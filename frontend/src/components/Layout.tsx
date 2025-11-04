@@ -8,6 +8,9 @@ import {
   LogOut,
   Menu,
   X,
+  Phone,
+  Users,
+  FileText,
 } from 'lucide-react'
 import { useState } from 'react'
 
@@ -16,6 +19,9 @@ const navigation = [
   { name: 'Audio Files', href: '/audio', icon: Music },
   { name: 'Evaluations', href: '/evaluations', icon: FileCheck },
   { name: 'Batch Jobs', href: '/batch', icon: FolderSync },
+  {name: 'Agents', href: '/agents', icon: Phone },
+  {name: 'Personas', href: '/personas', icon: Users },
+  {name: 'Scenarios', href: '/scenarios', icon: FileText }
 ]
 
 export default function Layout() {

@@ -211,3 +211,158 @@ class ErrorResponse(BaseModel):
 
     detail: str
 
+# ============================================
+# VAIOPS SCHEMAS - Voice AI Ops
+# ============================================
+
+from enum import Enum as PyEnum
+
+class LanguageEnum(str, PyEnum):
+    ENGLISH = "en"
+    SPANISH = "es"
+    FRENCH = "fr"
+    GERMAN = "de"
+    CHINESE = "zh"
+    JAPANESE = "ja"
+    HINDI = "hi"
+    ARABIC = "ar"
+
+
+class CallTypeEnum(str, PyEnum):
+    INBOUND = "inbound"
+    OUTBOUND = "outbound"
+
+
+class GenderEnum(str, PyEnum):
+    MALE = "male"
+    FEMALE = "female"
+    NEUTRAL = "neutral"
+
+
+class AccentEnum(str, PyEnum):
+    AMERICAN = "american"
+    BRITISH = "british"
+    AUSTRALIAN = "australian"
+    INDIAN = "indian"
+    CHINESE = "chinese"
+    SPANISH = "spanish"
+    FRENCH = "french"
+    GERMAN = "german"
+    NEUTRAL = "neutral"
+
+
+class BackgroundNoiseEnum(str, PyEnum):
+    NONE = "none"
+    OFFICE = "office"
+    STREET = "street"
+    CAFE = "cafe"
+    HOME = "home"
+    CALL_CENTER = "call_center"
+
+
+# Agent Schemas
+class AgentCreate(BaseModel):
+    """Schema for creating a new agent"""
+    name: str = Field(..., min_length=1, max_length=255)
+    phone_number: str
+    language: LanguageEnum = LanguageEnum.ENGLISH
+    description: Optional[str] = None
+    call_type: CallTypeEnum = CallTypeEnum.OUTBOUND
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "name": "Customer Support Bot",
+                "phone_number": "+1234567890",
+                "language": "en",
+                "description": "Handles customer support",
+                "call_type": "outbound"
+            }
+        }
+
+
+class AgentUpdate(BaseModel):
+    """Schema for updating an agent"""
+    name: Optional[str] = None
+    phone_number: Optional[str] = None
+    language: Optional[LanguageEnum] = None
+    description: Optional[str] = None
+    call_type: Optional[CallTypeEnum] = None
+
+
+class AgentResponse(BaseModel):
+    """Schema for agent response"""
+    id: UUID
+    name: str
+    phone_number: str
+    language: LanguageEnum
+    description: Optional[str]
+    call_type: CallTypeEnum
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        orm_mode = True
+
+
+# Persona Schemas
+class PersonaCreate(BaseModel):
+    """Schema for creating a new persona"""
+    name: str = Field(..., min_length=1, max_length=255)
+    language: LanguageEnum = LanguageEnum.ENGLISH
+    accent: AccentEnum = AccentEnum.AMERICAN
+    gender: GenderEnum = GenderEnum.NEUTRAL
+    background_noise: BackgroundNoiseEnum = BackgroundNoiseEnum.NONE
+
+
+class PersonaUpdate(BaseModel):
+    """Schema for updating a persona"""
+    name: Optional[str] = None
+    language: Optional[LanguageEnum] = None
+    accent: Optional[AccentEnum] = None
+    gender: Optional[GenderEnum] = None
+    background_noise: Optional[BackgroundNoiseEnum] = None
+
+
+class PersonaResponse(BaseModel):
+    """Schema for persona response"""
+    id: UUID
+    name: str
+    language: LanguageEnum
+    accent: AccentEnum
+    gender: GenderEnum
+    background_noise: BackgroundNoiseEnum
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        orm_mode = True
+
+
+# Scenario Schemas
+class ScenarioCreate(BaseModel):
+    """Schema for creating a new scenario"""
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
+    required_info: Dict[str, str] = Field(default_factory=dict)
+
+
+class ScenarioUpdate(BaseModel):
+    """Schema for updating a scenario"""
+    name: Optional[str] = None
+    description: Optional[str] = None
+    required_info: Optional[Dict[str, str]] = None
+
+
+class ScenarioResponse(BaseModel):
+    """Schema for scenario response"""
+    id: UUID
+    name: str
+    description: Optional[str]
+    required_info: Dict[str, str]
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        orm_mode = True
+

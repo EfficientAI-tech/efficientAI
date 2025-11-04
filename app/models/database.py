@@ -130,3 +130,100 @@ class BatchJob(Base):
     completed_at = Column(DateTime(timezone=True), nullable=True)
     error_message = Column(String, nullable=True)
 
+# ============================================
+# VAIOPS MODELS - Voice AI Ops
+# ============================================
+
+class LanguageEnum(str, enum.Enum):
+    """Supported languages"""
+    ENGLISH = "en"
+    SPANISH = "es"
+    FRENCH = "fr"
+    GERMAN = "de"
+    CHINESE = "zh"
+    JAPANESE = "ja"
+    HINDI = "hi"
+    ARABIC = "ar"
+
+
+class CallTypeEnum(str, enum.Enum):
+    """Call direction"""
+    INBOUND = "inbound"
+    OUTBOUND = "outbound"
+
+
+class GenderEnum(str, enum.Enum):
+    """Gender options for personas"""
+    MALE = "male"
+    FEMALE = "female"
+    NEUTRAL = "neutral"
+
+
+class AccentEnum(str, enum.Enum):
+    """Accent options"""
+    AMERICAN = "american"
+    BRITISH = "british"
+    AUSTRALIAN = "australian"
+    INDIAN = "indian"
+    CHINESE = "chinese"
+    SPANISH = "spanish"
+    FRENCH = "french"
+    GERMAN = "german"
+    NEUTRAL = "neutral"
+
+
+class BackgroundNoiseEnum(str, enum.Enum):
+    """Background noise options"""
+    NONE = "none"
+    OFFICE = "office"
+    STREET = "street"
+    CAFE = "cafe"
+    HOME = "home"
+    CALL_CENTER = "call_center"
+
+
+class Agent(Base):
+    """Test Agent - The voice AI agent being evaluated"""
+    __tablename__ = "agents"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String, nullable=False)
+    phone_number = Column(String, nullable=False)
+    language = Column(Enum(LanguageEnum), nullable=False, default=LanguageEnum.ENGLISH)
+    description = Column(String)
+    call_type = Column(Enum(CallTypeEnum), nullable=False, default=CallTypeEnum.OUTBOUND)
+    
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    created_by = Column(String)
+
+
+class Persona(Base):
+    """Persona - The simulated caller/user for testing"""
+    __tablename__ = "personas"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String, nullable=False)
+    language = Column(Enum(LanguageEnum), nullable=False, default=LanguageEnum.ENGLISH)
+    accent = Column(Enum(AccentEnum), nullable=False, default=AccentEnum.AMERICAN)
+    gender = Column(Enum(GenderEnum), nullable=False, default=GenderEnum.NEUTRAL)
+    background_noise = Column(Enum(BackgroundNoiseEnum), nullable=False, default=BackgroundNoiseEnum.NONE)
+    
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    created_by = Column(String)
+
+
+class Scenario(Base):
+    """Scenario - The conversation scenario/test case"""
+    __tablename__ = "scenarios"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String, nullable=False)
+    description = Column(String)
+    required_info = Column(JSON)
+    
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    created_by = Column(String)
+

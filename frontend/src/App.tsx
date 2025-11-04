@@ -8,6 +8,10 @@ import EvaluationDetail from './pages/EvaluationDetail'
 import BatchJobs from './pages/BatchJobs'
 import BatchDetail from './pages/BatchDetail'
 import Layout from './components/Layout'
+import Agents from './pages/Agents'
+import Personas from './pages/Personas'
+import Scenarios from './pages/Scenarios'
+
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const { apiKey } = useAuthStore()
@@ -38,6 +42,9 @@ function App() {
           <Route path="evaluations/:id" element={<EvaluationDetail />} />
           <Route path="batch" element={<BatchJobs />} />
           <Route path="batch/:id" element={<BatchDetail />} />
+          <Route path="agents" element={<Agents />} />
+          <Route path="personas" element={<Personas />} />
+          <Route path="scenarios" element={<Scenarios />} />
         </Route>
       </Routes>
     </BrowserRouter>
