@@ -11,8 +11,9 @@ export default function BatchDetail() {
     queryKey: ['batches', id],
     queryFn: () => apiClient.getBatch(id!),
     enabled: !!id,
-    refetchInterval: (data) => {
+    refetchInterval: (query) => {
       // Poll if batch is pending or processing
+      const data = query.state.data
       if (data?.status === 'pending' || data?.status === 'processing') {
         return 5000 // Poll every 5 seconds
       }

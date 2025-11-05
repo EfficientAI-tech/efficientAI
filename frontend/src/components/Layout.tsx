@@ -7,7 +7,6 @@ import {
   FolderSync,
   LogOut,
   Menu,
-  X,
   Phone,
   Users,
   FileText,

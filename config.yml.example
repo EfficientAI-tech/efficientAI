@@ -1,0 +1,59 @@
+# EfficientAI Configuration File
+
+# Application Settings
+app:
+  name: "Voice AI Evaluation Platform"
+  version: "0.1.0"
+  debug: true
+  secret_key: "your-secret-key-here-change-in-production"
+
+# Server Settings
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+# Database Configuration
+database:
+  url: "postgresql://efficientai:password@localhost:5432/efficientai"
+  # Alternative: specify individual components
+  # user: "efficientai"
+  # password: "password"
+  # host: "localhost"
+  # port: 5432
+  # db: "efficientai"
+
+# Redis Configuration
+redis:
+  url: "redis://localhost:6379/0"
+  # Alternative: specify individual components
+  # host: "localhost"
+  # port: 6379
+  # db: 0
+
+# Celery Configuration
+celery:
+  broker_url: "redis://localhost:6379/0"
+  result_backend: "redis://localhost:6379/0"
+
+# File Storage
+storage:
+  upload_dir: "./uploads"
+  max_file_size_mb: 500
+  allowed_audio_formats:
+    - "wav"
+    - "mp3"
+    - "flac"
+    - "m4a"
+
+# CORS Settings
+cors:
+  origins:
+    - "http://localhost:3000"
+    - "http://localhost:8000"
+
+# API Settings
+api:
+  prefix: "/api/v1"
+  key_header: "X-API-Key"
+  rate_limit_per_minute: 60
+

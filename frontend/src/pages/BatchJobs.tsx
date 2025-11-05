@@ -1,13 +1,10 @@
 import { useState } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { apiClient } from '../lib/api'
-import { EvaluationType } from '../types/api'
 import {
   Plus,
   Loader,
   FolderSync,
-  Download,
   RefreshCw,
   CheckCircle,
   Clock,
@@ -18,7 +15,6 @@ import CreateBatchModal from '../components/CreateBatchModal'
 
 export default function BatchJobs() {
   const [showCreateModal, setShowCreateModal] = useState(false)
-  const queryClient = useQueryClient()
 
   // Note: There's no list batch endpoint, so we'd need to track batch IDs
   // For now, we'll show a placeholder with create functionality

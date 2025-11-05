@@ -270,7 +270,7 @@ class AgentCreate(BaseModel):
     call_type: CallTypeEnum = CallTypeEnum.OUTBOUND
 
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "name": "Customer Support Bot",
                 "phone_number": "+1234567890",
@@ -302,7 +302,7 @@ class AgentResponse(BaseModel):
     updated_at: datetime
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 
 # Persona Schemas
@@ -336,7 +336,7 @@ class PersonaResponse(BaseModel):
     updated_at: datetime
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 
 # Scenario Schemas
@@ -364,5 +364,5 @@ class ScenarioResponse(BaseModel):
     updated_at: datetime
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 

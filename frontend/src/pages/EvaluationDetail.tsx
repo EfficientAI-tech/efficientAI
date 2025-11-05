@@ -20,8 +20,9 @@ export default function EvaluationDetail() {
     queryKey: ['evaluations', id],
     queryFn: () => apiClient.getEvaluation(id!),
     enabled: !!id,
-    refetchInterval: (data) => {
+    refetchInterval: (query) => {
       // Poll if evaluation is pending or processing
+      const data = query.state.data
       if (
         data?.status === EvaluationStatus.PENDING ||
         data?.status === EvaluationStatus.PROCESSING
@@ -185,7 +186,7 @@ export default function EvaluationDetail() {
                 <div className="bg-white shadow rounded-lg p-6">
                   <h2 className="text-lg font-medium text-gray-900 mb-4">Processing Information</h2>
                   <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                    {result.processing_time !== null && (
+                    {result.processing_time !== null && result.processing_time !== undefined && (
                       <div>
                         <dt className="text-sm font-medium text-gray-500">Processing Time</dt>
                         <dd className="mt-1 text-sm text-gray-900">

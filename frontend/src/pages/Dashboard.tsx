@@ -3,11 +3,8 @@ import { apiClient } from '../lib/api'
 import {
   Music,
   FileCheck,
-  FolderSync,
-  TrendingUp,
   Clock,
   CheckCircle,
-  XCircle,
   Loader,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
@@ -15,7 +12,7 @@ import { EvaluationStatus } from '../types/api'
 import { format } from 'date-fns'
 
 export default function Dashboard() {
-  const { data: audioFiles, isLoading: audioLoading } = useQuery({
+  const { data: audioFiles } = useQuery({
     queryKey: ['audio', 'list'],
     queryFn: () => apiClient.listAudio(0, 10),
   })

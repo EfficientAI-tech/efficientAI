@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { apiClient } from '../lib/api'
-import { EvaluationStatus, EvaluationType } from '../types/api'
+import { EvaluationStatus } from '../types/api'
 import {
   Plus,
   Loader,

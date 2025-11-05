@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
-import { Upload, Trash2, Download, Music, Loader, AlertCircle } from 'lucide-react'
+import { Upload, Trash2, Download, Music, Loader } from 'lucide-react'
 import { format } from 'date-fns'
 
 export default function AudioFiles() {
