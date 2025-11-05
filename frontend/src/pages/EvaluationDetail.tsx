@@ -223,11 +223,11 @@ export default function EvaluationDetail() {
       )}
 
       {evaluation.status === EvaluationStatus.PROCESSING && (
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+        <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
           <div className="flex">
-            <RefreshCw className="h-5 w-5 text-blue-400 animate-spin" />
+            <RefreshCw className="h-5 w-5 text-orange-400 animate-spin" />
             <div className="ml-3">
-              <p className="text-sm text-blue-800">
+              <p className="text-sm text-orange-800">
                 This evaluation is currently being processed...
               </p>
             </div>
@@ -247,8 +247,8 @@ function StatusBadge({ status }: { status: EvaluationStatus }) {
       icon: Clock,
     },
     [EvaluationStatus.PROCESSING]: {
-      bg: 'bg-blue-100',
-      text: 'text-blue-800',
+      bg: 'bg-orange-100',
+      text: 'text-orange-800',
       label: 'Processing',
       icon: Loader,
     },

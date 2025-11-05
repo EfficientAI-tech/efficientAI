@@ -5,6 +5,8 @@ import yaml
 import os
 import sys
 import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -13,6 +15,127 @@ from typing import Optional
 def main():
     """EfficientAI - Voice AI Evaluation Platform CLI."""
     pass
+
+
+class FrontendWatcher:
+    """Watch frontend files and rebuild on changes."""
+    
+    def __init__(self, frontend_dir: Path):
+        self.frontend_dir = frontend_dir
+        self.watching = False
+        self.thread = None
+        self.last_build_time = 0
+        self.build_lock = threading.Lock()
+        
+    def should_rebuild(self) -> bool:
+        """Check if frontend files have changed."""
+        src_dir = self.frontend_dir / "src"
+        if not src_dir.exists():
+            return False
+        
+        # Check modification time of source files
+        max_mtime = 0
+        for ext in [".tsx", ".ts", ".css", ".jsx", ".js"]:
+            for file_path in src_dir.rglob(f"*{ext}"):
+                if file_path.is_file():
+                    max_mtime = max(max_mtime, file_path.stat().st_mtime)
+        
+        # Also check config files
+        config_files = [
+            self.frontend_dir / "vite.config.ts",
+            self.frontend_dir / "tailwind.config.js",
+            self.frontend_dir / "tsconfig.json",
+            self.frontend_dir / "package.json",
+        ]
+        for config_file in config_files:
+            if config_file.exists():
+                max_mtime = max(max_mtime, config_file.stat().st_mtime)
+        
+        if max_mtime > self.last_build_time:
+            self.last_build_time = max_mtime
+            return True
+        return False
+    
+    def build_frontend(self):
+        """Rebuild the frontend."""
+        with self.build_lock:
+            try:
+                click.echo("\n🔄 Frontend files changed, rebuilding...")
+                result = subprocess.run(
+                    ["npm", "run", "build"],
+                    cwd=self.frontend_dir,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode == 0:
+                    click.echo("✅ Frontend rebuilt successfully")
+                else:
+                    click.echo(f"⚠️  Frontend build had warnings (check logs)", err=True)
+                    if result.stderr:
+                        click.echo(result.stderr[:500], err=True)  # Show first 500 chars
+            except Exception as e:
+                click.echo(f"❌ Frontend build error: {e}", err=True)
+    
+    def watch_loop(self):
+        """Watch loop that runs in background thread."""
+        while self.watching:
+            try:
+                if self.should_rebuild():
+                    self.build_frontend()
+                time.sleep(1)  # Check every second
+            except Exception as e:
+                click.echo(f"❌ Watcher error: {e}", err=True)
+                time.sleep(5)  # Wait longer on error
+    
+    def start(self):
+        """Start the watcher in a background thread."""
+        if self.watching:
+            return
+        self.watching = True
+        # Set initial build time to avoid rebuilding immediately
+        self.last_build_time = time.time()
+        self.thread = threading.Thread(target=self.watch_loop, daemon=True)
+        self.thread.start()
+    
+    def stop(self):
+        """Stop the watcher."""
+        self.watching = False
+        if self.thread:
+            self.thread.join(timeout=1)
+
+
+def start_frontend_watcher(frontend_dir: Path) -> FrontendWatcher:
+    """Start a frontend file watcher."""
+    watcher = FrontendWatcher(frontend_dir)
+    watcher.start()
+    return watcher
+
+
+@main.command()
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    help="Show detailed migration output",
+)
+def migrate(verbose: bool):
+    """Run pending database migrations."""
+    import logging
+    from app.core.migrations import run_migrations, ensure_migrations_directory
+    
+    if verbose:
+        logging.basicConfig(level=logging.INFO)
+    
+    click.echo("🔄 Running database migrations...")
+    ensure_migrations_directory()
+    
+    try:
+        run_migrations()
+        click.echo("✅ All migrations completed successfully!")
+    except Exception as e:
+        click.echo(f"❌ Migration failed: {e}", err=True)
+        sys.exit(1)
 
 
 @main.command()
@@ -44,7 +167,12 @@ def main():
     default=True,
     help="Enable auto-reload for development (default: True)",
 )
-def start(config: str, host: Optional[str], port: Optional[int], build_frontend: bool, reload: bool):
+@click.option(
+    "--watch-frontend/--no-watch-frontend",
+    default=False,
+    help="Watch frontend files and rebuild automatically (default: False)",
+)
+def start(config: str, host: Optional[str], port: Optional[int], build_frontend: bool, reload: bool, watch_frontend: bool):
     """Start the EfficientAI application server."""
     from app.config import load_config_from_file, settings
     
@@ -124,6 +252,13 @@ def start(config: str, host: Optional[str], port: Optional[int], build_frontend:
             click.echo("❌ npm not found. Please install Node.js and npm.", err=True)
             sys.exit(1)
     
+    # Start frontend watcher if requested
+    frontend_watcher = None
+    if watch_frontend:
+        click.echo("👀 Starting frontend file watcher...")
+        frontend_dir = Path(__file__).parent.parent / "frontend"
+        frontend_watcher = start_frontend_watcher(frontend_dir)
+    
     # Start the server
     import uvicorn
     
@@ -133,14 +268,21 @@ def start(config: str, host: Optional[str], port: Optional[int], build_frontend:
     click.echo(f"   API: http://{settings.HOST}:{settings.PORT}{settings.API_V1_PREFIX}")
     click.echo(f"   Frontend: http://{settings.HOST}:{settings.PORT}/")
     click.echo(f"   Docs: http://{settings.HOST}:{settings.PORT}/docs")
+    if watch_frontend:
+        click.echo(f"   Frontend watcher: Active (rebuilding on file changes)")
     
     # Use import string for reload to work properly
-    uvicorn.run(
-        "app.main:app",
-        host=settings.HOST,
-        port=settings.PORT,
-        reload=reload,
-    )
+    try:
+        uvicorn.run(
+            "app.main:app",
+            host=settings.HOST,
+            port=settings.PORT,
+            reload=reload,
+        )
+    finally:
+        # Clean up watcher on exit
+        if frontend_watcher:
+            frontend_watcher.stop()
 
 
 @main.command()

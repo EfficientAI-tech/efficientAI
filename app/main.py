@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 from app.config import settings
 from app.api.v1.api import api_router
 from app.database import init_db
+from app.core.migrations import run_migrations, ensure_migrations_directory
 
 # Create FastAPI app
 app = FastAPI(
@@ -67,7 +68,14 @@ if frontend_dist.exists() and frontend_dist.is_dir():
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize database on startup."""
+    """Initialize database and run migrations on startup."""
+    # Ensure migrations directory exists
+    ensure_migrations_directory()
+    
+    # Run database migrations
+    run_migrations()
+    
+    # Initialize database (creates tables if they don't exist)
     init_db()
 
 

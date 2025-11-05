@@ -1,6 +1,6 @@
 """SQLAlchemy database models."""
 
-from sqlalchemy import Column, String, Integer, Float, DateTime, ForeignKey, Boolean, JSON, Enum
+from sqlalchemy import Column, String, Integer, Float, DateTime, ForeignKey, Boolean, JSON, Enum, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -38,6 +38,102 @@ class BatchStatus(str, enum.Enum):
     CANCELLED = "cancelled"
 
 
+class RoleEnum(str, enum.Enum):
+    """User role enumeration for RBAC."""
+    
+    READER = "reader"
+    WRITER = "writer"
+    ADMIN = "admin"
+
+
+class InvitationStatus(str, enum.Enum):
+    """Invitation status enumeration."""
+    
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    DECLINED = "declined"
+    EXPIRED = "expired"
+
+
+class Organization(Base):
+    """Organization model for multi-tenancy."""
+
+    __tablename__ = "organizations"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(255), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # Relationships
+    api_keys = relationship("APIKey", back_populates="organization")
+    members = relationship("OrganizationMember", back_populates="organization", cascade="all, delete-orphan")
+    invitations = relationship("Invitation", back_populates="organization", cascade="all, delete-orphan")
+
+
+class User(Base):
+    """User model for authentication and profile management."""
+
+    __tablename__ = "users"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    name = Column(String(255), nullable=True)
+    password_hash = Column(String(255), nullable=True)  # Nullable for users created via invitation
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # Relationships
+    organization_memberships = relationship("OrganizationMember", back_populates="user", cascade="all, delete-orphan")
+    api_keys = relationship("APIKey", back_populates="user")
+    invitations = relationship("Invitation", back_populates="invited_user", foreign_keys="Invitation.invited_user_id")
+
+
+class OrganizationMember(Base):
+    """Organization membership with role."""
+
+    __tablename__ = "organization_members"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    role = Column(Enum(RoleEnum), nullable=False, default=RoleEnum.READER)
+    joined_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Unique constraint: one membership per user per organization
+    __table_args__ = (
+        UniqueConstraint('organization_id', 'user_id', name='uq_org_user'),
+    )
+
+    # Relationships
+    organization = relationship("Organization", back_populates="members")
+    user = relationship("User", back_populates="organization_memberships")
+
+
+class Invitation(Base):
+    """Invitation model for inviting users to organizations."""
+
+    __tablename__ = "invitations"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    invited_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True, index=True)  # Null if user doesn't exist yet
+    invited_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    email = Column(String(255), nullable=False)  # Email of invited user
+    role = Column(Enum(RoleEnum), nullable=False, default=RoleEnum.READER)
+    status = Column(Enum(InvitationStatus), nullable=False, default=InvitationStatus.PENDING)
+    token = Column(String(255), unique=True, nullable=False, index=True)  # Invitation token
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    accepted_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    organization = relationship("Organization", back_populates="invitations")
+    invited_user = relationship("User", foreign_keys=[invited_user_id], back_populates="invitations")
+    invited_by = relationship("User", foreign_keys=[invited_by_id])
+
+
 class APIKey(Base):
     """API Key model for authentication."""
 
@@ -46,9 +142,15 @@ class APIKey(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     key = Column(String(255), unique=True, nullable=False, index=True)
     name = Column(String(255), nullable=True)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True, index=True)  # Optional: link to user
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     last_used = Column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    organization = relationship("Organization", back_populates="api_keys")
+    user = relationship("User", back_populates="api_keys")
 
 
 class AudioFile(Base):
@@ -57,6 +159,7 @@ class AudioFile(Base):
     __tablename__ = "audio_files"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
     filename = Column(String(255), nullable=False)
     file_path = Column(String(512), nullable=False)
     file_size = Column(Integer, nullable=False)  # Size in bytes
@@ -76,6 +179,7 @@ class Evaluation(Base):
     __tablename__ = "evaluations"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
     audio_id = Column(UUID(as_uuid=True), ForeignKey("audio_files.id"), nullable=False)
     reference_text = Column(String, nullable=True)  # For WER calculation
     evaluation_type = Column(Enum(EvaluationType), nullable=False)
@@ -116,6 +220,7 @@ class BatchJob(Base):
     __tablename__ = "batch_jobs"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
     status = Column(Enum(BatchStatus), default=BatchStatus.PENDING, nullable=False)
     total_files = Column(Integer, nullable=False)
     processed_files = Column(Integer, default=0, nullable=False)
@@ -187,6 +292,7 @@ class Agent(Base):
     __tablename__ = "agents"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
     name = Column(String, nullable=False)
     phone_number = Column(String, nullable=False)
     language = Column(Enum(LanguageEnum), nullable=False, default=LanguageEnum.ENGLISH)
@@ -203,6 +309,7 @@ class Persona(Base):
     __tablename__ = "personas"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
     name = Column(String, nullable=False)
     language = Column(Enum(LanguageEnum), nullable=False, default=LanguageEnum.ENGLISH)
     accent = Column(Enum(AccentEnum), nullable=False, default=AccentEnum.AMERICAN)
@@ -219,6 +326,7 @@ class Scenario(Base):
     __tablename__ = "scenarios"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
     name = Column(String, nullable=False)
     description = Column(String)
     required_info = Column(JSON)
@@ -226,4 +334,26 @@ class Scenario(Base):
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     created_by = Column(String)
+
+
+class IntegrationPlatform(str, enum.Enum):
+    """Integration platform enumeration."""
+    
+    RETELL = "retell"
+    VAPI = "vapi"
+
+
+class Integration(Base):
+    """Integration model for connecting with external voice AI platforms."""
+    __tablename__ = "integrations"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    platform = Column(Enum(IntegrationPlatform), nullable=False)
+    name = Column(String, nullable=True)  # Optional friendly name
+    api_key = Column(String, nullable=False)  # Encrypted API key for the platform
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    last_tested_at = Column(DateTime(timezone=True), nullable=True)  # When API key was last validated
 

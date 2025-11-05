@@ -5,12 +5,13 @@ from sqlalchemy.orm import Session
 from uuid import uuid4
 from typing import List
 from app.database import get_db
-from app.dependencies import get_api_key
+from app.dependencies import get_api_key, get_organization_id
 from app.models.database import AudioFile
 from app.models.schemas import AudioFileResponse, MessageResponse
 from app.services.storage_service import storage_service
 from app.services.audio_service import AudioService
 from app.core.exceptions import AudioFileNotFoundError, StorageError
+from uuid import UUID
 
 router = APIRouter(prefix="/audio", tags=["Audio"])
 audio_service = AudioService()
@@ -20,6 +21,7 @@ audio_service = AudioService()
 def upload_audio_file(
     file: UploadFile = File(...),
     api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ):
     """
@@ -28,6 +30,7 @@ def upload_audio_file(
     Args:
         file: Audio file to upload
         api_key: Validated API key
+        organization_id: Organization ID from API key
         db: Database session
 
     Returns:
@@ -51,6 +54,7 @@ def upload_audio_file(
         # Create database record
         audio_file = AudioFile(
             id=file_id,
+            organization_id=organization_id,
             filename=file.filename,
             file_path=file_path,
             file_size=file_size,
@@ -75,6 +79,7 @@ def upload_audio_file(
 def get_audio_file(
     audio_id: str,
     api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ):
     """
@@ -83,19 +88,21 @@ def get_audio_file(
     Args:
         audio_id: Audio file ID
         api_key: Validated API key
+        organization_id: Organization ID from API key
         db: Database session
 
     Returns:
         Audio file metadata
     """
-    from uuid import UUID
-
     try:
         file_id = UUID(audio_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid audio ID format")
 
-    audio_file = db.query(AudioFile).filter(AudioFile.id == file_id).first()
+    audio_file = db.query(AudioFile).filter(
+        AudioFile.id == file_id,
+        AudioFile.organization_id == organization_id
+    ).first()
     if not audio_file:
         raise HTTPException(status_code=404, detail="Audio file not found")
 
@@ -106,6 +113,7 @@ def get_audio_file(
 def download_audio_file(
     audio_id: str,
     api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ):
     """
@@ -114,12 +122,12 @@ def download_audio_file(
     Args:
         audio_id: Audio file ID
         api_key: Validated API key
+        organization_id: Organization ID from API key
         db: Database session
 
     Returns:
         File response
     """
-    from uuid import UUID
     from fastapi.responses import FileResponse
     from pathlib import Path
 
@@ -128,7 +136,10 @@ def download_audio_file(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid audio ID format")
 
-    audio_file = db.query(AudioFile).filter(AudioFile.id == file_id).first()
+    audio_file = db.query(AudioFile).filter(
+        AudioFile.id == file_id,
+        AudioFile.organization_id == organization_id
+    ).first()
     if not audio_file:
         raise HTTPException(status_code=404, detail="Audio file not found")
 
@@ -147,6 +158,7 @@ def download_audio_file(
 def delete_audio_file(
     audio_id: str,
     api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ):
     """
@@ -155,31 +167,40 @@ def delete_audio_file(
     Args:
         audio_id: Audio file ID
         api_key: Validated API key
+        organization_id: Organization ID from API key
         db: Database session
 
     Returns:
         Success message
     """
-    from uuid import UUID
-
     try:
         file_id = UUID(audio_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid audio ID format")
 
-    audio_file = db.query(AudioFile).filter(AudioFile.id == file_id).first()
+    audio_file = db.query(AudioFile).filter(
+        AudioFile.id == file_id,
+        AudioFile.organization_id == organization_id
+    ).first()
     if not audio_file:
         raise HTTPException(status_code=404, detail="Audio file not found")
 
     # Delete file from storage
     try:
         storage_service.delete_file(audio_file.id, audio_file.format)
-    except Exception:
-        pass  # Continue even if file deletion fails
+    except Exception as e:
+        # Log the error but continue - file might already be deleted
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(f"Failed to delete file from storage: {str(e)}")
 
     # Delete database record
-    db.delete(audio_file)
-    db.commit()
+    try:
+        db.delete(audio_file)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to delete audio file: {str(e)}")
 
     return {"message": "Audio file deleted successfully"}
 
@@ -189,20 +210,24 @@ def list_audio_files(
     skip: int = 0,
     limit: int = 100,
     api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ):
     """
-    List all audio files (paginated).
+    List all audio files (paginated) for the organization.
 
     Args:
         skip: Number of records to skip
         limit: Maximum number of records to return
         api_key: Validated API key
+        organization_id: Organization ID from API key
         db: Database session
 
     Returns:
         List of audio files
     """
-    audio_files = db.query(AudioFile).offset(skip).limit(limit).all()
+    audio_files = db.query(AudioFile).filter(
+        AudioFile.organization_id == organization_id
+    ).offset(skip).limit(limit).all()
     return audio_files
 

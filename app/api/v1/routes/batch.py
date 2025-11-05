@@ -2,10 +2,10 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from uuid import uuid4
+from uuid import uuid4, UUID
 from typing import List
 from app.database import get_db
-from app.dependencies import get_api_key
+from app.dependencies import get_api_key, get_organization_id
 from app.models.database import BatchJob, BatchStatus, Evaluation, EvaluationStatus
 from app.models.schemas import (
     BatchCreate,
@@ -24,6 +24,7 @@ router = APIRouter(prefix="/batch", tags=["Batch"])
 def create_batch(
     batch_data: BatchCreate,
     api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ):
     """
@@ -32,6 +33,7 @@ def create_batch(
     Args:
         batch_data: Batch creation data
         api_key: Validated API key
+        organization_id: Organization ID from API key
         db: Database session
 
     Returns:
@@ -39,8 +41,11 @@ def create_batch(
     """
     from app.models.database import AudioFile
 
-    # Verify all audio files exist
-    audio_files = db.query(AudioFile).filter(AudioFile.id.in_(batch_data.audio_ids)).all()
+    # Verify all audio files exist and belong to organization
+    audio_files = db.query(AudioFile).filter(
+        AudioFile.id.in_(batch_data.audio_ids),
+        AudioFile.organization_id == organization_id
+    ).all()
     if len(audio_files) != len(batch_data.audio_ids):
         raise HTTPException(status_code=404, detail="One or more audio files not found")
 
@@ -48,6 +53,7 @@ def create_batch(
     batch_id = uuid4()
     batch = BatchJob(
         id=batch_id,
+        organization_id=organization_id,
         status=BatchStatus.PENDING,
         total_files=len(batch_data.audio_ids),
         processed_files=0,
@@ -67,6 +73,7 @@ def create_batch(
         )
 
         evaluation = Evaluation(
+            organization_id=organization_id,
             audio_id=audio_id,
             reference_text=reference_text,
             evaluation_type=batch_data.evaluation_type,
@@ -93,6 +100,7 @@ def create_batch(
 def get_batch(
     batch_id: str,
     api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ):
     """
@@ -101,19 +109,21 @@ def get_batch(
     Args:
         batch_id: Batch job ID
         api_key: Validated API key
+        organization_id: Organization ID from API key
         db: Database session
 
     Returns:
         Batch job details
     """
-    from uuid import UUID
-
     try:
         batch_uuid = UUID(batch_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid batch ID format")
 
-    batch = db.query(BatchJob).filter(BatchJob.id == batch_uuid).first()
+    batch = db.query(BatchJob).filter(
+        BatchJob.id == batch_uuid,
+        BatchJob.organization_id == organization_id
+    ).first()
     if not batch:
         raise HTTPException(status_code=404, detail="Batch job not found")
 
@@ -124,6 +134,7 @@ def get_batch(
 def get_batch_results(
     batch_id: str,
     api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ):
     """
@@ -132,12 +143,12 @@ def get_batch_results(
     Args:
         batch_id: Batch job ID
         api_key: Validated API key
+        organization_id: Organization ID from API key
         db: Database session
 
     Returns:
         Batch results summary
     """
-    from uuid import UUID
     from app.models.database import EvaluationResult
 
     try:
@@ -145,7 +156,10 @@ def get_batch_results(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid batch ID format")
 
-    batch = db.query(BatchJob).filter(BatchJob.id == batch_uuid).first()
+    batch = db.query(BatchJob).filter(
+        BatchJob.id == batch_uuid,
+        BatchJob.organization_id == organization_id
+    ).first()
     if not batch:
         raise HTTPException(status_code=404, detail="Batch job not found")
 
@@ -191,6 +205,7 @@ def export_batch_results(
     batch_id: str,
     format: str = "json",
     api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ):
     """
@@ -200,12 +215,12 @@ def export_batch_results(
         batch_id: Batch job ID
         format: Export format (json or csv)
         api_key: Validated API key
+        organization_id: Organization ID from API key
         db: Database session
 
     Returns:
         Exported results
     """
-    from uuid import UUID
     from app.models.database import EvaluationResult
     from fastapi.responses import Response
     import json
@@ -217,7 +232,10 @@ def export_batch_results(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid batch ID format")
 
-    batch = db.query(BatchJob).filter(BatchJob.id == batch_uuid).first()
+    batch = db.query(BatchJob).filter(
+        BatchJob.id == batch_uuid,
+        BatchJob.organization_id == organization_id
+    ).first()
     if not batch:
         raise HTTPException(status_code=404, detail="Batch job not found")
 

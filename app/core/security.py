@@ -32,6 +32,23 @@ def verify_api_key(api_key: str, db: Session) -> bool:
     return True
 
 
+def get_api_key_organization_id(api_key: str, db: Session):
+    """
+    Get organization ID from API key.
+
+    Args:
+        api_key: The API key
+        db: Database session
+
+    Returns:
+        Organization ID (UUID) or None if not found
+    """
+    db_key = db.query(APIKey).filter(APIKey.key == api_key, APIKey.is_active == True).first()
+    if db_key:
+        return db_key.organization_id
+    return None
+
+
 def get_api_key_dependency(api_key: Optional[str] = None) -> str:
     """
     Dependency for FastAPI to extract and validate API key.

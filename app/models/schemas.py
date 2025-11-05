@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field, validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from uuid import UUID
-from app.models.database import EvaluationType, EvaluationStatus, BatchStatus
+from app.models.database import EvaluationType, EvaluationStatus, BatchStatus, RoleEnum, InvitationStatus, IntegrationPlatform
 
 
 # Audio File Schemas
@@ -362,6 +362,128 @@ class ScenarioResponse(BaseModel):
     required_info: Dict[str, str]
     created_at: datetime
     updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# ============================================
+# IAM & USER SCHEMAS
+# ============================================
+
+# User Schemas
+class UserCreate(BaseModel):
+    """Schema for creating a user."""
+    email: str = Field(..., description="User email address")
+    name: Optional[str] = None
+    password: Optional[str] = None  # Optional for invitation-based signup
+
+
+class UserUpdate(BaseModel):
+    """Schema for updating user profile."""
+    name: Optional[str] = None
+    email: Optional[str] = None
+
+
+class UserResponse(BaseModel):
+    """Schema for user response."""
+    id: UUID
+    email: str
+    name: Optional[str]
+    is_active: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class OrganizationMemberResponse(BaseModel):
+    """Schema for organization member response."""
+    id: UUID
+    user_id: UUID
+    organization_id: UUID
+    role: RoleEnum
+    joined_at: datetime
+    user: UserResponse  # Include user details
+
+    class Config:
+        from_attributes = True
+
+
+# Invitation Schemas
+class InvitationCreate(BaseModel):
+    """Schema for creating an invitation."""
+    email: str = Field(..., description="Email address of the user to invite")
+    role: RoleEnum = RoleEnum.READER
+
+
+class InvitationResponse(BaseModel):
+    """Schema for invitation response."""
+    id: UUID
+    organization_id: UUID
+    email: str
+    role: RoleEnum
+    status: InvitationStatus
+    expires_at: datetime
+    created_at: datetime
+    organization_name: Optional[str] = None  # Include organization name
+
+    class Config:
+        from_attributes = True
+
+
+class InvitationUpdate(BaseModel):
+    """Schema for updating invitation (accept/decline)."""
+    token: str
+
+
+class RoleUpdate(BaseModel):
+    """Schema for updating user role in organization."""
+    role: RoleEnum
+
+
+# Profile Schemas
+class ProfileResponse(BaseModel):
+    """Schema for user profile response."""
+    id: UUID
+    email: str
+    name: Optional[str]
+    created_at: datetime
+    organizations: List[dict] = Field(default_factory=list)  # List of org memberships
+
+    class Config:
+        from_attributes = True
+
+
+# ============================================
+# INTEGRATION SCHEMAS
+# ============================================
+
+class IntegrationCreate(BaseModel):
+    """Schema for creating an integration."""
+    platform: IntegrationPlatform
+    api_key: str = Field(..., description="API key for the platform")
+    name: Optional[str] = Field(None, description="Optional friendly name for the integration")
+
+
+class IntegrationUpdate(BaseModel):
+    """Schema for updating an integration."""
+    name: Optional[str] = None
+    api_key: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class IntegrationResponse(BaseModel):
+    """Schema for integration response."""
+    id: UUID
+    organization_id: UUID
+    platform: IntegrationPlatform
+    name: Optional[str]
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+    last_tested_at: Optional[datetime] = None
+    # Note: api_key is NOT included in response for security
 
     class Config:
         from_attributes = True

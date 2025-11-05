@@ -57,7 +57,7 @@ export default function Scenarios() {
         {scenarios.length === 0 && (
           <button
             onClick={seedDemoData}
-            className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
+            className="bg-primary-600 text-white px-4 py-2 rounded-lg hover:bg-primary-700 transition-colors"
           >
             Load Demo Scenarios
           </button>
@@ -71,7 +71,7 @@ export default function Scenarios() {
           <p className="text-gray-500 mb-4">Load demo scenarios to get started with testing</p>
           <button
             onClick={seedDemoData}
-            className="text-blue-600 hover:text-blue-700 font-medium"
+            className="text-primary-600 hover:text-primary-700 font-medium"
           >
             Load demo scenarios →
           </button>
@@ -100,7 +100,7 @@ export default function Scenarios() {
                         {Object.entries(scenario.required_info).map(([key, value]) => (
                           <span
                             key={key}
-                            className="px-3 py-1 bg-blue-50 text-blue-700 rounded-full text-sm border border-blue-100"
+                            className="px-3 py-1 bg-orange-50 text-orange-700 rounded-full text-sm border border-orange-100"
                           >
                             {key.replace(/_/g, ' ')}: <span className="font-mono text-xs">{value}</span>
                           </span>
@@ -112,7 +112,7 @@ export default function Scenarios() {
               </div>
 
               <div className="mt-4 pt-4 border-t border-gray-100 flex gap-3">
-                <button className="flex-1 text-center text-sm text-blue-600 hover:text-blue-700 font-medium py-2 border border-blue-200 rounded-lg hover:bg-blue-50 transition-colors">
+                <button className="flex-1 text-center text-sm text-primary-600 hover:text-primary-700 font-medium py-2 border border-primary-200 rounded-lg hover:bg-primary-50 transition-colors">
                   Use in Test →
                 </button>
                 <button className="text-sm text-gray-600 hover:text-gray-700 font-medium py-2 px-4 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">

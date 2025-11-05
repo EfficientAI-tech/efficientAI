@@ -77,7 +77,7 @@ export default function Personas() {
         {personas.length === 0 && (
           <button
             onClick={seedDemoData}
-            className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
+            className="bg-primary-600 text-white px-4 py-2 rounded-lg hover:bg-primary-700 transition-colors"
           >
             Load Demo Personas
           </button>
@@ -91,7 +91,7 @@ export default function Personas() {
           <p className="text-gray-500 mb-4">Load demo personas to get started with testing</p>
           <button
             onClick={seedDemoData}
-            className="text-blue-600 hover:text-blue-700 font-medium"
+            className="text-primary-600 hover:text-primary-700 font-medium"
           >
             Load demo personas →
           </button>
@@ -130,7 +130,7 @@ export default function Personas() {
               </div>
 
               <div className="mt-4 pt-4 border-t border-gray-100">
-                <button className="w-full text-center text-sm text-blue-600 hover:text-blue-700 font-medium">
+                <button className="w-full text-center text-sm text-primary-600 hover:text-primary-700 font-medium">
                   Use in Test →
                 </button>
               </div>
@@ -140,8 +140,8 @@ export default function Personas() {
       )}
 
       {personas.length > 0 && (
-        <div className="mt-6 p-4 bg-blue-50 rounded-lg border border-blue-100">
-          <p className="text-sm text-blue-800">
+        <div className="mt-6 p-4 bg-orange-50 rounded-lg border border-orange-100">
+          <p className="text-sm text-orange-800">
             💡 <strong>Tip:</strong> These personas simulate different caller types. Use them to test how your agent handles various customer behaviors and environments.
           </p>
         </div>

@@ -13,9 +13,13 @@ There are two ways to run the application:
    docker compose up -d
    ```
 
-2. **Initialize database**
+2. **Initialize database** (migrations run automatically on startup, but you can also run manually)
    ```bash
-   docker compose exec api python scripts/init_db.py
+   # Option 1: Let migrations run automatically on startup
+   # (No action needed - migrations run when the app starts)
+   
+   # Option 2: Run migrations manually before starting
+   docker compose exec api eai migrate
    ```
 
 3. **Create an API key**
@@ -58,6 +62,17 @@ There are two ways to run the application:
    - Start the API server
    - Serve both API and frontend from the same server
 
+   **For development with hot reload:**
+   ```bash
+   # Enable auto-rebuild of frontend on file changes
+   eai start --config config.yml --watch-frontend
+   ```
+   
+   This will:
+   - Automatically rebuild the frontend when source files change
+   - Keep the backend hot-reload enabled (by default)
+   - Perfect for active frontend development
+
 5. **Access the application**
    - Frontend: http://localhost:8000/
    - API Docs: http://localhost:8000/docs
@@ -83,11 +98,20 @@ eai start
 # Start with custom config
 eai start --config production.yml
 
+# Start with frontend file watching (auto-rebuild on changes)
+eai start --watch-frontend
+
 # Start without building frontend (if already built)
 eai start --no-build-frontend
 
 # Start without auto-reload (production mode)
 eai start --no-reload --no-build-frontend
+```
+
+**Development Mode:**
+```bash
+# Full development setup with both backend and frontend hot reload
+eai start --watch-frontend --reload
 ```
 
 ### Generate Config File
@@ -98,6 +122,17 @@ eai init-config
 # Generate custom config file
 eai init-config --output my-config.yml
 ```
+
+### Database Migrations
+```bash
+# Run pending migrations manually
+eai migrate
+
+# Run migrations with verbose output
+eai migrate --verbose
+```
+
+**Note:** Migrations run automatically on application startup. You only need to run them manually if you want to apply migrations before starting the server.
 
 ## Configuration
 
@@ -138,6 +173,64 @@ REDIS_URL=redis://redis:6379/0
 SECRET_KEY=your-secret-key-here
 ```
 
+## Database Migrations
+
+The application includes an automatic migration system that runs database schema changes on startup.
+
+### How It Works
+
+- **Automatic Execution**: Migrations run automatically when the application starts
+- **Version Tracking**: Applied migrations are tracked in the `schema_migrations` table
+- **Idempotent**: Each migration only runs once, even if the application restarts
+- **Ordered Execution**: Migrations run in alphabetical order (use numbered prefixes like `001_`, `002_`, etc.)
+
+### Migration Files
+
+Migrations are stored in the `migrations/` directory. Each migration file should:
+
+1. Have a numeric prefix: `001_description.py`, `002_another.py`, etc.
+2. Include a `description` variable
+3. Have an `upgrade(db)` function that takes a SQLAlchemy Session
+
+Example migration:
+```python
+"""
+Migration: Add New Feature
+"""
+
+description = "Add new feature support"
+
+def upgrade(db):
+    """Apply this migration."""
+    from sqlalchemy import text
+    
+    db.execute(text("CREATE TABLE IF NOT EXISTS new_table (...)"))
+    db.commit()
+```
+
+### Running Migrations
+
+**Automatic (Recommended):**
+- Migrations run automatically when you start the app with `eai start`
+
+**Manual:**
+```bash
+# Run migrations manually
+eai migrate
+
+# With verbose output
+eai migrate --verbose
+```
+
+### Creating New Migrations
+
+1. Create a new file in `migrations/` directory with the next sequential number
+2. Follow the format shown above
+3. Test the migration on a development database first
+4. Use `IF NOT EXISTS` checks for idempotent operations
+
+See `migrations/README.md` for detailed documentation.
+
 ## Development
 
 ### Running Locally
@@ -147,10 +240,13 @@ SECRET_KEY=your-secret-key-here
    docker compose up -d db redis
    ```
 
-2. **Run the application**
+2. **Run the application with hot reload**
    ```bash
-   eai start --config config.yml --reload
+   # Backend auto-reload + Frontend auto-rebuild on file changes
+   eai start --config config.yml --watch-frontend
    ```
+   
+   The `--watch-frontend` flag automatically rebuilds the frontend whenever you modify source files (`.tsx`, `.ts`, `.css`, etc.), so you don't need to manually rebuild after each change.
 
 3. **Run Celery worker** (in separate terminal)
    ```bash
@@ -159,11 +255,19 @@ SECRET_KEY=your-secret-key-here
 
 ### Frontend Development
 
+**Option 1: Using CLI with watch mode (Recommended)**
+```bash
+# From project root - automatically rebuilds on changes
+eai start --watch-frontend
+```
+
+**Option 2: Using Vite dev server (for instant hot module replacement)**
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
+This runs Vite dev server on `http://localhost:3000` with instant hot module replacement. Note: You'll need to run the backend separately on port 8000.
 
 ## License
 

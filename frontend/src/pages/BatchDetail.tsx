@@ -99,7 +99,7 @@ export default function BatchDetail() {
               batch.status === 'completed'
                 ? 'bg-green-100 text-green-800'
                 : batch.status === 'processing'
-                ? 'bg-blue-100 text-blue-800'
+                ? 'bg-orange-100 text-orange-800'
                 : 'bg-yellow-100 text-yellow-800'
             }`}
           >
@@ -250,11 +250,11 @@ export default function BatchDetail() {
 
       {/* Processing status */}
       {batch.status === 'processing' && (
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+        <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
           <div className="flex">
-            <RefreshCw className="h-5 w-5 text-blue-400 animate-spin" />
+            <RefreshCw className="h-5 w-5 text-orange-400 animate-spin" />
             <div className="ml-3">
-              <p className="text-sm text-blue-800">
+              <p className="text-sm text-orange-800">
                 Processing {batch.processed_files} of {batch.total_files} files...
               </p>
             </div>
