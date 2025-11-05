@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from typing import List
 from uuid import UUID
 from app.database import get_db
-from app.dependencies import get_api_key
+from app.dependencies import get_api_key, get_organization_id
 from app.models.database import Evaluation, EvaluationStatus
 from app.models.schemas import (
     EvaluationCreate,
@@ -23,6 +23,7 @@ router = APIRouter(prefix="/evaluations", tags=["Evaluations"])
 def create_evaluation(
     evaluation_data: EvaluationCreate,
     api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ):
     """
@@ -31,20 +32,25 @@ def create_evaluation(
     Args:
         evaluation_data: Evaluation creation data
         api_key: Validated API key
+        organization_id: Organization ID from API key
         db: Database session
 
     Returns:
         Created evaluation
     """
-    # Verify audio file exists
+    # Verify audio file exists and belongs to organization
     from app.models.database import AudioFile
 
-    audio_file = db.query(AudioFile).filter(AudioFile.id == evaluation_data.audio_id).first()
+    audio_file = db.query(AudioFile).filter(
+        AudioFile.id == evaluation_data.audio_id,
+        AudioFile.organization_id == organization_id
+    ).first()
     if not audio_file:
         raise HTTPException(status_code=404, detail="Audio file not found")
 
     # Create evaluation record
     evaluation = Evaluation(
+        organization_id=organization_id,
         audio_id=evaluation_data.audio_id,
         reference_text=evaluation_data.reference_text,
         evaluation_type=evaluation_data.evaluation_type,
@@ -66,6 +72,7 @@ def create_evaluation(
 def get_evaluation(
     evaluation_id: str,
     api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ):
     """
@@ -74,6 +81,7 @@ def get_evaluation(
     Args:
         evaluation_id: Evaluation ID
         api_key: Validated API key
+        organization_id: Organization ID from API key
         db: Database session
 
     Returns:
@@ -84,7 +92,10 @@ def get_evaluation(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid evaluation ID format")
 
-    evaluation = db.query(Evaluation).filter(Evaluation.id == eval_id).first()
+    evaluation = db.query(Evaluation).filter(
+        Evaluation.id == eval_id,
+        Evaluation.organization_id == organization_id
+    ).first()
     if not evaluation:
         raise HTTPException(status_code=404, detail="Evaluation not found")
 
@@ -97,22 +108,24 @@ def list_evaluations(
     limit: int = 100,
     status: EvaluationStatus = None,
     api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ):
     """
-    List evaluations (paginated, optionally filtered by status).
+    List evaluations (paginated, optionally filtered by status) for the organization.
 
     Args:
         skip: Number of records to skip
         limit: Maximum number of records to return
         status: Optional status filter
         api_key: Validated API key
+        organization_id: Organization ID from API key
         db: Database session
 
     Returns:
         List of evaluations
     """
-    query = db.query(Evaluation)
+    query = db.query(Evaluation).filter(Evaluation.organization_id == organization_id)
     if status:
         query = query.filter(Evaluation.status == status)
 
@@ -124,6 +137,7 @@ def list_evaluations(
 def cancel_evaluation(
     evaluation_id: str,
     api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ):
     """
@@ -132,6 +146,7 @@ def cancel_evaluation(
     Args:
         evaluation_id: Evaluation ID
         api_key: Validated API key
+        organization_id: Organization ID from API key
         db: Database session
 
     Returns:
@@ -142,7 +157,10 @@ def cancel_evaluation(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid evaluation ID format")
 
-    evaluation = db.query(Evaluation).filter(Evaluation.id == eval_id).first()
+    evaluation = db.query(Evaluation).filter(
+        Evaluation.id == eval_id,
+        Evaluation.organization_id == organization_id
+    ).first()
     if not evaluation:
         raise HTTPException(status_code=404, detail="Evaluation not found")
 
@@ -161,6 +179,7 @@ def cancel_evaluation(
 def delete_evaluation(
     evaluation_id: str,
     api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ):
     """
@@ -169,6 +188,7 @@ def delete_evaluation(
     Args:
         evaluation_id: Evaluation ID
         api_key: Validated API key
+        organization_id: Organization ID from API key
         db: Database session
 
     Returns:
@@ -179,7 +199,10 @@ def delete_evaluation(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid evaluation ID format")
 
-    evaluation = db.query(Evaluation).filter(Evaluation.id == eval_id).first()
+    evaluation = db.query(Evaluation).filter(
+        Evaluation.id == eval_id,
+        Evaluation.organization_id == organization_id
+    ).first()
     if not evaluation:
         raise HTTPException(status_code=404, detail="Evaluation not found")
 

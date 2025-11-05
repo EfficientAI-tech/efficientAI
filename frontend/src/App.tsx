@@ -2,12 +2,19 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useAuthStore } from './store/authStore'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
-import AudioFiles from './pages/AudioFiles'
 import Evaluations from './pages/Evaluations'
 import EvaluationDetail from './pages/EvaluationDetail'
 import BatchJobs from './pages/BatchJobs'
 import BatchDetail from './pages/BatchDetail'
 import Layout from './components/Layout'
+import Agents from './pages/Agents'
+import Personas from './pages/Personas'
+import Scenarios from './pages/Scenarios'
+import IAM from './pages/IAM'
+import Profile from './pages/Profile'
+import Metrics from './pages/Metrics'
+import Integrations from './pages/Integrations'
+
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const { apiKey } = useAuthStore()
@@ -33,11 +40,17 @@ function App() {
           }
         >
           <Route index element={<Dashboard />} />
-          <Route path="audio" element={<AudioFiles />} />
           <Route path="evaluations" element={<Evaluations />} />
           <Route path="evaluations/:id" element={<EvaluationDetail />} />
           <Route path="batch" element={<BatchJobs />} />
           <Route path="batch/:id" element={<BatchDetail />} />
+          <Route path="agents" element={<Agents />} />
+          <Route path="personas" element={<Personas />} />
+          <Route path="scenarios" element={<Scenarios />} />
+          <Route path="metrics" element={<Metrics />} />
+          <Route path="integrations" element={<Integrations />} />
+          <Route path="iam" element={<IAM />} />
+          <Route path="profile" element={<Profile />} />
         </Route>
       </Routes>
     </BrowserRouter>

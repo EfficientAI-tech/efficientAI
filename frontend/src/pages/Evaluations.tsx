@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { apiClient } from '../lib/api'
-import { EvaluationStatus, EvaluationType } from '../types/api'
+import { EvaluationStatus } from '../types/api'
 import {
   Plus,
   Loader,
@@ -218,7 +218,7 @@ export default function Evaluations() {
 function StatusIcon({ status }: { status: EvaluationStatus }) {
   const iconConfig = {
     [EvaluationStatus.PENDING]: { Icon: Clock, color: 'text-yellow-500' },
-    [EvaluationStatus.PROCESSING]: { Icon: Loader, color: 'text-blue-500 animate-spin' },
+    [EvaluationStatus.PROCESSING]: { Icon: Loader, color: 'text-orange-500 animate-spin' },
     [EvaluationStatus.COMPLETED]: { Icon: CheckCircle, color: 'text-green-500' },
     [EvaluationStatus.FAILED]: { Icon: XCircle, color: 'text-red-500' },
     [EvaluationStatus.CANCELLED]: { Icon: AlertCircle, color: 'text-gray-500' },
@@ -236,8 +236,8 @@ function StatusBadge({ status }: { status: EvaluationStatus }) {
       label: 'Pending',
     },
     [EvaluationStatus.PROCESSING]: {
-      bg: 'bg-blue-100',
-      text: 'text-blue-800',
+      bg: 'bg-orange-100',
+      text: 'text-orange-800',
       label: 'Processing',
     },
     [EvaluationStatus.COMPLETED]: {

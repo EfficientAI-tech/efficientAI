@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from typing import List
 from uuid import UUID
 from app.database import get_db
-from app.dependencies import get_api_key
+from app.dependencies import get_api_key, get_organization_id
 from app.models.database import Evaluation, EvaluationResult, EvaluationStatus
 from app.models.schemas import (
     EvaluationResultResponse,
@@ -22,6 +22,7 @@ router = APIRouter(prefix="/results", tags=["Results"])
 def get_evaluation_result(
     evaluation_id: str,
     api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ):
     """
@@ -30,6 +31,7 @@ def get_evaluation_result(
     Args:
         evaluation_id: Evaluation ID
         api_key: Validated API key
+        organization_id: Organization ID from API key
         db: Database session
 
     Returns:
@@ -40,7 +42,10 @@ def get_evaluation_result(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid evaluation ID format")
 
-    evaluation = db.query(Evaluation).filter(Evaluation.id == eval_id).first()
+    evaluation = db.query(Evaluation).filter(
+        Evaluation.id == eval_id,
+        Evaluation.organization_id == organization_id
+    ).first()
     if not evaluation:
         raise HTTPException(status_code=404, detail="Evaluation not found")
 
@@ -72,6 +77,7 @@ def get_evaluation_result(
 def get_metrics(
     evaluation_id: str,
     api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ):
     """
@@ -80,6 +86,7 @@ def get_metrics(
     Args:
         evaluation_id: Evaluation ID
         api_key: Validated API key
+        organization_id: Organization ID from API key
         db: Database session
 
     Returns:
@@ -89,6 +96,14 @@ def get_metrics(
         eval_id = UUID(evaluation_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid evaluation ID format")
+
+    # Verify evaluation belongs to organization
+    evaluation = db.query(Evaluation).filter(
+        Evaluation.id == eval_id,
+        Evaluation.organization_id == organization_id
+    ).first()
+    if not evaluation:
+        raise HTTPException(status_code=404, detail="Evaluation not found")
 
     result = db.query(EvaluationResult).filter(EvaluationResult.evaluation_id == eval_id).first()
     if not result:
@@ -105,6 +120,7 @@ def get_metrics(
 def get_transcript(
     evaluation_id: str,
     api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ):
     """
@@ -113,6 +129,7 @@ def get_transcript(
     Args:
         evaluation_id: Evaluation ID
         api_key: Validated API key
+        organization_id: Organization ID from API key
         db: Database session
 
     Returns:
@@ -122,6 +139,14 @@ def get_transcript(
         eval_id = UUID(evaluation_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid evaluation ID format")
+
+    # Verify evaluation belongs to organization
+    evaluation = db.query(Evaluation).filter(
+        Evaluation.id == eval_id,
+        Evaluation.organization_id == organization_id
+    ).first()
+    if not evaluation:
+        raise HTTPException(status_code=404, detail="Evaluation not found")
 
     result = db.query(EvaluationResult).filter(EvaluationResult.evaluation_id == eval_id).first()
     if not result:
@@ -134,6 +159,7 @@ def get_transcript(
 def compare_evaluations(
     comparison_data: ComparisonRequest,
     api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ):
     """
@@ -142,6 +168,7 @@ def compare_evaluations(
     Args:
         comparison_data: Evaluation IDs to compare
         api_key: Validated API key
+        organization_id: Organization ID from API key
         db: Database session
 
     Returns:
@@ -155,12 +182,16 @@ def compare_evaluations(
         except ValueError:
             continue
 
-        result = db.query(EvaluationResult).filter(EvaluationResult.evaluation_id == eval_id).first()
-        if not result:
+        # Verify evaluation belongs to organization
+        evaluation = db.query(Evaluation).filter(
+            Evaluation.id == eval_id,
+            Evaluation.organization_id == organization_id
+        ).first()
+        if not evaluation:
             continue
 
-        evaluation = db.query(Evaluation).filter(Evaluation.id == eval_id).first()
-        if not evaluation:
+        result = db.query(EvaluationResult).filter(EvaluationResult.evaluation_id == eval_id).first()
+        if not result:
             continue
 
         evaluation_results.append(

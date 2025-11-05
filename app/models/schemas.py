@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field, validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from uuid import UUID
-from app.models.database import EvaluationType, EvaluationStatus, BatchStatus
+from app.models.database import EvaluationType, EvaluationStatus, BatchStatus, RoleEnum, InvitationStatus, IntegrationPlatform
 
 
 # Audio File Schemas
@@ -210,4 +210,281 @@ class ErrorResponse(BaseModel):
     """Error response schema."""
 
     detail: str
+
+# ============================================
+# VAIOPS SCHEMAS - Voice AI Ops
+# ============================================
+
+from enum import Enum as PyEnum
+
+class LanguageEnum(str, PyEnum):
+    ENGLISH = "en"
+    SPANISH = "es"
+    FRENCH = "fr"
+    GERMAN = "de"
+    CHINESE = "zh"
+    JAPANESE = "ja"
+    HINDI = "hi"
+    ARABIC = "ar"
+
+
+class CallTypeEnum(str, PyEnum):
+    INBOUND = "inbound"
+    OUTBOUND = "outbound"
+
+
+class GenderEnum(str, PyEnum):
+    MALE = "male"
+    FEMALE = "female"
+    NEUTRAL = "neutral"
+
+
+class AccentEnum(str, PyEnum):
+    AMERICAN = "american"
+    BRITISH = "british"
+    AUSTRALIAN = "australian"
+    INDIAN = "indian"
+    CHINESE = "chinese"
+    SPANISH = "spanish"
+    FRENCH = "french"
+    GERMAN = "german"
+    NEUTRAL = "neutral"
+
+
+class BackgroundNoiseEnum(str, PyEnum):
+    NONE = "none"
+    OFFICE = "office"
+    STREET = "street"
+    CAFE = "cafe"
+    HOME = "home"
+    CALL_CENTER = "call_center"
+
+
+# Agent Schemas
+class AgentCreate(BaseModel):
+    """Schema for creating a new agent"""
+    name: str = Field(..., min_length=1, max_length=255)
+    phone_number: str
+    language: LanguageEnum = LanguageEnum.ENGLISH
+    description: Optional[str] = None
+    call_type: CallTypeEnum = CallTypeEnum.OUTBOUND
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "name": "Customer Support Bot",
+                "phone_number": "+1234567890",
+                "language": "en",
+                "description": "Handles customer support",
+                "call_type": "outbound"
+            }
+        }
+
+
+class AgentUpdate(BaseModel):
+    """Schema for updating an agent"""
+    name: Optional[str] = None
+    phone_number: Optional[str] = None
+    language: Optional[LanguageEnum] = None
+    description: Optional[str] = None
+    call_type: Optional[CallTypeEnum] = None
+
+
+class AgentResponse(BaseModel):
+    """Schema for agent response"""
+    id: UUID
+    name: str
+    phone_number: str
+    language: LanguageEnum
+    description: Optional[str]
+    call_type: CallTypeEnum
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# Persona Schemas
+class PersonaCreate(BaseModel):
+    """Schema for creating a new persona"""
+    name: str = Field(..., min_length=1, max_length=255)
+    language: LanguageEnum = LanguageEnum.ENGLISH
+    accent: AccentEnum = AccentEnum.AMERICAN
+    gender: GenderEnum = GenderEnum.NEUTRAL
+    background_noise: BackgroundNoiseEnum = BackgroundNoiseEnum.NONE
+
+
+class PersonaUpdate(BaseModel):
+    """Schema for updating a persona"""
+    name: Optional[str] = None
+    language: Optional[LanguageEnum] = None
+    accent: Optional[AccentEnum] = None
+    gender: Optional[GenderEnum] = None
+    background_noise: Optional[BackgroundNoiseEnum] = None
+
+
+class PersonaResponse(BaseModel):
+    """Schema for persona response"""
+    id: UUID
+    name: str
+    language: LanguageEnum
+    accent: AccentEnum
+    gender: GenderEnum
+    background_noise: BackgroundNoiseEnum
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# Scenario Schemas
+class ScenarioCreate(BaseModel):
+    """Schema for creating a new scenario"""
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
+    required_info: Dict[str, str] = Field(default_factory=dict)
+
+
+class ScenarioUpdate(BaseModel):
+    """Schema for updating a scenario"""
+    name: Optional[str] = None
+    description: Optional[str] = None
+    required_info: Optional[Dict[str, str]] = None
+
+
+class ScenarioResponse(BaseModel):
+    """Schema for scenario response"""
+    id: UUID
+    name: str
+    description: Optional[str]
+    required_info: Dict[str, str]
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# ============================================
+# IAM & USER SCHEMAS
+# ============================================
+
+# User Schemas
+class UserCreate(BaseModel):
+    """Schema for creating a user."""
+    email: str = Field(..., description="User email address")
+    name: Optional[str] = None
+    password: Optional[str] = None  # Optional for invitation-based signup
+
+
+class UserUpdate(BaseModel):
+    """Schema for updating user profile."""
+    name: Optional[str] = None
+    email: Optional[str] = None
+
+
+class UserResponse(BaseModel):
+    """Schema for user response."""
+    id: UUID
+    email: str
+    name: Optional[str]
+    is_active: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class OrganizationMemberResponse(BaseModel):
+    """Schema for organization member response."""
+    id: UUID
+    user_id: UUID
+    organization_id: UUID
+    role: RoleEnum
+    joined_at: datetime
+    user: UserResponse  # Include user details
+
+    class Config:
+        from_attributes = True
+
+
+# Invitation Schemas
+class InvitationCreate(BaseModel):
+    """Schema for creating an invitation."""
+    email: str = Field(..., description="Email address of the user to invite")
+    role: RoleEnum = RoleEnum.READER
+
+
+class InvitationResponse(BaseModel):
+    """Schema for invitation response."""
+    id: UUID
+    organization_id: UUID
+    email: str
+    role: RoleEnum
+    status: InvitationStatus
+    expires_at: datetime
+    created_at: datetime
+    organization_name: Optional[str] = None  # Include organization name
+
+    class Config:
+        from_attributes = True
+
+
+class InvitationUpdate(BaseModel):
+    """Schema for updating invitation (accept/decline)."""
+    token: str
+
+
+class RoleUpdate(BaseModel):
+    """Schema for updating user role in organization."""
+    role: RoleEnum
+
+
+# Profile Schemas
+class ProfileResponse(BaseModel):
+    """Schema for user profile response."""
+    id: UUID
+    email: str
+    name: Optional[str]
+    created_at: datetime
+    organizations: List[dict] = Field(default_factory=list)  # List of org memberships
+
+    class Config:
+        from_attributes = True
+
+
+# ============================================
+# INTEGRATION SCHEMAS
+# ============================================
+
+class IntegrationCreate(BaseModel):
+    """Schema for creating an integration."""
+    platform: IntegrationPlatform
+    api_key: str = Field(..., description="API key for the platform")
+    name: Optional[str] = Field(None, description="Optional friendly name for the integration")
+
+
+class IntegrationUpdate(BaseModel):
+    """Schema for updating an integration."""
+    name: Optional[str] = None
+    api_key: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class IntegrationResponse(BaseModel):
+    """Schema for integration response."""
+    id: UUID
+    organization_id: UUID
+    platform: IntegrationPlatform
+    name: Optional[str]
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+    last_tested_at: Optional[datetime] = None
+    # Note: api_key is NOT included in response for security
+
+    class Config:
+        from_attributes = True
 

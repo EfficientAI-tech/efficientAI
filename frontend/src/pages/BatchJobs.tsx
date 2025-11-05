@@ -1,13 +1,10 @@
 import { useState } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { apiClient } from '../lib/api'
-import { EvaluationType } from '../types/api'
 import {
   Plus,
   Loader,
   FolderSync,
-  Download,
   RefreshCw,
   CheckCircle,
   Clock,
@@ -18,7 +15,6 @@ import CreateBatchModal from '../components/CreateBatchModal'
 
 export default function BatchJobs() {
   const [showCreateModal, setShowCreateModal] = useState(false)
-  const queryClient = useQueryClient()
 
   // Note: There's no list batch endpoint, so we'd need to track batch IDs
   // For now, we'll show a placeholder with create functionality
@@ -113,7 +109,7 @@ export default function BatchJobs() {
 function StatusIcon({ status }: { status: string }) {
   const iconConfig: Record<string, { Icon: React.ComponentType<{ className?: string }>, color: string }> = {
     pending: { Icon: Clock, color: 'text-yellow-500' },
-    processing: { Icon: RefreshCw, color: 'text-blue-500 animate-spin' },
+    processing: { Icon: RefreshCw, color: 'text-orange-500 animate-spin' },
     completed: { Icon: CheckCircle, color: 'text-green-500' },
     failed: { Icon: XCircle, color: 'text-red-500' },
     cancelled: { Icon: XCircle, color: 'text-gray-500' },
@@ -127,7 +123,7 @@ function StatusIcon({ status }: { status: string }) {
 function StatusBadge({ status }: { status: string }) {
   const statusConfig: Record<string, { bg: string; text: string; label: string }> = {
     pending: { bg: 'bg-yellow-100', text: 'text-yellow-800', label: 'Pending' },
-    processing: { bg: 'bg-blue-100', text: 'text-blue-800', label: 'Processing' },
+    processing: { bg: 'bg-orange-100', text: 'text-orange-800', label: 'Processing' },
     completed: { bg: 'bg-green-100', text: 'text-green-800', label: 'Completed' },
     failed: { bg: 'bg-red-100', text: 'text-red-800', label: 'Failed' },
     cancelled: { bg: 'bg-gray-100', text: 'text-gray-800', label: 'Cancelled' },

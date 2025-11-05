@@ -1,47 +1,168 @@
 # Voice AI Evaluation Platform
 
-A containerized voice AI evaluation platform built with Python (uv), FastAPI, and Docker. The platform supports audio file uploads, evaluation processing with multiple metrics, and comprehensive results management.
-
-## Features
-
-- **Audio File Management**: Upload, store, and manage audio files (WAV, MP3, FLAC, M4A)
-- **ASR Evaluation**: Evaluate Automatic Speech Recognition models with metrics like WER, CER, latency
-- **Batch Processing**: Process multiple audio files in parallel
-- **Results Management**: Store, retrieve, and compare evaluation results
-- **RESTful API**: Comprehensive REST API with OpenAPI documentation
-- **Async Processing**: Celery-based async task processing for long-running evaluations
-- **Containerized**: Fully containerized with Docker Compose
-
-## Tech Stack
-
-- **Package Manager**: uv (Python)
-- **Framework**: FastAPI
-- **Containerization**: Docker & Docker Compose
-- **Database**: PostgreSQL (with SQLAlchemy ORM)
-- **File Storage**: Local filesystem (extensible to S3)
-- **Authentication**: API Key based
-- **Audio Processing**: librosa, whisper
-- **Task Queue**: Celery + Redis (for async batch processing)
+A voice AI evaluation platform built with FastAPI and React. Supports audio file uploads, evaluation processing with multiple metrics, batch processing, and a modern web interface.
 
 ## Quick Start
 
-### Prerequisites
+There are two ways to run the application:
 
+### Method 1: Using Docker Compose
+
+1. **Start all services**
+   ```bash
+   docker compose up -d
+   ```
+
+2. **Initialize database** (migrations run automatically on startup, but you can also run manually)
+   ```bash
+   # Option 1: Let migrations run automatically on startup
+   # (No action needed - migrations run when the app starts)
+   
+   # Option 2: Run migrations manually before starting
+   docker compose exec api eai migrate
+   ```
+
+3. **Create an API key**
+   ```bash
+   docker compose exec api python scripts/create_api_key.py "My API Key"
+   ```
+
+4. **Access the application**
+   - Frontend: http://localhost:8000/
+   - API Docs: http://localhost:8000/docs
+
+### Method 2: Using Command Line (CLI)
+
+1. **Install the package**
+   ```bash
+   pip install -e .
+   ```
+
+2. **Generate configuration file**
+   ```bash
+   eai init-config
+   ```
+
+3. **Edit `config.yml`** with your database and Redis connection strings:
+   ```yaml
+   database:
+     url: "postgresql://efficientai:password@localhost:5432/efficientai"
+   
+   redis:
+     url: "redis://localhost:6379/0"
+   ```
+
+4. **Start the application**
+   ```bash
+   eai start --config config.yml
+   ```
+
+   The application will automatically:
+   - Build the frontend (if needed)
+   - Start the API server
+   - Serve both API and frontend from the same server
+
+   **For development with hot reload:**
+   ```bash
+   # Enable auto-rebuild of frontend on file changes
+   eai start --config config.yml --watch-frontend
+   ```
+   
+   This will:
+   - Automatically rebuild the frontend when source files change
+   - Keep the backend hot-reload enabled (by default)
+   - Perfect for active frontend development
+
+5. **Access the application**
+   - Frontend: http://localhost:8000/
+   - API Docs: http://localhost:8000/docs
+
+## Prerequisites
+
+**For Docker Compose:**
 - Docker and Docker Compose installed
-- (Optional) uv installed locally for development
 
-### Setup
+**For CLI:**
+- Python 3.11+
+- Node.js 18+ and npm
+- PostgreSQL running (locally or remote)
+- Redis running (locally or remote)
 
-1. **Clone the repository**
+## CLI Commands
 
+### Start Application
 ```bash
-git clone <repository-url>
-cd efficientAI
+# Start with default config.yml
+eai start
+
+# Start with custom config
+eai start --config production.yml
+
+# Start with frontend file watching (auto-rebuild on changes)
+eai start --watch-frontend
+
+# Start without building frontend (if already built)
+eai start --no-build-frontend
+
+# Start without auto-reload (production mode)
+eai start --no-reload --no-build-frontend
 ```
 
-2. **Configure environment variables**
+**Development Mode:**
+```bash
+# Full development setup with both backend and frontend hot reload
+eai start --watch-frontend --reload
+```
 
-Create a `.env` file in the root directory (see `.env.example` for reference):
+### Generate Config File
+```bash
+# Generate default config.yml
+eai init-config
+
+# Generate custom config file
+eai init-config --output my-config.yml
+```
+
+### Database Migrations
+```bash
+# Run pending migrations manually
+eai migrate
+
+# Run migrations with verbose output
+eai migrate --verbose
+```
+
+**Note:** Migrations run automatically on application startup. You only need to run them manually if you want to apply migrations before starting the server.
+
+## Configuration
+
+### YAML Configuration (for CLI)
+
+Edit `config.yml` to configure your application:
+
+```yaml
+# Server Settings
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+# Database Configuration
+database:
+  url: "postgresql://user:password@host:port/dbname"
+
+# Redis Configuration
+redis:
+  url: "redis://host:port/db"
+
+# File Storage
+storage:
+  upload_dir: "./uploads"
+  max_file_size_mb: 500
+```
+
+### Environment Variables (for Docker)
+
+Create a `.env` file for Docker Compose:
 
 ```env
 DATABASE_URL=postgresql://efficientai:password@db:5432/efficientai
@@ -50,267 +171,104 @@ POSTGRES_PASSWORD=password
 POSTGRES_DB=efficientai
 REDIS_URL=redis://redis:6379/0
 SECRET_KEY=your-secret-key-here
-CELERY_BROKER_URL=redis://redis:6379/0
-CELERY_RESULT_BACKEND=redis://redis:6379/0
-UPLOAD_DIR=/app/uploads
 ```
 
-3. **Start services**
+## Database Migrations
 
+The application includes an automatic migration system that runs database schema changes on startup.
+
+### How It Works
+
+- **Automatic Execution**: Migrations run automatically when the application starts
+- **Version Tracking**: Applied migrations are tracked in the `schema_migrations` table
+- **Idempotent**: Each migration only runs once, even if the application restarts
+- **Ordered Execution**: Migrations run in alphabetical order (use numbered prefixes like `001_`, `002_`, etc.)
+
+### Migration Files
+
+Migrations are stored in the `migrations/` directory. Each migration file should:
+
+1. Have a numeric prefix: `001_description.py`, `002_another.py`, etc.
+2. Include a `description` variable
+3. Have an `upgrade(db)` function that takes a SQLAlchemy Session
+
+Example migration:
+```python
+"""
+Migration: Add New Feature
+"""
+
+description = "Add new feature support"
+
+def upgrade(db):
+    """Apply this migration."""
+    from sqlalchemy import text
+    
+    db.execute(text("CREATE TABLE IF NOT EXISTS new_table (...)"))
+    db.commit()
+```
+
+### Running Migrations
+
+**Automatic (Recommended):**
+- Migrations run automatically when you start the app with `eai start`
+
+**Manual:**
 ```bash
-docker compose up -d
+# Run migrations manually
+eai migrate
+
+# With verbose output
+eai migrate --verbose
 ```
 
-Or if using older Docker Compose:
-```bash
-docker-compose up -d
-```
+### Creating New Migrations
 
-This will start:
-- PostgreSQL database (port 5432)
-- Redis (port 6379)
-- FastAPI application (port 8000)
-- Celery worker
+1. Create a new file in `migrations/` directory with the next sequential number
+2. Follow the format shown above
+3. Test the migration on a development database first
+4. Use `IF NOT EXISTS` checks for idempotent operations
 
-4. **Initialize database**
-
-```bash
-docker compose exec api python scripts/init_db.py
-```
-
-5. **Create an API key**
-
-```bash
-docker compose exec api python scripts/create_api_key.py "My API Key"
-```
-
-The script will output an API key that you can use for authentication.
-
-6. **Access the API**
-
-- API Documentation: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
-- Health Check: http://localhost:8000/health
-
-## API Usage
-
-### Authentication
-
-All API endpoints (except `/health` and `/`) require authentication via API key. Include the API key in the request header:
-
-```
-X-API-Key: your-api-key-here
-```
-
-### Example Workflow
-
-1. **Upload an audio file**
-
-```bash
-curl -X POST "http://localhost:8000/api/v1/audio/upload" \
-  -H "X-API-Key: your-api-key" \
-  -F "file=@audio.wav"
-```
-
-2. **Create an evaluation**
-
-```bash
-curl -X POST "http://localhost:8000/api/v1/evaluations/create" \
-  -H "X-API-Key: your-api-key" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "audio_id": "audio-uuid-here",
-    "evaluation_type": "asr",
-    "model_name": "base",
-    "metrics": ["wer", "latency", "rtf"],
-    "reference_text": "optional reference text for WER calculation"
-  }'
-```
-
-3. **Check evaluation status**
-
-```bash
-curl -X GET "http://localhost:8000/api/v1/evaluations/{evaluation_id}" \
-  -H "X-API-Key: your-api-key"
-```
-
-4. **Get results**
-
-```bash
-curl -X GET "http://localhost:8000/api/v1/results/{evaluation_id}" \
-  -H "X-API-Key: your-api-key"
-```
-
-## API Endpoints
-
-### Authentication
-- `POST /api/v1/auth/generate-key` - Generate API key
-- `POST /api/v1/auth/validate` - Validate API key
-
-### Audio Management
-- `POST /api/v1/audio/upload` - Upload audio file
-- `GET /api/v1/audio/{audio_id}` - Get audio metadata
-- `GET /api/v1/audio/{audio_id}/download` - Download audio file
-- `DELETE /api/v1/audio/{audio_id}` - Delete audio file
-- `GET /api/v1/audio` - List audio files (paginated)
-
-### Evaluations
-- `POST /api/v1/evaluations/create` - Create evaluation job
-- `GET /api/v1/evaluations/{evaluation_id}` - Get evaluation details
-- `GET /api/v1/evaluations` - List evaluations (filtered, paginated)
-- `POST /api/v1/evaluations/{evaluation_id}/cancel` - Cancel pending evaluation
-- `DELETE /api/v1/evaluations/{evaluation_id}` - Delete evaluation
-
-### Results
-- `GET /api/v1/results/{evaluation_id}` - Get detailed results
-- `GET /api/v1/results/{evaluation_id}/metrics` - Get metrics breakdown
-- `GET /api/v1/results/{evaluation_id}/transcript` - Get transcription
-- `POST /api/v1/results/compare` - Compare multiple evaluations
-
-### Batch Processing
-- `POST /api/v1/batch/create` - Create batch evaluation job
-- `GET /api/v1/batch/{batch_id}` - Get batch status
-- `GET /api/v1/batch/{batch_id}/results` - Get batch results summary
-- `POST /api/v1/batch/{batch_id}/export` - Export results as CSV/JSON
-
-## Evaluation Metrics
-
-The platform supports the following evaluation metrics:
-
-- **WER (Word Error Rate)**: Percentage of word errors in transcription (requires reference text)
-- **CER (Character Error Rate)**: Percentage of character errors in transcription (requires reference text)
-- **Latency**: Processing time in milliseconds
-- **RTF (Real-Time Factor)**: Processing time relative to audio duration
-- **Quality Score**: Placeholder for quality metrics
+See `migrations/README.md` for detailed documentation.
 
 ## Development
 
-### Local Development Setup
+### Running Locally
 
-1. **Install uv** (if not using Docker)
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-2. **Install dependencies**
-
-```bash
-uv pip install -e .
-```
-
-3. **Run services locally**
-
-```bash
-# Start PostgreSQL and Redis
-docker-compose up -d db redis
-
-# Run FastAPI
-uvicorn app.main:app --reload
-
-# Run Celery worker (in separate terminal)
-celery -A app.workers.celery_app worker --loglevel=info
-```
-
-### Project Structure
-
-```
-efficientAI/
-├── app/
-│   ├── api/v1/routes/     # API route handlers
-│   ├── models/            # Database models and schemas
-│   ├── services/          # Business logic services
-│   ├── core/              # Core utilities (security, exceptions)
-│   ├── workers/           # Celery task definitions
-│   ├── main.py           # FastAPI application
-│   └── config.py         # Configuration
-├── docker/                # Dockerfiles
-├── scripts/               # Utility scripts
-└── tests/                 # Test files
-```
-
-## Configuration
-
-Configuration is managed through environment variables (see `.env.example`). Key settings:
-
-- `DATABASE_URL`: PostgreSQL connection string
-- `REDIS_URL`: Redis connection string
-- `UPLOAD_DIR`: Directory for uploaded audio files
-- `MAX_FILE_SIZE_MB`: Maximum file size in MB
-- `ALLOWED_AUDIO_FORMATS`: Comma-separated list of allowed formats
-
-## Troubleshooting
-
-### Docker Daemon Connection Issues
-
-If you see an error like "Cannot connect to the Docker daemon at unix:///var/run/docker.sock":
-
-1. **Check Docker is running:**
+1. **Start PostgreSQL and Redis**
    ```bash
-   docker ps
+   docker compose up -d db redis
    ```
 
-2. **If Docker Desktop is not running (Windows/WSL):**
-   - Start Docker Desktop
-   - Wait for it to fully initialize
-   - Verify with `docker ps`
-
-3. **If using WSL, ensure Docker Desktop integration is enabled:**
-   - Open Docker Desktop Settings
-   - Go to Resources → WSL Integration
-   - Enable integration for your WSL distribution
-
-4. **Try the command again:**
+2. **Run the application with hot reload**
    ```bash
-   docker compose up -d
+   # Backend auto-reload + Frontend auto-rebuild on file changes
+   eai start --config config.yml --watch-frontend
+   ```
+   
+   The `--watch-frontend` flag automatically rebuilds the frontend whenever you modify source files (`.tsx`, `.ts`, `.css`, etc.), so you don't need to manually rebuild after each change.
+
+3. **Run Celery worker** (in separate terminal)
+   ```bash
+   celery -A app.workers.celery_app worker --loglevel=info
    ```
 
-### Port Already in Use
+### Frontend Development
 
-If you see port conflicts (e.g., port 5432 or 8000 already in use):
+**Option 1: Using CLI with watch mode (Recommended)**
+```bash
+# From project root - automatically rebuilds on changes
+eai start --watch-frontend
+```
 
-- Check what's using the port:
-  ```bash
-  # For Linux/WSL
-  sudo lsof -i :8000
-  # or
-  sudo netstat -tulpn | grep :8000
-  ```
-
-- Stop conflicting services or change ports in `docker-compose.yml`
-
-### Database Connection Issues
-
-If the API can't connect to the database:
-
-- Ensure the database container is healthy:
-  ```bash
-  docker compose ps
-  ```
-
-- Check database logs:
-  ```bash
-  docker compose logs db
-  ```
-
-- Verify the `DATABASE_URL` in your `.env` file matches the docker-compose configuration
-
-## Production Deployment
-
-For production deployment:
-
-1. Set strong `SECRET_KEY`
-2. Configure proper CORS origins
-3. Use external PostgreSQL and Redis instances
-4. Consider using S3 or similar for file storage
-5. Set up proper logging and monitoring
-6. Configure rate limiting
-7. Use HTTPS
+**Option 2: Using Vite dev server (for instant hot module replacement)**
+```bash
+cd frontend
+npm install
+npm run dev
+```
+This runs Vite dev server on `http://localhost:3000` with instant hot module replacement. Note: You'll need to run the backend separately on port 8000.
 
 ## License
 
 MIT License - see LICENSE file for details
-
-## Contributing
-
-Contributions are welcome! Please open an issue or submit a pull request.

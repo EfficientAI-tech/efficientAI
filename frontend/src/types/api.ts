@@ -105,3 +105,95 @@ export interface MessageResponse {
   message: string
 }
 
+// IAM & User Types
+export enum Role {
+  READER = 'reader',
+  WRITER = 'writer',
+  ADMIN = 'admin',
+}
+
+export enum InvitationStatus {
+  PENDING = 'pending',
+  ACCEPTED = 'accepted',
+  DECLINED = 'declined',
+  EXPIRED = 'expired',
+}
+
+export interface User {
+  id: string
+  email: string
+  name?: string | null
+  is_active: boolean
+  created_at: string
+}
+
+export interface OrganizationMember {
+  id: string
+  user_id: string
+  organization_id: string
+  role: Role
+  joined_at: string
+  user: User
+}
+
+export interface Invitation {
+  id: string
+  organization_id: string
+  email: string
+  role: Role
+  status: InvitationStatus
+  expires_at: string
+  created_at: string
+  organization_name?: string | null
+}
+
+export interface InvitationCreate {
+  email: string
+  role: Role
+}
+
+export interface RoleUpdate {
+  role: Role
+}
+
+export interface Profile {
+  id: string
+  email: string
+  name?: string | null
+  created_at: string
+  organizations: Array<{
+    id: string
+    name: string
+    role: string
+    joined_at: string
+  }>
+}
+
+export interface UserUpdate {
+  name?: string | null
+  email?: string | null
+}
+
+// Integration Types
+export enum IntegrationPlatform {
+  RETELL = 'retell',
+  VAPI = 'vapi',
+}
+
+export interface Integration {
+  id: string
+  organization_id: string
+  platform: IntegrationPlatform
+  name?: string | null
+  is_active: boolean
+  created_at: string
+  updated_at: string
+  last_tested_at?: string | null
+}
+
+export interface IntegrationCreate {
+  platform: IntegrationPlatform
+  api_key: string
+  name?: string | null
+}
+

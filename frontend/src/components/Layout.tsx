@@ -2,20 +2,71 @@ import { Outlet, Link, useLocation } from 'react-router-dom'
 import { useAuthStore } from '../store/authStore'
 import {
   LayoutDashboard,
-  Music,
   FileCheck,
   FolderSync,
   LogOut,
   Menu,
-  X,
+  Phone,
+  Users,
+  FileText,
+  Shield,
+  UserCircle,
+  Play,
+  BarChart3,
+  Plug,
+  ChevronRight,
+  ChevronDown,
 } from 'lucide-react'
 import { useState } from 'react'
+import Logo from './Logo'
 
-const navigation = [
+interface NavItem {
+  name: string
+  href: string
+  icon: React.ComponentType<{ className?: string }>
+}
+
+interface NavSection {
+  title: string
+  items: NavItem[]
+  icon: React.ComponentType<{ className?: string }>
+}
+
+const navigationSections: NavSection[] = [
+  {
+    title: 'Simulations',
+    icon: Play,
+    items: [
+      { name: 'Personas', href: '/personas', icon: Users },
+      { name: 'Scenarios', href: '/scenarios', icon: FileText },
+    ],
+  },
+  {
+    title: 'Evaluations',
+    icon: FileCheck,
+    items: [
+      { name: 'Evaluations', href: '/evaluations', icon: FileCheck },
+      { name: 'Batch Jobs', href: '/batch', icon: FolderSync },
+    ],
+  },
+  {
+    title: 'Metrics',
+    icon: BarChart3,
+    items: [
+      { name: 'Metrics Dashboard', href: '/metrics', icon: BarChart3 },
+    ],
+  },
+]
+
+const otherNavigation: NavItem[] = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
-  { name: 'Audio Files', href: '/audio', icon: Music },
-  { name: 'Evaluations', href: '/evaluations', icon: FileCheck },
-  { name: 'Batch Jobs', href: '/batch', icon: FolderSync },
+  { name: 'Agents', href: '/agents', icon: Phone },
+  { name: 'Integrations', href: '/integrations', icon: Plug },
+]
+
+const bottomNavigation = [
+  {name: 'IAM', href: '/iam', icon: Shield },
+  {name: 'Profile', href: '/profile', icon: UserCircle }
 ]
 
 export default function Layout() {
@@ -59,13 +110,12 @@ export default function Layout() {
         <div className="sticky top-0 z-10 flex-shrink-0 flex h-16 bg-white shadow-sm border-b border-gray-200">
           <button
             type="button"
-            className="px-4 text-gray-500 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-primary-500 lg:hidden"
+            className="px-4 text-gray-500 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-gray-500 lg:hidden"
             onClick={() => setSidebarOpen(true)}
           >
             <Menu className="h-6 w-6" />
           </button>
           <div className="flex-1 px-4 flex justify-between items-center">
-            <h1 className="text-2xl font-semibold text-gray-900">Voice AI Evaluation</h1>
           </div>
         </div>
 
@@ -85,14 +135,33 @@ function SidebarContent({
   onLogout: () => void
   location: ReturnType<typeof useLocation>
 }) {
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(
+    new Set(['Simulations', 'Evaluations', 'Metrics'])
+  )
+
+  const toggleSection = (title: string) => {
+    const newExpanded = new Set(expandedSections)
+    if (newExpanded.has(title)) {
+      newExpanded.delete(title)
+    } else {
+      newExpanded.add(title)
+    }
+    setExpandedSections(newExpanded)
+  }
+
+  const isSectionActive = (section: NavSection) => {
+    return section.items.some(item => location.pathname === item.href)
+  }
+
   return (
     <>
       <div className="flex items-center flex-shrink-0 px-4 h-16 border-b border-gray-200">
-        <h2 className="text-xl font-bold text-primary-600">EfficientAI</h2>
+        <Logo />
       </div>
       <div className="flex-1 flex flex-col pt-5 pb-4 overflow-y-auto">
         <nav className="mt-5 flex-1 px-2 space-y-1">
-          {navigation.map((item) => {
+          {/* Other Navigation */}
+          {otherNavigation.map((item) => {
             const isActive = location.pathname === item.href
             return (
               <Link
@@ -100,13 +169,97 @@ function SidebarContent({
                 to={item.href}
                 className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md ${
                   isActive
-                    ? 'bg-primary-50 text-primary-600'
+                    ? 'bg-gray-100 text-gray-900'
                     : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
                 }`}
               >
                 <item.icon
                   className={`mr-3 flex-shrink-0 h-5 w-5 ${
-                    isActive ? 'text-primary-600' : 'text-gray-400 group-hover:text-gray-500'
+                    isActive ? 'text-gray-700' : 'text-gray-400 group-hover:text-gray-500'
+                  }`}
+                />
+                {item.name}
+              </Link>
+            )
+          })}
+
+          {/* Navigation Sections */}
+          <div className="mt-4 space-y-1">
+            {navigationSections.map((section) => {
+              const isExpanded = expandedSections.has(section.title)
+              const isActive = isSectionActive(section)
+              const SectionIcon = section.icon
+              
+              return (
+                <div key={section.title}>
+                  <button
+                    onClick={() => toggleSection(section.title)}
+                    className={`w-full group flex items-center justify-between px-2 py-2 text-sm font-medium rounded-md ${
+                      isActive
+                        ? 'bg-gray-100 text-gray-900'
+                        : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
+                    }`}
+                  >
+                    <div className="flex items-center">
+                      <SectionIcon
+                        className={`mr-3 flex-shrink-0 h-5 w-5 ${
+                          isActive ? 'text-gray-700' : 'text-gray-400 group-hover:text-gray-500'
+                        }`}
+                      />
+                      {section.title}
+                    </div>
+                    {isExpanded ? (
+                      <ChevronDown className="h-4 w-4 text-gray-400" />
+                    ) : (
+                      <ChevronRight className="h-4 w-4 text-gray-400" />
+                    )}
+                  </button>
+                  {isExpanded && (
+                    <div className="ml-6 mt-1 space-y-1">
+                      {section.items.map((item) => {
+                        const isItemActive = location.pathname === item.href
+                        return (
+                          <Link
+                            key={item.name}
+                            to={item.href}
+                            className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md ${
+                              isItemActive
+                                ? 'bg-gray-100 text-gray-900'
+                                : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                            }`}
+                          >
+                            <item.icon
+                              className={`mr-3 flex-shrink-0 h-4 w-4 ${
+                                isItemActive ? 'text-gray-700' : 'text-gray-400 group-hover:text-gray-500'
+                              }`}
+                            />
+                            {item.name}
+                          </Link>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </nav>
+        <nav className="mt-5 px-2 space-y-1 border-t border-gray-200 pt-4">
+          {bottomNavigation.map((item) => {
+            const isActive = location.pathname === item.href
+            return (
+              <Link
+                key={item.name}
+                to={item.href}
+                className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md ${
+                  isActive
+                    ? 'bg-gray-100 text-gray-900'
+                    : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
+                }`}
+              >
+                <item.icon
+                  className={`mr-3 flex-shrink-0 h-5 w-5 ${
+                    isActive ? 'text-gray-700' : 'text-gray-400 group-hover:text-gray-500'
                   }`}
                 />
                 {item.name}
