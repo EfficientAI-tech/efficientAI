@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Plus, Phone, Edit2, Trash2 } from 'lucide-react'
-import { useAuthStore } from '../store/authStore'
+import { apiClient } from '../lib/api'
 
 interface Agent {
   id: string
@@ -14,7 +14,6 @@ interface Agent {
 }
 
 export default function Agents() {
-  const { apiKey } = useAuthStore()
   const [agents, setAgents] = useState<Agent[]>([])
   const [loading, setLoading] = useState(true)
   const [showCreateModal, setShowCreateModal] = useState(false)
@@ -32,12 +31,7 @@ export default function Agents() {
 
   const fetchAgents = async () => {
     try {
-      const response = await fetch('http://localhost:8000/api/v1/vaiops/agents', {
-        headers: {
-          'X-API-Key': apiKey || ''
-        }
-      })
-      const data = await response.json()
+      const data = await apiClient.listAgents()
       setAgents(data)
     } catch (error) {
       console.error('Error fetching agents:', error)
@@ -49,26 +43,19 @@ export default function Agents() {
   const createAgent = async (e: React.FormEvent) => {
     e.preventDefault()
     try {
-      const response = await fetch('http://localhost:8000/api/v1/vaiops/agents', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': apiKey || ''
-        },
-        body: JSON.stringify(formData)
+      await apiClient.createAgent({
+        ...formData,
+        description: formData.description || null
       })
-      
-      if (response.ok) {
-        setShowCreateModal(false)
-        setFormData({
-          name: '',
-          phone_number: '',
-          language: 'en',
-          description: '',
-          call_type: 'outbound'
-        })
-        fetchAgents()
-      }
+      setShowCreateModal(false)
+      setFormData({
+        name: '',
+        phone_number: '',
+        language: 'en',
+        description: '',
+        call_type: 'outbound'
+      })
+      fetchAgents()
     } catch (error) {
       console.error('Error creating agent:', error)
     }
@@ -78,12 +65,7 @@ export default function Agents() {
     if (!confirm('Are you sure you want to delete this agent?')) return
     
     try {
-      await fetch(`http://localhost:8000/api/v1/vaiops/agents/${id}`, {
-        method: 'DELETE',
-        headers: {
-          'X-API-Key': apiKey || ''
-        }
-      })
+      await apiClient.deleteAgent(id)
       fetchAgents()
     } catch (error) {
       console.error('Error deleting agent:', error)

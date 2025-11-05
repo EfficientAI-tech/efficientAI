@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { FileText, Tag } from 'lucide-react'
-import { useAuthStore } from '../store/authStore'
+import { apiClient } from '../lib/api'
 
 interface Scenario {
   id: string
@@ -12,7 +12,6 @@ interface Scenario {
 }
 
 export default function Scenarios() {
-  const { apiKey } = useAuthStore()
   const [scenarios, setScenarios] = useState<Scenario[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -22,12 +21,7 @@ export default function Scenarios() {
 
   const fetchScenarios = async () => {
     try {
-      const response = await fetch('http://localhost:8000/api/v1/vaiops/scenarios', {
-        headers: {
-          'X-API-Key': apiKey || ''
-        }
-      })
-      const data = await response.json()
+      const data = await apiClient.listScenarios()
       setScenarios(data)
     } catch (error) {
       console.error('Error fetching scenarios:', error)
@@ -38,12 +32,7 @@ export default function Scenarios() {
 
   const seedDemoData = async () => {
     try {
-      await fetch('http://localhost:8000/api/v1/vaiops/seed-data', {
-        method: 'POST',
-        headers: {
-          'X-API-Key': apiKey || ''
-        }
-      })
+      await apiClient.seedDemoData()
       fetchScenarios()
     } catch (error) {
       console.error('Error seeding data:', error)

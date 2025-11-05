@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Users, Volume2, Globe, User } from 'lucide-react'
-import { useAuthStore } from '../store/authStore'
+import { apiClient } from '../lib/api'
 
 interface Persona {
   id: string
@@ -32,7 +32,6 @@ const accentFlags: Record<string, string> = {
 }
 
 export default function Personas() {
-  const { apiKey } = useAuthStore()
   const [personas, setPersonas] = useState<Persona[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -42,12 +41,7 @@ export default function Personas() {
 
   const fetchPersonas = async () => {
     try {
-      const response = await fetch('http://localhost:8000/api/v1/vaiops/personas', {
-        headers: {
-          'X-API-Key': apiKey || ''
-        }
-      })
-      const data = await response.json()
+      const data = await apiClient.listPersonas()
       setPersonas(data)
     } catch (error) {
       console.error('Error fetching personas:', error)
@@ -58,12 +52,7 @@ export default function Personas() {
 
   const seedDemoData = async () => {
     try {
-      await fetch('http://localhost:8000/api/v1/vaiops/seed-data', {
-        method: 'POST',
-        headers: {
-          'X-API-Key': apiKey || ''
-        }
-      })
+      await apiClient.seedDemoData()
       fetchPersonas()
     } catch (error) {
       console.error('Error seeding data:', error)
