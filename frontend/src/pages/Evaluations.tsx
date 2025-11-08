@@ -12,15 +12,24 @@ import {
   Clock,
   XCircle,
   AlertCircle,
+  Mic,
+  List,
 } from 'lucide-react'
 import { format } from 'date-fns'
 import CreateEvaluationModal from '../components/CreateEvaluationModal'
+import ManualEvaluations from '../components/ManualEvaluations'
+import ManualEvaluationsList from '../components/ManualEvaluationsList'
 import Button from '../components/Button'
 
 export default function Evaluations() {
   const [searchParams, setSearchParams] = useSearchParams()
   const statusFilter = searchParams.get('status') as EvaluationStatus | null
+  const tabParam = searchParams.get('tab')
   const [showCreateModal, setShowCreateModal] = useState(false)
+  const [activeTab, setActiveTab] = useState<'evaluations' | 'manual'>(
+    (tabParam === 'manual' ? 'manual' : 'evaluations') as 'evaluations' | 'manual'
+  )
+  const [showTranscriptionForm, setShowTranscriptionForm] = useState(false)
   const queryClient = useQueryClient()
 
   const { data: evaluations, isLoading } = useQuery({
@@ -71,14 +80,59 @@ export default function Evaluations() {
             Manage and monitor your ASR evaluations
           </p>
         </div>
-        <Button
-          variant="primary"
-          onClick={() => setShowCreateModal(true)}
-          leftIcon={<Plus className="h-4 w-4" />}
-        >
-          New Evaluation
-        </Button>
+        {activeTab === 'evaluations' && (
+          <Button
+            variant="primary"
+            onClick={() => setShowCreateModal(true)}
+            leftIcon={<Plus className="h-4 w-4" />}
+          >
+            New Evaluation
+          </Button>
+        )}
       </div>
+
+      {/* Tabs */}
+      <div className="border-b border-gray-200">
+        <nav className="-mb-px flex space-x-8">
+          <button
+            onClick={() => {
+              setActiveTab('evaluations')
+              setSearchParams({})
+            }}
+            className={`${
+              activeTab === 'evaluations'
+                ? 'border-primary-500 text-primary-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm flex items-center space-x-2`}
+          >
+            <List className="h-4 w-4" />
+            <span>Automated Evaluations</span>
+          </button>
+          <button
+            onClick={() => {
+              setActiveTab('manual')
+              setSearchParams({ tab: 'manual' })
+            }}
+            className={`${
+              activeTab === 'manual'
+                ? 'border-primary-500 text-primary-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm flex items-center space-x-2`}
+          >
+            <Mic className="h-4 w-4" />
+            <span>Manual Evaluations</span>
+          </button>
+        </nav>
+      </div>
+
+      {activeTab === 'manual' ? (
+        showTranscriptionForm ? (
+          <ManualEvaluations onBack={() => setShowTranscriptionForm(false)} />
+        ) : (
+          <ManualEvaluationsList onNewTranscription={() => setShowTranscriptionForm(true)} />
+        )
+      ) : (
+        <>
 
       {/* Filters */}
       <div className="bg-white shadow rounded-lg p-4">
@@ -211,11 +265,13 @@ export default function Evaluations() {
         </div>
       )}
 
-      {showCreateModal && (
-        <CreateEvaluationModal
-          isOpen={showCreateModal}
-          onClose={() => setShowCreateModal(false)}
-        />
+          {showCreateModal && (
+            <CreateEvaluationModal
+              isOpen={showCreateModal}
+              onClose={() => setShowCreateModal(false)}
+            />
+          )}
+        </>
       )}
     </div>
   )

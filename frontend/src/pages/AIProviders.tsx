@@ -1,8 +1,8 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
 import { AIProvider, AIProviderCreate, ModelProvider } from '../types/api'
-import { Brain, Plus, Edit, Trash2, X, Loader, Key, CheckCircle } from 'lucide-react'
+import { Brain, Plus, Edit, Trash2, X, Loader, Key, CheckCircle, ChevronDown } from 'lucide-react'
 import Button from '../components/Button'
 import { useToast } from '../hooks/useToast'
 
@@ -13,6 +13,15 @@ const PROVIDER_LABELS: Record<ModelProvider, string> = {
   [ModelProvider.AZURE]: 'Azure',
   [ModelProvider.AWS]: 'AWS',
   [ModelProvider.CUSTOM]: 'Custom',
+}
+
+const PROVIDER_LOGOS: Record<ModelProvider, string | null> = {
+  [ModelProvider.OPENAI]: '/openai-logo.png',
+  [ModelProvider.ANTHROPIC]: '/anthropic.png',
+  [ModelProvider.GOOGLE]: '/geminiai.png',
+  [ModelProvider.AZURE]: '/azureai.png',
+  [ModelProvider.AWS]: '/AWS_logo.png',
+  [ModelProvider.CUSTOM]: null,
 }
 
 const PROVIDER_DESCRIPTIONS: Record<ModelProvider, string> = {
@@ -30,6 +39,7 @@ export default function AIProviders() {
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [showEditModal, setShowEditModal] = useState(false)
   const [showDeleteModal, setShowDeleteModal] = useState(false)
+  const [showProviderDropdown, setShowProviderDropdown] = useState(false)
   const [selectedProvider, setSelectedProvider] = useState<AIProvider | null>(null)
   const [formData, setFormData] = useState<AIProviderCreate>({
     provider: ModelProvider.OPENAI,
@@ -101,6 +111,30 @@ export default function AIProviders() {
       name: '',
     })
   }
+
+  const dropdownRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setShowProviderDropdown(false)
+      }
+    }
+
+    if (showProviderDropdown) {
+      document.addEventListener('mousedown', handleClickOutside)
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [showProviderDropdown])
+
+  useEffect(() => {
+    if (!showCreateModal) {
+      setShowProviderDropdown(false)
+    }
+  }, [showCreateModal])
 
   const openCreateModal = () => {
     resetForm()
@@ -198,9 +232,19 @@ export default function AIProviders() {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-4 flex-1">
                     <div className="flex-shrink-0">
-                      <div className="w-12 h-12 bg-gradient-to-br from-primary-100 to-primary-200 rounded-lg flex items-center justify-center">
-                        <Brain className="h-6 w-6 text-primary-600" />
-                      </div>
+                      {PROVIDER_LOGOS[provider.provider as ModelProvider] ? (
+                        <div className="w-12 h-12 bg-white rounded-lg flex items-center justify-center border border-gray-200 p-2">
+                          <img
+                            src={PROVIDER_LOGOS[provider.provider as ModelProvider]!}
+                            alt={PROVIDER_LABELS[provider.provider as ModelProvider]}
+                            className="w-full h-full object-contain"
+                          />
+                        </div>
+                      ) : (
+                        <div className="w-12 h-12 bg-gradient-to-br from-primary-100 to-primary-200 rounded-lg flex items-center justify-center">
+                          <Brain className="h-6 w-6 text-primary-600" />
+                        </div>
+                      )}
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
@@ -286,9 +330,19 @@ export default function AIProviders() {
                   className="group p-4 border-2 border-gray-200 rounded-lg hover:border-primary-300 hover:shadow-md transition-all text-left"
                 >
                   <div className="flex items-center gap-3 mb-2">
-                    <div className="w-10 h-10 bg-gradient-to-br from-primary-100 to-primary-200 rounded-lg flex items-center justify-center group-hover:from-primary-200 group-hover:to-primary-300 transition-colors">
-                      <Brain className="h-5 w-5 text-primary-600" />
-                    </div>
+                    {PROVIDER_LOGOS[provider] ? (
+                      <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center border border-gray-200 p-1.5">
+                        <img
+                          src={PROVIDER_LOGOS[provider]!}
+                          alt={PROVIDER_LABELS[provider]}
+                          className="w-full h-full object-contain"
+                        />
+                      </div>
+                    ) : (
+                      <div className="w-10 h-10 bg-gradient-to-br from-primary-100 to-primary-200 rounded-lg flex items-center justify-center group-hover:from-primary-200 group-hover:to-primary-300 transition-colors">
+                        <Brain className="h-5 w-5 text-primary-600" />
+                      </div>
+                    )}
                     <h3 className="font-semibold text-gray-900">{PROVIDER_LABELS[provider]}</h3>
                   </div>
                   <p className="text-sm text-gray-600">{PROVIDER_DESCRIPTIONS[provider]}</p>
@@ -332,20 +386,54 @@ export default function AIProviders() {
                 <label htmlFor="provider" className="block text-sm font-medium text-gray-700 mb-1">
                   Provider *
                 </label>
-                <select
-                  id="provider"
-                  required
-                  value={formData.provider}
-                  onChange={(e) => setFormData({ ...formData, provider: e.target.value as ModelProvider })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                  disabled={availableProviders.length === 0}
-                >
-                  {availableProviders.map((provider) => (
-                    <option key={provider} value={provider}>
-                      {PROVIDER_LABELS[provider]}
-                    </option>
-                  ))}
-                </select>
+                <div className="relative" ref={dropdownRef}>
+                  <button
+                    type="button"
+                    onClick={() => setShowProviderDropdown(!showProviderDropdown)}
+                    disabled={availableProviders.length === 0}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white text-left flex items-center justify-between disabled:bg-gray-100 disabled:cursor-not-allowed"
+                  >
+                    <div className="flex items-center gap-2">
+                      {PROVIDER_LOGOS[formData.provider] ? (
+                        <img
+                          src={PROVIDER_LOGOS[formData.provider]!}
+                          alt={PROVIDER_LABELS[formData.provider]}
+                          className="w-5 h-5 object-contain"
+                        />
+                      ) : (
+                        <Brain className="h-5 w-5 text-primary-600" />
+                      )}
+                      <span>{PROVIDER_LABELS[formData.provider]}</span>
+                    </div>
+                    <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${showProviderDropdown ? 'transform rotate-180' : ''}`} />
+                  </button>
+                  {showProviderDropdown && availableProviders.length > 0 && (
+                    <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-auto">
+                      {availableProviders.map((provider) => (
+                        <button
+                          key={provider}
+                          type="button"
+                          onClick={() => {
+                            setFormData({ ...formData, provider })
+                            setShowProviderDropdown(false)
+                          }}
+                          className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center gap-2 transition-colors"
+                        >
+                          {PROVIDER_LOGOS[provider] ? (
+                            <img
+                              src={PROVIDER_LOGOS[provider]!}
+                              alt={PROVIDER_LABELS[provider]}
+                              className="w-5 h-5 object-contain"
+                            />
+                          ) : (
+                            <Brain className="h-5 w-5 text-primary-600" />
+                          )}
+                          <span>{PROVIDER_LABELS[provider]}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 {formData.provider && (
                   <p className="mt-1 text-xs text-gray-500">{PROVIDER_DESCRIPTIONS[formData.provider]}</p>
                 )}

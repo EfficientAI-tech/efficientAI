@@ -6,6 +6,7 @@ import Evaluations from './pages/Evaluations'
 import EvaluationDetail from './pages/EvaluationDetail'
 import BatchJobs from './pages/BatchJobs'
 import BatchDetail from './pages/BatchDetail'
+import ManualTranscriptionDetail from './pages/ManualTranscriptionDetail'
 import Layout from './components/Layout'
 import Agents from './pages/Agents'
 import Personas from './pages/Personas'
@@ -45,6 +46,7 @@ function App() {
           <Route index element={<Dashboard />} />
           <Route path="evaluations" element={<Evaluations />} />
           <Route path="evaluations/:id" element={<EvaluationDetail />} />
+          <Route path="manual-evaluations/:id" element={<ManualTranscriptionDetail />} />
           <Route path="batch" element={<BatchJobs />} />
           <Route path="batch/:id" element={<BatchDetail />} />
           <Route path="agents" element={<Agents />} />

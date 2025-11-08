@@ -1,0 +1,130 @@
+{
+  "whisper-1": {
+    "provider": "openai",
+    "model_type": "stt"
+  },
+  "gpt-4o-transcribe": {
+    "provider": "openai",
+    "model_type": "stt"
+  },
+  "gpt-4o-mini-transcribe": {
+    "provider": "openai",
+    "model_type": "stt"
+  },
+  "gpt-4": {
+    "provider": "openai",
+    "model_type": "llm"
+  },
+  "gpt-4-turbo": {
+    "provider": "openai",
+    "model_type": "llm"
+  },
+  "gpt-3.5-turbo": {
+    "provider": "openai",
+    "model_type": "llm"
+  },
+  "gpt-5": {
+    "provider": "openai",
+    "model_type": "llm"
+  },
+  "gpt-5-main": {
+    "provider": "openai",
+    "model_type": "llm"
+  },
+  "gpt-5-main-mini": {
+    "provider": "openai",
+    "model_type": "llm"
+  },
+  "gpt-5-thinking": {
+    "provider": "openai",
+    "model_type": "llm"
+  },
+  "gpt-5-thinking-mini": {
+    "provider": "openai",
+    "model_type": "llm"
+  },
+  "gpt-5-thinking-nano": {
+    "provider": "openai",
+    "model_type": "llm"
+  },
+  "gpt-4o": {
+    "provider": "openai",
+    "model_type": "llm"
+  },
+  "tts-1": {
+    "provider": "openai",
+    "model_type": "tts"
+  },
+  "tts-1-hd": {
+    "provider": "openai",
+    "model_type": "tts"
+  },
+  "gpt-4o-mini-tts": {
+    "provider": "openai",
+    "model_type": "tts"
+  },
+  "claude-3-opus": {
+    "provider": "anthropic",
+    "model_type": "llm"
+  },
+  "claude-3-sonnet": {
+    "provider": "anthropic",
+    "model_type": "llm"
+  },
+  "claude-3-haiku": {
+    "provider": "anthropic",
+    "model_type": "llm"
+  },
+  "google-speech-v2": {
+    "provider": "google",
+    "model_type": "stt"
+  },
+  "gemini-pro": {
+    "provider": "google",
+    "model_type": "llm"
+  },
+  "gemini-ultra": {
+    "provider": "google",
+    "model_type": "llm"
+  },
+  "gemini-2.5-pro": {
+    "provider": "google",
+    "model_type": "llm"
+  },
+  "gemini-2.5-flash": {
+    "provider": "google",
+    "model_type": "llm"
+  },
+  "google-tts-v1": {
+    "provider": "google",
+    "model_type": "tts"
+  },
+  "gemini-2.5-flash-preview-tts": {
+    "provider": "google",
+    "model_type": "tts"
+  },
+  "azure-speech-v1": {
+    "provider": "azure",
+    "model_type": "stt"
+  },
+  "azure-openai-gpt4": {
+    "provider": "azure",
+    "model_type": "llm"
+  },
+  "azure-tts-v1": {
+    "provider": "azure",
+    "model_type": "tts"
+  },
+  "aws-transcribe": {
+    "provider": "aws",
+    "model_type": "stt"
+  },
+  "aws-bedrock-claude": {
+    "provider": "aws",
+    "model_type": "llm"
+  },
+  "aws-polly": {
+    "provider": "aws",
+    "model_type": "tts"
+  }
+}

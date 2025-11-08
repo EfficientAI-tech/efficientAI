@@ -368,6 +368,26 @@ class ModelProvider(str, enum.Enum):
     CUSTOM = "custom"
 
 
+class ManualTranscription(Base):
+    """Manual transcription model for storing transcriptions from S3 audio files."""
+
+    __tablename__ = "manual_transcriptions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    name = Column(String(255), nullable=True)  # User-friendly name for the transcription
+    audio_file_key = Column(String(512), nullable=False)  # S3 key or file path
+    transcript = Column(String, nullable=False)  # Full transcript text
+    speaker_segments = Column(JSON, nullable=True)  # List of segments with speaker labels: [{"speaker": "Speaker 1", "text": "...", "start": 0.0, "end": 5.2}]
+    stt_model = Column(String(100), nullable=True)  # STT model used (e.g., "whisper-1", "google-speech-v2")
+    stt_provider = Column(Enum(ModelProvider), nullable=True)  # Provider used
+    language = Column(String(10), nullable=True)  # Detected or specified language
+    processing_time = Column(Float, nullable=True)  # Processing time in seconds
+    raw_output = Column(JSON, nullable=True)  # Full model output for reference
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class AIProvider(Base):
     """AI Provider - Stores API keys for different AI platforms."""
     __tablename__ = "aiproviders"

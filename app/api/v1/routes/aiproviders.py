@@ -12,6 +12,7 @@ from app.models.database import AIProvider
 from app.models.schemas import (
     AIProviderCreate, AIProviderUpdate, AIProviderResponse
 )
+from app.core.encryption import encrypt_api_key
 
 router = APIRouter(prefix="/aiproviders", tags=["aiproviders"])
 
@@ -31,7 +32,8 @@ async def create_aiprovider(
     
     if existing:
         # Update existing provider
-        existing.api_key = aiprovider.api_key  # TODO: Encrypt this
+        encrypted_api_key = encrypt_api_key(aiprovider.api_key)
+        existing.api_key = encrypted_api_key
         existing.name = aiprovider.name
         existing.is_active = True
         db.commit()
@@ -42,10 +44,11 @@ async def create_aiprovider(
         return existing
     
     # Create new provider
+    encrypted_api_key = encrypt_api_key(aiprovider.api_key)
     db_aiprovider = AIProvider(
         organization_id=organization_id,
         provider=aiprovider.provider,
-        api_key=aiprovider.api_key,  # TODO: Encrypt this
+        api_key=encrypted_api_key,
         name=aiprovider.name,
     )
     db.add(db_aiprovider)
@@ -119,7 +122,8 @@ async def update_aiprovider(
     update_data = aiprovider_update.dict(exclude_unset=True)
     for field, value in update_data.items():
         if field == 'api_key' and value:
-            db_aiprovider.api_key = value  # TODO: Encrypt this
+            encrypted_api_key = encrypt_api_key(value)
+            db_aiprovider.api_key = encrypted_api_key
         else:
             setattr(db_aiprovider, field, value)
     

@@ -43,6 +43,9 @@ uv.lock
 .env
 .env.local
 
+# Encryption key file (should never be committed)
+.encryption_key
+
 # Docker
 .dockerignore
 
