@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
+import { Clock } from 'lucide-react'
 
 interface SpeakerSegment {
   speaker: string
@@ -18,7 +19,6 @@ export default function SpeakerWaveform({
   speakerSegments,
   audioRef,
 }: SpeakerWaveformProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null)
   const [currentTime, setCurrentTime] = useState(0)
   const [isPlaying, setIsPlaying] = useState(false)
 
@@ -34,7 +34,7 @@ export default function SpeakerWaveform({
     }
 
     audio.addEventListener('play', handlePlay)
-    audio.addEventListener('pause', handlePlay)
+    audio.addEventListener('pause', handlePause)
     audio.addEventListener('timeupdate', handleTimeUpdate)
 
     return () => {
@@ -44,158 +44,230 @@ export default function SpeakerWaveform({
     }
   }, [audioRef])
 
-  useEffect(() => {
-    const canvas = canvasRef.current
-    if (!canvas || !audioDuration || speakerSegments.length === 0) return
+  // Get unique speakers
+  const speakers = Array.from(new Set(speakerSegments.map((s) => s.speaker))).sort()
+  
+  // Color palette for speakers
+  type ColorScheme = {
+    bg: string
+    light: string
+    text: string
+    border: string
+  }
+  
+  const speakerColors: Record<string, ColorScheme> = {}
+  const colors: ColorScheme[] = [
+    { bg: 'bg-blue-500', light: 'bg-blue-100', text: 'text-blue-700', border: 'border-blue-300' },
+    { bg: 'bg-green-500', light: 'bg-green-100', text: 'text-green-700', border: 'border-green-300' },
+    { bg: 'bg-amber-500', light: 'bg-amber-100', text: 'text-amber-700', border: 'border-amber-300' },
+    { bg: 'bg-red-500', light: 'bg-red-100', text: 'text-red-700', border: 'border-red-300' },
+    { bg: 'bg-purple-500', light: 'bg-purple-100', text: 'text-purple-700', border: 'border-purple-300' },
+    { bg: 'bg-pink-500', light: 'bg-pink-100', text: 'text-pink-700', border: 'border-pink-300' },
+  ]
+  
+  speakers.forEach((speaker, idx) => {
+    speakerColors[speaker] = colors[idx % colors.length]
+  })
 
-    // Get device pixel ratio for crisp rendering
-    const dpr = window.devicePixelRatio || 1
-    const rect = canvas.getBoundingClientRect()
-    const displayWidth = Math.max(rect.width || 800, 800) // Minimum width for readability
-    const padding = 20
-    const waveformHeight = 60
-    const timelineHeight = 30
-    const totalHeight = waveformHeight * 2 + timelineHeight + padding * 3
-
-    // Set display size (CSS pixels)
-    canvas.style.width = displayWidth + 'px'
-    canvas.style.height = totalHeight + 'px'
-
-    // Set actual size in memory (scaled for device pixel ratio)
-    canvas.width = displayWidth * dpr
-    canvas.height = totalHeight * dpr
-
-    const ctx = canvas.getContext('2d', { alpha: false }) // Disable alpha for better performance
-    if (!ctx) return
-
-    // Scale the context to match device pixel ratio
-    ctx.scale(dpr, dpr)
-
-    const width = displayWidth
-
-    // Clear canvas
-    ctx.clearRect(0, 0, width, totalHeight)
-
-    // Get unique speakers
-    const speakers = Array.from(new Set(speakerSegments.map((s) => s.speaker))).sort()
-    const speakerColors: Record<string, string> = {}
-    const colors = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899']
-    speakers.forEach((speaker, idx) => {
-      speakerColors[speaker] = colors[idx % colors.length]
-    })
-
-    // Draw timeline
-    const timelineY = padding
-    ctx.strokeStyle = '#E5E7EB'
-    ctx.lineWidth = 1
-    ctx.beginPath()
-    ctx.moveTo(padding, timelineY)
-    ctx.lineTo(width - padding, timelineY)
-    ctx.stroke()
-
-    // Draw time markers
-    const numMarkers = Math.min(15, Math.floor(audioDuration / 5)) // More markers for longer audio
-    ctx.fillStyle = '#6B7280'
-    ctx.font = '11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
-    ctx.textAlign = 'center'
-    ctx.textBaseline = 'top'
-    for (let i = 0; i <= numMarkers; i++) {
-      const time = (audioDuration / numMarkers) * i
-      const x = padding + ((width - padding * 2) / numMarkers) * i
-      ctx.beginPath()
-      ctx.moveTo(x, timelineY - 5)
-      ctx.lineTo(x, timelineY + 5)
-      ctx.stroke()
-      ctx.fillText(formatTime(time), x, timelineY - 18)
+  // Calculate time markers
+  const getTimeMarkers = () => {
+    if (audioDuration === 0) return []
+    const interval = audioDuration <= 60 ? 10 : audioDuration <= 300 ? 30 : 60
+    const markers: number[] = []
+    for (let i = 0; i <= audioDuration; i += interval) {
+      markers.push(i)
     }
-
-    // Draw speaker waveforms
-    speakers.forEach((speaker, speakerIdx) => {
-      const y = padding + timelineHeight + padding + speakerIdx * (waveformHeight + padding)
-      const speakerSegs = speakerSegments.filter((s) => s.speaker === speaker)
-
-      // Draw background
-      ctx.fillStyle = '#F9FAFB'
-      ctx.fillRect(padding, y, width - padding * 2, waveformHeight)
-
-      // Draw segments for this speaker
-      speakerSegs.forEach((segment) => {
-        const startX = padding + ((segment.start / audioDuration) * (width - padding * 2))
-        const endX = padding + ((segment.end / audioDuration) * (width - padding * 2))
-        const segmentWidth = endX - startX
-
-        // Draw waveform bar (simplified - just a rectangle with height variation)
-        ctx.fillStyle = speakerColors[speaker] || '#6B7280'
-        const barHeight = waveformHeight * 0.7
-        const barY = y + (waveformHeight - barHeight) / 2
-        ctx.fillRect(startX, barY, segmentWidth, barHeight)
-
-        // Draw speaker label
-        if (segmentWidth > 50) {
-          ctx.fillStyle = '#FFFFFF'
-          ctx.font = 'bold 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
-          ctx.textAlign = 'left'
-          ctx.textBaseline = 'top'
-          ctx.fillText(speaker, startX + 4, y + 15)
-        }
-      })
-
-      // Draw speaker label on the left
-      ctx.fillStyle = '#374151'
-      ctx.font = 'bold 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
-      ctx.textAlign = 'left'
-      ctx.textBaseline = 'middle'
-      ctx.fillText(speaker, 4, y + waveformHeight / 2)
-    })
-
-    // Draw current time indicator
-    if (audioDuration > 0) {
-      const currentX = padding + ((currentTime / audioDuration) * (width - padding * 2))
-      ctx.strokeStyle = '#EF4444'
-      ctx.lineWidth = 2
-      ctx.beginPath()
-      ctx.moveTo(currentX, padding)
-      ctx.lineTo(currentX, totalHeight - padding)
-      ctx.stroke()
-
-      // Draw playhead circle
-      ctx.fillStyle = '#EF4444'
-      ctx.beginPath()
-      ctx.arc(currentX, padding, 5, 0, Math.PI * 2)
-      ctx.fill()
-      
-      // Add white border to playhead for visibility
-      ctx.strokeStyle = '#FFFFFF'
-      ctx.lineWidth = 1.5
-      ctx.stroke()
+    if (markers[markers.length - 1] !== audioDuration) {
+      markers.push(audioDuration)
     }
-  }, [audioDuration, speakerSegments, currentTime, isPlaying])
+    return markers
+  }
+
+  const timeMarkers = getTimeMarkers()
+
+  const handleSegmentClick = (start: number) => {
+    const audio = audioRef.current
+    if (audio) {
+      audio.currentTime = start
+    }
+  }
+
+  const formatTime = (seconds: number): string => {
+    const mins = Math.floor(seconds / 60)
+    const secs = Math.floor(seconds % 60)
+    return `${mins}:${secs.toString().padStart(2, '0')}`
+  }
+
+  const getPercentage = (time: number) => {
+    if (audioDuration === 0) return 0
+    return (time / audioDuration) * 100
+  }
+
+  if (audioDuration === 0 || speakerSegments.length === 0) {
+    return null
+  }
 
   return (
-    <div className="mt-4">
-      <h3 className="text-sm font-medium text-gray-700 mb-2">Speaker Timeline</h3>
-      <div className="border border-gray-200 rounded-lg p-4 bg-gray-50 overflow-x-auto">
-        <canvas
-          ref={canvasRef}
-          className="w-full"
-          style={{ 
-            height: 'auto',
-            minHeight: '200px',
-            imageRendering: 'crisp-edges',
-            imageRendering: '-webkit-optimize-contrast'
-          }}
-        />
+    <div className="mt-6">
+      <div className="flex items-center gap-2 mb-4">
+        <Clock className="h-5 w-5 text-gray-500" />
+        <h3 className="text-lg font-semibold text-gray-900">Speaker Timeline</h3>
       </div>
-      <p className="mt-2 text-xs text-gray-500">
-        Visual representation of speaker segments. Red line indicates current playback position.
-      </p>
+      
+      <div className="bg-white border border-gray-200 rounded-lg p-6 shadow-sm relative">
+        {/* Time markers */}
+        <div className="relative mb-6" style={{ height: '40px' }}>
+          <div className="absolute top-0 left-0 right-0 h-0.5 bg-gray-300"></div>
+          {timeMarkers.map((time) => {
+            const position = getPercentage(time)
+            return (
+              <div
+                key={time}
+                className="absolute transform -translate-x-1/2"
+                style={{ left: `${position}%` }}
+              >
+                <div className="w-0.5 h-3 bg-gray-400"></div>
+                <div className="mt-1 text-xs text-gray-600 whitespace-nowrap">
+                  {formatTime(time)}
+                </div>
+              </div>
+            )
+          })}
+          
+          {/* Playhead indicator on timeline */}
+          {audioDuration > 0 && (
+            <div
+              className="absolute z-20 transform -translate-x-1/2"
+              style={{ left: `${getPercentage(currentTime)}%`, top: '-2px' }}
+            >
+              <div className="w-0.5 h-5 bg-red-500"></div>
+              <div className="absolute -top-2 -left-2 w-4 h-4 bg-red-500 rounded-full border-2 border-white shadow-md"></div>
+            </div>
+          )}
+        </div>
+
+        {/* Speaker segments */}
+        <div className="relative space-y-4">
+          {speakers.map((speaker) => {
+            const speakerSegs = speakerSegments
+              .filter((s) => s.speaker === speaker)
+              .sort((a, b) => a.start - b.start)
+            const colorScheme = speakerColors[speaker] || colors[0]
+
+            return (
+              <div key={speaker} className="relative">
+                <div className="flex items-center gap-4">
+                  {/* Speaker label */}
+                  <div className="w-24 flex-shrink-0">
+                    <div
+                      className={`inline-flex items-center px-3 py-1.5 rounded-md font-semibold text-sm ${colorScheme.light} ${colorScheme.text} ${colorScheme.border} border`}
+                    >
+                      {speaker}
+                    </div>
+                  </div>
+
+                  {/* Timeline track - using consistent width calculation */}
+                  <div className="flex-1 relative h-16 bg-gray-50 rounded-lg border border-gray-200 overflow-hidden" style={{ minWidth: 0 }}>
+                    {/* Time markers on track for alignment verification */}
+                    {timeMarkers.map((time) => {
+                      const position = getPercentage(time)
+                      return (
+                        <div
+                          key={time}
+                          className="absolute top-0 bottom-0 w-px bg-gray-300/50 pointer-events-none"
+                          style={{ left: `${position}%` }}
+                        />
+                      )
+                    })}
+                    
+                    {/* Playhead indicator on speaker track */}
+                    {audioDuration > 0 && (
+                      <div
+                        className="absolute z-10 w-0.5 bg-red-500 h-full transition-all duration-100 pointer-events-none"
+                        style={{ left: `${getPercentage(currentTime)}%` }}
+                      >
+                        <div className="absolute -top-1 -left-1.5 w-3 h-3 bg-red-500 rounded-full border border-white shadow-sm"></div>
+                      </div>
+                    )}
+                    
+                    {speakerSegs.map((segment, idx) => {
+                      const left = getPercentage(segment.start)
+                      const width = getPercentage(segment.end - segment.start)
+                      const duration = segment.end - segment.start
+
+                      return (
+                        <div
+                          key={idx}
+                          onClick={() => handleSegmentClick(segment.start)}
+                          className={`absolute top-0 h-full ${colorScheme.bg} cursor-pointer hover:opacity-90 transition-opacity rounded-sm border-r border-l border-white/20 flex items-center justify-center group`}
+                          style={{
+                            left: `${left}%`,
+                            width: `${width}%`,
+                            minWidth: '40px',
+                          }}
+                          title={`${formatTime(segment.start)} - ${formatTime(segment.end)}`}
+                        >
+                          {/* Timestamp labels - always show start time */}
+                          <div className="absolute left-1 top-1 bg-black/60 text-white text-[10px] px-1.5 py-0.5 rounded font-mono opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-20">
+                            {formatTime(segment.start)}
+                          </div>
+                          
+                          {/* End time label for larger segments */}
+                          {width > 12 && (
+                            <div className="absolute right-1 top-1 bg-black/60 text-white text-[10px] px-1.5 py-0.5 rounded font-mono opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-20">
+                              {formatTime(segment.end)}
+                            </div>
+                          )}
+                          
+                          {/* Duration badge for larger segments */}
+                          {width > 15 && (
+                            <div className="absolute bottom-1 right-1 bg-black/40 text-white text-[10px] px-1.5 py-0.5 rounded font-mono">
+                              {duration.toFixed(1)}s
+                            </div>
+                          )}
+                          
+                          {/* Always visible start time indicator */}
+                          <div className="absolute left-0 top-0 bottom-0 w-0.5 bg-white/80"></div>
+                          <div className="absolute right-0 top-0 bottom-0 w-0.5 bg-white/80"></div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+
+        {/* Current time display */}
+        <div className="mt-6 pt-4 border-t border-gray-200">
+          <div className="flex items-center justify-between text-sm">
+            <div className="flex items-center gap-2">
+              <span className="text-gray-500">Current position:</span>
+              <span className="font-mono font-semibold text-gray-900">
+                {formatTime(currentTime)}
+              </span>
+              <span className="text-gray-400">/</span>
+              <span className="font-mono text-gray-600">{formatTime(audioDuration)}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div
+                className={`w-2 h-2 rounded-full ${isPlaying ? 'bg-green-500 animate-pulse' : 'bg-gray-400'}`}
+              ></div>
+              <span className="text-gray-500 text-xs">
+                {isPlaying ? 'Playing' : 'Paused'}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Legend */}
+        <div className="mt-4 pt-4 border-t border-gray-200">
+          <p className="text-xs text-gray-500">
+            Click on any segment to jump to that timestamp. Hover over segments to see detailed timestamps.
+          </p>
+        </div>
+      </div>
     </div>
   )
 }
-
-function formatTime(seconds: number): string {
-  const mins = Math.floor(seconds / 60)
-  const secs = Math.floor(seconds % 60)
-  return `${mins}:${secs.toString().padStart(2, '0')}`
-}
-

@@ -51,6 +51,7 @@ const navigationSections: NavSection[] = [
     items: [
       { name: 'Evaluations', href: '/evaluations', icon: FileCheck },
       { name: 'Batch Jobs', href: '/batch', icon: FolderSync },
+      { name: 'Evaluate Test Agents', href: '/evaluate-test-agents', icon: Mic },
     ],
   },
   {

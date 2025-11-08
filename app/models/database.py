@@ -441,3 +441,46 @@ class VoiceBundle(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     created_by = Column(String, nullable=True)
+
+
+class TestAgentConversationStatus(str, enum.Enum):
+    """Test agent conversation status enumeration."""
+    
+    INITIALIZING = "initializing"
+    ACTIVE = "active"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class TestAgentConversation(Base):
+    """Test Agent Conversation - Records conversations between test AI agent and voice AI agent."""
+    __tablename__ = "test_agent_conversations"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    
+    # Configuration
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False)
+    persona_id = Column(UUID(as_uuid=True), ForeignKey("personas.id"), nullable=False)
+    scenario_id = Column(UUID(as_uuid=True), ForeignKey("scenarios.id"), nullable=False)
+    voice_bundle_id = Column(UUID(as_uuid=True), ForeignKey("voicebundles.id"), nullable=False)
+    
+    # Conversation data
+    status = Column(Enum(TestAgentConversationStatus), nullable=False, default=TestAgentConversationStatus.INITIALIZING)
+    live_transcription = Column(JSON, nullable=True)  # Array of conversation turns with timestamps
+    conversation_audio_key = Column(String, nullable=True)  # S3 key for recorded conversation audio
+    full_transcript = Column(String, nullable=True)  # Full conversation transcript
+    
+    # Metadata
+    started_at = Column(DateTime(timezone=True), server_default=func.now())
+    ended_at = Column(DateTime(timezone=True), nullable=True)
+    duration_seconds = Column(Float, nullable=True)
+    
+    # Additional metadata
+    conversation_metadata = Column(JSON, nullable=True)  # Additional conversation metadata
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_by = Column(String, nullable=True)

@@ -653,3 +653,63 @@ class VoiceBundleResponse(BaseModel):
     
     class Config:
         from_attributes = True
+
+
+# Test Agent Conversation Schemas
+class TestAgentConversationCreate(BaseModel):
+    """Schema for creating a new test agent conversation."""
+    agent_id: UUID
+    persona_id: UUID
+    scenario_id: UUID
+    voice_bundle_id: UUID
+    conversation_metadata: Optional[Dict[str, Any]] = None
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "agent_id": "123e4567-e89b-12d3-a456-426614174000",
+                "persona_id": "123e4567-e89b-12d3-a456-426614174001",
+                "scenario_id": "123e4567-e89b-12d3-a456-426614174002",
+                "voice_bundle_id": "123e4567-e89b-12d3-a456-426614174003"
+            }
+        }
+
+
+class TestAgentConversationUpdate(BaseModel):
+    """Schema for updating a test agent conversation."""
+    status: Optional[str] = None
+    live_transcription: Optional[List[Dict[str, Any]]] = None
+    full_transcript: Optional[str] = None
+    conversation_metadata: Optional[Dict[str, Any]] = None
+
+
+class TestAgentConversationResponse(BaseModel):
+    """Schema for test agent conversation response."""
+    id: UUID
+    organization_id: UUID
+    agent_id: UUID
+    persona_id: UUID
+    scenario_id: UUID
+    voice_bundle_id: UUID
+    status: str
+    live_transcription: Optional[List[Dict[str, Any]]]
+    conversation_audio_key: Optional[str]
+    full_transcript: Optional[str]
+    started_at: datetime
+    ended_at: Optional[datetime]
+    duration_seconds: Optional[float]
+    conversation_metadata: Optional[Dict[str, Any]]
+    created_at: datetime
+    updated_at: datetime
+    created_by: Optional[str]
+    
+    class Config:
+        from_attributes = True
+
+
+class ConversationTurn(BaseModel):
+    """Schema for a single conversation turn."""
+    speaker: str  # "test_agent" or "voice_agent"
+    text: str
+    timestamp: float  # Time in seconds from start
+    audio_segment_key: Optional[str] = None  # S3 key for this segment's audio

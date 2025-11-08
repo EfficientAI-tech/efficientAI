@@ -270,6 +270,47 @@ export interface VoiceBundleCreate {
   extra_metadata?: Record<string, any> | null
 }
 
+// Test Agent Conversation Types
+export interface TestAgentConversation {
+  id: string
+  organization_id: string
+  agent_id: string
+  persona_id: string
+  scenario_id: string
+  voice_bundle_id: string
+  status: string
+  live_transcription?: Array<{
+    speaker: string
+    text: string
+    timestamp: number
+    audio_segment_key?: string
+  }> | null
+  conversation_audio_key?: string | null
+  full_transcript?: string | null
+  started_at: string
+  ended_at?: string | null
+  duration_seconds?: number | null
+  conversation_metadata?: Record<string, any> | null
+  created_at: string
+  updated_at: string
+  created_by?: string | null
+}
+
+export interface TestAgentConversationCreate {
+  agent_id: string
+  persona_id: string
+  scenario_id: string
+  voice_bundle_id: string
+  conversation_metadata?: Record<string, any> | null
+}
+
+export interface TestAgentConversationUpdate {
+  status?: string | null
+  live_transcription?: Array<Record<string, any>> | null
+  full_transcript?: string | null
+  conversation_metadata?: Record<string, any> | null
+}
+
 export interface VoiceBundleUpdate {
   name?: string
   description?: string | null
