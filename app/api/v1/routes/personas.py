@@ -2,15 +2,15 @@
 Personas API Routes
 Complete CRUD operations for test personas
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Body
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 from uuid import UUID
 
 from app.dependencies import get_db, get_organization_id
 from app.models.database import Persona
 from app.models.schemas import (
-    PersonaCreate, PersonaUpdate, PersonaResponse
+    PersonaCreate, PersonaUpdate, PersonaResponse, PersonaCloneRequest
 )
 
 router = APIRouter(prefix="/personas", tags=["personas"])
@@ -108,6 +108,36 @@ async def delete_persona(
     db.delete(db_persona)
     db.commit()
     return None
+
+
+@router.post("/{persona_id}/clone", response_model=PersonaResponse, status_code=status.HTTP_201_CREATED)
+async def clone_persona(
+    persona_id: UUID,
+    clone_request: PersonaCloneRequest,
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db)
+):
+    """Clone an existing persona to create a new one"""
+    source_persona = db.query(Persona).filter(
+        Persona.id == persona_id,
+        Persona.organization_id == organization_id
+    ).first()
+    if not source_persona:
+        raise HTTPException(status_code=404, detail=f"Persona {persona_id} not found")
+    
+    # Create new persona with same attributes
+    new_persona = Persona(
+        organization_id=organization_id,
+        name=clone_request.name if clone_request.name else f"{source_persona.name} (Copy)",
+        language=source_persona.language,
+        accent=source_persona.accent,
+        gender=source_persona.gender,
+        background_noise=source_persona.background_noise
+    )
+    db.add(new_persona)
+    db.commit()
+    db.refresh(new_persona)
+    return new_persona
 
 
 # ============================================

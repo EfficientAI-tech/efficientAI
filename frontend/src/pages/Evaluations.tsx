@@ -15,6 +15,7 @@ import {
 } from 'lucide-react'
 import { format } from 'date-fns'
 import CreateEvaluationModal from '../components/CreateEvaluationModal'
+import Button from '../components/Button'
 
 export default function Evaluations() {
   const [searchParams, setSearchParams] = useSearchParams()
@@ -70,13 +71,13 @@ export default function Evaluations() {
             Manage and monitor your ASR evaluations
           </p>
         </div>
-        <button
+        <Button
+          variant="primary"
           onClick={() => setShowCreateModal(true)}
-          className="inline-flex items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
+          leftIcon={<Plus className="h-4 w-4" />}
         >
-          <Plus className="h-4 w-4 mr-2" />
           New Evaluation
-        </button>
+        </Button>
       </div>
 
       {/* Filters */}
@@ -121,12 +122,13 @@ export default function Evaluations() {
         <div className="text-center py-12 bg-white rounded-lg shadow">
           <FileCheck className="h-12 w-12 mx-auto mb-4 text-gray-400" />
           <p className="text-gray-500">No evaluations found</p>
-          <button
+          <Button
+            variant="ghost"
             onClick={() => setShowCreateModal(true)}
-            className="mt-4 text-primary-600 hover:text-primary-700"
+            className="mt-4"
           >
             Create your first evaluation →
-          </button>
+          </Button>
         </div>
       ) : (
         <div className="bg-white shadow overflow-hidden sm:rounded-md">
@@ -174,27 +176,31 @@ export default function Evaluations() {
                         <StatusBadge status={evaluation.status} />
                         {(evaluation.status === EvaluationStatus.PENDING ||
                           evaluation.status === EvaluationStatus.PROCESSING) && (
-                          <button
+                          <Button
+                            variant="ghost"
+                            size="sm"
                             onClick={(e) => {
                               e.preventDefault()
                               e.stopPropagation()
                               handleCancel(evaluation.id)
                             }}
-                            className="inline-flex items-center px-2 py-1 text-xs font-medium rounded text-red-700 bg-red-100 hover:bg-red-200"
+                            className="text-red-700 hover:bg-red-100 hover:text-red-800"
                           >
                             Cancel
-                          </button>
+                          </Button>
                         )}
-                        <button
+                        <Button
+                          variant="ghost"
+                          size="sm"
                           onClick={(e) => {
                             e.preventDefault()
                             e.stopPropagation()
                             handleDelete(evaluation.id)
                           }}
-                          className="inline-flex items-center px-2 py-1 text-xs font-medium rounded text-red-700 bg-red-100 hover:bg-red-200"
+                          className="text-red-700 hover:bg-red-100 hover:text-red-800"
                         >
                           Delete
-                        </button>
+                        </Button>
                       </div>
                     </div>
                   </div>

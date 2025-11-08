@@ -3,6 +3,7 @@ import { apiClient } from '../lib/api'
 import { useState } from 'react'
 import { Key, Plus, Trash2, X, AlertCircle } from 'lucide-react'
 import { IntegrationCreate, IntegrationPlatform } from '../types/api'
+import Button from '../components/Button'
 
 export default function Integrations() {
   const queryClient = useQueryClient()
@@ -71,13 +72,13 @@ export default function Integrations() {
             Connect with voice AI platforms to test and evaluate agents
           </p>
         </div>
-        <button
+        <Button
+          variant="primary"
           onClick={() => setShowModal(true)}
-          className="flex items-center gap-2 bg-primary-600 text-white px-4 py-2 rounded-lg hover:bg-primary-700 transition-colors"
+          leftIcon={<Plus className="h-5 w-5" />}
         >
-          <Plus className="h-5 w-5" />
           Add Integration
-        </button>
+        </Button>
       </div>
 
       {/* Platform Cards */}
@@ -118,17 +119,20 @@ export default function Integrations() {
                             </div>
                           </div>
                         </div>
-                        <button
+                        <Button
+                          variant="ghost"
+                          size="sm"
                           onClick={() => {
                             if (confirm('Are you sure you want to delete this integration?')) {
                               deleteMutation.mutate(integration.id)
                             }
                           }}
-                          className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                          leftIcon={<Trash2 className="h-5 w-5" />}
                           title="Delete integration"
+                          className="text-red-600 hover:bg-red-50 hover:text-red-700"
                         >
-                          <Trash2 className="h-5 w-5" />
-                        </button>
+                          Delete
+                        </Button>
                       </div>
                     ))}
                   </div>
@@ -136,15 +140,17 @@ export default function Integrations() {
                   <div className="text-center py-8 text-gray-500">
                     <Key className="h-12 w-12 mx-auto mb-3 text-gray-300" />
                     <p>No integrations configured</p>
-                    <button
+                    <Button
+                      variant="ghost"
+                      size="sm"
                       onClick={() => {
                         setSelectedPlatform(platform.id)
                         setShowModal(true)
                       }}
-                      className="mt-3 text-primary-600 hover:text-primary-700 font-medium text-sm"
+                      className="mt-3"
                     >
                       Add Integration
-                    </button>
+                    </Button>
                   </div>
                 )}
               </div>
@@ -231,25 +237,27 @@ export default function Integrations() {
                 </div>
               )}
               <div className="flex gap-3 pt-4">
-                <button
+                <Button
                   type="button"
+                  variant="outline"
                   onClick={() => {
                     setShowModal(false)
                     setSelectedPlatform(null)
                     setApiKey('')
                     setName('')
                   }}
-                  className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
+                  className="flex-1"
                 >
                   Cancel
-                </button>
-                <button
+                </Button>
+                <Button
                   type="submit"
-                  disabled={createMutation.isPending}
-                  className="flex-1 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors disabled:opacity-50"
+                  variant="primary"
+                  isLoading={createMutation.isPending}
+                  className="flex-1"
                 >
-                  {createMutation.isPending ? 'Adding...' : 'Add Integration'}
-                </button>
+                  Add Integration
+                </Button>
               </div>
             </form>
           </div>

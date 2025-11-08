@@ -16,6 +16,10 @@ import {
   Plug,
   ChevronRight,
   ChevronDown,
+  Database,
+  Settings,
+  Mic,
+  Brain,
 } from 'lucide-react'
 import { useState } from 'react'
 import Logo from './Logo'
@@ -54,6 +58,15 @@ const navigationSections: NavSection[] = [
     icon: BarChart3,
     items: [
       { name: 'Metrics Dashboard', href: '/metrics', icon: BarChart3 },
+    ],
+  },
+  {
+    title: 'Configurations',
+    icon: Settings,
+    items: [
+      { name: 'S3 Integration', href: '/data-sources', icon: Database },
+      { name: 'AI Providers', href: '/ai-providers', icon: Brain },
+      { name: 'VoiceBundle', href: '/voicebundles', icon: Mic },
     ],
   },
 ]
@@ -136,7 +149,7 @@ function SidebarContent({
   location: ReturnType<typeof useLocation>
 }) {
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
-    new Set(['Simulations', 'Evaluations', 'Metrics'])
+    new Set(['Simulations', 'Evaluations', 'Metrics', 'Configurations'])
   )
 
   const toggleSection = (title: string) => {

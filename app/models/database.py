@@ -357,3 +357,67 @@ class Integration(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     last_tested_at = Column(DateTime(timezone=True), nullable=True)  # When API key was last validated
 
+
+class ModelProvider(str, enum.Enum):
+    """Model provider enumeration for extensibility."""
+    OPENAI = "openai"
+    ANTHROPIC = "anthropic"
+    GOOGLE = "google"
+    AZURE = "azure"
+    AWS = "aws"
+    CUSTOM = "custom"
+
+
+class AIProvider(Base):
+    """AI Provider - Stores API keys for different AI platforms."""
+    __tablename__ = "aiproviders"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    provider = Column(Enum(ModelProvider), nullable=False)
+    api_key = Column(String, nullable=False)  # Encrypted API key
+    name = Column(String, nullable=True)  # Optional friendly name
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    last_tested_at = Column(DateTime(timezone=True), nullable=True)  # When API key was last validated
+    
+    # Unique constraint: one active provider per organization
+    __table_args__ = (
+        UniqueConstraint('organization_id', 'provider', name='unique_org_provider'),
+    )
+
+
+class VoiceBundle(Base):
+    """VoiceBundle - Composable unit combining STT, LLM, and TTS for voice AI testing."""
+    __tablename__ = "voicebundles"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    
+    # STT Configuration (references AIProvider via provider name)
+    stt_provider = Column(Enum(ModelProvider), nullable=False)
+    stt_model = Column(String, nullable=False)  # e.g., "whisper-1", "google-speech-v2"
+    
+    # LLM Configuration (references AIProvider via provider name)
+    llm_provider = Column(Enum(ModelProvider), nullable=False)
+    llm_model = Column(String, nullable=False)  # e.g., "gpt-4", "claude-3-opus"
+    llm_temperature = Column(Float, nullable=True, default=0.7)
+    llm_max_tokens = Column(Integer, nullable=True)
+    llm_config = Column(JSON, nullable=True)  # Additional LLM configuration (extensible)
+    
+    # TTS Configuration (references AIProvider via provider name)
+    tts_provider = Column(Enum(ModelProvider), nullable=False)
+    tts_model = Column(String, nullable=False)  # e.g., "tts-1", "neural-voice"
+    tts_voice = Column(String, nullable=True)  # Voice selection if applicable
+    tts_config = Column(JSON, nullable=True)  # Additional TTS configuration (extensible)
+    
+    # Additional configuration for extensibility
+    extra_metadata = Column(JSON, nullable=True)  # For future extensions (renamed from 'metadata' to avoid SQLAlchemy conflict)
+    
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_by = Column(String, nullable=True)

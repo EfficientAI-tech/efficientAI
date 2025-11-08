@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 import { format } from 'date-fns'
 import CreateBatchModal from '../components/CreateBatchModal'
+import Button from '../components/Button'
 
 export default function BatchJobs() {
   const [showCreateModal, setShowCreateModal] = useState(false)
@@ -36,13 +37,12 @@ export default function BatchJobs() {
             Process multiple audio files in parallel
           </p>
         </div>
-        <button
+        <Button
           onClick={() => setShowCreateModal(true)}
-          className="inline-flex items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
+          leftIcon={<Plus className="h-4 w-4" />}
         >
-          <Plus className="h-4 w-4 mr-2" />
           New Batch Job
-        </button>
+        </Button>
       </div>
 
       {isLoading ? (
@@ -53,12 +53,13 @@ export default function BatchJobs() {
         <div className="text-center py-12 bg-white rounded-lg shadow">
           <FolderSync className="h-12 w-12 mx-auto mb-4 text-gray-400" />
           <p className="text-gray-500">No batch jobs yet</p>
-          <button
+          <Button
+            variant="ghost"
             onClick={() => setShowCreateModal(true)}
-            className="mt-4 text-primary-600 hover:text-primary-700"
+            className="mt-4"
           >
             Create your first batch job →
-          </button>
+          </Button>
         </div>
       ) : (
         <div className="bg-white shadow overflow-hidden sm:rounded-md">

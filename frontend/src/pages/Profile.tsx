@@ -3,6 +3,7 @@ import { apiClient } from '../lib/api'
 import { useState, useEffect } from 'react'
 import { Profile as ProfileType, Invitation, UserUpdate, InvitationStatus } from '../types/api'
 import { User, Mail, Building2, CheckCircle, XCircle } from 'lucide-react'
+import Button from '../components/Button'
 
 export default function Profile() {
   const queryClient = useQueryClient()
@@ -110,12 +111,13 @@ export default function Profile() {
             Personal Information
           </h2>
           {!isEditing && (
-            <button
+            <Button
+              variant="ghost"
+              size="sm"
               onClick={() => setIsEditing(true)}
-              className="text-primary-600 hover:text-primary-700 font-medium text-sm"
             >
               Edit
-            </button>
+            </Button>
           )}
         </div>
         <div className="p-6">
@@ -149,20 +151,21 @@ export default function Profile() {
                 />
               </div>
               <div className="flex gap-3 pt-4">
-                <button
+                <Button
                   type="button"
+                  variant="outline"
                   onClick={handleCancel}
-                  className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
+                  className="flex-1"
                 >
                   Cancel
-                </button>
-                <button
+                </Button>
+                <Button
                   type="submit"
-                  disabled={updateMutation.isPending}
-                  className="flex-1 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors disabled:opacity-50"
+                  isLoading={updateMutation.isPending}
+                  className="flex-1"
                 >
-                  {updateMutation.isPending ? 'Saving...' : 'Save Changes'}
-                </button>
+                  Save Changes
+                </Button>
               </div>
             </form>
           ) : (
@@ -253,22 +256,28 @@ export default function Profile() {
                     {getInvitationStatusBadge(invitation.status)}
                     {invitation.status === InvitationStatus.PENDING && (
                       <div className="flex gap-2">
-                        <button
+                        <Button
+                          variant="ghost"
+                          size="sm"
                           onClick={() => acceptInvitationMutation.mutate(invitation.id)}
-                          disabled={acceptInvitationMutation.isPending}
-                          className="p-2 text-green-600 hover:bg-green-50 rounded-lg transition-colors disabled:opacity-50"
+                          isLoading={acceptInvitationMutation.isPending}
+                          leftIcon={!acceptInvitationMutation.isPending ? <CheckCircle className="h-5 w-5" /> : undefined}
                           title="Accept invitation"
+                          className="text-green-600 hover:bg-green-50 hover:text-green-700"
                         >
-                          <CheckCircle className="h-5 w-5" />
-                        </button>
-                        <button
+                          Accept
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
                           onClick={() => declineInvitationMutation.mutate(invitation.id)}
-                          disabled={declineInvitationMutation.isPending}
-                          className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50"
+                          isLoading={declineInvitationMutation.isPending}
+                          leftIcon={!declineInvitationMutation.isPending ? <XCircle className="h-5 w-5" /> : undefined}
                           title="Decline invitation"
+                          className="text-red-600 hover:bg-red-50 hover:text-red-700"
                         >
-                          <XCircle className="h-5 w-5" />
-                        </button>
+                          Decline
+                        </Button>
                       </div>
                     )}
                   </div>

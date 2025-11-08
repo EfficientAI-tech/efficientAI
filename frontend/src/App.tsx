@@ -14,6 +14,9 @@ import IAM from './pages/IAM'
 import Profile from './pages/Profile'
 import Metrics from './pages/Metrics'
 import Integrations from './pages/Integrations'
+import DataSources from './pages/DataSources'
+import AIProviders from './pages/AIProviders'
+import VoiceBundles from './pages/VoiceBundles'
 
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -49,6 +52,9 @@ function App() {
           <Route path="scenarios" element={<Scenarios />} />
           <Route path="metrics" element={<Metrics />} />
           <Route path="integrations" element={<Integrations />} />
+          <Route path="data-sources" element={<DataSources />} />
+          <Route path="ai-providers" element={<AIProviders />} />
+          <Route path="voicebundles" element={<VoiceBundles />} />
           <Route path="iam" element={<IAM />} />
           <Route path="profile" element={<Profile />} />
         </Route>

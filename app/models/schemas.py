@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field, validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from uuid import UUID
-from app.models.database import EvaluationType, EvaluationStatus, BatchStatus, RoleEnum, InvitationStatus, IntegrationPlatform
+from app.models.database import EvaluationType, EvaluationStatus, BatchStatus, RoleEnum, InvitationStatus, IntegrationPlatform, ModelProvider
 
 
 # Audio File Schemas
@@ -339,6 +339,11 @@ class PersonaResponse(BaseModel):
         from_attributes = True
 
 
+class PersonaCloneRequest(BaseModel):
+    """Schema for cloning a persona"""
+    name: Optional[str] = None
+
+
 # Scenario Schemas
 class ScenarioCreate(BaseModel):
     """Schema for creating a new scenario"""
@@ -488,3 +493,163 @@ class IntegrationResponse(BaseModel):
     class Config:
         from_attributes = True
 
+
+# ============================================
+# DATA SOURCES SCHEMAS
+# ============================================
+
+class S3ConnectionTest(BaseModel):
+    """Schema for testing S3 connection."""
+    bucket_name: str
+    region: str = "us-east-1"
+    access_key_id: str
+    secret_access_key: str
+    endpoint_url: Optional[str] = None
+
+
+class S3ConnectionTestResponse(BaseModel):
+    """Schema for S3 connection test response."""
+    success: bool
+    message: str
+    bucket_name: Optional[str] = None
+
+
+class S3FileInfo(BaseModel):
+    """Schema for S3 file information."""
+    key: str
+    filename: str
+    size: int
+    last_modified: str
+
+
+class S3ListFilesResponse(BaseModel):
+    """Schema for listing S3 files response."""
+    files: List[S3FileInfo]
+    total: int
+    prefix: Optional[str] = None
+
+
+class S3UploadResponse(BaseModel):
+    """Schema for S3 upload response."""
+    key: str
+    bucket: str
+    file_id: UUID
+    message: str
+
+
+# AIProvider Schemas
+class AIProviderCreate(BaseModel):
+    """Schema for creating an AI Provider."""
+    provider: ModelProvider
+    api_key: str = Field(..., min_length=1)
+    name: Optional[str] = None
+
+
+class AIProviderUpdate(BaseModel):
+    """Schema for updating an AI Provider."""
+    api_key: Optional[str] = Field(None, min_length=1)
+    name: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class AIProviderResponse(BaseModel):
+    """Schema for AI Provider response."""
+    id: UUID
+    provider: ModelProvider
+    api_key: Optional[str] = None  # Will be None in response for security
+    name: Optional[str]
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+    last_tested_at: Optional[datetime]
+    
+    class Config:
+        from_attributes = True
+
+
+# VoiceBundle Schemas
+class VoiceBundleCreate(BaseModel):
+    """Schema for creating a VoiceBundle."""
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
+    
+    # STT Configuration
+    stt_provider: ModelProvider
+    stt_model: str = Field(..., min_length=1)
+    
+    # LLM Configuration
+    llm_provider: ModelProvider
+    llm_model: str = Field(..., min_length=1)
+    llm_temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
+    llm_max_tokens: Optional[int] = Field(None, gt=0)
+    llm_config: Optional[Dict[str, Any]] = None
+    
+    # TTS Configuration
+    tts_provider: ModelProvider
+    tts_model: str = Field(..., min_length=1)
+    tts_voice: Optional[str] = None
+    tts_config: Optional[Dict[str, Any]] = None
+    
+    # Additional metadata
+    extra_metadata: Optional[Dict[str, Any]] = None
+
+
+class VoiceBundleUpdate(BaseModel):
+    """Schema for updating a VoiceBundle."""
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    description: Optional[str] = None
+    
+    # STT Configuration
+    stt_provider: Optional[ModelProvider] = None
+    stt_model: Optional[str] = Field(None, min_length=1)
+    
+    # LLM Configuration
+    llm_provider: Optional[ModelProvider] = None
+    llm_model: Optional[str] = Field(None, min_length=1)
+    llm_temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
+    llm_max_tokens: Optional[int] = Field(None, gt=0)
+    llm_config: Optional[Dict[str, Any]] = None
+    
+    # TTS Configuration
+    tts_provider: Optional[ModelProvider] = None
+    tts_model: Optional[str] = Field(None, min_length=1)
+    tts_voice: Optional[str] = None
+    tts_config: Optional[Dict[str, Any]] = None
+    
+    # Additional metadata
+    extra_metadata: Optional[Dict[str, Any]] = None
+    is_active: Optional[bool] = None
+
+
+class VoiceBundleResponse(BaseModel):
+    """Schema for VoiceBundle response."""
+    id: UUID
+    name: str
+    description: Optional[str]
+    
+    # STT Configuration
+    stt_provider: ModelProvider
+    stt_model: str
+    
+    # LLM Configuration
+    llm_provider: ModelProvider
+    llm_model: str
+    llm_temperature: Optional[float]
+    llm_max_tokens: Optional[int]
+    llm_config: Optional[Dict[str, Any]]
+    
+    # TTS Configuration
+    tts_provider: ModelProvider
+    tts_model: str
+    tts_voice: Optional[str]
+    tts_config: Optional[Dict[str, Any]]
+    
+    # Additional metadata
+    extra_metadata: Optional[Dict[str, Any]]
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+    created_by: Optional[str]
+    
+    class Config:
+        from_attributes = True

@@ -4,6 +4,7 @@ import { useAuthStore } from '../store/authStore'
 import { apiClient } from '../lib/api'
 import { AlertCircle } from 'lucide-react'
 import Logo from '../components/Logo'
+import Button from '../components/Button'
 
 export default function Login() {
   const navigate = useNavigate()
@@ -103,13 +104,13 @@ export default function Login() {
                 )}
 
                 <div>
-                  <button
+                  <Button
                     type="submit"
-                    disabled={isLoading}
-                    className="group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-primary-600 hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 disabled:opacity-50"
+                    isLoading={isLoading}
+                    className="w-full"
                   >
-                    {isLoading ? 'Signing in...' : 'Sign in'}
-                  </button>
+                    Sign in
+                  </Button>
                 </div>
               </form>
 
@@ -124,12 +125,13 @@ export default function Login() {
                 </div>
 
                 <div className="mt-6">
-                  <button
+                  <Button
+                    variant="outline"
                     onClick={() => setShowGenerate(true)}
-                    className="w-full flex justify-center py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50"
+                    className="w-full"
                   >
                     Generate New API Key
-                  </button>
+                  </Button>
                 </div>
               </div>
             </>
@@ -150,13 +152,13 @@ export default function Login() {
                 />
               </div>
 
-              <button
+              <Button
                 onClick={handleGenerateKey}
-                disabled={isLoading}
-                className="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-primary-600 hover:bg-primary-700 disabled:opacity-50"
+                isLoading={isLoading}
+                className="w-full"
               >
-                {isLoading ? 'Generating...' : 'Generate API Key'}
-              </button>
+                Generate API Key
+              </Button>
 
               {generatedKey && (
                 <div className="rounded-md bg-green-50 p-4">

@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 from app.api.v1.routes import auth, audio, evaluations, results, batch
-from app.api.v1.routes import agents, personas, scenarios, iam, profile, integrations
+from app.api.v1.routes import agents, personas, scenarios, iam, profile, integrations, data_sources, voicebundles, aiproviders
 
 api_router = APIRouter()
 
@@ -18,4 +18,7 @@ api_router.include_router(scenarios.router)
 api_router.include_router(iam.router)
 api_router.include_router(profile.router)
 api_router.include_router(integrations.router)
+api_router.include_router(data_sources.router)
+api_router.include_router(voicebundles.router)
+api_router.include_router(aiproviders.router)
 

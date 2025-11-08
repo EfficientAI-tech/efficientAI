@@ -15,7 +15,7 @@ from app.core.migrations import run_migrations, ensure_migrations_directory
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
-    description="Voice AI Evaluation Platform API",
+    description="EfficientAI Voice AI Evaluation Platform API",
     docs_url="/docs",
     redoc_url="/redoc",
 )
@@ -69,6 +69,18 @@ if frontend_dist.exists() and frontend_dist.is_dir():
 @app.on_event("startup")
 async def startup_event():
     """Initialize database and run migrations on startup."""
+    # Try to load config.yml if it exists (in case server wasn't started with eai start)
+    from app.config import load_config_from_file
+    from pathlib import Path
+    
+    config_path = Path("config.yml")
+    if config_path.exists():
+        try:
+            load_config_from_file(str(config_path))
+            print(f"✅ Loaded configuration from {config_path}")
+        except Exception as e:
+            print(f"⚠️  Warning: Could not load config.yml: {e}")
+    
     # Ensure migrations directory exists
     ensure_migrations_directory()
     

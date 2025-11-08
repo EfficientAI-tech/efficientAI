@@ -45,6 +45,16 @@ storage:
     - "flac"
     - "m4a"
 
+# S3 Configuration (for data sources integration)
+s3:
+  enabled: false
+  bucket_name: "your-s3-bucket-name"
+  region: "us-east-1"
+  access_key_id: "your-access-key-id"
+  secret_access_key: "your-secret-access-key"
+  endpoint_url: null  # Optional: for S3-compatible services (e.g., MinIO, DigitalOcean Spaces)
+  prefix: "audio/"  # Prefix for audio files in bucket
+
 # CORS Settings
 cors:
   origins:

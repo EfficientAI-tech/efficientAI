@@ -40,6 +40,15 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "./uploads"
     MAX_FILE_SIZE_MB: int = 500
     ALLOWED_AUDIO_FORMATS: List[str] = ["wav", "mp3", "flac", "m4a"]
+    
+    # S3 Configuration
+    S3_ENABLED: bool = False
+    S3_BUCKET_NAME: Optional[str] = None
+    S3_REGION: str = "us-east-1"
+    S3_ACCESS_KEY_ID: Optional[str] = None
+    S3_SECRET_ACCESS_KEY: Optional[str] = None
+    S3_ENDPOINT_URL: Optional[str] = None  # For S3-compatible services
+    S3_PREFIX: str = "audio/"  # Prefix for audio files in bucket
 
     # Celery
     CELERY_BROKER_URL: Optional[str] = None
@@ -229,6 +238,23 @@ def load_config_from_file(config_path: str) -> None:
             settings.MAX_FILE_SIZE_MB = storage_config["max_file_size_mb"]
         if "allowed_audio_formats" in storage_config:
             settings.ALLOWED_AUDIO_FORMATS = storage_config["allowed_audio_formats"]
+    
+    if "s3" in config_data:
+        s3_config = config_data["s3"]
+        if "enabled" in s3_config:
+            settings.S3_ENABLED = s3_config["enabled"]
+        if "bucket_name" in s3_config:
+            settings.S3_BUCKET_NAME = s3_config["bucket_name"]
+        if "region" in s3_config:
+            settings.S3_REGION = s3_config["region"]
+        if "access_key_id" in s3_config:
+            settings.S3_ACCESS_KEY_ID = s3_config["access_key_id"]
+        if "secret_access_key" in s3_config:
+            settings.S3_SECRET_ACCESS_KEY = s3_config["secret_access_key"]
+        if "endpoint_url" in s3_config:
+            settings.S3_ENDPOINT_URL = s3_config["endpoint_url"]
+        if "prefix" in s3_config:
+            settings.S3_PREFIX = s3_config["prefix"]
     
     if "cors" in config_data:
         cors_config = config_data["cors"]
