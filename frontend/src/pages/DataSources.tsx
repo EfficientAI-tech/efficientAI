@@ -22,6 +22,9 @@ export default function DataSources() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [customFilename, setCustomFilename] = useState('')
   const [prefix, setPrefix] = useState('')
+  const [showDeleteModal, setShowDeleteModal] = useState(false)
+  const [fileToDelete, setFileToDelete] = useState<S3FileInfo | null>(null)
+  const [deletingFileKey, setDeletingFileKey] = useState<string | null>(null)
 
   // Fetch S3 status
   const { data: s3Status, refetch: refetchStatus } = useQuery({
@@ -54,12 +57,33 @@ export default function DataSources() {
     mutationFn: (fileKey: string) => apiClient.deleteFromS3(fileKey),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['s3-files'] })
-      alert('✅ File deleted successfully')
+      setShowDeleteModal(false)
+      setFileToDelete(null)
+      setDeletingFileKey(null)
     },
-    onError: (error: any) => {
-      alert(`❌ Failed to delete file: ${error.response?.data?.detail || error.message}`)
+    onError: () => {
+      setDeletingFileKey(null)
+      // Error will be shown in the modal via deleteFileMutation.error
     },
   })
+
+  const handleDeleteClick = (file: S3FileInfo) => {
+    setFileToDelete(file)
+    setShowDeleteModal(true)
+  }
+
+  const handleDeleteConfirm = () => {
+    if (fileToDelete) {
+      setDeletingFileKey(fileToDelete.key)
+      deleteFileMutation.mutate(fileToDelete.key)
+    }
+  }
+
+  const handleDeleteCancel = () => {
+    setShowDeleteModal(false)
+    setFileToDelete(null)
+    setDeletingFileKey(null)
+  }
 
   // Upload file mutation
   const uploadMutation = useMutation({
@@ -239,13 +263,10 @@ export default function DataSources() {
                           <Button
                             variant="ghost"
                             size="sm"
-                            onClick={() => {
-                              if (confirm(`Are you sure you want to delete "${file.filename}"?`)) {
-                                deleteFileMutation.mutate(file.key)
-                              }
-                            }}
-                            isLoading={deleteFileMutation.isPending}
-                            leftIcon={!deleteFileMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined}
+                            onClick={() => handleDeleteClick(file)}
+                            isLoading={deletingFileKey === file.key}
+                            disabled={deletingFileKey !== null && deletingFileKey !== file.key}
+                            leftIcon={deletingFileKey !== file.key ? <Trash2 className="h-4 w-4" /> : undefined}
                             title="Delete file"
                             className="text-red-600 hover:text-red-700 hover:bg-red-50"
                           >
@@ -377,6 +398,69 @@ export default function DataSources() {
                 </Button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {showDeleteModal && fileToDelete && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
+            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+              <h3 className="text-lg font-semibold text-red-600">Confirm Deletion</h3>
+              <button
+                onClick={handleDeleteCancel}
+                disabled={deletingFileKey !== null}
+                className="text-gray-400 hover:text-gray-600 disabled:opacity-50"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="p-6">
+              <div className="flex items-start gap-3 mb-4">
+                <AlertCircle className="h-5 w-5 text-red-600 mt-0.5 flex-shrink-0" />
+                <div>
+                  <p className="text-sm text-gray-800 font-medium mb-1">
+                    Are you sure you want to delete this file?
+                  </p>
+                  <p className="text-sm text-gray-600">
+                    <span className="font-medium">{fileToDelete.filename}</span>
+                    <span className="text-gray-500 ml-2">({formatFileSize(fileToDelete.size)})</span>
+                  </p>
+                  <p className="text-xs text-red-600 mt-2">
+                    This action cannot be undone.
+                  </p>
+                </div>
+              </div>
+              {deleteFileMutation.isError && (
+                <div className="mb-4 rounded-md bg-red-50 p-3">
+                  <p className="text-sm text-red-800">
+                    {(deleteFileMutation.error as any)?.response?.data?.detail || 'Failed to delete file'}
+                  </p>
+                </div>
+              )}
+              <div className="flex gap-3 pt-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handleDeleteCancel}
+                  disabled={deletingFileKey !== null}
+                  className="flex-1"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  variant="primary"
+                  onClick={handleDeleteConfirm}
+                  isLoading={deletingFileKey !== null}
+                  disabled={deletingFileKey !== null}
+                  className="flex-1 bg-red-600 hover:bg-red-700 text-white"
+                >
+                  {deletingFileKey !== null ? 'Deleting...' : 'Delete'}
+                </Button>
+              </div>
+            </div>
           </div>
         </div>
       )}

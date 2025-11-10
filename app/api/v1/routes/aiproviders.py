@@ -17,7 +17,7 @@ from app.core.encryption import encrypt_api_key
 router = APIRouter(prefix="/aiproviders", tags=["aiproviders"])
 
 
-@router.post("", response_model=AIProviderResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=AIProviderResponse, status_code=status.HTTP_201_CREATED, operation_id="createAIProvider")
 async def create_aiprovider(
     aiprovider: AIProviderCreate,
     organization_id: UUID = Depends(get_organization_id),
@@ -61,7 +61,7 @@ async def create_aiprovider(
     return db_aiprovider
 
 
-@router.get("", response_model=List[AIProviderResponse])
+@router.get("", response_model=List[AIProviderResponse], operation_id="listAIProviders")
 async def list_aiproviders(
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db)
@@ -101,7 +101,7 @@ async def get_aiprovider(
     return aiprovider
 
 
-@router.put("/{aiprovider_id}", response_model=AIProviderResponse)
+@router.put("/{aiprovider_id}", response_model=AIProviderResponse, operation_id="updateAIProvider")
 async def update_aiprovider(
     aiprovider_id: UUID,
     aiprovider_update: AIProviderUpdate,
@@ -136,7 +136,7 @@ async def update_aiprovider(
     return db_aiprovider
 
 
-@router.delete("/{aiprovider_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{aiprovider_id}", status_code=status.HTTP_204_NO_CONTENT, operation_id="deleteAIProvider")
 async def delete_aiprovider(
     aiprovider_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
@@ -159,7 +159,7 @@ async def delete_aiprovider(
     return None
 
 
-@router.post("/{aiprovider_id}/test", status_code=status.HTTP_200_OK)
+@router.post("/{aiprovider_id}/test", status_code=status.HTTP_200_OK, operation_id="testAIProvider")
 async def test_aiprovider(
     aiprovider_id: UUID,
     organization_id: UUID = Depends(get_organization_id),

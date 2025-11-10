@@ -178,6 +178,7 @@ export interface UserUpdate {
 export enum IntegrationPlatform {
   RETELL = 'retell',
   VAPI = 'vapi',
+  CARTESIA = 'cartesia',
 }
 
 export interface Integration {

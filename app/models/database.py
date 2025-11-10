@@ -341,6 +341,7 @@ class IntegrationPlatform(str, enum.Enum):
     
     RETELL = "retell"
     VAPI = "vapi"
+    CARTESIA = "cartesia"
 
 
 class Integration(Base):
@@ -384,6 +385,31 @@ class ManualTranscription(Base):
     language = Column(String(10), nullable=True)  # Detected or specified language
     processing_time = Column(Float, nullable=True)  # Processing time in seconds
     raw_output = Column(JSON, nullable=True)  # Full model output for reference
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class ConversationEvaluation(Base):
+    """Conversation evaluation model for evaluating manual transcriptions against agent objectives."""
+    
+    __tablename__ = "conversation_evaluations"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    transcription_id = Column(UUID(as_uuid=True), ForeignKey("manual_transcriptions.id"), nullable=False, index=True)
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
+    
+    # Evaluation results
+    objective_achieved = Column(Boolean, nullable=False)  # Binary: was the conversation objective achieved?
+    objective_achieved_reason = Column(String, nullable=True)  # Explanation for the binary result
+    additional_metrics = Column(JSON, nullable=True)  # Additional evaluation metrics (e.g., professionalism, clarity, etc.)
+    overall_score = Column(Float, nullable=True)  # Overall score (0.0 to 1.0)
+    
+    # LLM metadata
+    llm_provider = Column(Enum(ModelProvider), nullable=True)
+    llm_model = Column(String(100), nullable=True)
+    llm_response = Column(JSON, nullable=True)  # Full LLM response for reference
+    
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

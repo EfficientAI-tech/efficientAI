@@ -17,7 +17,7 @@ from app.core.encryption import encrypt_api_key, decrypt_api_key
 router = APIRouter(prefix="/integrations", tags=["Integrations"])
 
 
-@router.post("", response_model=IntegrationResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=IntegrationResponse, status_code=status.HTTP_201_CREATED, operation_id="createIntegration")
 async def create_integration(
     integration_data: IntegrationCreate,
     organization_id: UUID = Depends(get_organization_id),
@@ -59,7 +59,7 @@ async def create_integration(
     return integration
 
 
-@router.get("", response_model=List[IntegrationResponse])
+@router.get("", response_model=List[IntegrationResponse], operation_id="listIntegrations")
 async def list_integrations(
     organization_id: UUID = Depends(get_organization_id),
     api_key: str = Depends(get_api_key),
@@ -98,7 +98,7 @@ async def get_integration(
     return integration
 
 
-@router.put("/{integration_id}", response_model=IntegrationResponse)
+@router.put("/{integration_id}", response_model=IntegrationResponse, operation_id="updateIntegration")
 async def update_integration(
     integration_id: UUID,
     integration_update: IntegrationUpdate,
@@ -133,7 +133,7 @@ async def update_integration(
     return integration
 
 
-@router.delete("/{integration_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{integration_id}", status_code=status.HTTP_204_NO_CONTENT, operation_id="deleteIntegration")
 async def delete_integration(
     integration_id: UUID,
     organization_id: UUID = Depends(get_organization_id),

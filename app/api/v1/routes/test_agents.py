@@ -21,7 +21,7 @@ from app.services.test_agent_service import test_agent_service
 router = APIRouter(prefix="/test-agents", tags=["test-agents"])
 
 
-@router.post("/conversations", response_model=TestAgentConversationResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/conversations", response_model=TestAgentConversationResponse, status_code=status.HTTP_201_CREATED, operation_id="createTestAgentConversation")
 async def create_conversation(
     conversation: TestAgentConversationCreate,
     organization_id: UUID = Depends(get_organization_id),
@@ -59,7 +59,7 @@ async def list_conversations(
     return conversations
 
 
-@router.get("/conversations/{conversation_id}", response_model=TestAgentConversationResponse)
+@router.get("/conversations/{conversation_id}", response_model=TestAgentConversationResponse, operation_id="getTestAgentConversation")
 async def get_conversation(
     conversation_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
@@ -77,7 +77,7 @@ async def get_conversation(
     return conversation
 
 
-@router.post("/conversations/{conversation_id}/start", response_model=TestAgentConversationResponse)
+@router.post("/conversations/{conversation_id}/start", response_model=TestAgentConversationResponse, operation_id="startTestAgentConversation")
 async def start_conversation(
     conversation_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
@@ -97,7 +97,7 @@ async def start_conversation(
         raise HTTPException(status_code=500, detail=f"Failed to start conversation: {str(e)}")
 
 
-@router.post("/conversations/{conversation_id}/process-audio")
+@router.post("/conversations/{conversation_id}/process-audio", operation_id="processTestAgentAudio")
 async def process_audio_chunk(
     conversation_id: UUID,
     audio_file: UploadFile = File(...),
@@ -154,7 +154,7 @@ async def process_audio_chunk(
         )
 
 
-@router.get("/conversations/{conversation_id}/response-audio")
+@router.get("/conversations/{conversation_id}/response-audio", operation_id="getTestAgentResponseAudio")
 async def get_response_audio(
     conversation_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
@@ -197,7 +197,7 @@ async def get_response_audio(
         raise HTTPException(status_code=500, detail=f"Failed to retrieve audio: {str(e)}")
 
 
-@router.post("/conversations/{conversation_id}/end", response_model=TestAgentConversationResponse)
+@router.post("/conversations/{conversation_id}/end", response_model=TestAgentConversationResponse, operation_id="endTestAgentConversation")
 async def end_conversation(
     conversation_id: UUID,
     final_audio_key: Optional[str] = None,

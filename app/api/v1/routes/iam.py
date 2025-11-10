@@ -84,7 +84,7 @@ def require_admin_role(
     return user
 
 
-@router.get("/users", response_model=List[OrganizationMemberResponse])
+@router.get("/users", response_model=List[OrganizationMemberResponse], operation_id="listOrganizationUsers")
 async def list_organization_users(
     organization_id: UUID = Depends(get_organization_id),
     api_key: str = Depends(get_api_key),
@@ -120,7 +120,7 @@ async def list_organization_users(
     return result
 
 
-@router.post("/invitations", response_model=InvitationResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/invitations", response_model=InvitationResponse, status_code=status.HTTP_201_CREATED, operation_id="inviteUser")
 async def invite_user(
     invitation_data: InvitationCreate,
     organization_id: UUID = Depends(get_organization_id),
@@ -198,7 +198,7 @@ async def invite_user(
     }
 
 
-@router.get("/invitations", response_model=List[InvitationResponse])
+@router.get("/invitations", response_model=List[InvitationResponse], operation_id="listInvitations")
 async def list_invitations(
     organization_id: UUID = Depends(get_organization_id),
     api_key: str = Depends(get_api_key),
@@ -236,7 +236,7 @@ async def list_invitations(
     return result
 
 
-@router.put("/users/{user_id}/role", response_model=OrganizationMemberResponse)
+@router.put("/users/{user_id}/role", response_model=OrganizationMemberResponse, operation_id="updateUserRole")
 async def update_user_role(
     user_id: UUID,
     role_update: RoleUpdate,
@@ -294,7 +294,7 @@ async def update_user_role(
     }
 
 
-@router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT, operation_id="removeUser")
 async def remove_user(
     user_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
@@ -334,7 +334,7 @@ async def remove_user(
     return None
 
 
-@router.delete("/invitations/{invitation_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/invitations/{invitation_id}", status_code=status.HTTP_204_NO_CONTENT, operation_id="cancelInvitation")
 async def cancel_invitation(
     invitation_id: UUID,
     organization_id: UUID = Depends(get_organization_id),

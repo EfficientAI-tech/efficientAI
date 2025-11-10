@@ -61,7 +61,7 @@ def get_current_user(
     return user
 
 
-@router.get("", response_model=ProfileResponse)
+@router.get("", response_model=ProfileResponse, operation_id="getProfile")
 async def get_profile(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -96,7 +96,7 @@ async def get_profile(
     }
 
 
-@router.put("", response_model=ProfileResponse)
+@router.put("", response_model=ProfileResponse, operation_id="updateProfile")
 async def update_profile(
     profile_update: UserUpdate,
     current_user: User = Depends(get_current_user),
@@ -151,7 +151,7 @@ async def update_profile(
     }
 
 
-@router.get("/invitations", response_model=List[InvitationResponse])
+@router.get("/invitations", response_model=List[InvitationResponse], operation_id="getMyInvitations")
 async def get_my_invitations(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -188,7 +188,7 @@ async def get_my_invitations(
     return result
 
 
-@router.post("/invitations/{invitation_id}/accept", response_model=MessageResponse)
+@router.post("/invitations/{invitation_id}/accept", response_model=MessageResponse, operation_id="acceptInvitation")
 async def accept_invitation(
     invitation_id: UUID,
     current_user: User = Depends(get_current_user),
@@ -246,7 +246,7 @@ async def accept_invitation(
     return {"message": "Invitation accepted successfully"}
 
 
-@router.post("/invitations/{invitation_id}/decline", response_model=MessageResponse)
+@router.post("/invitations/{invitation_id}/decline", response_model=MessageResponse, operation_id="declineInvitation")
 async def decline_invitation(
     invitation_id: UUID,
     current_user: User = Depends(get_current_user),

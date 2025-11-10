@@ -172,7 +172,13 @@ def migrate(verbose: bool):
     default=False,
     help="Watch frontend files and rebuild automatically (default: False)",
 )
-def start(config: str, host: Optional[str], port: Optional[int], build_frontend: bool, reload: bool, watch_frontend: bool):
+@click.option(
+    "--force-rebuild",
+    is_flag=True,
+    default=False,
+    help="Force rebuild of frontend without prompting",
+)
+def start(config: str, host: Optional[str], port: Optional[int], build_frontend: bool, reload: bool, watch_frontend: bool, force_rebuild: bool):
     """Start the EfficientAI application server."""
     from app.config import load_config_from_file, settings
     
@@ -200,7 +206,8 @@ def start(config: str, host: Optional[str], port: Optional[int], build_frontend:
     # Check if frontend is already built
     frontend_dist = Path(__file__).parent.parent / "frontend" / "dist"
     if build_frontend and frontend_dist.exists() and any(frontend_dist.iterdir()):
-        if not click.confirm("Frontend dist directory already exists. Rebuild anyway?"):
+        # If watching, we always want to rebuild to catch latest changes at start
+        if not force_rebuild and not watch_frontend and not click.confirm("Frontend dist directory already exists. Rebuild anyway?"):
             build_frontend = False
     
     if build_frontend:

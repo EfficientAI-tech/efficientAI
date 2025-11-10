@@ -713,3 +713,41 @@ class ConversationTurn(BaseModel):
     text: str
     timestamp: float  # Time in seconds from start
     audio_segment_key: Optional[str] = None  # S3 key for this segment's audio
+
+
+# Conversation Evaluation Schemas
+class ConversationEvaluationCreate(BaseModel):
+    """Schema for creating a conversation evaluation."""
+    transcription_id: UUID
+    agent_id: UUID
+    llm_provider: Optional[ModelProvider] = ModelProvider.OPENAI
+    llm_model: Optional[str] = "gpt-4o"
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "transcription_id": "123e4567-e89b-12d3-a456-426614174000",
+                "agent_id": "123e4567-e89b-12d3-a456-426614174001",
+                "llm_provider": "openai",
+                "llm_model": "gpt-4o"
+            }
+        }
+
+
+class ConversationEvaluationResponse(BaseModel):
+    """Schema for conversation evaluation response."""
+    id: UUID
+    organization_id: UUID
+    transcription_id: UUID
+    agent_id: UUID
+    objective_achieved: bool
+    objective_achieved_reason: Optional[str]
+    additional_metrics: Optional[Dict[str, Any]]
+    overall_score: Optional[float]
+    llm_provider: Optional[ModelProvider]
+    llm_model: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
