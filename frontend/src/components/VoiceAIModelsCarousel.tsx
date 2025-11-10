@@ -13,7 +13,7 @@ const models: VoiceAIModel[] = [
   {
     id: 'cartesia-1',
     company: 'Cartesia',
-    companyLogo: '🎤',
+    companyLogo: '/cartesia.jpg',
     modelName: 'Sonic-3',
     features: [
       'Ultra-low latency streaming TTS (<100ms) with natural emotions, laughter, and expressive conversations',
@@ -23,7 +23,7 @@ const models: VoiceAIModel[] = [
   {
     id: 'elevenlabs-1',
     company: 'ElevenLabs',
-    companyLogo: '🔊',
+    companyLogo: '/elevenLabs.png',
     modelName: 'ElevenLabs Turbo',
     features: [
       'State-of-the-art voice cloning with minimal audio samples required',
@@ -33,7 +33,7 @@ const models: VoiceAIModel[] = [
   {
     id: 'openai-1',
     company: 'OpenAI',
-    companyLogo: '🤖',
+    companyLogo: '/openai-logo.png',
     modelName: 'OpenAI TTS',
     features: [
       'Neural text-to-speech with natural prosody and expressiveness',
@@ -84,8 +84,20 @@ export default function VoiceAIModelsCarousel() {
                   <div className="flex items-center gap-4 flex-1">
                     {/* Company Logo */}
                     <div className="flex-shrink-0">
-                      <div className="w-16 h-16 rounded-lg bg-gradient-to-br from-gray-100 to-gray-200 flex items-center justify-center text-3xl">
-                        {model.companyLogo}
+                      <div className={`w-16 h-16 rounded-lg flex items-center justify-center overflow-hidden ${
+                        model.companyLogo.startsWith('/') 
+                          ? 'bg-white border border-gray-200' 
+                          : 'bg-gradient-to-br from-gray-100 to-gray-200'
+                      }`}>
+                        {model.companyLogo.startsWith('/') ? (
+                          <img 
+                            src={model.companyLogo} 
+                            alt={model.company}
+                            className="w-full h-full object-contain p-2"
+                          />
+                        ) : (
+                          <span className="text-3xl">{model.companyLogo}</span>
+                        )}
                       </div>
                     </div>
                     
