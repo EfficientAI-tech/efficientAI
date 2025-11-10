@@ -1,8 +1,10 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Plus, Phone, Edit2, Trash2, X } from 'lucide-react'
 import { apiClient } from '../lib/api'
 import { format } from 'date-fns'
 import Button from '../components/Button'
+import { useAgentStore } from '../store/agentStore'
 
 interface Agent {
   id: string
@@ -16,9 +18,8 @@ interface Agent {
 }
 
 export default function Agents() {
-  const [agents, setAgents] = useState<Agent[]>([])
-  const [loading, setLoading] = useState(true)
-  const [deleting, setDeleting] = useState(false)
+  const queryClient = useQueryClient()
+  const { selectedAgent: globalSelectedAgent, setSelectedAgent: setGlobalSelectedAgent } = useAgentStore()
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [showEditModal, setShowEditModal] = useState(false)
   const [showDeleteModal, setShowDeleteModal] = useState(false)
@@ -31,20 +32,10 @@ export default function Agents() {
     call_type: 'outbound'
   })
 
-  useEffect(() => {
-    fetchAgents()
-  }, [])
-
-  const fetchAgents = async () => {
-    try {
-      const data = await apiClient.listAgents()
-      setAgents(data)
-    } catch (error) {
-      console.error('Error fetching agents:', error)
-    } finally {
-      setLoading(false)
-    }
-  }
+  const { data: agents = [], isLoading: loading } = useQuery({
+    queryKey: ['agents'],
+    queryFn: () => apiClient.listAgents(),
+  })
 
   const resetForm = () => {
     setFormData({
@@ -82,39 +73,69 @@ export default function Agents() {
     resetForm()
   }
 
-  const createAgent = async (e: React.FormEvent) => {
-    e.preventDefault()
-    try {
-      await apiClient.createAgent({
-        ...formData,
-        description: formData.description || null
-      })
+  const createMutation = useMutation({
+    mutationFn: (data: typeof formData) => apiClient.createAgent({
+      ...data,
+      description: data.description || null
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['agents'] })
       closeModals()
-      fetchAgents()
-    } catch (error) {
+    },
+    onError: (error: any) => {
       console.error('Error creating agent:', error)
       alert('Failed to create agent. Please try again.')
-    }
+    },
+  })
+
+  const updateMutation = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: typeof formData }) =>
+      apiClient.updateAgent(id, {
+        name: data.name,
+        phone_number: data.phone_number,
+        language: data.language,
+        description: data.description || null,
+        call_type: data.call_type
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['agents'] })
+      closeModals()
+    },
+    onError: (error: any) => {
+      console.error('Error updating agent:', error)
+      alert('Failed to update agent. Please try again.')
+    },
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => apiClient.deleteAgent(id),
+    onSuccess: (_, deletedId) => {
+      // Clear global selection if the deleted agent was selected
+      if (globalSelectedAgent?.id === deletedId) {
+        setGlobalSelectedAgent(null)
+      }
+      queryClient.invalidateQueries({ queryKey: ['agents'] })
+      if (showEditModal && selectedAgent) {
+        closeModals()
+      }
+      setShowDeleteModal(false)
+      setSelectedAgent(null)
+    },
+    onError: (error: any) => {
+      console.error('Error deleting agent:', error)
+      alert('Failed to delete agent. Please try again.')
+    },
+  })
+
+  const createAgent = async (e: React.FormEvent) => {
+    e.preventDefault()
+    createMutation.mutate(formData)
   }
 
   const updateAgent = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!selectedAgent) return
-    
-    try {
-      await apiClient.updateAgent(selectedAgent.id, {
-        name: formData.name,
-        phone_number: formData.phone_number,
-        language: formData.language,
-        description: formData.description || null,
-        call_type: formData.call_type
-      })
-      closeModals()
-      fetchAgents()
-    } catch (error) {
-      console.error('Error updating agent:', error)
-      alert('Failed to update agent. Please try again.')
-    }
+    updateMutation.mutate({ id: selectedAgent.id, data: formData })
   }
 
   const handleDelete = (agent: Agent, event?: React.MouseEvent) => {
@@ -127,22 +148,7 @@ export default function Agents() {
 
   const confirmDelete = async () => {
     if (!selectedAgent) return
-    
-    setDeleting(true)
-    try {
-      await apiClient.deleteAgent(selectedAgent.id)
-      if (showEditModal && selectedAgent) {
-        closeModals()
-      }
-      setShowDeleteModal(false)
-      setSelectedAgent(null)
-      fetchAgents()
-    } catch (error) {
-      console.error('Error deleting agent:', error)
-      alert('Failed to delete agent. Please try again.')
-    } finally {
-      setDeleting(false)
-    }
+    deleteMutation.mutate(selectedAgent.id)
   }
 
   if (loading) {
@@ -547,8 +553,8 @@ export default function Agents() {
                 <Button
                   variant="danger"
                   onClick={confirmDelete}
-                  isLoading={deleting}
-                  leftIcon={!deleting ? <Trash2 className="h-4 w-4" /> : undefined}
+                  isLoading={deleteMutation.isPending}
+                  leftIcon={!deleteMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined}
                   className="flex-1"
                 >
                   Delete

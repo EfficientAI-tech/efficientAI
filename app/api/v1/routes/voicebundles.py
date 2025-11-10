@@ -16,7 +16,7 @@ from app.models.schemas import (
 router = APIRouter(prefix="/voicebundles", tags=["voicebundles"])
 
 
-@router.post("", response_model=VoiceBundleResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=VoiceBundleResponse, status_code=status.HTTP_201_CREATED, operation_id="createVoiceBundle")
 async def create_voicebundle(
     voicebundle: VoiceBundleCreate,
     organization_id: UUID = Depends(get_organization_id),
@@ -47,7 +47,7 @@ async def create_voicebundle(
     return db_voicebundle
 
 
-@router.get("", response_model=List[VoiceBundleResponse])
+@router.get("", response_model=List[VoiceBundleResponse], operation_id="listVoiceBundles")
 async def list_voicebundles(
     skip: int = 0,
     limit: int = 100,
@@ -82,7 +82,7 @@ async def get_voicebundle(
     return voicebundle
 
 
-@router.put("/{voicebundle_id}", response_model=VoiceBundleResponse)
+@router.put("/{voicebundle_id}", response_model=VoiceBundleResponse, operation_id="updateVoiceBundle")
 async def update_voicebundle(
     voicebundle_id: UUID,
     voicebundle_update: VoiceBundleUpdate,
@@ -110,7 +110,7 @@ async def update_voicebundle(
     return db_voicebundle
 
 
-@router.delete("/{voicebundle_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{voicebundle_id}", status_code=status.HTTP_204_NO_CONTENT, operation_id="deleteVoiceBundle")
 async def delete_voicebundle(
     voicebundle_id: UUID,
     organization_id: UUID = Depends(get_organization_id),

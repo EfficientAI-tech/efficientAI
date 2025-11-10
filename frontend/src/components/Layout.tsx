@@ -1,5 +1,8 @@
 import { Outlet, Link, useLocation } from 'react-router-dom'
 import { useAuthStore } from '../store/authStore'
+import { useAgentStore } from '../store/agentStore'
+import { useQuery } from '@tanstack/react-query'
+import { apiClient } from '../lib/api'
 import {
   LayoutDashboard,
   FileCheck,
@@ -21,7 +24,7 @@ import {
   Mic,
   Brain,
 } from 'lucide-react'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import Logo from './Logo'
 
 interface NavItem {
@@ -68,14 +71,13 @@ const navigationSections: NavSection[] = [
       { name: 'S3 Integration', href: '/data-sources', icon: Database },
       { name: 'AI Providers', href: '/ai-providers', icon: Brain },
       { name: 'VoiceBundle', href: '/voicebundles', icon: Mic },
+      { name: 'Integrations', href: '/integrations', icon: Plug },
     ],
   },
 ]
 
 const otherNavigation: NavItem[] = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
-  { name: 'Agents', href: '/agents', icon: Phone },
-  { name: 'Integrations', href: '/integrations', icon: Plug },
 ]
 
 const bottomNavigation = [
@@ -86,7 +88,33 @@ const bottomNavigation = [
 export default function Layout() {
   const location = useLocation()
   const { logout } = useAuthStore()
+  const { selectedAgent, setSelectedAgent } = useAgentStore()
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [showAgentDropdown, setShowAgentDropdown] = useState(false)
+
+  // Fetch agents
+  const { data: agents = [] } = useQuery({
+    queryKey: ['agents'],
+    queryFn: () => apiClient.listAgents(),
+  })
+
+  // Auto-select first agent if none is selected and agents are available
+  useEffect(() => {
+    if (!selectedAgent && agents.length > 0) {
+      setSelectedAgent(agents[0])
+    }
+  }, [agents, selectedAgent, setSelectedAgent])
+
+  // Clear selection if selected agent no longer exists
+  useEffect(() => {
+    if (selectedAgent && !agents.find(a => a.id === selectedAgent.id)) {
+      if (agents.length > 0) {
+        setSelectedAgent(agents[0])
+      } else {
+        setSelectedAgent(null)
+      }
+    }
+  }, [agents, selectedAgent, setSelectedAgent])
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -130,6 +158,78 @@ export default function Layout() {
             <Menu className="h-6 w-6" />
           </button>
           <div className="flex-1 px-4 flex justify-between items-center">
+            {/* Agent Selector */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setShowAgentDropdown(!showAgentDropdown)}
+                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+              >
+                <Phone className="h-4 w-4 text-gray-500" />
+                <span className="min-w-[120px] text-left">
+                  {selectedAgent ? selectedAgent.name : 'Select Agent'}
+                </span>
+                <ChevronDown className="h-4 w-4 text-gray-500" />
+              </button>
+
+              {/* Dropdown */}
+              {showAgentDropdown && (
+                <>
+                  <div
+                    className="fixed inset-0 z-10"
+                    onClick={() => setShowAgentDropdown(false)}
+                  />
+                  <div className="absolute left-0 mt-2 w-64 bg-white rounded-lg shadow-lg border border-gray-200 z-20 max-h-96 overflow-y-auto">
+                    {agents.length === 0 ? (
+                      <div className="px-4 py-3 text-sm text-gray-500 text-center">
+                        No agents available
+                      </div>
+                    ) : (
+                      <>
+                        {agents.map((agent) => (
+                          <button
+                            key={agent.id}
+                            type="button"
+                            onClick={() => {
+                              setSelectedAgent(agent)
+                              setShowAgentDropdown(false)
+                            }}
+                            className={`w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors ${
+                              selectedAgent?.id === agent.id
+                                ? 'bg-primary-50 border-l-4 border-primary-500'
+                                : 'border-l-4 border-transparent'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <div className="text-sm font-medium text-gray-900">
+                                  {agent.name}
+                                </div>
+                                <div className="text-xs text-gray-500 mt-0.5">
+                                  {agent.phone_number} • {agent.language}
+                                </div>
+                              </div>
+                              {selectedAgent?.id === agent.id && (
+                                <div className="h-2 w-2 bg-primary-500 rounded-full" />
+                              )}
+                            </div>
+                          </button>
+                        ))}
+                        <div className="border-t border-gray-200 px-4 py-2">
+                          <Link
+                            to="/agents"
+                            onClick={() => setShowAgentDropdown(false)}
+                            className="text-sm text-primary-600 hover:text-primary-700 font-medium"
+                          >
+                            Manage Agents →
+                          </Link>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </div>
 
