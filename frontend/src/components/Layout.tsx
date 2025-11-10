@@ -16,6 +16,10 @@ import {
   Plug,
   ChevronRight,
   ChevronDown,
+  Database,
+  Settings,
+  Mic,
+  Brain,
 } from 'lucide-react'
 import { useState } from 'react'
 import Logo from './Logo'
@@ -47,6 +51,7 @@ const navigationSections: NavSection[] = [
     items: [
       { name: 'Evaluations', href: '/evaluations', icon: FileCheck },
       { name: 'Batch Jobs', href: '/batch', icon: FolderSync },
+      { name: 'Evaluate Test Agents', href: '/evaluate-test-agents', icon: Mic },
     ],
   },
   {
@@ -54,6 +59,15 @@ const navigationSections: NavSection[] = [
     icon: BarChart3,
     items: [
       { name: 'Metrics Dashboard', href: '/metrics', icon: BarChart3 },
+    ],
+  },
+  {
+    title: 'Configurations',
+    icon: Settings,
+    items: [
+      { name: 'S3 Integration', href: '/data-sources', icon: Database },
+      { name: 'AI Providers', href: '/ai-providers', icon: Brain },
+      { name: 'VoiceBundle', href: '/voicebundles', icon: Mic },
     ],
   },
 ]
@@ -136,7 +150,7 @@ function SidebarContent({
   location: ReturnType<typeof useLocation>
 }) {
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
-    new Set(['Simulations', 'Evaluations', 'Metrics'])
+    new Set(['Simulations', 'Evaluations', 'Metrics', 'Configurations'])
   )
 
   const toggleSection = (title: string) => {
@@ -158,8 +172,8 @@ function SidebarContent({
       <div className="flex items-center flex-shrink-0 px-4 h-16 border-b border-gray-200">
         <Logo />
       </div>
-      <div className="flex-1 flex flex-col pt-5 pb-4 overflow-y-auto">
-        <nav className="mt-5 flex-1 px-2 space-y-1">
+      <div className="flex-1 flex flex-col pb-4 overflow-y-auto">
+        <nav className="flex-1 px-2 space-y-1">
           {/* Other Navigation */}
           {otherNavigation.map((item) => {
             const isActive = location.pathname === item.href

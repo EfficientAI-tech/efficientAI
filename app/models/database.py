@@ -357,3 +357,130 @@ class Integration(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     last_tested_at = Column(DateTime(timezone=True), nullable=True)  # When API key was last validated
 
+
+class ModelProvider(str, enum.Enum):
+    """Model provider enumeration for extensibility."""
+    OPENAI = "openai"
+    ANTHROPIC = "anthropic"
+    GOOGLE = "google"
+    AZURE = "azure"
+    AWS = "aws"
+    CUSTOM = "custom"
+
+
+class ManualTranscription(Base):
+    """Manual transcription model for storing transcriptions from S3 audio files."""
+
+    __tablename__ = "manual_transcriptions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    name = Column(String(255), nullable=True)  # User-friendly name for the transcription
+    audio_file_key = Column(String(512), nullable=False)  # S3 key or file path
+    transcript = Column(String, nullable=False)  # Full transcript text
+    speaker_segments = Column(JSON, nullable=True)  # List of segments with speaker labels: [{"speaker": "Speaker 1", "text": "...", "start": 0.0, "end": 5.2}]
+    stt_model = Column(String(100), nullable=True)  # STT model used (e.g., "whisper-1", "google-speech-v2")
+    stt_provider = Column(Enum(ModelProvider), nullable=True)  # Provider used
+    language = Column(String(10), nullable=True)  # Detected or specified language
+    processing_time = Column(Float, nullable=True)  # Processing time in seconds
+    raw_output = Column(JSON, nullable=True)  # Full model output for reference
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class AIProvider(Base):
+    """AI Provider - Stores API keys for different AI platforms."""
+    __tablename__ = "aiproviders"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    provider = Column(Enum(ModelProvider), nullable=False)
+    api_key = Column(String, nullable=False)  # Encrypted API key
+    name = Column(String, nullable=True)  # Optional friendly name
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    last_tested_at = Column(DateTime(timezone=True), nullable=True)  # When API key was last validated
+    
+    # Unique constraint: one active provider per organization
+    __table_args__ = (
+        UniqueConstraint('organization_id', 'provider', name='unique_org_provider'),
+    )
+
+
+class VoiceBundle(Base):
+    """VoiceBundle - Composable unit combining STT, LLM, and TTS for voice AI testing."""
+    __tablename__ = "voicebundles"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    
+    # STT Configuration (references AIProvider via provider name)
+    stt_provider = Column(Enum(ModelProvider), nullable=False)
+    stt_model = Column(String, nullable=False)  # e.g., "whisper-1", "google-speech-v2"
+    
+    # LLM Configuration (references AIProvider via provider name)
+    llm_provider = Column(Enum(ModelProvider), nullable=False)
+    llm_model = Column(String, nullable=False)  # e.g., "gpt-4", "claude-3-opus"
+    llm_temperature = Column(Float, nullable=True, default=0.7)
+    llm_max_tokens = Column(Integer, nullable=True)
+    llm_config = Column(JSON, nullable=True)  # Additional LLM configuration (extensible)
+    
+    # TTS Configuration (references AIProvider via provider name)
+    tts_provider = Column(Enum(ModelProvider), nullable=False)
+    tts_model = Column(String, nullable=False)  # e.g., "tts-1", "neural-voice"
+    tts_voice = Column(String, nullable=True)  # Voice selection if applicable
+    tts_config = Column(JSON, nullable=True)  # Additional TTS configuration (extensible)
+    
+    # Additional configuration for extensibility
+    extra_metadata = Column(JSON, nullable=True)  # For future extensions (renamed from 'metadata' to avoid SQLAlchemy conflict)
+    
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_by = Column(String, nullable=True)
+
+
+class TestAgentConversationStatus(str, enum.Enum):
+    """Test agent conversation status enumeration."""
+    
+    INITIALIZING = "initializing"
+    ACTIVE = "active"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class TestAgentConversation(Base):
+    """Test Agent Conversation - Records conversations between test AI agent and voice AI agent."""
+    __tablename__ = "test_agent_conversations"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    
+    # Configuration
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False)
+    persona_id = Column(UUID(as_uuid=True), ForeignKey("personas.id"), nullable=False)
+    scenario_id = Column(UUID(as_uuid=True), ForeignKey("scenarios.id"), nullable=False)
+    voice_bundle_id = Column(UUID(as_uuid=True), ForeignKey("voicebundles.id"), nullable=False)
+    
+    # Conversation data
+    status = Column(Enum(TestAgentConversationStatus), nullable=False, default=TestAgentConversationStatus.INITIALIZING)
+    live_transcription = Column(JSON, nullable=True)  # Array of conversation turns with timestamps
+    conversation_audio_key = Column(String, nullable=True)  # S3 key for recorded conversation audio
+    full_transcript = Column(String, nullable=True)  # Full conversation transcript
+    
+    # Metadata
+    started_at = Column(DateTime(timezone=True), server_default=func.now())
+    ended_at = Column(DateTime(timezone=True), nullable=True)
+    duration_seconds = Column(Float, nullable=True)
+    
+    # Additional metadata
+    conversation_metadata = Column(JSON, nullable=True)  # Additional conversation metadata
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_by = Column(String, nullable=True)

@@ -81,15 +81,8 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900">Dashboard</h1>
-        <p className="mt-2 text-sm text-gray-600">
-          Overview of your EfficientAI platform
-        </p>
-      </div>
-
       {/* Voice AI Models Carousel */}
-      <div className="bg-gradient-to-br from-gray-50 to-gray-100 rounded-lg p-6">
+      <div className="bg-gradient-to-br from-gray-50 to-gray-100 rounded-lg p-6 -mt-6">
         <div className="mb-4">
           <h2 className="text-xl font-semibold text-gray-900 mb-1">
             Latest Voice AI Models

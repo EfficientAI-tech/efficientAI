@@ -3,6 +3,7 @@ import { apiClient } from '../lib/api'
 import { useState } from 'react'
 import { Role, Invitation, OrganizationMember, InvitationCreate } from '../types/api'
 import { Users, Mail, UserPlus, Shield, ShieldCheck, ShieldAlert, X, Trash2 } from 'lucide-react'
+import Button from '../components/Button'
 
 export default function IAM() {
   const queryClient = useQueryClient()
@@ -104,13 +105,13 @@ export default function IAM() {
             Manage users and their permissions in your organization
           </p>
         </div>
-        <button
+        <Button
+          variant="primary"
           onClick={() => setShowInviteModal(true)}
-          className="flex items-center gap-2 bg-primary-600 text-white px-4 py-2 rounded-lg hover:bg-primary-700 transition-colors"
+          leftIcon={<UserPlus className="h-5 w-5" />}
         >
-          <UserPlus className="h-5 w-5" />
           Invite User
-        </button>
+        </Button>
       </div>
 
       {/* Users Section */}
@@ -159,17 +160,20 @@ export default function IAM() {
                       <option value={Role.WRITER}>Writer</option>
                       <option value={Role.ADMIN}>Admin</option>
                     </select>
-                    <button
+                    <Button
+                      variant="ghost"
+                      size="sm"
                       onClick={() => {
                         if (confirm('Are you sure you want to remove this user?')) {
                           removeUserMutation.mutate(member.user_id)
                         }
                       }}
-                      className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                      leftIcon={<Trash2 className="h-5 w-5" />}
                       title="Remove user"
+                      className="text-red-600 hover:bg-red-50 hover:text-red-700"
                     >
-                      <Trash2 className="h-5 w-5" />
-                    </button>
+                      Remove
+                    </Button>
                   </div>
                 </div>
               ))}
@@ -207,17 +211,20 @@ export default function IAM() {
                   <div className="flex items-center gap-3">
                     {getInvitationStatusBadge(invitation.status)}
                     {invitation.status === 'pending' && (
-                      <button
+                      <Button
+                        variant="ghost"
+                        size="sm"
                         onClick={() => {
                           if (confirm('Cancel this invitation?')) {
                             cancelInvitationMutation.mutate(invitation.id)
                           }
                         }}
-                        className="p-2 text-gray-600 hover:bg-gray-50 rounded-lg transition-colors"
+                        leftIcon={<X className="h-5 w-5" />}
                         title="Cancel invitation"
+                        className="text-gray-600 hover:bg-gray-50"
                       >
-                        <X className="h-5 w-5" />
-                      </button>
+                        Cancel
+                      </Button>
                     )}
                   </div>
                 </div>
@@ -273,20 +280,22 @@ export default function IAM() {
                 </select>
               </div>
               <div className="flex gap-3 pt-4">
-                <button
+                <Button
                   type="button"
+                  variant="outline"
                   onClick={() => setShowInviteModal(false)}
-                  className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
+                  className="flex-1"
                 >
                   Cancel
-                </button>
-                <button
+                </Button>
+                <Button
                   type="submit"
-                  disabled={inviteMutation.isPending}
-                  className="flex-1 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors disabled:opacity-50"
+                  variant="primary"
+                  isLoading={inviteMutation.isPending}
+                  className="flex-1"
                 >
-                  {inviteMutation.isPending ? 'Sending...' : 'Send Invitation'}
-                </button>
+                  Send Invitation
+                </Button>
               </div>
             </form>
           </div>

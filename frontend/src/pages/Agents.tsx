@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { Plus, Phone, Edit2, Trash2, X } from 'lucide-react'
 import { apiClient } from '../lib/api'
 import { format } from 'date-fns'
+import Button from '../components/Button'
 
 interface Agent {
   id: string
@@ -17,8 +18,10 @@ interface Agent {
 export default function Agents() {
   const [agents, setAgents] = useState<Agent[]>([])
   const [loading, setLoading] = useState(true)
+  const [deleting, setDeleting] = useState(false)
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [showEditModal, setShowEditModal] = useState(false)
+  const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null)
   const [formData, setFormData] = useState({
     name: '',
@@ -74,6 +77,7 @@ export default function Agents() {
   const closeModals = () => {
     setShowCreateModal(false)
     setShowEditModal(false)
+    setShowDeleteModal(false)
     setSelectedAgent(null)
     resetForm()
   }
@@ -113,21 +117,31 @@ export default function Agents() {
     }
   }
 
-  const deleteAgent = async (id: string, event?: React.MouseEvent) => {
+  const handleDelete = (agent: Agent, event?: React.MouseEvent) => {
     if (event) {
       event.stopPropagation()
     }
-    if (!confirm('Are you sure you want to delete this agent?')) return
+    setSelectedAgent(agent)
+    setShowDeleteModal(true)
+  }
+
+  const confirmDelete = async () => {
+    if (!selectedAgent) return
     
+    setDeleting(true)
     try {
-      await apiClient.deleteAgent(id)
-      if (selectedAgent?.id === id) {
+      await apiClient.deleteAgent(selectedAgent.id)
+      if (showEditModal && selectedAgent) {
         closeModals()
       }
+      setShowDeleteModal(false)
+      setSelectedAgent(null)
       fetchAgents()
     } catch (error) {
       console.error('Error deleting agent:', error)
       alert('Failed to delete agent. Please try again.')
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -146,13 +160,9 @@ export default function Agents() {
           <h1 className="text-2xl font-bold text-gray-900">Test Agents</h1>
           <p className="text-gray-600 mt-1">Manage your voice AI test agents</p>
         </div>
-        <button
-          onClick={openCreateModal}
-          className="flex items-center gap-2 bg-primary-600 text-white px-4 py-2 rounded-lg hover:bg-primary-700 transition-colors"
-        >
-          <Plus className="w-4 h-4" />
+        <Button variant="primary" onClick={openCreateModal} leftIcon={<Plus className="w-4 h-4" />}>
           Create Agent
-        </button>
+        </Button>
       </div>
 
       {agents.length === 0 ? (
@@ -160,59 +170,86 @@ export default function Agents() {
           <Phone className="w-12 h-12 text-gray-400 mx-auto mb-4" />
           <h3 className="text-lg font-medium text-gray-900 mb-2">No agents yet</h3>
           <p className="text-gray-500 mb-4">Create your first test agent to get started</p>
-          <button
-            onClick={openCreateModal}
-            className="text-primary-600 hover:text-primary-700 font-medium"
-          >
+          <Button variant="ghost" onClick={openCreateModal}>
             Create your first agent →
-          </button>
+          </Button>
         </div>
       ) : (
-        <div className="grid gap-4">
-          {agents.map((agent) => (
-            <div
-              key={agent.id}
-              onClick={() => openEditModal(agent)}
-              className="bg-white rounded-lg shadow p-6 hover:shadow-md transition-shadow cursor-pointer"
-            >
-              <div className="flex items-start justify-between">
-                <div className="flex-1">
-                  <h3 className="text-lg font-semibold text-gray-900">{agent.name}</h3>
-                  {agent.description && (
-                    <p className="text-gray-600 mt-1">{agent.description}</p>
-                  )}
-                  <div className="flex gap-4 mt-3">
-                    <div className="flex items-center gap-2 text-sm text-gray-500">
-                      <Phone className="w-4 h-4" />
-                      {agent.phone_number}
-                    </div>
-                    <div className="text-sm text-gray-500">
-                      Language: <span className="font-medium">{agent.language.toUpperCase()}</span>
-                    </div>
-                    <div className="text-sm text-gray-500">
-                      Type: <span className="font-medium capitalize">{agent.call_type}</span>
-                    </div>
-                  </div>
-                </div>
-                <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
-                  <button
-                    onClick={() => openEditModal(agent)}
-                    className="p-2 text-gray-400 hover:text-primary-600 rounded-lg hover:bg-primary-50 transition-colors"
-                    title="Edit"
-                  >
-                    <Edit2 className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick={(e) => deleteAgent(agent.id, e)}
-                    className="p-2 text-gray-400 hover:text-red-600 rounded-lg hover:bg-red-50 transition-colors"
-                    title="Delete"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-            </div>
-          ))}
+        <div className="bg-white shadow rounded-lg overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Name
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Phone Number
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Language
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Type
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Actions
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {agents.map((agent) => (
+                  <tr key={agent.id} className="hover:bg-gray-50">
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="flex items-center">
+                        <span className="text-sm font-medium text-gray-900">{agent.name}</span>
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="flex items-center gap-2 text-sm text-gray-500">
+                        <Phone className="w-4 h-4" />
+                        {agent.phone_number}
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      <span className="font-medium">{agent.language.toUpperCase()}</span>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                      <span className="font-medium capitalize">{agent.call_type}</span>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm">
+                      <div className="flex items-center gap-3">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => openEditModal(agent)}
+                          leftIcon={<Edit2 className="h-4 w-4" />}
+                          title="Edit"
+                        >
+                          Edit
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={(e) => handleDelete(agent, e)}
+                          leftIcon={<Trash2 className="h-4 w-4" />}
+                          title="Delete"
+                          className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                        >
+                          Delete
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="px-6 py-3 bg-gray-50 border-t border-gray-200">
+            <p className="text-sm text-gray-600">
+              Showing {agents.length} agent{agents.length !== 1 ? 's' : ''}
+            </p>
+          </div>
         </div>
       )}
 
@@ -304,19 +341,21 @@ export default function Agents() {
               </div>
 
               <div className="flex gap-3 pt-4">
-                <button
+                <Button
                   type="button"
+                  variant="outline"
                   onClick={closeModals}
-                  className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
+                  className="flex-1"
                 >
                   Cancel
-                </button>
-                <button
+                </Button>
+                <Button
                   type="submit"
-                  className="flex-1 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
+                  variant="primary"
+                  className="flex-1"
                 >
                   Create Agent
-                </button>
+                </Button>
               </div>
             </form>
           </div>
@@ -430,31 +469,92 @@ export default function Agents() {
               </div>
 
               <div className="flex gap-3 pt-4 border-t border-gray-200">
-                <button
+                <Button
                   type="button"
-                  onClick={() => deleteAgent(selectedAgent.id)}
-                  className="px-4 py-2 border border-red-300 rounded-lg text-red-700 hover:bg-red-50 transition-colors"
+                  variant="outline"
+                  onClick={() => handleDelete(selectedAgent)}
+                  leftIcon={<Trash2 className="w-4 h-4" />}
+                  className="border-red-300 text-red-700 hover:bg-red-50 hover:border-red-400"
                 >
-                  <Trash2 className="w-4 h-4 inline mr-2" />
                   Delete
-                </button>
+                </Button>
                 <div className="flex-1 flex gap-3">
-                  <button
+                  <Button
                     type="button"
+                    variant="outline"
                     onClick={closeModals}
-                    className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
+                    className="flex-1"
                   >
                     Cancel
-                  </button>
-                  <button
+                  </Button>
+                  <Button
                     type="submit"
-                    className="flex-1 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
+                    variant="primary"
+                    className="flex-1"
                   >
                     Save Changes
-                  </button>
+                  </Button>
                 </div>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {showDeleteModal && selectedAgent && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={() => setShowDeleteModal(false)}>
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
+            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+              <h3 className="text-lg font-semibold text-gray-900">Delete Agent</h3>
+              <button
+                onClick={() => {
+                  setShowDeleteModal(false)
+                  setSelectedAgent(null)
+                }}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="p-6">
+              <div className="flex items-start gap-4 mb-6">
+                <div className="flex-shrink-0">
+                  <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center">
+                    <Trash2 className="h-6 w-6 text-red-600" />
+                  </div>
+                </div>
+                <div className="flex-1">
+                  <p className="text-sm text-gray-700 mb-2">
+                    Are you sure you want to delete <span className="font-semibold text-gray-900">"{selectedAgent.name}"</span>?
+                  </p>
+                  <p className="text-xs text-gray-500">
+                    This action cannot be undone. The agent will be permanently deleted.
+                  </p>
+                </div>
+              </div>
+              <div className="flex gap-3">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setShowDeleteModal(false)
+                    setSelectedAgent(null)
+                  }}
+                  className="flex-1"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="danger"
+                  onClick={confirmDelete}
+                  isLoading={deleting}
+                  leftIcon={!deleting ? <Trash2 className="h-4 w-4" /> : undefined}
+                  className="flex-1"
+                >
+                  Delete
+                </Button>
+              </div>
+            </div>
           </div>
         </div>
       )}
