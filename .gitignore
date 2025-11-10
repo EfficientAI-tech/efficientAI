@@ -24,6 +24,7 @@ MANIFEST
 # Virtual environments
 venv/
 env/
+newenv/
 ENV/
 .venv
 config.yml

@@ -16,7 +16,7 @@ from app.models.schemas import (
 router = APIRouter(prefix="/personas", tags=["personas"])
 
 
-@router.post("", response_model=PersonaResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=PersonaResponse, status_code=status.HTTP_201_CREATED, operation_id="createPersona")
 async def create_persona(
     persona: PersonaCreate,
     organization_id: UUID = Depends(get_organization_id),
@@ -37,7 +37,7 @@ async def create_persona(
     return db_persona
 
 
-@router.get("", response_model=List[PersonaResponse])
+@router.get("", response_model=List[PersonaResponse], operation_id="listPersonas")
 async def list_personas(
     skip: int = 0,
     limit: int = 100,
@@ -67,7 +67,7 @@ async def get_persona(
     return persona
 
 
-@router.put("/{persona_id}", response_model=PersonaResponse)
+@router.put("/{persona_id}", response_model=PersonaResponse, operation_id="updatePersona")
 async def update_persona(
     persona_id: UUID,
     persona_update: PersonaUpdate,
@@ -91,7 +91,7 @@ async def update_persona(
     return db_persona
 
 
-@router.delete("/{persona_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{persona_id}", status_code=status.HTTP_204_NO_CONTENT, operation_id="deletePersona")
 async def delete_persona(
     persona_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
@@ -110,7 +110,7 @@ async def delete_persona(
     return None
 
 
-@router.post("/{persona_id}/clone", response_model=PersonaResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/{persona_id}/clone", response_model=PersonaResponse, status_code=status.HTTP_201_CREATED, operation_id="clonePersona")
 async def clone_persona(
     persona_id: UUID,
     clone_request: PersonaCloneRequest,
@@ -144,7 +144,7 @@ async def clone_persona(
 # SEED DATA (Helper for demo)
 # ============================================
 
-@router.post("/seed-data", status_code=status.HTTP_201_CREATED)
+@router.post("/seed-data", status_code=status.HTTP_201_CREATED, operation_id="seedDemoData")
 async def seed_demo_data(
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db)

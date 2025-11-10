@@ -50,7 +50,7 @@ class PresignedUrlResponse(BaseModel):
     expires_in: int
 
 
-@router.get("/audio-files", response_model=S3ListFilesResponse)
+@router.get("/audio-files", response_model=S3ListFilesResponse, operation_id="listManualEvaluationAudioFiles")
 async def list_audio_files(
     prefix: Optional[str] = None,
     max_keys: int = 1000,
@@ -114,7 +114,7 @@ async def list_audio_files(
         )
 
 
-@router.get("/audio-files/{file_key:path}/presigned-url", response_model=PresignedUrlResponse)
+@router.get("/audio-files/{file_key:path}/presigned-url", response_model=PresignedUrlResponse, operation_id="getAudioPresignedUrl")
 async def get_presigned_url(
     file_key: str,
     expiration: int = 3600,
@@ -170,7 +170,7 @@ async def get_presigned_url(
         )
 
 
-@router.post("/transcribe", response_model=TranscriptionResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/transcribe", response_model=TranscriptionResponse, status_code=status.HTTP_201_CREATED, operation_id="transcribeAudio")
 async def transcribe_audio(
     request: TranscriptionRequest,
     api_key: str = Depends(get_api_key),
@@ -304,7 +304,7 @@ async def transcribe_audio(
         )
 
 
-@router.get("/transcriptions", response_model=List[TranscriptionResponse])
+@router.get("/transcriptions", response_model=List[TranscriptionResponse], operation_id="listManualTranscriptions")
 async def list_transcriptions(
     skip: int = 0,
     limit: int = 100,
@@ -353,7 +353,7 @@ async def list_transcriptions(
         )
 
 
-@router.get("/transcriptions/{transcription_id}", response_model=TranscriptionResponse)
+@router.get("/transcriptions/{transcription_id}", response_model=TranscriptionResponse, operation_id="getManualTranscription")
 async def get_transcription(
     transcription_id: str,
     api_key: str = Depends(get_api_key),
@@ -400,7 +400,7 @@ async def get_transcription(
     )
 
 
-@router.delete("/transcriptions/{transcription_id}", response_model=MessageResponse)
+@router.delete("/transcriptions/{transcription_id}", response_model=MessageResponse, operation_id="deleteManualTranscription")
 async def delete_transcription(
     transcription_id: str,
     api_key: str = Depends(get_api_key),

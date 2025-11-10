@@ -16,7 +16,7 @@ from app.models.schemas import (
 router = APIRouter(prefix="/agents", tags=["agents"])
 
 
-@router.post("", response_model=AgentResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=AgentResponse, status_code=status.HTTP_201_CREATED, operation_id="createAgent")
 async def create_agent(
     agent: AgentCreate,
     organization_id: UUID = Depends(get_organization_id),
@@ -37,7 +37,7 @@ async def create_agent(
     return db_agent
 
 
-@router.get("", response_model=List[AgentResponse])
+@router.get("", response_model=List[AgentResponse], operation_id="listAgents")
 async def list_agents(
     skip: int = 0,
     limit: int = 100,
@@ -67,7 +67,7 @@ async def get_agent(
     return agent
 
 
-@router.put("/{agent_id}", response_model=AgentResponse)
+@router.put("/{agent_id}", response_model=AgentResponse, operation_id="updateAgent")
 async def update_agent(
     agent_id: UUID,
     agent_update: AgentUpdate,
@@ -91,7 +91,7 @@ async def update_agent(
     return db_agent
 
 
-@router.delete("/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{agent_id}", status_code=status.HTTP_204_NO_CONTENT, operation_id="deleteAgent")
 async def delete_agent(
     agent_id: UUID,
     organization_id: UUID = Depends(get_organization_id),

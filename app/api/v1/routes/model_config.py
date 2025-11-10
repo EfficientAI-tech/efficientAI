@@ -89,7 +89,7 @@ async def get_model_options(
     return model_config_service.get_model_options_by_provider(provider_enum)
 
 
-@router.get("/providers/{provider}/types/{model_type}/models")
+@router.get("/providers/{provider}/types/{model_type}/models", operation_id="getModelsByType")
 async def get_models_by_type(
     provider: str,
     model_type: str,

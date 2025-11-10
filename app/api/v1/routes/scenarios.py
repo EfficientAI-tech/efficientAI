@@ -16,7 +16,7 @@ from app.models.schemas import (
 router = APIRouter(prefix="/scenarios", tags=["scenarios"])
 
 
-@router.post("", response_model=ScenarioResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=ScenarioResponse, status_code=status.HTTP_201_CREATED, operation_id="createScenario")
 async def create_scenario(
     scenario: ScenarioCreate,
     organization_id: UUID = Depends(get_organization_id),
@@ -35,7 +35,7 @@ async def create_scenario(
     return db_scenario
 
 
-@router.get("", response_model=List[ScenarioResponse])
+@router.get("", response_model=List[ScenarioResponse], operation_id="listScenarios")
 async def list_scenarios(
     skip: int = 0,
     limit: int = 100,
@@ -89,7 +89,7 @@ async def update_scenario(
     return db_scenario
 
 
-@router.delete("/{scenario_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{scenario_id}", status_code=status.HTTP_204_NO_CONTENT, operation_id="deleteScenario")
 async def delete_scenario(
     scenario_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
