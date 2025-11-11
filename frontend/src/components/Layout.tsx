@@ -181,8 +181,15 @@ export default function Layout() {
                   />
                   <div className="absolute left-0 mt-2 w-64 bg-white rounded-lg shadow-lg border border-gray-200 z-20 max-h-96 overflow-y-auto">
                     {agents.length === 0 ? (
-                      <div className="px-4 py-3 text-sm text-gray-500 text-center">
-                        No agents available
+                      <div className="px-4 py-3 text-center">
+                        <p className="text-sm text-gray-500 mb-3">No agents available</p>
+                        <Link
+                          to="/agents"
+                          onClick={() => setShowAgentDropdown(false)}
+                          className="inline-block text-sm text-primary-600 hover:text-primary-700 font-medium"
+                        >
+                          Create your first agent →
+                        </Link>
                       </div>
                     ) : (
                       <>

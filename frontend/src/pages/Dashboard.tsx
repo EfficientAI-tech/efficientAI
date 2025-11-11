@@ -9,6 +9,11 @@ import {
   Phone,
   Database,
   Zap,
+  Brain,
+  Mic,
+  Cloud,
+  Rocket,
+  ArrowRight,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { EvaluationStatus, Evaluation } from '../types/api'
@@ -81,8 +86,55 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
+      {/* Quick Start Guide */}
+      <div className="bg-gradient-to-br from-primary-50 to-primary-100 rounded-lg p-6 -mt-6 border border-primary-200">
+        <div className="flex items-center gap-3 mb-6">
+          <div className="p-2 bg-primary-500 rounded-lg">
+            <Rocket className="h-6 w-6 text-white" />
+          </div>
+          <div>
+            <h2 className="text-2xl font-bold text-gray-900">
+              Start Testing in 5 Minutes
+            </h2>
+            <p className="text-sm text-gray-600 mt-1">
+              Follow these quick steps to get started with voice AI testing
+            </p>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <QuickStartCard
+            icon={Brain}
+            title="Configure your AI Provider"
+            description="Set up your AI provider credentials (OpenAI, Anthropic, etc.) to enable voice AI capabilities."
+            href="/ai-providers"
+            step={1}
+          />
+          <QuickStartCard
+            icon={Mic}
+            title="Create your Voice AI Bundle"
+            description="Configure voice settings including STT, LLM, and TTS models for your voice AI agent."
+            href="/voicebundles"
+            step={2}
+          />
+          <QuickStartCard
+            icon={Cloud}
+            title="Integrate with Data Sources (S3)"
+            description="Connect your S3 bucket to upload and manage audio files for evaluation and transcription."
+            href="/data-sources"
+            step={3}
+          />
+          <QuickStartCard
+            icon={Users}
+            title="Create Test Agent, Scenario & Persona"
+            description="Set up a test agent, define conversation scenarios, and create personas to simulate different caller types."
+            href="/agents"
+            step={4}
+          />
+        </div>
+      </div>
+
       {/* Voice AI Models Carousel */}
-      <div className="bg-gradient-to-br from-gray-50 to-gray-100 rounded-lg p-6 -mt-6">
+      <div className="bg-gradient-to-br from-gray-50 to-gray-100 rounded-lg p-6">
         <div className="mb-4">
           <h2 className="text-xl font-semibold text-gray-900 mb-1">
             Latest Voice AI Models
@@ -327,6 +379,50 @@ function ResourceCard({
   if (href) {
     return <Link to={href}>{content}</Link>
   }
+
+  return content
+}
+
+function QuickStartCard({
+  icon: Icon,
+  title,
+  description,
+  href,
+  step,
+}: {
+  icon: React.ComponentType<{ className?: string }>
+  title: string
+  description: string
+  href: string
+  step: number
+}) {
+  const content = (
+    <div className="bg-white rounded-lg p-5 shadow-sm hover:shadow-md transition-all duration-200 border border-gray-200 hover:border-primary-300 h-full flex flex-col">
+      <div className="flex items-start gap-3 mb-3">
+        <div className="flex-shrink-0">
+          <div className="w-10 h-10 rounded-lg bg-primary-100 flex items-center justify-center">
+            <Icon className="h-5 w-5 text-primary-600" />
+          </div>
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-xs font-semibold text-primary-600 bg-primary-50 px-2 py-0.5 rounded">
+              Step {step}
+            </span>
+          </div>
+          <h3 className="text-base font-semibold text-gray-900 mb-2">{title}</h3>
+        </div>
+      </div>
+      <p className="text-sm text-gray-600 mb-4 flex-1">{description}</p>
+      <Link
+        to={href}
+        className="inline-flex items-center gap-2 text-sm font-medium text-primary-600 hover:text-primary-700 group"
+      >
+        Get started
+        <ArrowRight className="h-4 w-4 group-hover:translate-x-1 transition-transform" />
+      </Link>
+    </div>
+  )
 
   return content
 }
