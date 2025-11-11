@@ -1,3 +1,5 @@
+![VoiceAI Evaluation Platform](voiceAIeval.jpeg)
+
 # EfficientAI voice AI Evaluation Platform
 
 A voice AI evaluation platform built with FastAPI and React. Supports audio file uploads, evaluation processing with multiple metrics, batch processing, and a modern web interface.
