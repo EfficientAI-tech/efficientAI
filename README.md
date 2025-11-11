@@ -1,8 +1,43 @@
-# EfficientAI voice AI Evaluation Platform
+<div align="center">
 
-A voice AI evaluation platform built with FastAPI and React. Supports audio file uploads, evaluation processing with multiple metrics, batch processing, and a modern web interface.
+# 🎙️ Efficient<span style="color: #EAB308;">AI</span>
 
-## Quick Start
+[![GitHub Stars](https://img.shields.io/github/stars/EfficientAI-tech/efficientAI?style=social&label=Star)](https://github.com/EfficientAI-tech/efficientAI)
+[![GitHub Forks](https://img.shields.io/github/forks/EfficientAI-tech/efficientAI?style=social&label=Fork)](https://github.com/EfficientAI-tech/efficientAI)
+
+**Test your Voice AI Agents before Production**
+
+<span style="color: #EAB308;">**Open-source**</span> evaluation platform for conversational AI.
+
+Test quality, measure performance, & ship with confidence.
+
+[📚 Documentation](https://docs.efficientai.cloud) • [📅 Book a Demo](https://calendly.com/aadhar-efficientai/30min) • [💻 GitHub](https://github.com/EfficientAI-tech/efficientAI)
+
+[![GitHub Stars](https://img.shields.io/github/stars/EfficientAI-tech/efficientAI?style=flat-square&logo=github)](https://github.com/EfficientAI-tech/efficientAI)
+[![License](https://img.shields.io/github/license/EfficientAI-tech/efficientAI?style=flat-square)](https://github.com/EfficientAI-tech/efficientAI)
+[![LinkedIn](https://img.shields.io/static/v1?label=Connect%20on&message=LinkedIn&color=0077B5&logo=LinkedIn&style=flat-square)](https://www.linkedin.com/company/efficientaicloud)
+[![X (Twitter)](https://img.shields.io/static/v1?label=Follow%20on&message=X%20(Twitter)&color=000000&logo=X&style=flat-square)](https://x.com/AiEfficient)
+[![Book a Demo](https://img.shields.io/static/v1?label=Schedule&message=Demo&color=006BFF&logo=Calendly&style=flat-square)](https://calendly.com/aadhar-efficientai/30min)
+
+</div>
+
+---
+
+## ✨ What EfficientAI Does
+
+- ✅ **Voice AI Evaluation**: Test your voice AI agents with comprehensive evaluation metrics
+- ✅ **Persona Creation**: Design diverse voice personas with unique characteristics and behaviors
+- ✅ **Scenario Building**: Create comprehensive conversation flows and dialogue trees
+- ✅ **Automated Testing**: Execute tests automatically across all your voice agents
+- ✅ **Real-time Insights**: Get real-time insights on latency, accuracy, and quality metrics
+- ✅ **Batch Processing**: Process multiple audio files and evaluations efficiently
+- ✅ **Modern Web Interface**: Beautiful React-based UI for managing evaluations
+
+**Quick Navigation:** [Quick Start](#-quick-start) • [CLI Commands](#-cli-commands) • [Development](#-development)
+
+---
+
+## 🚀 Quick Start
 
 There are two ways to run the application:
 
@@ -77,7 +112,7 @@ There are two ways to run the application:
    - Frontend: http://localhost:8000/
    - API Docs: http://localhost:8000/docs
 
-## Prerequisites
+### Prerequisites
 
 **For Docker Compose:**
 - Docker and Docker Compose installed
@@ -88,7 +123,9 @@ There are two ways to run the application:
 - PostgreSQL running (locally or remote)
 - Redis running (locally or remote)
 
-## CLI Commands
+---
+
+## 💻 CLI Commands
 
 ### Start Application
 ```bash
@@ -134,7 +171,9 @@ eai migrate --verbose
 
 **Note:** Migrations run automatically on application startup. You only need to run them manually if you want to apply migrations before starting the server.
 
-## Configuration
+---
+
+## ⚙️ Configuration
 
 ### YAML Configuration (for CLI)
 
@@ -173,7 +212,9 @@ REDIS_URL=redis://redis:6379/0
 SECRET_KEY=your-secret-key-here
 ```
 
-## Database Migrations
+---
+
+## 🗄️ Database Migrations
 
 The application includes an automatic migration system that runs database schema changes on startup.
 
@@ -231,7 +272,9 @@ eai migrate --verbose
 
 See `migrations/README.md` for detailed documentation.
 
-## Development
+---
+
+## 🛠️ Development
 
 ### Running Locally
 
@@ -269,6 +312,19 @@ npm run dev
 ```
 This runs Vite dev server on `http://localhost:3000` with instant hot module replacement. Note: You'll need to run the backend separately on port 8000.
 
-## License
+---
+
+## 📞 Support
+
+- 📧 **Email**: [tejas@efficientai.cloud](mailto:tejas@efficientai.cloud)
+- 📅 **Book a Demo**: [Schedule a call](https://calendly.com/aadhar-efficientai/30min)
+- 💬 **LinkedIn**: [Connect with us](https://www.linkedin.com/company/efficientaicloud)
+- 🐦 **X (Twitter)**: [Follow us](https://x.com/AiEfficient)
+- 📚 **Documentation**: [docs.efficientai.cloud](https://docs.efficientai.cloud)
+- 💻 **GitHub**: [View on GitHub](https://github.com/EfficientAI-tech/efficientAI)
+
+---
+
+## 📄 License
 
 MIT License - see LICENSE file for details
