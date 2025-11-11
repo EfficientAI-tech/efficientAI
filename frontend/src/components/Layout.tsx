@@ -1,6 +1,6 @@
 import { Outlet, Link, useLocation } from 'react-router-dom'
 import { useAuthStore } from '../store/authStore'
-import { useAgentStore } from '../store/agentStore'
+import { useAgentStore, type Agent } from '../store/agentStore'
 import { useQuery } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
 import {
@@ -107,7 +107,7 @@ export default function Layout() {
 
   // Clear selection if selected agent no longer exists
   useEffect(() => {
-    if (selectedAgent && !agents.find(a => a.id === selectedAgent.id)) {
+    if (selectedAgent && !agents.find((a: Agent) => a.id === selectedAgent.id)) {
       if (agents.length > 0) {
         setSelectedAgent(agents[0])
       } else {
@@ -186,7 +186,7 @@ export default function Layout() {
                       </div>
                     ) : (
                       <>
-                        {agents.map((agent) => (
+                        {agents.map((agent: Agent) => (
                           <button
                             key={agent.id}
                             type="button"

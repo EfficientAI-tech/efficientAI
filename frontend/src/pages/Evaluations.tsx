@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { apiClient } from '../lib/api'
-import { EvaluationStatus } from '../types/api'
+import { EvaluationStatus, Evaluation, MessageResponse } from '../types/api'
 import {
   Plus,
   Loader,
@@ -37,15 +37,15 @@ export default function Evaluations() {
     queryFn: () => apiClient.listEvaluations(0, 100, statusFilter || undefined),
   })
 
-  const deleteMutation = useMutation({
-    mutationFn: apiClient.deleteEvaluation,
+  const deleteMutation = useMutation<MessageResponse, Error, string>({
+    mutationFn: (evaluationId: string) => apiClient.deleteEvaluation(evaluationId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['evaluations'] })
     },
   })
 
-  const cancelMutation = useMutation({
-    mutationFn: apiClient.cancelEvaluation,
+  const cancelMutation = useMutation<MessageResponse, Error, string>({
+    mutationFn: (evaluationId: string) => apiClient.cancelEvaluation(evaluationId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['evaluations'] })
     },
@@ -187,7 +187,7 @@ export default function Evaluations() {
       ) : (
         <div className="bg-white shadow overflow-hidden sm:rounded-md">
           <ul className="divide-y divide-gray-200">
-            {evaluations.map((evaluation) => (
+            {evaluations.map((evaluation: Evaluation) => (
               <li key={evaluation.id}>
                 <Link
                   to={`/evaluations/${evaluation.id}`}
@@ -214,7 +214,7 @@ export default function Evaluations() {
                           </div>
                           {evaluation.metrics_requested && evaluation.metrics_requested.length > 0 && (
                             <div className="mt-2 flex flex-wrap gap-2">
-                              {evaluation.metrics_requested.map((metric) => (
+                              {evaluation.metrics_requested.map((metric: string) => (
                                 <span
                                   key={metric}
                                   className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800"

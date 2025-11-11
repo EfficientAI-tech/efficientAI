@@ -113,7 +113,7 @@ export default function Integrations() {
   ]
 
   // Get configured platforms
-  const configuredPlatforms = new Set(integrations.map(i => i.platform))
+  const configuredPlatforms = new Set(integrations.map((i: Integration) => i.platform))
   const availablePlatforms = platforms.filter(p => !configuredPlatforms.has(p.id))
 
   const getPlatformInfo = (platformId: IntegrationPlatform) => {
@@ -149,7 +149,7 @@ export default function Integrations() {
             <p className="text-sm text-gray-600 mt-1">These integrations are ready to use</p>
           </div>
           <div className="divide-y divide-gray-200">
-            {integrations.map((integration) => {
+            {integrations.map((integration: Integration) => {
               const platformInfo = getPlatformInfo(integration.platform)
               return (
                 <div

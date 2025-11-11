@@ -186,7 +186,7 @@ export default function AIProviders() {
   }
 
   // Get configured providers
-  const configuredProviders = new Set(aiproviders.map(p => p.provider))
+  const configuredProviders = new Set(aiproviders.map((p: AIProvider) => p.provider))
   const availableProviders = Object.values(ModelProvider).filter(p => !configuredProviders.has(p))
 
   if (isLoading) {
@@ -224,7 +224,7 @@ export default function AIProviders() {
             <p className="text-sm text-gray-600 mt-1">These providers are available for use in VoiceBundles</p>
           </div>
           <div className="divide-y divide-gray-200">
-            {aiproviders.map((provider) => (
+            {aiproviders.map((provider: AIProvider) => (
               <div
                 key={provider.id}
                 className="px-6 py-4 hover:bg-gray-50 transition-colors"

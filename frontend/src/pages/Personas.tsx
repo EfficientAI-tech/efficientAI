@@ -129,7 +129,7 @@ export default function Personas() {
     // Track which default persona IDs we've seen to avoid duplicates
     const seenDefaultIds = new Set<string>()
     
-    personas.forEach((persona) => {
+    personas.forEach((persona: Persona) => {
       // Check if it's a default persona:
       // 1. Name exactly matches a default persona name
       // 2. created_by is null/empty (seeded personas)

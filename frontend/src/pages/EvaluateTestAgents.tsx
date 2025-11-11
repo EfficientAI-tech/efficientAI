@@ -44,14 +44,19 @@ export default function EvaluateTestAgents() {
   })
 
   // Create conversation mutation
-  const createConversationMutation = useMutation({
+  const createConversationMutation = useMutation<TestAgentConversation, Error, {
+    agent_id: string
+    persona_id: string
+    scenario_id: string
+    voice_bundle_id: string
+  }>({
     mutationFn: (data: {
       agent_id: string
       persona_id: string
       scenario_id: string
       voice_bundle_id: string
     }) => apiClient.createTestAgentConversation(data),
-    onSuccess: (data) => {
+    onSuccess: (data: TestAgentConversation) => {
       setConversation(data)
       setError(null)
     },
@@ -61,9 +66,9 @@ export default function EvaluateTestAgents() {
   })
 
   // Start conversation mutation
-  const startConversationMutation = useMutation({
+  const startConversationMutation = useMutation<TestAgentConversation, Error, string>({
     mutationFn: (conversationId: string) => apiClient.startTestAgentConversation(conversationId),
-    onSuccess: (data) => {
+    onSuccess: (data: TestAgentConversation) => {
       setConversation(data)
       conversationRef.current = data
       conversationStartTimeRef.current = Date.now()
@@ -91,7 +96,7 @@ export default function EvaluateTestAgents() {
       }
       
       // Refresh conversation to get updated transcription
-      const updated = await apiClient.getTestAgentConversation(variables.conversationId)
+      const updated: TestAgentConversation = await apiClient.getTestAgentConversation(variables.conversationId)
       setConversation(updated)
       conversationRef.current = updated
       isProcessingRef.current = false
@@ -105,10 +110,10 @@ export default function EvaluateTestAgents() {
   })
 
   // End conversation mutation
-  const endConversationMutation = useMutation({
+  const endConversationMutation = useMutation<TestAgentConversation, Error, { conversationId: string; finalAudioKey?: string }>({
     mutationFn: ({ conversationId, finalAudioKey }: { conversationId: string; finalAudioKey?: string }) =>
-      apiClient.endTestAgentConversation(conversationId, finalAudioKey),
-    onSuccess: (data) => {
+      apiClient.endTestAgentConversation(conversationId, finalAudioKey) as Promise<TestAgentConversation>,
+    onSuccess: (data: TestAgentConversation) => {
       setConversation(data)
       stopRecording()
     },
@@ -235,7 +240,7 @@ export default function EvaluateTestAgents() {
     })
 
     // Start conversation
-    await startConversationMutation.mutateAsync(newConversation.id)
+    await startConversationMutation.mutateAsync((newConversation as TestAgentConversation).id)
   }
 
   const handleStop = async () => {

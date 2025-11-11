@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { apiClient } from '../lib/api'
-import { EvaluationType } from '../types/api'
+import { EvaluationType, AudioFile, Evaluation } from '../types/api'
 import { X, Loader } from 'lucide-react'
 
 interface CreateEvaluationModalProps {
@@ -22,15 +22,15 @@ export default function CreateEvaluationModal({
   const [referenceText, setReferenceText] = useState('')
   const [metrics, setMetrics] = useState<string[]>(['wer', 'latency'])
 
-  const { data: audioFiles } = useQuery({
+  const { data: audioFiles } = useQuery<AudioFile[]>({
     queryKey: ['audio', 'list'],
     queryFn: () => apiClient.listAudio(),
     enabled: isOpen,
   })
 
-  const createMutation = useMutation({
-    mutationFn: apiClient.createEvaluation,
-    onSuccess: (data) => {
+  const createMutation = useMutation<Evaluation, Error, any>({
+    mutationFn: (data: any) => apiClient.createEvaluation(data),
+    onSuccess: (data: Evaluation) => {
       queryClient.invalidateQueries({ queryKey: ['evaluations'] })
       onClose()
       navigate(`/evaluations/${data.id}`)
@@ -92,7 +92,7 @@ export default function CreateEvaluationModal({
                 className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
               >
                 <option value="">Select an audio file</option>
-                {audioFiles?.map((file) => (
+                {audioFiles?.map((file: AudioFile) => (
                   <option key={file.id} value={file.id}>
                     {file.filename} ({(file.file_size / 1024 / 1024).toFixed(2)} MB)
                   </option>

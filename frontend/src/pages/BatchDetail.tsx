@@ -1,6 +1,7 @@
 import { useParams, Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
+import { EvaluationResult } from '../types/api'
 import { ArrowLeft, Loader, Download, RefreshCw } from 'lucide-react'
 import { format } from 'date-fns'
 
@@ -202,7 +203,7 @@ export default function BatchDetail() {
                     </h2>
                   </div>
                   <div className="divide-y divide-gray-200">
-                    {results.individual_results.map((result, index) => (
+                    {results.individual_results.map((result: EvaluationResult, index: number) => (
                       <div key={index} className="px-4 py-4 sm:p-6">
                         <div className="flex items-center justify-between mb-3">
                           <Link

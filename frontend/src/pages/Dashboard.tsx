@@ -11,7 +11,7 @@ import {
   Zap,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
-import { EvaluationStatus } from '../types/api'
+import { EvaluationStatus, Evaluation } from '../types/api'
 import { format } from 'date-fns'
 import VoiceAIModelsCarousel from '../components/VoiceAIModelsCarousel'
 
@@ -60,10 +60,10 @@ export default function Dashboard() {
   const stats = {
     totalEvaluations: evaluations?.length || 0,
     completedEvaluations: evaluations?.filter(
-      (e) => e.status === EvaluationStatus.COMPLETED
+      (e: Evaluation) => e.status === EvaluationStatus.COMPLETED
     ).length || 0,
     pendingEvaluations: evaluations?.filter(
-      (e) => e.status === EvaluationStatus.PENDING
+      (e: Evaluation) => e.status === EvaluationStatus.PENDING
     ).length || 0,
   }
 
@@ -207,7 +207,7 @@ export default function Dashboard() {
           ) : (
             <div className="flow-root">
               <ul className="-my-5 divide-y divide-gray-200">
-                {recentEvaluations.map((evaluation) => (
+                {recentEvaluations.map((evaluation: Evaluation) => (
                   <li key={evaluation.id} className="py-5">
                     <Link
                       to={`/evaluations/${evaluation.id}`}

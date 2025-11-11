@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { apiClient } from '../lib/api'
-import { EvaluationType } from '../types/api'
+import { EvaluationType, AudioFile, BatchJob } from '../types/api'
 import { X, Loader } from 'lucide-react'
 
 interface CreateBatchModalProps {
@@ -21,15 +21,15 @@ export default function CreateBatchModal({
   const [modelName, setModelName] = useState('base')
   const [metrics, setMetrics] = useState<string[]>(['wer', 'latency'])
 
-  const { data: audioFiles } = useQuery({
+  const { data: audioFiles } = useQuery<AudioFile[]>({
     queryKey: ['audio', 'list'],
     queryFn: () => apiClient.listAudio(),
     enabled: isOpen,
   })
 
-  const createMutation = useMutation({
-    mutationFn: apiClient.createBatch,
-    onSuccess: (data) => {
+  const createMutation = useMutation<BatchJob, Error, any>({
+    mutationFn: (data: any) => apiClient.createBatch(data),
+    onSuccess: (data: BatchJob) => {
       queryClient.invalidateQueries({ queryKey: ['batches'] })
       onClose()
       navigate(`/batch/${data.id}`)
@@ -100,7 +100,7 @@ export default function CreateBatchModal({
                   </div>
                 ) : (
                   <ul className="divide-y divide-gray-200">
-                    {audioFiles.map((file) => (
+                    {audioFiles?.map((file: AudioFile) => (
                       <li key={file.id} className="px-4 py-3 hover:bg-gray-50">
                         <label className="flex items-center cursor-pointer">
                           <input

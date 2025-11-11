@@ -117,7 +117,7 @@ export default function EvaluationDetail() {
             <div className="sm:col-span-2">
               <dt className="text-sm font-medium text-gray-500">Requested Metrics</dt>
               <dd className="mt-1 flex flex-wrap gap-2">
-                {evaluation.metrics_requested.map((metric) => (
+                {evaluation.metrics_requested.map((metric: string) => (
                   <span
                     key={metric}
                     className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-primary-100 text-primary-800"
