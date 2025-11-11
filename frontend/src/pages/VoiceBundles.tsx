@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
-import { VoiceBundle, VoiceBundleCreate, ModelProvider } from '../types/api'
+import { VoiceBundle, VoiceBundleCreate, ModelProvider, AIProvider } from '../types/api'
 import { Mic, Plus, Edit, Trash2, X, Loader, Volume2, Brain, MessageSquare, AlertCircle, ChevronDown } from 'lucide-react'
 import Button from '../components/Button'
 import { useToast } from '../hooks/useToast'
@@ -78,8 +78,8 @@ export default function VoiceBundles() {
 
   // Get configured providers (only show these in dropdowns)
   const configuredProviders = aiproviders
-    .filter(p => p.is_active)
-    .map(p => p.provider as ModelProvider)
+    .filter((p: AIProvider) => p.is_active)
+    .map((p: AIProvider) => p.provider as ModelProvider)
 
   // Helper function to get model options for a provider
   const getModelOptions = (provider: ModelProvider): { stt: string[]; llm: string[]; tts: string[] } => {
@@ -286,7 +286,7 @@ export default function VoiceBundles() {
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {voicebundles.map((bundle) => (
+          {voicebundles.map((bundle: VoiceBundle) => (
             <div
               key={bundle.id}
               className="bg-white rounded-lg shadow-md p-6 hover:shadow-lg transition-shadow border border-gray-100"
