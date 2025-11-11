@@ -1,10 +1,12 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Phone, Edit2, Trash2, X } from 'lucide-react'
+import { Plus, Phone, Edit2, Trash2, X, AlertCircle } from 'lucide-react'
 import { apiClient } from '../lib/api'
 import { format } from 'date-fns'
 import Button from '../components/Button'
 import { useAgentStore } from '../store/agentStore'
+import { useToast } from '../hooks/useToast'
+import { TestAgentConversation } from '../types/api'
 
 interface Agent {
   id: string
@@ -20,10 +22,13 @@ interface Agent {
 export default function Agents() {
   const queryClient = useQueryClient()
   const { selectedAgent: globalSelectedAgent, setSelectedAgent: setGlobalSelectedAgent } = useAgentStore()
+  const { showToast, ToastContainer } = useToast()
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [showEditModal, setShowEditModal] = useState(false)
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null)
+  const [blockingConversations, setBlockingConversations] = useState<TestAgentConversation[]>([])
+  const [showConversationsList, setShowConversationsList] = useState(false)
   const [formData, setFormData] = useState({
     name: '',
     phone_number: '',
@@ -81,10 +86,11 @@ export default function Agents() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       closeModals()
+      showToast('Agent created successfully!', 'success')
     },
     onError: (error: any) => {
       console.error('Error creating agent:', error)
-      alert('Failed to create agent. Please try again.')
+      showToast(`Failed to create agent: ${error.response?.data?.detail || error.message}`, 'error')
     },
   })
 
@@ -100,10 +106,11 @@ export default function Agents() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       closeModals()
+      showToast('Agent updated successfully!', 'success')
     },
     onError: (error: any) => {
       console.error('Error updating agent:', error)
-      alert('Failed to update agent. Please try again.')
+      showToast(`Failed to update agent: ${error.response?.data?.detail || error.message}`, 'error')
     },
   })
 
@@ -120,10 +127,54 @@ export default function Agents() {
       }
       setShowDeleteModal(false)
       setSelectedAgent(null)
+      setBlockingConversations([])
+      setShowConversationsList(false)
+      showToast('Agent deleted successfully!', 'success')
+    },
+    onError: async (error: any) => {
+      console.error('Error deleting agent:', error)
+      const errorMessage = error.response?.data?.detail || error.message || 'Failed to delete agent. Please try again.'
+      
+      // If error mentions test conversations, fetch them
+      if (errorMessage.includes('test conversation') && selectedAgent) {
+        try {
+          const conversations = await apiClient.listTestAgentConversations()
+          const blocking = conversations.filter((conv: TestAgentConversation) => conv.agent_id === selectedAgent.id)
+          setBlockingConversations(blocking)
+          setShowConversationsList(true)
+        } catch (err) {
+          console.error('Error fetching conversations:', err)
+        }
+      }
+      
+      showToast(errorMessage, 'error')
+    },
+  })
+
+  // Delete conversation mutation
+  const deleteConversationMutation = useMutation({
+    mutationFn: (conversationId: string) => apiClient.deleteTestAgentConversation(conversationId),
+    onSuccess: async () => {
+      queryClient.invalidateQueries({ queryKey: ['test-agent-conversations'] })
+      // Refresh the blocking conversations list
+      if (selectedAgent) {
+        try {
+          const conversations = await apiClient.listTestAgentConversations()
+          const blocking = conversations.filter((conv: TestAgentConversation) => conv.agent_id === selectedAgent.id)
+          setBlockingConversations(blocking)
+          if (blocking.length === 0) {
+            setShowConversationsList(false)
+            showToast('All blocking conversations deleted. You can now delete the agent.', 'success')
+          } else {
+            showToast('Conversation deleted successfully!', 'success')
+          }
+        } catch (err) {
+          showToast('Conversation deleted successfully!', 'success')
+        }
+      }
     },
     onError: (error: any) => {
-      console.error('Error deleting agent:', error)
-      alert('Failed to delete agent. Please try again.')
+      showToast(`Failed to delete conversation: ${error.response?.data?.detail || error.message}`, 'error')
     },
   })
 
@@ -138,12 +189,25 @@ export default function Agents() {
     updateMutation.mutate({ id: selectedAgent.id, data: formData })
   }
 
-  const handleDelete = (agent: Agent, event?: React.MouseEvent) => {
+  const handleDelete = async (agent: Agent, event?: React.MouseEvent) => {
     if (event) {
       event.stopPropagation()
     }
     setSelectedAgent(agent)
     setShowDeleteModal(true)
+    setShowConversationsList(false)
+    setBlockingConversations([])
+    
+    // Pre-fetch conversations to check if there are any
+    try {
+      const conversations = await apiClient.listTestAgentConversations()
+      const blocking = conversations.filter((conv: TestAgentConversation) => conv.agent_id === agent.id)
+      if (blocking.length > 0) {
+        setBlockingConversations(blocking)
+      }
+    } catch (err) {
+      console.error('Error fetching conversations:', err)
+    }
   }
 
   const confirmDelete = async () => {
@@ -509,14 +573,21 @@ export default function Agents() {
 
       {/* Delete Confirmation Modal */}
       {showDeleteModal && selectedAgent && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={() => setShowDeleteModal(false)}>
-          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={() => {
+          setShowDeleteModal(false)
+          setSelectedAgent(null)
+          setBlockingConversations([])
+          setShowConversationsList(false)
+        }}>
+          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
               <h3 className="text-lg font-semibold text-gray-900">Delete Agent</h3>
               <button
                 onClick={() => {
                   setShowDeleteModal(false)
                   setSelectedAgent(null)
+                  setBlockingConversations([])
+                  setShowConversationsList(false)
                 }}
                 className="text-gray-400 hover:text-gray-600"
               >
@@ -524,6 +595,69 @@ export default function Agents() {
               </button>
             </div>
             <div className="p-6">
+              {blockingConversations.length > 0 && (
+                <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+                  <div className="flex items-start gap-3">
+                    <AlertCircle className="h-5 w-5 text-yellow-600 flex-shrink-0 mt-0.5" />
+                    <div className="flex-1">
+                      <p className="text-sm font-medium text-yellow-800 mb-2">
+                        Cannot delete agent - {blockingConversations.length} test conversation{blockingConversations.length !== 1 ? 's' : ''} found
+                      </p>
+                      <p className="text-xs text-yellow-700 mb-3">
+                        This agent is being used by test conversations. Please delete them first before deleting the agent.
+                      </p>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setShowConversationsList(!showConversationsList)}
+                        className="text-xs"
+                      >
+                        {showConversationsList ? 'Hide' : 'Show'} Conversations ({blockingConversations.length})
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {showConversationsList && blockingConversations.length > 0 && (
+                <div className="mb-6 border border-gray-200 rounded-lg overflow-hidden">
+                  <div className="bg-gray-50 px-4 py-2 border-b border-gray-200">
+                    <h4 className="text-sm font-medium text-gray-900">Test Conversations</h4>
+                  </div>
+                  <div className="max-h-64 overflow-y-auto">
+                    {blockingConversations.map((conv) => (
+                      <div key={conv.id} className="px-4 py-3 border-b border-gray-100 last:border-b-0 flex items-center justify-between">
+                        <div className="flex-1">
+                          <p className="text-sm text-gray-900">
+                            Conversation {conv.id.substring(0, 8)}...
+                          </p>
+                          <p className="text-xs text-gray-500 mt-1">
+                            Status: <span className="capitalize">{conv.status}</span>
+                            {conv.started_at && (
+                              <> • Started: {format(new Date(conv.started_at), 'MMM d, yyyy HH:mm')}</>
+                            )}
+                          </p>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            if (confirm('Are you sure you want to delete this conversation?')) {
+                              deleteConversationMutation.mutate(conv.id)
+                            }
+                          }}
+                          isLoading={deleteConversationMutation.isPending}
+                          className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                          leftIcon={<Trash2 className="h-3 w-3" />}
+                        >
+                          Delete
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div className="flex items-start gap-4 mb-6">
                 <div className="flex-shrink-0">
                   <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center">
@@ -545,6 +679,8 @@ export default function Agents() {
                   onClick={() => {
                     setShowDeleteModal(false)
                     setSelectedAgent(null)
+                    setBlockingConversations([])
+                    setShowConversationsList(false)
                   }}
                   className="flex-1"
                 >
@@ -554,6 +690,7 @@ export default function Agents() {
                   variant="danger"
                   onClick={confirmDelete}
                   isLoading={deleteMutation.isPending}
+                  disabled={blockingConversations.length > 0}
                   leftIcon={!deleteMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined}
                   className="flex-1"
                 >
@@ -564,6 +701,7 @@ export default function Agents() {
           </div>
         </div>
       )}
+      <ToastContainer />
     </div>
   )
 }

@@ -1,5 +1,6 @@
 import { useState, useRef } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
+import { Link } from 'react-router-dom'
 import { apiClient } from '../lib/api'
 import { Play, Square, Loader, MessageSquare } from 'lucide-react'
 import Button from '../components/Button'
@@ -290,18 +291,30 @@ export default function EvaluateTestAgents() {
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 Agent
               </label>
-              <select
-                value={selectedAgent}
-                onChange={(e) => setSelectedAgent(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
-              >
-                <option value="">Select an agent</option>
-                {agents.map((agent: any) => (
-                  <option key={agent.id} value={agent.id}>
-                    {agent.name}
-                  </option>
-                ))}
-              </select>
+              {agents.length === 0 ? (
+                <div className="w-full px-3 py-2 border border-gray-300 rounded-md bg-gray-50">
+                  <p className="text-sm text-gray-500 mb-2">No agents available</p>
+                  <Link
+                    to="/agents"
+                    className="text-sm text-primary-600 hover:text-primary-700 font-medium"
+                  >
+                    Create your first agent →
+                  </Link>
+                </div>
+              ) : (
+                <select
+                  value={selectedAgent}
+                  onChange={(e) => setSelectedAgent(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
+                >
+                  <option value="">Select an agent</option>
+                  {agents.map((agent: any) => (
+                    <option key={agent.id} value={agent.id}>
+                      {agent.name}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
 
             <div>

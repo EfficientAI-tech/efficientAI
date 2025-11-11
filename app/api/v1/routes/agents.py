@@ -8,7 +8,7 @@ from typing import List
 from uuid import UUID
 
 from app.dependencies import get_db, get_organization_id
-from app.models.database import Agent
+from app.models.database import Agent, ConversationEvaluation, TestAgentConversation
 from app.models.schemas import (
     AgentCreate, AgentUpdate, AgentResponse
 )
@@ -104,6 +104,31 @@ async def delete_agent(
     ).first()
     if not db_agent:
         raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
+    
+    # Check for references in ConversationEvaluation (Metrics Dashboard)
+    conversation_evaluations = db.query(ConversationEvaluation).filter(
+        ConversationEvaluation.agent_id == agent_id,
+        ConversationEvaluation.organization_id == organization_id
+    ).count()
+    
+    # Check for references in TestAgentConversation
+    test_conversations = db.query(TestAgentConversation).filter(
+        TestAgentConversation.agent_id == agent_id,
+        TestAgentConversation.organization_id == organization_id
+    ).count()
+    
+    # Build error message if agent is referenced
+    references = []
+    if conversation_evaluations > 0:
+        references.append(f"{conversation_evaluations} conversation evaluation(s) in Metrics Dashboard")
+    if test_conversations > 0:
+        references.append(f"{test_conversations} test conversation(s)")
+    
+    if references:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot delete agent. It is currently being used by: {', '.join(references)}. Please remove these references before deleting the agent."
+        )
     
     db.delete(db_agent)
     db.commit()
