@@ -1,5 +1,12 @@
 FROM python:3.11-slim
 
+# Install Node.js and npm for frontend build
+RUN apt-get update && apt-get install -y \
+    curl \
+    && curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
@@ -10,9 +17,26 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY app/ ./app/
 COPY scripts/ ./scripts/
+COPY migrations/ ./migrations/
 
-# Install dependencies
+# Install Python dependencies
 RUN uv pip install --system -e .
+
+# Build frontend
+# Copy package files first for better layer caching
+COPY frontend/package.json frontend/package-lock.json* ./frontend/
+WORKDIR /app/frontend
+# Install all dependencies (including dev dependencies needed for build)
+RUN npm ci || npm install
+
+# Copy frontend source files
+COPY frontend/ ./
+
+# Build frontend for production
+RUN npm run build
+
+# Return to app directory
+WORKDIR /app
 
 # Create uploads directory
 RUN mkdir -p /app/uploads

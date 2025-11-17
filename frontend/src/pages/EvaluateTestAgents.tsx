@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom'
 import { apiClient } from '../lib/api'
 import { Play, Square, Loader, MessageSquare } from 'lucide-react'
 import Button from '../components/Button'
+import VoiceAgent from '../components/VoiceAgent'
 import { TestAgentConversation } from '../types/api'
 
 export default function EvaluateTestAgents() {
@@ -485,6 +486,11 @@ export default function EvaluateTestAgents() {
 
       {/* Hidden audio element for playback */}
       <audio ref={responseAudioRef} />
+
+      {/* Voice Agent Section */}
+      <div className="border-t border-gray-200 pt-6 mt-6">
+        <VoiceAgent />
+      </div>
     </div>
   )
 }

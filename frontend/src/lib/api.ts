@@ -645,6 +645,12 @@ class ApiClient {
   async deleteTestAgentConversation(conversationId: string): Promise<void> {
     await this.client.delete(`/api/v1/test-agents/conversations/${conversationId}`)
   }
+
+  // Voice Agent endpoints
+  async getVoiceAgentConnection(): Promise<{ ws_url: string; endpoint: string }> {
+    const response = await this.client.post('/api/v1/voice-agent/connect')
+    return response.data
+  }
 }
 
 // Factory function to create ApiClient instance

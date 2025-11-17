@@ -178,7 +178,13 @@ def migrate(verbose: bool):
     default=False,
     help="Force rebuild of frontend without prompting",
 )
-def start(config: str, host: Optional[str], port: Optional[int], build_frontend: bool, reload: bool, watch_frontend: bool, force_rebuild: bool):
+@click.option(
+    "--skip-migrations",
+    is_flag=True,
+    default=False,
+    help="Skip running migrations before starting (not recommended)",
+)
+def start(config: str, host: Optional[str], port: Optional[int], build_frontend: bool, reload: bool, watch_frontend: bool, force_rebuild: bool, skip_migrations: bool):
     """Start the EfficientAI application server."""
     from app.config import load_config_from_file, settings
     
@@ -258,6 +264,21 @@ def start(config: str, host: Optional[str], port: Optional[int], build_frontend:
         except FileNotFoundError:
             click.echo("❌ npm not found. Please install Node.js and npm.", err=True)
             sys.exit(1)
+    
+    # Run migrations before starting (unless explicitly skipped)
+    if not skip_migrations:
+        click.echo("🔄 Running database migrations before startup...")
+        from app.core.migrations import run_migrations, ensure_migrations_directory
+        try:
+            ensure_migrations_directory()
+            run_migrations()
+            click.echo("✅ Migrations completed successfully")
+        except Exception as e:
+            click.echo(f"❌ Migration failed: {e}", err=True)
+            click.echo("💡 You can skip migrations with --skip-migrations (not recommended)", err=True)
+            sys.exit(1)
+    else:
+        click.echo("⚠️  Skipping migrations (not recommended - migrations will run on startup)")
     
     # Start frontend watcher if requested
     frontend_watcher = None

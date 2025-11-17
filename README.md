@@ -11,7 +11,7 @@
 
 Test quality, measure performance, & ship with confidence.
 
-[📚 Documentation](https://docs.efficientai.cloud) • [📅 Book a Demo](https://calendly.com/aadhar-efficientai/30min) • [💻 GitHub](https://github.com/EfficientAI-tech/efficientAI)
+ [📅 Book a Demo](https://calendly.com/aadhar-efficientai/30min) • [💻 GitHub](https://github.com/EfficientAI-tech/efficientAI)
 
 [![GitHub Stars](https://img.shields.io/github/stars/EfficientAI-tech/efficientAI?style=flat-square&logo=github)](https://github.com/EfficientAI-tech/efficientAI)
 [![License](https://img.shields.io/github/license/EfficientAI-tech/efficientAI?style=flat-square)](https://github.com/EfficientAI-tech/efficientAI)
@@ -47,6 +47,22 @@ There are two ways to run the application:
    ```bash
    docker compose up -d
    ```
+   
+   This will automatically:
+   - Build Docker images if they don't exist
+   - Build the frontend during the Docker build process
+   - Start all services (database, Redis, API, worker)
+   - Run database migrations automatically on startup
+   
+   **Note:** If you make changes to the frontend or backend code, you may need to rebuild:
+   ```bash
+   # Rebuild and restart (forces rebuild even if image exists)
+   docker compose up -d --build
+   
+   # Or rebuild without cache for a clean build
+   docker compose build --no-cache api
+   docker compose up -d
+   ```
 
 2. **Initialize database** (migrations run automatically on startup, but you can also run manually)
    ```bash
@@ -65,6 +81,11 @@ There are two ways to run the application:
 4. **Access the application**
    - Frontend: http://localhost:8000/
    - API Docs: http://localhost:8000/docs
+   
+   **Note:** The frontend is automatically built into the Docker image during the first `docker compose up -d` command. If you make frontend changes later, rebuild with:
+   ```bash
+   docker compose up -d --build
+   ```
 
 ### Method 2: Using Command Line (CLI)
 
@@ -93,9 +114,12 @@ There are two ways to run the application:
    ```
 
    The application will automatically:
+   - **Run database migrations** (ensures schema is up to date)
    - Build the frontend (if needed)
    - Start the API server
    - Serve both API and frontend from the same server
+   
+   **Important:** Migrations run automatically before startup. If migrations fail, the app won't start.
 
    **For development with hot reload:**
    ```bash
@@ -253,6 +277,11 @@ def upgrade(db):
 
 **Automatic (Recommended):**
 - Migrations run automatically when you start the app with `eai start`
+- Migrations run **twice** for safety:
+  1. Before the server starts (via CLI)
+  2. On application startup (via lifespan handler)
+- If migrations fail, the application **will not start**
+- API requests are **blocked** if migrations are pending
 
 **Manual:**
 ```bash
@@ -261,6 +290,12 @@ eai migrate
 
 # With verbose output
 eai migrate --verbose
+```
+
+**Skip migrations (not recommended):**
+```bash
+# Only use this if you know what you're doing
+eai start --skip-migrations
 ```
 
 ### Creating New Migrations
@@ -314,13 +349,76 @@ This runs Vite dev server on `http://localhost:3000` with instant hot module rep
 
 ---
 
+## 🔧 Troubleshooting
+
+### Database Migration Issues
+
+**Problem:** After cloning the repository, you see errors like:
+```
+psycopg2.errors.UndefinedColumn: column "organization_id" of relation "api_keys" does not exist
+```
+
+**Cause:** The database schema is out of sync with the code. This happens when:
+- The database was created before migrations were added
+- Migrations failed to run on startup
+- The database was created using an older version of the code
+
+**Solution:**
+
+1. **Check migration status:**
+   ```bash
+   python scripts/check_migrations.py
+   ```
+   This will show which migrations have been applied and identify any schema issues.
+
+2. **Run migrations manually:**
+   ```bash
+   # Using CLI (recommended)
+   eai migrate --verbose
+   
+   # Or using Python directly
+   python -c "from app.core.migrations import run_migrations; run_migrations()"
+   ```
+
+3. **If you're using a fresh database (just created/nuked):**
+   - The migration system now handles fresh databases correctly
+   - If tables don't exist, migrations will skip them and `init_db()` will create them with the correct schema
+   - However, if you see this error on a fresh DB, try:
+     ```bash
+     # Stop the application
+     # Then run migrations explicitly
+     eai migrate --verbose
+     # Then start the application again
+     eai start
+     ```
+
+4. **If migrations still fail:**
+   - Ensure your database connection is correct in `config.yml` or `.env`
+   - Check that you have the necessary permissions on the database
+   - Review the migration logs for specific errors
+   - You may need to manually add missing columns (see migration files in `migrations/` directory)
+   - **For fresh databases**: Make sure migrations run BEFORE any tables are created
+
+5. **For Docker setups:**
+   ```bash
+   docker compose exec api eai migrate --verbose
+   ```
+   
+   **Important for Docker**: If you nuked the DB container and created a new one:
+   - The new container starts with an empty database
+   - Migrations should run automatically on startup
+   - If they don't, run them manually as shown above
+
+**Prevention:** Always ensure migrations run successfully before using the application. Check the startup logs for migration status messages.
+
+---
+
 ## 📞 Support
 
 - 📧 **Email**: [tejas@efficientai.cloud](mailto:tejas@efficientai.cloud)
 - 📅 **Book a Demo**: [Schedule a call](https://calendly.com/aadhar-efficientai/30min)
 - 💬 **LinkedIn**: [Connect with us](https://www.linkedin.com/company/efficientaicloud)
 - 🐦 **X (Twitter)**: [Follow us](https://x.com/AiEfficient)
-- 📚 **Documentation**: [docs.efficientai.cloud](https://docs.efficientai.cloud)
 - 💻 **GitHub**: [View on GitHub](https://github.com/EfficientAI-tech/efficientAI)
 
 ---

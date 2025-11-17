@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -9,16 +10,89 @@ from fastapi.responses import FileResponse
 from app.config import settings
 from app.api.v1.api import api_router
 from app.database import init_db
-from app.core.migrations import run_migrations, ensure_migrations_directory
+from app.core.migrations import run_migrations, ensure_migrations_directory, check_migrations_status
+from app.core.migration_middleware import MigrationCheckMiddleware
+import logging
 
-# Create FastAPI app
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Lifespan context manager for FastAPI.
+    Ensures migrations run before the app starts serving requests.
+    """
+    # Startup: Run migrations
+    logger.info("=" * 60)
+    logger.info("🚀 Starting EfficientAI Application")
+    logger.info("=" * 60)
+    
+    # Try to load config.yml if it exists (in case server wasn't started with eai start)
+    from app.config import load_config_from_file
+    config_path = Path("config.yml")
+    if config_path.exists():
+        try:
+            load_config_from_file(str(config_path))
+            logger.info(f"✅ Loaded configuration from {config_path}")
+        except Exception as e:
+            logger.warning(f"⚠️  Warning: Could not load config.yml: {e}")
+    
+    # Ensure migrations directory exists
+    ensure_migrations_directory()
+    
+    # Run database migrations (this will raise if they fail)
+    try:
+        run_migrations()
+    except Exception as e:
+        logger.error("=" * 60)
+        logger.error("❌ CRITICAL: Database migrations failed!")
+        logger.error("=" * 60)
+        logger.error("The application cannot start without successful migrations.")
+        logger.error(f"Error: {e}")
+        logger.error("")
+        logger.error("Please fix the migration errors and try again.")
+        logger.error("You can run migrations manually with: eai migrate --verbose")
+        raise  # Re-raise to prevent app from starting
+    
+    # Initialize database (creates tables if they don't exist)
+    try:
+        init_db()
+        logger.info("✅ Database initialized")
+    except Exception as e:
+        logger.error(f"❌ Error initializing database: {e}")
+        raise
+    
+    # Verify migrations are up to date
+    is_up_to_date, pending = check_migrations_status()
+    if not is_up_to_date:
+        logger.warning(f"⚠️  Warning: {len(pending)} migration(s) still pending after startup: {', '.join(pending)}")
+    else:
+        logger.info("✅ All migrations are up to date")
+    
+    logger.info("=" * 60)
+    logger.info("✅ Application startup complete - Ready to serve requests")
+    logger.info("=" * 60)
+    
+    yield  # Application is running
+    
+    # Shutdown: Cleanup (if needed)
+    logger.info("Shutting down EfficientAI Application...")
+
+
+# Create FastAPI app with lifespan
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
     description="EfficientAI Voice AI Evaluation Platform API",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
+
+# Add migration check middleware FIRST (before CORS)
+# This ensures API requests are blocked if migrations are pending
+app.add_middleware(MigrationCheckMiddleware)
 
 # Configure CORS
 app.add_middleware(
@@ -66,33 +140,24 @@ if frontend_dist.exists() and frontend_dist.is_dir():
         return {"detail": "Frontend not found"}
 
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize database and run migrations on startup."""
-    # Try to load config.yml if it exists (in case server wasn't started with eai start)
-    from app.config import load_config_from_file
-    from pathlib import Path
-    
-    config_path = Path("config.yml")
-    if config_path.exists():
-        try:
-            load_config_from_file(str(config_path))
-            print(f"✅ Loaded configuration from {config_path}")
-        except Exception as e:
-            print(f"⚠️  Warning: Could not load config.yml: {e}")
-    
-    # Ensure migrations directory exists
-    ensure_migrations_directory()
-    
-    # Run database migrations
-    run_migrations()
-    
-    # Initialize database (creates tables if they don't exist)
-    init_db()
-
-
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
-    return {"status": "healthy"}
+    """
+    Health check endpoint.
+    Returns migration status to help diagnose issues.
+    """
+    is_up_to_date, pending = check_migrations_status()
+    
+    if is_up_to_date:
+        return {
+            "status": "healthy",
+            "migrations": "up_to_date"
+        }
+    else:
+        return {
+            "status": "degraded",
+            "migrations": "pending",
+            "pending_migrations": pending,
+            "message": f"{len(pending)} migration(s) pending: {', '.join(pending)}"
+        }
 
