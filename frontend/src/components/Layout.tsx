@@ -52,7 +52,7 @@ const navigationSections: NavSection[] = [
     title: 'Evaluations',
     icon: FileCheck,
     items: [
-      { name: 'Evaluations', href: '/evaluations', icon: FileCheck },
+      { name: 'Manual Transcriptions', href: '/evaluations', icon: Mic },
       { name: 'Batch Jobs', href: '/batch', icon: FolderSync },
       { name: 'Evaluate Test Agents', href: '/evaluate-test-agents', icon: Mic },
     ],
@@ -81,8 +81,8 @@ const otherNavigation: NavItem[] = [
 ]
 
 const bottomNavigation = [
-  {name: 'IAM', href: '/iam', icon: Shield },
-  {name: 'Profile', href: '/profile', icon: UserCircle }
+  { name: 'IAM', href: '/iam', icon: Shield },
+  { name: 'Profile', href: '/profile', icon: UserCircle }
 ]
 
 export default function Layout() {
@@ -120,20 +120,17 @@ export default function Layout() {
     <div className="min-h-screen bg-gray-50">
       {/* Mobile sidebar */}
       <div
-        className={`fixed inset-0 z-40 lg:hidden ${
-          sidebarOpen ? '' : 'pointer-events-none'
-        }`}
+        className={`fixed inset-0 z-40 lg:hidden ${sidebarOpen ? '' : 'pointer-events-none'
+          }`}
       >
         <div
-          className={`fixed inset-0 bg-gray-600 bg-opacity-75 transition-opacity ${
-            sidebarOpen ? 'opacity-100' : 'opacity-0'
-          }`}
+          className={`fixed inset-0 bg-gray-600 bg-opacity-75 transition-opacity ${sidebarOpen ? 'opacity-100' : 'opacity-0'
+            }`}
           onClick={() => setSidebarOpen(false)}
         />
         <div
-          className={`fixed inset-y-0 left-0 flex w-64 flex-col bg-white shadow-xl transition-transform duration-300 ease-in-out ${
-            sidebarOpen ? 'translate-x-0' : '-translate-x-full'
-          }`}
+          className={`fixed inset-y-0 left-0 flex w-64 flex-col bg-white shadow-xl transition-transform duration-300 ease-in-out ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'
+            }`}
         >
           <SidebarContent onLogout={logout} location={location} />
         </div>
@@ -201,11 +198,10 @@ export default function Layout() {
                               setSelectedAgent(agent)
                               setShowAgentDropdown(false)
                             }}
-                            className={`w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors ${
-                              selectedAgent?.id === agent.id
+                            className={`w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors ${selectedAgent?.id === agent.id
                                 ? 'bg-primary-50 border-l-4 border-primary-500'
                                 : 'border-l-4 border-transparent'
-                            }`}
+                              }`}
                           >
                             <div className="flex items-center justify-between">
                               <div>
@@ -288,16 +284,14 @@ function SidebarContent({
               <Link
                 key={item.name}
                 to={item.href}
-                className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md ${
-                  isActive
+                className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md ${isActive
                     ? 'bg-gray-100 text-gray-900'
                     : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
-                }`}
+                  }`}
               >
                 <item.icon
-                  className={`mr-3 flex-shrink-0 h-5 w-5 ${
-                    isActive ? 'text-gray-700' : 'text-gray-400 group-hover:text-gray-500'
-                  }`}
+                  className={`mr-3 flex-shrink-0 h-5 w-5 ${isActive ? 'text-gray-700' : 'text-gray-400 group-hover:text-gray-500'
+                    }`}
                 />
                 {item.name}
               </Link>
@@ -310,22 +304,20 @@ function SidebarContent({
               const isExpanded = expandedSections.has(section.title)
               const isActive = isSectionActive(section)
               const SectionIcon = section.icon
-              
+
               return (
                 <div key={section.title}>
                   <button
                     onClick={() => toggleSection(section.title)}
-                    className={`w-full group flex items-center justify-between px-2 py-2 text-sm font-medium rounded-md ${
-                      isActive
+                    className={`w-full group flex items-center justify-between px-2 py-2 text-sm font-medium rounded-md ${isActive
                         ? 'bg-gray-100 text-gray-900'
                         : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
-                    }`}
+                      }`}
                   >
                     <div className="flex items-center">
                       <SectionIcon
-                        className={`mr-3 flex-shrink-0 h-5 w-5 ${
-                          isActive ? 'text-gray-700' : 'text-gray-400 group-hover:text-gray-500'
-                        }`}
+                        className={`mr-3 flex-shrink-0 h-5 w-5 ${isActive ? 'text-gray-700' : 'text-gray-400 group-hover:text-gray-500'
+                          }`}
                       />
                       {section.title}
                     </div>
@@ -343,16 +335,14 @@ function SidebarContent({
                           <Link
                             key={item.name}
                             to={item.href}
-                            className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md ${
-                              isItemActive
+                            className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md ${isItemActive
                                 ? 'bg-gray-100 text-gray-900'
                                 : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
-                            }`}
+                              }`}
                           >
                             <item.icon
-                              className={`mr-3 flex-shrink-0 h-4 w-4 ${
-                                isItemActive ? 'text-gray-700' : 'text-gray-400 group-hover:text-gray-500'
-                              }`}
+                              className={`mr-3 flex-shrink-0 h-4 w-4 ${isItemActive ? 'text-gray-700' : 'text-gray-400 group-hover:text-gray-500'
+                                }`}
                             />
                             {item.name}
                           </Link>
@@ -372,16 +362,14 @@ function SidebarContent({
               <Link
                 key={item.name}
                 to={item.href}
-                className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md ${
-                  isActive
+                className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md ${isActive
                     ? 'bg-gray-100 text-gray-900'
                     : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
-                }`}
+                  }`}
               >
                 <item.icon
-                  className={`mr-3 flex-shrink-0 h-5 w-5 ${
-                    isActive ? 'text-gray-700' : 'text-gray-400 group-hover:text-gray-500'
-                  }`}
+                  className={`mr-3 flex-shrink-0 h-5 w-5 ${isActive ? 'text-gray-700' : 'text-gray-400 group-hover:text-gray-500'
+                    }`}
                 />
                 {item.name}
               </Link>

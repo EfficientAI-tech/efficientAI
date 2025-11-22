@@ -25,7 +25,7 @@ import type {
 
 // When running in production (served from same origin), use relative path
 // Otherwise use environment variable or default
-const API_BASE_URL = import.meta.env.VITE_API_URL || 
+const API_BASE_URL = import.meta.env.VITE_API_URL ||
   (import.meta.env.PROD ? '' : 'http://localhost:8000')
 
 class ApiClient {
@@ -572,6 +572,11 @@ class ApiClient {
 
   async getManualTranscription(transcriptionId: string): Promise<any> {
     const response = await this.client.get(`/api/v1/manual-evaluations/transcriptions/${transcriptionId}`)
+    return response.data
+  }
+
+  async updateManualTranscription(transcriptionId: string, name: string): Promise<any> {
+    const response = await this.client.patch(`/api/v1/manual-evaluations/transcriptions/${transcriptionId}`, { name })
     return response.data
   }
 

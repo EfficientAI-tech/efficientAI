@@ -223,7 +223,7 @@ export default function ManualEvaluations({ onBack }: ManualEvaluationsProps) {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold text-gray-900">Manual Evaluations</h2>
+          <h2 className="text-2xl font-bold text-gray-900">Manual Transcriptions</h2>
           <p className="mt-1 text-sm text-gray-600">
             Select audio files from S3, play them, and transcribe using STT models
           </p>
@@ -257,11 +257,10 @@ export default function ManualEvaluations({ onBack }: ManualEvaluationsProps) {
                   <button
                     key={file.key}
                     onClick={() => setSelectedFile(file)}
-                    className={`w-full text-left px-4 py-3 rounded-lg border transition-colors ${
-                      selectedFile?.key === file.key
+                    className={`w-full text-left px-4 py-3 rounded-lg border transition-colors ${selectedFile?.key === file.key
                         ? 'border-primary-500 bg-primary-50'
                         : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
-                    }`}
+                      }`}
                   >
                     <div className="flex items-center justify-between">
                       <div className="flex-1 min-w-0">
@@ -465,7 +464,7 @@ export default function ManualEvaluations({ onBack }: ManualEvaluationsProps) {
 
                     {currentTranscription.stt_model && (
                       <div className="mt-4 text-xs text-gray-500">
-                        Model: {currentTranscription.stt_model} • 
+                        Model: {currentTranscription.stt_model} •
                         {currentTranscription.processing_time && (
                           <> Processing: {currentTranscription.processing_time.toFixed(2)}s</>
                         )}

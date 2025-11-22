@@ -11,13 +11,18 @@ import { WebSocketTransport } from '@pipecat-ai/websocket-transport'
 import { Mic, MicOff, Loader, MessageSquare } from 'lucide-react'
 import Button from './Button'
 
-export default function VoiceAgent() {
+interface VoiceAgentProps {
+  personaId?: string
+  scenarioId?: string
+}
+
+export default function VoiceAgent({ personaId, scenarioId }: VoiceAgentProps) {
   const [isConnected, setIsConnected] = useState(false)
   const [isConnecting, setIsConnecting] = useState(false)
   const [status, setStatus] = useState<string>('Disconnected')
   const [error, setError] = useState<string | null>(null)
   const [logs, setLogs] = useState<Array<{ timestamp: string; message: string; type: 'user' | 'bot' | 'system' }>>([])
-  
+
   const pcClientRef = useRef<PipecatClient | null>(null)
   const botAudioRef = useRef<HTMLAudioElement | null>(null)
   const isConnectingRef = useRef(false) // Guard to prevent multiple simultaneous connections
@@ -88,7 +93,7 @@ export default function VoiceAgent() {
     if (!botAudioRef.current) return
 
     log('Setting up audio track', 'system')
-    
+
     if (
       botAudioRef.current.srcObject &&
       'getAudioTracks' in botAudioRef.current.srcObject
@@ -106,7 +111,7 @@ export default function VoiceAgent() {
       log('Connection already in progress, ignoring duplicate request', 'system')
       return
     }
-    
+
     if (pcClientRef.current) {
       log('Client already exists, disconnecting first...', 'system')
       try {
@@ -116,7 +121,7 @@ export default function VoiceAgent() {
       }
       pcClientRef.current = null
     }
-    
+
     try {
       isConnectingRef.current = true
       setIsConnecting(true)
@@ -139,7 +144,7 @@ export default function VoiceAgent() {
       // Note: WebSocketTransport might need endpoint URL for RTVI protocol initialization
       // But the constructor doesn't accept parameters, so we'll set it after creation
       const transport = new WebSocketTransport()
-      
+
       const PipecatConfig: PipecatClientOptions = {
         transport: transport,
         enableMic: true,
@@ -171,8 +176,8 @@ export default function VoiceAgent() {
           },
           onMessageError: (error: any) => {
             console.error('Message error:', error)
-            const errorMessage = (error && typeof error === 'object' && 'message' in error) 
-              ? error.message 
+            const errorMessage = (error && typeof error === 'object' && 'message' in error)
+              ? error.message
               : String(error)
             log(`Error: ${errorMessage}`, 'system')
           },
@@ -190,8 +195,8 @@ export default function VoiceAgent() {
       const pcClient = new PipecatClient(PipecatConfig)
       pcClientRef.current = pcClient
 
-      // Expose for debugging
-      ;(window as any).pcClient = pcClient
+        // Expose for debugging
+        ; (window as any).pcClient = pcClient
 
       setupTrackListeners()
 
@@ -200,10 +205,20 @@ export default function VoiceAgent() {
 
       // Use startBotAndConnect exactly like the Pipecat example
       // This handles RTVI protocol handshake automatically
-      const endpointUrl = `${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/v1/voice-agent/connect`
+      let endpointUrl = `${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/v1/voice-agent/connect`
+
+      // Append persona and scenario IDs if present
+      const params = new URLSearchParams()
+      if (personaId) params.append('persona_id', personaId)
+      if (scenarioId) params.append('scenario_id', scenarioId)
+
+      if (params.toString()) {
+        endpointUrl += `?${params.toString()}`
+      }
+
       log(`Connecting to bot endpoint: ${endpointUrl}`, 'system')
       log('Using startBotAndConnect() - this will handle RTVI protocol handshake...', 'system')
-      
+
       await pcClient.startBotAndConnect({
         endpoint: endpointUrl,
       })
@@ -332,13 +347,12 @@ export default function VoiceAgent() {
               logs.map((log, idx) => (
                 <div
                   key={idx}
-                  className={`mb-1 ${
-                    log.type === 'user'
+                  className={`mb-1 ${log.type === 'user'
                       ? 'text-blue-600'
                       : log.type === 'bot'
-                      ? 'text-green-600'
-                      : 'text-gray-600'
-                  }`}
+                        ? 'text-green-600'
+                        : 'text-gray-600'
+                    }`}
                 >
                   <span className="text-gray-400">
                     {new Date(log.timestamp).toLocaleTimeString()}

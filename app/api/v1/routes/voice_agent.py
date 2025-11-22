@@ -83,12 +83,57 @@ async def websocket_endpoint(
             )
             return
         
+        # Get persona_id and scenario_id from query params
+        persona_id = websocket.query_params.get("persona_id")
+        scenario_id = websocket.query_params.get("scenario_id")
+        
+        system_instruction = None
+        
+        if persona_id or scenario_id:
+            from app.models.database import Persona, Scenario
+            
+            instruction_parts = []
+            
+            if persona_id:
+                try:
+                    persona_uuid = UUID(persona_id)
+                    persona = db.query(Persona).filter(
+                        Persona.id == persona_uuid,
+                        Persona.organization_id == organization_id
+                    ).first()
+                    if persona:
+                        instruction_parts.append(f"Role: {persona.role}")
+                        instruction_parts.append(f"Personality: {persona.personality}")
+                        instruction_parts.append(f"Tone: {persona.tone}")
+                        instruction_parts.append(f"Instructions: {persona.instructions}")
+                except ValueError:
+                    print(f"Invalid persona_id: {persona_id}")
+            
+            if scenario_id:
+                try:
+                    scenario_uuid = UUID(scenario_id)
+                    scenario = db.query(Scenario).filter(
+                        Scenario.id == scenario_uuid,
+                        Scenario.organization_id == organization_id
+                    ).first()
+                    if scenario:
+                        instruction_parts.append(f"Scenario Name: {scenario.name}")
+                        instruction_parts.append(f"Scenario Description: {scenario.description}")
+                        instruction_parts.append(f"Scenario Context: {scenario.context}")
+                        instruction_parts.append(f"Scenario Goal: {scenario.goal}")
+                except ValueError:
+                    print(f"Invalid scenario_id: {scenario_id}")
+            
+            if instruction_parts:
+                system_instruction = "\n\n".join(instruction_parts)
+                print(f"Constructed system instruction from persona/scenario: {system_instruction[:100]}...")
+        
         # Run the bot with the decrypted API key
         print("Starting voice agent bot...")
         print(f"WebSocket client state: {websocket.client_state}")
         print(f"WebSocket application state: {websocket.application_state}")
         try:
-            await run_bot(websocket, google_api_key)
+            await run_bot(websocket, google_api_key, system_instruction)
             print("Voice agent bot finished")
         except Exception as bot_error:
             print(f"Error in run_bot: {bot_error}")
@@ -233,8 +278,18 @@ async def bot_connect(
     host = request.headers.get("host", f"localhost:{settings.PORT}")
     base_url = f"{scheme}://{host}"
     
+    # Get persona_id and scenario_id from query params
+    persona_id = request.query_params.get("persona_id")
+    scenario_id = request.query_params.get("scenario_id")
+    
     # The WebSocket endpoint path with API key as query parameter
     ws_url = f"{base_url}{settings.API_V1_PREFIX}/voice-agent/ws?X-API-Key={api_key}"
+    
+    # Append persona_id and scenario_id if present
+    if persona_id:
+        ws_url += f"&persona_id={persona_id}"
+    if scenario_id:
+        ws_url += f"&scenario_id={scenario_id}"
     
     # Return the response in the format Pipecat expects
     # Pipecat expects a JSON response with ws_url field
