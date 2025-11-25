@@ -23,6 +23,7 @@ import {
   Settings,
   Mic,
   Brain,
+  Bot,
 } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import Logo from './Logo'
@@ -44,6 +45,7 @@ const navigationSections: NavSection[] = [
     title: 'Simulations',
     icon: Play,
     items: [
+      { name: 'Agents', href: '/agents', icon: Bot },
       { name: 'Personas', href: '/personas', icon: Users },
       { name: 'Scenarios', href: '/scenarios', icon: FileText },
     ],
@@ -199,8 +201,8 @@ export default function Layout() {
                               setShowAgentDropdown(false)
                             }}
                             className={`w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors ${selectedAgent?.id === agent.id
-                                ? 'bg-primary-50 border-l-4 border-primary-500'
-                                : 'border-l-4 border-transparent'
+                              ? 'bg-primary-50 border-l-4 border-primary-500'
+                              : 'border-l-4 border-transparent'
                               }`}
                           >
                             <div className="flex items-center justify-between">
@@ -285,8 +287,8 @@ function SidebarContent({
                 key={item.name}
                 to={item.href}
                 className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md ${isActive
-                    ? 'bg-gray-100 text-gray-900'
-                    : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
+                  ? 'bg-gray-100 text-gray-900'
+                  : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
                   }`}
               >
                 <item.icon
@@ -310,8 +312,8 @@ function SidebarContent({
                   <button
                     onClick={() => toggleSection(section.title)}
                     className={`w-full group flex items-center justify-between px-2 py-2 text-sm font-medium rounded-md ${isActive
-                        ? 'bg-gray-100 text-gray-900'
-                        : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
+                      ? 'bg-gray-100 text-gray-900'
+                      : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
                       }`}
                   >
                     <div className="flex items-center">
@@ -336,8 +338,8 @@ function SidebarContent({
                             key={item.name}
                             to={item.href}
                             className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md ${isItemActive
-                                ? 'bg-gray-100 text-gray-900'
-                                : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                              ? 'bg-gray-100 text-gray-900'
+                              : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
                               }`}
                           >
                             <item.icon
@@ -363,8 +365,8 @@ function SidebarContent({
                 key={item.name}
                 to={item.href}
                 className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md ${isActive
-                    ? 'bg-gray-100 text-gray-900'
-                    : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
+                  ? 'bg-gray-100 text-gray-900'
+                  : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
                   }`}
               >
                 <item.icon

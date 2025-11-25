@@ -342,6 +342,8 @@ class IntegrationPlatform(str, enum.Enum):
     RETELL = "retell"
     VAPI = "vapi"
     CARTESIA = "cartesia"
+    ELEVENLABS = "elevenlabs"
+    DEEPGRAM = "deepgram"
 
 
 class Integration(Base):
