@@ -179,6 +179,8 @@ export enum IntegrationPlatform {
   RETELL = 'retell',
   VAPI = 'vapi',
   CARTESIA = 'cartesia',
+  ELEVENLABS = 'elevenlabs',
+  DEEPGRAM = 'deepgram',
 }
 
 export interface Integration {

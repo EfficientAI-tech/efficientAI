@@ -25,7 +25,7 @@ import type {
 
 // When running in production (served from same origin), use relative path
 // Otherwise use environment variable or default
-const API_BASE_URL = import.meta.env.VITE_API_URL || 
+const API_BASE_URL = import.meta.env.VITE_API_URL ||
   (import.meta.env.PROD ? '' : 'http://localhost:8000')
 
 class ApiClient {
@@ -575,6 +575,11 @@ class ApiClient {
     return response.data
   }
 
+  async updateManualTranscription(transcriptionId: string, name: string): Promise<any> {
+    const response = await this.client.patch(`/api/v1/manual-evaluations/transcriptions/${transcriptionId}`, { name })
+    return response.data
+  }
+
   async deleteManualTranscription(transcriptionId: string): Promise<MessageResponse> {
     const response = await this.client.delete(`/api/v1/manual-evaluations/transcriptions/${transcriptionId}`)
     return response.data
@@ -644,6 +649,12 @@ class ApiClient {
 
   async deleteTestAgentConversation(conversationId: string): Promise<void> {
     await this.client.delete(`/api/v1/test-agents/conversations/${conversationId}`)
+  }
+
+  // Voice Agent endpoints
+  async getVoiceAgentConnection(): Promise<{ ws_url: string; endpoint: string }> {
+    const response = await this.client.post('/api/v1/voice-agent/connect')
+    return response.data
   }
 }
 

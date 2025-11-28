@@ -40,9 +40,11 @@ services:
       SECRET_KEY: ${SECRET_KEY:-your-secret-key-change-in-production}
       UPLOAD_DIR: /app/uploads
       DEBUG: ${DEBUG:-True}
+      FRONTEND_DIR: /app/frontend/dist
     volumes:
       - ./app:/app/app
       - ./uploads:/app/uploads
+      # Note: Frontend is built into the image, not mounted as volume
     ports:
       - "8000:8000"
     depends_on:

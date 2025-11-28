@@ -36,7 +36,32 @@ def upgrade(db):
     for table_name in tables_to_alter:
         logger.info(f"  2. Adding organization_id column to {table_name}...")
         try:
-            db.execute(text(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS organization_id UUID"))
+            # Check if table exists first
+            result = db.execute(text("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = :table_name
+                )
+            """), {"table_name": table_name})
+            table_exists = result.scalar()
+            
+            if not table_exists:
+                logger.info(f"     ⚠ Table {table_name} does not exist yet. It will be created by init_db() with organization_id column.")
+                continue
+            
+            # Table exists, add the column if it doesn't exist
+            db.execute(text(f"""
+                DO $$ 
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name = '{table_name}' 
+                        AND column_name = 'organization_id'
+                    ) THEN
+                        ALTER TABLE {table_name} ADD COLUMN organization_id UUID;
+                    END IF;
+                END $$;
+            """))
             db.execute(text(f"""
                 DO $$ 
                 BEGIN
@@ -54,7 +79,7 @@ def upgrade(db):
             db.commit()
             logger.info(f"     ✓ organization_id column added to {table_name}")
         except ProgrammingError as e:
-            logger.warning(f"     ⚠ Column organization_id may already exist in {table_name}: {e}")
+            logger.warning(f"     ⚠ Error adding organization_id to {table_name}: {e}")
             db.rollback()
     
     # 3. Create a default organization if none exist
@@ -80,33 +105,59 @@ def upgrade(db):
         default_org_id = default_org[0]
         for table_name in tables_to_alter:
             try:
-                db.execute(text(f"UPDATE {table_name} SET organization_id = :org_id WHERE organization_id IS NULL"), 
-                          {"org_id": default_org_id})
-                db.commit()
-                logger.info(f"     ✓ {table_name} records assigned")
+                # Check if table exists and has organization_id column
+                result = db.execute(text("""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name = :table_name 
+                        AND column_name = 'organization_id'
+                    )
+                """), {"table_name": table_name})
+                has_column = result.scalar()
+                
+                if has_column:
+                    db.execute(text(f"UPDATE {table_name} SET organization_id = :org_id WHERE organization_id IS NULL"), 
+                              {"org_id": default_org_id})
+                    db.commit()
+                    logger.info(f"     ✓ {table_name} records assigned")
+                else:
+                    logger.info(f"     ⚠ Skipping {table_name} - column doesn't exist yet")
             except Exception as e:
                 logger.warning(f"     ⚠ Error assigning {table_name}: {e}")
                 db.rollback()
     
-    # 5. Make organization_id NOT NULL
+    # 5. Make organization_id NOT NULL (only if table exists and column exists)
     logger.info("  5. Making organization_id NOT NULL...")
     for table_name in tables_to_alter:
         try:
-            db.execute(text(f"""
-                DO $$ 
-                BEGIN
-                    IF EXISTS (
-                        SELECT 1 FROM information_schema.columns 
-                        WHERE table_name = '{table_name}' 
-                        AND column_name = 'organization_id' 
-                        AND is_nullable = 'YES'
-                    ) THEN
-                        ALTER TABLE {table_name} ALTER COLUMN organization_id SET NOT NULL;
-                    END IF;
-                END $$;
-            """))
-            db.commit()
-            logger.info(f"     ✓ organization_id column in {table_name} set to NOT NULL")
+            # Check if table and column exist
+            result = db.execute(text("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.columns 
+                    WHERE table_name = :table_name 
+                    AND column_name = 'organization_id'
+                )
+            """), {"table_name": table_name})
+            has_column = result.scalar()
+            
+            if has_column:
+                db.execute(text(f"""
+                    DO $$ 
+                    BEGIN
+                        IF EXISTS (
+                            SELECT 1 FROM information_schema.columns 
+                            WHERE table_name = '{table_name}' 
+                            AND column_name = 'organization_id' 
+                            AND is_nullable = 'YES'
+                        ) THEN
+                            ALTER TABLE {table_name} ALTER COLUMN organization_id SET NOT NULL;
+                        END IF;
+                    END $$;
+                """))
+                db.commit()
+                logger.info(f"     ✓ organization_id column in {table_name} set to NOT NULL")
+            else:
+                logger.info(f"     ⚠ Skipping {table_name} - column doesn't exist yet (will be created by init_db())")
         except ProgrammingError as e:
             logger.warning(f"     ⚠ Column organization_id in {table_name} may already be NOT NULL: {e}")
             db.rollback()

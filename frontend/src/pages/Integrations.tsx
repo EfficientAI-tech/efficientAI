@@ -10,7 +10,7 @@ export default function Integrations() {
   const [showModal, setShowModal] = useState(false)
   const [isEditMode, setIsEditMode] = useState(false)
   const [selectedIntegration, setSelectedIntegration] = useState<Integration | null>(null)
-  const [selectedPlatform, setSelectedPlatform] = useState<'retell' | 'vapi' | 'cartesia' | null>(null)
+  const [selectedPlatform, setSelectedPlatform] = useState<'retell' | 'vapi' | 'cartesia' | 'elevenlabs' | 'deepgram' | null>(null)
   const [apiKey, setApiKey] = useState('')
   const [name, setName] = useState('')
 
@@ -54,7 +54,7 @@ export default function Integrations() {
 
   const handleEdit = (integration: Integration) => {
     setSelectedIntegration(integration)
-    setSelectedPlatform(integration.platform as 'retell' | 'vapi' | 'cartesia')
+    setSelectedPlatform(integration.platform as 'retell' | 'vapi' | 'cartesia' | 'elevenlabs' | 'deepgram')
     setName(integration.name || '')
     setApiKey('') // Don't pre-fill API key for security
     setIsEditMode(true)
@@ -63,7 +63,7 @@ export default function Integrations() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    
+
     if (isEditMode && selectedIntegration) {
       // Update existing integration
       const updateData: Partial<IntegrationCreate> = {}
@@ -73,7 +73,7 @@ export default function Integrations() {
       if (apiKey) {
         updateData.api_key = apiKey
       }
-      
+
       if (Object.keys(updateData).length > 0) {
         updateMutation.mutate({ id: selectedIntegration.id, data: updateData })
       } else {
@@ -109,6 +109,18 @@ export default function Integrations() {
       name: 'Cartesia',
       description: 'Connect your Cartesia voice AI agents',
       image: '/cartesia.jpg',
+    },
+    {
+      id: IntegrationPlatform.ELEVENLABS,
+      name: 'ElevenLabs',
+      description: 'Connect your ElevenLabs voice AI agents',
+      image: '/elevenLabs.png',
+    },
+    {
+      id: IntegrationPlatform.DEEPGRAM,
+      name: 'Deepgram',
+      description: 'Connect your Deepgram voice AI agents',
+      image: '/deepgram.png',
     },
   ]
 
@@ -247,14 +259,14 @@ export default function Integrations() {
                 <button
                   key={platform.id}
                   onClick={() => {
-                    setSelectedPlatform(platform.id as 'retell' | 'vapi' | 'cartesia')
+                    setSelectedPlatform(platform.id as 'retell' | 'vapi' | 'cartesia' | 'elevenlabs' | 'deepgram')
                     setShowModal(true)
                   }}
                   className="group p-4 border-2 border-gray-200 rounded-lg hover:border-primary-300 hover:shadow-md transition-all text-left"
                 >
                   <div className="border border-gray-200 rounded-lg p-3 mb-3 bg-white">
-                    <img 
-                      src={platform.image} 
+                    <img
+                      src={platform.image}
                       alt={platform.name}
                       className="w-full h-20 object-contain"
                     />
@@ -305,13 +317,15 @@ export default function Integrations() {
                   required
                   disabled={isEditMode}
                   value={selectedPlatform || ''}
-                  onChange={(e) => setSelectedPlatform(e.target.value as 'retell' | 'vapi' | 'cartesia')}
+                  onChange={(e) => setSelectedPlatform(e.target.value as 'retell' | 'vapi' | 'cartesia' | 'elevenlabs' | 'deepgram')}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent disabled:bg-gray-100 disabled:cursor-not-allowed"
                 >
                   <option value="">Select a platform</option>
                   <option value="retell">Retell AI</option>
                   <option value="vapi">Vapi</option>
                   <option value="cartesia">Cartesia</option>
+                  <option value="elevenlabs">ElevenLabs</option>
+                  <option value="deepgram">Deepgram</option>
                 </select>
                 {isEditMode && (
                   <p className="mt-1 text-xs text-gray-500">
@@ -355,8 +369,8 @@ export default function Integrations() {
                     <AlertCircle className="h-5 w-5 text-red-400" />
                     <div className="ml-3">
                       <p className="text-sm text-red-800">
-                        {(createMutation.error || updateMutation.error as any)?.response?.data?.detail || 
-                         (isEditMode ? 'Failed to update integration' : 'Failed to create integration')}
+                        {(createMutation.error || updateMutation.error as any)?.response?.data?.detail ||
+                          (isEditMode ? 'Failed to update integration' : 'Failed to create integration')}
                       </p>
                     </div>
                   </div>

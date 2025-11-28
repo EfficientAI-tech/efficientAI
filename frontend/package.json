@@ -17,7 +17,10 @@
     "zustand": "^4.4.7",
     "lucide-react": "^0.303.0",
     "clsx": "^2.1.0",
-    "date-fns": "^3.0.6"
+    "date-fns": "^3.0.6",
+    "@pipecat-ai/client-js": "^1.2.0",
+    "@pipecat-ai/websocket-transport": "^1.2.0",
+    "protobufjs": "^7.4.0"
   },
   "devDependencies": {
     "@types/react": "^18.2.43",
@@ -32,7 +35,9 @@
     "postcss": "^8.4.32",
     "tailwindcss": "^3.3.6",
     "typescript": "^5.2.2",
-    "vite": "^5.0.8"
+    "vite": "^5.0.8",
+    "@types/node": "^22.15.30",
+    "@types/protobufjs": "^6.0.0"
   }
 }
 

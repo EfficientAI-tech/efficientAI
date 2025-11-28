@@ -6,7 +6,7 @@ Migrations are tracked in a `schema_migrations` table to ensure they only run on
 import os
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from sqlalchemy import text, inspect
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import ProgrammingError
@@ -117,7 +117,9 @@ class MigrationRunner:
             return True
             
         except Exception as e:
+            import traceback
             logger.error(f"Error running migration {version}: {e}")
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
             self.db.rollback()
             return False
         finally:
@@ -163,11 +165,47 @@ def run_migrations():
         runner = MigrationRunner(db)
         success = runner.run_all()
         if not success:
-            logger.error("Migration failed. Application may not start correctly.")
+            logger.error("=" * 60)
+            logger.error("❌ MIGRATION FAILED - Application may not start correctly!")
+            logger.error("=" * 60)
+            logger.error("Please run 'eai migrate --verbose' to see detailed error messages.")
+            logger.error("Or check the logs above for specific migration errors.")
             raise RuntimeError("Database migrations failed")
         logger.info("✅ All migrations completed successfully")
+    except RuntimeError:
+        # Re-raise RuntimeError (migration failures)
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error during migrations: {e}")
+        import traceback
+        logger.error(f"Traceback:\n{traceback.format_exc()}")
+        raise
     finally:
         db.close()
+
+
+def check_migrations_status() -> Tuple[bool, List[str]]:
+    """
+    Check if there are any pending migrations.
+    
+    Returns:
+        Tuple of (is_up_to_date, pending_migration_names)
+        - is_up_to_date: True if all migrations are applied
+        - pending_migration_names: List of pending migration file names
+    """
+    try:
+        db = SessionLocal()
+        try:
+            runner = MigrationRunner(db)
+            pending = runner.get_pending_migrations()
+            pending_names = [m.stem for m in pending]
+            return (len(pending) == 0, pending_names)
+        finally:
+            db.close()
+    except Exception as e:
+        logger.error(f"Error checking migration status: {e}")
+        # If we can't check, assume migrations are needed (fail safe)
+        return (False, ["unknown"])
 
 
 def ensure_migrations_directory():
