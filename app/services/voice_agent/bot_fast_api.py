@@ -6,22 +6,22 @@
 import os
 import sys
 from loguru import logger
-from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.frames.frames import LLMRunFrame
-from pipecat.pipeline.pipeline import Pipeline
-from pipecat.pipeline.runner import PipelineRunner
-from pipecat.pipeline.task import PipelineParams, PipelineTask
-from pipecat.processors.aggregators.llm_context import LLMContext
-from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
-from pipecat.processors.frameworks.rtvi import RTVIConfig, RTVIObserver, RTVIProcessor
-from pipecat.serializers.protobuf import ProtobufFrameSerializer
-from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService
-from pipecat.transports.websocket.fastapi import (
+from efficientai.audio.vad.silero import SileroVADAnalyzer
+from efficientai.frames.frames import LLMRunFrame
+from efficientai.pipeline.pipeline import Pipeline
+from efficientai.pipeline.runner import PipelineRunner
+from efficientai.pipeline.task import PipelineParams, PipelineTask
+from efficientai.processors.aggregators.llm_context import LLMContext
+from efficientai.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
+from efficientai.processors.frameworks.rtvi import RTVIConfig, RTVIObserver, RTVIProcessor
+from efficientai.serializers.protobuf import ProtobufFrameSerializer
+from efficientai.services.google.gemini_live.llm import GeminiLiveLLMService
+from efficientai.transports.websocket.fastapi import (
     FastAPIWebsocketParams,
     FastAPIWebsocketTransport,
 )
-from pipecat.processors.frame_processor import FrameProcessor
-from pipecat.frames.frames import Frame, AudioRawFrame, EndFrame, StartFrame, CancelFrame
+from efficientai.processors.frame_processor import FrameProcessor
+from efficientai.frames.frames import Frame, AudioRawFrame, EndFrame, StartFrame, CancelFrame
 import wave
 import tempfile
 import subprocess

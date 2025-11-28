@@ -46,8 +46,11 @@ dev = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build]
+force-include = { "src/efficientai" = "efficientai" }
+
 [tool.hatch.build.targets.wheel]
-packages = ["app"]
+packages = ["app", "efficientai"]
 
 [project.scripts]
 eai = "app.cli:main"

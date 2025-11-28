@@ -1,0 +1,18 @@
+#
+# Copyright (c) 2024–2025, Daily
+#
+# SPDX-License-Identifier: BSD 2-Clause License
+#
+
+import sys
+
+from efficientai.services import DeprecatedModuleProxy
+
+from .agent_core import *
+from .llm import *
+from .nova_sonic import *
+from .sagemaker import *
+from .stt import *
+from .tts import *
+
+sys.modules[__name__] = DeprecatedModuleProxy(globals(), "aws", "aws.[llm,stt,tts]")
