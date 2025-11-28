@@ -8,6 +8,9 @@ import {
   FileAudio,
   Mic,
   Plus,
+  Edit2,
+  Check,
+  X,
 } from 'lucide-react'
 import Button from './Button'
 import { format } from 'date-fns'
@@ -40,6 +43,8 @@ export default function ManualEvaluationsList(props?: ManualEvaluationsListProps
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [selectedTranscriptionId, setSelectedTranscriptionId] = useState<string | null>(null)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editName, setEditName] = useState('')
 
   // Fetch transcriptions
   const { data: transcriptions, isLoading } = useQuery({
@@ -58,6 +63,17 @@ export default function ManualEvaluationsList(props?: ManualEvaluationsListProps
     },
   })
 
+  // Update transcription mutation
+  const updateMutation = useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) =>
+      apiClient.updateManualTranscription(id, name),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['manual-evaluations'] })
+      setEditingId(null)
+      setEditName('')
+    },
+  })
+
   const handleDelete = async (e: React.MouseEvent, transcriptionId: string) => {
     e.stopPropagation()
     if (confirm('Are you sure you want to delete this transcription?')) {
@@ -69,7 +85,29 @@ export default function ManualEvaluationsList(props?: ManualEvaluationsListProps
     }
   }
 
+  const handleEditClick = (e: React.MouseEvent, transcription: Transcription) => {
+    e.stopPropagation()
+    setEditingId(transcription.id)
+    setEditName(transcription.name || '')
+  }
+
+  const handleSaveClick = async (e: React.MouseEvent, id: string) => {
+    e.stopPropagation()
+    try {
+      await updateMutation.mutateAsync({ id, name: editName })
+    } catch (error) {
+      console.error('Failed to update transcription:', error)
+    }
+  }
+
+  const handleCancelClick = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    setEditingId(null)
+    setEditName('')
+  }
+
   const handleRowClick = (transcriptionId: string) => {
+    if (editingId === transcriptionId) return
     navigate(`/manual-evaluations/${transcriptionId}`)
   }
 
@@ -149,14 +187,26 @@ export default function ManualEvaluationsList(props?: ManualEvaluationsListProps
                   className="cursor-pointer hover:bg-gray-50 transition-colors"
                 >
                   <td className="px-6 py-4 whitespace-nowrap">
-                    <div>
-                      <div className="text-sm font-medium text-gray-900">
-                        {transcription.name || `Transcription ${transcription.id.slice(0, 8)}`}
+                    {editingId === transcription.id ? (
+                      <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="text"
+                          value={editName}
+                          onChange={(e) => setEditName(e.target.value)}
+                          className="block w-full rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 sm:text-sm"
+                          autoFocus
+                        />
                       </div>
-                      <div className="text-xs text-gray-500">
-                        ID: {transcription.id.slice(0, 8)}...
+                    ) : (
+                      <div>
+                        <div className="text-sm font-medium text-gray-900 group flex items-center gap-2">
+                          {transcription.name || `Transcription ${transcription.id.slice(0, 8)}`}
+                        </div>
+                        <div className="text-xs text-gray-500">
+                          ID: {transcription.id.slice(0, 8)}...
+                        </div>
                       </div>
-                    </div>
+                    )}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
                     <div className="flex items-center text-sm text-gray-900">
@@ -185,13 +235,43 @@ export default function ManualEvaluationsList(props?: ManualEvaluationsListProps
                     {format(new Date(transcription.created_at), 'MMM d, yyyy HH:mm')}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                    <button
-                      onClick={(e) => handleDelete(e, transcription.id)}
-                      className="text-red-600 hover:text-red-900 inline-flex items-center"
-                      title="Delete transcription"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
+                    <div className="flex items-center justify-end gap-2">
+                      {editingId === transcription.id ? (
+                        <>
+                          <button
+                            onClick={(e) => handleSaveClick(e, transcription.id)}
+                            className="text-green-600 hover:text-green-900"
+                            title="Save"
+                          >
+                            <Check className="h-4 w-4" />
+                          </button>
+                          <button
+                            onClick={handleCancelClick}
+                            className="text-gray-600 hover:text-gray-900"
+                            title="Cancel"
+                          >
+                            <X className="h-4 w-4" />
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            onClick={(e) => handleEditClick(e, transcription)}
+                            className="text-blue-600 hover:text-blue-900"
+                            title="Edit name"
+                          >
+                            <Edit2 className="h-4 w-4" />
+                          </button>
+                          <button
+                            onClick={(e) => handleDelete(e, transcription.id)}
+                            className="text-red-600 hover:text-red-900"
+                            title="Delete transcription"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
