@@ -6,13 +6,15 @@ API endpoints for managing voice agent WebSocket connections.
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, Request, status
 from sqlalchemy.orm import Session
 from uuid import UUID
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
+from loguru import logger
 
 from app.database import get_db
 from app.dependencies import get_organization_id, get_api_key
 from app.models.database import AIProvider, ModelProvider
 from app.core.encryption import decrypt_api_key
 from app.services.voice_agent.bot_fast_api import run_bot
+from app.services.s3_service import s3_service
 
 router = APIRouter(prefix="/voice-agent", tags=["voice-agent"])
 
@@ -83,58 +85,87 @@ async def websocket_endpoint(
             )
             return
         
-        # Get persona_id and scenario_id from query params
+        # Get agent_id, persona_id and scenario_id from query params
+        agent_id = websocket.query_params.get("agent_id")
         persona_id = websocket.query_params.get("persona_id")
         scenario_id = websocket.query_params.get("scenario_id")
         
         system_instruction = None
+        instruction_parts = []
         
-        if persona_id or scenario_id:
-            from app.models.database import Persona, Scenario
-            
-            instruction_parts = []
-            
-            if persona_id:
-                try:
-                    persona_uuid = UUID(persona_id)
-                    persona = db.query(Persona).filter(
-                        Persona.id == persona_uuid,
-                        Persona.organization_id == organization_id
-                    ).first()
-                    if persona:
-                        instruction_parts.append(f"Role: {persona.role}")
-                        instruction_parts.append(f"Personality: {persona.personality}")
-                        instruction_parts.append(f"Tone: {persona.tone}")
-                        instruction_parts.append(f"Instructions: {persona.instructions}")
-                except ValueError:
-                    print(f"Invalid persona_id: {persona_id}")
-            
-            if scenario_id:
-                try:
-                    scenario_uuid = UUID(scenario_id)
-                    scenario = db.query(Scenario).filter(
-                        Scenario.id == scenario_uuid,
-                        Scenario.organization_id == organization_id
-                    ).first()
-                    if scenario:
-                        instruction_parts.append(f"Scenario Name: {scenario.name}")
-                        instruction_parts.append(f"Scenario Description: {scenario.description}")
-                        instruction_parts.append(f"Scenario Context: {scenario.context}")
-                        instruction_parts.append(f"Scenario Goal: {scenario.goal}")
-                except ValueError:
-                    print(f"Invalid scenario_id: {scenario_id}")
-            
-            if instruction_parts:
-                system_instruction = "\n\n".join(instruction_parts)
-                print(f"Constructed system instruction from persona/scenario: {system_instruction[:100]}...")
+        # Build system instruction as a bundle: Agent + Persona + Scenario
+        from app.models.database import Agent, Persona, Scenario
+        
+        # 1. Add Agent description (base instruction)
+        if agent_id:
+            try:
+                agent_uuid = UUID(agent_id)
+                agent = db.query(Agent).filter(
+                    Agent.id == agent_uuid,
+                    Agent.organization_id == organization_id
+                ).first()
+                if agent and agent.description:
+                    instruction_parts.append(agent.description)
+            except ValueError:
+                pass
+        
+        # 2. Add Persona information (characteristics)
+        if persona_id:
+            try:
+                persona_uuid = UUID(persona_id)
+                persona = db.query(Persona).filter(
+                    Persona.id == persona_uuid,
+                    Persona.organization_id == organization_id
+                ).first()
+                if persona:
+                    persona_parts = []
+                    persona_parts.append(f"\n\nPersona: {persona.name}")
+                    if persona.language:
+                        persona_parts.append(f"Language: {persona.language.value}")
+                    if persona.accent:
+                        persona_parts.append(f"Accent: {persona.accent.value}")
+                    if persona.gender:
+                        persona_parts.append(f"Gender: {persona.gender.value}")
+                    if persona.background_noise and persona.background_noise.value != "none":
+                        persona_parts.append(f"Background noise: {persona.background_noise.value}")
+                    
+                    if persona_parts:
+                        instruction_parts.append("\n".join(persona_parts))
+            except ValueError:
+                pass
+        
+        # 3. Add Scenario information (context and goals)
+        if scenario_id:
+            try:
+                scenario_uuid = UUID(scenario_id)
+                scenario = db.query(Scenario).filter(
+                    Scenario.id == scenario_uuid,
+                    Scenario.organization_id == organization_id
+                ).first()
+                if scenario:
+                    scenario_parts = []
+                    scenario_parts.append(f"\n\nScenario: {scenario.name}")
+                    if scenario.description:
+                        scenario_parts.append(f"Description: {scenario.description}")
+                    if scenario.required_info:
+                        required_info_str = ", ".join([f"{k}: {v}" for k, v in scenario.required_info.items()]) if isinstance(scenario.required_info, dict) else str(scenario.required_info)
+                        if required_info_str:
+                            scenario_parts.append(f"Required information to collect: {required_info_str}")
+                    
+                    if scenario_parts:
+                        instruction_parts.append("\n".join(scenario_parts))
+            except ValueError:
+                pass
+        
+        # Combine all parts into final system instruction
+        if instruction_parts:
+            system_instruction = "\n".join(instruction_parts)
         
         # Run the bot with the decrypted API key
-        print("Starting voice agent bot...")
-        print(f"WebSocket client state: {websocket.client_state}")
-        print(f"WebSocket application state: {websocket.application_state}")
+        logger.info("Starting voice agent bot...")
         try:
-            await run_bot(websocket, google_api_key, system_instruction)
-            print("Voice agent bot finished")
+            await run_bot(websocket, google_api_key, system_instruction, str(organization_id))
+            logger.info("Voice agent bot finished")
         except Exception as bot_error:
             print(f"Error in run_bot: {bot_error}")
             import traceback
@@ -278,14 +309,17 @@ async def bot_connect(
     host = request.headers.get("host", f"localhost:{settings.PORT}")
     base_url = f"{scheme}://{host}"
     
-    # Get persona_id and scenario_id from query params
+    # Get agent_id, persona_id and scenario_id from query params
+    agent_id = request.query_params.get("agent_id")
     persona_id = request.query_params.get("persona_id")
     scenario_id = request.query_params.get("scenario_id")
     
     # The WebSocket endpoint path with API key as query parameter
     ws_url = f"{base_url}{settings.API_V1_PREFIX}/voice-agent/ws?X-API-Key={api_key}"
     
-    # Append persona_id and scenario_id if present
+    # Append agent_id, persona_id and scenario_id if present
+    if agent_id:
+        ws_url += f"&agent_id={agent_id}"
     if persona_id:
         ws_url += f"&persona_id={persona_id}"
     if scenario_id:
@@ -310,4 +344,33 @@ async def bot_connect(
             "Content-Type": "application/json",
         }
     )
+
+
+@router.get("/audio", response_model=List[Dict[str, Any]])
+async def list_voice_agent_audio_files(
+    organization_id: UUID = Depends(get_organization_id),
+    max_keys: int = 1000,
+):
+    """
+    List audio files for voice agent conversations for the current organization.
+    
+    Args:
+        organization_id: Organization ID from API key
+        max_keys: Maximum number of files to return
+        
+    Returns:
+        List of audio file metadata with keys: key, size, last_modified, filename
+    """
+    try:
+        files = s3_service.list_audio_files(
+            organization_id=str(organization_id),
+            max_keys=max_keys
+        )
+        return files
+    except Exception as e:
+        logger.error(f"Error listing voice agent audio files: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to list audio files: {str(e)}"
+        )
 

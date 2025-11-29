@@ -19,7 +19,7 @@ from typing import Any, AsyncGenerator, Dict, Literal, Optional
 import aiohttp
 from loguru import logger
 
-from pipecat import __version__ as pipecat_version
+from efficientai import __version__ as pipecat_version
 from efficientai.frames.frames import (
     CancelFrame,
     EndFrame,

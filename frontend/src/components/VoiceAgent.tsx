@@ -10,6 +10,7 @@ import { PipecatClient, PipecatClientOptions, RTVIEvent } from '@pipecat-ai/clie
 import { WebSocketTransport } from '@pipecat-ai/websocket-transport'
 import { Mic, MicOff, Loader, MessageSquare } from 'lucide-react'
 import Button from './Button'
+import { useAgentStore } from '../store/agentStore'
 
 interface VoiceAgentProps {
   personaId?: string
@@ -17,6 +18,7 @@ interface VoiceAgentProps {
 }
 
 export default function VoiceAgent({ personaId, scenarioId }: VoiceAgentProps) {
+  const { selectedAgent } = useAgentStore()
   const [isConnected, setIsConnected] = useState(false)
   const [isConnecting, setIsConnecting] = useState(false)
   const [status, setStatus] = useState<string>('Disconnected')
@@ -207,8 +209,11 @@ export default function VoiceAgent({ personaId, scenarioId }: VoiceAgentProps) {
       // This handles RTVI protocol handshake automatically
       let endpointUrl = `${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/v1/voice-agent/connect`
 
-      // Append persona and scenario IDs if present
+      // Append agent_id, persona_id and scenario_id if present
       const params = new URLSearchParams()
+      if (selectedAgent?.id) {
+        params.append('agent_id', selectedAgent.id)
+      }
       if (personaId) params.append('persona_id', personaId)
       if (scenarioId) params.append('scenario_id', scenarioId)
 

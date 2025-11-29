@@ -10,8 +10,10 @@ from app.models.database import AudioFile
 from app.models.schemas import AudioFileResponse, MessageResponse
 from app.services.storage_service import storage_service
 from app.services.audio_service import AudioService
+from app.services.s3_service import s3_service
 from app.core.exceptions import AudioFileNotFoundError, StorageError
 from uuid import UUID
+from loguru import logger
 
 router = APIRouter(prefix="/audio", tags=["Audio"])
 audio_service = AudioService()
@@ -37,7 +39,7 @@ def upload_audio_file(
         Created audio file metadata
     """
     try:
-        # Validate and save file
+        # Validate and save file to local disk
         file_id = uuid4()
         file_path, file_size = storage_service.save_file(file, file_id)
 
@@ -50,6 +52,26 @@ def upload_audio_file(
 
         # Get file format
         file_ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else ""
+
+        # Upload to S3 in organization-specific folder
+        s3_key = None
+        if s3_service.is_enabled():
+            try:
+                # Read file content for S3 upload
+                with open(file_path, "rb") as f:
+                    file_content = f.read()
+                
+                # Upload to S3 with organization_id
+                s3_key = s3_service.upload_file(
+                    file_content=file_content,
+                    file_id=file_id,
+                    file_format=file_ext,
+                    organization_id=str(organization_id)
+                )
+                logger.info(f"Audio file uploaded to S3: {s3_key}")
+            except Exception as e:
+                # Log error but don't fail the upload - local storage succeeded
+                logger.warning(f"Failed to upload audio file to S3: {e}")
 
         # Create database record
         audio_file = AudioFile(
