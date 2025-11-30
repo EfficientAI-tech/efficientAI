@@ -132,17 +132,28 @@ class MigrationRunner:
         pending = self.get_pending_migrations()
         
         if not pending:
-            logger.info("No pending migrations")
+            logger.info("✅ No pending migrations - database is up to date")
             return True
         
-        logger.info(f"Found {len(pending)} pending migration(s)")
+        logger.info(f"📋 Found {len(pending)} pending migration(s):")
+        for migration_file in pending:
+            logger.info(f"   - {migration_file.name}")
         
         success = True
+        
         for migration_file in pending:
+            logger.info("")
+            logger.info(f"🔄 Applying migration: {migration_file.name}")
             if not self.run_migration(migration_file):
+                logger.error(f"❌ Failed to run migration: {migration_file.name}")
                 success = False
-                logger.error(f"Failed to run migration: {migration_file.name}")
                 break  # Stop on first failure
+            else:
+                logger.info(f"✅ Successfully applied: {migration_file.name}")
+        
+        if success:
+            logger.info("")
+            logger.info("✅ All pending migrations completed successfully")
         
         return success
 
@@ -151,6 +162,9 @@ def run_migrations():
     """
     Run all pending database migrations.
     This should be called on application startup.
+    
+    Raises:
+        RuntimeError: If migrations fail, preventing application startup
     """
     # Ensure logging is configured at INFO level
     logging.basicConfig(
@@ -159,26 +173,71 @@ def run_migrations():
         force=True
     )
     
-    logger.info("Starting database migrations...")
+    logger.info("=" * 60)
+    logger.info("🔄 Starting database migrations...")
+    logger.info("=" * 60)
+    
     db = SessionLocal()
     try:
         runner = MigrationRunner(db)
+        
+        # Check current migration status
+        applied = runner.get_applied_migrations()
+        pending = runner.get_pending_migrations()
+        
+        if applied:
+            logger.info(f"📊 Currently applied migrations: {len(applied)}")
+            for version in applied[-5:]:  # Show last 5
+                logger.info(f"   ✓ {version}")
+            if len(applied) > 5:
+                logger.info(f"   ... and {len(applied) - 5} more")
+        
+        if not pending:
+            logger.info("✅ Database is up to date - no migrations needed")
+            return
+        
+        # Run migrations
         success = runner.run_all()
         if not success:
+            logger.error("")
             logger.error("=" * 60)
-            logger.error("❌ MIGRATION FAILED - Application may not start correctly!")
+            logger.error("❌ MIGRATION FAILED - Application cannot start!")
             logger.error("=" * 60)
-            logger.error("Please run 'eai migrate --verbose' to see detailed error messages.")
-            logger.error("Or check the logs above for specific migration errors.")
+            logger.error("The application will not start until migrations succeed.")
+            logger.error("")
+            logger.error("To diagnose the issue:")
+            logger.error("  1. Run: eai migrate --verbose")
+            logger.error("  2. Check the error messages above")
+            logger.error("  3. Fix any database schema issues")
+            logger.error("=" * 60)
             raise RuntimeError("Database migrations failed")
-        logger.info("✅ All migrations completed successfully")
+        
+        # Verify migrations were applied
+        logger.info("")
+        logger.info("🔍 Verifying migrations were applied...")
+        final_pending = runner.get_pending_migrations()
+        if final_pending:
+            logger.warning(f"⚠️  Warning: {len(final_pending)} migration(s) still pending after run:")
+            for migration_file in final_pending:
+                logger.warning(f"   - {migration_file.name}")
+            logger.warning("This may indicate a migration tracking issue.")
+        else:
+            logger.info("✅ Verification complete - all migrations applied successfully")
+        
+        logger.info("=" * 60)
+        
     except RuntimeError:
         # Re-raise RuntimeError (migration failures)
         raise
     except Exception as e:
-        logger.error(f"Unexpected error during migrations: {e}")
+        logger.error("")
+        logger.error("=" * 60)
+        logger.error("❌ UNEXPECTED ERROR during migrations!")
+        logger.error("=" * 60)
+        logger.error(f"Error: {e}")
         import traceback
         logger.error(f"Traceback:\n{traceback.format_exc()}")
+        logger.error("=" * 60)
         raise
     finally:
         db.close()

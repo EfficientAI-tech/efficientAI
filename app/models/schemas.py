@@ -1,10 +1,10 @@
 """Pydantic schemas for request/response validation."""
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, validator, model_validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from uuid import UUID
-from app.models.database import EvaluationType, EvaluationStatus, BatchStatus, RoleEnum, InvitationStatus, IntegrationPlatform, ModelProvider
+from app.models.database import EvaluationType, EvaluationStatus, BatchStatus, RoleEnum, InvitationStatus, IntegrationPlatform, ModelProvider, MetricType, MetricTrigger, EvaluatorResultStatus
 
 
 # Audio File Schemas
@@ -268,6 +268,20 @@ class AgentCreate(BaseModel):
     language: LanguageEnum = LanguageEnum.ENGLISH
     description: Optional[str] = None
     call_type: CallTypeEnum = CallTypeEnum.OUTBOUND
+    voice_bundle_id: Optional[UUID] = None
+    ai_provider_id: Optional[UUID] = None
+
+    @model_validator(mode='after')
+    def validate_voice_config(self):
+        """Ensure exactly one of voice_bundle_id or ai_provider_id is provided"""
+        voice_bundle = self.voice_bundle_id
+        ai_provider = self.ai_provider_id
+        
+        if voice_bundle and ai_provider:
+            raise ValueError('Cannot specify both voice_bundle_id and ai_provider_id. Choose one.')
+        if not voice_bundle and not ai_provider:
+            raise ValueError('Must specify either voice_bundle_id or ai_provider_id.')
+        return self
 
     class Config:
         json_schema_extra = {
@@ -276,7 +290,8 @@ class AgentCreate(BaseModel):
                 "phone_number": "+1234567890",
                 "language": "en",
                 "description": "Handles customer support",
-                "call_type": "outbound"
+                "call_type": "outbound",
+                "voice_bundle_id": "123e4567-e89b-12d3-a456-426614174000"
             }
         }
 
@@ -288,6 +303,18 @@ class AgentUpdate(BaseModel):
     language: Optional[LanguageEnum] = None
     description: Optional[str] = None
     call_type: Optional[CallTypeEnum] = None
+    voice_bundle_id: Optional[UUID] = None
+    ai_provider_id: Optional[UUID] = None
+
+    @model_validator(mode='after')
+    def validate_voice_config(self):
+        """Ensure at most one of voice_bundle_id or ai_provider_id is provided"""
+        voice_bundle = self.voice_bundle_id
+        ai_provider = self.ai_provider_id
+        
+        if voice_bundle and ai_provider:
+            raise ValueError('Cannot specify both voice_bundle_id and ai_provider_id. Choose one.')
+        return self
 
 
 class AgentResponse(BaseModel):
@@ -298,6 +325,8 @@ class AgentResponse(BaseModel):
     language: LanguageEnum
     description: Optional[str]
     call_type: CallTypeEnum
+    voice_bundle_id: Optional[UUID]
+    ai_provider_id: Optional[UUID]
     created_at: datetime
     updated_at: datetime
 
@@ -748,6 +777,166 @@ class ConversationEvaluationResponse(BaseModel):
     llm_model: Optional[str]
     created_at: datetime
     updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+# Evaluator Schemas
+class EvaluatorCreate(BaseModel):
+    """Schema for creating an evaluator."""
+    agent_id: UUID
+    persona_id: UUID
+    scenario_id: UUID
+    tags: Optional[List[str]] = None
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "agent_id": "123e4567-e89b-12d3-a456-426614174000",
+                "persona_id": "123e4567-e89b-12d3-a456-426614174001",
+                "scenario_id": "123e4567-e89b-12d3-a456-426614174002",
+                "tags": ["test", "production"]
+            }
+        }
+
+
+class EvaluatorUpdate(BaseModel):
+    """Schema for updating an evaluator."""
+    agent_id: Optional[UUID] = None
+    persona_id: Optional[UUID] = None
+    scenario_id: Optional[UUID] = None
+    tags: Optional[List[str]] = None
+
+
+class EvaluatorResponse(BaseModel):
+    """Schema for evaluator response."""
+    id: UUID
+    evaluator_id: str
+    organization_id: UUID
+    agent_id: UUID
+    persona_id: UUID
+    scenario_id: UUID
+    tags: Optional[List[str]]
+    created_at: datetime
+    updated_at: datetime
+    created_by: Optional[str]
+    
+    class Config:
+        from_attributes = True
+
+
+class EvaluatorBulkCreate(BaseModel):
+    """Schema for creating multiple evaluators at once."""
+    agent_id: UUID
+    scenario_id: UUID
+    persona_ids: List[UUID]
+    tags: Optional[List[str]] = None
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "agent_id": "123e4567-e89b-12d3-a456-426614174000",
+                "scenario_id": "123e4567-e89b-12d3-a456-426614174002",
+                "persona_ids": [
+                    "123e4567-e89b-12d3-a456-426614174001",
+                    "123e4567-e89b-12d3-a456-426614174003"
+                ],
+                "tags": ["test", "production"]
+            }
+        }
+
+
+# Metric Schemas
+class MetricCreate(BaseModel):
+    """Schema for creating a metric."""
+    name: str
+    description: Optional[str] = None
+    metric_type: MetricType = MetricType.RATING
+    trigger: MetricTrigger = MetricTrigger.ALWAYS
+    enabled: bool = True
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "name": "Professionalism",
+                "description": "Measures the professional tone and behavior",
+                "metric_type": "rating",
+                "trigger": "always",
+                "enabled": True
+            }
+        }
+
+
+class MetricUpdate(BaseModel):
+    """Schema for updating a metric."""
+    name: Optional[str] = None
+    description: Optional[str] = None
+    metric_type: Optional[MetricType] = None
+    trigger: Optional[MetricTrigger] = None
+    enabled: Optional[bool] = None
+
+
+class MetricResponse(BaseModel):
+    """Schema for metric response."""
+    id: UUID
+    organization_id: UUID
+    name: str
+    description: Optional[str]
+    metric_type: MetricType
+    trigger: MetricTrigger
+    enabled: bool
+    is_default: bool
+    created_at: datetime
+    updated_at: datetime
+    created_by: Optional[str]
+    
+    class Config:
+        from_attributes = True
+
+
+# Evaluator Result Schemas
+class EvaluatorResultCreate(BaseModel):
+    """Schema for creating an evaluator result."""
+    evaluator_id: UUID
+    agent_id: UUID
+    persona_id: UUID
+    scenario_id: UUID
+    name: str
+    duration_seconds: Optional[float] = None
+    audio_s3_key: Optional[str] = None
+
+
+class EvaluatorResultUpdate(BaseModel):
+    """Schema for updating an evaluator result."""
+    status: Optional[EvaluatorResultStatus] = None
+    transcription: Optional[str] = None
+    metric_scores: Optional[Dict[str, Any]] = None
+    error_message: Optional[str] = None
+    duration_seconds: Optional[float] = None
+
+
+class EvaluatorResultResponse(BaseModel):
+    """Schema for evaluator result response."""
+    id: UUID
+    result_id: str
+    organization_id: UUID
+    evaluator_id: UUID
+    agent_id: UUID
+    persona_id: UUID
+    scenario_id: UUID
+    name: str
+    timestamp: datetime
+    duration_seconds: Optional[float]
+    status: EvaluatorResultStatus
+    audio_s3_key: Optional[str]
+    transcription: Optional[str]
+    metric_scores: Optional[Dict[str, Any]]
+    celery_task_id: Optional[str]
+    error_message: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+    created_by: Optional[str]
     
     class Config:
         from_attributes = True

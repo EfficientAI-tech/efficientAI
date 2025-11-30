@@ -173,7 +173,7 @@ class AudioRecorder(FrameProcessor):
             self.wave_file = None
 
 
-async def run_bot(websocket_client, google_api_key: str, system_instruction: str = None, organization_id: str = None):
+async def run_bot(websocket_client, google_api_key: str, system_instruction: str = None, organization_id: str = None, agent_id: str = None, persona_id: str = None, scenario_id: str = None):
     """
     Run the voice agent bot with the provided Google API key.
     
@@ -205,6 +205,12 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
             instruction = DEFAULT_SYSTEM_INSTRUCTION.strip()
 
         logger.info("Setting up GeminiLiveLLMService...")
+        # Validate API key before passing to Gemini
+        if not google_api_key or not google_api_key.strip():
+            raise ValueError("Google API key is empty or invalid")
+        
+        # Log API key validation (first few chars only for security)
+        
         llm = GeminiLiveLLMService(
             api_key=google_api_key,
             voice_id="Puck",  # Aoede, Charon, Fenrir, Kore, Puck
@@ -366,6 +372,8 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
                             )
                             
                             logger.info(f"✅ Conversation audio uploaded to S3: {s3_key}")
+                            s3_key_result = s3_key
+                            duration_result = time.time() - call_start_time
                             
                             # Clean up merged file
                             os.unlink(merged_path)
@@ -385,5 +393,22 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
 
     except Exception as e:
         logger.error(f"Error in run_bot: {e}", exc_info=True)
-        raise
+        # Still return metadata if we have it, even if there was an error
+        return {
+            "s3_key": s3_key_result,
+            "duration": duration_result,
+            "agent_id": agent_id,
+            "persona_id": persona_id,
+            "scenario_id": scenario_id,
+            "error": str(e)
+        }
+    
+    # Return call metadata for evaluator result creation
+    return {
+        "s3_key": s3_key_result,
+        "duration": duration_result,
+        "agent_id": agent_id,
+        "persona_id": persona_id,
+        "scenario_id": scenario_id
+    }
 

@@ -15,10 +15,14 @@ import { useAgentStore } from '../store/agentStore'
 interface VoiceAgentProps {
   personaId?: string
   scenarioId?: string
+  agentId?: string
 }
 
-export default function VoiceAgent({ personaId, scenarioId }: VoiceAgentProps) {
+export default function VoiceAgent({ personaId, scenarioId, agentId }: VoiceAgentProps) {
   const { selectedAgent } = useAgentStore()
+  
+  // Use agentId prop if provided, otherwise fall back to selectedAgent from store
+  const effectiveAgentId = agentId || selectedAgent?.id
   const [isConnected, setIsConnected] = useState(false)
   const [isConnecting, setIsConnecting] = useState(false)
   const [status, setStatus] = useState<string>('Disconnected')
@@ -211,8 +215,8 @@ export default function VoiceAgent({ personaId, scenarioId }: VoiceAgentProps) {
 
       // Append agent_id, persona_id and scenario_id if present
       const params = new URLSearchParams()
-      if (selectedAgent?.id) {
-        params.append('agent_id', selectedAgent.id)
+      if (effectiveAgentId) {
+        params.append('agent_id', effectiveAgentId)
       }
       if (personaId) params.append('persona_id', personaId)
       if (scenarioId) params.append('scenario_id', scenarioId)
@@ -286,14 +290,18 @@ export default function VoiceAgent({ personaId, scenarioId }: VoiceAgentProps) {
     }
   }
 
+  // Get agent name for display - use selectedAgent if available, otherwise use generic
+  const agentName = selectedAgent?.name || 'Voice Agent'
+  const agentDescription = selectedAgent?.description || 'Interact with a real-time voice AI agent'
+
   return (
     <div className="space-y-6">
       <div className="bg-white shadow rounded-lg p-6">
         <div className="flex items-center justify-between mb-4">
           <div>
-            <h2 className="text-lg font-semibold text-gray-900">Voice Agent (Gemini)</h2>
+            <h2 className="text-lg font-semibold text-gray-900">{agentName}</h2>
             <p className="text-sm text-gray-600 mt-1">
-              Interact with a real-time voice AI agent powered by Google Gemini
+              {agentDescription}
             </p>
           </div>
         </div>

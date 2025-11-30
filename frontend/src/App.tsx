@@ -19,6 +19,8 @@ import DataSources from './pages/DataSources'
 import AIProviders from './pages/AIProviders'
 import VoiceBundles from './pages/VoiceBundles'
 import EvaluateTestAgents from './pages/EvaluateTestAgents'
+import MetricsManagement from './pages/MetricsManagement'
+import Results from './pages/Results'
 
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -59,6 +61,8 @@ function App() {
           <Route path="ai-providers" element={<AIProviders />} />
           <Route path="voicebundles" element={<VoiceBundles />} />
           <Route path="evaluate-test-agents" element={<EvaluateTestAgents />} />
+          <Route path="metrics-management" element={<MetricsManagement />} />
+          <Route path="results" element={<Results />} />
           <Route path="iam" element={<IAM />} />
           <Route path="profile" element={<Profile />} />
         </Route>

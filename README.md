@@ -275,13 +275,13 @@ def upgrade(db):
 
 ### Running Migrations
 
-**Automatic (Recommended):**
-- Migrations run automatically when you start the app with `eai start`
-- Migrations run **twice** for safety:
-  1. Before the server starts (via CLI)
-  2. On application startup (via lifespan handler)
-- If migrations fail, the application **will not start**
-- API requests are **blocked** if migrations are pending
+**Automatic (Recommended - Default Behavior):**
+- ✅ Migrations run **automatically** when you start the app with `eai start`
+- ✅ Migrations also run automatically when the application starts (via lifespan handler)
+- ✅ **If migrations fail, the application will NOT start** - this ensures database consistency
+- ✅ API requests are **blocked** if migrations are pending
+- ✅ When cloning from main, migrations will run automatically on first startup
+- ✅ Each migration only runs once (tracked in `schema_migrations` table)
 
 **Manual:**
 ```bash

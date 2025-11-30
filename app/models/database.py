@@ -28,6 +28,14 @@ class EvaluationStatus(str, enum.Enum):
     CANCELLED = "cancelled"
 
 
+class EvaluatorResultStatus(str, enum.Enum):
+    """Evaluator result status enumeration."""
+
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class BatchStatus(str, enum.Enum):
     """Batch job status enumeration."""
 
@@ -299,6 +307,10 @@ class Agent(Base):
     description = Column(String)
     call_type = Column(Enum(CallTypeEnum), nullable=False, default=CallTypeEnum.OUTBOUND)
     
+    # Voice configuration - either voice_bundle_id OR ai_provider_id (mutually exclusive)
+    voice_bundle_id = Column(UUID(as_uuid=True), ForeignKey("voicebundles.id"), nullable=True, index=True)
+    ai_provider_id = Column(UUID(as_uuid=True), ForeignKey("aiproviders.id"), nullable=True, index=True)
+    
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     created_by = Column(String)
@@ -509,6 +521,104 @@ class TestAgentConversation(Base):
     # Additional metadata
     conversation_metadata = Column(JSON, nullable=True)  # Additional conversation metadata
     
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_by = Column(String, nullable=True)
+
+
+class Evaluator(Base):
+    """Evaluator - Configuration for testing agents with specific persona and scenario combinations."""
+    __tablename__ = "evaluators"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    evaluator_id = Column(String(6), unique=True, nullable=False, index=True)  # 6-digit ID
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    
+    # Configuration
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False)
+    persona_id = Column(UUID(as_uuid=True), ForeignKey("personas.id"), nullable=False)
+    scenario_id = Column(UUID(as_uuid=True), ForeignKey("scenarios.id"), nullable=False)
+    
+    # Tags for categorization
+    tags = Column(JSON, nullable=True)  # Array of tag strings
+    
+    # Metadata
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_by = Column(String, nullable=True)
+
+
+class MetricType(str, enum.Enum):
+    """Metric type enumeration."""
+    NUMBER = "number"
+    BOOLEAN = "boolean"
+    RATING = "rating"
+
+
+class MetricTrigger(str, enum.Enum):
+    """Metric trigger enumeration."""
+    ALWAYS = "always"
+    # Can add more triggers in the future like "on_error", "on_completion", etc.
+
+
+class Metric(Base):
+    """Metric - Configuration for evaluation metrics."""
+    __tablename__ = "metrics"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    
+    # Basic information
+    name = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    
+    # Configuration
+    metric_type = Column(Enum(MetricType), nullable=False, default=MetricType.RATING)
+    trigger = Column(Enum(MetricTrigger), nullable=False, default=MetricTrigger.ALWAYS)
+    enabled = Column(Boolean, nullable=False, default=True)
+    
+    # Metadata
+    is_default = Column(Boolean, nullable=False, default=False)  # Pre-defined metrics
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_by = Column(String, nullable=True)
+
+
+class EvaluatorResult(Base):
+    """EvaluatorResult - Results from running an evaluator with transcription and metric evaluations."""
+    __tablename__ = "evaluator_results"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    result_id = Column(String(6), unique=True, nullable=False, index=True)  # 6-digit ID
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    
+    # References
+    evaluator_id = Column(UUID(as_uuid=True), ForeignKey("evaluators.id"), nullable=False, index=True)
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False)
+    persona_id = Column(UUID(as_uuid=True), ForeignKey("personas.id"), nullable=False)
+    scenario_id = Column(UUID(as_uuid=True), ForeignKey("scenarios.id"), nullable=False)
+    
+    # Result data
+    name = Column(String, nullable=False)  # Scenario name
+    timestamp = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    duration_seconds = Column(Float, nullable=True)  # Call duration
+    status = Column(Enum(EvaluatorResultStatus), nullable=False, default=EvaluatorResultStatus.IN_PROGRESS)
+    
+    # Audio and transcription
+    audio_s3_key = Column(String, nullable=True)  # S3 key for audio file
+    transcription = Column(String, nullable=True)  # Full transcription
+    
+    # Metric scores - JSON object with metric_id as key and score as value
+    # Format: {"metric_id_1": {"value": 85, "type": "rating"}, "metric_id_2": {"value": true, "type": "boolean"}}
+    metric_scores = Column(JSON, nullable=True)
+    
+    # Celery task tracking
+    celery_task_id = Column(String, nullable=True, index=True)  # Celery task ID for tracking
+    
+    # Error information
+    error_message = Column(String, nullable=True)
+    
+    # Metadata
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     created_by = Column(String, nullable=True)

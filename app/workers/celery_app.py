@@ -108,3 +108,115 @@ def process_batch_evaluation_task(batch_id: str, evaluation_ids: list[str]):
     finally:
         db.close()
 
+
+@celery_app.task(name="process_evaluator_result", bind=True, max_retries=3)
+def process_evaluator_result_task(self, result_id: str):
+    """
+    Celery task to process an evaluator result: transcribe audio and evaluate metrics.
+    
+    Args:
+        self: Task instance
+        result_id: EvaluatorResult ID as string
+        
+    Returns:
+        Dictionary with processing results
+    """
+    db = SessionLocal()
+    try:
+        from app.models.database import EvaluatorResult, EvaluatorResultStatus, Metric
+        from app.services.s3_service import s3_service
+        from app.services.audio_service import AudioService
+        import tempfile
+        import os
+        
+        result_uuid = UUID(result_id)
+        result = db.query(EvaluatorResult).filter(EvaluatorResult.id == result_uuid).first()
+        
+        if not result:
+            return {"error": "Evaluator result not found"}
+        
+        # Update status to IN_PROGRESS
+        result.status = EvaluatorResultStatus.IN_PROGRESS
+        result.celery_task_id = self.request.id
+        db.commit()
+        
+        try:
+            # Step 1: Download audio from S3
+            if not result.audio_s3_key:
+                raise ValueError("No audio S3 key found")
+            
+            # Download audio file
+            audio_data = s3_service.download_file_by_key(result.audio_s3_key)
+            
+            # Save to temp file for processing
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp_file:
+                tmp_file.write(audio_data)
+                tmp_audio_path = tmp_file.name
+            
+            try:
+                # Step 2: Transcribe audio
+                # TODO: Integrate with transcription service (e.g., OpenAI Whisper, AWS Transcribe)
+                # For now, we'll use a placeholder
+                audio_service = AudioService()
+                # transcription = audio_service.transcribe(tmp_audio_path)  # Implement this
+                transcription = "Transcription placeholder - implement transcription service"
+                
+                result.transcription = transcription
+                
+                # Step 3: Get enabled metrics for the organization
+                enabled_metrics = db.query(Metric).filter(
+                    Metric.organization_id == result.organization_id,
+                    Metric.enabled == True
+                ).all()
+                
+                # Step 4: Evaluate against enabled metrics
+                metric_scores = {}
+                for metric in enabled_metrics:
+                    # TODO: Implement actual metric evaluation logic
+                    # This is a placeholder - implement based on metric type
+                    if metric.metric_type.value == "rating":
+                        # Evaluate rating metric (1-5 or 1-10 scale)
+                        score = 4.0  # Placeholder
+                    elif metric.metric_type.value == "boolean":
+                        # Evaluate boolean metric
+                        score = True  # Placeholder
+                    elif metric.metric_type.value == "number":
+                        # Evaluate number metric
+                        score = 85.0  # Placeholder
+                    else:
+                        score = None
+                    
+                    metric_scores[str(metric.id)] = {
+                        "value": score,
+                        "type": metric.metric_type.value,
+                        "metric_name": metric.name
+                    }
+                
+                result.metric_scores = metric_scores
+                result.status = EvaluatorResultStatus.COMPLETED
+                
+            finally:
+                # Clean up temp file
+                if os.path.exists(tmp_audio_path):
+                    os.unlink(tmp_audio_path)
+            
+            db.commit()
+            return {
+                "result_id": result_id,
+                "status": "completed",
+                "transcription": transcription,
+                "metrics_evaluated": len(metric_scores)
+            }
+            
+        except Exception as e:
+            # Mark as failed
+            result.status = EvaluatorResultStatus.FAILED
+            result.error_message = str(e)
+            db.commit()
+            raise
+            
+    except Exception as exc:
+        # Retry on failure
+        raise self.retry(exc=exc, countdown=60)
+    finally:
+        db.close()

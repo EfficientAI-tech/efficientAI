@@ -61,34 +61,75 @@ async def websocket_endpoint(
             db.close()
             return
         
-        # Get Google AI Provider for this organization
-        ai_provider = db.query(AIProvider).filter(
-            AIProvider.organization_id == organization_id,
-            AIProvider.provider == ModelProvider.GOOGLE,
-            AIProvider.is_active == True
-        ).first()
+        # Get agent_id, persona_id and scenario_id from query params
+        agent_id = websocket.query_params.get("agent_id")
+        persona_id = websocket.query_params.get("persona_id")
+        scenario_id = websocket.query_params.get("scenario_id")
+        
+        # Determine which AI Provider to use
+        # Priority: 1) Agent's ai_provider_id, 2) Agent's voice_bundle's providers, 3) Default Google
+        ai_provider = None
+        agent = None
+        
+        if agent_id:
+            try:
+                from app.models.database import Agent, VoiceBundle
+                agent_uuid = UUID(agent_id)
+                agent = db.query(Agent).filter(
+                    Agent.id == agent_uuid,
+                    Agent.organization_id == organization_id
+                ).first()
+                
+                if agent:
+                    # If agent has ai_provider_id, use that
+                    if agent.ai_provider_id:
+                        ai_provider = db.query(AIProvider).filter(
+                            AIProvider.id == agent.ai_provider_id,
+                            AIProvider.organization_id == organization_id,
+                            AIProvider.is_active == True
+                        ).first()
+                    # If agent has voice_bundle_id, we could use it in the future
+                    # For now, fall back to Google
+                    elif agent.voice_bundle_id:
+                        # Voice Bundle support can be added here in the future
+                        # For now, use default Google provider
+                        pass
+            except ValueError:
+                pass
+        
+        # Fall back to Google AI Provider if no agent-specific provider found
+        if not ai_provider:
+            ai_provider = db.query(AIProvider).filter(
+                AIProvider.organization_id == organization_id,
+                AIProvider.provider == ModelProvider.GOOGLE,
+                AIProvider.is_active == True
+            ).first()
         
         if not ai_provider:
             await websocket.close(
                 code=1008, 
-                reason="Google AI Provider not configured. Please configure a Google API key in AI Providers settings."
+                reason="AI Provider not configured. Please configure an AI Provider in AI Providers settings or select one when creating the agent."
             )
             return
         
         # Decrypt API key
         try:
             google_api_key = decrypt_api_key(ai_provider.api_key)
+            # Validate the decrypted key
+            if not google_api_key or not google_api_key.strip():
+                logger.error("Decrypted API key is empty")
+                await websocket.close(
+                    code=1008,
+                    reason="API key is empty. Please configure a valid API key in AI Providers settings."
+                )
+                return
         except Exception as e:
+            logger.error(f"Failed to decrypt API key: {e}", exc_info=True)
             await websocket.close(
                 code=1008,
                 reason=f"Failed to decrypt API key: {str(e)}"
             )
             return
-        
-        # Get agent_id, persona_id and scenario_id from query params
-        agent_id = websocket.query_params.get("agent_id")
-        persona_id = websocket.query_params.get("persona_id")
-        scenario_id = websocket.query_params.get("scenario_id")
         
         system_instruction = None
         instruction_parts = []
@@ -162,15 +203,81 @@ async def websocket_endpoint(
             system_instruction = "\n".join(instruction_parts)
         
         # Run the bot with the decrypted API key
-        logger.info("Starting voice agent bot...")
+        call_metadata = None
         try:
-            await run_bot(websocket, google_api_key, system_instruction, str(organization_id))
-            logger.info("Voice agent bot finished")
+            call_metadata = await run_bot(
+                websocket, 
+                google_api_key, 
+                system_instruction, 
+                str(organization_id),
+                agent_id,
+                persona_id,
+                scenario_id
+            )
         except Exception as bot_error:
-            print(f"Error in run_bot: {bot_error}")
-            import traceback
-            traceback.print_exc()
-            raise
+            logger.error(f"Error in run_bot: {bot_error}", exc_info=True)
+            # Continue to try creating evaluator result if we have metadata
+        
+        # Create evaluator result if we have the required data (only if no error)
+        if call_metadata and call_metadata.get("s3_key") and not call_metadata.get("error") and agent_id and persona_id and scenario_id:
+            try:
+                from app.models.database import Evaluator, EvaluatorResult, EvaluatorResultStatus, Scenario
+                from app.workers.celery_app import process_evaluator_result_task
+                import random
+                
+                # Find evaluator by agent, persona, scenario
+                evaluator = db.query(Evaluator).filter(
+                    Evaluator.agent_id == UUID(agent_id),
+                    Evaluator.persona_id == UUID(persona_id),
+                    Evaluator.scenario_id == UUID(scenario_id),
+                    Evaluator.organization_id == organization_id
+                ).first()
+                
+                if evaluator:
+                    # Get scenario name
+                    scenario = db.query(Scenario).filter(Scenario.id == UUID(scenario_id)).first()
+                    scenario_name = scenario.name if scenario else "Unknown Scenario"
+                    
+                    # Generate unique 6-digit result ID
+                    max_attempts = 100
+                    result_id = None
+                    for _ in range(max_attempts):
+                        candidate_id = f"{random.randint(100000, 999999)}"
+                        existing = db.query(EvaluatorResult).filter(EvaluatorResult.result_id == candidate_id).first()
+                        if not existing:
+                            result_id = candidate_id
+                            break
+                    
+                    if not result_id:
+                        logger.error("Failed to generate unique result ID")
+                    else:
+                        # Create evaluator result
+                        evaluator_result = EvaluatorResult(
+                            result_id=result_id,
+                            organization_id=organization_id,
+                            evaluator_id=evaluator.id,
+                            agent_id=UUID(agent_id),
+                            persona_id=UUID(persona_id),
+                            scenario_id=UUID(scenario_id),
+                            name=scenario_name,
+                            duration_seconds=call_metadata.get("duration"),
+                            status=EvaluatorResultStatus.IN_PROGRESS,
+                            audio_s3_key=call_metadata.get("s3_key")
+                        )
+                        db.add(evaluator_result)
+                        db.commit()
+                        db.refresh(evaluator_result)
+                        
+                        # Trigger Celery task
+                        task = process_evaluator_result_task.delay(str(evaluator_result.id))
+                        evaluator_result.celery_task_id = task.id
+                        db.commit()
+                        
+                        logger.info(f"✅ Created evaluator result {result_id} and triggered processing task")
+                else:
+                    pass
+            except Exception as e:
+                logger.error(f"Error creating evaluator result: {e}", exc_info=True)
         
     except WebSocketDisconnect:
         print("WebSocket disconnected by client")
@@ -288,31 +395,54 @@ async def bot_connect(
     
     print(f"[BACKEND] Organization ID: {organization_id}")
     
-    # Verify Google AI Provider is configured
-    ai_provider = db.query(AIProvider).filter(
-        AIProvider.organization_id == organization_id,
-        AIProvider.provider == ModelProvider.GOOGLE,
-        AIProvider.is_active == True
-    ).first()
+    # Get agent_id, persona_id and scenario_id from query params first
+    agent_id = request.query_params.get("agent_id")
+    persona_id = request.query_params.get("persona_id")
+    scenario_id = request.query_params.get("scenario_id")
+    
+    # Determine which AI Provider to use based on agent configuration
+    ai_provider = None
+    agent = None
+    
+    if agent_id:
+        try:
+            from app.models.database import Agent
+            agent_uuid = UUID(agent_id)
+            agent = db.query(Agent).filter(
+                Agent.id == agent_uuid,
+                Agent.organization_id == organization_id
+            ).first()
+            
+            if agent and agent.ai_provider_id:
+                ai_provider = db.query(AIProvider).filter(
+                    AIProvider.id == agent.ai_provider_id,
+                    AIProvider.organization_id == organization_id,
+                    AIProvider.is_active == True
+                ).first()
+        except ValueError:
+            pass
+    
+    # Fall back to Google AI Provider if no agent-specific provider found
+    if not ai_provider:
+        ai_provider = db.query(AIProvider).filter(
+            AIProvider.organization_id == organization_id,
+            AIProvider.provider == ModelProvider.GOOGLE,
+            AIProvider.is_active == True
+        ).first()
     
     if not ai_provider:
-        print("[BACKEND] ❌ Google AI Provider not configured")
+        print("[BACKEND] ❌ AI Provider not configured")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Google AI Provider not configured. Please configure a Google API key in AI Providers settings."
+            detail="AI Provider not configured. Please configure an AI Provider in AI Providers settings or select one when creating the agent."
         )
     
-    print("[BACKEND] ✅ Google AI Provider found")
+    print(f"[BACKEND] ✅ AI Provider found: {ai_provider.provider.value}")
     
     # Determine WebSocket protocol based on request
     scheme = "wss" if request.url.scheme == "https" else "ws"
     host = request.headers.get("host", f"localhost:{settings.PORT}")
     base_url = f"{scheme}://{host}"
-    
-    # Get agent_id, persona_id and scenario_id from query params
-    agent_id = request.query_params.get("agent_id")
-    persona_id = request.query_params.get("persona_id")
-    scenario_id = request.query_params.get("scenario_id")
     
     # The WebSocket endpoint path with API key as query parameter
     ws_url = f"{base_url}{settings.API_V1_PREFIX}/voice-agent/ws?X-API-Key={api_key}"

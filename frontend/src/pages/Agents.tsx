@@ -15,6 +15,8 @@ interface Agent {
   language: string
   description: string | null
   call_type: string
+  voice_bundle_id?: string | null
+  ai_provider_id?: string | null
   created_at: string
   updated_at: string
 }
@@ -34,12 +36,25 @@ export default function Agents() {
     phone_number: '',
     language: 'en',
     description: '',
-    call_type: 'outbound'
+    call_type: 'outbound',
+    voice_config_type: 'voice_bundle' as 'voice_bundle' | 'ai_provider',
+    voice_bundle_id: '',
+    ai_provider_id: ''
   })
 
   const { data: agents = [], isLoading: loading } = useQuery({
     queryKey: ['agents'],
     queryFn: () => apiClient.listAgents(),
+  })
+
+  const { data: voiceBundles = [] } = useQuery({
+    queryKey: ['voicebundles'],
+    queryFn: () => apiClient.listVoiceBundles(),
+  })
+
+  const { data: aiProviders = [] } = useQuery({
+    queryKey: ['aiproviders'],
+    queryFn: () => apiClient.listAIProviders(),
   })
 
   const resetForm = () => {
@@ -48,7 +63,10 @@ export default function Agents() {
       phone_number: '',
       language: 'en',
       description: '',
-      call_type: 'outbound'
+      call_type: 'outbound',
+      voice_config_type: 'voice_bundle',
+      voice_bundle_id: '',
+      ai_provider_id: ''
     })
   }
 
@@ -59,7 +77,10 @@ export default function Agents() {
       phone_number: agent.phone_number,
       language: agent.language,
       description: agent.description || '',
-      call_type: agent.call_type
+      call_type: agent.call_type,
+      voice_config_type: (agent as any).voice_bundle_id ? 'voice_bundle' : 'ai_provider',
+      voice_bundle_id: (agent as any).voice_bundle_id || '',
+      ai_provider_id: (agent as any).ai_provider_id || ''
     })
     setShowEditModal(true)
   }
@@ -80,8 +101,13 @@ export default function Agents() {
 
   const createMutation = useMutation({
     mutationFn: (data: typeof formData) => apiClient.createAgent({
-      ...data,
-      description: data.description || null
+      name: data.name,
+      phone_number: data.phone_number,
+      language: data.language,
+      description: data.description || null,
+      call_type: data.call_type,
+      voice_bundle_id: data.voice_config_type === 'voice_bundle' ? data.voice_bundle_id || undefined : undefined,
+      ai_provider_id: data.voice_config_type === 'ai_provider' ? data.ai_provider_id || undefined : undefined
     }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['agents'] })
@@ -101,7 +127,9 @@ export default function Agents() {
         phone_number: data.phone_number,
         language: data.language,
         description: data.description || null,
-        call_type: data.call_type
+        call_type: data.call_type,
+        voice_bundle_id: data.voice_config_type === 'voice_bundle' ? data.voice_bundle_id || undefined : undefined,
+        ai_provider_id: data.voice_config_type === 'ai_provider' ? data.ai_provider_id || undefined : undefined
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['agents'] })
@@ -410,6 +438,91 @@ export default function Agents() {
                 />
               </div>
 
+              {/* Voice Configuration */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Voice Configuration *
+                </label>
+                <div className="space-y-3">
+                  <div className="flex gap-4">
+                    <label className="flex items-center">
+                      <input
+                        type="radio"
+                        name="voice_config_type"
+                        value="voice_bundle"
+                        checked={formData.voice_config_type === 'voice_bundle'}
+                        onChange={() => setFormData({
+                          ...formData,
+                          voice_config_type: 'voice_bundle',
+                          ai_provider_id: ''
+                        })}
+                        className="mr-2"
+                      />
+                      <span className="text-sm text-gray-700">Voice Bundle</span>
+                    </label>
+                    <label className="flex items-center">
+                      <input
+                        type="radio"
+                        name="voice_config_type"
+                        value="ai_provider"
+                        checked={formData.voice_config_type === 'ai_provider'}
+                        onChange={() => setFormData({
+                          ...formData,
+                          voice_config_type: 'ai_provider',
+                          voice_bundle_id: ''
+                        })}
+                        className="mr-2"
+                      />
+                      <span className="text-sm text-gray-700">AI Provider</span>
+                    </label>
+                  </div>
+                  
+                  {formData.voice_config_type === 'voice_bundle' ? (
+                    <div>
+                      <select
+                        value={formData.voice_bundle_id}
+                        onChange={(e) => setFormData({ ...formData, voice_bundle_id: e.target.value })}
+                        required
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                      >
+                        <option value="">Select a Voice Bundle</option>
+                        {voiceBundles.filter((vb: any) => vb.is_active).map((vb: any) => (
+                          <option key={vb.id} value={vb.id}>
+                            {vb.name}
+                          </option>
+                        ))}
+                      </select>
+                      {voiceBundles.filter((vb: any) => vb.is_active).length === 0 && (
+                        <p className="mt-1 text-xs text-gray-500">
+                          No active voice bundles available. Create one in VoiceBundle section.
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    <div>
+                      <select
+                        value={formData.ai_provider_id}
+                        onChange={(e) => setFormData({ ...formData, ai_provider_id: e.target.value })}
+                        required
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                      >
+                        <option value="">Select an AI Provider</option>
+                        {aiProviders.filter((ap: any) => ap.is_active).map((ap: any) => (
+                          <option key={ap.id} value={ap.id}>
+                            {ap.name} ({ap.provider})
+                          </option>
+                        ))}
+                      </select>
+                      {aiProviders.filter((ap: any) => ap.is_active).length === 0 && (
+                        <p className="mt-1 text-xs text-gray-500">
+                          No active AI providers available. Create one in AI Providers section.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+
               <div className="flex gap-3 pt-4">
                 <Button
                   type="button"
@@ -536,6 +649,91 @@ export default function Agents() {
                   rows={3}
                   placeholder="Optional description"
                 />
+              </div>
+
+              {/* Voice Configuration */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Voice Configuration *
+                </label>
+                <div className="space-y-3">
+                  <div className="flex gap-4">
+                    <label className="flex items-center">
+                      <input
+                        type="radio"
+                        name="voice_config_type_edit"
+                        value="voice_bundle"
+                        checked={formData.voice_config_type === 'voice_bundle'}
+                        onChange={() => setFormData({
+                          ...formData,
+                          voice_config_type: 'voice_bundle',
+                          ai_provider_id: ''
+                        })}
+                        className="mr-2"
+                      />
+                      <span className="text-sm text-gray-700">Voice Bundle</span>
+                    </label>
+                    <label className="flex items-center">
+                      <input
+                        type="radio"
+                        name="voice_config_type_edit"
+                        value="ai_provider"
+                        checked={formData.voice_config_type === 'ai_provider'}
+                        onChange={() => setFormData({
+                          ...formData,
+                          voice_config_type: 'ai_provider',
+                          voice_bundle_id: ''
+                        })}
+                        className="mr-2"
+                      />
+                      <span className="text-sm text-gray-700">AI Provider</span>
+                    </label>
+                  </div>
+                  
+                  {formData.voice_config_type === 'voice_bundle' ? (
+                    <div>
+                      <select
+                        value={formData.voice_bundle_id}
+                        onChange={(e) => setFormData({ ...formData, voice_bundle_id: e.target.value })}
+                        required
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                      >
+                        <option value="">Select a Voice Bundle</option>
+                        {voiceBundles.filter((vb: any) => vb.is_active).map((vb: any) => (
+                          <option key={vb.id} value={vb.id}>
+                            {vb.name}
+                          </option>
+                        ))}
+                      </select>
+                      {voiceBundles.filter((vb: any) => vb.is_active).length === 0 && (
+                        <p className="mt-1 text-xs text-gray-500">
+                          No active voice bundles available. Create one in VoiceBundle section.
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    <div>
+                      <select
+                        value={formData.ai_provider_id}
+                        onChange={(e) => setFormData({ ...formData, ai_provider_id: e.target.value })}
+                        required
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                      >
+                        <option value="">Select an AI Provider</option>
+                        {aiProviders.filter((ap: any) => ap.is_active).map((ap: any) => (
+                          <option key={ap.id} value={ap.id}>
+                            {ap.name} ({ap.provider})
+                          </option>
+                        ))}
+                      </select>
+                      {aiProviders.filter((ap: any) => ap.is_active).length === 0 && (
+                        <p className="mt-1 text-xs text-gray-500">
+                          No active AI providers available. Create one in AI Providers section.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
 
               <div className="flex gap-3 pt-4 border-t border-gray-200">
