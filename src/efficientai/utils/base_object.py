@@ -8,7 +8,7 @@
 
 This module provides the foundational BaseObject class that offers common
 functionality including unique identification, naming, event handling,
-and async cleanup for all Pipecat components.
+and async cleanup for all EfficientAI components.
 """
 
 import asyncio
@@ -42,10 +42,10 @@ class EventHandler:
 
 
 class BaseObject(ABC):
-    """Abstract base class providing common functionality for Pipecat objects.
+    """Abstract base class providing common functionality for EfficientAI objects.
 
     Provides unique identification, naming, event handling capabilities,
-    and async lifecycle management for all Pipecat components. All major
+    and async lifecycle management for all EfficientAI components. All major
     classes in the framework should inherit from this base class.
     """
 

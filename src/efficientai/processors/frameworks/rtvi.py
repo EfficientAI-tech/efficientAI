@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""RTVI (Real-Time Voice Interface) protocol implementation for Pipecat.
+"""RTVI (Real-Time Voice Interface) protocol implementation for EfficientAI.
 
 This module provides the RTVI protocol implementation for real-time voice interactions
 between clients and AI agents. It includes message handling, action processing,
@@ -232,7 +232,7 @@ class RTVIConfig(BaseModel):
 
 
 #
-# Client -> Pipecat messages.
+# Client -> EfficientAI messages.
 #
 
 
@@ -374,7 +374,7 @@ class RTVIMessage(BaseModel):
 
 
 #
-# Pipecat -> Client responses and messages.
+# EfficientAI -> Client responses and messages.
 #
 
 

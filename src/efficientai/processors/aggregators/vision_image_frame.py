@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Vision image frame aggregation for Pipecat.
+"""Vision image frame aggregation for EfficientAI.
 
 This module provides frame aggregation functionality to combine text and image
 frames into vision frames for multimodal processing.

@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""User idle detection and timeout handling for Pipecat."""
+"""User idle detection and timeout handling for EfficientAI."""
 
 import asyncio
 import inspect

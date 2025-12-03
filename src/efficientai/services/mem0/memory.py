@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Mem0 memory service integration for Pipecat.
+"""Mem0 memory service integration for EfficientAI.
 
 This module provides a memory service that integrates with Mem0 to store
 and retrieve conversational memories, enhancing LLM context with relevant
@@ -123,7 +123,7 @@ class Mem0MemoryService(FrameProcessor):
             params = {
                 "async_mode": True,
                 "messages": messages,
-                "metadata": {"platform": "pipecat"},
+                "metadata": {"platform": "efficientai"},
                 "output_format": "v1.1",
             }
             for id in ["user_id", "agent_id", "run_id"]:

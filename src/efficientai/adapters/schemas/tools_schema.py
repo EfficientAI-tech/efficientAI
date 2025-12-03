@@ -7,7 +7,7 @@
 """Tools schema definitions for function calling adapters.
 
 This module provides schemas for managing both standardized function tools
-and custom adapter-specific tools in the Pipecat framework.
+and custom adapter-specific tools in the EfficientAI framework.
 """
 
 from enum import Enum

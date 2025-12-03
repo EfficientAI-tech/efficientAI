@@ -38,7 +38,7 @@ try:
     from websockets.protocol import State
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
-    logger.error("In order to use Deepgram Flux, you need to `pip install pipecat-ai[deepgram]`.")
+    logger.error("In order to use Deepgram Flux, you need to `pip install efficientai-ai[deepgram]`.")
     raise Exception(f"Missing module: {e}")
 
 
@@ -685,7 +685,7 @@ class DeepgramFluxSTTService(WebsocketSTTService):
         # However, if speech resumes or the transcripts differ from the final EndOfTurn, the
         # EagerEndOfTurn response should be cancelled to avoid incorrect or partial responses.
         #
-        # Pipecat doesn't yet provide built-in Gate/control mechanisms to:
+        # EfficientAI doesn't yet provide built-in Gate/control mechanisms to:
         # 1. Start LLM/TTS processing early on EagerEndOfTurn events
         # 2. Cancel in-flight processing when TurnResumed occurs
         #

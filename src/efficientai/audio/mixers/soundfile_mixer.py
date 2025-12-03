@@ -25,7 +25,7 @@ try:
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
     logger.error(
-        "In order to use the soundfile mixer, you need to `pip install pipecat-ai[soundfile]`."
+        "In order to use the soundfile mixer, you need to `pip install efficientai-ai[soundfile]`."
     )
     raise Exception(f"Missing module: {e}")
 

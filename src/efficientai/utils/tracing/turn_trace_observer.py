@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Turn trace observer for OpenTelemetry tracing in Pipecat.
+"""Turn trace observer for OpenTelemetry tracing in EfficientAI.
 
 This module provides an observer that creates trace spans for each conversation
 turn, integrating with the turn tracking system to provide hierarchical tracing

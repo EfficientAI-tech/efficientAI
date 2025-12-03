@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""FastAPI WebSocket transport implementation for Pipecat.
+"""FastAPI WebSocket transport implementation for EfficientAI.
 
 This module provides WebSocket-based transport for real-time audio/video streaming
 using FastAPI and WebSocket connections. Supports binary and text serialization

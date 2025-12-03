@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""OpenAI LLM context management for Pipecat.
+"""OpenAI LLM context management for EfficientAI.
 
 This module provides classes for managing OpenAI-specific conversation contexts,
 including message handling, tool management, and image/audio processing capabilities.
@@ -226,7 +226,7 @@ class OpenAILLMContext:
     def to_standard_messages(self, obj) -> list:
         """Convert from OpenAI message format to OpenAI message format (passthrough).
 
-        OpenAI's format is our standard format throughout Pipecat. This function
+        OpenAI's format is our standard format throughout EfficientAI. This function
         returns a list containing the original message to maintain consistency with
         other LLM services that may need to return multiple messages.
 

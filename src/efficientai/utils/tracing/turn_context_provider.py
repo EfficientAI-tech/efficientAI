@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Turn context provider for OpenTelemetry tracing in Pipecat.
+"""Turn context provider for OpenTelemetry tracing in EfficientAI.
 
 This module provides a singleton context provider that manages the current
 turn's tracing context, allowing services to create child spans that are

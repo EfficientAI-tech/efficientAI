@@ -37,12 +37,12 @@ try:
     from websockets.protocol import State
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
-    logger.error("In order to use Sarvam, you need to `pip install pipecat-ai[sarvam]`.")
+    logger.error("In order to use Sarvam, you need to `pip install efficientai-ai[sarvam]`.")
     raise Exception(f"Missing module: {e}")
 
 
 def language_to_sarvam_language(language: Language) -> Optional[str]:
-    """Convert Pipecat Language enum to Sarvam AI language codes.
+    """Convert EfficientAI Language enum to Sarvam AI language codes.
 
     Args:
         language: The Language enum value to convert.

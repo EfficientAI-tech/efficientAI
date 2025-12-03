@@ -4,11 +4,11 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""ai-coustics AIC SDK audio filter for Pipecat.
+"""ai-coustics AIC SDK audio filter for EfficientAI.
 
 This module provides an audio filter implementation using ai-coustics' AIC SDK to
 enhance audio streams in real time. It mirrors the structure of other filters like
-the Koala filter and integrates with Pipecat's input transport pipeline.
+the Koala filter and integrates with EfficientAI's input transport pipeline.
 """
 
 from typing import List, Optional
@@ -24,7 +24,7 @@ try:
     from aic import AICModelType, AICParameter, Model
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
-    logger.error("In order to use the AIC filter, you need to `pip install pipecat-ai[aic]`.")
+    logger.error("In order to use the AIC filter, you need to `pip install efficientai-ai[aic]`.")
     raise Exception(f"Missing module: {e}")
 
 

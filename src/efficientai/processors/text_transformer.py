@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Stateless text transformation processor for Pipecat."""
+"""Stateless text transformation processor for EfficientAI."""
 
 from typing import Callable, Coroutine, Union
 

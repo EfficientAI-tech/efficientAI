@@ -4,11 +4,11 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Audio utility functions for Pipecat.
+"""Audio utility functions for EfficientAI.
 
 This module provides common audio processing utilities including mixing,
 format conversion, volume calculation, and codec transformations for
-various audio formats used in Pipecat pipelines.
+various audio formats used in EfficientAI pipelines.
 """
 
 import audioop

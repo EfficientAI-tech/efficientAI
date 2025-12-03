@@ -33,7 +33,7 @@ from efficientai.serializers.base_serializer import FrameSerializer, FrameSerial
 class PlivoFrameSerializer(FrameSerializer):
     """Serializer for Plivo Audio Streaming WebSocket protocol.
 
-    This serializer handles converting between Pipecat frames and Plivo's WebSocket
+    This serializer handles converting between EfficientAI frames and Plivo's WebSocket
     audio streaming protocol. It supports audio conversion, DTMF events, and automatic
     call termination.
 
@@ -103,13 +103,13 @@ class PlivoFrameSerializer(FrameSerializer):
         self._sample_rate = self._params.sample_rate or frame.audio_in_sample_rate
 
     async def serialize(self, frame: Frame) -> str | bytes | None:
-        """Serializes a Pipecat frame to Plivo WebSocket format.
+        """Serializes a EfficientAI frame to Plivo WebSocket format.
 
         Handles conversion of various frame types to Plivo WebSocket messages.
         For EndFrames, initiates call termination if auto_hang_up is enabled.
 
         Args:
-            frame: The Pipecat frame to serialize.
+            frame: The EfficientAI frame to serialize.
 
         Returns:
             Serialized data as string or bytes, or None if the frame isn't handled.
@@ -202,15 +202,15 @@ class PlivoFrameSerializer(FrameSerializer):
             logger.exception(f"Failed to hang up Plivo call: {e}")
 
     async def deserialize(self, data: str | bytes) -> Frame | None:
-        """Deserializes Plivo WebSocket data to Pipecat frames.
+        """Deserializes Plivo WebSocket data to EfficientAI frames.
 
-        Handles conversion of Plivo media events to appropriate Pipecat frames.
+        Handles conversion of Plivo media events to appropriate EfficientAI frames.
 
         Args:
             data: The raw WebSocket data from Plivo.
 
         Returns:
-            A Pipecat frame corresponding to the Plivo event, or None if unhandled.
+            A EfficientAI frame corresponding to the Plivo event, or None if unhandled.
         """
         try:
             message = json.loads(data)

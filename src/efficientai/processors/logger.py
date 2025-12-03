@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Frame logging utilities for debugging and monitoring frame flow in Pipecat pipelines."""
+"""Frame logging utilities for debugging and monitoring frame flow in EfficientAI pipelines."""
 
 from typing import Optional, Tuple, Type
 

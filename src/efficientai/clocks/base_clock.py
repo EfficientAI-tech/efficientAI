@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Base clock interface for Pipecat timing operations."""
+"""Base clock interface for EfficientAI timing operations."""
 
 from abc import ABC, abstractmethod
 
@@ -12,7 +12,7 @@ from abc import ABC, abstractmethod
 class BaseClock(ABC):
     """Abstract base class for clock implementations.
 
-    Provides a common interface for timing operations used in Pipecat
+    Provides a common interface for timing operations used in EfficientAI
     for synchronization, scheduling, and time-based processing.
     """
 

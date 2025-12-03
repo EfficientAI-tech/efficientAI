@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Metrics logging observer for Pipecat.
+"""Metrics logging observer for EfficientAI.
 
 This module provides an observer that logs metrics frames to the console,
 allowing developers to monitor performance metrics, token usage, and other

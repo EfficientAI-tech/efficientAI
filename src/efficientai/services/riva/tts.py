@@ -37,7 +37,7 @@ try:
 
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
-    logger.error("In order to use NVIDIA Riva TTS, you need to `pip install pipecat-ai[riva]`.")
+    logger.error("In order to use NVIDIA Riva TTS, you need to `pip install efficientai-ai[riva]`.")
     raise Exception(f"Missing module: {e}")
 
 RIVA_TTS_TIMEOUT_SECS = 5

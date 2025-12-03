@@ -6,7 +6,7 @@
 
 """Base AI service implementation.
 
-Provides the foundation for all AI services in the Pipecat framework, including
+Provides the foundation for all AI services in the EfficientAI framework, including
 model management, settings handling, and frame processing lifecycle methods.
 """
 

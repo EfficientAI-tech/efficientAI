@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""WebSocket client transport implementation for Pipecat.
+"""WebSocket client transport implementation for EfficientAI.
 
 This module provides a WebSocket client transport that enables bidirectional
 communication over WebSocket connections, with support for audio streaming,

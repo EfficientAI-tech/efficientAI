@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Azure OpenAI service implementation for the Pipecat AI framework."""
+"""Azure OpenAI service implementation for the EfficientAI AI framework."""
 
 from loguru import logger
 from openai import AsyncAzureOpenAI

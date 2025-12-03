@@ -42,15 +42,15 @@ try:
     from websockets.protocol import State
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
-    logger.error("In order to use Rime, you need to `pip install pipecat-ai[rime]`.")
+    logger.error("In order to use Rime, you need to `pip install efficientai-ai[rime]`.")
     raise Exception(f"Missing module: {e}")
 
 
 def language_to_rime_language(language: Language) -> str:
-    """Convert pipecat Language to Rime language code.
+    """Convert efficientai Language to Rime language code.
 
     Args:
-        language: The pipecat Language enum value.
+        language: The efficientai Language enum value.
 
     Returns:
         Three-letter language code used by Rime (e.g., 'eng' for English).
@@ -174,7 +174,7 @@ class RimeTTSService(AudioContextWordTTSService):
         return True
 
     def language_to_service_language(self, language: Language) -> str | None:
-        """Convert pipecat language to Rime language code.
+        """Convert efficientai language to Rime language code.
 
         Args:
             language: The language to convert.
@@ -543,7 +543,7 @@ class RimeHttpTTSService(TTSService):
         return True
 
     def language_to_service_language(self, language: Language) -> str | None:
-        """Convert pipecat language to Rime language code.
+        """Convert efficientai language to Rime language code.
 
         Args:
             language: The language to convert.

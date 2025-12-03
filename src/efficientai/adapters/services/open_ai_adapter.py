@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""OpenAI LLM adapter for Pipecat."""
+"""OpenAI LLM adapter for EfficientAI."""
 
 import copy
 import json
@@ -38,13 +38,13 @@ class OpenAILLMInvocationParams(TypedDict):
 
 
 class OpenAILLMAdapter(BaseLLMAdapter[OpenAILLMInvocationParams]):
-    """OpenAI-specific adapter for Pipecat.
+    """OpenAI-specific adapter for EfficientAI.
 
     Handles:
 
     - Extracting parameters for OpenAI's ChatCompletion API from a universal
       LLM context
-    - Converting Pipecat's standardized tools schema to OpenAI's function-calling format.
+    - Converting EfficientAI's standardized tools schema to OpenAI's function-calling format.
     - Extracting and sanitizing messages from the LLM context for logging about OpenAI.
     """
 
@@ -73,7 +73,7 @@ class OpenAILLMAdapter(BaseLLMAdapter[OpenAILLMInvocationParams]):
         """Convert function schemas to OpenAI's function-calling format.
 
         Args:
-            tools_schema: The Pipecat tools schema to convert.
+            tools_schema: The EfficientAI tools schema to convert.
 
         Returns:
             List of OpenAI formatted function call definitions ready for use

@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Language code enumerations for Pipecat.
+"""Language code enumerations for EfficientAI.
 
 This module provides comprehensive language code constants following ISO 639
 and BCP 47 standards, supporting both language-only and language-region

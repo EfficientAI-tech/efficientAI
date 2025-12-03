@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""System clock implementation for Pipecat."""
+"""System clock implementation for EfficientAI."""
 
 import time
 

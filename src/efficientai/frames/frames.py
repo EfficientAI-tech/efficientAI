@@ -4,9 +4,9 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Core frame definitions for the Pipecat AI framework.
+"""Core frame definitions for the EfficientAI AI framework.
 
-This module contains all frame types used throughout the Pipecat pipeline system,
+This module contains all frame types used throughout the EfficientAI pipeline system,
 including data frames, system frames, and control frames for audio, video, text,
 and LLM processing.
 """
@@ -111,7 +111,7 @@ def format_pts(pts: Optional[int]):
 
 @dataclass
 class Frame:
-    """Base frame class for all frames in the Pipecat pipeline.
+    """Base frame class for all frames in the EfficientAI pipeline.
 
     All frames inherit from this base class and automatically receive
     unique identifiers, names, and metadata support.

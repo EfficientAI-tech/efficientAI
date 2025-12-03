@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""OLLama LLM service implementation for Pipecat AI framework."""
+"""OLLama LLM service implementation for EfficientAI AI framework."""
 
 from loguru import logger
 

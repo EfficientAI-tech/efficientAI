@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""AWS Nova Sonic LLM adapter for Pipecat."""
+"""AWS Nova Sonic LLM adapter for EfficientAI."""
 
 import copy
 import json
@@ -63,7 +63,7 @@ class AWSNovaSonicLLMInvocationParams(TypedDict):
 class AWSNovaSonicLLMAdapter(BaseLLMAdapter[AWSNovaSonicLLMInvocationParams]):
     """Adapter for AWS Nova Sonic language models.
 
-    Converts Pipecat's standard function schemas into AWS Nova Sonic's
+    Converts EfficientAI's standard function schemas into AWS Nova Sonic's
     specific function-calling format, enabling tool use with Nova Sonic models.
     """
 

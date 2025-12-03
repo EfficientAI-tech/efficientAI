@@ -44,7 +44,7 @@ try:
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
     logger.error(
-        "In order to use ElevenLabs Realtime STT, you need to `pip install pipecat-ai[elevenlabs]`."
+        "In order to use ElevenLabs Realtime STT, you need to `pip install efficientai-ai[elevenlabs]`."
     )
     raise Exception(f"Missing module: {e}")
 
@@ -398,7 +398,7 @@ class ElevenLabsRealtimeSTTService(WebsocketSTTService):
     transcripts, and can use either manual commit control or automatic Voice Activity
     Detection (VAD) for segment boundaries.
 
-    By default, uses manual commit strategy where Pipecat's VAD controls when to
+    By default, uses manual commit strategy where EfficientAI's VAD controls when to
     commit transcript segments, providing consistency with other STT services.
     """
 
@@ -407,7 +407,7 @@ class ElevenLabsRealtimeSTTService(WebsocketSTTService):
 
         Parameters:
             language_code: ISO-639-1 or ISO-639-3 language code. Leave None for auto-detection.
-            commit_strategy: How to segment speech - manual (Pipecat VAD) or vad (ElevenLabs VAD).
+            commit_strategy: How to segment speech - manual (EfficientAI VAD) or vad (ElevenLabs VAD).
             vad_silence_threshold_secs: Seconds of silence before VAD commits (0.3-3.0).
                 Only used when commit_strategy is VAD. None uses ElevenLabs default.
             vad_threshold: VAD sensitivity (0.1-0.9, lower is more sensitive).

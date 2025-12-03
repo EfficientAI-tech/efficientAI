@@ -1,4 +1,4 @@
-"""Strands Agent integration for Pipecat.
+"""Strands Agent integration for EfficientAI.
 
 This module provides integration with Strands Agents for handling conversational AI
 interactions. It supports both single agent and multi-agent graphs.
@@ -28,7 +28,7 @@ except ModuleNotFoundError as e:
 
 
 class StrandsAgentsProcessor(FrameProcessor):
-    """Processor that integrates Strands Agents with Pipecat's frame pipeline.
+    """Processor that integrates Strands Agents with EfficientAI's frame pipeline.
 
     This processor takes LLM message frames, extracts the latest user message,
     and processes it through either a single Strands Agent or a multi-agent Graph.
@@ -81,7 +81,7 @@ class StrandsAgentsProcessor(FrameProcessor):
             await self.push_frame(frame, direction)
 
     async def _ainvoke(self, text: str):
-        """Invoke the Strands agent with the provided text and stream results as Pipecat frames.
+        """Invoke the Strands agent with the provided text and stream results as EfficientAI frames.
 
         Args:
             text: The user input text to process through the agent or graph.

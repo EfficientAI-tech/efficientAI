@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""OpenPipe LLM service implementation for Pipecat.
+"""OpenPipe LLM service implementation for EfficientAI.
 
 This module provides an OpenPipe-specific implementation of the OpenAI LLM service,
 enabling integration with OpenPipe's fine-tuning and monitoring capabilities.
@@ -21,7 +21,7 @@ try:
     from openpipe import AsyncOpenAI as OpenPipeAI
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
-    logger.error("In order to use OpenPipe, you need to `pip install pipecat-ai[openpipe]`.")
+    logger.error("In order to use OpenPipe, you need to `pip install efficientai-ai[openpipe]`.")
     raise Exception(f"Missing module: {e}")
 
 

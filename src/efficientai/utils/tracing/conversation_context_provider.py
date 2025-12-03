@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Conversation context provider for OpenTelemetry tracing in Pipecat.
+"""Conversation context provider for OpenTelemetry tracing in EfficientAI.
 
 This module provides a singleton context provider that manages the current
 conversation's tracing context, allowing services to create child spans

@@ -4,16 +4,16 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Pipecat development runner.
+"""EfficientAI development runner.
 
-This development runner executes Pipecat bots and provides the supporting
+This development runner executes EfficientAI bots and provides the supporting
 infrastructure they need - creating Daily rooms and tokens, managing WebRTC
 connections, and setting up telephony webhook/WebSocket infrastructure. It
 supports multiple transport types with a unified interface.
 
 Install with::
 
-    pip install pipecat-ai[runner]
+    pip install efficientai-ai[runner]
 
 All bots must implement a `bot(runner_args)` async function as the entry point.
 The server automatically discovers and executes this function when connections
@@ -95,9 +95,9 @@ try:
     from fastapi.responses import HTMLResponse, RedirectResponse
 except ImportError as e:
     logger.error(f"Runner dependencies not available: {e}")
-    logger.error("To use Pipecat runners, install with: pip install pipecat-ai[runner]")
+    logger.error("To use EfficientAI runners, install with: pip install efficientai-ai[runner]")
     raise ImportError(
-        "Runner dependencies required. Install with: pip install pipecat-ai[runner]"
+        "Runner dependencies required. Install with: pip install efficientai-ai[runner]"
     ) from e
 
 
@@ -203,7 +203,7 @@ def _setup_webrtc_routes(
 ):
     """Set up WebRTC-specific routes."""
     try:
-        from pipecat_ai_small_webrtc_prebuilt.frontend import SmallWebRTCPrebuiltUI
+        from efficientai_ai_small_webrtc_prebuilt.frontend import SmallWebRTCPrebuiltUI
 
         from efficientai.transports.smallwebrtc.connection import SmallWebRTCConnection
         from efficientai.transports.smallwebrtc.request_handler import (
@@ -286,7 +286,7 @@ def _setup_webrtc_routes(
 
     @app.post("/start")
     async def rtvi_start(request: Request):
-        """Mimic Pipecat Cloud's /start endpoint."""
+        """Mimic EfficientAI Cloud's /start endpoint."""
         # Parse the request body
         try:
             request_data = await request.json()
@@ -295,7 +295,7 @@ def _setup_webrtc_routes(
             logger.error(f"Failed to parse request body: {e}")
             request_data = {}
 
-        # Store session info immediately in memory, replicate the behavior expected on Pipecat Cloud
+        # Store session info immediately in memory, replicate the behavior expected on EfficientAI Cloud
         session_id = str(uuid.uuid4())
         active_sessions[session_id] = request_data
 
@@ -314,7 +314,7 @@ def _setup_webrtc_routes(
     async def proxy_request(
         session_id: str, path: str, request: Request, background_tasks: BackgroundTasks
     ):
-        """Mimic Pipecat Cloud's proxy."""
+        """Mimic EfficientAI Cloud's proxy."""
         active_session = active_sessions.get(session_id)
         if active_session is None:
             return Response(content="Invalid or not-yet-ready session_id", status_code=404)
@@ -405,7 +405,7 @@ def _setup_whatsapp_routes(app: FastAPI):
         return
 
     try:
-        from pipecat_ai_small_webrtc_prebuilt.frontend import SmallWebRTCPrebuiltUI
+        from efficientai_ai_small_webrtc_prebuilt.frontend import SmallWebRTCPrebuiltUI
 
         from efficientai.transports.smallwebrtc.connection import SmallWebRTCConnection
         from efficientai.transports.smallwebrtc.request_handler import (
@@ -757,7 +757,7 @@ def runner_port() -> int:
 
 
 def main():
-    """Start the Pipecat development runner.
+    """Start the EfficientAI development runner.
 
     Parses command-line arguments and starts a FastAPI server configured
     for the specified transport type. The runner will discover and run
@@ -778,7 +778,7 @@ def main():
     """
     global RUNNER_DOWNLOADS_FOLDER, RUNNER_HOST, RUNNER_PORT
 
-    parser = argparse.ArgumentParser(description="Pipecat Development Runner")
+    parser = argparse.ArgumentParser(description="EfficientAI Development Runner")
     parser.add_argument("--host", type=str, default=RUNNER_HOST, help="Host address")
     parser.add_argument("--port", type=int, default=RUNNER_PORT, help="Port number")
     parser.add_argument(

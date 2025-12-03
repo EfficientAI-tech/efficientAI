@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Base observer classes for monitoring frame flow in the Pipecat pipeline.
+"""Base observer classes for monitoring frame flow in the EfficientAI pipeline.
 
 This module provides the foundation for observing frame transfers between
 processors without modifying the pipeline structure. Observers can be used

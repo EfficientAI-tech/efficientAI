@@ -15,7 +15,7 @@ try:
     from aic import AICVadParameter
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
-    logger.error("In order to use the AIC filter, you need to `pip install pipecat-ai[aic]`.")
+    logger.error("In order to use the AIC filter, you need to `pip install efficientai-ai[aic]`.")
     raise Exception(f"Missing module: {e}")
 
 

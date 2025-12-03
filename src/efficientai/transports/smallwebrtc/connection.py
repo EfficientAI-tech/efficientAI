@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Small WebRTC connection implementation for Pipecat.
+"""Small WebRTC connection implementation for EfficientAI.
 
 This module provides a WebRTC connection implementation using aiortc,
 with support for audio/video tracks, data channels, and signaling
@@ -33,7 +33,7 @@ try:
     from av.frame import Frame
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
-    logger.error("In order to use the SmallWebRTC, you need to `pip install pipecat-ai[webrtc]`.")
+    logger.error("In order to use the SmallWebRTC, you need to `pip install efficientai-ai[webrtc]`.")
     raise Exception(f"Missing module: {e}")
 
 SIGNALLING_TYPE = "signalling"

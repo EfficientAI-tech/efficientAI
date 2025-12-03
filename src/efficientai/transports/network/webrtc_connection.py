@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Small WebRTC connection implementation for Pipecat.
+"""Small WebRTC connection implementation for EfficientAI.
 
 This module provides a WebRTC connection implementation using aiortc,
 with support for audio/video tracks, data channels, and signaling

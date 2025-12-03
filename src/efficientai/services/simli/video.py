@@ -32,7 +32,7 @@ try:
     from simli import SimliClient, SimliConfig
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
-    logger.error("In order to use Simli, you need to `pip install pipecat-ai[simli]`.")
+    logger.error("In order to use Simli, you need to `pip install efficientai-ai[simli]`.")
     raise Exception(f"Missing module: {e}")
 
 
@@ -156,8 +156,8 @@ class SimliVideoService(FrameProcessor):
             simliURL=simli_url,
         )
 
-        self._pipecat_resampler: AudioResampler = None
-        self._pipecat_resampler_event = asyncio.Event()
+        self._efficientai_resampler: AudioResampler = None
+        self._efficientai_resampler_event = asyncio.Event()
         self._simli_resampler = AudioResampler("s16", "mono", 16000)
 
         self._audio_task: asyncio.Task = None
@@ -182,10 +182,10 @@ class SimliVideoService(FrameProcessor):
 
     async def _consume_and_process_audio(self):
         """Consume audio frames from Simli and push them downstream."""
-        await self._pipecat_resampler_event.wait()
+        await self._efficientai_resampler_event.wait()
         audio_iterator = self._simli_client.getAudioStreamIterator()
         async for audio_frame in audio_iterator:
-            resampled_frames = self._pipecat_resampler.resample(audio_frame)
+            resampled_frames = self._efficientai_resampler.resample(audio_frame)
             for resampled_frame in resampled_frames:
                 audio_array = resampled_frame.to_ndarray()
                 # Only push frame is there is audio (e.g. not silence)
@@ -193,14 +193,14 @@ class SimliVideoService(FrameProcessor):
                     await self.push_frame(
                         TTSAudioRawFrame(
                             audio=audio_array.tobytes(),
-                            sample_rate=self._pipecat_resampler.rate,
+                            sample_rate=self._efficientai_resampler.rate,
                             num_channels=1,
                         ),
                     )
 
     async def _consume_and_process_video(self):
         """Consume video frames from Simli and convert them to output frames."""
-        await self._pipecat_resampler_event.wait()
+        await self._efficientai_resampler_event.wait()
         video_iterator = self._simli_client.getVideoStreamIterator(targetFormat="rgb24")
         async for video_frame in video_iterator:
             # Process the video frame
@@ -231,11 +231,11 @@ class SimliVideoService(FrameProcessor):
                 )
                 old_frame.sample_rate = frame.sample_rate
 
-                if self._pipecat_resampler is None:
-                    self._pipecat_resampler = AudioResampler(
+                if self._efficientai_resampler is None:
+                    self._efficientai_resampler = AudioResampler(
                         "s16", old_frame.layout, old_frame.sample_rate
                     )
-                    self._pipecat_resampler_event.set()
+                    self._efficientai_resampler_event.set()
 
                 resampled_frames = self._simli_resampler.resample(old_frame)
                 for resampled_frame in resampled_frames:

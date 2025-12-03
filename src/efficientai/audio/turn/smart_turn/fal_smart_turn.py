@@ -11,7 +11,7 @@ for end-of-turn detection in conversations.
 
 Note: To learn more about the smart-turn model, visit:
     - https://fal.ai/models/fal-ai/smart-turn/playground
-    - https://github.com/pipecat-ai/smart-turn
+    - https://github.com/efficientai-ai/smart-turn
 """
 
 from typing import Optional

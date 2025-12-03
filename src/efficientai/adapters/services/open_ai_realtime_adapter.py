@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""OpenAI Realtime LLM adapter for Pipecat."""
+"""OpenAI Realtime LLM adapter for EfficientAI."""
 
 import copy
 import json
@@ -34,7 +34,7 @@ class OpenAIRealtimeLLMInvocationParams(TypedDict):
 class OpenAIRealtimeLLMAdapter(BaseLLMAdapter):
     """LLM adapter for OpenAI Realtime API function calling.
 
-    Converts Pipecat's tool schemas into the specific format required by
+    Converts EfficientAI's tool schemas into the specific format required by
     OpenAI's Realtime API for function calling capabilities.
     """
 

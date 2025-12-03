@@ -23,7 +23,7 @@ try:
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
     logger.error(
-        "In order to use LocalSmartTurnAnalyzerV3, you need to `pip install pipecat-ai[local-smart-turn-v3]`."
+        "In order to use LocalSmartTurnAnalyzerV3, you need to `pip install efficientai-ai[local-smart-turn-v3]`."
     )
     raise Exception(f"Missing module: {e}")
 

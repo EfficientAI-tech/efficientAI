@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Anthropic LLM adapter for Pipecat."""
+"""Anthropic LLM adapter for EfficientAI."""
 
 import copy
 import json
@@ -38,7 +38,7 @@ class AnthropicLLMInvocationParams(TypedDict):
 class AnthropicLLMAdapter(BaseLLMAdapter[AnthropicLLMInvocationParams]):
     """Adapter for converting tool schemas to Anthropic's function-calling format.
 
-    This adapter handles the conversion of Pipecat's standard function schemas
+    This adapter handles the conversion of EfficientAI's standard function schemas
     to the specific format required by Anthropic's Claude models for function calling.
     """
 

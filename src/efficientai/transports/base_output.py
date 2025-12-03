@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Base output transport implementation for Pipecat.
+"""Base output transport implementation for EfficientAI.
 
 This module provides the BaseOutputTransport class which handles audio and video
 output processing, including frame buffering, mixing, timing, and media streaming.

@@ -16,7 +16,7 @@ try:
     import sentry_sdk
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
-    logger.error("In order to use Sentry, you need to `pip install pipecat-ai[sentry]`.")
+    logger.error("In order to use Sentry, you need to `pip install efficientai-ai[sentry]`.")
     raise Exception(f"Missing module: {e}")
 
 from efficientai.processors.metrics.frame_processor_metrics import FrameProcessorMetrics

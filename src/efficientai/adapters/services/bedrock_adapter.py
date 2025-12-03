@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""AWS Bedrock LLM adapter for Pipecat."""
+"""AWS Bedrock LLM adapter for EfficientAI."""
 
 import base64
 import copy
@@ -36,9 +36,9 @@ class AWSBedrockLLMInvocationParams(TypedDict):
 
 
 class AWSBedrockLLMAdapter(BaseLLMAdapter[AWSBedrockLLMInvocationParams]):
-    """Adapter for AWS Bedrock LLM integration with Pipecat.
+    """Adapter for AWS Bedrock LLM integration with EfficientAI.
 
-    Provides conversion utilities for transforming Pipecat function schemas
+    Provides conversion utilities for transforming EfficientAI function schemas
     into AWS Bedrock's expected tool format for function calling capabilities.
     """
 

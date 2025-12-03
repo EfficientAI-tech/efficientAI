@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Metrics data models for Pipecat framework.
+"""Metrics data models for EfficientAI framework.
 
 This module defines Pydantic models for various types of metrics data
 collected throughout the pipeline, including timing, token usage, and

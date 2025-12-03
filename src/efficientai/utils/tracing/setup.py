@@ -4,10 +4,10 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Core OpenTelemetry tracing utilities and setup for Pipecat.
+"""Core OpenTelemetry tracing utilities and setup for EfficientAI.
 
 This module provides functions to check availability and configure OpenTelemetry
-tracing for Pipecat applications. It handles the optional nature of OpenTelemetry
+tracing for EfficientAI applications. It handles the optional nature of OpenTelemetry
 dependencies and provides a safe setup process.
 """
 
@@ -35,7 +35,7 @@ def is_tracing_available() -> bool:
 
 
 def setup_tracing(
-    service_name: str = "pipecat",
+    service_name: str = "efficientai",
     exporter=None,  # User-provided exporter
     console_export: bool = False,
 ) -> bool:

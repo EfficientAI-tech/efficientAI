@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Text sentence aggregation processor for Pipecat.
+"""Text sentence aggregation processor for EfficientAI.
 
 This module provides a frame processor that accumulates text frames into
 complete sentences, only outputting when a sentence-ending pattern is detected.

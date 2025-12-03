@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Base notifier interface for Pipecat."""
+"""Base notifier interface for EfficientAI."""
 
 from abc import ABC, abstractmethod
 
@@ -14,7 +14,7 @@ class BaseNotifier(ABC):
 
     Provides a standard interface for implementing notification and waiting
     patterns used for event coordination and signaling between components
-    in the Pipecat framework.
+    in the EfficientAI framework.
     """
 
     @abstractmethod

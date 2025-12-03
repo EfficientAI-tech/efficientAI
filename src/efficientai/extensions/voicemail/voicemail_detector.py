@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Voicemail detection module for Pipecat.
+"""Voicemail detection module for EfficientAI.
 
 This module provides voicemail detection capabilities using parallel pipeline
 processing to classify incoming calls as either voicemail messages or live

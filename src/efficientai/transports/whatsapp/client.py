@@ -109,13 +109,13 @@ class WhatsAppClient:
 
         # Terminate each call via WhatsApp API
         termination_tasks = []
-        for call_id, pipecat_connection in self._ongoing_calls_map.items():
+        for call_id, efficientai_connection in self._ongoing_calls_map.items():
             logger.debug(f"Terminating call {call_id}")
             # Call WhatsApp API to terminate the call
             if self._whatsapp_api:
                 termination_tasks.append(self._whatsapp_api.terminate_call_to_whatsapp(call_id))
-            # Disconnect the pipecat connection
-            termination_tasks.append(pipecat_connection.disconnect())
+            # Disconnect the efficientai connection
+            termination_tasks.append(efficientai_connection.disconnect())
 
         # Execute all terminations concurrently
         await asyncio.gather(*termination_tasks, return_exceptions=True)
@@ -301,12 +301,12 @@ class WhatsAppClient:
         """
         logger.debug(f"Incoming call from {call.from_}, call_id: {call.id}")
 
-        pipecat_connection = None
+        efficientai_connection = None
         try:
             # Create and initialize WebRTC connection
-            pipecat_connection = SmallWebRTCConnection(self._ice_servers)
-            await pipecat_connection.initialize(sdp=call.session.sdp, type=call.session.sdp_type)
-            sdp_answer = pipecat_connection.get_answer().get("sdp")
+            efficientai_connection = SmallWebRTCConnection(self._ice_servers)
+            await efficientai_connection.initialize(sdp=call.session.sdp, type=call.session.sdp_type)
+            sdp_answer = efficientai_connection.get_answer().get("sdp")
             sdp_answer = self._filter_sdp_for_whatsapp(sdp_answer)
 
             logger.debug(f"SDP answer generated for call {call.id}")
@@ -340,10 +340,10 @@ class WhatsAppClient:
                 raise Exception(f"Failed to accept call: {e}")
 
             # Store the connection for management
-            self._ongoing_calls_map[call.id] = pipecat_connection
+            self._ongoing_calls_map[call.id] = efficientai_connection
 
             # Set up disconnect handler
-            @pipecat_connection.event_handler("closed")
+            @efficientai_connection.event_handler("closed")
             async def handle_disconnected(webrtc_connection: SmallWebRTCConnection):
                 logger.debug(
                     f"Peer connection closed: {webrtc_connection.pc_id} for call {call.id}"
@@ -352,13 +352,13 @@ class WhatsAppClient:
                 self._ongoing_calls_map.pop(call.id, None)
 
             logger.debug(f"WebRTC connection established successfully for call {call.id}")
-            return pipecat_connection
+            return efficientai_connection
 
         except Exception as e:
             # Clean up connection on failure
-            if pipecat_connection:
+            if efficientai_connection:
                 try:
-                    await pipecat_connection.disconnect()
+                    await efficientai_connection.disconnect()
                 except Exception as cleanup_error:
                     logger.error(
                         f"Failed to cleanup connection for call {call.id}: {cleanup_error}"
@@ -388,11 +388,11 @@ class WhatsAppClient:
 
         try:
             if call.id in self._ongoing_calls_map:
-                pipecat_connection = self._ongoing_calls_map[call.id]
+                efficientai_connection = self._ongoing_calls_map[call.id]
                 logger.debug(f"Disconnecting WebRTC connection for call {call.id}")
 
                 try:
-                    await pipecat_connection.disconnect()
+                    await efficientai_connection.disconnect()
                     logger.debug(f"WebRTC connection disconnected successfully for call {call.id}")
                 except Exception as disconnect_error:
                     logger.error(

@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Tavus transport implementation for Pipecat.
+"""Tavus transport implementation for EfficientAI.
 
 This module provides integration with the Tavus platform for creating conversational
 AI applications with avatars. It manages conversation sessions and provides real-time
@@ -155,13 +155,13 @@ class TavusParams(DailyParams):
 
 
 class TavusTransportClient:
-    """Transport client that integrates Pipecat with the Tavus platform.
+    """Transport client that integrates EfficientAI with the Tavus platform.
 
-    A transport client that integrates a Pipecat Bot with the Tavus platform by managing
+    A transport client that integrates a EfficientAI Bot with the Tavus platform by managing
     conversation sessions using the Tavus API.
 
     This client uses `TavusApi` to interact with the Tavus backend services. When a conversation
-    is started via `TavusApi`, Tavus provides a `roomURL` that can be used to connect the Pipecat Bot
+    is started via `TavusApi`, Tavus provides a `roomURL` that can be used to connect the EfficientAI Bot
     into the same virtual room where the TavusBot is operating.
     """
 
@@ -173,19 +173,19 @@ class TavusTransportClient:
         callbacks: TavusCallbacks,
         api_key: str,
         replica_id: str,
-        persona_id: str = "pipecat-stream",
+        persona_id: str = "efficientai-stream",
         session: aiohttp.ClientSession,
     ) -> None:
         """Initialize the Tavus transport client.
 
         Args:
-            bot_name: The name of the Pipecat bot instance.
+            bot_name: The name of the EfficientAI bot instance.
             params: Optional parameters for Tavus operation.
             callbacks: Callback handlers for Tavus-related events.
             api_key: API key for authenticating with Tavus API.
             replica_id: ID of the replica to use in the Tavus conversation.
-            persona_id: ID of the Tavus persona. Defaults to "pipecat-stream",
-                which signals Tavus to use the TTS voice of the Pipecat bot
+            persona_id: ID of the Tavus persona. Defaults to "efficientai-stream",
+                which signals Tavus to use the TTS voice of the EfficientAI bot
                 instead of a Tavus persona voice.
             session: The aiohttp session for making async HTTP requests.
         """
@@ -252,7 +252,7 @@ class TavusTransportClient:
                 on_transcription_error=partial(self._on_handle_callback, "on_transcription_error"),
             )
             self._client = DailyTransportClient(
-                room_url, None, "Pipecat", self._params, daily_callbacks, self._bot_name
+                room_url, None, "EfficientAI", self._params, daily_callbacks, self._bot_name
             )
             await self._client.setup(setup)
         except Exception as e:
@@ -658,7 +658,7 @@ class TavusOutputTransport(BaseOutputTransport):
 class TavusTransport(BaseTransport):
     """Transport implementation for Tavus video calls.
 
-    When used, the Pipecat bot joins the same virtual room as the Tavus Avatar and the user.
+    When used, the EfficientAI bot joins the same virtual room as the Tavus Avatar and the user.
     This is achieved by using `TavusTransportClient`, which initiates the conversation via
     `TavusApi` and obtains a room URL that all participants connect to.
     """
@@ -669,7 +669,7 @@ class TavusTransport(BaseTransport):
         session: aiohttp.ClientSession,
         api_key: str,
         replica_id: str,
-        persona_id: str = "pipecat-stream",
+        persona_id: str = "efficientai-stream",
         params: TavusParams = TavusParams(),
         input_name: Optional[str] = None,
         output_name: Optional[str] = None,
@@ -677,12 +677,12 @@ class TavusTransport(BaseTransport):
         """Initialize the Tavus transport.
 
         Args:
-            bot_name: The name of the Pipecat bot.
+            bot_name: The name of the EfficientAI bot.
             session: aiohttp session used for async HTTP requests.
             api_key: Tavus API key for authentication.
             replica_id: ID of the replica model used for voice generation.
-            persona_id: ID of the Tavus persona. Defaults to "pipecat-stream"
-                to use the Pipecat TTS voice.
+            persona_id: ID of the Tavus persona. Defaults to "efficientai-stream"
+                to use the EfficientAI TTS voice.
             params: Optional Tavus-specific configuration parameters.
             input_name: Optional name for the input transport.
             output_name: Optional name for the output transport.
@@ -695,7 +695,7 @@ class TavusTransport(BaseTransport):
             on_participant_left=self._on_participant_left,
         )
         self._client = TavusTransportClient(
-            bot_name="Pipecat",
+            bot_name="EfficientAI",
             callbacks=callbacks,
             api_key=api_key,
             replica_id=replica_id,

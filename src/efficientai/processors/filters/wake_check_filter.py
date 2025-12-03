@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Wake phrase detection filter for Pipecat transcription processing.
+"""Wake phrase detection filter for EfficientAI transcription processing.
 
 This module provides a frame processor that filters transcription frames,
 only allowing them through after wake phrases have been detected. Includes

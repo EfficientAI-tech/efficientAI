@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""GStreamer pipeline source integration for Pipecat."""
+"""GStreamer pipeline source integration for EfficientAI."""
 
 import asyncio
 from typing import Optional
@@ -32,7 +32,7 @@ try:
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
     logger.error(
-        "In order to use GStreamer, you need to `pip install pipecat-ai[gstreamer]`. Also, you need to install GStreamer in your system."
+        "In order to use GStreamer, you need to `pip install efficientai-ai[gstreamer]`. Also, you need to install GStreamer in your system."
     )
     raise Exception(f"Missing module: {e}")
 

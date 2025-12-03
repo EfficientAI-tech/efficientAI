@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Sequential pipeline merging for Pipecat.
+"""Sequential pipeline merging for EfficientAI.
 
 This module provides a pipeline implementation that sequentially merges
 the output from multiple pipelines, processing them one after another

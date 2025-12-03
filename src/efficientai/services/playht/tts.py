@@ -42,7 +42,7 @@ try:
     from websockets.protocol import State
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
-    logger.error("In order to use PlayHTTTSService, you need to `pip install pipecat-ai[playht]`.")
+    logger.error("In order to use PlayHTTTSService, you need to `pip install efficientai-ai[playht]`.")
     raise Exception(f"Missing module: {e}")
 
 

@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Langchain integration processor for Pipecat."""
+"""Langchain integration processor for EfficientAI."""
 
 from typing import Optional, Union
 
@@ -24,12 +24,12 @@ try:
     from langchain_core.messages import AIMessageChunk
     from langchain_core.runnables import Runnable
 except ModuleNotFoundError as e:
-    logger.exception("In order to use Langchain, you need to `pip install pipecat-ai[langchain]`. ")
+    logger.exception("In order to use Langchain, you need to `pip install efficientai-ai[langchain]`. ")
     raise Exception(f"Missing module: {e}")
 
 
 class LangchainProcessor(FrameProcessor):
-    """Processor that integrates Langchain runnables with Pipecat's frame pipeline.
+    """Processor that integrates Langchain runnables with EfficientAI's frame pipeline.
 
     This processor takes LLM message frames, extracts the latest user message,
     and processes it through a Langchain runnable chain. The response is streamed

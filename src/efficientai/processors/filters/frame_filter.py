@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Frame filtering processor for the Pipecat framework."""
+"""Frame filtering processor for the EfficientAI framework."""
 
 from typing import Tuple, Type
 

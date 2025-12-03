@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""LiveKit transport implementation for Pipecat.
+"""LiveKit transport implementation for EfficientAI.
 
 This module provides comprehensive LiveKit real-time communication integration
 including audio streaming, data messaging, participant management, and room

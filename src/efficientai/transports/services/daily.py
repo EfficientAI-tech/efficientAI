@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Daily transport implementation for Pipecat.
+"""Daily transport implementation for EfficientAI.
 
 This module provides comprehensive Daily video conferencing integration including
 audio/video streaming, transcription, recording, dial-in/out functionality, and

@@ -28,7 +28,7 @@ try:
     from groq import AsyncGroq
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
-    logger.error("In order to use Groq, you need to `pip install pipecat-ai[groq]`.")
+    logger.error("In order to use Groq, you need to `pip install efficientai-ai[groq]`.")
     raise Exception(f"Missing module: {e}")
 
 

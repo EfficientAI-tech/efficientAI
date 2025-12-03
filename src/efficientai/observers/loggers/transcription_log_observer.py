@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Transcription logging observer for Pipecat.
+"""Transcription logging observer for EfficientAI.
 
 This module provides an observer that logs transcription frames to the console,
 allowing developers to monitor speech-to-text activity in real-time.

@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Anthropic AI service integration for Pipecat.
+"""Anthropic AI service integration for EfficientAI.
 
 This module provides LLM services and context management for Anthropic's Claude models,
 including support for function calling, vision, and prompt caching features.
@@ -63,7 +63,7 @@ try:
     from anthropic import NOT_GIVEN, APITimeoutError, AsyncAnthropic, NotGiven
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
-    logger.error("In order to use Anthropic, you need to `pip install pipecat-ai[anthropic]`.")
+    logger.error("In order to use Anthropic, you need to `pip install efficientai-ai[anthropic]`.")
     raise Exception(f"Missing module: {e}")
 
 

@@ -49,7 +49,7 @@ try:
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
     logger.error(
-        "In order to use Speechmatics, you need to `pip install pipecat-ai[speechmatics]`."
+        "In order to use Speechmatics, you need to `pip install efficientai-ai[speechmatics]`."
     )
     raise Exception(f"Missing module: {e}")
 
@@ -988,7 +988,7 @@ def _get_endpoint_url(url: str) -> str:
         str: The formatted endpoint URL.
     """
     query_params = dict()
-    query_params["sm-app"] = f"pipecat/{__version__}"
+    query_params["sm-app"] = f"efficientai/{__version__}"
     query = urlencode(query_params)
 
     return f"{url}?{query}"
