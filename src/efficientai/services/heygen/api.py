@@ -108,7 +108,7 @@ class HeyGenSession(BaseModel):
     Parameters:
         session_id (str): Unique identifier for the streaming session.
         access_token (str): Token for accessing the session securely.
-        livekit_agent_token (str): Token for HeyGen’s audio agents(Pipecat).
+        livekit_agent_token (str): Token for HeyGen’s audio agents(EfficientAI).
         realtime_endpoint (str): Real-time communication endpoint URL.
         url (str): Direct URL for the session.
     """

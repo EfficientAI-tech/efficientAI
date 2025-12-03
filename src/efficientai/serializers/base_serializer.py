@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Frame serialization interfaces for Pipecat."""
+"""Frame serialization interfaces for EfficientAI."""
 
 from abc import ABC, abstractmethod
 from enum import Enum

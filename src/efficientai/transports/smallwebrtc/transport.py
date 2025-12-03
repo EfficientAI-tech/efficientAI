@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Small WebRTC transport implementation for Pipecat.
+"""Small WebRTC transport implementation for EfficientAI.
 
 This module provides a WebRTC transport implementation using aiortc for
 real-time audio and video communication. It supports bidirectional media
@@ -49,7 +49,7 @@ try:
     from av import AudioFrame, AudioResampler, VideoFrame
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
-    logger.error("In order to use the SmallWebRTC, you need to `pip install pipecat-ai[webrtc]`.")
+    logger.error("In order to use the SmallWebRTC, you need to `pip install efficientai-ai[webrtc]`.")
     raise Exception(f"Missing module: {e}")
 
 CAM_VIDEO_SOURCE = "camera"
@@ -235,7 +235,7 @@ class SmallWebRTCClient:
 
         # We are always resampling it for 16000 if the sample_rate that we receive is bigger than that.
         # otherwise we face issues with Silero VAD
-        self._pipecat_resampler = AudioResampler("s16", "mono", 16000)
+        self._efficientai_resampler = AudioResampler("s16", "mono", 16000)
 
         @self._webrtc_connection.event_handler("connected")
         async def on_connected(connection: SmallWebRTCConnection):
@@ -367,7 +367,7 @@ class SmallWebRTCClient:
                 continue
 
             if frame.sample_rate > self._in_sample_rate:
-                resampled_frames = self._pipecat_resampler.resample(frame)
+                resampled_frames = self._efficientai_resampler.resample(frame)
                 for resampled_frame in resampled_frames:
                     # 16-bit PCM bytes
                     pcm_array = resampled_frame.to_ndarray().astype(np.int16)

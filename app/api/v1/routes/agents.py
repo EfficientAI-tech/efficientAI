@@ -8,7 +8,8 @@ from typing import List
 from uuid import UUID
 
 from app.dependencies import get_db, get_organization_id
-from app.models.database import Agent, ConversationEvaluation, TestAgentConversation
+from app.models.database import Agent, ConversationEvaluation, TestAgentConversation, VoiceBundle, AIProvider
+from sqlalchemy import and_
 from app.models.schemas import (
     AgentCreate, AgentUpdate, AgentResponse
 )
@@ -23,13 +24,36 @@ async def create_agent(
     db: Session = Depends(get_db)
 ):
     """Create a new test agent"""
+    # Validate voice_bundle_id or ai_provider_id exists and belongs to organization
+    if agent.voice_bundle_id:
+        voice_bundle = db.query(VoiceBundle).filter(
+            and_(
+                VoiceBundle.id == agent.voice_bundle_id,
+                VoiceBundle.organization_id == organization_id
+            )
+        ).first()
+        if not voice_bundle:
+            raise HTTPException(status_code=404, detail="Voice bundle not found")
+    
+    if agent.ai_provider_id:
+        ai_provider = db.query(AIProvider).filter(
+            and_(
+                AIProvider.id == agent.ai_provider_id,
+                AIProvider.organization_id == organization_id
+            )
+        ).first()
+        if not ai_provider:
+            raise HTTPException(status_code=404, detail="AI Provider not found")
+    
     db_agent = Agent(
         organization_id=organization_id,
         name=agent.name,
         phone_number=agent.phone_number,
         language=agent.language,
         description=agent.description,
-        call_type=agent.call_type
+        call_type=agent.call_type,
+        voice_bundle_id=agent.voice_bundle_id,
+        ai_provider_id=agent.ai_provider_id
     )
     db.add(db_agent)
     db.commit()
@@ -81,6 +105,27 @@ async def update_agent(
     ).first()
     if not db_agent:
         raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
+    
+    # Validate voice_bundle_id or ai_provider_id if provided
+    if agent_update.voice_bundle_id:
+        voice_bundle = db.query(VoiceBundle).filter(
+            and_(
+                VoiceBundle.id == agent_update.voice_bundle_id,
+                VoiceBundle.organization_id == organization_id
+            )
+        ).first()
+        if not voice_bundle:
+            raise HTTPException(status_code=404, detail="Voice bundle not found")
+    
+    if agent_update.ai_provider_id:
+        ai_provider = db.query(AIProvider).filter(
+            and_(
+                AIProvider.id == agent_update.ai_provider_id,
+                AIProvider.organization_id == organization_id
+            )
+        ).first()
+        if not ai_provider:
+            raise HTTPException(status_code=404, detail="AI Provider not found")
     
     update_data = agent_update.dict(exclude_unset=True)
     for field, value in update_data.items():

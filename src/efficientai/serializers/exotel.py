@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Exotel Media Streams serializer for Pipecat."""
+"""Exotel Media Streams serializer for EfficientAI."""
 
 import base64
 import json
@@ -31,7 +31,7 @@ from efficientai.serializers.base_serializer import FrameSerializer, FrameSerial
 class ExotelFrameSerializer(FrameSerializer):
     """Serializer for Exotel Media Streams WebSocket protocol.
 
-    This serializer handles converting between Pipecat frames and Exotel's WebSocket
+    This serializer handles converting between EfficientAI frames and Exotel's WebSocket
     media streams protocol. It supports audio conversion, DTMF events, and automatic
     call termination.
 
@@ -88,12 +88,12 @@ class ExotelFrameSerializer(FrameSerializer):
         self._sample_rate = self._params.sample_rate or frame.audio_in_sample_rate
 
     async def serialize(self, frame: Frame) -> str | bytes | None:
-        """Serializes a Pipecat frame to Exotel WebSocket format.
+        """Serializes a EfficientAI frame to Exotel WebSocket format.
 
         Handles conversion of various frame types to Exotel WebSocket messages.
 
         Args:
-            frame: The Pipecat frame to serialize.
+            frame: The EfficientAI frame to serialize.
 
         Returns:
             Serialized data as string or bytes, or None if the frame isn't handled.
@@ -127,15 +127,15 @@ class ExotelFrameSerializer(FrameSerializer):
         return None
 
     async def deserialize(self, data: str | bytes) -> Frame | None:
-        """Deserializes Exotel WebSocket data to Pipecat frames.
+        """Deserializes Exotel WebSocket data to EfficientAI frames.
 
-        Handles conversion of Exotel media events to appropriate Pipecat frames.
+        Handles conversion of Exotel media events to appropriate EfficientAI frames.
 
         Args:
             data: The raw WebSocket data from Exotel.
 
         Returns:
-            A Pipecat frame corresponding to the Exotel event, or None if unhandled.
+            A EfficientAI frame corresponding to the Exotel event, or None if unhandled.
         """
         message = json.loads(data)
 

@@ -4,9 +4,6 @@ import type {
   Evaluation,
   EvaluationCreate,
   EvaluationResult,
-  BatchJob,
-  BatchCreate,
-  BatchResults,
   APIKey,
   MessageResponse,
   EvaluationStatus,
@@ -182,30 +179,6 @@ class ApiClient {
     return response.data
   }
 
-  // Batch endpoints
-  async createBatch(data: BatchCreate): Promise<BatchJob> {
-    const response = await this.client.post('/api/v1/batch/create', data)
-    return response.data
-  }
-
-  async getBatch(batchId: string): Promise<BatchJob> {
-    const response = await this.client.get(`/api/v1/batch/${batchId}`)
-    return response.data
-  }
-
-  async getBatchResults(batchId: string): Promise<BatchResults> {
-    const response = await this.client.get(`/api/v1/batch/${batchId}/results`)
-    return response.data
-  }
-
-  async exportBatchResults(batchId: string, format: 'json' | 'csv'): Promise<Blob> {
-    const response = await this.client.get(`/api/v1/batch/${batchId}/export`, {
-      params: { format },
-      responseType: 'blob',
-    })
-    return response.data
-  }
-
   // Agents endpoints
   async createAgent(data: {
     name: string
@@ -213,6 +186,8 @@ class ApiClient {
     language: string
     description?: string | null
     call_type: string
+    voice_bundle_id?: string
+    ai_provider_id?: string
   }): Promise<any> {
     const response = await this.client.post('/api/v1/agents', data)
     return response.data
@@ -230,7 +205,15 @@ class ApiClient {
     return response.data
   }
 
-  async updateAgent(agentId: string, data: any): Promise<any> {
+  async updateAgent(agentId: string, data: {
+    name?: string
+    phone_number?: string
+    language?: string
+    description?: string | null
+    call_type?: string
+    voice_bundle_id?: string
+    ai_provider_id?: string
+  }): Promise<any> {
     const response = await this.client.put(`/api/v1/agents/${agentId}`, data)
     return response.data
   }
@@ -654,6 +637,131 @@ class ApiClient {
   // Voice Agent endpoints
   async getVoiceAgentConnection(): Promise<{ ws_url: string; endpoint: string }> {
     const response = await this.client.post('/api/v1/voice-agent/connect')
+    return response.data
+  }
+
+  // Evaluator endpoints
+  async createEvaluator(data: {
+    agent_id: string
+    persona_id: string
+    scenario_id: string
+    tags?: string[]
+  }): Promise<any> {
+    const response = await this.client.post('/api/v1/evaluators', data)
+    return response.data
+  }
+
+  async createEvaluatorsBulk(data: {
+    agent_id: string
+    scenario_id: string
+    persona_ids: string[]
+    tags?: string[]
+  }): Promise<any[]> {
+    const response = await this.client.post('/api/v1/evaluators/bulk', data)
+    return response.data
+  }
+
+  async listEvaluators(): Promise<any[]> {
+    const response = await this.client.get('/api/v1/evaluators')
+    return response.data
+  }
+
+  async getEvaluator(evaluatorId: string): Promise<any> {
+    const response = await this.client.get(`/api/v1/evaluators/${evaluatorId}`)
+    return response.data
+  }
+
+  async updateEvaluator(evaluatorId: string, data: {
+    agent_id?: string
+    persona_id?: string
+    scenario_id?: string
+    tags?: string[]
+  }): Promise<any> {
+    const response = await this.client.put(`/api/v1/evaluators/${evaluatorId}`, data)
+    return response.data
+  }
+
+  async deleteEvaluator(evaluatorId: string): Promise<void> {
+    await this.client.delete(`/api/v1/evaluators/${evaluatorId}`)
+  }
+
+  // Metric endpoints
+  async createMetric(data: {
+    name: string
+    description?: string
+    metric_type: 'number' | 'boolean' | 'rating'
+    trigger?: 'always'
+    enabled?: boolean
+  }): Promise<any> {
+    const response = await this.client.post('/api/v1/metrics', data)
+    return response.data
+  }
+
+  async listMetrics(): Promise<any[]> {
+    const response = await this.client.get('/api/v1/metrics')
+    return response.data
+  }
+
+  // Evaluator Results endpoints
+  async listEvaluatorResults(evaluatorId?: string): Promise<any[]> {
+    const params = evaluatorId ? { evaluator_id: evaluatorId } : {}
+    const response = await this.client.get('/api/v1/evaluator-results', { params })
+    return response.data
+  }
+
+  async getEvaluatorResult(id: string): Promise<any> {
+    const response = await this.client.get(`/api/v1/evaluator-results/${id}`)
+    return response.data
+  }
+
+  async getEvaluatorResultMetrics(id: string): Promise<any> {
+    const response = await this.client.get(`/api/v1/evaluator-results/${id}/metrics`)
+    return response.data
+  }
+
+  async createEvaluatorResultManual(data: {
+    evaluator_id: string
+    audio_s3_key: string
+    duration_seconds?: number
+  }): Promise<any> {
+    const response = await this.client.post('/api/v1/evaluator-results', data)
+    return response.data
+  }
+
+  async deleteEvaluatorResult(id: string): Promise<void> {
+    await this.client.delete(`/api/v1/evaluator-results/${id}`)
+  }
+
+  async deleteEvaluatorResultsBulk(ids: string[]): Promise<void> {
+    // FastAPI expects multiple query parameters with the same name
+    // Build query string manually: result_ids=id1&result_ids=id2
+    const params = new URLSearchParams()
+    ids.forEach(id => params.append('result_ids', id))
+    await this.client.delete(`/api/v1/evaluator-results?${params.toString()}`)
+  }
+
+  async getMetric(metricId: string): Promise<any> {
+    const response = await this.client.get(`/api/v1/metrics/${metricId}`)
+    return response.data
+  }
+
+  async updateMetric(metricId: string, data: {
+    name?: string
+    description?: string
+    metric_type?: 'number' | 'boolean' | 'rating'
+    trigger?: 'always'
+    enabled?: boolean
+  }): Promise<any> {
+    const response = await this.client.put(`/api/v1/metrics/${metricId}`, data)
+    return response.data
+  }
+
+  async deleteMetric(metricId: string): Promise<void> {
+    await this.client.delete(`/api/v1/metrics/${metricId}`)
+  }
+
+  async seedDefaultMetrics(): Promise<any[]> {
+    const response = await this.client.post('/api/v1/metrics/seed-defaults')
     return response.data
   }
 }

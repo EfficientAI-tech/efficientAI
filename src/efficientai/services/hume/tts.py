@@ -34,7 +34,7 @@ try:
     from hume.tts.types import TimestampMessage
 except ModuleNotFoundError as e:  # pragma: no cover - import-time guidance
     logger.error(f"Exception: {e}")
-    logger.error("In order to use Hume, you need to `pip install pipecat-ai[hume]`.")
+    logger.error("In order to use Hume, you need to `pip install efficientai-ai[hume]`.")
     raise Exception(f"Missing module: {e}")
 
 
@@ -45,7 +45,7 @@ class HumeTTSService(WordTTSService):
     """Hume Octave Text-to-Speech service.
 
     Streams PCM audio via Hume's HTTP output streaming (JSON chunks) endpoint
-    using the Python SDK and emits ``TTSAudioRawFrame`` frames suitable for Pipecat transports.
+    using the Python SDK and emits ``TTSAudioRawFrame`` frames suitable for EfficientAI transports.
 
     Supported features:
 

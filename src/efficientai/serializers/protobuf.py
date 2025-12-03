@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Protobuf frame serialization for Pipecat."""
+"""Protobuf frame serialization for EfficientAI."""
 
 import dataclasses
 import json
@@ -37,7 +37,7 @@ class MessageFrame:
 
 
 class ProtobufFrameSerializer(FrameSerializer):
-    """Serializer for converting Pipecat frames to/from Protocol Buffer format.
+    """Serializer for converting EfficientAI frames to/from Protocol Buffer format.
 
     Provides efficient binary serialization for frame transport over network
     connections. Supports text, audio, transcription, and message frames with

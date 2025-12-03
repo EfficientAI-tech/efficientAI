@@ -25,7 +25,7 @@ Technical Implementation:
 - Implements both JSON line-by-line parsing (streaming) and complete response (non-streaming)
 - Handles base64-encoded audio data with proper decoding
 - Manages audio continuity to prevent clicks and artifacts
-- Integrates with Pipecat's frame-based pipeline architecture
+- Integrates with EfficientAI's frame-based pipeline architecture
 
 Examples::
 
@@ -80,7 +80,7 @@ from efficientai.utils.tracing.service_decorators import traced_tts
 class InworldTTSService(TTSService):
     """Inworld AI HTTP-based Text-to-Speech Service.
 
-    This unified service integrates Inworld AI's high-quality TTS API with Pipecat's pipeline
+    This unified service integrates Inworld AI's high-quality TTS API with EfficientAI's pipeline
     architecture. It supports both streaming and non-streaming modes, providing flexible
     speech synthesis with natural-sounding voices.
 
@@ -102,7 +102,7 @@ class InworldTTSService(TTSService):
     - **Non-Streaming**: Single HTTP POST with complete response
     - Processes base64-encoded audio chunks in real-time or batch
     - Manages audio continuity to prevent artifacts
-    - Integrates with Pipecat's frame-based pipeline system
+    - Integrates with EfficientAI's frame-based pipeline system
 
     Supported Configuration:
 
@@ -589,7 +589,7 @@ class InworldTTSService(TTSService):
         # Only yield frames with actual audio content
         # Empty frames can cause pipeline issues
         if len(audio_data) > 0:
-            # Create Pipecat audio frame with processed audio data
+            # Create EfficientAI audio frame with processed audio data
             yield TTSAudioRawFrame(
                 audio=audio_data,  # Clean audio without headers
                 sample_rate=self.sample_rate,  # Configured sample rate (48kHz)

@@ -26,7 +26,7 @@ try:
     from mcp.client.streamable_http import streamablehttp_client
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
-    logger.error("In order to use an MCP client, you need to `pip install pipecat-ai[mcp]`.")
+    logger.error("In order to use an MCP client, you need to `pip install efficientai-ai[mcp]`.")
     raise Exception(f"Missing module: {e}")
 
 ServerParameters: TypeAlias = StdioServerParameters | SseServerParameters | StreamableHttpParameters
@@ -79,13 +79,13 @@ class MCPClient(BaseObject):
         """Register all available MCP tools with an LLM service.
 
         Connects to the MCP server, discovers available tools, converts their
-        schemas to Pipecat format, and registers them with the LLM service.
+        schemas to EfficientAI format, and registers them with the LLM service.
 
         This is the equivalent of calling get_tools_schema() followed by
         register_tools_schema().
 
         Args:
-            llm: The Pipecat LLM service to register tools with.
+            llm: The EfficientAI LLM service to register tools with.
 
         Returns:
             A ToolsSchema containing all successfully registered tools.
@@ -98,7 +98,7 @@ class MCPClient(BaseObject):
         """Get the schema of all available MCP tools without registering them.
 
         Connects to the MCP server, discovers available tools, and converts their
-        schemas to Pipecat format.
+        schemas to EfficientAI format.
 
         Returns:
             A ToolsSchema containing all available tools. This can be used for
@@ -114,15 +114,15 @@ class MCPClient(BaseObject):
 
         Args:
             tools_schema: The ToolsSchema to register with the LLM service.
-            llm: The Pipecat LLM service to register tools with.
+            llm: The EfficientAI LLM service to register tools with.
         """
         for function_schema in tools_schema.standard_tools:
             llm.register_function(function_schema.name, self._tool_wrapper)
 
-    def _convert_mcp_schema_to_pipecat(
+    def _convert_mcp_schema_to_efficientai(
         self, tool_name: str, tool_schema: Dict[str, Any]
     ) -> FunctionSchema:
-        """Convert an mcp tool schema to Pipecat's FunctionSchema format.
+        """Convert an mcp tool schema to EfficientAI's FunctionSchema format.
 
         Args:
             tool_name: The name of the tool
@@ -163,7 +163,7 @@ class MCPClient(BaseObject):
                 return tools_schema
 
     async def _sse_tool_wrapper(self, params: FunctionCallParams) -> None:
-        """Wrapper for mcp tool calls to match Pipecat's function call interface."""
+        """Wrapper for mcp tool calls to match EfficientAI's function call interface."""
         logger.debug(f"Executing tool '{params.function_name}' with call ID: {params.tool_call_id}")
         logger.trace(f"Tool arguments: {json.dumps(params.arguments, indent=2)}")
         try:
@@ -194,7 +194,7 @@ class MCPClient(BaseObject):
                 return tools_schema
 
     async def _stdio_tool_wrapper(self, params: FunctionCallParams) -> None:
-        """Wrapper for mcp tool calls to match Pipecat's function call interface."""
+        """Wrapper for mcp tool calls to match EfficientAI's function call interface."""
         logger.debug(f"Executing tool '{params.function_name}' with call ID: {params.tool_call_id}")
         logger.trace(f"Tool arguments: {json.dumps(params.arguments, indent=2)}")
         try:
@@ -229,7 +229,7 @@ class MCPClient(BaseObject):
                 return tools_schema
 
     async def _streamable_http_tool_wrapper(self, params: FunctionCallParams) -> None:
-        """Wrapper for mcp tool calls to match Pipecat's function call interface."""
+        """Wrapper for mcp tool calls to match EfficientAI's function call interface."""
         logger.debug(f"Executing tool '{params.function_name}' with call ID: {params.tool_call_id}")
         logger.trace(f"Tool arguments: {json.dumps(params.arguments, indent=2)}")
         try:
@@ -291,7 +291,7 @@ class MCPClient(BaseObject):
 
             try:
                 # Convert the schema
-                function_schema = self._convert_mcp_schema_to_pipecat(
+                function_schema = self._convert_mcp_schema_to_efficientai(
                     tool_name,
                     {"description": tool.description, "input_schema": tool.inputSchema},
                 )

@@ -24,7 +24,7 @@ from efficientai.utils.tracing.service_decorators import traced_stt
 
 
 def language_to_whisper_language(language: Language) -> Optional[str]:
-    """Maps pipecat Language enum to Whisper API language codes.
+    """Maps efficientai Language enum to Whisper API language codes.
 
     Language support for Whisper API.
     Docs: https://platform.openai.com/docs/guides/speech-to-text#supported-languages
@@ -166,7 +166,7 @@ class BaseWhisperSTTService(SegmentedSTTService):
         return True
 
     def language_to_service_language(self, language: Language) -> Optional[str]:
-        """Convert from pipecat Language to service language code.
+        """Convert from efficientai Language to service language code.
 
         Args:
             language: The Language enum value to convert.

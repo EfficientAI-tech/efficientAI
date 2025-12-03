@@ -32,7 +32,7 @@ try:
 
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
-    logger.error("In order to use NVIDIA Riva STT, you need to `pip install pipecat-ai[riva]`.")
+    logger.error("In order to use NVIDIA Riva STT, you need to `pip install efficientai-ai[riva]`.")
     raise Exception(f"Missing module: {e}")
 
 
@@ -472,7 +472,7 @@ class RivaSegmentedSTTService(SegmentedSTTService):
         self._settings = {"language": self._language_enum}
 
     def language_to_service_language(self, language: Language) -> Optional[str]:
-        """Convert pipecat Language enum to Riva's language code.
+        """Convert efficientai Language enum to Riva's language code.
 
         Args:
             language: Language enum value.

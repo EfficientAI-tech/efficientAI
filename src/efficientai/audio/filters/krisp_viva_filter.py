@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Krisp noise reduction audio filter for Pipecat.
+"""Krisp noise reduction audio filter for EfficientAI.
 
 This module provides an audio filter implementation using Krisp VIVA SDK.
 """

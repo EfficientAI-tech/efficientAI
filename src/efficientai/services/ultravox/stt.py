@@ -37,7 +37,7 @@ try:
     from vllm.engine.arg_utils import AsyncEngineArgs
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
-    logger.error("In order to use Ultravox, you need to `pip install pipecat-ai[ultravox]`.")
+    logger.error("In order to use Ultravox, you need to `pip install efficientai-ai[ultravox]`.")
     raise Exception(f"Missing module: {e}")
 
 

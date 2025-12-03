@@ -851,7 +851,7 @@ class PipelineTask(BasePipelineTask):
         return True
 
     async def _load_observer_files(self):
-        observer_files = os.environ.get("PIPECAT_OBSERVER_FILES", "").split(":")
+        observer_files = os.environ.get("EFFICIENTAI_OBSERVER_FILES", "").split(":")
         for f in observer_files:
             try:
                 path = Path(f).resolve()

@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Google services module for Pipecat."""
+"""Google services module for EfficientAI."""
 
 import sys
 

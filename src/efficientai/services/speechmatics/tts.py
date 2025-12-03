@@ -30,7 +30,7 @@ try:
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
     logger.error(
-        "In order to use Speechmatics, you need to `pip install pipecat-ai[speechmatics]`."
+        "In order to use Speechmatics, you need to `pip install efficientai-ai[speechmatics]`."
     )
     raise Exception(f"Missing module: {e}")
 
@@ -186,7 +186,7 @@ class SpeechmaticsTTSService(TTSService):
                         )
                         return
 
-                    # Update Pipecat metrics
+                    # Update EfficientAI metrics
                     await self.start_tts_usage_metrics(text)
 
                     # Emit the TTS started frame
@@ -244,7 +244,7 @@ def _get_endpoint_url(base_url: str, voice: str, sample_rate: int) -> str:
     """
     query_params = {}
     query_params["output_format"] = f"pcm_{sample_rate}"
-    query_params["sm-app"] = f"pipecat/{__version__}"
+    query_params["sm-app"] = f"efficientai/{__version__}"
     query = urlencode(query_params)
 
     return f"{base_url}/generate/{voice}?{query}"

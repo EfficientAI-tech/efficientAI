@@ -13,14 +13,6 @@ export enum EvaluationStatus {
   CANCELLED = 'cancelled',
 }
 
-export enum BatchStatus {
-  PENDING = 'pending',
-  PROCESSING = 'processing',
-  COMPLETED = 'completed',
-  FAILED = 'failed',
-  CANCELLED = 'cancelled',
-}
-
 export interface AudioFile {
   id: string
   filename: string
@@ -64,29 +56,7 @@ export interface EvaluationResult {
   created_at: string
 }
 
-export interface BatchJob {
-  id: string
-  status: BatchStatus
-  total_files: number
-  processed_files: number
-  failed_files: number
-  evaluation_type: EvaluationType
-  created_at: string
-  completed_at?: string | null
-}
-
-export interface BatchCreate {
-  audio_ids: string[]
-  reference_texts?: Record<string, string> | null
-  evaluation_type: EvaluationType
-  model_name?: string | null
-  metrics?: string[]
-}
-
-export interface BatchResults {
-  batch_id: string
-  status: BatchStatus
-  total_files: number
+export interface BatchEvaluationResult {
   processed_files: number
   failed_files: number
   aggregated_metrics?: Record<string, any> | null

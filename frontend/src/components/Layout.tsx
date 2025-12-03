@@ -6,7 +6,6 @@ import { apiClient } from '../lib/api'
 import {
   LayoutDashboard,
   FileCheck,
-  FolderSync,
   LogOut,
   Menu,
   Phone,
@@ -24,6 +23,7 @@ import {
   Mic,
   Brain,
   Bot,
+  Type,
 } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import Logo from './Logo'
@@ -48,22 +48,22 @@ const navigationSections: NavSection[] = [
       { name: 'Agents', href: '/agents', icon: Bot },
       { name: 'Personas', href: '/personas', icon: Users },
       { name: 'Scenarios', href: '/scenarios', icon: FileText },
+      { name: 'Metrics Management', href: '/metrics-management', icon: BarChart3 },
     ],
   },
   {
     title: 'Evaluations',
     icon: FileCheck,
     items: [
-      { name: 'Manual Transcriptions', href: '/evaluations', icon: Mic },
-      { name: 'Batch Jobs', href: '/batch', icon: FolderSync },
-      { name: 'Evaluate Test Agents', href: '/evaluate-test-agents', icon: Mic },
+      { name: 'Manual Transcriptions', href: '/evaluations', icon: Type },
+      { name: 'Evaluators', href: '/evaluate-test-agents', icon: Mic },
     ],
   },
   {
-    title: 'Metrics',
+    title: 'Results',
     icon: BarChart3,
     items: [
-      { name: 'Metrics Dashboard', href: '/metrics', icon: BarChart3 },
+      { name: 'Evaluation Results', href: '/results', icon: BarChart3 },
     ],
   },
   {
@@ -255,7 +255,7 @@ function SidebarContent({
   location: ReturnType<typeof useLocation>
 }) {
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
-    new Set(['Simulations', 'Evaluations', 'Metrics', 'Configurations'])
+    new Set(['Simulations', 'Evaluations', 'Results', 'Configurations'])
   )
 
   const toggleSection = (title: string) => {

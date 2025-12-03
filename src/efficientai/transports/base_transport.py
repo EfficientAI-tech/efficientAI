@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Base transport classes for Pipecat.
+"""Base transport classes for EfficientAI.
 
 This module provides the foundation for transport implementations including
 parameter configuration and abstract base classes for input/output transport

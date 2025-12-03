@@ -17,7 +17,7 @@ from urllib.parse import urlencode
 
 from loguru import logger
 
-from pipecat import __version__ as pipecat_version
+from efficientai import __version__ as efficientai_version
 from efficientai.frames.frames import (
     CancelFrame,
     EndFrame,
@@ -48,7 +48,7 @@ try:
     from websockets.asyncio.client import connect as websocket_connect
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
-    logger.error('In order to use AssemblyAI, you need to `pip install "pipecat-ai[assemblyai]"`.')
+    logger.error('In order to use AssemblyAI, you need to `pip install "efficientai-ai[assemblyai]"`.')
     raise Exception(f"Missing module: {e}")
 
 
@@ -195,7 +195,7 @@ class AssemblyAISTTService(STTService):
             ws_url = self._build_ws_url()
             headers = {
                 "Authorization": self._api_key,
-                "User-Agent": f"AssemblyAI/1.0 (integration=Pipecat/{pipecat_version})",
+                "User-Agent": f"AssemblyAI/1.0 (integration=EfficientAI/{efficientai_version})",
             }
             self._websocket = await websocket_connect(
                 ws_url,

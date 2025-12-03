@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""LLM logging observer for Pipecat."""
+"""LLM logging observer for EfficientAI."""
 
 from loguru import logger
 

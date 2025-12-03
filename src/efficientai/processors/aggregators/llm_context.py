@@ -4,10 +4,10 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Universal LLM context management for LLM services in Pipecat.
+"""Universal LLM context management for LLM services in EfficientAI.
 
 Context contents are represented in a universal format (based on OpenAI)
-that supports a union of known Pipecat LLM service functionality.
+that supports a union of known EfficientAI LLM service functionality.
 
 Whenever an LLM service needs to access context, it does a just-in-time
 translation from this universal context into whatever format it needs, using a

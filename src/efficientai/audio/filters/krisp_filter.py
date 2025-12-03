@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Krisp noise reduction audio filter for Pipecat.
+"""Krisp noise reduction audio filter for EfficientAI.
 
 This module provides an audio filter implementation using Krisp's noise
 reduction technology to suppress background noise in audio streams.
@@ -19,10 +19,10 @@ from efficientai.audio.filters.base_audio_filter import BaseAudioFilter
 from efficientai.frames.frames import FilterControlFrame, FilterEnableFrame
 
 try:
-    from pipecat_ai_krisp.audio.krisp_processor import KrispAudioProcessor
+    from efficientai_ai_krisp.audio.krisp_processor import KrispAudioProcessor
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
-    logger.error("In order to use the Krisp filter, you need to `pip install pipecat-ai[krisp]`.")
+    logger.error("In order to use the Krisp filter, you need to `pip install efficientai-ai[krisp]`.")
     raise Exception(f"Missing module: {e}")
 
 

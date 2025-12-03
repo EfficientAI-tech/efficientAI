@@ -63,6 +63,9 @@ class Settings(BaseSettings):
     
     # Frontend
     FRONTEND_DIR: str = "./frontend/dist"
+    
+    # Speaker Diarization (Optional)
+    HUGGINGFACE_TOKEN: Optional[str] = None  # For pyannote.audio speaker diarization
 
     model_config = SettingsConfigDict(
         env_file=".env",

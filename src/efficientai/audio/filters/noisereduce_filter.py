@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Noisereduce audio filter for Pipecat.
+"""Noisereduce audio filter for EfficientAI.
 
 This module provides an audio filter implementation using the noisereduce
 library to reduce background noise in audio streams through spectral
@@ -22,7 +22,7 @@ try:
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
     logger.error(
-        "In order to use the noisereduce filter, you need to `pip install pipecat-ai[noisereduce]`."
+        "In order to use the noisereduce filter, you need to `pip install efficientai-ai[noisereduce]`."
     )
     raise Exception(f"Missing module: {e}")
 

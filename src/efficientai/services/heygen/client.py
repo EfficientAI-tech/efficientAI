@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""HeyGen implementation for Pipecat.
+"""HeyGen implementation for EfficientAI.
 
 This module provides integration with the HeyGen platform for creating conversational
 AI applications with avatars. It manages conversation sessions and provides real-time
@@ -39,7 +39,7 @@ try:
     from websockets.exceptions import ConnectionClosedOK
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
-    logger.error("In order to use HeyGen, you need to `pip install pipecat-ai[heygen]`.")
+    logger.error("In order to use HeyGen, you need to `pip install efficientai-ai[heygen]`.")
     raise Exception(f"Missing module: {e}")
 
 HEY_GEN_SAMPLE_RATE = 24000
@@ -122,7 +122,7 @@ class HeyGenClient:
         self._audio_seconds_sent = 0.0
         self._transport_ready = False
         # HeyGen enforces a protection mechanism that will automatically disconnect the avatar if a user does not join within 5 minutes,
-        # regardless of whether the Pipecat agent remains present in the room.
+        # regardless of whether the EfficientAI agent remains present in the room.
         # To prevent unexpected disconnections in HeyGenVideoService, we ensure that a user connection is established using the user's token.
         # This keeps the avatar session active and avoids forced logouts due to inactivity from the user side.
         self._connect_as_user = connect_as_user

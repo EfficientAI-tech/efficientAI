@@ -8,7 +8,7 @@
 
 This module provides a service for interacting with Perplexity's API using
 an OpenAI-compatible interface. It handles Perplexity's unique token usage
-reporting patterns while maintaining compatibility with the Pipecat framework.
+reporting patterns while maintaining compatibility with the EfficientAI framework.
 """
 
 from openai import NOT_GIVEN

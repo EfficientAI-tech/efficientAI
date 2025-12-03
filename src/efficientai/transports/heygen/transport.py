@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""HeyGen implementation for Pipecat.
+"""HeyGen implementation for EfficientAI.
 
 This module provides integration with the HeyGen platform for creating conversational
 AI applications with avatars. It manages conversation sessions and provides real-time
@@ -285,7 +285,7 @@ class HeyGenParams(TransportParams):
 class HeyGenTransport(BaseTransport):
     """Transport implementation for HeyGen video calls.
 
-    When used, the Pipecat bot joins the same virtual room as the HeyGen Avatar and the user.
+    When used, the EfficientAI bot joins the same virtual room as the HeyGen Avatar and the user.
     This is achieved by using `HeyGenTransport`, which initiates the conversation via
     `HeyGenApi` and obtains a room URL that all participants connect to.
     """
@@ -305,7 +305,7 @@ class HeyGenTransport(BaseTransport):
         """Initialize the HeyGen transport.
 
         Sets up a new HeyGen transport instance with the specified configuration for
-        handling video calls between the Pipecat bot and HeyGen Avatar.
+        handling video calls between the EfficientAI bot and HeyGen Avatar.
 
         Args:
             session: aiohttp session for making async HTTP requests

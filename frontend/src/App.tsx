@@ -4,8 +4,6 @@ import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Evaluations from './pages/Evaluations'
 import EvaluationDetail from './pages/EvaluationDetail'
-import BatchJobs from './pages/BatchJobs'
-import BatchDetail from './pages/BatchDetail'
 import ManualTranscriptionDetail from './pages/ManualTranscriptionDetail'
 import Layout from './components/Layout'
 import Agents from './pages/Agents'
@@ -19,6 +17,9 @@ import DataSources from './pages/DataSources'
 import AIProviders from './pages/AIProviders'
 import VoiceBundles from './pages/VoiceBundles'
 import EvaluateTestAgents from './pages/EvaluateTestAgents'
+import MetricsManagement from './pages/MetricsManagement'
+import Results from './pages/Results'
+import EvaluatorResultDetail from './pages/EvaluatorResultDetail'
 
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -48,8 +49,6 @@ function App() {
           <Route path="evaluations" element={<Evaluations />} />
           <Route path="evaluations/:id" element={<EvaluationDetail />} />
           <Route path="manual-evaluations/:id" element={<ManualTranscriptionDetail />} />
-          <Route path="batch" element={<BatchJobs />} />
-          <Route path="batch/:id" element={<BatchDetail />} />
           <Route path="agents" element={<Agents />} />
           <Route path="personas" element={<Personas />} />
           <Route path="scenarios" element={<Scenarios />} />
@@ -59,6 +58,9 @@ function App() {
           <Route path="ai-providers" element={<AIProviders />} />
           <Route path="voicebundles" element={<VoiceBundles />} />
           <Route path="evaluate-test-agents" element={<EvaluateTestAgents />} />
+          <Route path="metrics-management" element={<MetricsManagement />} />
+          <Route path="results" element={<Results />} />
+          <Route path="results/:id" element={<EvaluatorResultDetail />} />
           <Route path="iam" element={<IAM />} />
           <Route path="profile" element={<Profile />} />
         </Route>

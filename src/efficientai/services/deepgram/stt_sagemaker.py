@@ -6,7 +6,7 @@
 
 """Deepgram speech-to-text service for AWS SageMaker.
 
-This module provides a Pipecat STT service that connects to Deepgram models
+This module provides a EfficientAI STT service that connects to Deepgram models
 deployed on AWS SageMaker endpoints. Uses HTTP/2 bidirectional streaming for
 low-latency real-time transcription with support for interim results, multiple
 languages, and various Deepgram features.
@@ -41,7 +41,7 @@ try:
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
     logger.error(
-        "In order to use DeepgramSageMakerSTTService, you need to `pip install pipecat-ai[deepgram,sagemaker]`."
+        "In order to use DeepgramSageMakerSTTService, you need to `pip install efficientai-ai[deepgram,sagemaker]`."
     )
     raise Exception(f"Missing module: {e}")
 

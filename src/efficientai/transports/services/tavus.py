@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Tavus transport implementation for Pipecat.
+"""Tavus transport implementation for EfficientAI.
 
 This module provides integration with the Tavus platform for creating conversational
 AI applications with avatars. It manages conversation sessions and provides real-time

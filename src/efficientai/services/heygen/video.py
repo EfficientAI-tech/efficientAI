@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""HeyGen implementation for Pipecat.
+"""HeyGen implementation for EfficientAI.
 
 This module provides integration with the HeyGen platform for creating conversational
 AI applications with avatars. It manages conversation sessions and provides real-time

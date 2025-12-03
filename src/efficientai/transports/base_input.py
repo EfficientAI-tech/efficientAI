@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Base input transport implementation for Pipecat.
+"""Base input transport implementation for EfficientAI.
 
 This module provides the BaseInputTransport class which handles audio and video
 input processing, including VAD, turn analysis, and interruption management.

@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Small WebRTC transport implementation for Pipecat.
+"""Small WebRTC transport implementation for EfficientAI.
 
 This module provides a WebRTC transport implementation using aiortc for
 real-time audio and video communication. It supports bidirectional media

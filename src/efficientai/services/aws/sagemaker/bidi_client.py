@@ -31,7 +31,7 @@ try:
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
     logger.error(
-        "In order to use SageMaker BiDi client, you need to `pip install pipecat-ai[sagemaker]`."
+        "In order to use SageMaker BiDi client, you need to `pip install efficientai-ai[sagemaker]`."
     )
     raise Exception(f"Missing module: {e}")
 

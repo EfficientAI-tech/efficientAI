@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Daily transport implementation for Pipecat.
+"""Daily transport implementation for EfficientAI.
 
 This module provides comprehensive Daily video conferencing integration including
 audio/video streaming, transcription, recording, dial-in/out functionality, and
@@ -66,7 +66,7 @@ try:
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
     logger.error(
-        "In order to use the Daily transport, you need to `pip install pipecat-ai[daily]`."
+        "In order to use the Daily transport, you need to `pip install efficientai-ai[daily]`."
     )
     raise Exception(f"Missing module: {e}")
 

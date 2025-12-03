@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Function-based frame filtering for Pipecat pipelines.
+"""Function-based frame filtering for EfficientAI pipelines.
 
 This module provides a processor that filters frames based on a custom function,
 allowing for flexible frame filtering logic in processing pipelines.

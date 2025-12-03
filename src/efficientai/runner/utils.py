@@ -545,7 +545,7 @@ async def create_transport(
         return DailyTransport(
             runner_args.room_url,
             runner_args.token,
-            "Pipecat Bot",
+            "EfficientAI Bot",
             params=params,
         )
 

@@ -42,12 +42,12 @@ class TavusVideoService(AIService):
 
     Uses the TavusTransportClient to manage sessions and handle communication.
     When audio is sent, Tavus responds with both audio and video streams, which
-    are routed through Pipecat's media pipeline.
+    are routed through EfficientAI's media pipeline.
 
     In use cases with DailyTransport, this creates two distinct virtual rooms:
 
-    - Tavus room: Contains the Tavus Avatar and the Pipecat Bot
-    - User room: Contains the Pipecat Bot and the user
+    - Tavus room: Contains the Tavus Avatar and the EfficientAI Bot
+    - User room: Contains the EfficientAI Bot and the user
     """
 
     def __init__(
@@ -55,7 +55,7 @@ class TavusVideoService(AIService):
         *,
         api_key: str,
         replica_id: str,
-        persona_id: str = "pipecat-stream",
+        persona_id: str = "efficientai-stream",
         session: aiohttp.ClientSession,
         **kwargs,
     ) -> None:
@@ -64,7 +64,7 @@ class TavusVideoService(AIService):
         Args:
             api_key: Tavus API key used for authentication.
             replica_id: ID of the Tavus voice replica to use for speech synthesis.
-            persona_id: ID of the Tavus persona. Defaults to "pipecat-stream" for Pipecat TTS voice.
+            persona_id: ID of the Tavus persona. Defaults to "efficientai-stream" for EfficientAI TTS voice.
             session: Async HTTP session used for communication with Tavus.
             **kwargs: Additional arguments passed to the parent AIService class.
         """
@@ -98,7 +98,7 @@ class TavusVideoService(AIService):
             on_participant_left=self._on_participant_left,
         )
         self._client = TavusTransportClient(
-            bot_name="Pipecat",
+            bot_name="EfficientAI",
             callbacks=callbacks,
             api_key=self._api_key,
             replica_id=self._replica_id,

@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Time utilities for the Pipecat framework.
+"""Time utilities for the EfficientAI framework.
 
 This module provides utility functions for time handling including
 ISO8601 formatting, nanosecond conversions, and human-readable

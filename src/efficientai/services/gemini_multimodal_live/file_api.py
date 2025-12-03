@@ -23,7 +23,7 @@ try:
     from efficientai.services.google.gemini_live.file_api import GeminiFileAPI as _GeminiFileAPI
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
-    logger.error("In order to use Google AI, you need to `pip install pipecat-ai[google]`.")
+    logger.error("In order to use Google AI, you need to `pip install efficientai-ai[google]`.")
     raise Exception(f"Missing module: {e}")
 
 # These aliases are just here for backward compatibility, since we used to

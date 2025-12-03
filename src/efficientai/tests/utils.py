@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Testing utilities for Pipecat pipeline components."""
+"""Testing utilities for EfficientAI pipeline components."""
 
 import asyncio
 from dataclasses import dataclass

@@ -36,7 +36,7 @@ try:
     from websockets.protocol import State
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
-    logger.error("In order to use Soniox, you need to `pip install pipecat-ai[soniox]`.")
+    logger.error("In order to use Soniox, you need to `pip install efficientai-ai[soniox]`.")
     raise Exception(f"Missing module: {e}")
 
 
@@ -113,7 +113,7 @@ def is_end_token(token: dict) -> bool:
 
 
 def language_to_soniox_language(language: Language) -> str:
-    """Pipecat Language enum uses same ISO 2-letter codes as Soniox, except with added regional variants.
+    """EfficientAI Language enum uses same ISO 2-letter codes as Soniox, except with added regional variants.
 
     For a list of all supported languages, see: https://soniox.com/docs/speech-to-text/core-concepts/supported-languages
     """

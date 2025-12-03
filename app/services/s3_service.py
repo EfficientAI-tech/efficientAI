@@ -105,11 +105,49 @@ class S3Service:
         self._ensure_initialized()
         return self._initialization_error
 
-    def _get_key(self, file_id: uuid.UUID, file_format: str) -> str:
-        """Generate S3 key for a file."""
-        return f"{self.prefix}{file_id}.{file_format}"
+    def _get_key(
+        self, 
+        file_id: uuid.UUID, 
+        file_format: str, 
+        organization_id: Optional[str] = None,
+        evaluator_id: Optional[str] = None,
+        meaningful_id: Optional[str] = None
+    ) -> str:
+        """
+        Generate S3 key for a file.
+        
+        Args:
+            file_id: Unique file identifier (UUID)
+            file_format: File format extension
+            organization_id: Optional organization ID
+            evaluator_id: Optional evaluator ID for organizing by evaluator
+            meaningful_id: Optional meaningful identifier (e.g., result_id, timestamp-based ID)
+        
+        Returns:
+            S3 key path
+        """
+        # Use meaningful_id if provided, otherwise use file_id
+        file_identifier = meaningful_id if meaningful_id else str(file_id)
+        base_key = f"{file_identifier}.{file_format}"
+        
+        if organization_id:
+            if evaluator_id:
+                # Organize by evaluator: prefix/organizations/{org_id}/evaluators/{evaluator_id}/audio/{meaningful_id}.{format}
+                return f"{self.prefix}organizations/{organization_id}/evaluators/{evaluator_id}/audio/{base_key}"
+            else:
+                # Organize files by organization: prefix/organizations/{org_id}/audio/{file_id}.{format}
+                return f"{self.prefix}organizations/{organization_id}/audio/{base_key}"
+        return f"{self.prefix}{base_key}"
 
-    def upload_file(self, file_content: bytes, file_id: uuid.UUID, file_format: str) -> str:
+    def upload_file(
+        self, 
+        file_content: bytes, 
+        file_id: uuid.UUID, 
+        file_format: str, 
+        organization_id: Optional[str] = None,
+        evaluator_id: Optional[str] = None,
+        meaningful_id: Optional[str] = None
+    ) -> str:
         """
         Upload file to S3.
 
@@ -117,6 +155,9 @@ class S3Service:
             file_content: File content as bytes
             file_id: Unique identifier for the file
             file_format: File format extension
+            organization_id: Optional organization ID to organize files in folders
+            evaluator_id: Optional evaluator ID to organize files by evaluator
+            meaningful_id: Optional meaningful identifier (e.g., result_id, timestamp-based ID)
 
         Returns:
             S3 key (path) of the uploaded file
@@ -130,7 +171,7 @@ class S3Service:
             raise StorageError(error_msg)
 
         try:
-            key = self._get_key(file_id, file_format)
+            key = self._get_key(file_id, file_format, organization_id, evaluator_id, meaningful_id)
             
             # Determine content type based on file format
             content_type_map = {
@@ -273,13 +314,14 @@ class S3Service:
         except Exception:
             return False
 
-    def list_audio_files(self, prefix: Optional[str] = None, max_keys: int = 1000) -> List[dict]:
+    def list_audio_files(self, prefix: Optional[str] = None, max_keys: int = 1000, organization_id: Optional[str] = None) -> List[dict]:
         """
         List audio files in S3 bucket.
 
         Args:
             prefix: Optional prefix to filter files (defaults to configured prefix)
             max_keys: Maximum number of keys to return
+            organization_id: Optional organization ID to filter files for a specific organization
 
         Returns:
             List of file metadata dictionaries with keys: key, size, last_modified
@@ -293,7 +335,11 @@ class S3Service:
             raise StorageError(error_msg)
 
         try:
-            search_prefix = prefix if prefix else self.prefix
+            if organization_id:
+                # List files for specific organization
+                search_prefix = f"{self.prefix}organizations/{organization_id}/audio/"
+            else:
+                search_prefix = prefix if prefix else self.prefix
             response = self.s3_client.list_objects_v2(
                 Bucket=self.bucket_name,
                 Prefix=search_prefix,

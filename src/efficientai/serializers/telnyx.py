@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Telnyx WebSocket frame serializer for Pipecat."""
+"""Telnyx WebSocket frame serializer for EfficientAI."""
 
 import base64
 import json
@@ -38,7 +38,7 @@ from efficientai.serializers.base_serializer import FrameSerializer, FrameSerial
 class TelnyxFrameSerializer(FrameSerializer):
     """Serializer for Telnyx WebSocket protocol.
 
-    This serializer handles converting between Pipecat frames and Telnyx's WebSocket
+    This serializer handles converting between EfficientAI frames and Telnyx's WebSocket
     media streams protocol. It supports audio conversion, DTMF events, and automatic
     call termination.
 
@@ -115,13 +115,13 @@ class TelnyxFrameSerializer(FrameSerializer):
         self._sample_rate = self._params.sample_rate or frame.audio_in_sample_rate
 
     async def serialize(self, frame: Frame) -> str | bytes | None:
-        """Serializes a Pipecat frame to Telnyx WebSocket format.
+        """Serializes a EfficientAI frame to Telnyx WebSocket format.
 
         Handles conversion of various frame types to Telnyx WebSocket messages.
         For EndFrames and CancelFrames, initiates call termination if auto_hang_up is enabled.
 
         Args:
-            frame: The Pipecat frame to serialize.
+            frame: The EfficientAI frame to serialize.
 
         Returns:
             Serialized data as string or bytes, or None if the frame isn't handled.
@@ -228,16 +228,16 @@ class TelnyxFrameSerializer(FrameSerializer):
             logger.exception(f"Failed to hang up Telnyx call: {e}")
 
     async def deserialize(self, data: str | bytes) -> Frame | None:
-        """Deserializes Telnyx WebSocket data to Pipecat frames.
+        """Deserializes Telnyx WebSocket data to EfficientAI frames.
 
-        Handles conversion of Telnyx media events to appropriate Pipecat frames,
+        Handles conversion of Telnyx media events to appropriate EfficientAI frames,
         including audio data and DTMF keypresses.
 
         Args:
             data: The raw WebSocket data from Telnyx.
 
         Returns:
-            A Pipecat frame corresponding to the Telnyx event, or None if unhandled.
+            A EfficientAI frame corresponding to the Telnyx event, or None if unhandled.
 
         Raises:
             ValueError: If an unsupported encoding is specified.

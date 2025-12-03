@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Silero Voice Activity Detection (VAD) implementation for Pipecat.
+"""Silero Voice Activity Detection (VAD) implementation for EfficientAI.
 
 This module provides a VAD analyzer based on the Silero VAD ONNX model,
 which can detect voice activity in audio streams with high accuracy.
@@ -27,7 +27,7 @@ try:
 
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
-    logger.error("In order to use Silero VAD, you need to `pip install pipecat-ai[silero]`.")
+    logger.error("In order to use Silero VAD, you need to `pip install efficientai-ai[silero]`.")
     raise Exception(f"Missing module(s): {e}")
 
 

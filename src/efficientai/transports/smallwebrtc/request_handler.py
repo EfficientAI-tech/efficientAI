@@ -191,41 +191,41 @@ class SmallWebRTCRequestHandler:
             existing_connection = self._pcs_map.get(pc_id) if pc_id else None
 
             if existing_connection:
-                pipecat_connection = existing_connection
+                efficientai_connection = existing_connection
                 logger.info(f"Reusing existing connection for pc_id: {pc_id}")
-                await pipecat_connection.renegotiate(
+                await efficientai_connection.renegotiate(
                     sdp=request.sdp,
                     type=request.type,
                     restart_pc=request.restart_pc or False,
                 )
             else:
-                pipecat_connection = SmallWebRTCConnection(ice_servers=self._ice_servers)
-                await pipecat_connection.initialize(sdp=request.sdp, type=request.type)
+                efficientai_connection = SmallWebRTCConnection(ice_servers=self._ice_servers)
+                await efficientai_connection.initialize(sdp=request.sdp, type=request.type)
 
-                @pipecat_connection.event_handler("closed")
+                @efficientai_connection.event_handler("closed")
                 async def handle_disconnected(webrtc_connection: SmallWebRTCConnection):
                     logger.info(f"Discarding peer connection for pc_id: {webrtc_connection.pc_id}")
                     self._pcs_map.pop(webrtc_connection.pc_id, None)
 
                 # Invoke callback provided in runner arguments
                 try:
-                    await webrtc_connection_callback(pipecat_connection)
+                    await webrtc_connection_callback(efficientai_connection)
                     logger.debug(
-                        f"webrtc_connection_callback executed successfully for peer: {pipecat_connection.pc_id}"
+                        f"webrtc_connection_callback executed successfully for peer: {efficientai_connection.pc_id}"
                     )
                 except Exception as callback_error:
                     logger.error(
-                        f"webrtc_connection_callback failed for peer {pipecat_connection.pc_id}: {callback_error}"
+                        f"webrtc_connection_callback failed for peer {efficientai_connection.pc_id}: {callback_error}"
                     )
 
-            answer = pipecat_connection.get_answer()
+            answer = efficientai_connection.get_answer()
 
             if self._esp32_mode:
                 from efficientai.runner.utils import smallwebrtc_sdp_munging
 
                 answer["sdp"] = smallwebrtc_sdp_munging(answer["sdp"], self._host)
 
-            self._pcs_map[answer["pc_id"]] = pipecat_connection
+            self._pcs_map[answer["pc_id"]] = efficientai_connection
 
             return answer
         except Exception as e:

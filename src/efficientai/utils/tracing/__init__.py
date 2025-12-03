@@ -4,4 +4,4 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""OpenTelemetry tracing utilities for Pipecat."""
+"""OpenTelemetry tracing utilities for EfficientAI."""

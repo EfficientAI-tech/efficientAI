@@ -43,7 +43,7 @@ try:
     from websockets.protocol import State
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
-    logger.error("In order to use Neuphonic, you need to `pip install pipecat-ai[neuphonic]`.")
+    logger.error("In order to use Neuphonic, you need to `pip install efficientai-ai[neuphonic]`.")
     raise Exception(f"Missing module: {e}")
 
 

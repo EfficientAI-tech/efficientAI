@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""WebSocket server transport implementation for Pipecat.
+"""WebSocket server transport implementation for EfficientAI.
 
 This module provides WebSocket server transport functionality for real-time
 audio and data streaming, including client connection management, session
@@ -43,7 +43,7 @@ try:
     from websockets.protocol import State
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
-    logger.error("In order to use websockets, you need to `pip install pipecat-ai[websocket]`.")
+    logger.error("In order to use websockets, you need to `pip install efficientai-ai[websocket]`.")
     raise Exception(f"Missing module: {e}")
 
 

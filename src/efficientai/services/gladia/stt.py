@@ -19,7 +19,7 @@ from typing import Any, AsyncGenerator, Dict, Literal, Optional
 import aiohttp
 from loguru import logger
 
-from pipecat import __version__ as pipecat_version
+from efficientai import __version__ as efficientai_version
 from efficientai.frames.frames import (
     CancelFrame,
     EndFrame,
@@ -42,7 +42,7 @@ try:
     from websockets.protocol import State
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
-    logger.error("In order to use Gladia, you need to `pip install pipecat-ai[gladia]`.")
+    logger.error("In order to use Gladia, you need to `pip install efficientai-ai[gladia]`.")
     raise Exception(f"Missing module: {e}")
 
 
@@ -287,7 +287,7 @@ class GladiaSTTService(STTService):
         return True
 
     def language_to_service_language(self, language: Language) -> Optional[str]:
-        """Convert pipecat Language enum to Gladia's language code.
+        """Convert efficientai Language enum to Gladia's language code.
 
         Args:
             language: The Language enum value to convert.
@@ -308,7 +308,7 @@ class GladiaSTTService(STTService):
 
         # Add custom_metadata if provided
         settings["custom_metadata"] = dict(self._params.custom_metadata or {})
-        settings["custom_metadata"]["pipecat"] = pipecat_version
+        settings["custom_metadata"]["efficientai"] = efficientai_version
 
         # Add endpointing parameters if provided
         if self._params.endpointing is not None:

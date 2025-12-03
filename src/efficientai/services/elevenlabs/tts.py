@@ -47,7 +47,7 @@ try:
     from websockets.protocol import State
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
-    logger.error("In order to use ElevenLabs, you need to `pip install pipecat-ai[elevenlabs]`.")
+    logger.error("In order to use ElevenLabs, you need to `pip install efficientai-ai[elevenlabs]`.")
     raise Exception(f"Missing module: {e}")
 
 ElevenLabsOutputFormat = Literal["pcm_16000", "pcm_22050", "pcm_24000", "pcm_44100"]
@@ -574,7 +574,7 @@ class ElevenLabsTTSService(AudioContextWordTTSService):
         if self._context_id and self._websocket:
             logger.trace(f"Closing context {self._context_id} due to interruption")
             try:
-                # ElevenLabs requires that Pipecat manages the contexts and closes them
+                # ElevenLabs requires that EfficientAI manages the contexts and closes them
                 # when they're not longer in use. Since an InterruptionFrame is pushed
                 # every time the user speaks, we'll use this as a trigger to close the context
                 # and reset the state.
@@ -855,7 +855,7 @@ class ElevenLabsHttpTTSService(WordTTSService):
         self._partial_word_start_time = 0.0
 
     def language_to_service_language(self, language: Language) -> Optional[str]:
-        """Convert pipecat Language to ElevenLabs language code.
+        """Convert efficientai Language to ElevenLabs language code.
 
         Args:
             language: The language to convert.

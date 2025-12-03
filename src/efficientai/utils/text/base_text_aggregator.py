@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Base text aggregator interface for Pipecat text processing.
+"""Base text aggregator interface for EfficientAI text processing.
 
 This module defines the abstract base class for text aggregators that accumulate
 and process text tokens, typically used by TTS services to determine when
@@ -54,7 +54,7 @@ class Aggregation:
 
 
 class BaseTextAggregator(ABC):
-    """Base class for text aggregators in the Pipecat framework.
+    """Base class for text aggregators in the EfficientAI framework.
 
     Text aggregators are usually used by the TTS service to aggregate LLM tokens
     and decide when the aggregated text should be pushed to the TTS service.

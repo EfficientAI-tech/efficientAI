@@ -36,7 +36,7 @@ try:
     )
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
-    logger.error("In order to use Azure, you need to `pip install pipecat-ai[azure]`.")
+    logger.error("In order to use Azure, you need to `pip install efficientai-ai[azure]`.")
     raise Exception(f"Missing module: {e}")
 
 

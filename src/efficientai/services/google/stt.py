@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Google Cloud Speech-to-Text V2 service implementation for Pipecat.
+"""Google Cloud Speech-to-Text V2 service implementation for EfficientAI.
 
 This module provides a Google Cloud Speech-to-Text V2 service with streaming
 support, enabling real-time speech recognition with features like automatic
@@ -51,7 +51,7 @@ try:
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
     logger.error(
-        "In order to use Google AI, you need to `pip install pipecat-ai[google]`. Also, set `GOOGLE_APPLICATION_CREDENTIALS` environment variable."
+        "In order to use Google AI, you need to `pip install efficientai-ai[google]`. Also, set `GOOGLE_APPLICATION_CREDENTIALS` environment variable."
     )
     raise Exception(f"Missing module: {e}")
 

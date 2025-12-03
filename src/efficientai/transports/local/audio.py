@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Local audio transport implementation for Pipecat.
+"""Local audio transport implementation for EfficientAI.
 
 This module provides a local audio transport that uses PyAudio for real-time
 audio input and output through the system's default audio devices.
@@ -27,7 +27,7 @@ try:
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
     logger.error(
-        "In order to use local audio, you need to `pip install pipecat-ai[local]`. On MacOS, you also need to `brew install portaudio`."
+        "In order to use local audio, you need to `pip install efficientai-ai[local]`. On MacOS, you also need to `brew install portaudio`."
     )
     raise Exception(f"Missing module: {e}")
 

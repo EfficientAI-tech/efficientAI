@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Gemini LLM adapter for Pipecat."""
+"""Gemini LLM adapter for EfficientAI."""
 
 import base64
 import json
@@ -27,7 +27,7 @@ try:
     from google.genai.types import Blob, Content, FileData, FunctionCall, FunctionResponse, Part
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
-    logger.error("In order to use Google AI, you need to `pip install pipecat-ai[google]`.")
+    logger.error("In order to use Google AI, you need to `pip install efficientai-ai[google]`.")
     raise Exception(f"Missing module: {e}")
 
 
@@ -40,11 +40,11 @@ class GeminiLLMInvocationParams(TypedDict):
 
 
 class GeminiLLMAdapter(BaseLLMAdapter[GeminiLLMInvocationParams]):
-    """Gemini-specific adapter for Pipecat.
+    """Gemini-specific adapter for EfficientAI.
 
     Handles:
     - Extracting parameters for Gemini's API from a universal LLM context
-    - Converting Pipecat's standardized tools schema to Gemini's function-calling format.
+    - Converting EfficientAI's standardized tools schema to Gemini's function-calling format.
     - Extracting and sanitizing messages from the LLM context for logging with Gemini.
     """
 

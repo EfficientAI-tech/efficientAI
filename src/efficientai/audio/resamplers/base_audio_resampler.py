@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Base audio resampler interface for Pipecat.
+"""Base audio resampler interface for EfficientAI.
 
 This module defines the abstract base class for audio resampling implementations,
 providing a common interface for converting audio between different sample rates.

@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""AWS Nova Sonic LLM service implementation for Pipecat AI framework.
+"""AWS Nova Sonic LLM service implementation for EfficientAI AI framework.
 
 This module provides a speech-to-speech LLM service using AWS Nova Sonic, which supports
 bidirectional audio streaming, text generation, and function calling capabilities.
@@ -80,7 +80,7 @@ try:
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
     logger.error(
-        "In order to use AWS services, you need to `pip install pipecat-ai[aws-nova-sonic]`."
+        "In order to use AWS services, you need to `pip install efficientai-ai[aws-nova-sonic]`."
     )
     raise Exception(f"Missing module: {e}")
 
@@ -592,7 +592,7 @@ class AWSNovaSonicLLMService(LLMService):
         return BedrockRuntimeClient(config=config)
 
     #
-    # LLM communication: input events (pipecat -> LLM)
+    # LLM communication: input events (efficientai -> LLM)
     #
 
     async def _send_session_start_event(self):
@@ -833,7 +833,7 @@ class AWSNovaSonicLLMService(LLMService):
         await self._stream.input_stream.send(event)
 
     #
-    # LLM communication: output events (LLM -> pipecat)
+    # LLM communication: output events (LLM -> efficientai)
     #
 
     # Receive events for the session.

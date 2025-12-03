@@ -4,9 +4,9 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Google Gemini integration for Pipecat.
+"""Google Gemini integration for EfficientAI.
 
-This module provides Google Gemini integration for the Pipecat framework,
+This module provides Google Gemini integration for the EfficientAI framework,
 including LLM services, context management, and message aggregation.
 """
 
@@ -78,7 +78,7 @@ try:
     genai._api_client.READ_BUFFER_SIZE = 5 * 1024 * 1024
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
-    logger.error("In order to use Google AI, you need to `pip install pipecat-ai[google]`.")
+    logger.error("In order to use Google AI, you need to `pip install efficientai-ai[google]`.")
     raise Exception(f"Missing module: {e}")
 
 

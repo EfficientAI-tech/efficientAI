@@ -139,7 +139,7 @@ async def configure_with_args(parser: Optional[argparse.ArgumentParser] = None):
             "LIVEKIT_API_KEY and LIVEKIT_API_SECRET must be set in environment variables."
         )
 
-    token = generate_token_with_agent(room_name, "Pipecat Agent", api_key, api_secret)
+    token = generate_token_with_agent(room_name, "EfficientAI Agent", api_key, api_secret)
 
     # Generate user token for testing/debugging
     user_token = generate_token(room_name, "User", api_key, api_secret)

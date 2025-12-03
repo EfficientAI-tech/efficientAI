@@ -17,7 +17,7 @@ try:
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
     logger.error(
-        "In order to use OpenAI, you need to `pip install pipecat-ai[openai]`. Also, set `OPENAI_API_KEY` environment variable."
+        "In order to use OpenAI, you need to `pip install efficientai-ai[openai]`. Also, set `OPENAI_API_KEY` environment variable."
     )
     raise Exception(f"Missing module: {e}")
 

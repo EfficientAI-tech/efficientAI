@@ -34,7 +34,7 @@ try:
     from botocore.exceptions import BotoCoreError, ClientError
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
-    logger.error("In order to use AWS services, you need to `pip install pipecat-ai[aws]`.")
+    logger.error("In order to use AWS services, you need to `pip install efficientai-ai[aws]`.")
     raise Exception(f"Missing module: {e}")
 
 

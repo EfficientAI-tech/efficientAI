@@ -29,7 +29,7 @@ try:
     from sarvamai.core.events import EventType
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
-    logger.error("In order to use Sarvam, you need to `pip install pipecat-ai[sarvam]`.")
+    logger.error("In order to use Sarvam, you need to `pip install efficientai-ai[sarvam]`.")
     raise Exception(f"Missing module: {e}")
 
 
@@ -42,7 +42,7 @@ def language_to_sarvam_language(language: Language) -> str:
     Returns:
         The Sarvam language code string.
     """
-    # Mapping of pipecat Language enum to Sarvam language codes
+    # Mapping of efficientai Language enum to Sarvam language codes
     LANGUAGE_MAP = {
         Language.BN_IN: "bn-IN",
         Language.GU_IN: "gu-IN",
@@ -147,7 +147,7 @@ class SarvamSTTService(STTService):
         self._receive_task = None
 
     def language_to_service_language(self, language: Language) -> str:
-        """Convert pipecat Language enum to Sarvam's language code.
+        """Convert efficientai Language enum to Sarvam's language code.
 
         Args:
             language: The Language enum value to convert.
@@ -321,12 +321,12 @@ class SarvamSTTService(STTService):
             # Register event handler for incoming messages
             def _message_handler(message):
                 """Wrapper to handle async response handler."""
-                # Use Pipecat's built-in task management
+                # Use EfficientAI's built-in task management
                 self.create_task(self._handle_message(message))
 
             self._socket_client.on(EventType.MESSAGE, _message_handler)
 
-            # Start receive task using Pipecat's task management
+            # Start receive task using EfficientAI's task management
             self._receive_task = self.create_task(self._receive_task_handler())
 
             logger.info("Connected to Sarvam successfully")
@@ -442,7 +442,7 @@ class SarvamSTTService(STTService):
         pass
 
     def _map_language_code_to_enum(self, language_code: str) -> Language:
-        """Map Sarvam language code to pipecat Language enum."""
+        """Map Sarvam language code to efficientai Language enum."""
         mapping = {
             "bn-IN": Language.BN_IN,
             "gu-IN": Language.GU_IN,
