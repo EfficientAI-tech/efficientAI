@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
 import { useAgentStore } from '../store/agentStore'
 import Button from '../components/Button'
-import { Plus, Edit, Trash2, Play, X, Tag, ChevronDown, ChevronUp } from 'lucide-react'
+import { Plus, Edit, Trash2, Play, X, Tag, ChevronDown, ChevronUp, Phone } from 'lucide-react'
 import VoiceAgent from '../components/VoiceAgent'
 
 const DEFAULT_PERSONA_NAMES = [
@@ -295,8 +295,15 @@ export default function EvaluateTestAgents() {
                               </div>
                             )}
                           </div>
-                          <div className="text-sm text-gray-600 mt-1">
-                            {persona?.name || 'Unknown Persona'} • {scenario?.name || 'Unknown Scenario'}
+                          <div className="flex items-center gap-2 mt-2 flex-wrap">
+                            <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-gradient-to-r from-purple-100 to-purple-200 text-purple-800 border border-purple-300 shadow-sm">
+                              <span className="w-1.5 h-1.5 bg-purple-500 rounded-full mr-1.5"></span>
+                              {persona?.name || 'Unknown Persona'}
+                            </span>
+                            <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-gradient-to-r from-blue-100 to-blue-200 text-blue-800 border border-blue-300 shadow-sm">
+                              <span className="w-1.5 h-1.5 bg-blue-500 rounded-full mr-1.5"></span>
+                              {scenario?.name || 'Unknown Scenario'}
+                            </span>
                           </div>
                         </div>
                       </button>
@@ -340,31 +347,53 @@ export default function EvaluateTestAgents() {
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div>
                           <h3 className="text-sm font-semibold text-gray-700 mb-2">Agent</h3>
-                          <div className="bg-gray-50 rounded p-3">
-                            <p className="text-sm font-medium">{evaluatorDetails.agent.name}</p>
-                            {evaluatorDetails.agent.description && (
-                              <p className="text-xs text-gray-600 mt-1">{evaluatorDetails.agent.description}</p>
-                            )}
-                            <p className="text-xs text-gray-500 mt-1">Phone: {evaluatorDetails.agent.phone_number}</p>
+                          <div className="space-y-3">
+                            <div className="bg-gray-50 rounded-lg p-3">
+                              <p className="text-sm font-medium">{evaluatorDetails.agent.name}</p>
+                              {evaluatorDetails.agent.description && (
+                                <p className="text-xs text-gray-600 mt-1">{evaluatorDetails.agent.description}</p>
+                              )}
+                            </div>
+                            <span className="inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium bg-gradient-to-r from-teal-100 to-teal-200 text-teal-800 border border-teal-300 shadow-sm">
+                              <Phone className="w-3.5 h-3.5 mr-1.5" />
+                              {evaluatorDetails.agent.phone_number}
+                            </span>
                           </div>
                         </div>
                         <div>
                           <h3 className="text-sm font-semibold text-gray-700 mb-2">Persona</h3>
-                          <div className="bg-gray-50 rounded p-3">
-                            <p className="text-sm font-medium">{evaluatorDetails.persona.name}</p>
-                            <div className="text-xs text-gray-600 mt-1 space-y-0.5">
-                              <p>Language: {evaluatorDetails.persona.language}</p>
-                              <p>Accent: {evaluatorDetails.persona.accent}</p>
-                              <p>Gender: {evaluatorDetails.persona.gender}</p>
+                          <div className="space-y-3">
+                            <span className="inline-flex items-center px-3 py-1.5 rounded-full text-sm font-medium bg-gradient-to-r from-purple-100 to-purple-200 text-purple-800 border border-purple-300 shadow-sm">
+                              <span className="w-2 h-2 bg-purple-500 rounded-full mr-2"></span>
+                              {evaluatorDetails.persona.name}
+                            </span>
+                            <div className="flex flex-wrap gap-2">
+                              <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-gradient-to-r from-emerald-100 to-emerald-200 text-emerald-800 border border-emerald-300 shadow-sm">
+                                <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full mr-1.5"></span>
+                                Language: {evaluatorDetails.persona.language}
+                              </span>
+                              <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-gradient-to-r from-amber-100 to-amber-200 text-amber-800 border border-amber-300 shadow-sm">
+                                <span className="w-1.5 h-1.5 bg-amber-500 rounded-full mr-1.5"></span>
+                                Accent: {evaluatorDetails.persona.accent}
+                              </span>
+                              <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-gradient-to-r from-pink-100 to-pink-200 text-pink-800 border border-pink-300 shadow-sm">
+                                <span className="w-1.5 h-1.5 bg-pink-500 rounded-full mr-1.5"></span>
+                                Gender: {evaluatorDetails.persona.gender}
+                              </span>
                             </div>
                           </div>
                         </div>
                         <div className="md:col-span-2">
                           <h3 className="text-sm font-semibold text-gray-700 mb-2">Scenario</h3>
-                          <div className="bg-gray-50 rounded p-3">
-                            <p className="text-sm font-medium">{evaluatorDetails.scenario.name}</p>
+                          <div className="space-y-3">
+                            <span className="inline-flex items-center px-3 py-1.5 rounded-full text-sm font-medium bg-gradient-to-r from-blue-100 to-blue-200 text-blue-800 border border-blue-300 shadow-sm">
+                              <span className="w-2 h-2 bg-blue-500 rounded-full mr-2"></span>
+                              {evaluatorDetails.scenario.name}
+                            </span>
                             {evaluatorDetails.scenario.description && (
-                              <p className="text-xs text-gray-600 mt-1">{evaluatorDetails.scenario.description}</p>
+                              <div className="bg-gray-50 rounded-lg p-3">
+                                <p className="text-xs text-gray-600">{evaluatorDetails.scenario.description}</p>
+                              </div>
                             )}
                           </div>
                         </div>
@@ -669,12 +698,16 @@ export default function EvaluateTestAgents() {
         return (
           <div className="fixed inset-0 z-50 overflow-y-auto">
             <div className="flex min-h-screen items-center justify-center p-4">
-              <div className="relative bg-white rounded-lg shadow-xl max-w-6xl w-full p-6">
+              <div
+                className="fixed inset-0 bg-gray-900 bg-opacity-75 transition-opacity backdrop-blur-sm"
+                onClick={() => setRunningEvaluator(null)}
+              />
+              <div className="relative bg-white rounded-lg shadow-2xl max-w-6xl w-full p-6 z-10 border border-gray-200">
                 <div className="flex items-center justify-between mb-4">
                   <h2 className="text-2xl font-bold text-gray-900">Voice Agent</h2>
                   <button
                     onClick={() => setRunningEvaluator(null)}
-                    className="text-gray-400 hover:text-gray-500"
+                    className="text-gray-400 hover:text-gray-600 transition-colors"
                   >
                     <X className="h-6 w-6" />
                   </button>

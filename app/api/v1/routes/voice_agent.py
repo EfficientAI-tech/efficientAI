@@ -202,27 +202,14 @@ async def websocket_endpoint(
         if instruction_parts:
             system_instruction = "\n".join(instruction_parts)
         
-        # Run the bot with the decrypted API key
-        call_metadata = None
-        try:
-            call_metadata = await run_bot(
-                websocket, 
-                google_api_key, 
-                system_instruction, 
-                str(organization_id),
-                agent_id,
-                persona_id,
-                scenario_id
-            )
-        except Exception as bot_error:
-            logger.error(f"Error in run_bot: {bot_error}", exc_info=True)
-            # Continue to try creating evaluator result if we have metadata
+        # Find evaluator and generate result_id BEFORE running bot (for meaningful S3 path)
+        evaluator = None
+        result_id = None
+        scenario_name = "Unknown Scenario"
         
-        # Create evaluator result if we have the required data (only if no error)
-        if call_metadata and call_metadata.get("s3_key") and not call_metadata.get("error") and agent_id and persona_id and scenario_id:
+        if agent_id and persona_id and scenario_id:
             try:
                 from app.models.database import Evaluator, EvaluatorResult, EvaluatorResultStatus, Scenario
-                from app.workers.celery_app import process_evaluator_result_task
                 import random
                 
                 # Find evaluator by agent, persona, scenario
@@ -238,9 +225,8 @@ async def websocket_endpoint(
                     scenario = db.query(Scenario).filter(Scenario.id == UUID(scenario_id)).first()
                     scenario_name = scenario.name if scenario else "Unknown Scenario"
                     
-                    # Generate unique 6-digit result ID
+                    # Generate unique 6-digit result ID BEFORE upload
                     max_attempts = 100
-                    result_id = None
                     for _ in range(max_attempts):
                         candidate_id = f"{random.randint(100000, 999999)}"
                         existing = db.query(EvaluatorResult).filter(EvaluatorResult.result_id == candidate_id).first()
@@ -249,33 +235,57 @@ async def websocket_endpoint(
                             break
                     
                     if not result_id:
-                        logger.error("Failed to generate unique result ID")
-                    else:
-                        # Create evaluator result
-                        evaluator_result = EvaluatorResult(
-                            result_id=result_id,
-                            organization_id=organization_id,
-                            evaluator_id=evaluator.id,
-                            agent_id=UUID(agent_id),
-                            persona_id=UUID(persona_id),
-                            scenario_id=UUID(scenario_id),
-                            name=scenario_name,
-                            duration_seconds=call_metadata.get("duration"),
-                            status=EvaluatorResultStatus.IN_PROGRESS,
-                            audio_s3_key=call_metadata.get("s3_key")
-                        )
-                        db.add(evaluator_result)
-                        db.commit()
-                        db.refresh(evaluator_result)
-                        
-                        # Trigger Celery task
-                        task = process_evaluator_result_task.delay(str(evaluator_result.id))
-                        evaluator_result.celery_task_id = task.id
-                        db.commit()
-                        
-                        logger.info(f"✅ Created evaluator result {result_id} and triggered processing task")
-                else:
-                    pass
+                        logger.warning("Failed to generate unique result ID, will use UUID in S3 path")
+            except Exception as e:
+                logger.warning(f"Error finding evaluator or generating result_id: {e}")
+        
+        # Run the bot with the decrypted API key
+        call_metadata = None
+        try:
+            call_metadata = await run_bot(
+                websocket, 
+                google_api_key, 
+                system_instruction, 
+                str(organization_id),
+                agent_id,
+                persona_id,
+                scenario_id,
+                evaluator_id=str(evaluator.id) if evaluator else None,
+                result_id=result_id
+            )
+        except Exception as bot_error:
+            logger.error(f"Error in run_bot: {bot_error}", exc_info=True)
+            # Continue to try creating evaluator result if we have metadata
+        
+        # Create evaluator result if we have the required data (only if no error)
+        if call_metadata and call_metadata.get("s3_key") and not call_metadata.get("error") and evaluator and result_id:
+            try:
+                from app.models.database import EvaluatorResult, EvaluatorResultStatus
+                from app.workers.celery_app import process_evaluator_result_task
+                
+                # Create evaluator result with QUEUED status
+                evaluator_result = EvaluatorResult(
+                    result_id=result_id,
+                    organization_id=organization_id,
+                    evaluator_id=evaluator.id,
+                    agent_id=UUID(agent_id),
+                    persona_id=UUID(persona_id),
+                    scenario_id=UUID(scenario_id),
+                    name=scenario_name,
+                    duration_seconds=call_metadata.get("duration"),
+                    status=EvaluatorResultStatus.QUEUED.value,  # Use .value to get the string
+                    audio_s3_key=call_metadata.get("s3_key")
+                )
+                db.add(evaluator_result)
+                db.commit()
+                db.refresh(evaluator_result)
+                
+                # Trigger Celery task
+                task = process_evaluator_result_task.delay(str(evaluator_result.id))
+                evaluator_result.celery_task_id = task.id
+                db.commit()
+                
+                logger.info(f"✅ Created evaluator result {result_id} and triggered processing task")
             except Exception as e:
                 logger.error(f"Error creating evaluator result: {e}", exc_info=True)
         

@@ -315,6 +315,272 @@ def start(config: str, host: Optional[str], port: Optional[int], build_frontend:
 
 @main.command()
 @click.option(
+    "--config",
+    "-c",
+    type=click.Path(exists=True, readable=True),
+    default="config.yml",
+    help="Path to configuration YAML file",
+)
+@click.option(
+    "--loglevel",
+    "-l",
+    default="info",
+    type=click.Choice(["debug", "info", "warning", "error", "critical"], case_sensitive=False),
+    help="Log level for Celery worker",
+)
+def worker(config: str, loglevel: str):
+    """Start the Celery worker for background task processing."""
+    from app.config import load_config_from_file
+    
+    # Load configuration from YAML file
+    config_path = Path(config)
+    if not config_path.exists():
+        click.echo(f"❌ Config file not found: {config}", err=True)
+        click.echo(f"💡 Create a config.yml file or use --config to specify a different path.", err=True)
+        sys.exit(1)
+    
+    try:
+        load_config_from_file(str(config_path))
+        click.echo(f"✅ Loaded configuration from {config_path}")
+    except Exception as e:
+        click.echo(f"❌ Error loading config: {e}", err=True)
+        sys.exit(1)
+    
+    click.echo(f"🚀 Starting Celery worker...")
+    click.echo(f"   Log level: {loglevel}")
+    
+    # Start Celery worker
+    try:
+        import subprocess
+        subprocess.run(
+            ["celery", "-A", "app.workers.celery_app", "worker", f"--loglevel={loglevel}"],
+            check=True,
+        )
+    except KeyboardInterrupt:
+        click.echo("\n👋 Celery worker stopped")
+    except subprocess.CalledProcessError as e:
+        click.echo(f"❌ Celery worker failed: {e}", err=True)
+        sys.exit(1)
+    except FileNotFoundError:
+        click.echo("❌ Celery not found. Please install it: pip install celery", err=True)
+        sys.exit(1)
+
+
+@main.command()
+@click.option(
+    "--config",
+    "-c",
+    type=click.Path(exists=True, readable=True),
+    default="config.yml",
+    help="Path to configuration YAML file",
+)
+@click.option(
+    "--host",
+    default=None,
+    help="Host to bind to (overrides config)",
+)
+@click.option(
+    "--port",
+    default=None,
+    type=int,
+    help="Port to bind to (overrides config)",
+)
+@click.option(
+    "--build-frontend/--no-build-frontend",
+    default=True,
+    help="Build frontend before starting (default: True)",
+)
+@click.option(
+    "--reload/--no-reload",
+    default=True,
+    help="Enable auto-reload for development (default: True)",
+)
+@click.option(
+    "--watch-frontend/--no-watch-frontend",
+    default=False,
+    help="Watch frontend files and rebuild automatically (default: False)",
+)
+@click.option(
+    "--force-rebuild",
+    is_flag=True,
+    default=False,
+    help="Force rebuild of frontend without prompting",
+)
+@click.option(
+    "--skip-migrations",
+    is_flag=True,
+    default=False,
+    help="Skip running migrations before starting (not recommended)",
+)
+@click.option(
+    "--worker-loglevel",
+    "-l",
+    default="info",
+    type=click.Choice(["debug", "info", "warning", "error", "critical"], case_sensitive=False),
+    help="Log level for Celery worker",
+)
+def start_all(config: str, host: Optional[str], port: Optional[int], build_frontend: bool, reload: bool, watch_frontend: bool, force_rebuild: bool, skip_migrations: bool, worker_loglevel: str):
+    """Start both the application server and Celery worker together."""
+    import signal
+    import atexit
+    
+    click.echo("🚀 Starting EfficientAI (App + Worker)...")
+    click.echo("   This will start both the API server and Celery worker")
+    click.echo("   Press Ctrl+C to stop both services\n")
+    
+    # Load configuration
+    config_path = Path(config)
+    if not config_path.exists():
+        click.echo(f"❌ Config file not found: {config}", err=True)
+        click.echo(f"💡 Create a config.yml file or use --config to specify a different path.", err=True)
+        sys.exit(1)
+    
+    try:
+        from app.config import load_config_from_file
+        load_config_from_file(str(config_path))
+        click.echo(f"✅ Loaded configuration from {config_path}")
+    except Exception as e:
+        click.echo(f"❌ Error loading config: {e}", err=True)
+        sys.exit(1)
+    
+    # Store worker process for cleanup
+    worker_process = None
+    
+    def cleanup_processes():
+        """Clean up spawned processes."""
+        nonlocal worker_process
+        if worker_process and worker_process.poll() is None:  # Process is still running
+            try:
+                click.echo("\n👋 Stopping Celery worker...")
+                worker_process.terminate()
+                worker_process.wait(timeout=5)
+                click.echo("✅ Celery worker stopped")
+            except subprocess.TimeoutExpired:
+                worker_process.kill()
+                worker_process.wait()
+            except Exception:
+                pass
+    
+    # Register cleanup on exit
+    atexit.register(cleanup_processes)
+    
+    def signal_handler(sig, frame):
+        """Handle Ctrl+C gracefully."""
+        cleanup_processes()
+        sys.exit(0)
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    # Run migrations before starting (unless explicitly skipped)
+    if not skip_migrations:
+        click.echo("🔄 Running database migrations before startup...")
+        from app.core.migrations import run_migrations, ensure_migrations_directory
+        try:
+            ensure_migrations_directory()
+            run_migrations()
+            click.echo("✅ Migrations completed successfully")
+        except Exception as e:
+            click.echo(f"❌ Migration failed: {e}", err=True)
+            click.echo("💡 You can skip migrations with --skip-migrations (not recommended)", err=True)
+            sys.exit(1)
+    
+    # Build frontend if needed
+    if build_frontend:
+        frontend_dir = Path(__file__).parent.parent / "frontend"
+        if frontend_dir.exists():
+            click.echo("🔨 Building frontend...")
+            try:
+                if not (frontend_dir / "node_modules").exists():
+                    click.echo("   Installing frontend dependencies...")
+                    subprocess.run(["npm", "install"], cwd=frontend_dir, check=True, capture_output=True)
+                subprocess.run(["npm", "run", "build"], cwd=frontend_dir, check=True, capture_output=True)
+                click.echo("✅ Frontend built successfully")
+            except subprocess.CalledProcessError as e:
+                click.echo(f"❌ Frontend build failed: {e}", err=True)
+                sys.exit(1)
+    
+    # Start frontend watcher if requested
+    frontend_watcher = None
+    if watch_frontend:
+        click.echo("👀 Starting frontend file watcher...")
+        frontend_dir = Path(__file__).parent.parent / "frontend"
+        frontend_watcher = start_frontend_watcher(frontend_dir)
+    
+    # Start Celery worker as a subprocess with output streaming
+    try:
+        worker_process = subprocess.Popen(
+            ["celery", "-A", "app.workers.celery_app", "worker", f"--loglevel={worker_loglevel}"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1
+        )
+        click.echo("✅ Celery worker started")
+        
+        # Start a thread to stream worker output to terminal
+        def stream_worker_output():
+            """Stream worker output to terminal with prefix."""
+            if worker_process.stdout:
+                for line in iter(worker_process.stdout.readline, ''):
+                    if line:
+                        # Prefix worker logs with [WORKER] for clarity
+                        click.echo(f"[WORKER] {line.rstrip()}", err=False)
+                worker_process.stdout.close()
+        
+        worker_output_thread = threading.Thread(target=stream_worker_output, daemon=True)
+        worker_output_thread.start()
+    except FileNotFoundError:
+        click.echo("❌ Celery not found. Please install it: pip install celery", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Failed to start worker: {e}", err=True)
+        sys.exit(1)
+    
+    # Small delay to let worker start
+    time.sleep(1)
+    
+    # Start the application server in the main process
+    # This allows uvicorn's reload to work properly (it needs to spawn child processes)
+    try:
+        from app.config import settings
+        import uvicorn
+        
+        # Override with CLI options if provided
+        if host:
+            settings.HOST = host
+        if port:
+            settings.PORT = port
+        
+        click.echo("✅ Application server starting...")
+        click.echo(f"   Host: {settings.HOST}")
+        click.echo(f"   Port: {settings.PORT}")
+        click.echo(f"   API: http://{settings.HOST}:{settings.PORT}{settings.API_V1_PREFIX}")
+        click.echo(f"   Frontend: http://{settings.HOST}:{settings.PORT}/")
+        click.echo(f"   Docs: http://{settings.HOST}:{settings.PORT}/docs")
+        if watch_frontend:
+            click.echo(f"   Frontend watcher: Active (rebuilding on file changes)")
+        click.echo("\n📝 Both services are running. Press Ctrl+C to stop.\n")
+        
+        # Run uvicorn in the main process (allows reload to work)
+        uvicorn.run(
+            "app.main:app",
+            host=settings.HOST,
+            port=settings.PORT,
+            reload=reload,
+        )
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        click.echo(f"❌ App error: {e}", err=True)
+    finally:
+        cleanup_processes()
+        if frontend_watcher:
+            frontend_watcher.stop()
+
+
+@main.command()
+@click.option(
     "--output",
     "-o",
     type=click.Path(),

@@ -40,6 +40,7 @@ Speaker Diarization:
 import time
 import tempfile
 import os
+import logging
 from typing import Optional, Dict, Any, List
 from uuid import UUID
 from pathlib import Path
@@ -48,6 +49,8 @@ from app.models.database import ModelProvider, AIProvider
 from app.services.s3_service import s3_service
 from app.core.exceptions import StorageError
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 
 class TranscriptionService:
@@ -66,21 +69,59 @@ class TranscriptionService:
         ).first()
         return ai_provider
 
-    def _download_audio_to_temp(self, audio_file_key: str) -> str:
-        """Download audio from S3 to temporary file."""
-        try:
-            # Download from S3
-            audio_bytes = s3_service.download_file_by_key(audio_file_key)
+    def _download_audio_to_temp(self, audio_file_key: str, db: Optional[Session] = None) -> str:
+        """
+        Download audio from S3 to temporary file, or use local file if S3 is not available.
+        
+        Args:
+            audio_file_key: S3 key or local file path
+            db: Optional database session to look up local file paths
             
-            # Determine file extension from key
-            file_ext = Path(audio_file_key).suffix.lstrip('.') or 'wav'
-            
-            # Create temporary file
-            with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{file_ext}') as temp_file:
-                temp_file.write(audio_bytes)
-                return temp_file.name
-        except Exception as e:
-            raise StorageError(f"Failed to download audio file: {str(e)}")
+        Returns:
+            Path to temporary file (or original file if local)
+        """
+        import os
+        
+        # First, try S3 if enabled
+        if s3_service.is_enabled():
+            try:
+                # Download from S3
+                audio_bytes = s3_service.download_file_by_key(audio_file_key)
+                
+                # Determine file extension from key
+                file_ext = Path(audio_file_key).suffix.lstrip('.') or 'wav'
+                
+                # Create temporary file
+                with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{file_ext}') as temp_file:
+                    temp_file.write(audio_bytes)
+                    return temp_file.name
+            except Exception as e:
+                # If S3 download fails, fall through to local file check
+                logger.warning(f"S3 download failed for {audio_file_key}: {e}, trying local file...")
+        
+        # Fallback: Try to find local file
+        # Check if it's already a local file path
+        if os.path.exists(audio_file_key):
+            # It's a local file path, return it directly
+            return audio_file_key
+        
+        # Try to look up in database if db session is provided
+        if db:
+            try:
+                from app.models.database import AudioFile
+                # Try to find by S3 key or file path
+                audio_file = db.query(AudioFile).filter(
+                    (AudioFile.file_path == audio_file_key) | 
+                    (AudioFile.file_path.like(f"%{audio_file_key}%"))
+                ).first()
+                
+                if audio_file and os.path.exists(audio_file.file_path):
+                    return audio_file.file_path
+            except Exception as e:
+                logger.warning(f"Database lookup failed for {audio_file_key}: {e}")
+        
+        # If all else fails, raise error
+        raise StorageError(f"Failed to download audio file: S3 is not enabled and local file not found for key: {audio_file_key}")
 
     def _transcribe_with_openai(self, audio_file_path: str, model: str, api_key: str, language: Optional[str] = None) -> Dict[str, Any]:
         """Transcribe audio using OpenAI Whisper API."""
@@ -106,6 +147,7 @@ class TranscriptionService:
             }
             
             # Extract segments if available (verbose_json format includes segments)
+            # OpenAI's verbose_json format returns segments as a list
             if hasattr(transcript, 'segments') and transcript.segments:
                 for seg in transcript.segments:
                     result["segments"].append({
@@ -113,6 +155,53 @@ class TranscriptionService:
                         "end": getattr(seg, 'end', 0),
                         "text": getattr(seg, 'text', '')
                     })
+                logger.info(f"OpenAI transcription returned {len(result['segments'])} segments")
+            else:
+                # Check if transcript itself is a dict with segments (alternative format)
+                if isinstance(transcript, dict) and 'segments' in transcript:
+                    for seg in transcript['segments']:
+                        result["segments"].append({
+                            "start": seg.get('start', 0),
+                            "end": seg.get('end', 0),
+                            "text": seg.get('text', '')
+                        })
+                    logger.info(f"OpenAI transcription returned {len(result['segments'])} segments (dict format)")
+            
+            # If no segments were extracted but we have text, create segments from the full text
+            # Split by sentences and estimate timestamps
+            if not result["segments"] and result["text"]:
+                logger.warning("OpenAI transcription returned no segments, creating segments from full text")
+                import re
+                # Split text into sentences
+                sentences = re.split(r'[.!?]+\s+', result["text"].strip())
+                sentences = [s.strip() for s in sentences if s.strip()]
+                
+                if sentences:
+                    # Estimate duration based on word count (average 150 words per minute)
+                    total_words = len(result["text"].split())
+                    estimated_duration = max(1.0, (total_words / 150.0) * 60.0)
+                    time_per_sentence = estimated_duration / len(sentences) if sentences else 1.0
+                    
+                    current_time = 0.0
+                    for sentence in sentences:
+                        sentence_words = len(sentence.split())
+                        sentence_duration = max(0.5, (sentence_words / 150.0) * 60.0)
+                        result["segments"].append({
+                            "start": current_time,
+                            "end": current_time + sentence_duration,
+                            "text": sentence
+                        })
+                        current_time += sentence_duration
+                    logger.info(f"Created {len(result['segments'])} segments from full text")
+                else:
+                    # Fallback: single segment
+                    word_count = len(result["text"].split())
+                    estimated_duration = max(1.0, (word_count / 150.0) * 60.0)
+                    result["segments"] = [{
+                        "start": 0.0,
+                        "end": estimated_duration,
+                        "text": result["text"]
+                    }]
             
             return result
         except ImportError:
@@ -158,9 +247,13 @@ class TranscriptionService:
             
             # Load the diarization pipeline
             # Note: Requires HuggingFace token and accepting model terms
+            # Get token from: https://huggingface.co/settings/tokens
+            # Accept model terms at: https://huggingface.co/pyannote/speaker-diarization-3.1
+            from app.config import settings
+            hf_token = os.getenv("HUGGINGFACE_TOKEN") or settings.HUGGINGFACE_TOKEN
             pipeline = Pipeline.from_pretrained(
                 "pyannote/speaker-diarization-3.1",
-                use_auth_token=os.getenv("HUGGINGFACE_TOKEN")  # Optional: for private models
+                use_auth_token=hf_token  # Optional: for private models
             )
             
             # Run diarization
@@ -371,7 +464,7 @@ class TranscriptionService:
         
         try:
             # Download audio to temporary file
-            temp_file_path = self._download_audio_to_temp(audio_file_key)
+            temp_file_path = self._download_audio_to_temp(audio_file_key, db=db)
             
             # Get provider API key
             ai_provider = self._get_ai_provider(stt_provider, db, organization_id)
@@ -407,15 +500,46 @@ class TranscriptionService:
                 # Default to local Whisper
                 result = self._transcribe_with_whisper_local(temp_file_path, "base")
             
-            # Apply speaker diarization if enabled and segments available
+            # Apply speaker diarization if enabled
             speaker_segments = None
-            if enable_speaker_diarization and result.get("segments"):
-                # Try pyannote.audio first (if available), fall back to heuristic
-                try:
-                    speaker_segments = self._detect_speakers_with_pyannote(temp_file_path, result["segments"])
-                except Exception:
-                    # Fall back to heuristic if pyannote fails
-                    speaker_segments = self._detect_speakers_heuristic(result["segments"])
+            if enable_speaker_diarization:
+                segments = result.get("segments", [])
+                
+                # If no segments from transcription, create a single segment from the full text
+                if not segments and result.get("text"):
+                    logger.warning("No segments returned from transcription, creating single segment from full text")
+                    # Create a single segment with the full transcription
+                    # We'll estimate duration if available, otherwise use a default
+                    estimated_duration = 0.0
+                    if hasattr(result, 'duration') and result.get('duration'):
+                        estimated_duration = result.get('duration')
+                    elif audio_file_path and os.path.exists(audio_file_path):
+                        try:
+                            import librosa
+                            duration = librosa.get_duration(path=audio_file_path)
+                            estimated_duration = duration
+                        except:
+                            pass
+                    
+                    segments = [{
+                        "start": 0.0,
+                        "end": estimated_duration if estimated_duration > 0 else 10.0,  # Default to 10s if unknown
+                        "text": result.get("text", "")
+                    }]
+                
+                if segments:
+                    # Try pyannote.audio first (if available), fall back to heuristic
+                    try:
+                        speaker_segments = self._detect_speakers_with_pyannote(temp_file_path, segments)
+                        if not speaker_segments:
+                            logger.info("Pyannote returned no speaker segments, falling back to heuristic")
+                            speaker_segments = self._detect_speakers_heuristic(segments)
+                    except Exception as e:
+                        logger.warning(f"Pyannote diarization failed: {str(e)}, falling back to heuristic")
+                        # Fall back to heuristic if pyannote fails
+                        speaker_segments = self._detect_speakers_heuristic(segments)
+                else:
+                    logger.warning("No segments available for speaker diarization")
             
             processing_time = time.time() - start_time
             

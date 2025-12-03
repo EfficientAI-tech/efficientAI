@@ -31,19 +31,11 @@ class EvaluationStatus(str, enum.Enum):
 class EvaluatorResultStatus(str, enum.Enum):
     """Evaluator result status enumeration."""
 
-    IN_PROGRESS = "in_progress"
+    QUEUED = "queued"
+    TRANSCRIBING = "transcribing"
+    EVALUATING = "evaluating"
     COMPLETED = "completed"
     FAILED = "failed"
-
-
-class BatchStatus(str, enum.Enum):
-    """Batch job status enumeration."""
-
-    PENDING = "pending"
-    PROCESSING = "processing"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
 
 
 class RoleEnum(str, enum.Enum):
@@ -221,27 +213,6 @@ class EvaluationResult(Base):
     # Relationships
     evaluation = relationship("Evaluation", back_populates="result")
 
-
-class BatchJob(Base):
-    """Batch evaluation job model."""
-
-    __tablename__ = "batch_jobs"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
-    status = Column(Enum(BatchStatus), default=BatchStatus.PENDING, nullable=False)
-    total_files = Column(Integer, nullable=False)
-    processed_files = Column(Integer, default=0, nullable=False)
-    failed_files = Column(Integer, default=0, nullable=False)
-    evaluation_ids = Column(JSON, nullable=True)  # List of evaluation IDs in this batch
-    evaluation_type = Column(Enum(EvaluationType), nullable=False)
-    model_name = Column(String(100), nullable=True)
-    metrics_requested = Column(JSON, nullable=True)
-    aggregated_metrics = Column(JSON, nullable=True)  # Aggregated metrics across batch
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    started_at = Column(DateTime(timezone=True), nullable=True)
-    completed_at = Column(DateTime(timezone=True), nullable=True)
-    error_message = Column(String, nullable=True)
 
 # ============================================
 # VAIOPS MODELS - Voice AI Ops
@@ -602,11 +573,12 @@ class EvaluatorResult(Base):
     name = Column(String, nullable=False)  # Scenario name
     timestamp = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     duration_seconds = Column(Float, nullable=True)  # Call duration
-    status = Column(Enum(EvaluatorResultStatus), nullable=False, default=EvaluatorResultStatus.IN_PROGRESS)
+    status = Column(String(20), nullable=False, default=EvaluatorResultStatus.QUEUED.value)
     
     # Audio and transcription
     audio_s3_key = Column(String, nullable=True)  # S3 key for audio file
     transcription = Column(String, nullable=True)  # Full transcription
+    speaker_segments = Column(JSON, nullable=True)  # List of segments with speaker labels: [{"speaker": "Speaker 1", "text": "...", "start": 0.0, "end": 5.2}]
     
     # Metric scores - JSON object with metric_id as key and score as value
     # Format: {"metric_id_1": {"value": 85, "type": "rating"}, "metric_id_2": {"value": true, "type": "boolean"}}

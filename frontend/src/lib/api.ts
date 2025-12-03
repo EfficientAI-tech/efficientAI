@@ -4,9 +4,6 @@ import type {
   Evaluation,
   EvaluationCreate,
   EvaluationResult,
-  BatchJob,
-  BatchCreate,
-  BatchResults,
   APIKey,
   MessageResponse,
   EvaluationStatus,
@@ -178,30 +175,6 @@ class ApiClient {
   }> {
     const response = await this.client.post('/api/v1/results/compare', {
       evaluation_ids: evaluationIds,
-    })
-    return response.data
-  }
-
-  // Batch endpoints
-  async createBatch(data: BatchCreate): Promise<BatchJob> {
-    const response = await this.client.post('/api/v1/batch/create', data)
-    return response.data
-  }
-
-  async getBatch(batchId: string): Promise<BatchJob> {
-    const response = await this.client.get(`/api/v1/batch/${batchId}`)
-    return response.data
-  }
-
-  async getBatchResults(batchId: string): Promise<BatchResults> {
-    const response = await this.client.get(`/api/v1/batch/${batchId}/results`)
-    return response.data
-  }
-
-  async exportBatchResults(batchId: string, format: 'json' | 'csv'): Promise<Blob> {
-    const response = await this.client.get(`/api/v1/batch/${batchId}/export`, {
-      params: { format },
-      responseType: 'blob',
     })
     return response.data
   }
@@ -744,6 +717,27 @@ class ApiClient {
   async getEvaluatorResultMetrics(id: string): Promise<any> {
     const response = await this.client.get(`/api/v1/evaluator-results/${id}/metrics`)
     return response.data
+  }
+
+  async createEvaluatorResultManual(data: {
+    evaluator_id: string
+    audio_s3_key: string
+    duration_seconds?: number
+  }): Promise<any> {
+    const response = await this.client.post('/api/v1/evaluator-results', data)
+    return response.data
+  }
+
+  async deleteEvaluatorResult(id: string): Promise<void> {
+    await this.client.delete(`/api/v1/evaluator-results/${id}`)
+  }
+
+  async deleteEvaluatorResultsBulk(ids: string[]): Promise<void> {
+    // FastAPI expects multiple query parameters with the same name
+    // Build query string manually: result_ids=id1&result_ids=id2
+    const params = new URLSearchParams()
+    ids.forEach(id => params.append('result_ids', id))
+    await this.client.delete(`/api/v1/evaluator-results?${params.toString()}`)
   }
 
   async getMetric(metricId: string): Promise<any> {

@@ -173,7 +173,7 @@ class AudioRecorder(FrameProcessor):
             self.wave_file = None
 
 
-async def run_bot(websocket_client, google_api_key: str, system_instruction: str = None, organization_id: str = None, agent_id: str = None, persona_id: str = None, scenario_id: str = None):
+async def run_bot(websocket_client, google_api_key: str, system_instruction: str = None, organization_id: str = None, agent_id: str = None, persona_id: str = None, scenario_id: str = None, evaluator_id: str = None, result_id: str = None):
     """
     Run the voice agent bot with the provided Google API key.
     
@@ -183,6 +183,11 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
         system_instruction: Optional system instruction (overrides default)
         organization_id: Organization ID for organizing S3 uploads
     """
+    # Initialize variables for return values
+    call_start_time = time.time()
+    s3_key_result = None
+    duration_result = None
+    
     try:
         logger.info("Setting up FastAPIWebsocketTransport...")
         ws_transport = FastAPIWebsocketTransport(
@@ -364,11 +369,15 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
                                 file_content = f.read()
                                 
                             file_id = uuid.uuid4()
+                            # Use result_id as meaningful identifier if available, otherwise use timestamp-based ID
+                            meaningful_id = result_id if result_id else f"{int(time.time())}-{file_id.hex[:8]}"
                             s3_key = s3_service.upload_file(
                                 file_content=file_content,
                                 file_id=file_id,
                                 file_format="wav",
-                                organization_id=organization_id
+                                organization_id=organization_id,
+                                evaluator_id=evaluator_id,
+                                meaningful_id=meaningful_id
                             )
                             
                             logger.info(f"✅ Conversation audio uploaded to S3: {s3_key}")
@@ -378,9 +387,13 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
                             # Clean up merged file
                             os.unlink(merged_path)
                         else:
-                            logger.error(f"FFmpeg merge failed: {process.stderr}")
+                            logger.warning("Audio merge completed but output file not found or FFmpeg failed")
+                            if process.stderr:
+                                logger.error(f"FFmpeg merge failed: {process.stderr}")
                     else:
                         logger.warning("Recorded audio files are too small, skipping merge/upload.")
+                else:
+                    logger.warning("Audio files not found, skipping merge/upload.")
                 
                 # Clean up temp files
                 if os.path.exists(user_audio_path):
@@ -404,11 +417,23 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
         }
     
     # Return call metadata for evaluator result creation
-    return {
-        "s3_key": s3_key_result,
-        "duration": duration_result,
-        "agent_id": agent_id,
-        "persona_id": persona_id,
-        "scenario_id": scenario_id
-    }
+    # Only return if we have valid results
+    if s3_key_result:
+        return {
+            "s3_key": s3_key_result,
+            "duration": duration_result,
+            "agent_id": agent_id,
+            "persona_id": persona_id,
+            "scenario_id": scenario_id
+        }
+    else:
+        # Return empty result if no audio was uploaded
+        return {
+            "s3_key": None,
+            "duration": duration_result,
+            "agent_id": agent_id,
+            "persona_id": persona_id,
+            "scenario_id": scenario_id,
+            "error": "No audio file was uploaded"
+        }
 

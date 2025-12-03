@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field, validator, model_validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from uuid import UUID
-from app.models.database import EvaluationType, EvaluationStatus, BatchStatus, RoleEnum, InvitationStatus, IntegrationPlatform, ModelProvider, MetricType, MetricTrigger, EvaluatorResultStatus
+from app.models.database import EvaluationType, EvaluationStatus, RoleEnum, InvitationStatus, IntegrationPlatform, ModelProvider, MetricType, MetricTrigger, EvaluatorResultStatus
 
 
 # Audio File Schemas
@@ -112,57 +112,6 @@ class MetricsResponse(BaseModel):
     evaluation_id: UUID
     metrics: Dict[str, Any]
     processing_time: Optional[float] = None
-
-
-# Batch Job Schemas
-class BatchCreate(BaseModel):
-    """Schema for creating a batch evaluation."""
-
-    audio_ids: List[UUID] = Field(..., min_items=1, description="List of audio file IDs to evaluate")
-    reference_texts: Optional[Dict[str, str]] = Field(
-        None, description="Mapping of audio_id to reference text"
-    )
-    evaluation_type: EvaluationType
-    model_name: Optional[str] = None
-    metrics: Optional[List[str]] = Field(default=["wer", "latency"], description="Metrics to calculate")
-
-    @validator("metrics")
-    def validate_metrics(cls, v):
-        """Validate metrics list."""
-        allowed_metrics = ["wer", "cer", "latency", "quality_score", "rtf"]
-        if v:
-            invalid = [m for m in v if m not in allowed_metrics]
-            if invalid:
-                raise ValueError(f"Invalid metrics: {invalid}")
-        return v
-
-
-class BatchResponse(BaseModel):
-    """Schema for batch job response."""
-
-    id: UUID
-    status: BatchStatus
-    total_files: int
-    processed_files: int
-    failed_files: int
-    evaluation_type: EvaluationType
-    created_at: datetime
-    completed_at: Optional[datetime] = None
-
-    class Config:
-        from_attributes = True
-
-
-class BatchResultsResponse(BaseModel):
-    """Schema for batch results summary."""
-
-    batch_id: UUID
-    status: BatchStatus
-    total_files: int
-    processed_files: int
-    failed_files: int
-    aggregated_metrics: Optional[Dict[str, Any]] = None
-    individual_results: List[EvaluationResultResponse]
 
 
 # Comparison Schema
@@ -907,6 +856,13 @@ class EvaluatorResultCreate(BaseModel):
     audio_s3_key: Optional[str] = None
 
 
+class EvaluatorResultCreateManual(BaseModel):
+    """Schema for manually creating an evaluator result from existing audio file."""
+    evaluator_id: UUID
+    audio_s3_key: str
+    duration_seconds: Optional[float] = None
+
+
 class EvaluatorResultUpdate(BaseModel):
     """Schema for updating an evaluator result."""
     status: Optional[EvaluatorResultStatus] = None
@@ -931,12 +887,19 @@ class EvaluatorResultResponse(BaseModel):
     status: EvaluatorResultStatus
     audio_s3_key: Optional[str]
     transcription: Optional[str]
+    speaker_segments: Optional[List[Dict[str, Any]]] = None  # [{"speaker": "Speaker 1", "text": "...", "start": 0.0, "end": 5.2}]
     metric_scores: Optional[Dict[str, Any]]
     celery_task_id: Optional[str]
     error_message: Optional[str]
     created_at: datetime
     updated_at: datetime
     created_by: Optional[str]
+    
+    # Related entities (optional, populated when requested)
+    agent: Optional[AgentResponse] = None
+    persona: Optional[PersonaResponse] = None
+    scenario: Optional[ScenarioResponse] = None
+    evaluator: Optional[EvaluatorResponse] = None
     
     class Config:
         from_attributes = True

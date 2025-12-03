@@ -6,7 +6,6 @@ import { apiClient } from '../lib/api'
 import {
   LayoutDashboard,
   FileCheck,
-  FolderSync,
   LogOut,
   Menu,
   Phone,
@@ -24,6 +23,7 @@ import {
   Mic,
   Brain,
   Bot,
+  Type,
 } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import Logo from './Logo'
@@ -55,8 +55,7 @@ const navigationSections: NavSection[] = [
     title: 'Evaluations',
     icon: FileCheck,
     items: [
-      { name: 'Manual Transcriptions', href: '/evaluations', icon: Mic },
-      { name: 'Batch Jobs', href: '/batch', icon: FolderSync },
+      { name: 'Manual Transcriptions', href: '/evaluations', icon: Type },
       { name: 'Evaluators', href: '/evaluate-test-agents', icon: Mic },
     ],
   },
