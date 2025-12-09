@@ -9,6 +9,8 @@ export default function Profile() {
   const queryClient = useQueryClient()
   const [isEditing, setIsEditing] = useState(false)
   const [name, setName] = useState('')
+  const [firstName, setFirstName] = useState('')
+  const [lastName, setLastName] = useState('')
   const [email, setEmail] = useState('')
 
   const { data: profile, isLoading: profileLoading } = useQuery<ProfileType>({
@@ -20,6 +22,8 @@ export default function Profile() {
   useEffect(() => {
     if (profile) {
       setName(profile.name || '')
+      setFirstName(profile.first_name || '')
+      setLastName(profile.last_name || '')
       setEmail(profile.email)
     }
   }, [profile])
@@ -54,13 +58,20 @@ export default function Profile() {
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault()
-    updateMutation.mutate({ name: name || undefined, email })
+    updateMutation.mutate({ 
+      name: name || undefined, 
+      first_name: firstName || undefined,
+      last_name: lastName || undefined,
+      email 
+    })
   }
 
   const handleCancel = () => {
     setIsEditing(false)
     if (profile) {
       setName(profile.name || '')
+      setFirstName(profile.first_name || '')
+      setLastName(profile.last_name || '')
       setEmail(profile.email)
     }
   }
@@ -123,9 +134,37 @@ export default function Profile() {
         <div className="p-6">
           {isEditing ? (
             <form onSubmit={handleSave} className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label htmlFor="firstName" className="block text-sm font-medium text-gray-700 mb-1">
+                    First Name
+                  </label>
+                  <input
+                    id="firstName"
+                    type="text"
+                    value={firstName}
+                    onChange={(e) => setFirstName(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    placeholder="First name"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="lastName" className="block text-sm font-medium text-gray-700 mb-1">
+                    Last Name
+                  </label>
+                  <input
+                    id="lastName"
+                    type="text"
+                    value={lastName}
+                    onChange={(e) => setLastName(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    placeholder="Last name"
+                  />
+                </div>
+              </div>
               <div>
                 <label htmlFor="name" className="block text-sm font-medium text-gray-700 mb-1">
-                  Name
+                  Full Name (Optional)
                 </label>
                 <input
                   id="name"
@@ -133,7 +172,7 @@ export default function Profile() {
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                  placeholder="Your name"
+                  placeholder="Your full name"
                 />
               </div>
               <div>
@@ -170,8 +209,18 @@ export default function Profile() {
             </form>
           ) : (
             <div className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-1">First Name</label>
+                  <p className="text-gray-900">{profile?.first_name || 'Not set'}</p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-1">Last Name</label>
+                  <p className="text-gray-900">{profile?.last_name || 'Not set'}</p>
+                </div>
+              </div>
               <div>
-                <label className="block text-sm font-medium text-gray-500 mb-1">Name</label>
+                <label className="block text-sm font-medium text-gray-500 mb-1">Full Name</label>
                 <p className="text-gray-900">{profile?.name || 'Not set'}</p>
               </div>
               <div>

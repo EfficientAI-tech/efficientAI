@@ -391,6 +391,8 @@ class UserCreate(BaseModel):
 class UserUpdate(BaseModel):
     """Schema for updating user profile."""
     name: Optional[str] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
     email: Optional[str] = None
 
 
@@ -399,6 +401,8 @@ class UserResponse(BaseModel):
     id: UUID
     email: str
     name: Optional[str]
+    first_name: Optional[str]
+    last_name: Optional[str]
     is_active: bool
     created_at: datetime
 
@@ -457,6 +461,8 @@ class ProfileResponse(BaseModel):
     id: UUID
     email: str
     name: Optional[str]
+    first_name: Optional[str]
+    last_name: Optional[str]
     created_at: datetime
     organizations: List[dict] = Field(default_factory=list)  # List of org memberships
 

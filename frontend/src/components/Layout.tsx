@@ -3,6 +3,7 @@ import { useAuthStore } from '../store/authStore'
 import { useAgentStore, type Agent } from '../store/agentStore'
 import { useQuery } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
+import { Profile } from '../types/api'
 import {
   LayoutDashboard,
   FileCheck,
@@ -12,7 +13,6 @@ import {
   Users,
   FileText,
   Shield,
-  UserCircle,
   Play,
   BarChart3,
   Plug,
@@ -24,6 +24,7 @@ import {
   Brain,
   Bot,
   Type,
+  Activity,
 } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import Logo from './Logo'
@@ -64,6 +65,7 @@ const navigationSections: NavSection[] = [
     icon: BarChart3,
     items: [
       { name: 'Evaluation Results', href: '/results', icon: BarChart3 },
+      { name: 'Observability', href: '/observability', icon: Activity },
     ],
   },
   {
@@ -84,7 +86,6 @@ const otherNavigation: NavItem[] = [
 
 const bottomNavigation = [
   { name: 'IAM', href: '/iam', icon: Shield },
-  { name: 'Profile', href: '/profile', icon: UserCircle }
 ]
 
 export default function Layout() {
@@ -251,6 +252,9 @@ export default function Layout() {
                 </>
               )}
             </div>
+            
+            {/* Profile Link */}
+            <ProfileAvatar />
           </div>
         </div>
 
@@ -259,6 +263,51 @@ export default function Layout() {
           <Outlet />
         </main>
       </div>
+    </div>
+  )
+}
+
+function ProfileAvatar() {
+  const location = useLocation()
+  const { data: profile } = useQuery<Profile>({
+    queryKey: ['profile'],
+    queryFn: () => apiClient.getProfile(),
+  })
+
+  const getInitials = () => {
+    if (profile?.first_name && profile?.last_name) {
+      return `${profile.first_name.charAt(0).toUpperCase()}${profile.last_name.charAt(0).toUpperCase()}`
+    } else if (profile?.first_name) {
+      return profile.first_name.charAt(0).toUpperCase()
+    } else if (profile?.name) {
+      const nameParts = profile.name.trim().split(/\s+/)
+      if (nameParts.length >= 2) {
+        return `${nameParts[0].charAt(0).toUpperCase()}${nameParts[nameParts.length - 1].charAt(0).toUpperCase()}`
+      }
+      return nameParts[0].charAt(0).toUpperCase()
+    } else if (profile?.email) {
+      return profile.email.charAt(0).toUpperCase()
+    }
+    return 'U'
+  }
+
+  const initials = getInitials()
+
+  return (
+    <div className="flex items-center">
+      <Link
+        to="/profile"
+        className={`flex items-center justify-center w-10 h-10 rounded-lg transition-colors ${
+          location.pathname === '/profile'
+            ? 'bg-gray-100'
+            : 'hover:bg-gray-50'
+        }`}
+        title="Profile"
+      >
+        <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white text-sm font-semibold">
+          {initials}
+        </div>
+      </Link>
     </div>
   )
 }
@@ -302,13 +351,13 @@ function SidebarContent({
               <Link
                 key={item.name}
                 to={item.href}
-                className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md ${isActive
-                  ? 'bg-gray-100 text-gray-900'
+                className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md relative overflow-hidden ${isActive
+                  ? 'bg-gradient-to-r from-gray-900 via-gray-700 to-gray-400 text-white'
                   : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
                   }`}
               >
                 <item.icon
-                  className={`mr-3 flex-shrink-0 h-5 w-5 ${isActive ? 'text-gray-700' : 'text-gray-400 group-hover:text-gray-500'
+                  className={`mr-3 flex-shrink-0 h-5 w-5 ${isActive ? 'text-white' : 'text-gray-400 group-hover:text-gray-500'
                     }`}
                 />
                 {item.name}
@@ -353,13 +402,13 @@ function SidebarContent({
                           <Link
                             key={item.name}
                             to={item.href}
-                            className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md ${isItemActive
-                              ? 'bg-gray-100 text-gray-900'
+                            className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md relative overflow-hidden ${isItemActive
+                              ? 'bg-gradient-to-r from-gray-900 via-gray-700 to-gray-400 text-white'
                               : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
                               }`}
                           >
                             <item.icon
-                              className={`mr-3 flex-shrink-0 h-4 w-4 ${isItemActive ? 'text-gray-700' : 'text-gray-400 group-hover:text-gray-500'
+                              className={`mr-3 flex-shrink-0 h-4 w-4 ${isItemActive ? 'text-white' : 'text-gray-400 group-hover:text-gray-500'
                                 }`}
                             />
                             {item.name}
@@ -380,13 +429,13 @@ function SidebarContent({
               <Link
                 key={item.name}
                 to={item.href}
-                className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md ${isActive
-                  ? 'bg-gray-100 text-gray-900'
+                className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md relative overflow-hidden ${isActive
+                  ? 'bg-gradient-to-r from-gray-900 via-gray-700 to-gray-400 text-white'
                   : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
                   }`}
               >
                 <item.icon
-                  className={`mr-3 flex-shrink-0 h-5 w-5 ${isActive ? 'text-gray-700' : 'text-gray-400 group-hover:text-gray-500'
+                  className={`mr-3 flex-shrink-0 h-5 w-5 ${isActive ? 'text-white' : 'text-gray-400 group-hover:text-gray-500'
                     }`}
                 />
                 {item.name}

@@ -9,20 +9,24 @@
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0"
   },
   "dependencies": {
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "react-router-dom": "^6.21.0",
-    "@tanstack/react-query": "^5.17.0",
-    "axios": "^1.6.2",
-    "zustand": "^4.4.7",
-    "lucide-react": "^0.303.0",
-    "clsx": "^2.1.0",
-    "date-fns": "^3.0.6",
     "@pipecat-ai/client-js": "^1.2.0",
     "@pipecat-ai/websocket-transport": "^1.2.0",
-    "protobufjs": "^7.4.0"
+    "@tanstack/react-query": "^5.17.0",
+    "axios": "^1.6.2",
+    "clsx": "^2.1.0",
+    "date-fns": "^3.0.6",
+    "lucide-react": "^0.303.0",
+    "protobufjs": "^7.4.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-markdown": "^10.1.0",
+    "react-router-dom": "^6.21.0",
+    "recharts": "^2.10.3",
+    "zustand": "^4.4.7"
   },
   "devDependencies": {
+    "@types/node": "^22.15.30",
+    "@types/protobufjs": "^6.0.0",
     "@types/react": "^18.2.43",
     "@types/react-dom": "^18.2.17",
     "@typescript-eslint/eslint-plugin": "^6.14.0",
@@ -35,9 +39,6 @@
     "postcss": "^8.4.32",
     "tailwindcss": "^3.3.6",
     "typescript": "^5.2.2",
-    "vite": "^5.0.8",
-    "@types/node": "^22.15.30",
-    "@types/protobufjs": "^6.0.0"
+    "vite": "^5.0.8"
   }
 }
-

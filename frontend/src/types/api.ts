@@ -130,6 +130,8 @@ export interface Profile {
   id: string
   email: string
   name?: string | null
+  first_name?: string | null
+  last_name?: string | null
   created_at: string
   organizations: Array<{
     id: string
@@ -141,6 +143,8 @@ export interface Profile {
 
 export interface UserUpdate {
   name?: string | null
+  first_name?: string | null
+  last_name?: string | null
   email?: string | null
 }
 

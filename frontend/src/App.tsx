@@ -21,6 +21,7 @@ import MetricsManagement from './pages/MetricsManagement'
 import Results from './pages/Results'
 import EvaluatorResultDetail from './pages/EvaluatorResultDetail'
 import AgentDetail from './pages/AgentDetail'
+import Observability from './pages/Observability'
 
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -63,6 +64,7 @@ function App() {
           <Route path="metrics-management" element={<MetricsManagement />} />
           <Route path="results" element={<Results />} />
           <Route path="results/:id" element={<EvaluatorResultDetail />} />
+          <Route path="observability" element={<Observability />} />
           <Route path="iam" element={<IAM />} />
           <Route path="profile" element={<Profile />} />
         </Route>

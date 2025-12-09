@@ -91,6 +91,8 @@ async def get_profile(
         "id": current_user.id,
         "email": current_user.email,
         "name": current_user.name,
+        "first_name": current_user.first_name,
+        "last_name": current_user.last_name,
         "created_at": current_user.created_at,
         "organizations": organizations
     }
@@ -107,6 +109,12 @@ async def update_profile(
     """
     if profile_update.name is not None:
         current_user.name = profile_update.name
+    
+    if profile_update.first_name is not None:
+        current_user.first_name = profile_update.first_name
+    
+    if profile_update.last_name is not None:
+        current_user.last_name = profile_update.last_name
     
     if profile_update.email is not None:
         # Check if email is already taken
@@ -146,6 +154,8 @@ async def update_profile(
         "id": current_user.id,
         "email": current_user.email,
         "name": current_user.name,
+        "first_name": current_user.first_name,
+        "last_name": current_user.last_name,
         "created_at": current_user.created_at,
         "organizations": organizations
     }
