@@ -2,6 +2,7 @@ import { create } from 'zustand'
 
 export interface Agent {
   id: string
+  agent_id?: string | null
   name: string
   phone_number: string
   language: string

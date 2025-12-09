@@ -5,7 +5,7 @@ from app.api.v1.routes import (
     auth, audio, evaluations, results, agents, personas, scenarios, iam,
     profile, integrations, data_sources, voicebundles, aiproviders, model_config,
     manual_evaluations, test_agents, conversation_evaluations, voice_agent, evaluators, metrics,
-    evaluator_results
+    evaluator_results, chat
 )
 
 api_router = APIRouter()
@@ -32,4 +32,5 @@ api_router.include_router(voice_agent.router)
 api_router.include_router(evaluators.router)
 api_router.include_router(metrics.router)
 api_router.include_router(evaluator_results.router)
+api_router.include_router(chat.router)
 

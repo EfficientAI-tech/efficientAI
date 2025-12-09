@@ -166,7 +166,18 @@ export default function Layout() {
               >
                 <Phone className="h-4 w-4 text-gray-500" />
                 <span className="min-w-[120px] text-left">
-                  {selectedAgent ? selectedAgent.name : 'Select Agent'}
+                  {selectedAgent ? (
+                    <>
+                      {selectedAgent.name}
+                      {selectedAgent.agent_id && (
+                        <span className="ml-2 font-mono text-xs text-gray-500">
+                          ({selectedAgent.agent_id})
+                        </span>
+                      )}
+                    </>
+                  ) : (
+                    'Select Agent'
+                  )}
                 </span>
                 <ChevronDown className="h-4 w-4 text-gray-500" />
               </button>
@@ -209,6 +220,11 @@ export default function Layout() {
                               <div>
                                 <div className="text-sm font-medium text-gray-900">
                                   {agent.name}
+                                  {agent.agent_id && (
+                                    <span className="ml-2 font-mono text-xs text-gray-500">
+                                      ({agent.agent_id})
+                                    </span>
+                                  )}
                                 </div>
                                 <div className="text-xs text-gray-500 mt-0.5">
                                   {agent.phone_number} • {agent.language}

@@ -25,7 +25,8 @@ interface EvaluatorResultDetail {
   agent?: {
     id: string
     name: string
-    phone_number: string
+    phone_number: string | null
+    call_medium?: string
     description: string | null
   }
   persona?: {
@@ -536,7 +537,15 @@ export default function EvaluatorResultDetail() {
                 </div>
                 <div>
                   <div className="text-gray-500">Phone</div>
-                  <div className="text-gray-900">{resultData.agent.phone_number}</div>
+                  <div className="text-gray-900">
+                    {resultData.agent.call_medium === 'web_call' ? (
+                      <span className="italic text-gray-500">Not applicable - Web Call</span>
+                    ) : resultData.agent.phone_number ? (
+                      resultData.agent.phone_number
+                    ) : (
+                      <span className="text-gray-400">-</span>
+                    )}
+                  </div>
                 </div>
                 {resultData.agent.description && (
                   <div>

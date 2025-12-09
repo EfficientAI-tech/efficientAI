@@ -182,10 +182,11 @@ class ApiClient {
   // Agents endpoints
   async createAgent(data: {
     name: string
-    phone_number: string
+    phone_number?: string
     language: string
     description?: string | null
     call_type: string
+    call_medium: string
     voice_bundle_id?: string
     ai_provider_id?: string
   }): Promise<any> {
@@ -211,6 +212,7 @@ class ApiClient {
     language?: string
     description?: string | null
     call_type?: string
+    call_medium?: string
     voice_bundle_id?: string
     ai_provider_id?: string
   }): Promise<any> {
@@ -294,6 +296,23 @@ class ApiClient {
 
   async deleteScenario(scenarioId: string): Promise<void> {
     await this.client.delete(`/api/v1/scenarios/${scenarioId}`)
+  }
+
+  // Chat/Inference endpoints
+  async chatCompletion(data: {
+    messages: Array<{ role: string; content: string }>
+    provider: string
+    model: string
+    temperature?: number
+    max_tokens?: number
+  }): Promise<{
+    text: string
+    model: string
+    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }
+    processing_time?: number
+  }> {
+    const response = await this.client.post('/api/v1/chat/completion', data)
+    return response.data
   }
 
   // VoiceBundle endpoints

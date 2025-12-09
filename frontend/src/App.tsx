@@ -20,6 +20,7 @@ import EvaluateTestAgents from './pages/EvaluateTestAgents'
 import MetricsManagement from './pages/MetricsManagement'
 import Results from './pages/Results'
 import EvaluatorResultDetail from './pages/EvaluatorResultDetail'
+import AgentDetail from './pages/AgentDetail'
 
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -50,6 +51,7 @@ function App() {
           <Route path="evaluations/:id" element={<EvaluationDetail />} />
           <Route path="manual-evaluations/:id" element={<ManualTranscriptionDetail />} />
           <Route path="agents" element={<Agents />} />
+          <Route path="agents/:id" element={<AgentDetail />} />
           <Route path="personas" element={<Personas />} />
           <Route path="scenarios" element={<Scenarios />} />
           <Route path="metrics" element={<Metrics />} />

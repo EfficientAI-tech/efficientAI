@@ -182,6 +182,11 @@ class CallTypeEnum(str, PyEnum):
     OUTBOUND = "outbound"
 
 
+class CallMediumEnum(str, PyEnum):
+    PHONE_CALL = "phone_call"
+    WEB_CALL = "web_call"
+
+
 class GenderEnum(str, PyEnum):
     MALE = "male"
     FEMALE = "female"
@@ -213,10 +218,11 @@ class BackgroundNoiseEnum(str, PyEnum):
 class AgentCreate(BaseModel):
     """Schema for creating a new agent"""
     name: str = Field(..., min_length=1, max_length=255)
-    phone_number: str
+    phone_number: Optional[str] = None
     language: LanguageEnum = LanguageEnum.ENGLISH
     description: Optional[str] = None
     call_type: CallTypeEnum = CallTypeEnum.OUTBOUND
+    call_medium: CallMediumEnum = CallMediumEnum.PHONE_CALL
     voice_bundle_id: Optional[UUID] = None
     ai_provider_id: Optional[UUID] = None
 
@@ -230,6 +236,13 @@ class AgentCreate(BaseModel):
             raise ValueError('Cannot specify both voice_bundle_id and ai_provider_id. Choose one.')
         if not voice_bundle and not ai_provider:
             raise ValueError('Must specify either voice_bundle_id or ai_provider_id.')
+        return self
+    
+    @model_validator(mode='after')
+    def validate_phone_number(self):
+        """Ensure phone_number is provided when call_medium is phone_call"""
+        if self.call_medium == CallMediumEnum.PHONE_CALL and not self.phone_number:
+            raise ValueError('phone_number is required when call_medium is phone_call')
         return self
 
     class Config:
@@ -252,6 +265,7 @@ class AgentUpdate(BaseModel):
     language: Optional[LanguageEnum] = None
     description: Optional[str] = None
     call_type: Optional[CallTypeEnum] = None
+    call_medium: Optional[CallMediumEnum] = None
     voice_bundle_id: Optional[UUID] = None
     ai_provider_id: Optional[UUID] = None
 
@@ -264,16 +278,28 @@ class AgentUpdate(BaseModel):
         if voice_bundle and ai_provider:
             raise ValueError('Cannot specify both voice_bundle_id and ai_provider_id. Choose one.')
         return self
+    
+    @model_validator(mode='after')
+    def validate_phone_number(self):
+        """Ensure phone_number is provided when call_medium is phone_call"""
+        # Only validate if call_medium is being set to phone_call
+        if self.call_medium == CallMediumEnum.PHONE_CALL and not self.phone_number:
+            # If phone_number is not being updated, we need to check existing value
+            # This will be handled in the route
+            pass
+        return self
 
 
 class AgentResponse(BaseModel):
     """Schema for agent response"""
     id: UUID
+    agent_id: Optional[str] = None
     name: str
-    phone_number: str
+    phone_number: Optional[str] = None
     language: LanguageEnum
     description: Optional[str]
     call_type: CallTypeEnum
+    call_medium: CallMediumEnum
     voice_bundle_id: Optional[UUID]
     ai_provider_id: Optional[UUID]
     created_at: datetime

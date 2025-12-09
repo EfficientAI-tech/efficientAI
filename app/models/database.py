@@ -236,6 +236,12 @@ class CallTypeEnum(str, enum.Enum):
     OUTBOUND = "outbound"
 
 
+class CallMediumEnum(str, enum.Enum):
+    """Call medium"""
+    PHONE_CALL = "phone_call"
+    WEB_CALL = "web_call"
+
+
 class GenderEnum(str, enum.Enum):
     """Gender options for personas"""
     MALE = "male"
@@ -271,12 +277,14 @@ class Agent(Base):
     __tablename__ = "agents"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    agent_id = Column(String(6), unique=True, nullable=True, index=True)  # 6-digit ID
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
     name = Column(String, nullable=False)
-    phone_number = Column(String, nullable=False)
+    phone_number = Column(String, nullable=True)  # Optional, required only for phone_call
     language = Column(Enum(LanguageEnum), nullable=False, default=LanguageEnum.ENGLISH)
     description = Column(String)
     call_type = Column(Enum(CallTypeEnum), nullable=False, default=CallTypeEnum.OUTBOUND)
+    call_medium = Column(Enum(CallMediumEnum), nullable=False, default=CallMediumEnum.PHONE_CALL)
     
     # Voice configuration - either voice_bundle_id OR ai_provider_id (mutually exclusive)
     voice_bundle_id = Column(UUID(as_uuid=True), ForeignKey("voicebundles.id"), nullable=True, index=True)

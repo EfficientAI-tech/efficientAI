@@ -354,10 +354,20 @@ export default function EvaluateTestAgents() {
                                 <p className="text-xs text-gray-600 mt-1">{evaluatorDetails.agent.description}</p>
                               )}
                             </div>
-                            <span className="inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium bg-gradient-to-r from-teal-100 to-teal-200 text-teal-800 border border-teal-300 shadow-sm">
-                              <Phone className="w-3.5 h-3.5 mr-1.5" />
-                              {evaluatorDetails.agent.phone_number}
-                            </span>
+                            {evaluatorDetails.agent.call_medium === 'web_call' ? (
+                              <span className="inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600 border border-gray-300 shadow-sm italic">
+                                Web Call - No phone required
+                              </span>
+                            ) : evaluatorDetails.agent.phone_number ? (
+                              <span className="inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium bg-gradient-to-r from-teal-100 to-teal-200 text-teal-800 border border-teal-300 shadow-sm">
+                                <Phone className="w-3.5 h-3.5 mr-1.5" />
+                                {evaluatorDetails.agent.phone_number}
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600 border border-gray-300 shadow-sm">
+                                No phone number
+                              </span>
+                            )}
                           </div>
                         </div>
                         <div>
