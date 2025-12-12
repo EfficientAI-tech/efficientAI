@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
 from uuid import UUID
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import secrets
 
 from app.dependencies import get_db, get_organization_id, get_api_key
@@ -26,7 +26,7 @@ router = APIRouter(prefix="/iam", tags=["IAM"])
 def get_user_from_api_key(api_key: str, db: Session) -> User:
     """
     Get user associated with API key.
-    For now, creates a user if doesn't exist.
+    Creates a user if doesn't exist and adds them to the organization as ADMIN.
     """
     from app.models.database import APIKey
     
@@ -38,6 +38,22 @@ def get_user_from_api_key(api_key: str, db: Session) -> User:
     if db_key.user_id:
         user = db.query(User).filter(User.id == db_key.user_id).first()
         if user:
+            # Ensure user is a member of the organization
+            existing_member = db.query(OrganizationMember).filter(
+                OrganizationMember.organization_id == db_key.organization_id,
+                OrganizationMember.user_id == user.id
+            ).first()
+            
+            if not existing_member:
+                # Add user to organization as ADMIN (they created the API key)
+                member = OrganizationMember(
+                    organization_id=db_key.organization_id,
+                    user_id=user.id,
+                    role=RoleEnum.ADMIN
+                )
+                db.add(member)
+                db.commit()
+            
             return user
     
     # Otherwise, create a user for this API key
@@ -55,7 +71,35 @@ def get_user_from_api_key(api_key: str, db: Session) -> User:
         
         # Link API key to user
         db_key.user_id = user.id
+        
+        # Add user to organization as ADMIN (they created the API key)
+        member = OrganizationMember(
+            organization_id=db_key.organization_id,
+            user_id=user.id,
+            role=RoleEnum.ADMIN
+        )
+        db.add(member)
         db.commit()
+    else:
+        # User exists but might not be in organization
+        existing_member = db.query(OrganizationMember).filter(
+            OrganizationMember.organization_id == db_key.organization_id,
+            OrganizationMember.user_id == user.id
+        ).first()
+        
+        if not existing_member:
+            # Link API key to user if not already linked
+            if not db_key.user_id:
+                db_key.user_id = user.id
+            
+            # Add user to organization as ADMIN
+            member = OrganizationMember(
+                organization_id=db_key.organization_id,
+                user_id=user.id,
+                role=RoleEnum.ADMIN
+            )
+            db.add(member)
+            db.commit()
     
     return user
 
@@ -112,6 +156,8 @@ async def list_organization_users(
                     "id": user.id,
                     "email": user.email,
                     "name": user.name,
+                    "first_name": user.first_name,
+                    "last_name": user.last_name,
                     "is_active": user.is_active,
                     "created_at": user.created_at
                 }
@@ -155,7 +201,7 @@ async def invite_user(
     
     if existing_invitation:
         # Check if expired
-        if existing_invitation.expires_at < datetime.utcnow():
+        if existing_invitation.expires_at < datetime.now(timezone.utc):
             existing_invitation.status = InvitationStatus.EXPIRED
             db.commit()
         else:
@@ -166,7 +212,7 @@ async def invite_user(
     
     # Create invitation
     invitation_token = secrets.token_urlsafe(32)
-    expires_at = datetime.utcnow() + timedelta(days=7)  # 7 days expiry
+    expires_at = datetime.now(timezone.utc) + timedelta(days=7)  # 7 days expiry
     
     invitation = Invitation(
         organization_id=organization_id,
@@ -218,7 +264,7 @@ async def list_invitations(
     result = []
     for invitation in invitations:
         # Check if expired
-        if invitation.status == InvitationStatus.PENDING and invitation.expires_at < datetime.utcnow():
+        if invitation.status == InvitationStatus.PENDING and invitation.expires_at < datetime.now(timezone.utc):
             invitation.status = InvitationStatus.EXPIRED
             db.commit()
         
@@ -288,6 +334,8 @@ async def update_user_role(
             "id": user.id,
             "email": user.email,
             "name": user.name,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
             "is_active": user.is_active,
             "created_at": user.created_at
         }
@@ -305,6 +353,13 @@ async def remove_user(
     Remove a user from the organization.
     Requires ADMIN role.
     """
+    # Prevent users from removing themselves
+    if user_id == current_user.id:
+        raise HTTPException(
+            status_code=400,
+            detail="You cannot remove yourself from the organization"
+        )
+    
     member = db.query(OrganizationMember).filter(
         OrganizationMember.organization_id == organization_id,
         OrganizationMember.user_id == user_id

@@ -41,7 +41,8 @@ interface Metric {
 type TimeFilter = 1 | 4 | 7 | 30
 type ChartType = 'bar' | 'line' | 'area'
 
-const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4']
+// Darker, more muted colors for graphs (amber/orange tones)
+const COLORS = ['#d97706', '#b45309', '#92400e', '#78350f', '#ca8a04', '#a16207', '#854d0e']
 
 export default function Observability() {
   const [timeFilter, setTimeFilter] = useState<TimeFilter>(7)
@@ -179,6 +180,45 @@ export default function Observability() {
     }))
   }, [filteredResults])
 
+  // Find Problem Resolution metric ID
+  const problemResolutionMetricId = useMemo(() => {
+    const metric = (metrics as Metric[]).find(
+      (m) => m.name.toLowerCase().includes('problem resolution')
+    )
+    return metric?.id || null
+  }, [metrics])
+
+  // Problem Resolution distribution for pie chart
+  const problemResolutionDistribution = useMemo(() => {
+    if (!problemResolutionMetricId) {
+      return []
+    }
+
+    let resolvedCount = 0
+    let notResolvedCount = 0
+
+    completedResults.forEach((result) => {
+      const problemResolutionScore = result.metric_scores?.[problemResolutionMetricId]
+      if (problemResolutionScore !== undefined) {
+        if (problemResolutionScore.value === true) {
+          resolvedCount++
+        } else {
+          notResolvedCount++
+        }
+      }
+    })
+
+    const distribution = []
+    if (resolvedCount > 0) {
+      distribution.push({ name: 'Resolved', value: resolvedCount })
+    }
+    if (notResolvedCount > 0) {
+      distribution.push({ name: 'Not Resolved', value: notResolvedCount })
+    }
+
+    return distribution
+  }, [completedResults, problemResolutionMetricId])
+
   // Metric averages for bar chart
   const metricAverages = useMemo(() => {
     return Object.entries(aggregateMetrics)
@@ -190,14 +230,6 @@ export default function Observability() {
       }))
       .sort((a, b) => b.average - a.average)
   }, [aggregateMetrics])
-
-  // Find Problem Resolution metric ID
-  const problemResolutionMetricId = useMemo(() => {
-    const metric = (metrics as Metric[]).find(
-      (m) => m.name.toLowerCase().includes('problem resolution')
-    )
-    return metric?.id || null
-  }, [metrics])
 
   // Overall statistics
   const overallStats = useMemo(() => {
@@ -244,16 +276,16 @@ export default function Observability() {
   const getStatusColor = (status: string) => {
     switch (status.toLowerCase()) {
       case 'completed':
-        return '#10b981'
+        return '#10b981' // green
       case 'failed':
-        return '#ef4444'
+        return '#ef4444' // red
       case 'queued':
-        return '#6b7280'
+        return '#6b7280' // gray
       case 'transcribing':
       case 'evaluating':
-        return '#3b82f6'
+        return '#3b82f6' // blue
       default:
-        return '#9ca3af'
+        return '#9ca3af' // light gray
     }
   }
 
@@ -280,7 +312,7 @@ export default function Observability() {
             onClick={() => onChange(type)}
             className={`flex items-center space-x-1 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
               value === type
-                ? 'bg-blue-600 text-white'
+                ? 'bg-primary-500 text-white'
                 : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
             }`}
           >
@@ -314,7 +346,7 @@ export default function Observability() {
               onClick={() => setTimeFilter(days)}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
                 timeFilter === days
-                  ? 'bg-blue-600 text-white'
+                  ? 'bg-primary-500 text-white'
                   : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
               }`}
             >
@@ -326,7 +358,7 @@ export default function Observability() {
 
       {loadingResults ? (
         <div className="flex items-center justify-center p-12">
-          <Loader className="w-8 h-8 animate-spin text-blue-600" />
+          <Loader className="w-8 h-8 animate-spin text-primary-500" />
           <span className="ml-3 text-gray-600">Loading data...</span>
         </div>
       ) : filteredResults.length === 0 ? (
@@ -344,7 +376,7 @@ export default function Observability() {
                   <p className="text-sm font-medium text-gray-600">Total Results</p>
                   <p className="text-2xl font-bold text-gray-900 mt-1">{overallStats.totalResults}</p>
                 </div>
-                <Activity className="w-8 h-8 text-blue-600" />
+                <Activity className="w-8 h-8 text-primary-500" />
               </div>
             </div>
 
@@ -356,7 +388,7 @@ export default function Observability() {
                     {overallStats.successRate.toFixed(1)}%
                   </p>
                 </div>
-                <CheckCircle className="w-8 h-8 text-green-600" />
+                <CheckCircle className="w-8 h-8 text-primary-600" />
               </div>
             </div>
 
@@ -368,7 +400,7 @@ export default function Observability() {
                     {overallStats.overallScore.toFixed(1)}
                   </p>
                 </div>
-                <TrendingUp className="w-8 h-8 text-purple-600" />
+                <TrendingUp className="w-8 h-8 text-primary-500" />
               </div>
             </div>
 
@@ -380,33 +412,67 @@ export default function Observability() {
                     {Math.round(overallStats.avgDuration)}s
                   </p>
                 </div>
-                <Clock className="w-8 h-8 text-orange-600" />
+                <Clock className="w-8 h-8 text-primary-600" />
               </div>
             </div>
           </div>
 
-          {/* Status Distribution Pie Chart */}
-          <div className="bg-white rounded-lg shadow p-6">
-            <h2 className="text-xl font-bold text-gray-900 mb-4">Status Distribution</h2>
-            <ResponsiveContainer width="100%" height={300}>
-              <PieChart>
-                <Pie
-                  data={statusDistribution}
-                  cx="50%"
-                  cy="50%"
-                  labelLine={false}
-                  label={({ name, percent }: { name: string; percent: number }) => `${name}: ${(percent * 100).toFixed(0)}%`}
-                  outerRadius={100}
-                  fill="#8884d8"
-                  dataKey="value"
-                >
-                  {statusDistribution.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={getStatusColor(entry.name)} />
-                  ))}
-                </Pie>
-                <Tooltip />
-              </PieChart>
-            </ResponsiveContainer>
+          {/* Status Distribution Section */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* Status Distribution Pie Chart */}
+            <div className="bg-white rounded-lg shadow p-6">
+              <h2 className="text-xl font-bold text-gray-900 mb-4">Status Distribution</h2>
+              <ResponsiveContainer width="100%" height={300}>
+                <PieChart>
+                  <Pie
+                    data={statusDistribution}
+                    cx="50%"
+                    cy="50%"
+                    labelLine={false}
+                    label={({ name, percent }: { name: string; percent: number }) => `${name}: ${(percent * 100).toFixed(0)}%`}
+                    outerRadius={100}
+                    fill="#d97706"
+                    dataKey="value"
+                  >
+                    {statusDistribution.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={getStatusColor(entry.name)} />
+                    ))}
+                  </Pie>
+                  <Tooltip />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+
+            {/* Problem Resolution Distribution Pie Chart */}
+            {problemResolutionDistribution.length > 0 && (
+              <div className="bg-white rounded-lg shadow p-6">
+                <h2 className="text-xl font-bold text-gray-900 mb-4">Problem Resolution</h2>
+                <ResponsiveContainer width="100%" height={300}>
+                  <PieChart>
+                    <Pie
+                      data={problemResolutionDistribution}
+                      cx="50%"
+                      cy="50%"
+                      labelLine={false}
+                      label={({ name, percent, value }: { name: string; percent: number; value: number }) => 
+                        `${name}: ${value} (${(percent * 100).toFixed(0)}%)`
+                      }
+                      outerRadius={100}
+                      fill="#d97706"
+                      dataKey="value"
+                    >
+                      {problemResolutionDistribution.map((entry, index) => (
+                        <Cell 
+                          key={`pr-cell-${index}`} 
+                          fill={entry.name === 'Resolved' ? '#d97706' : '#92400e'} 
+                        />
+                      ))}
+                    </Pie>
+                    <Tooltip />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+            )}
           </div>
 
           {/* Metric Trends Over Time */}
@@ -537,9 +603,9 @@ export default function Observability() {
                     <YAxis />
                     <Tooltip />
                     <Legend />
-                    <Bar dataKey="average" fill="#3b82f6" name="Average" />
-                    <Bar dataKey="min" fill="#ef4444" name="Min" />
-                    <Bar dataKey="max" fill="#10b981" name="Max" />
+                    <Bar dataKey="average" fill="#d97706" name="Average" />
+                    <Bar dataKey="min" fill="#b45309" name="Min" />
+                    <Bar dataKey="max" fill="#ca8a04" name="Max" />
                   </BarChart>
                 ) : averagesChartType === 'line' ? (
                   <LineChart data={metricAverages}>
@@ -553,9 +619,9 @@ export default function Observability() {
                     <YAxis />
                     <Tooltip />
                     <Legend />
-                    <Line type="monotone" dataKey="average" stroke="#3b82f6" strokeWidth={2} dot={{ r: 4 }} name="Average" />
-                    <Line type="monotone" dataKey="min" stroke="#ef4444" strokeWidth={2} dot={{ r: 4 }} name="Min" />
-                    <Line type="monotone" dataKey="max" stroke="#10b981" strokeWidth={2} dot={{ r: 4 }} name="Max" />
+                    <Line type="monotone" dataKey="average" stroke="#d97706" strokeWidth={2} dot={{ r: 4 }} name="Average" />
+                    <Line type="monotone" dataKey="min" stroke="#b45309" strokeWidth={2} dot={{ r: 4 }} name="Min" />
+                    <Line type="monotone" dataKey="max" stroke="#ca8a04" strokeWidth={2} dot={{ r: 4 }} name="Max" />
                   </LineChart>
                 ) : (
                   <AreaChart data={metricAverages}>
@@ -569,9 +635,9 @@ export default function Observability() {
                     <YAxis />
                     <Tooltip />
                     <Legend />
-                    <Area type="monotone" dataKey="average" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.6} strokeWidth={2} name="Average" />
-                    <Area type="monotone" dataKey="min" stroke="#ef4444" fill="#ef4444" fillOpacity={0.6} strokeWidth={2} name="Min" />
-                    <Area type="monotone" dataKey="max" stroke="#10b981" fill="#10b981" fillOpacity={0.6} strokeWidth={2} name="Max" />
+                    <Area type="monotone" dataKey="average" stroke="#d97706" fill="#d97706" fillOpacity={0.6} strokeWidth={2} name="Average" />
+                    <Area type="monotone" dataKey="min" stroke="#b45309" fill="#b45309" fillOpacity={0.6} strokeWidth={2} name="Min" />
+                    <Area type="monotone" dataKey="max" stroke="#ca8a04" fill="#ca8a04" fillOpacity={0.6} strokeWidth={2} name="Max" />
                   </AreaChart>
                 )}
               </ResponsiveContainer>

@@ -49,7 +49,9 @@ class ApiClient {
     this.client.interceptors.response.use(
       (response) => response,
       (error) => {
-        if (error.response?.status === 401 || error.response?.status === 403) {
+        // Only log out on 401 (authentication failure)
+        // 403 errors are authorization failures that should be handled by the calling code
+        if (error.response?.status === 401) {
           // API key invalid, clear it
           localStorage.removeItem('apiKey')
           window.location.href = '/login'

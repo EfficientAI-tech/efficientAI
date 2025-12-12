@@ -255,7 +255,7 @@ export default function EvaluatorResultDetail() {
   const resultData = result as EvaluatorResultDetail
 
   return (
-    <div className="p-6 max-w-7xl mx-auto">
+    <div className="p-6 w-full">
       {/* Header */}
       <div className="mb-6">
         <Button
@@ -290,10 +290,34 @@ export default function EvaluatorResultDetail() {
         </div>
       )}
 
+      {/* Evaluation Metrics - Top Section */}
+      {resultData.metric_scores && Object.keys(resultData.metric_scores).length > 0 && (
+        <div className="mb-6 bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <h2 className="text-xl font-semibold text-gray-900 flex items-center mb-4">
+            <BarChart3 className="w-5 h-5 mr-2" />
+            Evaluation Metrics
+          </h2>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+            {Object.entries(resultData.metric_scores).map(([metricId, metric]) => (
+              <div key={metricId} className="border border-gray-200 rounded-lg p-4">
+                <div className="text-sm font-medium text-gray-500 mb-1">
+                  {metric.metric_name || metricId}
+                </div>
+                <div className="text-2xl font-bold text-gray-900">
+                  {formatMetricValue(metric.value, metric.type)}
+                </div>
+                <div className="text-xs text-gray-400 mt-1">{metric.type}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Main Content Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Main Content - 2 columns */}
+        {/* Left Column - 2 columns */}
         <div className="lg:col-span-2 space-y-6">
-          {/* Audio Player */}
+          {/* Playback Section - Audio Player */}
           {resultData.audio_s3_key && (
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
               <div className="flex items-center justify-between mb-4">
@@ -425,186 +449,118 @@ export default function EvaluatorResultDetail() {
             </div>
           )}
 
-          {/* Transcription */}
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <h2 className="text-xl font-semibold text-gray-900 flex items-center mb-4">
-              <FileText className="w-5 h-5 mr-2" />
-              Transcription
-            </h2>
-            {resultData.speaker_segments && resultData.speaker_segments.length > 0 ? (
-              <div className="space-y-3">
-                {resultData.speaker_segments.map((segment, index) => {
-                  const isActive = activeSegmentIndex === index
-                  const speakerName = getSpeakerName(segment.speaker)
-                  const speakerColor = getSpeakerColor(segment.speaker)
-                  
-                  return (
-                    <div
-                      key={index}
-                      onClick={() => handleSegmentClick(segment.start)}
-                      className={`
-                        border-2 rounded-lg p-4 cursor-pointer transition-all
-                        ${isActive ? 'ring-2 ring-blue-500 shadow-md' : 'hover:shadow-sm'}
-                        ${speakerColor}
-                      `}
-                    >
-                      <div className="flex items-center justify-between mb-2">
-                        <div className="flex items-center space-x-2">
-                          <span className="font-semibold text-sm">{speakerName}</span>
-                          <span className="text-xs opacity-75">
-                            {formatTime(segment.start)} - {formatTime(segment.end)}
-                          </span>
-                        </div>
-                        {isActive && isPlaying && (
-                          <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
-                        )}
-                      </div>
-                      <p className="text-gray-900 whitespace-pre-wrap">{segment.text}</p>
+          {/* Agent and Evaluation Details - Below Metrics */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* Evaluation Details */}
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+              <h2 className="text-lg font-semibold text-gray-900 mb-4">Evaluation Details</h2>
+              <div className="space-y-3 text-sm">
+                <div>
+                  <div className="text-gray-500">Result ID</div>
+                  <div className="font-mono font-semibold text-gray-900">{resultData.result_id}</div>
+                </div>
+                <div>
+                  <div className="text-gray-500">Timestamp</div>
+                  <div className="text-gray-900">{formatTimestamp(resultData.timestamp)}</div>
+                </div>
+                <div>
+                  <div className="text-gray-500">Duration</div>
+                  <div className="text-gray-900 flex items-center">
+                    <Clock className="w-4 h-4 mr-1" />
+                    {formatDuration(audioDuration || resultData.duration_seconds)}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Agent */}
+            {resultData.agent && (
+              <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                <h2 className="text-lg font-semibold text-gray-900 flex items-center mb-4">
+                  <Bot className="w-5 h-5 mr-2" />
+                  Agent
+                </h2>
+                <div className="space-y-2 text-sm">
+                  <div>
+                    <div className="text-gray-500">Name</div>
+                    <div className="font-medium text-gray-900">{resultData.agent.name}</div>
+                  </div>
+                  <div>
+                    <div className="text-gray-500">Phone</div>
+                    <div className="text-gray-900">
+                      {resultData.agent.call_medium === 'web_call' ? (
+                        <span className="italic text-gray-500">Not applicable - Web Call</span>
+                      ) : resultData.agent.phone_number ? (
+                        resultData.agent.phone_number
+                      ) : (
+                        <span className="text-gray-400">-</span>
+                      )}
                     </div>
-                  )
-                })}
-              </div>
-            ) : resultData.transcription ? (
-              <div className="prose max-w-none">
-                <p className="text-gray-700 whitespace-pre-wrap">{resultData.transcription}</p>
-              </div>
-            ) : (
-              <div className="text-gray-500 italic">
-                {resultData.status === 'transcribing' ? 'Transcription in progress...' : 'No transcription available'}
+                  </div>
+                  {resultData.agent.description && (
+                    <div>
+                      <div className="text-gray-500">Description</div>
+                      <div className="text-gray-900">{resultData.agent.description}</div>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </div>
 
-          {/* Metrics */}
-          {resultData.metric_scores && Object.keys(resultData.metric_scores).length > 0 && (
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-              <h2 className="text-xl font-semibold text-gray-900 flex items-center mb-4">
-                <BarChart3 className="w-5 h-5 mr-2" />
-                Evaluation Metrics
-              </h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {Object.entries(resultData.metric_scores).map(([metricId, metric]) => (
-                  <div key={metricId} className="border border-gray-200 rounded-lg p-4">
-                    <div className="text-sm font-medium text-gray-500 mb-1">
-                      {metric.metric_name || metricId}
+          {/* Persona and Scenario - Additional Details */}
+          {(resultData.persona || resultData.scenario) && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Persona */}
+              {resultData.persona && (
+                <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                  <h2 className="text-lg font-semibold text-gray-900 flex items-center mb-4">
+                    <User className="w-5 h-5 mr-2" />
+                    Persona
+                  </h2>
+                  <div className="space-y-2 text-sm">
+                    <div>
+                      <div className="text-gray-500">Name</div>
+                      <div className="font-medium text-gray-900">{resultData.persona.name}</div>
                     </div>
-                    <div className="text-2xl font-bold text-gray-900">
-                      {formatMetricValue(metric.value, metric.type)}
+                    <div>
+                      <div className="text-gray-500">Language</div>
+                      <div className="text-gray-900 capitalize">{resultData.persona.language}</div>
                     </div>
-                    <div className="text-xs text-gray-400 mt-1">{metric.type}</div>
+                    <div>
+                      <div className="text-gray-500">Accent</div>
+                      <div className="text-gray-900 capitalize">{resultData.persona.accent}</div>
+                    </div>
+                    <div>
+                      <div className="text-gray-500">Gender</div>
+                      <div className="text-gray-900 capitalize">{resultData.persona.gender}</div>
+                    </div>
+                    <div>
+                      <div className="text-gray-500">Background Noise</div>
+                      <div className="text-gray-900 capitalize">{resultData.persona.background_noise}</div>
+                    </div>
                   </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Sidebar - 1 column */}
-        <div className="space-y-6">
-          {/* Evaluation Info */}
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <h2 className="text-lg font-semibold text-gray-900 mb-4">Evaluation Details</h2>
-            <div className="space-y-3 text-sm">
-              <div>
-                <div className="text-gray-500">Result ID</div>
-                <div className="font-mono font-semibold text-gray-900">{resultData.result_id}</div>
-              </div>
-              <div>
-                <div className="text-gray-500">Timestamp</div>
-                <div className="text-gray-900">{formatTimestamp(resultData.timestamp)}</div>
-              </div>
-              <div>
-                <div className="text-gray-500">Duration</div>
-                <div className="text-gray-900 flex items-center">
-                  <Clock className="w-4 h-4 mr-1" />
-                  {formatDuration(audioDuration || resultData.duration_seconds)}
                 </div>
-              </div>
-            </div>
-          </div>
+              )}
 
-          {/* Agent */}
-          {resultData.agent && (
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-              <h2 className="text-lg font-semibold text-gray-900 flex items-center mb-4">
-                <Bot className="w-5 h-5 mr-2" />
-                Agent
-              </h2>
-              <div className="space-y-2 text-sm">
-                <div>
-                  <div className="text-gray-500">Name</div>
-                  <div className="font-medium text-gray-900">{resultData.agent.name}</div>
-                </div>
-                <div>
-                  <div className="text-gray-500">Phone</div>
-                  <div className="text-gray-900">
-                    {resultData.agent.call_medium === 'web_call' ? (
-                      <span className="italic text-gray-500">Not applicable - Web Call</span>
-                    ) : resultData.agent.phone_number ? (
-                      resultData.agent.phone_number
-                    ) : (
-                      <span className="text-gray-400">-</span>
+              {/* Scenario */}
+              {resultData.scenario && (
+                <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                  <h2 className="text-lg font-semibold text-gray-900 mb-4">Scenario</h2>
+                  <div className="space-y-2 text-sm">
+                    <div>
+                      <div className="text-gray-500">Name</div>
+                      <div className="font-medium text-gray-900">{resultData.scenario.name}</div>
+                    </div>
+                    {resultData.scenario.description && (
+                      <div>
+                        <div className="text-gray-500">Description</div>
+                        <div className="text-gray-900">{resultData.scenario.description}</div>
+                      </div>
                     )}
                   </div>
                 </div>
-                {resultData.agent.description && (
-                  <div>
-                    <div className="text-gray-500">Description</div>
-                    <div className="text-gray-900">{resultData.agent.description}</div>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Persona */}
-          {resultData.persona && (
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-              <h2 className="text-lg font-semibold text-gray-900 flex items-center mb-4">
-                <User className="w-5 h-5 mr-2" />
-                Persona
-              </h2>
-              <div className="space-y-2 text-sm">
-                <div>
-                  <div className="text-gray-500">Name</div>
-                  <div className="font-medium text-gray-900">{resultData.persona.name}</div>
-                </div>
-                <div>
-                  <div className="text-gray-500">Language</div>
-                  <div className="text-gray-900 capitalize">{resultData.persona.language}</div>
-                </div>
-                <div>
-                  <div className="text-gray-500">Accent</div>
-                  <div className="text-gray-900 capitalize">{resultData.persona.accent}</div>
-                </div>
-                <div>
-                  <div className="text-gray-500">Gender</div>
-                  <div className="text-gray-900 capitalize">{resultData.persona.gender}</div>
-                </div>
-                <div>
-                  <div className="text-gray-500">Background Noise</div>
-                  <div className="text-gray-900 capitalize">{resultData.persona.background_noise}</div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Scenario */}
-          {resultData.scenario && (
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-              <h2 className="text-lg font-semibold text-gray-900 mb-4">Scenario</h2>
-              <div className="space-y-2 text-sm">
-                <div>
-                  <div className="text-gray-500">Name</div>
-                  <div className="font-medium text-gray-900">{resultData.scenario.name}</div>
-                </div>
-                {resultData.scenario.description && (
-                  <div>
-                    <div className="text-gray-500">Description</div>
-                    <div className="text-gray-900">{resultData.scenario.description}</div>
-                  </div>
-                )}
-              </div>
+              )}
             </div>
           )}
 
@@ -624,6 +580,60 @@ export default function EvaluatorResultDetail() {
               </div>
             </div>
           )}
+        </div>
+
+        {/* Right Column - Transcription */}
+        <div className="lg:col-span-1">
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 sticky top-6">
+            <h2 className="text-xl font-semibold text-gray-900 flex items-center mb-4">
+              <FileText className="w-5 h-5 mr-2" />
+              Transcription
+            </h2>
+            <div className="max-h-[calc(100vh-200px)] overflow-y-auto">
+              {resultData.speaker_segments && resultData.speaker_segments.length > 0 ? (
+                <div className="space-y-3">
+                  {resultData.speaker_segments.map((segment, index) => {
+                    const isActive = activeSegmentIndex === index
+                    const speakerName = getSpeakerName(segment.speaker)
+                    const speakerColor = getSpeakerColor(segment.speaker)
+                    
+                    return (
+                      <div
+                        key={index}
+                        onClick={() => handleSegmentClick(segment.start)}
+                        className={`
+                          border-2 rounded-lg p-4 cursor-pointer transition-all
+                          ${isActive ? 'ring-2 ring-blue-500 shadow-md' : 'hover:shadow-sm'}
+                          ${speakerColor}
+                        `}
+                      >
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center space-x-2">
+                            <span className="font-semibold text-sm">{speakerName}</span>
+                            <span className="text-xs opacity-75">
+                              {formatTime(segment.start)} - {formatTime(segment.end)}
+                            </span>
+                          </div>
+                          {isActive && isPlaying && (
+                            <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
+                          )}
+                        </div>
+                        <p className="text-gray-900 whitespace-pre-wrap text-sm">{segment.text}</p>
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : resultData.transcription ? (
+                <div className="prose max-w-none">
+                  <p className="text-gray-700 whitespace-pre-wrap text-sm">{resultData.transcription}</p>
+                </div>
+              ) : (
+                <div className="text-gray-500 italic text-sm">
+                  {resultData.status === 'transcribing' ? 'Transcription in progress...' : 'No transcription available'}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       </div>
     </div>

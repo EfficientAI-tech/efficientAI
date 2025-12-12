@@ -304,7 +304,7 @@ function ProfileAvatar() {
         }`}
         title="Profile"
       >
-        <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white text-sm font-semibold">
+        <div className="w-8 h-8 rounded-full bg-transparent border-2 border-gray-400 flex items-center justify-center text-gray-700 text-sm font-semibold">
           {initials}
         </div>
       </Link>
