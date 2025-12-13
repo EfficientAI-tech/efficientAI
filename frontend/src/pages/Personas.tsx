@@ -662,17 +662,11 @@ export default function Personas() {
                         <div className="space-y-1.5 text-xs">
                           <div className="flex items-center gap-2">
                             <span className="text-gray-500 w-16">Language:</span>
-                            <div className="flex items-center gap-1">
-                              <FlagIcon code={languageToCountry[persona.language] || ''} className="w-4 h-3" title={persona.language} />
-                              <span className="font-medium text-gray-900 uppercase">{persona.language}</span>
-                            </div>
+                            <span className="font-medium text-gray-900 uppercase">{persona.language}</span>
                           </div>
                           <div className="flex items-center gap-2">
                             <span className="text-gray-500 w-16">Accent:</span>
-                            <div className="flex items-center gap-1">
-                              <FlagIcon code={accentToCountry[persona.accent] || ''} className="w-4 h-3" title={persona.accent} />
-                              <span className="font-medium text-gray-900 capitalize">{persona.accent}</span>
-                            </div>
+                            <span className="font-medium text-gray-900 capitalize">{persona.accent}</span>
                           </div>
                           <div className="flex items-center gap-2">
                             <span className="text-gray-500 w-16">Noise:</span>

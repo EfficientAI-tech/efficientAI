@@ -4,10 +4,14 @@ export interface Agent {
   id: string
   agent_id?: string | null
   name: string
-  phone_number: string
+  phone_number?: string | null
   language: string
   description: string | null
   call_type: string
+  call_medium?: string
+  voice_bundle_id?: string | null
+  voice_ai_integration_id?: string | null
+  voice_ai_agent_id?: string | null
   created_at: string
   updated_at: string
 }

@@ -23,7 +23,6 @@ import {
   Mic,
   Brain,
   Bot,
-  Type,
   Activity,
 } from 'lucide-react'
 import { useState, useEffect } from 'react'
@@ -56,7 +55,7 @@ const navigationSections: NavSection[] = [
     title: 'Evaluations',
     icon: FileCheck,
     items: [
-      { name: 'Manual Transcriptions', href: '/evaluations', icon: Type },
+      { name: 'Playground', href: '/playground', icon: Play },
       { name: 'Evaluators', href: '/evaluate-test-agents', icon: Mic },
     ],
   },

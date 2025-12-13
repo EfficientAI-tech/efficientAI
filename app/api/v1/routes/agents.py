@@ -9,7 +9,7 @@ from uuid import UUID
 import random
 
 from app.dependencies import get_db, get_organization_id
-from app.models.database import Agent, ConversationEvaluation, TestAgentConversation, VoiceBundle, AIProvider, CallMediumEnum
+from app.models.database import Agent, ConversationEvaluation, TestAgentConversation, VoiceBundle, AIProvider, Integration, IntegrationPlatform, CallMediumEnum
 from sqlalchemy import and_
 from app.models.schemas import (
     AgentCreate, AgentUpdate, AgentResponse, CallMediumEnum as CallMediumEnumSchema
@@ -46,7 +46,7 @@ async def create_agent(
             detail="phone_number is required when call_medium is phone_call"
         )
     
-    # Validate voice_bundle_id or ai_provider_id exists and belongs to organization
+    # Validate voice_bundle_id exists and belongs to organization
     if agent.voice_bundle_id:
         voice_bundle = db.query(VoiceBundle).filter(
             and_(
@@ -57,15 +57,31 @@ async def create_agent(
         if not voice_bundle:
             raise HTTPException(status_code=404, detail="Voice bundle not found")
     
-    if agent.ai_provider_id:
-        ai_provider = db.query(AIProvider).filter(
+    # Validate voice_ai_integration_id exists and belongs to organization
+    if agent.voice_ai_integration_id:
+        integration = db.query(Integration).filter(
             and_(
-                AIProvider.id == agent.ai_provider_id,
-                AIProvider.organization_id == organization_id
+                Integration.id == agent.voice_ai_integration_id,
+                Integration.organization_id == organization_id,
+                Integration.is_active == True
             )
         ).first()
-        if not ai_provider:
-            raise HTTPException(status_code=404, detail="AI Provider not found")
+        if not integration:
+            raise HTTPException(status_code=404, detail="Integration not found or inactive")
+        
+        # Validate that the integration platform is Retell or Vapi
+        if integration.platform not in [IntegrationPlatform.RETELL, IntegrationPlatform.VAPI]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Integration platform {integration.platform.value} is not supported for Voice AI agents. Only Retell and Vapi are supported."
+            )
+        
+        # Validate voice_ai_agent_id is provided
+        if not agent.voice_ai_agent_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="voice_ai_agent_id is required when voice_ai_integration_id is provided"
+            )
     
     # Generate unique 6-digit agent_id
     agent_id = generate_unique_agent_id(db)
@@ -80,7 +96,9 @@ async def create_agent(
         call_type=agent.call_type,
         call_medium=agent.call_medium,
         voice_bundle_id=agent.voice_bundle_id,
-        ai_provider_id=agent.ai_provider_id
+        ai_provider_id=agent.ai_provider_id,
+        voice_ai_integration_id=agent.voice_ai_integration_id,
+        voice_ai_agent_id=agent.voice_ai_agent_id
     )
     db.add(db_agent)
     db.commit()
@@ -173,7 +191,7 @@ async def update_agent(
                 detail="phone_number is required when call_medium is phone_call"
             )
     
-    # Validate voice_bundle_id or ai_provider_id if provided
+    # Validate voice_bundle_id if provided
     if agent_update.voice_bundle_id:
         voice_bundle = db.query(VoiceBundle).filter(
             and_(
@@ -184,17 +202,37 @@ async def update_agent(
         if not voice_bundle:
             raise HTTPException(status_code=404, detail="Voice bundle not found")
     
-    if agent_update.ai_provider_id:
-        ai_provider = db.query(AIProvider).filter(
+    # Validate voice_ai_integration_id if provided
+    if agent_update.voice_ai_integration_id:
+        integration = db.query(Integration).filter(
             and_(
-                AIProvider.id == agent_update.ai_provider_id,
-                AIProvider.organization_id == organization_id
+                Integration.id == agent_update.voice_ai_integration_id,
+                Integration.organization_id == organization_id,
+                Integration.is_active == True
             )
         ).first()
-        if not ai_provider:
-            raise HTTPException(status_code=404, detail="AI Provider not found")
+        if not integration:
+            raise HTTPException(status_code=404, detail="Integration not found or inactive")
+        
+        # Validate that the integration platform is Retell or Vapi
+        if integration.platform not in [IntegrationPlatform.RETELL, IntegrationPlatform.VAPI]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Integration platform {integration.platform.value} is not supported for Voice AI agents. Only Retell and Vapi are supported."
+            )
+        
+        # Validate voice_ai_agent_id is provided
+        if not agent_update.voice_ai_agent_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="voice_ai_agent_id is required when voice_ai_integration_id is provided"
+            )
     
-    update_data = agent_update.dict(exclude_unset=True)
+    # Convert the update model to dict, handling None values properly
+    # Use model_dump with exclude_unset to only get fields that were explicitly provided
+    update_data = agent_update.model_dump(exclude_unset=True, exclude_none=False)
+    
+    # Apply updates
     for field, value in update_data.items():
         setattr(db_agent, field, value)
     

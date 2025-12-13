@@ -288,9 +288,13 @@ class Agent(Base):
     call_type = Column(Enum(CallTypeEnum), nullable=False, default=CallTypeEnum.OUTBOUND)
     call_medium = Column(Enum(CallMediumEnum), nullable=False, default=CallMediumEnum.PHONE_CALL)
     
-    # Voice configuration - either voice_bundle_id OR ai_provider_id (mutually exclusive)
+    # Voice configuration - either voice_bundle_id OR ai_provider_id OR voice_ai_integration_id (mutually exclusive)
     voice_bundle_id = Column(UUID(as_uuid=True), ForeignKey("voicebundles.id"), nullable=True, index=True)
     ai_provider_id = Column(UUID(as_uuid=True), ForeignKey("aiproviders.id"), nullable=True, index=True)
+    
+    # Voice AI agent integration (Retell, Vapi, etc.)
+    voice_ai_integration_id = Column(UUID(as_uuid=True), ForeignKey("integrations.id"), nullable=True, index=True)
+    voice_ai_agent_id = Column(String, nullable=True)  # Agent ID from the external provider (Retell/Vapi)
     
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -604,3 +608,27 @@ class EvaluatorResult(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     created_by = Column(String, nullable=True)
+
+
+class CallRecordingStatus(str, enum.Enum):
+    """Call recording status enumeration."""
+    
+    PENDING = "PENDING"
+    UPDATED = "UPDATED"
+
+
+class CallRecording(Base):
+    """Call Recording model for tracking voice provider calls."""
+    __tablename__ = "call_recordings"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    call_short_id = Column(String(6), unique=True, nullable=False, index=True)  # 6-digit ID
+    status = Column(Enum(CallRecordingStatus), nullable=False, default=CallRecordingStatus.PENDING, index=True)
+    call_data = Column(JSON, nullable=True)  # JSON blob for provider response
+    provider_call_id = Column(String, nullable=True, index=True)  # Provider's call_id (e.g., Retell call_id)
+    provider_platform = Column(String, nullable=True)  # e.g., "retell", "vapi"
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True)  # Reference to our agent
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

@@ -191,6 +191,8 @@ class ApiClient {
     call_medium: string
     voice_bundle_id?: string
     ai_provider_id?: string
+    voice_ai_integration_id?: string
+    voice_ai_agent_id?: string
   }): Promise<any> {
     const response = await this.client.post('/api/v1/agents', data)
     return response.data
@@ -459,6 +461,11 @@ class ApiClient {
     return response.data
   }
 
+  async getIntegrationApiKey(integrationId: string): Promise<{ api_key: string }> {
+    const response = await this.client.get(`/api/v1/integrations/${integrationId}/api-key`)
+    return response.data
+  }
+
   // Data Sources endpoints
   async testS3Connection(): Promise<S3ConnectionTestResponse> {
     const response = await this.client.post('/api/v1/data-sources/s3/test-connection')
@@ -658,6 +665,46 @@ class ApiClient {
   // Voice Agent endpoints
   async getVoiceAgentConnection(): Promise<{ ws_url: string; endpoint: string }> {
     const response = await this.client.post('/api/v1/voice-agent/connect')
+    return response.data
+  }
+
+  // Playground endpoints
+  async createWebCall(data: {
+    agent_id: string
+    metadata?: Record<string, any>
+    retell_llm_dynamic_variables?: Record<string, any>
+    custom_sip_headers?: Record<string, string>
+  }): Promise<{
+    call_type: string
+    access_token: string
+    call_id: string
+    agent_id: string
+    agent_version?: number
+    call_status: string
+    agent_name?: string
+    metadata?: Record<string, any>
+    retell_llm_dynamic_variables?: Record<string, any>
+    sample_rate?: number
+    call_short_id?: string
+  }> {
+    const response = await this.client.post('/api/v1/playground/web-call', data)
+    return response.data
+  }
+
+  async listCallRecordings(skip = 0, limit = 100): Promise<any[]> {
+    const response = await this.client.get('/api/v1/playground/call-recordings', {
+      params: { skip, limit },
+    })
+    return response.data
+  }
+
+  async getCallRecording(callShortId: string): Promise<any> {
+    const response = await this.client.get(`/api/v1/playground/call-recordings/${callShortId}`)
+    return response.data
+  }
+
+  async refreshCallRecording(callShortId: string): Promise<{ message: string }> {
+    const response = await this.client.post(`/api/v1/playground/call-recordings/${callShortId}/refresh`)
     return response.data
   }
 

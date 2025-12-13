@@ -225,17 +225,23 @@ class AgentCreate(BaseModel):
     call_medium: CallMediumEnum = CallMediumEnum.PHONE_CALL
     voice_bundle_id: Optional[UUID] = None
     ai_provider_id: Optional[UUID] = None
+    voice_ai_integration_id: Optional[UUID] = None
+    voice_ai_agent_id: Optional[str] = None
 
     @model_validator(mode='after')
     def validate_voice_config(self):
-        """Ensure exactly one of voice_bundle_id or ai_provider_id is provided"""
+        """Validate voice configuration - both voice_bundle_id and voice_ai_integration_id can be provided independently"""
         voice_bundle = self.voice_bundle_id
-        ai_provider = self.ai_provider_id
+        voice_ai_integration = self.voice_ai_integration_id
         
-        if voice_bundle and ai_provider:
-            raise ValueError('Cannot specify both voice_bundle_id and ai_provider_id. Choose one.')
-        if not voice_bundle and not ai_provider:
-            raise ValueError('Must specify either voice_bundle_id or ai_provider_id.')
+        # At least one must be provided
+        if not voice_bundle and not voice_ai_integration:
+            raise ValueError('Must specify at least one voice configuration: voice_bundle_id (Test Voice AI Agent) or voice_ai_integration_id (Voice AI Agent).')
+        
+        # If voice_ai_integration_id is provided, voice_ai_agent_id must also be provided
+        if voice_ai_integration and not self.voice_ai_agent_id:
+            raise ValueError('voice_ai_agent_id is required when voice_ai_integration_id is provided.')
+        
         return self
     
     @model_validator(mode='after')
@@ -267,16 +273,19 @@ class AgentUpdate(BaseModel):
     call_type: Optional[CallTypeEnum] = None
     call_medium: Optional[CallMediumEnum] = None
     voice_bundle_id: Optional[UUID] = None
-    ai_provider_id: Optional[UUID] = None
+    voice_ai_integration_id: Optional[UUID] = None
+    voice_ai_agent_id: Optional[str] = None
 
     @model_validator(mode='after')
     def validate_voice_config(self):
-        """Ensure at most one of voice_bundle_id or ai_provider_id is provided"""
+        """Validate voice configuration - both voice_bundle_id and voice_ai_integration_id can be provided independently"""
         voice_bundle = self.voice_bundle_id
-        ai_provider = self.ai_provider_id
+        voice_ai_integration = self.voice_ai_integration_id
         
-        if voice_bundle and ai_provider:
-            raise ValueError('Cannot specify both voice_bundle_id and ai_provider_id. Choose one.')
+        # If voice_ai_integration_id is provided, voice_ai_agent_id must also be provided
+        if voice_ai_integration and not self.voice_ai_agent_id:
+            raise ValueError('voice_ai_agent_id is required when voice_ai_integration_id is provided.')
+        
         return self
     
     @model_validator(mode='after')
@@ -302,6 +311,8 @@ class AgentResponse(BaseModel):
     call_medium: CallMediumEnum
     voice_bundle_id: Optional[UUID]
     ai_provider_id: Optional[UUID]
+    voice_ai_integration_id: Optional[UUID]
+    voice_ai_agent_id: Optional[str]
     created_at: datetime
     updated_at: datetime
 

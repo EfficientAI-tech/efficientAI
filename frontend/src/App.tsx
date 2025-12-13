@@ -2,9 +2,8 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useAuthStore } from './store/authStore'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
-import Evaluations from './pages/Evaluations'
 import EvaluationDetail from './pages/EvaluationDetail'
-import ManualTranscriptionDetail from './pages/ManualTranscriptionDetail'
+import Playground from './components/Playground'
 import Layout from './components/Layout'
 import Agents from './pages/Agents'
 import Personas from './pages/Personas'
@@ -48,9 +47,8 @@ function App() {
           }
         >
           <Route index element={<Dashboard />} />
-          <Route path="evaluations" element={<Evaluations />} />
           <Route path="evaluations/:id" element={<EvaluationDetail />} />
-          <Route path="manual-evaluations/:id" element={<ManualTranscriptionDetail />} />
+          <Route path="playground" element={<Playground />} />
           <Route path="agents" element={<Agents />} />
           <Route path="agents/:id" element={<AgentDetail />} />
           <Route path="personas" element={<Personas />} />

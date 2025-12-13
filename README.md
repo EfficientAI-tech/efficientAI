@@ -409,6 +409,42 @@ See `migrations/README.md` for detailed documentation.
 
 ---
 
+## 📊 Database ER Diagram
+
+Generate a visual Entity-Relationship (ER) diagram of your database schema to visualize table structures and relationships.
+
+### Prerequisites
+
+Install the required system and Python packages:
+
+```bash
+# Install system graphviz package
+sudo apt-get update
+sudo apt-get install -y graphviz libgraphviz-dev pkg-config
+
+# Install Python packages
+pip install eralchemy graphviz
+```
+
+### Generating the ER Diagram
+
+Run the script to generate a PNG ER diagram:
+
+```bash
+python scripts/generate_er_diagram_simple.py
+```
+
+This will create `schema_er_diagram.png` in the project root directory, showing:
+- All database tables
+- Column names and types
+- Primary keys
+- Foreign key relationships
+- Indexes
+
+**Note:** The diagram is automatically generated from your current database schema, so make sure your database is running and migrations are up to date.
+
+---
+
 ## 🛠️ Development
 
 ### Running Locally

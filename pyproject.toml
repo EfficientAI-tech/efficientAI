@@ -30,6 +30,7 @@ dependencies = [
     "boto3>=1.34.0",
     "pipecat-ai[silero,websocket,google]>=0.0.82",
     "loguru>=0.7.0",
+    "retell-sdk>=0.1.0",
 ]
 
 [project.optional-dependencies]
