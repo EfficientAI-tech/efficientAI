@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useAgentStore } from '../store/agentStore'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
-import { Play, X, Phone, PhoneOff, RefreshCw, Eye } from 'lucide-react'
+import { Play, X, Phone, PhoneOff, RefreshCw, Eye, Trash2 } from 'lucide-react'
 import Button from './Button'
 import { useToast } from '../hooks/useToast'
 import { RetellWebClient } from 'retell-client-js-sdk'
@@ -23,12 +24,11 @@ type RetellWebClientWithMethods = RetellWebClient & {
 export default function Playground() {
   const { selectedAgent } = useAgentStore()
   const { showToast, ToastContainer } = useToast()
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const [showModal, setShowModal] = useState(false)
   const [isConnecting, setIsConnecting] = useState(false)
   const [isConnected, setIsConnected] = useState(false)
-  const [showCallRecordings, setShowCallRecordings] = useState(false)
-  const [showCallDetailsModal, setShowCallDetailsModal] = useState(false)
-  const [selectedCallRecording, setSelectedCallRecording] = useState<any>(null)
   const retellClientRef = useRef<RetellWebClientWithMethods | null>(null)
   const userInitiatedDisconnectRef = useRef(false)
 
@@ -45,19 +45,12 @@ export default function Playground() {
     enabled: !!selectedAgent?.id,
   })
 
-  // Fetch call recordings
+  // Fetch call recordings (always enabled)
   const { data: callRecordings = [], refetch: refetchCallRecordings } = useQuery({
     queryKey: ['call-recordings'],
     queryFn: () => apiClient.listCallRecordings(),
-    enabled: showCallRecordings,
   })
 
-  // Fetch call recording details when selected
-  const { data: callRecordingDetails, refetch: refetchCallDetails } = useQuery({
-    queryKey: ['call-recording', selectedCallRecording?.call_short_id],
-    queryFn: () => apiClient.getCallRecording(selectedCallRecording?.call_short_id),
-    enabled: !!selectedCallRecording?.call_short_id && showCallDetailsModal,
-  })
 
   // Find the integration for the agent
   const agentIntegration = fullAgent?.voice_ai_integration_id
@@ -240,11 +233,25 @@ export default function Playground() {
     setIsConnected(false)
   }
 
-  const handleViewCallRecording = async (callShortId: string) => {
-    const recording = callRecordings.find((cr: any) => cr.call_short_id === callShortId)
-    if (recording) {
-      setSelectedCallRecording(recording)
-      setShowCallDetailsModal(true)
+  const handleViewCallRecording = (callShortId: string) => {
+    navigate(`/playground/call-recordings/${callShortId}`)
+  }
+
+  const deleteMutation = useMutation({
+    mutationFn: (callShortId: string) => apiClient.deleteCallRecording(callShortId),
+    onSuccess: () => {
+      showToast('Call recording deleted successfully', 'success')
+      queryClient.invalidateQueries({ queryKey: ['call-recordings'] })
+    },
+    onError: (error: any) => {
+      showToast(`Failed to delete: ${error.response?.data?.detail || error.message}`, 'error')
+    },
+  })
+
+  const handleDeleteCallRecording = (callShortId: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (window.confirm('Are you sure you want to delete this call recording? This action cannot be undone.')) {
+      deleteMutation.mutate(callShortId)
     }
   }
 
@@ -254,7 +261,6 @@ export default function Playground() {
       showToast('Call recording refresh initiated', 'success')
       // Refetch after a delay
       setTimeout(() => {
-        refetchCallDetails()
         refetchCallRecordings()
       }, 2000)
     } catch (error: any) {
@@ -276,14 +282,10 @@ export default function Playground() {
           <div className="flex gap-2">
             <Button
               variant="outline"
-              onClick={() => {
-                setShowCallRecordings(!showCallRecordings)
-                if (!showCallRecordings) {
-                  refetchCallRecordings()
-                }
-              }}
+              onClick={() => refetchCallRecordings()}
+              leftIcon={<RefreshCw className="h-4 w-4" />}
             >
-              {showCallRecordings ? 'Hide' : 'Show'} Call Recordings
+              Refresh Recordings
             </Button>
             <Button
               variant="primary"
@@ -326,20 +328,11 @@ export default function Playground() {
             </div>
           )}
 
-          {/* Call Recordings Section */}
-          {showCallRecordings && (
-            <div className="mt-6">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-md font-semibold text-gray-900">Call Recordings</h3>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => refetchCallRecordings()}
-                  leftIcon={<RefreshCw className="h-4 w-4" />}
-                >
-                  Refresh
-                </Button>
-              </div>
+          {/* Call Recordings Section - Always Visible */}
+          <div className="mt-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-md font-semibold text-gray-900">Call Recordings</h3>
+            </div>
               {callRecordings.length === 0 ? (
                 <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
                   <p className="text-sm text-gray-600">No call recordings found</p>
@@ -359,6 +352,9 @@ export default function Playground() {
                           Platform
                         </th>
                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Provider Call ID
+                        </th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                           Created
                         </th>
                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -370,9 +366,12 @@ export default function Playground() {
                       {callRecordings.map((recording: any) => (
                         <tr key={recording.id} className="hover:bg-gray-50">
                           <td className="px-4 py-3 whitespace-nowrap">
-                            <span className="font-mono text-sm font-medium text-gray-900">
+                            <button
+                              onClick={() => handleViewCallRecording(recording.call_short_id)}
+                              className="font-mono text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline"
+                            >
                               {recording.call_short_id}
-                            </span>
+                            </button>
                           </td>
                           <td className="px-4 py-3 whitespace-nowrap">
                             <span
@@ -385,8 +384,22 @@ export default function Playground() {
                               {recording.status}
                             </span>
                           </td>
-                          <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
-                            {recording.provider_platform || 'N/A'}
+                          <td className="px-4 py-3 whitespace-nowrap">
+                            <div className="flex items-center gap-2">
+                              {recording.provider_platform === 'retell' && (
+                                <img
+                                  src="/retellai.png"
+                                  alt="Retell"
+                                  className="h-5 w-5 object-contain"
+                                />
+                              )}
+                              <span className="text-sm text-gray-500 capitalize">
+                                {recording.provider_platform || 'N/A'}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500 font-mono text-xs">
+                            {recording.provider_call_id || 'N/A'}
                           </td>
                           <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
                             {recording.created_at
@@ -394,22 +407,31 @@ export default function Playground() {
                               : 'N/A'}
                           </td>
                           <td className="px-4 py-3 whitespace-nowrap text-sm font-medium">
-                            <button
-                              onClick={() => handleViewCallRecording(recording.call_short_id)}
-                              className="text-blue-600 hover:text-blue-900 mr-3"
-                            >
-                              <Eye className="h-4 w-4 inline mr-1" />
-                              View
-                            </button>
-                            {recording.status === 'PENDING' && (
+                            <div className="flex items-center gap-2">
                               <button
-                                onClick={() => handleRefreshCallRecording(recording.call_short_id)}
-                                className="text-gray-600 hover:text-gray-900"
+                                onClick={() => handleViewCallRecording(recording.call_short_id)}
+                                className="text-blue-600 hover:text-blue-900"
                               >
-                                <RefreshCw className="h-4 w-4 inline mr-1" />
-                                Refresh
+                                <Eye className="h-4 w-4" />
                               </button>
-                            )}
+                              {recording.status === 'PENDING' && (
+                                <button
+                                  onClick={() => handleRefreshCallRecording(recording.call_short_id)}
+                                  className="text-gray-600 hover:text-gray-900"
+                                  title="Refresh"
+                                >
+                                  <RefreshCw className="h-4 w-4" />
+                                </button>
+                              )}
+                              <button
+                                onClick={(e) => handleDeleteCallRecording(recording.call_short_id, e)}
+                                className="text-red-600 hover:text-red-900"
+                                title="Delete"
+                                disabled={deleteMutation.isPending}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -418,90 +440,8 @@ export default function Playground() {
                 </div>
               )}
             </div>
-          )}
         </div>
       </div>
-
-      {/* Call Details Modal */}
-      {showCallDetailsModal && callRecordingDetails && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-hidden flex flex-col">
-            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-              <div>
-                <h3 className="text-lg font-semibold">Call Recording Details</h3>
-                <p className="text-sm text-gray-500 mt-1">
-                  Call ID: <span className="font-mono">{callRecordingDetails.call_short_id}</span>
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                {callRecordingDetails.status === 'PENDING' && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => handleRefreshCallRecording(callRecordingDetails.call_short_id)}
-                    leftIcon={<RefreshCw className="h-4 w-4" />}
-                  >
-                    Refresh
-                  </Button>
-                )}
-                <button
-                  onClick={() => {
-                    setShowCallDetailsModal(false)
-                    setSelectedCallRecording(null)
-                  }}
-                  className="text-gray-400 hover:text-gray-600"
-                >
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
-            </div>
-            <div className="flex-1 overflow-y-auto p-6">
-              <div className="bg-gray-50 rounded-lg p-4 mb-4">
-                <div className="grid grid-cols-2 gap-4 text-sm">
-                  <div>
-                    <span className="font-medium text-gray-700">Status:</span>{' '}
-                    <span
-                      className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                        callRecordingDetails.status === 'UPDATED'
-                          ? 'bg-green-100 text-green-800'
-                          : 'bg-yellow-100 text-yellow-800'
-                      }`}
-                    >
-                      {callRecordingDetails.status}
-                    </span>
-                  </div>
-                  <div>
-                    <span className="font-medium text-gray-700">Platform:</span>{' '}
-                    <span className="text-gray-600">
-                      {callRecordingDetails.provider_platform || 'N/A'}
-                    </span>
-                  </div>
-                  <div>
-                    <span className="font-medium text-gray-700">Provider Call ID:</span>{' '}
-                    <span className="font-mono text-xs text-gray-600">
-                      {callRecordingDetails.provider_call_id || 'N/A'}
-                    </span>
-                  </div>
-                  <div>
-                    <span className="font-medium text-gray-700">Created:</span>{' '}
-                    <span className="text-gray-600">
-                      {callRecordingDetails.created_at
-                        ? new Date(callRecordingDetails.created_at).toLocaleString()
-                        : 'N/A'}
-                    </span>
-                  </div>
-                </div>
-              </div>
-              <div>
-                <h4 className="text-md font-semibold text-gray-900 mb-3">Call Data (JSON)</h4>
-                <pre className="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-xs">
-                  {JSON.stringify(callRecordingDetails.call_data, null, 2)}
-                </pre>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Connect Modal */}
       {showModal && (

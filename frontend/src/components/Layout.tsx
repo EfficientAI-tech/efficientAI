@@ -21,7 +21,6 @@ import {
   Database,
   Settings,
   Mic,
-  Brain,
   Bot,
   Activity,
 } from 'lucide-react'
@@ -48,7 +47,7 @@ const navigationSections: NavSection[] = [
       { name: 'Agents', href: '/agents', icon: Bot },
       { name: 'Personas', href: '/personas', icon: Users },
       { name: 'Scenarios', href: '/scenarios', icon: FileText },
-      { name: 'Metrics Management', href: '/metrics-management', icon: BarChart3 },
+      { name: 'Metrics', href: '/metrics-management', icon: BarChart3 },
     ],
   },
   {
@@ -72,7 +71,6 @@ const navigationSections: NavSection[] = [
     icon: Settings,
     items: [
       { name: 'S3 Integration', href: '/data-sources', icon: Database },
-      { name: 'AI Providers', href: '/ai-providers', icon: Brain },
       { name: 'VoiceBundle', href: '/voicebundles', icon: Mic },
       { name: 'Integrations', href: '/integrations', icon: Plug },
     ],

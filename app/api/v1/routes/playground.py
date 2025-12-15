@@ -399,3 +399,30 @@ async def refresh_call_recording(
     
     return {"message": "Call recording refresh initiated"}
 
+
+@router.delete("/call-recordings/{call_short_id}", response_model=Dict[str, Any])
+async def delete_call_recording(
+    call_short_id: str,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db)
+):
+    """
+    Delete a call recording by its 6-digit short ID.
+    """
+    call_recording = db.query(CallRecording).filter(
+        CallRecording.call_short_id == call_short_id,
+        CallRecording.organization_id == organization_id
+    ).first()
+    
+    if not call_recording:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Call recording not found"
+        )
+    
+    db.delete(call_recording)
+    db.commit()
+    
+    return {"message": "Call recording deleted successfully"}
+

@@ -47,6 +47,65 @@ const DEFAULT_PERSONA_NAMES = [
   'Angry Caller',
 ]
 
+// Default persona templates with images and descriptions
+interface DefaultPersonaTemplate {
+  name: string
+  image: string
+  description: string
+  language: string
+  accent: string
+  gender: string
+  background_noise: string
+}
+
+const DEFAULT_PERSONA_TEMPLATES: DefaultPersonaTemplate[] = [
+  {
+    name: 'Angry Caller',
+    image: '/angry_customer_male.png',
+    description: 'A frustrated male customer with an American accent, often calling from noisy street environments',
+    language: 'en',
+    accent: 'american',
+    gender: 'male',
+    background_noise: 'street',
+  },
+  {
+    name: 'Confused Senior',
+    image: '/confused_senior_american.png',
+    description: 'An elderly person who may need extra patience and clear explanations, typically calling from home',
+    language: 'en',
+    accent: 'american',
+    gender: 'female',
+    background_noise: 'home',
+  },
+  {
+    name: 'Friendly Customer',
+    image: '/friendly_customer_female.png',
+    description: 'A cheerful and cooperative female customer with a pleasant American accent',
+    language: 'en',
+    accent: 'american',
+    gender: 'female',
+    background_noise: 'none',
+  },
+  {
+    name: 'Busy Professional',
+    image: '/busy_professional_american.png',
+    description: 'A time-conscious professional calling from a busy office environment',
+    language: 'en',
+    accent: 'american',
+    gender: 'neutral',
+    background_noise: 'office',
+  },
+  {
+    name: 'Grumpy Old Man',
+    image: '/grumpy_old_man.png',
+    description: 'An older male customer who may be less patient and prefers straightforward communication',
+    language: 'en',
+    accent: 'american',
+    gender: 'male',
+    background_noise: 'none',
+  },
+]
+
 const genderIcons: Record<string, string> = {
   male: '👨',
   female: '👩',
@@ -302,6 +361,20 @@ export default function Personas() {
     setCreateMode('custom')
   }
 
+  const handleSelectDefaultPersonaTemplate = (template: DefaultPersonaTemplate) => {
+    // Pre-populate form with template data, adding "(Copy)" to avoid being classified as default
+    setFormData({
+      name: `${template.name} (Copy)`,
+      language: template.language,
+      accent: template.accent,
+      gender: template.gender,
+      background_noise: template.background_noise,
+    })
+    // Open modal in custom mode to show the full form
+    setCreateMode('custom')
+    setShowMainModal(true)
+  }
+
   const openEditModal = (persona: Persona) => {
     setSelectedPersona(persona)
     setFormData({
@@ -411,6 +484,73 @@ export default function Personas() {
           >
             Create Persona
           </Button>
+        </div>
+      </div>
+
+      {/* Default Personas Carousel */}
+      <div className="bg-white rounded-lg shadow-sm p-6">
+        <div className="mb-4">
+          <h2 className="text-xl font-semibold text-gray-900 mb-2">Default Personas</h2>
+          <p className="text-sm text-gray-600">Click on any persona to create a copy with these settings</p>
+        </div>
+        <div className="relative">
+          <div className="overflow-x-auto scrollbar-hide pb-4">
+            <div className="flex gap-4">
+              {DEFAULT_PERSONA_TEMPLATES.map((template) => (
+                <div
+                  key={template.name}
+                  onClick={() => handleSelectDefaultPersonaTemplate(template)}
+                  className="flex-shrink-0 w-64 cursor-pointer group"
+                >
+                  <div className="relative rounded-lg overflow-hidden shadow-md hover:shadow-xl transition-all duration-300 transform hover:scale-105">
+                    {/* Image */}
+                    <div className="relative h-64 bg-gray-100">
+                      <img
+                        src={template.image}
+                        alt={template.name}
+                        className="w-full h-full object-cover"
+                      />
+                      {/* Overlay gradient for text readability */}
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent" />
+                      
+                      {/* Description overlay */}
+                      <div className="absolute bottom-0 left-0 right-0 p-4 text-white">
+                        <h3 className="text-lg font-semibold mb-2">{template.name}</h3>
+                        <p className="text-sm text-white/90 leading-relaxed line-clamp-3">
+                          {template.description}
+                        </p>
+                      </div>
+                    </div>
+                    
+                    {/* Info badges */}
+                    <div className="bg-white p-3 space-y-2">
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className="text-gray-500">Gender:</span>
+                        <span className="font-medium text-gray-900 capitalize">{template.gender}</span>
+                      </div>
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className="text-gray-500">Accent:</span>
+                        <span className="font-medium text-gray-900 capitalize">{template.accent}</span>
+                      </div>
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className="text-gray-500">Noise:</span>
+                        <span className="font-medium text-gray-900 capitalize">
+                          {template.background_noise === 'none' ? 'None' : template.background_noise}
+                        </span>
+                      </div>
+                    </div>
+                    
+                    {/* Hover effect indicator */}
+                    <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="bg-primary-500 text-white px-3 py-1 rounded-full text-xs font-medium">
+                        Click to Create
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
 

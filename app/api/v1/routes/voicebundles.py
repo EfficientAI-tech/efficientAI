@@ -23,10 +23,14 @@ async def create_voicebundle(
     db: Session = Depends(get_db)
 ):
     """Create a new VoiceBundle"""
+    # Convert enum to string value for database storage
+    bundle_type_value = voicebundle.bundle_type.value if hasattr(voicebundle.bundle_type, 'value') else str(voicebundle.bundle_type)
+    
     db_voicebundle = VoiceBundle(
         organization_id=organization_id,
         name=voicebundle.name,
         description=voicebundle.description,
+        bundle_type=bundle_type_value,
         stt_provider=voicebundle.stt_provider,
         stt_model=voicebundle.stt_model,
         llm_provider=voicebundle.llm_provider,
@@ -38,6 +42,9 @@ async def create_voicebundle(
         tts_model=voicebundle.tts_model,
         tts_voice=voicebundle.tts_voice,
         tts_config=voicebundle.tts_config,
+        s2s_provider=voicebundle.s2s_provider,
+        s2s_model=voicebundle.s2s_model,
+        s2s_config=voicebundle.s2s_config,
         extra_metadata=voicebundle.extra_metadata,
     )
     db.add(db_voicebundle)
@@ -102,6 +109,9 @@ async def update_voicebundle(
     
     update_data = voicebundle_update.dict(exclude_unset=True)
     for field, value in update_data.items():
+        # Convert bundle_type enum to string value if present
+        if field == 'bundle_type' and value is not None:
+            value = value.value if hasattr(value, 'value') else str(value)
         setattr(db_voicebundle, field, value)
     
     db.commit()

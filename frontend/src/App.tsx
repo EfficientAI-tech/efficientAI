@@ -13,7 +13,6 @@ import Profile from './pages/Profile'
 import Metrics from './pages/Metrics'
 import Integrations from './pages/Integrations'
 import DataSources from './pages/DataSources'
-import AIProviders from './pages/AIProviders'
 import VoiceBundles from './pages/VoiceBundles'
 import EvaluateTestAgents from './pages/EvaluateTestAgents'
 import MetricsManagement from './pages/MetricsManagement'
@@ -21,6 +20,7 @@ import Results from './pages/Results'
 import EvaluatorResultDetail from './pages/EvaluatorResultDetail'
 import AgentDetail from './pages/AgentDetail'
 import Observability from './pages/Observability'
+import CallRecordingDetail from './pages/CallRecordingDetail'
 
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -49,6 +49,7 @@ function App() {
           <Route index element={<Dashboard />} />
           <Route path="evaluations/:id" element={<EvaluationDetail />} />
           <Route path="playground" element={<Playground />} />
+          <Route path="playground/call-recordings/:callShortId" element={<CallRecordingDetail />} />
           <Route path="agents" element={<Agents />} />
           <Route path="agents/:id" element={<AgentDetail />} />
           <Route path="personas" element={<Personas />} />
@@ -56,7 +57,6 @@ function App() {
           <Route path="metrics" element={<Metrics />} />
           <Route path="integrations" element={<Integrations />} />
           <Route path="data-sources" element={<DataSources />} />
-          <Route path="ai-providers" element={<AIProviders />} />
           <Route path="voicebundles" element={<VoiceBundles />} />
           <Route path="evaluate-test-agents" element={<EvaluateTestAgents />} />
           <Route path="metrics-management" element={<MetricsManagement />} />

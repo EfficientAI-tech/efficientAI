@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
-import { VoiceBundle, VoiceBundleCreate, ModelProvider, AIProvider } from '../types/api'
+import { VoiceBundle, VoiceBundleCreate, ModelProvider, AIProvider, VoiceBundleType } from '../types/api'
 import { Mic, Plus, Edit, Trash2, X, Loader, Volume2, Brain, MessageSquare, AlertCircle, ChevronDown } from 'lucide-react'
 import Button from '../components/Button'
 import { useToast } from '../hooks/useToast'
@@ -34,6 +34,7 @@ export default function VoiceBundles() {
   const [formData, setFormData] = useState<VoiceBundleCreate>({
     name: '',
     description: '',
+    bundle_type: VoiceBundleType.STT_LLM_TTS,
     stt_provider: ModelProvider.OPENAI,
     stt_model: 'whisper-1',
     llm_provider: ModelProvider.OPENAI,
@@ -43,6 +44,8 @@ export default function VoiceBundles() {
     tts_provider: ModelProvider.OPENAI,
     tts_model: 'tts-1',
     tts_voice: '',
+    s2s_provider: null,
+    s2s_model: null,
   })
 
   const { data: voicebundles = [], isLoading } = useQuery({
@@ -60,15 +63,21 @@ export default function VoiceBundles() {
     queryKey: ['model-configs'],
     queryFn: async () => {
       const providers = Object.values(ModelProvider)
-      const configs: Record<string, { stt: string[]; llm: string[]; tts: string[] }> = {}
+      const configs: Record<string, { stt: string[]; llm: string[]; tts: string[]; s2s: string[] }> = {}
       
       for (const provider of providers) {
         try {
           const options = await apiClient.getModelOptions(provider)
-          configs[provider] = options
+          // Ensure s2s is always present (for backward compatibility)
+          configs[provider] = {
+            stt: options.stt || [],
+            llm: options.llm || [],
+            tts: options.tts || [],
+            s2s: options.s2s || []
+          }
         } catch (error) {
           // If provider not found in config, use empty arrays
-          configs[provider] = { stt: [], llm: [], tts: [] }
+          configs[provider] = { stt: [], llm: [], tts: [], s2s: [] }
         }
       }
       return configs
@@ -82,8 +91,8 @@ export default function VoiceBundles() {
     .map((p: AIProvider) => p.provider as ModelProvider)
 
   // Helper function to get model options for a provider
-  const getModelOptions = (provider: ModelProvider): { stt: string[]; llm: string[]; tts: string[] } => {
-    return modelConfigs[provider] || { stt: [], llm: [], tts: [] }
+  const getModelOptions = (provider: ModelProvider): { stt: string[]; llm: string[]; tts: string[]; s2s: string[] } => {
+    return modelConfigs[provider] || { stt: [], llm: [], tts: [], s2s: [] }
   }
   
   // Default to first configured provider if current selection is not configured
@@ -143,6 +152,7 @@ export default function VoiceBundles() {
     setFormData({
       name: '',
       description: '',
+      bundle_type: VoiceBundleType.STT_LLM_TTS,
       stt_provider: defaultProvider,
       stt_model: defaultSttModel,
       llm_provider: defaultProvider,
@@ -152,6 +162,8 @@ export default function VoiceBundles() {
       tts_provider: defaultProvider,
       tts_model: defaultTtsModel,
       tts_voice: '',
+      s2s_provider: null,
+      s2s_model: null,
     })
   }
 
@@ -165,15 +177,18 @@ export default function VoiceBundles() {
     setFormData({
       name: bundle.name,
       description: bundle.description || '',
-      stt_provider: getDefaultProvider(bundle.stt_provider as ModelProvider),
-      stt_model: bundle.stt_model,
-      llm_provider: getDefaultProvider(bundle.llm_provider as ModelProvider),
-      llm_model: bundle.llm_model,
+      bundle_type: bundle.bundle_type || VoiceBundleType.STT_LLM_TTS,
+      stt_provider: bundle.stt_provider ? getDefaultProvider(bundle.stt_provider as ModelProvider) : null,
+      stt_model: bundle.stt_model || null,
+      llm_provider: bundle.llm_provider ? getDefaultProvider(bundle.llm_provider as ModelProvider) : null,
+      llm_model: bundle.llm_model || null,
       llm_temperature: bundle.llm_temperature || 0.7,
       llm_max_tokens: bundle.llm_max_tokens || null,
-      tts_provider: getDefaultProvider(bundle.tts_provider as ModelProvider),
-      tts_model: bundle.tts_model,
+      tts_provider: bundle.tts_provider ? getDefaultProvider(bundle.tts_provider as ModelProvider) : null,
+      tts_model: bundle.tts_model || null,
       tts_voice: bundle.tts_voice || '',
+      s2s_provider: bundle.s2s_provider ? getDefaultProvider(bundle.s2s_provider as ModelProvider) : null,
+      s2s_model: bundle.s2s_model || null,
     })
     setShowEditModal(true)
   }
@@ -208,7 +223,7 @@ export default function VoiceBundles() {
     }
   }
 
-  const updateModelOptions = (type: 'stt' | 'llm' | 'tts', provider: ModelProvider) => {
+  const updateModelOptions = (type: 'stt' | 'llm' | 'tts' | 's2s', provider: ModelProvider) => {
     const options = getModelOptions(provider)
     const models = options[type]
     if (models.length > 0) {
@@ -216,8 +231,10 @@ export default function VoiceBundles() {
         setFormData({ ...formData, stt_provider: provider, stt_model: models[0] })
       } else if (type === 'llm') {
         setFormData({ ...formData, llm_provider: provider, llm_model: models[0] })
-      } else {
+      } else if (type === 'tts') {
         setFormData({ ...formData, tts_provider: provider, tts_model: models[0] })
+      } else if (type === 's2s') {
+        setFormData({ ...formData, s2s_provider: provider, s2s_model: models[0] })
       }
     }
   }
@@ -245,7 +262,7 @@ export default function VoiceBundles() {
               </p>
               <Button
                 variant="primary"
-                onClick={() => window.location.href = '/ai-providers'}
+                onClick={() => window.location.href = '/integrations'}
                 leftIcon={<Brain className="h-4 w-4" />}
               >
                 Configure AI Providers
@@ -266,7 +283,7 @@ export default function VoiceBundles() {
         <div>
           <h1 className="text-3xl font-bold text-gray-900">VoiceBundles</h1>
           <p className="text-gray-600 mt-1">
-            Composable units combining STT, LLM, and TTS for voice AI testing
+            Composable units combining STT, LLM, and TTS for voice AI testing, or Speech-to-Speech models
           </p>
         </div>
         <Button variant="primary" onClick={openCreateModal} leftIcon={<Plus className="h-5 w-5" />}>
@@ -289,75 +306,146 @@ export default function VoiceBundles() {
           {voicebundles.map((bundle: VoiceBundle) => (
             <div
               key={bundle.id}
-              className="bg-white rounded-lg shadow-md p-6 hover:shadow-lg transition-shadow border border-gray-100"
+              className="bg-white rounded-lg shadow-md p-6 hover:shadow-lg transition-shadow border border-gray-100 flex flex-col h-full"
             >
-              <div className="flex items-start justify-between mb-4">
-                <div className="flex-1">
-                  <h3 className="text-xl font-bold text-gray-900 mb-1">{bundle.name}</h3>
+              <div className="flex items-start justify-between mb-4 flex-shrink-0">
+                <div className="flex-1 min-w-0">
+                  <h3 className="text-xl font-bold text-gray-900 mb-1 truncate">{bundle.name}</h3>
                   {bundle.description && (
-                    <p className="text-sm text-gray-600 mb-3">{bundle.description}</p>
+                    <p className="text-sm text-gray-600 mb-3 line-clamp-2">{bundle.description}</p>
                   )}
                 </div>
                 {!bundle.is_active && (
-                  <span className="px-2 py-1 text-xs font-medium bg-gray-100 text-gray-600 rounded">
+                  <span className="px-2 py-1 text-xs font-medium bg-gray-100 text-gray-600 rounded flex-shrink-0 ml-2">
                     Inactive
                   </span>
                 )}
               </div>
 
-              {/* STT Configuration */}
-              <div className="mb-3 p-3 bg-blue-50 rounded-lg">
-                <div className="flex items-center gap-2 mb-1">
-                  <MessageSquare className="h-4 w-4 text-blue-600" />
-                  <span className="text-xs font-semibold text-blue-900 uppercase">STT</span>
-                </div>
-                <div className="text-sm text-gray-700">
-                  <span className="font-medium">{PROVIDER_LABELS[bundle.stt_provider as ModelProvider]}</span>
-                  <span className="text-gray-500"> • </span>
-                  <span>{bundle.stt_model}</span>
-                </div>
-              </div>
+              <div className="flex-1 flex flex-col justify-between">
+                {bundle.bundle_type === VoiceBundleType.S2S ? (
+                  /* S2S Configuration */
+                  <div className="mb-4 p-3 bg-orange-50 rounded-lg">
+                    <div className="flex items-center gap-2 mb-1">
+                      <Mic className="h-4 w-4 text-orange-600" />
+                      <span className="text-xs font-semibold text-orange-900 uppercase">Speech-to-Speech</span>
+                    </div>
+                    <div className="text-sm text-gray-700">
+                      {bundle.s2s_provider && bundle.s2s_model ? (
+                        <div className="flex items-center gap-2">
+                          {PROVIDER_LOGOS[bundle.s2s_provider as ModelProvider] ? (
+                            <img
+                              src={PROVIDER_LOGOS[bundle.s2s_provider as ModelProvider]!}
+                              alt={PROVIDER_LABELS[bundle.s2s_provider as ModelProvider]}
+                              className="w-4 h-4 object-contain"
+                            />
+                          ) : null}
+                          <span className="font-medium">{PROVIDER_LABELS[bundle.s2s_provider as ModelProvider]}</span>
+                          <span className="text-gray-500"> • </span>
+                          <span>{bundle.s2s_model}</span>
+                        </div>
+                      ) : (
+                        <span className="text-gray-500">Not configured</span>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    {/* STT Configuration */}
+                    <div className="mb-3 p-3 bg-blue-50 rounded-lg">
+                      <div className="flex items-center gap-2 mb-1">
+                        <MessageSquare className="h-4 w-4 text-blue-600" />
+                        <span className="text-xs font-semibold text-blue-900 uppercase">STT</span>
+                      </div>
+                      <div className="text-sm text-gray-700">
+                        {bundle.stt_provider && bundle.stt_model ? (
+                          <div className="flex items-center gap-2">
+                            {PROVIDER_LOGOS[bundle.stt_provider as ModelProvider] ? (
+                              <img
+                                src={PROVIDER_LOGOS[bundle.stt_provider as ModelProvider]!}
+                                alt={PROVIDER_LABELS[bundle.stt_provider as ModelProvider]}
+                                className="w-4 h-4 object-contain"
+                              />
+                            ) : null}
+                            <span className="font-medium">{PROVIDER_LABELS[bundle.stt_provider as ModelProvider]}</span>
+                            <span className="text-gray-500"> • </span>
+                            <span>{bundle.stt_model}</span>
+                          </div>
+                        ) : (
+                          <span className="text-gray-500">Not configured</span>
+                        )}
+                      </div>
+                    </div>
 
-              {/* LLM Configuration */}
-              <div className="mb-3 p-3 bg-purple-50 rounded-lg">
-                <div className="flex items-center gap-2 mb-1">
-                  <Brain className="h-4 w-4 text-purple-600" />
-                  <span className="text-xs font-semibold text-purple-900 uppercase">LLM</span>
-                </div>
-                <div className="text-sm text-gray-700">
-                  <span className="font-medium">{PROVIDER_LABELS[bundle.llm_provider as ModelProvider]}</span>
-                  <span className="text-gray-500"> • </span>
-                  <span>{bundle.llm_model}</span>
-                  {bundle.llm_temperature && (
-                    <>
-                      <span className="text-gray-500"> • </span>
-                      <span>Temp: {bundle.llm_temperature}</span>
-                    </>
-                  )}
-                </div>
-              </div>
+                    {/* LLM Configuration */}
+                    <div className="mb-3 p-3 bg-purple-50 rounded-lg">
+                      <div className="flex items-center gap-2 mb-1">
+                        <Brain className="h-4 w-4 text-purple-600" />
+                        <span className="text-xs font-semibold text-purple-900 uppercase">LLM</span>
+                      </div>
+                      <div className="text-sm text-gray-700">
+                        {bundle.llm_provider && bundle.llm_model ? (
+                          <div className="flex items-center gap-2 flex-wrap">
+                            {PROVIDER_LOGOS[bundle.llm_provider as ModelProvider] ? (
+                              <img
+                                src={PROVIDER_LOGOS[bundle.llm_provider as ModelProvider]!}
+                                alt={PROVIDER_LABELS[bundle.llm_provider as ModelProvider]}
+                                className="w-4 h-4 object-contain"
+                              />
+                            ) : null}
+                            <span className="font-medium">{PROVIDER_LABELS[bundle.llm_provider as ModelProvider]}</span>
+                            <span className="text-gray-500"> • </span>
+                            <span>{bundle.llm_model}</span>
+                            {bundle.llm_temperature && (
+                              <>
+                                <span className="text-gray-500"> • </span>
+                                <span>Temp: {bundle.llm_temperature}</span>
+                              </>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-gray-500">Not configured</span>
+                        )}
+                      </div>
+                    </div>
 
-              {/* TTS Configuration */}
-              <div className="mb-4 p-3 bg-green-50 rounded-lg">
-                <div className="flex items-center gap-2 mb-1">
-                  <Volume2 className="h-4 w-4 text-green-600" />
-                  <span className="text-xs font-semibold text-green-900 uppercase">TTS</span>
-                </div>
-                <div className="text-sm text-gray-700">
-                  <span className="font-medium">{PROVIDER_LABELS[bundle.tts_provider as ModelProvider]}</span>
-                  <span className="text-gray-500"> • </span>
-                  <span>{bundle.tts_model}</span>
-                  {bundle.tts_voice && (
-                    <>
-                      <span className="text-gray-500"> • </span>
-                      <span>Voice: {bundle.tts_voice}</span>
-                    </>
-                  )}
-                </div>
+                    {/* TTS Configuration */}
+                    <div className="mb-4 p-3 bg-green-50 rounded-lg">
+                      <div className="flex items-center gap-2 mb-1">
+                        <Volume2 className="h-4 w-4 text-green-600" />
+                        <span className="text-xs font-semibold text-green-900 uppercase">TTS</span>
+                      </div>
+                      <div className="text-sm text-gray-700">
+                        {bundle.tts_provider && bundle.tts_model ? (
+                          <div className="flex items-center gap-2 flex-wrap">
+                            {PROVIDER_LOGOS[bundle.tts_provider as ModelProvider] ? (
+                              <img
+                                src={PROVIDER_LOGOS[bundle.tts_provider as ModelProvider]!}
+                                alt={PROVIDER_LABELS[bundle.tts_provider as ModelProvider]}
+                                className="w-4 h-4 object-contain"
+                              />
+                            ) : null}
+                            <span className="font-medium">{PROVIDER_LABELS[bundle.tts_provider as ModelProvider]}</span>
+                            <span className="text-gray-500"> • </span>
+                            <span>{bundle.tts_model}</span>
+                            {bundle.tts_voice && (
+                              <>
+                                <span className="text-gray-500"> • </span>
+                                <span>Voice: {bundle.tts_voice}</span>
+                              </>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-gray-500">Not configured</span>
+                        )}
+                      </div>
+                    </div>
+                  </>
+                )}
               </div>
 
               {/* Actions */}
-              <div className="flex gap-2 pt-4 border-t border-gray-100">
+              <div className="flex gap-2 pt-4 border-t border-gray-100 mt-auto">
                 <Button
                   variant="ghost"
                   size="sm"
@@ -498,16 +586,18 @@ function VoiceBundleModal({
   onSubmit: (e: React.FormEvent) => void
   onClose: () => void
   isLoading: boolean
-  updateModelOptions: (type: 'stt' | 'llm' | 'tts', provider: ModelProvider) => void
+  updateModelOptions: (type: 'stt' | 'llm' | 'tts' | 's2s', provider: ModelProvider) => void
   configuredProviders: ModelProvider[]
-  getModelOptions: (provider: ModelProvider) => { stt: string[]; llm: string[]; tts: string[] }
+  getModelOptions: (provider: ModelProvider) => { stt: string[]; llm: string[]; tts: string[]; s2s: string[] }
 }) {
   const [showSttDropdown, setShowSttDropdown] = useState(false)
   const [showLlmDropdown, setShowLlmDropdown] = useState(false)
   const [showTtsDropdown, setShowTtsDropdown] = useState(false)
+  const [showS2sDropdown, setShowS2sDropdown] = useState(false)
   const sttDropdownRef = useRef<HTMLDivElement>(null)
   const llmDropdownRef = useRef<HTMLDivElement>(null)
   const ttsDropdownRef = useRef<HTMLDivElement>(null)
+  const s2sDropdownRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     const handleSttClickOutside = (event: MouseEvent) => {
@@ -528,6 +618,12 @@ function VoiceBundleModal({
       }
     }
 
+    const handleS2sClickOutside = (event: MouseEvent) => {
+      if (s2sDropdownRef.current && !s2sDropdownRef.current.contains(event.target as Node)) {
+        setShowS2sDropdown(false)
+      }
+    }
+
     if (showSttDropdown) {
       document.addEventListener('mousedown', handleSttClickOutside)
     }
@@ -537,13 +633,17 @@ function VoiceBundleModal({
     if (showTtsDropdown) {
       document.addEventListener('mousedown', handleTtsClickOutside)
     }
+    if (showS2sDropdown) {
+      document.addEventListener('mousedown', handleS2sClickOutside)
+    }
 
     return () => {
       document.removeEventListener('mousedown', handleSttClickOutside)
       document.removeEventListener('mousedown', handleLlmClickOutside)
       document.removeEventListener('mousedown', handleTtsClickOutside)
+      document.removeEventListener('mousedown', handleS2sClickOutside)
     }
-  }, [showSttDropdown, showLlmDropdown, showTtsDropdown])
+  }, [showSttDropdown, showLlmDropdown, showTtsDropdown, showS2sDropdown])
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 overflow-y-auto">
       <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full mx-4 my-8">
@@ -584,9 +684,77 @@ function VoiceBundleModal({
                 placeholder="Describe this VoiceBundle..."
               />
             </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Bundle Type *
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const defaultProvider = configuredProviders[0] || ModelProvider.OPENAI
+                    const options = getModelOptions(defaultProvider)
+                    setFormData({
+                      ...formData,
+                      bundle_type: VoiceBundleType.STT_LLM_TTS,
+                      stt_provider: defaultProvider,
+                      stt_model: options.stt[0] || '',
+                      llm_provider: defaultProvider,
+                      llm_model: options.llm[0] || '',
+                      tts_provider: defaultProvider,
+                      tts_model: options.tts[0] || '',
+                      s2s_provider: null,
+                      s2s_model: null,
+                    })
+                  }}
+                  className={`p-3 border-2 rounded-lg text-left transition-all ${
+                    formData.bundle_type === VoiceBundleType.STT_LLM_TTS
+                      ? 'border-primary-500 bg-primary-50'
+                      : 'border-gray-200 hover:border-gray-300'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <Brain className="h-5 w-5 text-primary-600" />
+                    <span className="font-medium text-gray-900">STT + LLM + TTS</span>
+                  </div>
+                  <p className="text-xs text-gray-600 mt-1">Traditional pipeline</p>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const defaultProvider = configuredProviders[0] || ModelProvider.OPENAI
+                    const options = getModelOptions(defaultProvider)
+                    setFormData({
+                      ...formData,
+                      bundle_type: VoiceBundleType.S2S,
+                      s2s_provider: defaultProvider,
+                      s2s_model: options.s2s[0] || '',
+                      stt_provider: null,
+                      stt_model: null,
+                      llm_provider: null,
+                      llm_model: null,
+                      tts_provider: null,
+                      tts_model: null,
+                    })
+                  }}
+                  className={`p-3 border-2 rounded-lg text-left transition-all ${
+                    formData.bundle_type === VoiceBundleType.S2S
+                      ? 'border-primary-500 bg-primary-50'
+                      : 'border-gray-200 hover:border-gray-300'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <Mic className="h-5 w-5 text-primary-600" />
+                    <span className="font-medium text-gray-900">Speech-to-Speech</span>
+                  </div>
+                  <p className="text-xs text-gray-600 mt-1">Single S2S model</p>
+                </button>
+              </div>
+            </div>
           </div>
 
-          {/* STT Configuration */}
+          {/* STT Configuration - Only show for STT_LLM_TTS type */}
+          {formData.bundle_type === VoiceBundleType.STT_LLM_TTS && (
           <div className="space-y-4 p-4 bg-blue-50 rounded-lg border border-blue-200">
             <div className="flex items-center gap-2 mb-2">
               <MessageSquare className="h-5 w-5 text-blue-600" />
@@ -604,7 +772,7 @@ function VoiceBundleModal({
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white text-left flex items-center justify-between"
                   >
                     <div className="flex items-center gap-2">
-                      {PROVIDER_LOGOS[formData.stt_provider] ? (
+                      {formData.stt_provider && PROVIDER_LOGOS[formData.stt_provider] ? (
                         <img
                           src={PROVIDER_LOGOS[formData.stt_provider]!}
                           alt={PROVIDER_LABELS[formData.stt_provider]}
@@ -613,7 +781,7 @@ function VoiceBundleModal({
                       ) : (
                         <Brain className="h-5 w-5 text-primary-600" />
                       )}
-                      <span>{PROVIDER_LABELS[formData.stt_provider]}</span>
+                      <span>{formData.stt_provider ? PROVIDER_LABELS[formData.stt_provider] : 'Select provider'}</span>
                     </div>
                     <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${showSttDropdown ? 'transform rotate-180' : ''}`} />
                   </button>
@@ -651,22 +819,29 @@ function VoiceBundleModal({
                 </label>
                 <select
                   id="stt_model"
-                  required
-                  value={formData.stt_model}
+                  required={formData.bundle_type === VoiceBundleType.STT_LLM_TTS}
+                  value={formData.stt_model || ''}
                   onChange={(e) => setFormData({ ...formData, stt_model: e.target.value })}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  disabled={!formData.stt_provider}
                 >
-                  {getModelOptions(formData.stt_provider).stt.map((model: string) => (
-                    <option key={model} value={model}>
-                      {model}
-                    </option>
-                  ))}
+                  {formData.stt_provider ? (
+                    getModelOptions(formData.stt_provider).stt.map((model: string) => (
+                      <option key={model} value={model}>
+                        {model}
+                      </option>
+                    ))
+                  ) : (
+                    <option value="">Select provider first</option>
+                  )}
                 </select>
               </div>
             </div>
           </div>
+          )}
 
-          {/* LLM Configuration */}
+          {/* LLM Configuration - Only show for STT_LLM_TTS type */}
+          {formData.bundle_type === VoiceBundleType.STT_LLM_TTS && (
           <div className="space-y-4 p-4 bg-purple-50 rounded-lg border border-purple-200">
             <div className="flex items-center gap-2 mb-2">
               <Brain className="h-5 w-5 text-purple-600" />
@@ -684,7 +859,7 @@ function VoiceBundleModal({
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white text-left flex items-center justify-between"
                   >
                     <div className="flex items-center gap-2">
-                      {PROVIDER_LOGOS[formData.llm_provider] ? (
+                      {formData.llm_provider && PROVIDER_LOGOS[formData.llm_provider] ? (
                         <img
                           src={PROVIDER_LOGOS[formData.llm_provider]!}
                           alt={PROVIDER_LABELS[formData.llm_provider]}
@@ -693,7 +868,7 @@ function VoiceBundleModal({
                       ) : (
                         <Brain className="h-5 w-5 text-primary-600" />
                       )}
-                      <span>{PROVIDER_LABELS[formData.llm_provider]}</span>
+                      <span>{formData.llm_provider ? PROVIDER_LABELS[formData.llm_provider] : 'Select provider'}</span>
                     </div>
                     <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${showLlmDropdown ? 'transform rotate-180' : ''}`} />
                   </button>
@@ -731,16 +906,21 @@ function VoiceBundleModal({
                 </label>
                 <select
                   id="llm_model"
-                  required
-                  value={formData.llm_model}
+                  required={formData.bundle_type === VoiceBundleType.STT_LLM_TTS}
+                  value={formData.llm_model || ''}
                   onChange={(e) => setFormData({ ...formData, llm_model: e.target.value })}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  disabled={!formData.llm_provider}
                 >
-                  {getModelOptions(formData.llm_provider).llm.map((model: string) => (
-                    <option key={model} value={model}>
-                      {model}
-                    </option>
-                  ))}
+                  {formData.llm_provider ? (
+                    getModelOptions(formData.llm_provider).llm.map((model: string) => (
+                      <option key={model} value={model}>
+                        {model}
+                      </option>
+                    ))
+                  ) : (
+                    <option value="">Select provider first</option>
+                  )}
                 </select>
               </div>
               <div>
@@ -774,8 +954,10 @@ function VoiceBundleModal({
               </div>
             </div>
           </div>
+          )}
 
-          {/* TTS Configuration */}
+          {/* TTS Configuration - Only show for STT_LLM_TTS type */}
+          {formData.bundle_type === VoiceBundleType.STT_LLM_TTS && (
           <div className="space-y-4 p-4 bg-green-50 rounded-lg border border-green-200">
             <div className="flex items-center gap-2 mb-2">
               <Volume2 className="h-5 w-5 text-green-600" />
@@ -793,7 +975,7 @@ function VoiceBundleModal({
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white text-left flex items-center justify-between"
                   >
                     <div className="flex items-center gap-2">
-                      {PROVIDER_LOGOS[formData.tts_provider] ? (
+                      {formData.tts_provider && PROVIDER_LOGOS[formData.tts_provider] ? (
                         <img
                           src={PROVIDER_LOGOS[formData.tts_provider]!}
                           alt={PROVIDER_LABELS[formData.tts_provider]}
@@ -802,7 +984,7 @@ function VoiceBundleModal({
                       ) : (
                         <Brain className="h-5 w-5 text-primary-600" />
                       )}
-                      <span>{PROVIDER_LABELS[formData.tts_provider]}</span>
+                      <span>{formData.tts_provider ? PROVIDER_LABELS[formData.tts_provider] : 'Select provider'}</span>
                     </div>
                     <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${showTtsDropdown ? 'transform rotate-180' : ''}`} />
                   </button>
@@ -840,16 +1022,21 @@ function VoiceBundleModal({
                 </label>
                 <select
                   id="tts_model"
-                  required
-                  value={formData.tts_model}
+                  required={formData.bundle_type === VoiceBundleType.STT_LLM_TTS}
+                  value={formData.tts_model || ''}
                   onChange={(e) => setFormData({ ...formData, tts_model: e.target.value })}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  disabled={!formData.tts_provider}
                 >
-                  {getModelOptions(formData.tts_provider).tts.map((model: string) => (
-                    <option key={model} value={model}>
-                      {model}
-                    </option>
-                  ))}
+                  {formData.tts_provider ? (
+                    getModelOptions(formData.tts_provider).tts.map((model: string) => (
+                      <option key={model} value={model}>
+                        {model}
+                      </option>
+                    ))
+                  ) : (
+                    <option value="">Select provider first</option>
+                  )}
                 </select>
               </div>
               <div>
@@ -867,6 +1054,105 @@ function VoiceBundleModal({
               </div>
             </div>
           </div>
+          )}
+
+          {/* S2S Configuration - Only show for S2S type */}
+          {formData.bundle_type === VoiceBundleType.S2S && (
+          <div className="space-y-4 p-4 bg-orange-50 rounded-lg border border-orange-200">
+            <div className="flex items-center gap-2 mb-2">
+              <Mic className="h-5 w-5 text-orange-600" />
+              <h4 className="text-sm font-semibold text-gray-900 uppercase tracking-wide">Speech-to-Speech (S2S)</h4>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label htmlFor="s2s_provider" className="block text-sm font-medium text-gray-700 mb-1">
+                  Provider *
+                </label>
+                <div className="relative" ref={s2sDropdownRef}>
+                  <button
+                    type="button"
+                    onClick={() => setShowS2sDropdown(!showS2sDropdown)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white text-left flex items-center justify-between"
+                  >
+                    <div className="flex items-center gap-2">
+                      {formData.s2s_provider && PROVIDER_LOGOS[formData.s2s_provider] ? (
+                        <img
+                          src={PROVIDER_LOGOS[formData.s2s_provider]!}
+                          alt={PROVIDER_LABELS[formData.s2s_provider]}
+                          className="w-5 h-5 object-contain"
+                        />
+                      ) : (
+                        <Brain className="h-5 w-5 text-primary-600" />
+                      )}
+                      <span>{formData.s2s_provider ? PROVIDER_LABELS[formData.s2s_provider] : 'Select provider'}</span>
+                    </div>
+                    <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${showS2sDropdown ? 'transform rotate-180' : ''}`} />
+                  </button>
+                  {showS2sDropdown && (
+                    <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-auto">
+                      {configuredProviders.map((provider: ModelProvider) => (
+                        <button
+                          key={provider}
+                          type="button"
+                          onClick={() => {
+                            updateModelOptions('s2s', provider)
+                            setShowS2sDropdown(false)
+                          }}
+                          className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center gap-2 transition-colors"
+                        >
+                          {PROVIDER_LOGOS[provider] ? (
+                            <img
+                              src={PROVIDER_LOGOS[provider]!}
+                              alt={PROVIDER_LABELS[provider]}
+                              className="w-5 h-5 object-contain"
+                            />
+                          ) : (
+                            <Brain className="h-5 w-5 text-primary-600" />
+                          )}
+                          <span>{PROVIDER_LABELS[provider]}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div>
+                <label htmlFor="s2s_model" className="block text-sm font-medium text-gray-700 mb-1">
+                  Model *
+                </label>
+                {formData.s2s_provider ? (
+                  getModelOptions(formData.s2s_provider).s2s.length > 0 ? (
+                    <select
+                      id="s2s_model"
+                      required={formData.bundle_type === VoiceBundleType.S2S}
+                      value={formData.s2s_model || ''}
+                      onChange={(e) => setFormData({ ...formData, s2s_model: e.target.value })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    >
+                      {getModelOptions(formData.s2s_provider).s2s.map((model: string) => (
+                        <option key={model} value={model}>
+                          {model}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <div className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-500 text-sm">
+                      No S2S models available for {PROVIDER_LABELS[formData.s2s_provider]}
+                    </div>
+                  )
+                ) : (
+                  <select
+                    id="s2s_model"
+                    disabled
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-500"
+                  >
+                    <option value="">Select provider first</option>
+                  </select>
+                )}
+              </div>
+            </div>
+          </div>
+          )}
 
           {/* Form Actions */}
           <div className="flex gap-3 pt-4 border-t border-gray-200">

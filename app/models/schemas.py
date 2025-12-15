@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field, validator, model_validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from uuid import UUID
-from app.models.database import EvaluationType, EvaluationStatus, RoleEnum, InvitationStatus, IntegrationPlatform, ModelProvider, MetricType, MetricTrigger, EvaluatorResultStatus
+from app.models.database import EvaluationType, EvaluationStatus, RoleEnum, InvitationStatus, IntegrationPlatform, ModelProvider, MetricType, MetricTrigger, EvaluatorResultStatus, VoiceBundleType
 
 
 # Audio File Schemas
@@ -594,31 +594,57 @@ class VoiceBundleCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
     
-    # STT Configuration
-    stt_provider: ModelProvider
-    stt_model: str = Field(..., min_length=1)
+    # Bundle type: either STT+LLM+TTS or S2S
+    bundle_type: VoiceBundleType = Field(default=VoiceBundleType.STT_LLM_TTS)
     
-    # LLM Configuration
-    llm_provider: ModelProvider
-    llm_model: str = Field(..., min_length=1)
+    # STT Configuration - required for STT_LLM_TTS, optional for S2S
+    stt_provider: Optional[ModelProvider] = None
+    stt_model: Optional[str] = Field(None, min_length=1)
+    
+    # LLM Configuration - required for STT_LLM_TTS, optional for S2S
+    llm_provider: Optional[ModelProvider] = None
+    llm_model: Optional[str] = Field(None, min_length=1)
     llm_temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
     llm_max_tokens: Optional[int] = Field(None, gt=0)
     llm_config: Optional[Dict[str, Any]] = None
     
-    # TTS Configuration
-    tts_provider: ModelProvider
-    tts_model: str = Field(..., min_length=1)
+    # TTS Configuration - required for STT_LLM_TTS, optional for S2S
+    tts_provider: Optional[ModelProvider] = None
+    tts_model: Optional[str] = Field(None, min_length=1)
     tts_voice: Optional[str] = None
     tts_config: Optional[Dict[str, Any]] = None
     
+    # S2S Configuration - required for S2S, optional for STT_LLM_TTS
+    s2s_provider: Optional[ModelProvider] = None
+    s2s_model: Optional[str] = Field(None, min_length=1)
+    s2s_config: Optional[Dict[str, Any]] = None
+    
     # Additional metadata
     extra_metadata: Optional[Dict[str, Any]] = None
+    
+    @model_validator(mode='after')
+    def validate_bundle_configuration(self):
+        """Validate that required fields are provided based on bundle_type."""
+        if self.bundle_type == VoiceBundleType.STT_LLM_TTS:
+            if not self.stt_provider or not self.stt_model:
+                raise ValueError('STT provider and model are required for STT_LLM_TTS bundle type')
+            if not self.llm_provider or not self.llm_model:
+                raise ValueError('LLM provider and model are required for STT_LLM_TTS bundle type')
+            if not self.tts_provider or not self.tts_model:
+                raise ValueError('TTS provider and model are required for STT_LLM_TTS bundle type')
+        elif self.bundle_type == VoiceBundleType.S2S:
+            if not self.s2s_provider or not self.s2s_model:
+                raise ValueError('S2S provider and model are required for S2S bundle type')
+        return self
 
 
 class VoiceBundleUpdate(BaseModel):
     """Schema for updating a VoiceBundle."""
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     description: Optional[str] = None
+    
+    # Bundle type
+    bundle_type: Optional[VoiceBundleType] = None
     
     # STT Configuration
     stt_provider: Optional[ModelProvider] = None
@@ -637,6 +663,11 @@ class VoiceBundleUpdate(BaseModel):
     tts_voice: Optional[str] = None
     tts_config: Optional[Dict[str, Any]] = None
     
+    # S2S Configuration
+    s2s_provider: Optional[ModelProvider] = None
+    s2s_model: Optional[str] = Field(None, min_length=1)
+    s2s_config: Optional[Dict[str, Any]] = None
+    
     # Additional metadata
     extra_metadata: Optional[Dict[str, Any]] = None
     is_active: Optional[bool] = None
@@ -648,22 +679,44 @@ class VoiceBundleResponse(BaseModel):
     name: str
     description: Optional[str]
     
+    # Bundle type - can be string from DB or enum, validator handles conversion
+    bundle_type: VoiceBundleType
+    
+    @validator('bundle_type', pre=True)
+    def convert_bundle_type(cls, v):
+        """Convert string to VoiceBundleType enum if needed."""
+        if isinstance(v, str):
+            try:
+                return VoiceBundleType(v)
+            except ValueError:
+                # Try to find by value
+                for enum_member in VoiceBundleType:
+                    if enum_member.value == v:
+                        return enum_member
+                raise ValueError(f"Invalid bundle_type value: {v}")
+        return v
+    
     # STT Configuration
-    stt_provider: ModelProvider
-    stt_model: str
+    stt_provider: Optional[ModelProvider]
+    stt_model: Optional[str]
     
     # LLM Configuration
-    llm_provider: ModelProvider
-    llm_model: str
+    llm_provider: Optional[ModelProvider]
+    llm_model: Optional[str]
     llm_temperature: Optional[float]
     llm_max_tokens: Optional[int]
     llm_config: Optional[Dict[str, Any]]
     
     # TTS Configuration
-    tts_provider: ModelProvider
-    tts_model: str
+    tts_provider: Optional[ModelProvider]
+    tts_model: Optional[str]
     tts_voice: Optional[str]
     tts_config: Optional[Dict[str, Any]]
+    
+    # S2S Configuration
+    s2s_provider: Optional[ModelProvider]
+    s2s_model: Optional[str]
+    s2s_config: Optional[Dict[str, Any]]
     
     # Additional metadata
     extra_metadata: Optional[Dict[str, Any]]

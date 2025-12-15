@@ -208,21 +208,30 @@ export interface AIProviderUpdate {
   is_active?: boolean
 }
 
+export enum VoiceBundleType {
+  STT_LLM_TTS = 'stt_llm_tts',
+  S2S = 's2s',
+}
+
 export interface VoiceBundle {
   id: string
   name: string
   description?: string | null
-  stt_provider: ModelProvider
-  stt_model: string
-  llm_provider: ModelProvider
-  llm_model: string
+  bundle_type: VoiceBundleType
+  stt_provider?: ModelProvider | null
+  stt_model?: string | null
+  llm_provider?: ModelProvider | null
+  llm_model?: string | null
   llm_temperature?: number | null
   llm_max_tokens?: number | null
   llm_config?: Record<string, any> | null
-  tts_provider: ModelProvider
-  tts_model: string
+  tts_provider?: ModelProvider | null
+  tts_model?: string | null
   tts_voice?: string | null
   tts_config?: Record<string, any> | null
+  s2s_provider?: ModelProvider | null
+  s2s_model?: string | null
+  s2s_config?: Record<string, any> | null
   extra_metadata?: Record<string, any> | null
   is_active: boolean
   created_at: string
@@ -233,17 +242,21 @@ export interface VoiceBundle {
 export interface VoiceBundleCreate {
   name: string
   description?: string | null
-  stt_provider: ModelProvider
-  stt_model: string
-  llm_provider: ModelProvider
-  llm_model: string
+  bundle_type?: VoiceBundleType
+  stt_provider?: ModelProvider | null
+  stt_model?: string | null
+  llm_provider?: ModelProvider | null
+  llm_model?: string | null
   llm_temperature?: number | null
   llm_max_tokens?: number | null
   llm_config?: Record<string, any> | null
-  tts_provider: ModelProvider
-  tts_model: string
+  tts_provider?: ModelProvider | null
+  tts_model?: string | null
   tts_voice?: string | null
   tts_config?: Record<string, any> | null
+  s2s_provider?: ModelProvider | null
+  s2s_model?: string | null
+  s2s_config?: Record<string, any> | null
   extra_metadata?: Record<string, any> | null
 }
 

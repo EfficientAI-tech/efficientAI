@@ -534,9 +534,14 @@ class ApiClient {
     return response.data
   }
 
-  async getModelOptions(provider: string): Promise<{ stt: string[]; llm: string[]; tts: string[] }> {
+  async getModelOptions(provider: string): Promise<{ stt: string[]; llm: string[]; tts: string[]; s2s: string[] }> {
     const response = await this.client.get(`/api/v1/model-config/providers/${provider}/options`)
-    return response.data
+    const data = response.data
+    // Ensure s2s is always present (for backward compatibility)
+    return {
+      ...data,
+      s2s: data.s2s || []
+    }
   }
 
   async getModelsByType(provider: string, modelType: 'stt' | 'llm' | 'tts'): Promise<string[]> {
@@ -705,6 +710,11 @@ class ApiClient {
 
   async refreshCallRecording(callShortId: string): Promise<{ message: string }> {
     const response = await this.client.post(`/api/v1/playground/call-recordings/${callShortId}/refresh`)
+    return response.data
+  }
+
+  async deleteCallRecording(callShortId: string): Promise<{ message: string }> {
+    const response = await this.client.delete(`/api/v1/playground/call-recordings/${callShortId}`)
     return response.data
   }
 

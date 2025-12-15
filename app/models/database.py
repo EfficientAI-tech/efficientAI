@@ -433,8 +433,14 @@ class AIProvider(Base):
     )
 
 
+class VoiceBundleType(str, enum.Enum):
+    """VoiceBundle type enumeration."""
+    STT_LLM_TTS = "stt_llm_tts"  # Traditional STT + LLM + TTS pipeline
+    S2S = "s2s"  # Speech-to-Speech model
+
+
 class VoiceBundle(Base):
-    """VoiceBundle - Composable unit combining STT, LLM, and TTS for voice AI testing."""
+    """VoiceBundle - Composable unit combining STT, LLM, and TTS for voice AI testing, or S2S models."""
     __tablename__ = "voicebundles"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -442,22 +448,32 @@ class VoiceBundle(Base):
     name = Column(String, nullable=False)
     description = Column(String, nullable=True)
     
-    # STT Configuration (references AIProvider via provider name)
-    stt_provider = Column(Enum(ModelProvider), nullable=False)
-    stt_model = Column(String, nullable=False)  # e.g., "whisper-1", "google-speech-v2"
+    # Bundle type: either STT+LLM+TTS or S2S
+    # Using String instead of Enum to avoid SQLAlchemy enum conversion issues
+    # The enum conversion is handled in the Pydantic schemas
+    bundle_type = Column(String(50), nullable=False, default=VoiceBundleType.STT_LLM_TTS.value)
     
-    # LLM Configuration (references AIProvider via provider name)
-    llm_provider = Column(Enum(ModelProvider), nullable=False)
-    llm_model = Column(String, nullable=False)  # e.g., "gpt-4", "claude-3-opus"
+    # STT Configuration (references AIProvider via provider name) - required for STT_LLM_TTS, optional for S2S
+    stt_provider = Column(Enum(ModelProvider), nullable=True)
+    stt_model = Column(String, nullable=True)  # e.g., "whisper-1", "google-speech-v2"
+    
+    # LLM Configuration (references AIProvider via provider name) - required for STT_LLM_TTS, optional for S2S
+    llm_provider = Column(Enum(ModelProvider), nullable=True)
+    llm_model = Column(String, nullable=True)  # e.g., "gpt-4", "claude-3-opus"
     llm_temperature = Column(Float, nullable=True, default=0.7)
     llm_max_tokens = Column(Integer, nullable=True)
     llm_config = Column(JSON, nullable=True)  # Additional LLM configuration (extensible)
     
-    # TTS Configuration (references AIProvider via provider name)
-    tts_provider = Column(Enum(ModelProvider), nullable=False)
-    tts_model = Column(String, nullable=False)  # e.g., "tts-1", "neural-voice"
+    # TTS Configuration (references AIProvider via provider name) - required for STT_LLM_TTS, optional for S2S
+    tts_provider = Column(Enum(ModelProvider), nullable=True)
+    tts_model = Column(String, nullable=True)  # e.g., "tts-1", "neural-voice"
     tts_voice = Column(String, nullable=True)  # Voice selection if applicable
     tts_config = Column(JSON, nullable=True)  # Additional TTS configuration (extensible)
+    
+    # S2S Configuration - required for S2S type, optional for STT_LLM_TTS
+    s2s_provider = Column(Enum(ModelProvider), nullable=True)
+    s2s_model = Column(String, nullable=True)  # e.g., "gpt-4o-transcribe", speech-to-speech model
+    s2s_config = Column(JSON, nullable=True)  # Additional S2S configuration (extensible)
     
     # Additional configuration for extensibility
     extra_metadata = Column(JSON, nullable=True)  # For future extensions (renamed from 'metadata' to avoid SQLAlchemy conflict)

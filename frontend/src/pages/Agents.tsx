@@ -122,17 +122,17 @@ export default function Agents() {
         call_type: data.call_type,
         call_medium: data.call_medium,
       }
-      
+
       // Only add phone_number if call_medium is phone_call
       if (data.call_medium === 'phone_call' && data.phone_number) {
         payload.phone_number = data.phone_number
       }
-      
+
       // Add voice_bundle_id if provided (Test Voice AI Agent section)
       if (data.voice_bundle_id && data.voice_bundle_id.trim() !== '') {
         payload.voice_bundle_id = data.voice_bundle_id.trim()
       }
-      
+
       // Add voice_ai_integration_id and voice_ai_agent_id if provided (Voice AI Agent section)
       if (data.voice_ai_integration_id && data.voice_ai_integration_id.trim() !== '') {
         payload.voice_ai_integration_id = data.voice_ai_integration_id.trim()
@@ -140,7 +140,7 @@ export default function Agents() {
       if (data.voice_ai_agent_id && data.voice_ai_agent_id.trim() !== '') {
         payload.voice_ai_agent_id = data.voice_ai_agent_id.trim()
       }
-      
+
       return apiClient.createAgent(payload)
     },
     onSuccess: () => {
@@ -172,7 +172,7 @@ export default function Agents() {
     onError: async (error: any) => {
       console.error('Error deleting agent:', error)
       const errorMessage = error.response?.data?.detail || error.message || 'Failed to delete agent. Please try again.'
-      
+
       // If error mentions test conversations, fetch them
       if (errorMessage.includes('test conversation') && selectedAgent) {
         try {
@@ -184,7 +184,7 @@ export default function Agents() {
           console.error('Error fetching conversations:', err)
         }
       }
-      
+
       showToast(errorMessage, 'error')
     },
   })
@@ -218,28 +218,28 @@ export default function Agents() {
 
   const createAgent = async (e: React.FormEvent) => {
     e.preventDefault()
-    
+
     // Validate that at least one voice configuration is selected
     const hasVoiceBundle = formData.voice_bundle_id && formData.voice_bundle_id.trim() !== ''
-    const hasVoiceAIIntegration = formData.voice_ai_integration_id && formData.voice_ai_integration_id.trim() !== '' && 
-                                  formData.voice_ai_agent_id && formData.voice_ai_agent_id.trim() !== ''
-    
+    const hasVoiceAIIntegration = formData.voice_ai_integration_id && formData.voice_ai_integration_id.trim() !== '' &&
+      formData.voice_ai_agent_id && formData.voice_ai_agent_id.trim() !== ''
+
     if (!hasVoiceBundle && !hasVoiceAIIntegration) {
       showToast('Please configure at least one: Voice Bundle (Test Voice AI Agents) or Voice AI Integration (Provider + Agent ID)', 'error')
       return
     }
-    
+
     // If Voice AI Integration is partially filled, validate it's complete
     if (formData.voice_ai_integration_id && !formData.voice_ai_agent_id) {
       showToast('Agent ID is required when Integration Provider is selected', 'error')
       return
     }
-    
+
     if (formData.voice_ai_agent_id && !formData.voice_ai_integration_id) {
       showToast('Integration Provider is required when Agent ID is provided', 'error')
       return
     }
-    
+
     createMutation.mutate(formData)
   }
 
@@ -251,7 +251,7 @@ export default function Agents() {
     setShowDeleteModal(true)
     setShowConversationsList(false)
     setBlockingConversations([])
-    
+
     // Pre-fetch conversations to check if there are any
     try {
       const conversations = await apiClient.listTestAgentConversations()
@@ -351,12 +351,23 @@ export default function Agents() {
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       {agent.agent_id ? (
-                        <span 
-                          className="font-mono font-semibold text-sm text-blue-600 hover:text-blue-800 hover:underline cursor-pointer"
-                          onClick={() => navigate(`/agents/${agent.agent_id || agent.id}`)}
-                        >
-                          {agent.agent_id}
-                        </span>
+                        <div className="flex items-center gap-2">
+                          {(() => {
+                            const integration = integrations.find((i: any) => i.id === agent.voice_ai_integration_id);
+                            if (integration?.platform === 'retell') {
+                              return <img src="/retellai.png" alt="Retell" className="h-5 w-5 object-contain" title="Retell AI" />;
+                            } else if (integration?.platform === 'vapi') {
+                              return <img src="/vapiai.jpg" alt="Vapi" className="h-5 w-5 rounded-full object-contain" title="Vapi AI" />;
+                            }
+                            return null;
+                          })()}
+                          <span
+                            className="font-mono font-semibold text-sm text-blue-600 hover:text-blue-800 hover:underline cursor-pointer"
+                            onClick={() => navigate(`/agents/${agent.agent_id || agent.id}`)}
+                          >
+                            {agent.agent_id}
+                          </span>
+                        </div>
                       ) : (
                         <span className="text-sm text-gray-400">-</span>
                       )}
@@ -467,20 +478,18 @@ export default function Agents() {
                     type="button"
                     onClick={() => {
                       const newMedium = formData.call_medium === 'phone_call' ? 'web_call' : 'phone_call'
-                      setFormData({ 
-                        ...formData, 
+                      setFormData({
+                        ...formData,
                         call_medium: newMedium,
                         phone_number: newMedium === 'web_call' ? '' : formData.phone_number
                       })
                     }}
-                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 ${
-                      formData.call_medium === 'phone_call' ? 'bg-primary-600' : 'bg-gray-200'
-                    }`}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 ${formData.call_medium === 'phone_call' ? 'bg-primary-600' : 'bg-gray-200'
+                      }`}
                   >
                     <span
-                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                        formData.call_medium === 'phone_call' ? 'translate-x-6' : 'translate-x-1'
-                      }`}
+                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${formData.call_medium === 'phone_call' ? 'translate-x-6' : 'translate-x-1'
+                        }`}
                     />
                   </button>
                   <span className={`text-sm ${formData.call_medium === 'phone_call' ? 'text-gray-700' : 'text-gray-500'}`}>
@@ -537,14 +546,12 @@ export default function Agents() {
                       const newType = formData.call_type === 'outbound' ? 'inbound' : 'outbound'
                       setFormData({ ...formData, call_type: newType })
                     }}
-                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 ${
-                      formData.call_type === 'inbound' ? 'bg-primary-600' : 'bg-gray-200'
-                    }`}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 ${formData.call_type === 'inbound' ? 'bg-primary-600' : 'bg-gray-200'
+                      }`}
                   >
                     <span
-                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                        formData.call_type === 'inbound' ? 'translate-x-6' : 'translate-x-1'
-                      }`}
+                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${formData.call_type === 'inbound' ? 'translate-x-6' : 'translate-x-1'
+                        }`}
                     />
                   </button>
                   <span className={`text-sm ${formData.call_type === 'inbound' ? 'text-gray-700' : 'text-gray-500'}`}>
@@ -567,11 +574,11 @@ export default function Agents() {
               </div>
 
               {/* Voice Configuration - Two Sections */}
-              <div className="space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 {/* Section 1: Test Voice AI Agents */}
-                <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
-                  <h3 className="text-lg font-semibold text-gray-900 mb-3">1. Test Voice AI Agents</h3>
-                  <p className="text-sm text-gray-600 mb-4">Configure agents using Voice Bundles for testing purposes</p>
+                <div className="border border-gray-200 rounded-lg p-4 bg-gray-50 flex flex-col h-full">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-3">1. Configure your test agent</h3>
+                  <p className="text-sm text-gray-600 mb-4 flex-grow">Configure agents using Voice Bundles for testing purposes</p>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">
                       Voice Bundle *
@@ -602,44 +609,59 @@ export default function Agents() {
                 </div>
 
                 {/* Section 2: Voice AI Agent */}
-                <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
+                <div className="border border-gray-200 rounded-lg p-4 bg-gray-50 flex flex-col h-full">
                   <h3 className="text-lg font-semibold text-gray-900 mb-3">2. Voice AI Agent</h3>
-                  <p className="text-sm text-gray-600 mb-4">Configure agents using external Voice AI integrations (Retell, Vapi)</p>
+                  <p className="text-sm text-gray-600 mb-4 flex-grow">Configure agents using external Voice AI integrations (Retell, Vapi)</p>
                   <div className="space-y-4">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
                         Integration Provider *
                       </label>
-                      <select
-                        value={formData.voice_ai_integration_id}
-                        onChange={(e) => {
-                          setFormData({
-                            ...formData,
-                            voice_ai_integration_id: e.target.value
-                          })
-                        }}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
-                      >
-                        <option value="">Select an Integration</option>
-                        {integrations
-                          .filter((integration: any) => 
-                            integration.is_active && 
-                            (integration.platform === 'retell' || integration.platform === 'vapi')
-                          )
-                          .map((integration: any) => (
-                            <option key={integration.id} value={integration.id}>
-                              {integration.name || integration.platform} ({integration.platform === 'retell' ? 'Retell' : 'Vapi'})
-                            </option>
-                          ))}
-                      </select>
-                      {integrations.filter((integration: any) => 
-                        integration.is_active && 
+                      <div className="flex items-center gap-3">
+                        <select
+                          value={formData.voice_ai_integration_id}
+                          onChange={(e) => {
+                            setFormData({
+                              ...formData,
+                              voice_ai_integration_id: e.target.value
+                            })
+                          }}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
+                        >
+                          <option value="">Select an Integration</option>
+                          {integrations
+                            .filter((integration: any) =>
+                              integration.is_active &&
+                              (integration.platform === 'retell' || integration.platform === 'vapi')
+                            )
+                            .map((integration: any) => (
+                              <option key={integration.id} value={integration.id}>
+                                {integration.name || integration.platform} ({integration.platform === 'retell' ? 'Retell' : 'Vapi'})
+                              </option>
+                            ))}
+                        </select>
+                        {formData.voice_ai_integration_id && (
+                          <div className="flex-shrink-0">
+                            {(() => {
+                              const selectedIntegration = integrations.find((i: any) => i.id === formData.voice_ai_integration_id);
+                              if (selectedIntegration?.platform === 'retell') {
+                                return <img src="/retellai.png" alt="Retell AI" className="h-8 w-8 object-contain" />;
+                              } else if (selectedIntegration?.platform === 'vapi') {
+                                return <img src="/vapiai.jpg" alt="Vapi AI" className="h-8 w-8 rounded-full object-contain" />;
+                              }
+                              return null;
+                            })()}
+                          </div>
+                        )}
+                      </div>
+                      {integrations.filter((integration: any) =>
+                        integration.is_active &&
                         (integration.platform === 'retell' || integration.platform === 'vapi')
                       ).length === 0 && (
-                        <p className="mt-1 text-xs text-gray-500">
-                          No active Retell or Vapi integrations available. Create one in Integrations section.
-                        </p>
-                      )}
+                          <p className="mt-1 text-xs text-gray-500">
+                            No active Retell or Vapi integrations available. Create one in Integrations section.
+                          </p>
+                        )}
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">

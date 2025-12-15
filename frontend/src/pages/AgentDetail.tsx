@@ -71,14 +71,14 @@ export default function AgentDetail() {
         call_type: data.call_type,
         call_medium: data.call_medium,
       }
-      
+
       // Add description if provided
       if (data.description && data.description.trim() !== '') {
         payload.description = data.description.trim()
       } else {
         payload.description = null
       }
-      
+
       // Handle phone_number based on call_medium
       if (data.call_medium === 'phone_call') {
         if (data.phone_number && data.phone_number.trim() !== '') {
@@ -90,19 +90,19 @@ export default function AgentDetail() {
         // For web_call, set phone_number to null
         payload.phone_number = null
       }
-      
+
       // Add voice_bundle_id if provided (Test Voice AI Agent section)
       // Only send if it's a non-empty string, otherwise send null to clear it
       const voiceBundleId = data.voice_bundle_id?.trim()
       payload.voice_bundle_id = voiceBundleId && voiceBundleId !== '' ? voiceBundleId : null
-      
+
       // Add voice_ai_integration_id and voice_ai_agent_id if provided (Voice AI Agent section)
       const integrationId = data.voice_ai_integration_id?.trim()
       payload.voice_ai_integration_id = integrationId && integrationId !== '' ? integrationId : null
-      
+
       const agentId = data.voice_ai_agent_id?.trim()
       payload.voice_ai_agent_id = agentId && agentId !== '' ? agentId : null
-      
+
       return apiClient.updateAgent(id!, payload)
     },
     onSuccess: () => {
@@ -127,7 +127,7 @@ export default function AgentDetail() {
     onError: async (error: any) => {
       console.error('Error deleting agent:', error)
       const errorMessage = error.response?.data?.detail || error.message || 'Failed to delete agent. Please try again.'
-      
+
       // If error mentions test conversations, fetch them
       if (errorMessage.includes('test conversation') && agent) {
         try {
@@ -139,7 +139,7 @@ export default function AgentDetail() {
           console.error('Error fetching conversations:', err)
         }
       }
-      
+
       showToast(errorMessage, 'error')
     },
   })
@@ -174,7 +174,7 @@ export default function AgentDetail() {
     setShowDeleteModal(true)
     setShowConversationsList(false)
     setBlockingConversations([])
-    
+
     // Pre-fetch conversations to check if there are any
     try {
       const conversations = await apiClient.listTestAgentConversations()
@@ -193,28 +193,28 @@ export default function AgentDetail() {
 
   const updateAgent = async (e: React.FormEvent) => {
     e.preventDefault()
-    
+
     // Validate that at least one voice configuration is selected
     const hasVoiceBundle = formData.voice_bundle_id && formData.voice_bundle_id.trim() !== ''
-    const hasVoiceAIIntegration = formData.voice_ai_integration_id && formData.voice_ai_integration_id.trim() !== '' && 
-                                  formData.voice_ai_agent_id && formData.voice_ai_agent_id.trim() !== ''
-    
+    const hasVoiceAIIntegration = formData.voice_ai_integration_id && formData.voice_ai_integration_id.trim() !== '' &&
+      formData.voice_ai_agent_id && formData.voice_ai_agent_id.trim() !== ''
+
     if (!hasVoiceBundle && !hasVoiceAIIntegration) {
       showToast('Please configure at least one: Voice Bundle (Test Voice AI Agents) or Voice AI Integration (Provider + Agent ID)', 'error')
       return
     }
-    
+
     // Validate Voice AI Integration fields
     if (formData.voice_ai_integration_id && !formData.voice_ai_agent_id) {
       showToast('Agent ID is required when Integration Provider is selected', 'error')
       return
     }
-    
+
     if (formData.voice_ai_agent_id && !formData.voice_ai_integration_id) {
       showToast('Integration Provider is required when Agent ID is provided', 'error')
       return
     }
-    
+
     updateMutation.mutate(formData)
   }
 
@@ -321,254 +321,337 @@ export default function AgentDetail() {
           </div>
         </div>
 
-        <form onSubmit={updateAgent} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Name *
-            </label>
-            <input
-              type="text"
-              required
-              disabled={!isEditMode}
-              value={formData.name}
-              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-              className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent ${
-                !isEditMode ? 'bg-gray-50 text-gray-700 cursor-not-allowed' : ''
-              }`}
-              placeholder="Customer Support Bot"
-            />
-          </div>
+        {!isEditMode ? (
+          <div className="space-y-8">
+            {/* General Information */}
+            <div>
+              <h3 className="text-lg font-medium text-gray-900 border-b border-gray-200 pb-2 mb-4">General Information</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <dt className="text-sm font-medium text-gray-500">Name</dt>
+                  <dd className="mt-1 text-sm text-gray-900 font-medium">{agent.name}</dd>
+                </div>
+                <div>
+                  <dt className="text-sm font-medium text-gray-500">Language</dt>
+                  <dd className="mt-1 text-sm text-gray-900">
+                    {({
+                      'en': 'English',
+                      'es': 'Spanish',
+                      'fr': 'French',
+                      'de': 'German',
+                      'zh': 'Chinese',
+                      'hi': 'Hindi'
+                    } as Record<string, string>)[agent.language] || agent.language}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-sm font-medium text-gray-500">Call Type</dt>
+                  <dd className="mt-1 text-sm text-gray-900 capitalize">{agent.call_type}</dd>
+                </div>
+                <div>
+                  <dt className="text-sm font-medium text-gray-500">Call Medium</dt>
+                  <dd className="mt-1 text-sm text-gray-900 capitalize flex items-center gap-2">
+                    {agent.call_medium === 'phone_call' ? 'Phone Call' : 'Web Call'}
+                  </dd>
+                </div>
+                {agent.phone_number && (
+                  <div>
+                    <dt className="text-sm font-medium text-gray-500">Phone Number</dt>
+                    <dd className="mt-1 text-sm text-gray-900">{agent.phone_number}</dd>
+                  </div>
+                )}
+                <div className="md:col-span-2">
+                  <dt className="text-sm font-medium text-gray-500">Description</dt>
+                  <dd className="mt-1 text-sm text-gray-900 whitespace-pre-wrap">{agent.description || '-'}</dd>
+                </div>
+              </div>
+            </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Call Medium *
-            </label>
-            <div className="flex items-center gap-4">
-              <span className={`text-sm ${formData.call_medium === 'phone_call' ? 'text-gray-500' : 'text-gray-700'}`}>
-                Web Call
-              </span>
-              <button
-                type="button"
-                disabled={!isEditMode}
-                onClick={() => {
-                  const newMedium = formData.call_medium === 'phone_call' ? 'web_call' : 'phone_call'
-                  setFormData({ 
-                    ...formData, 
-                    call_medium: newMedium,
-                    phone_number: newMedium === 'web_call' ? '' : formData.phone_number
-                  })
-                }}
-                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 ${
-                  formData.call_medium === 'phone_call' ? 'bg-primary-600' : 'bg-gray-200'
-                } ${!isEditMode ? 'opacity-50 cursor-not-allowed' : ''}`}
-              >
-                <span
-                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                    formData.call_medium === 'phone_call' ? 'translate-x-6' : 'translate-x-1'
-                  }`}
-                />
-              </button>
-              <span className={`text-sm ${formData.call_medium === 'phone_call' ? 'text-gray-700' : 'text-gray-500'}`}>
-                Phone Call
-              </span>
+            {/* Voice Configuration */}
+            <div>
+              <h3 className="text-lg font-medium text-gray-900 border-b border-gray-200 pb-2 mb-4">Voice Configuration</h3>
+              {agent.voice_bundle_id ? (
+                <div>
+                  <dt className="text-sm font-medium text-gray-500">Test Voice Bundle</dt>
+                  <dd className="mt-1 text-sm text-gray-900 font-medium bg-blue-50 text-blue-700 px-3 py-1 rounded-md inline-block border border-blue-100">
+                    {voiceBundles.find((v: any) => v.id === agent.voice_bundle_id)?.name || agent.voice_bundle_id}
+                  </dd>
+                </div>
+              ) : agent.voice_ai_integration_id ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <dt className="text-sm font-medium text-gray-500">Integration Provider</dt>
+                    <dd className="mt-1 flex items-center gap-2">
+                      {(() => {
+                        const integration = integrations.find((i: any) => i.id === agent.voice_ai_integration_id);
+                        if (integration?.platform === 'retell') {
+                          return <><img src="/retellai.png" alt="Retell" className="h-6 w-6 object-contain" /><span className="text-base font-medium text-gray-900">Retell AI</span></>;
+                        } else if (integration?.platform === 'vapi') {
+                          return <><img src="/vapiai.jpg" alt="Vapi" className="h-6 w-6 rounded-full object-contain" /><span className="text-base font-medium text-gray-900">Vapi AI</span></>;
+                        }
+                        return <span className="text-sm text-gray-900">{integration?.name || 'Unknown Provider'}</span>;
+                      })()}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-sm font-medium text-gray-500">Agent ID</dt>
+                    <dd className="mt-1 text-sm text-gray-900 font-mono bg-gray-100 px-3 py-2 rounded border border-gray-200 inline-block select-all">
+                      {agent.voice_ai_agent_id}
+                    </dd>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-sm text-gray-500 italic">No voice configuration detected.</p>
+              )}
             </div>
           </div>
-
-          {formData.call_medium === 'phone_call' && (
+        ) : (
+          <form onSubmit={updateAgent} className="space-y-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Phone Number *
+                Name *
               </label>
               <input
                 type="text"
-                required={formData.call_medium === 'phone_call'}
+                required
                 disabled={!isEditMode}
-                value={formData.phone_number}
-                onChange={(e) => setFormData({ ...formData, phone_number: e.target.value })}
-                className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent ${
-                  !isEditMode ? 'bg-gray-50 text-gray-700 cursor-not-allowed' : ''
-                }`}
-                placeholder="+1234567890"
+                value={formData.name}
+                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent ${!isEditMode ? 'bg-gray-50 text-gray-700 cursor-not-allowed' : ''
+                  }`}
+                placeholder="Customer Support Bot"
               />
             </div>
-          )}
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Language
-            </label>
-            <select
-              value={formData.language}
-              disabled={!isEditMode}
-              onChange={(e) => setFormData({ ...formData, language: e.target.value })}
-              className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent ${
-                !isEditMode ? 'bg-gray-50 text-gray-700 cursor-not-allowed' : ''
-              }`}
-            >
-              <option value="en">English</option>
-              <option value="es">Spanish</option>
-              <option value="fr">French</option>
-              <option value="de">German</option>
-              <option value="zh">Chinese</option>
-              <option value="hi">Hindi</option>
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Call Type
-            </label>
-            <select
-              value={formData.call_type}
-              disabled={!isEditMode}
-              onChange={(e) => setFormData({ ...formData, call_type: e.target.value })}
-              className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent ${
-                !isEditMode ? 'bg-gray-50 text-gray-700 cursor-not-allowed' : ''
-              }`}
-            >
-              <option value="outbound">Outbound</option>
-              <option value="inbound">Inbound</option>
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Description
-            </label>
-            <textarea
-              value={formData.description}
-              disabled={!isEditMode}
-              onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-              className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent ${
-                !isEditMode ? 'bg-gray-50 text-gray-700 cursor-not-allowed' : ''
-              }`}
-              rows={3}
-              placeholder="Optional description"
-            />
-          </div>
-
-          {/* Voice Configuration - Two Sections */}
-          <div className="space-y-6">
-            {/* Section 1: Test Voice AI Agents */}
-            <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
-              <h3 className="text-lg font-semibold text-gray-900 mb-3">1. Test Voice AI Agents</h3>
-              <p className="text-sm text-gray-600 mb-4">Configure agents using Voice Bundles for testing purposes</p>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Voice Bundle *
-                </label>
-                <select
-                  value={formData.voice_bundle_id}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Call Medium *
+              </label>
+              <div className="flex items-center gap-4">
+                <span className={`text-sm ${formData.call_medium === 'phone_call' ? 'text-gray-500' : 'text-gray-700'}`}>
+                  Web Call
+                </span>
+                <button
+                  type="button"
                   disabled={!isEditMode}
-                  onChange={(e) => {
+                  onClick={() => {
+                    const newMedium = formData.call_medium === 'phone_call' ? 'web_call' : 'phone_call'
                     setFormData({
                       ...formData,
-                      voice_bundle_id: e.target.value
+                      call_medium: newMedium,
+                      phone_number: newMedium === 'web_call' ? '' : formData.phone_number
                     })
                   }}
-                  className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent ${
-                    !isEditMode ? 'bg-gray-50 text-gray-700 cursor-not-allowed' : 'bg-white'
-                  }`}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 ${formData.call_medium === 'phone_call' ? 'bg-primary-600' : 'bg-gray-200'
+                    } ${!isEditMode ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
-                  <option value="">Select a Voice Bundle</option>
-                  {voiceBundles.filter((vb: any) => vb.is_active).map((vb: any) => (
-                    <option key={vb.id} value={vb.id}>
-                      {vb.name}
-                    </option>
-                  ))}
-                </select>
-                {voiceBundles.filter((vb: any) => vb.is_active).length === 0 && (
-                  <p className="mt-1 text-xs text-gray-500">
-                    No active voice bundles available. Create one in VoiceBundle section.
-                  </p>
-                )}
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${formData.call_medium === 'phone_call' ? 'translate-x-6' : 'translate-x-1'
+                      }`}
+                  />
+                </button>
+                <span className={`text-sm ${formData.call_medium === 'phone_call' ? 'text-gray-700' : 'text-gray-500'}`}>
+                  Phone Call
+                </span>
               </div>
             </div>
 
-            {/* Section 2: Voice AI Agent */}
-            <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
-              <h3 className="text-lg font-semibold text-gray-900 mb-3">2. Voice AI Agent</h3>
-              <p className="text-sm text-gray-600 mb-4">Configure agents using external Voice AI integrations (Retell, Vapi)</p>
-              <div className="space-y-4">
+            {formData.call_medium === 'phone_call' && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Phone Number *
+                </label>
+                <input
+                  type="text"
+                  required={formData.call_medium === 'phone_call'}
+                  disabled={!isEditMode}
+                  value={formData.phone_number}
+                  onChange={(e) => setFormData({ ...formData, phone_number: e.target.value })}
+                  className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent ${!isEditMode ? 'bg-gray-50 text-gray-700 cursor-not-allowed' : ''
+                    }`}
+                  placeholder="+1234567890"
+                />
+              </div>
+            )}
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Language
+              </label>
+              <select
+                value={formData.language}
+                disabled={!isEditMode}
+                onChange={(e) => setFormData({ ...formData, language: e.target.value })}
+                className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent ${!isEditMode ? 'bg-gray-50 text-gray-700 cursor-not-allowed' : ''
+                  }`}
+              >
+                <option value="en">English</option>
+                <option value="es">Spanish</option>
+                <option value="fr">French</option>
+                <option value="de">German</option>
+                <option value="zh">Chinese</option>
+                <option value="hi">Hindi</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Call Type
+              </label>
+              <select
+                value={formData.call_type}
+                disabled={!isEditMode}
+                onChange={(e) => setFormData({ ...formData, call_type: e.target.value })}
+                className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent ${!isEditMode ? 'bg-gray-50 text-gray-700 cursor-not-allowed' : ''
+                  }`}
+              >
+                <option value="outbound">Outbound</option>
+                <option value="inbound">Inbound</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Description
+              </label>
+              <textarea
+                value={formData.description}
+                disabled={!isEditMode}
+                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent ${!isEditMode ? 'bg-gray-50 text-gray-700 cursor-not-allowed' : ''
+                  }`}
+                rows={3}
+                placeholder="Optional description"
+              />
+            </div>
+
+            {/* Voice Configuration - Two Sections */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Section 1: Test Voice AI Agents */}
+              <div className="border border-gray-200 rounded-lg p-4 bg-gray-50 flex flex-col h-full">
+                <h3 className="text-lg font-semibold text-gray-900 mb-3">1. Configure your test agent</h3>
+                <p className="text-sm text-gray-600 mb-4 flex-grow">Configure agents using Voice Bundles for testing purposes</p>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Integration Provider *
+                    Voice Bundle *
                   </label>
                   <select
-                    value={formData.voice_ai_integration_id}
+                    value={formData.voice_bundle_id}
                     disabled={!isEditMode}
                     onChange={(e) => {
                       setFormData({
                         ...formData,
-                        voice_ai_integration_id: e.target.value
+                        voice_bundle_id: e.target.value
                       })
                     }}
-                    className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent ${
-                      !isEditMode ? 'bg-gray-50 text-gray-700 cursor-not-allowed' : 'bg-white'
-                    }`}
+                    className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent ${!isEditMode ? 'bg-gray-50 text-gray-700 cursor-not-allowed' : 'bg-white'
+                      }`}
                   >
-                    <option value="">Select an Integration</option>
-                    {integrations
-                      .filter((integration: any) => 
-                        integration.is_active && 
-                        (integration.platform === 'retell' || integration.platform === 'vapi')
-                      )
-                      .map((integration: any) => (
-                        <option key={integration.id} value={integration.id}>
-                          {integration.name || integration.platform} ({integration.platform === 'retell' ? 'Retell' : 'Vapi'})
-                        </option>
-                      ))}
+                    <option value="">Select a Voice Bundle</option>
+                    {voiceBundles.filter((vb: any) => vb.is_active).map((vb: any) => (
+                      <option key={vb.id} value={vb.id}>
+                        {vb.name}
+                      </option>
+                    ))}
                   </select>
-                  {integrations.filter((integration: any) => 
-                    integration.is_active && 
-                    (integration.platform === 'retell' || integration.platform === 'vapi')
-                  ).length === 0 && (
+                  {voiceBundles.filter((vb: any) => vb.is_active).length === 0 && (
                     <p className="mt-1 text-xs text-gray-500">
-                      No active Retell or Vapi integrations available. Create one in Integrations section.
+                      No active voice bundles available. Create one in VoiceBundle section.
                     </p>
                   )}
                 </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Agent ID *
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.voice_ai_agent_id}
-                    disabled={!isEditMode}
-                    onChange={(e) => {
-                      setFormData({
-                        ...formData,
-                        voice_ai_agent_id: e.target.value
-                      })
-                    }}
-                    className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent ${
-                      !isEditMode ? 'bg-gray-50 text-gray-700 cursor-not-allowed' : 'bg-white'
-                    }`}
-                    placeholder="Enter agent ID from Retell/Vapi"
-                  />
-                  <p className="mt-1 text-xs text-gray-500">
-                    Enter the agent ID you received from your Retell or Vapi provider
-                  </p>
+              </div>
+
+              {/* Section 2: Voice AI Agent */}
+              <div className="border border-gray-200 rounded-lg p-4 bg-gray-50 flex flex-col h-full">
+                <h3 className="text-lg font-semibold text-gray-900 mb-3">2. Voice AI Agent</h3>
+                <p className="text-sm text-gray-600 mb-4 flex-grow">Configure agents using external Voice AI integrations (Retell, Vapi)</p>
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Integration Provider *
+                    </label>
+                    <div className="flex items-center gap-3">
+                      <select
+                        value={formData.voice_ai_integration_id}
+                        disabled={!isEditMode}
+                        onChange={(e) => {
+                          setFormData({
+                            ...formData,
+                            voice_ai_integration_id: e.target.value
+                          })
+                        }}
+                        className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent ${!isEditMode ? 'bg-gray-50 text-gray-700 cursor-not-allowed' : 'bg-white'
+                          }`}
+                      >
+                        <option value="">Select an Integration</option>
+                        {integrations
+                          .filter((integration: any) =>
+                            integration.is_active &&
+                            (integration.platform === 'retell' || integration.platform === 'vapi')
+                          )
+                          .map((integration: any) => (
+                            <option key={integration.id} value={integration.id}>
+                              {integration.name || integration.platform} ({integration.platform === 'retell' ? 'Retell' : 'Vapi'})
+                            </option>
+                          ))}
+                      </select>
+                      {formData.voice_ai_integration_id && (
+                        <div className="flex-shrink-0">
+                          {(() => {
+                            const selectedIntegration = integrations.find((i: any) => i.id === formData.voice_ai_integration_id);
+                            if (selectedIntegration?.platform === 'retell') {
+                              return <img src="/retellai.png" alt="Retell AI" className="h-8 w-8 object-contain" />;
+                            } else if (selectedIntegration?.platform === 'vapi') {
+                              return <img src="/vapiai.jpg" alt="Vapi AI" className="h-8 w-8 rounded-full object-contain" />;
+                            }
+                            return null;
+                          })()}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Agent ID *
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.voice_ai_agent_id}
+                      disabled={!isEditMode}
+                      onChange={(e) => {
+                        setFormData({
+                          ...formData,
+                          voice_ai_agent_id: e.target.value
+                        })
+                      }}
+                      className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent ${!isEditMode ? 'bg-gray-50 text-gray-700 cursor-not-allowed' : 'bg-white'
+                        }`}
+                      placeholder="Enter agent ID from Retell/Vapi"
+                    />
+                    <p className="mt-1 text-xs text-gray-500">
+                      Enter the agent ID you received from your Retell or Vapi provider
+                    </p>
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
 
-          {isEditMode && (
-            <div className="flex gap-3 pt-4 border-t border-gray-200">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={handleDelete}
-                leftIcon={<Trash2 className="w-4 h-4" />}
-                className="border-red-300 text-red-700 hover:bg-red-50 hover:border-red-400"
-              >
-                Delete
-              </Button>
-            </div>
-          )}
-        </form>
+            {isEditMode && (
+              <div className="flex gap-3 pt-4 border-t border-gray-200">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handleDelete}
+                  leftIcon={<Trash2 className="w-4 h-4" />}
+                  className="border-red-300 text-red-700 hover:bg-red-50 hover:border-red-400"
+                >
+                  Delete
+                </Button>
+              </div>
+            )}
+          </form>
+        )}
       </div>
 
       {/* Delete Confirmation Modal */}
