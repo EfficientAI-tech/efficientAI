@@ -106,7 +106,7 @@ export default function Dashboard() {
             icon={Brain}
             title="Configure your AI Provider"
             description="Set up your AI provider credentials (OpenAI, Anthropic, etc.) to enable voice AI capabilities."
-            href="/ai-providers"
+            href="/integrations"
             step={1}
           />
           <QuickStartCard

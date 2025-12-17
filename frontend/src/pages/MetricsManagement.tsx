@@ -144,7 +144,7 @@ export default function MetricsManagement() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Metrics Management</h1>
+          <h1 className="text-3xl font-bold text-gray-900">Metrics</h1>
           <p className="mt-2 text-sm text-gray-600">
             Manage evaluation metrics for your conversations
           </p>
@@ -233,9 +233,9 @@ export default function MetricsManagement() {
                         disabled={toggleEnabledMutation.isPending}
                       >
                         {metric.enabled ? (
-                          <ToggleRight className="w-6 h-6 text-green-600" />
+                          <ToggleRight className="w-10 h-10 text-green-600" />
                         ) : (
-                          <ToggleLeft className="w-6 h-6 text-gray-400" />
+                          <ToggleLeft className="w-10 h-10 text-gray-400" />
                         )}
                       </button>
                     </td>

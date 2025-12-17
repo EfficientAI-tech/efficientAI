@@ -49,7 +49,9 @@ class ApiClient {
     this.client.interceptors.response.use(
       (response) => response,
       (error) => {
-        if (error.response?.status === 401 || error.response?.status === 403) {
+        // Only log out on 401 (authentication failure)
+        // 403 errors are authorization failures that should be handled by the calling code
+        if (error.response?.status === 401) {
           // API key invalid, clear it
           localStorage.removeItem('apiKey')
           window.location.href = '/login'
@@ -182,12 +184,15 @@ class ApiClient {
   // Agents endpoints
   async createAgent(data: {
     name: string
-    phone_number: string
+    phone_number?: string
     language: string
     description?: string | null
     call_type: string
+    call_medium: string
     voice_bundle_id?: string
     ai_provider_id?: string
+    voice_ai_integration_id?: string
+    voice_ai_agent_id?: string
   }): Promise<any> {
     const response = await this.client.post('/api/v1/agents', data)
     return response.data
@@ -211,6 +216,7 @@ class ApiClient {
     language?: string
     description?: string | null
     call_type?: string
+    call_medium?: string
     voice_bundle_id?: string
     ai_provider_id?: string
   }): Promise<any> {
@@ -294,6 +300,23 @@ class ApiClient {
 
   async deleteScenario(scenarioId: string): Promise<void> {
     await this.client.delete(`/api/v1/scenarios/${scenarioId}`)
+  }
+
+  // Chat/Inference endpoints
+  async chatCompletion(data: {
+    messages: Array<{ role: string; content: string }>
+    provider: string
+    model: string
+    temperature?: number
+    max_tokens?: number
+  }): Promise<{
+    text: string
+    model: string
+    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }
+    processing_time?: number
+  }> {
+    const response = await this.client.post('/api/v1/chat/completion', data)
+    return response.data
   }
 
   // VoiceBundle endpoints
@@ -438,6 +461,11 @@ class ApiClient {
     return response.data
   }
 
+  async getIntegrationApiKey(integrationId: string): Promise<{ api_key: string }> {
+    const response = await this.client.get(`/api/v1/integrations/${integrationId}/api-key`)
+    return response.data
+  }
+
   // Data Sources endpoints
   async testS3Connection(): Promise<S3ConnectionTestResponse> {
     const response = await this.client.post('/api/v1/data-sources/s3/test-connection')
@@ -506,9 +534,14 @@ class ApiClient {
     return response.data
   }
 
-  async getModelOptions(provider: string): Promise<{ stt: string[]; llm: string[]; tts: string[] }> {
+  async getModelOptions(provider: string): Promise<{ stt: string[]; llm: string[]; tts: string[]; s2s: string[] }> {
     const response = await this.client.get(`/api/v1/model-config/providers/${provider}/options`)
-    return response.data
+    const data = response.data
+    // Ensure s2s is always present (for backward compatibility)
+    return {
+      ...data,
+      s2s: data.s2s || []
+    }
   }
 
   async getModelsByType(provider: string, modelType: 'stt' | 'llm' | 'tts'): Promise<string[]> {
@@ -637,6 +670,51 @@ class ApiClient {
   // Voice Agent endpoints
   async getVoiceAgentConnection(): Promise<{ ws_url: string; endpoint: string }> {
     const response = await this.client.post('/api/v1/voice-agent/connect')
+    return response.data
+  }
+
+  // Playground endpoints
+  async createWebCall(data: {
+    agent_id: string
+    metadata?: Record<string, any>
+    retell_llm_dynamic_variables?: Record<string, any>
+    custom_sip_headers?: Record<string, string>
+  }): Promise<{
+    call_type: string
+    access_token: string
+    call_id: string
+    agent_id: string
+    agent_version?: number
+    call_status: string
+    agent_name?: string
+    metadata?: Record<string, any>
+    retell_llm_dynamic_variables?: Record<string, any>
+    sample_rate?: number
+    call_short_id?: string
+  }> {
+    const response = await this.client.post('/api/v1/playground/web-call', data)
+    return response.data
+  }
+
+  async listCallRecordings(skip = 0, limit = 100): Promise<any[]> {
+    const response = await this.client.get('/api/v1/playground/call-recordings', {
+      params: { skip, limit },
+    })
+    return response.data
+  }
+
+  async getCallRecording(callShortId: string): Promise<any> {
+    const response = await this.client.get(`/api/v1/playground/call-recordings/${callShortId}`)
+    return response.data
+  }
+
+  async refreshCallRecording(callShortId: string): Promise<{ message: string }> {
+    const response = await this.client.post(`/api/v1/playground/call-recordings/${callShortId}/refresh`)
+    return response.data
+  }
+
+  async deleteCallRecording(callShortId: string): Promise<{ message: string }> {
+    const response = await this.client.delete(`/api/v1/playground/call-recordings/${callShortId}`)
     return response.data
   }
 

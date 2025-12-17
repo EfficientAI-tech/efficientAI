@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
 from uuid import UUID
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.dependencies import get_db, get_api_key
 from app.models.database import (
@@ -28,7 +28,7 @@ def get_current_user(
 ) -> User:
     """
     Get current user from API key.
-    Creates user if doesn't exist.
+    Creates user if doesn't exist and adds them to the organization as ADMIN.
     """
     from app.models.database import APIKey
     
@@ -40,6 +40,22 @@ def get_current_user(
     if db_key.user_id:
         user = db.query(User).filter(User.id == db_key.user_id).first()
         if user:
+            # Ensure user is a member of the organization
+            existing_member = db.query(OrganizationMember).filter(
+                OrganizationMember.organization_id == db_key.organization_id,
+                OrganizationMember.user_id == user.id
+            ).first()
+            
+            if not existing_member:
+                # Add user to organization as ADMIN (they created the API key)
+                member = OrganizationMember(
+                    organization_id=db_key.organization_id,
+                    user_id=user.id,
+                    role=RoleEnum.ADMIN
+                )
+                db.add(member)
+                db.commit()
+            
             return user
     
     # Otherwise, create a user for this API key
@@ -56,7 +72,35 @@ def get_current_user(
         
         # Link API key to user
         db_key.user_id = user.id
+        
+        # Add user to organization as ADMIN (they created the API key)
+        member = OrganizationMember(
+            organization_id=db_key.organization_id,
+            user_id=user.id,
+            role=RoleEnum.ADMIN
+        )
+        db.add(member)
         db.commit()
+    else:
+        # User exists but might not be in organization
+        existing_member = db.query(OrganizationMember).filter(
+            OrganizationMember.organization_id == db_key.organization_id,
+            OrganizationMember.user_id == user.id
+        ).first()
+        
+        if not existing_member:
+            # Link API key to user if not already linked
+            if not db_key.user_id:
+                db_key.user_id = user.id
+            
+            # Add user to organization as ADMIN
+            member = OrganizationMember(
+                organization_id=db_key.organization_id,
+                user_id=user.id,
+                role=RoleEnum.ADMIN
+            )
+            db.add(member)
+            db.commit()
     
     return user
 
@@ -91,6 +135,8 @@ async def get_profile(
         "id": current_user.id,
         "email": current_user.email,
         "name": current_user.name,
+        "first_name": current_user.first_name,
+        "last_name": current_user.last_name,
         "created_at": current_user.created_at,
         "organizations": organizations
     }
@@ -107,6 +153,12 @@ async def update_profile(
     """
     if profile_update.name is not None:
         current_user.name = profile_update.name
+    
+    if profile_update.first_name is not None:
+        current_user.first_name = profile_update.first_name
+    
+    if profile_update.last_name is not None:
+        current_user.last_name = profile_update.last_name
     
     if profile_update.email is not None:
         # Check if email is already taken
@@ -146,6 +198,8 @@ async def update_profile(
         "id": current_user.id,
         "email": current_user.email,
         "name": current_user.name,
+        "first_name": current_user.first_name,
+        "last_name": current_user.last_name,
         "created_at": current_user.created_at,
         "organizations": organizations
     }
@@ -166,7 +220,7 @@ async def get_my_invitations(
     result = []
     for invitation in invitations:
         # Check if expired
-        if invitation.status == InvitationStatus.PENDING and invitation.expires_at < datetime.utcnow():
+        if invitation.status == InvitationStatus.PENDING and invitation.expires_at < datetime.now(timezone.utc):
             invitation.status = InvitationStatus.EXPIRED
             db.commit()
         
@@ -211,7 +265,7 @@ async def accept_invitation(
             detail=f"Cannot accept invitation with status: {invitation.status.value}"
         )
     
-    if invitation.expires_at < datetime.utcnow():
+    if invitation.expires_at < datetime.now(timezone.utc):
         invitation.status = InvitationStatus.EXPIRED
         db.commit()
         raise HTTPException(status_code=400, detail="Invitation has expired")
@@ -238,7 +292,7 @@ async def accept_invitation(
     
     # Update invitation
     invitation.status = InvitationStatus.ACCEPTED
-    invitation.accepted_at = datetime.utcnow()
+    invitation.accepted_at = datetime.now(timezone.utc)
     invitation.invited_user_id = current_user.id
     
     db.commit()

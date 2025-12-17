@@ -103,6 +103,10 @@
     "provider": "google",
     "model_type": "tts"
   },
+  "gemini-2.5-flash-live-001": {
+    "provider": "google",
+    "model_type": "s2s"
+  },
   "azure-speech-v1": {
     "provider": "azure",
     "model_type": "stt"

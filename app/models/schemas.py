@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field, validator, model_validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from uuid import UUID
-from app.models.database import EvaluationType, EvaluationStatus, RoleEnum, InvitationStatus, IntegrationPlatform, ModelProvider, MetricType, MetricTrigger, EvaluatorResultStatus
+from app.models.database import EvaluationType, EvaluationStatus, RoleEnum, InvitationStatus, IntegrationPlatform, ModelProvider, MetricType, MetricTrigger, EvaluatorResultStatus, VoiceBundleType
 
 
 # Audio File Schemas
@@ -182,6 +182,11 @@ class CallTypeEnum(str, PyEnum):
     OUTBOUND = "outbound"
 
 
+class CallMediumEnum(str, PyEnum):
+    PHONE_CALL = "phone_call"
+    WEB_CALL = "web_call"
+
+
 class GenderEnum(str, PyEnum):
     MALE = "male"
     FEMALE = "female"
@@ -213,23 +218,37 @@ class BackgroundNoiseEnum(str, PyEnum):
 class AgentCreate(BaseModel):
     """Schema for creating a new agent"""
     name: str = Field(..., min_length=1, max_length=255)
-    phone_number: str
+    phone_number: Optional[str] = None
     language: LanguageEnum = LanguageEnum.ENGLISH
     description: Optional[str] = None
     call_type: CallTypeEnum = CallTypeEnum.OUTBOUND
+    call_medium: CallMediumEnum = CallMediumEnum.PHONE_CALL
     voice_bundle_id: Optional[UUID] = None
     ai_provider_id: Optional[UUID] = None
+    voice_ai_integration_id: Optional[UUID] = None
+    voice_ai_agent_id: Optional[str] = None
 
     @model_validator(mode='after')
     def validate_voice_config(self):
-        """Ensure exactly one of voice_bundle_id or ai_provider_id is provided"""
+        """Validate voice configuration - both voice_bundle_id and voice_ai_integration_id can be provided independently"""
         voice_bundle = self.voice_bundle_id
-        ai_provider = self.ai_provider_id
+        voice_ai_integration = self.voice_ai_integration_id
         
-        if voice_bundle and ai_provider:
-            raise ValueError('Cannot specify both voice_bundle_id and ai_provider_id. Choose one.')
-        if not voice_bundle and not ai_provider:
-            raise ValueError('Must specify either voice_bundle_id or ai_provider_id.')
+        # At least one must be provided
+        if not voice_bundle and not voice_ai_integration:
+            raise ValueError('Must specify at least one voice configuration: voice_bundle_id (Test Voice AI Agent) or voice_ai_integration_id (Voice AI Agent).')
+        
+        # If voice_ai_integration_id is provided, voice_ai_agent_id must also be provided
+        if voice_ai_integration and not self.voice_ai_agent_id:
+            raise ValueError('voice_ai_agent_id is required when voice_ai_integration_id is provided.')
+        
+        return self
+    
+    @model_validator(mode='after')
+    def validate_phone_number(self):
+        """Ensure phone_number is provided when call_medium is phone_call"""
+        if self.call_medium == CallMediumEnum.PHONE_CALL and not self.phone_number:
+            raise ValueError('phone_number is required when call_medium is phone_call')
         return self
 
     class Config:
@@ -252,30 +271,48 @@ class AgentUpdate(BaseModel):
     language: Optional[LanguageEnum] = None
     description: Optional[str] = None
     call_type: Optional[CallTypeEnum] = None
+    call_medium: Optional[CallMediumEnum] = None
     voice_bundle_id: Optional[UUID] = None
-    ai_provider_id: Optional[UUID] = None
+    voice_ai_integration_id: Optional[UUID] = None
+    voice_ai_agent_id: Optional[str] = None
 
     @model_validator(mode='after')
     def validate_voice_config(self):
-        """Ensure at most one of voice_bundle_id or ai_provider_id is provided"""
+        """Validate voice configuration - both voice_bundle_id and voice_ai_integration_id can be provided independently"""
         voice_bundle = self.voice_bundle_id
-        ai_provider = self.ai_provider_id
+        voice_ai_integration = self.voice_ai_integration_id
         
-        if voice_bundle and ai_provider:
-            raise ValueError('Cannot specify both voice_bundle_id and ai_provider_id. Choose one.')
+        # If voice_ai_integration_id is provided, voice_ai_agent_id must also be provided
+        if voice_ai_integration and not self.voice_ai_agent_id:
+            raise ValueError('voice_ai_agent_id is required when voice_ai_integration_id is provided.')
+        
+        return self
+    
+    @model_validator(mode='after')
+    def validate_phone_number(self):
+        """Ensure phone_number is provided when call_medium is phone_call"""
+        # Only validate if call_medium is being set to phone_call
+        if self.call_medium == CallMediumEnum.PHONE_CALL and not self.phone_number:
+            # If phone_number is not being updated, we need to check existing value
+            # This will be handled in the route
+            pass
         return self
 
 
 class AgentResponse(BaseModel):
     """Schema for agent response"""
     id: UUID
+    agent_id: Optional[str] = None
     name: str
-    phone_number: str
+    phone_number: Optional[str] = None
     language: LanguageEnum
     description: Optional[str]
     call_type: CallTypeEnum
+    call_medium: CallMediumEnum
     voice_bundle_id: Optional[UUID]
     ai_provider_id: Optional[UUID]
+    voice_ai_integration_id: Optional[UUID]
+    voice_ai_agent_id: Optional[str]
     created_at: datetime
     updated_at: datetime
 
@@ -365,6 +402,8 @@ class UserCreate(BaseModel):
 class UserUpdate(BaseModel):
     """Schema for updating user profile."""
     name: Optional[str] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
     email: Optional[str] = None
 
 
@@ -373,6 +412,8 @@ class UserResponse(BaseModel):
     id: UUID
     email: str
     name: Optional[str]
+    first_name: Optional[str]
+    last_name: Optional[str]
     is_active: bool
     created_at: datetime
 
@@ -431,6 +472,8 @@ class ProfileResponse(BaseModel):
     id: UUID
     email: str
     name: Optional[str]
+    first_name: Optional[str]
+    last_name: Optional[str]
     created_at: datetime
     organizations: List[dict] = Field(default_factory=list)  # List of org memberships
 
@@ -551,31 +594,57 @@ class VoiceBundleCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
     
-    # STT Configuration
-    stt_provider: ModelProvider
-    stt_model: str = Field(..., min_length=1)
+    # Bundle type: either STT+LLM+TTS or S2S
+    bundle_type: VoiceBundleType = Field(default=VoiceBundleType.STT_LLM_TTS)
     
-    # LLM Configuration
-    llm_provider: ModelProvider
-    llm_model: str = Field(..., min_length=1)
+    # STT Configuration - required for STT_LLM_TTS, optional for S2S
+    stt_provider: Optional[ModelProvider] = None
+    stt_model: Optional[str] = Field(None, min_length=1)
+    
+    # LLM Configuration - required for STT_LLM_TTS, optional for S2S
+    llm_provider: Optional[ModelProvider] = None
+    llm_model: Optional[str] = Field(None, min_length=1)
     llm_temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
     llm_max_tokens: Optional[int] = Field(None, gt=0)
     llm_config: Optional[Dict[str, Any]] = None
     
-    # TTS Configuration
-    tts_provider: ModelProvider
-    tts_model: str = Field(..., min_length=1)
+    # TTS Configuration - required for STT_LLM_TTS, optional for S2S
+    tts_provider: Optional[ModelProvider] = None
+    tts_model: Optional[str] = Field(None, min_length=1)
     tts_voice: Optional[str] = None
     tts_config: Optional[Dict[str, Any]] = None
     
+    # S2S Configuration - required for S2S, optional for STT_LLM_TTS
+    s2s_provider: Optional[ModelProvider] = None
+    s2s_model: Optional[str] = Field(None, min_length=1)
+    s2s_config: Optional[Dict[str, Any]] = None
+    
     # Additional metadata
     extra_metadata: Optional[Dict[str, Any]] = None
+    
+    @model_validator(mode='after')
+    def validate_bundle_configuration(self):
+        """Validate that required fields are provided based on bundle_type."""
+        if self.bundle_type == VoiceBundleType.STT_LLM_TTS:
+            if not self.stt_provider or not self.stt_model:
+                raise ValueError('STT provider and model are required for STT_LLM_TTS bundle type')
+            if not self.llm_provider or not self.llm_model:
+                raise ValueError('LLM provider and model are required for STT_LLM_TTS bundle type')
+            if not self.tts_provider or not self.tts_model:
+                raise ValueError('TTS provider and model are required for STT_LLM_TTS bundle type')
+        elif self.bundle_type == VoiceBundleType.S2S:
+            if not self.s2s_provider or not self.s2s_model:
+                raise ValueError('S2S provider and model are required for S2S bundle type')
+        return self
 
 
 class VoiceBundleUpdate(BaseModel):
     """Schema for updating a VoiceBundle."""
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     description: Optional[str] = None
+    
+    # Bundle type
+    bundle_type: Optional[VoiceBundleType] = None
     
     # STT Configuration
     stt_provider: Optional[ModelProvider] = None
@@ -594,6 +663,11 @@ class VoiceBundleUpdate(BaseModel):
     tts_voice: Optional[str] = None
     tts_config: Optional[Dict[str, Any]] = None
     
+    # S2S Configuration
+    s2s_provider: Optional[ModelProvider] = None
+    s2s_model: Optional[str] = Field(None, min_length=1)
+    s2s_config: Optional[Dict[str, Any]] = None
+    
     # Additional metadata
     extra_metadata: Optional[Dict[str, Any]] = None
     is_active: Optional[bool] = None
@@ -605,22 +679,44 @@ class VoiceBundleResponse(BaseModel):
     name: str
     description: Optional[str]
     
+    # Bundle type - can be string from DB or enum, validator handles conversion
+    bundle_type: VoiceBundleType
+    
+    @validator('bundle_type', pre=True)
+    def convert_bundle_type(cls, v):
+        """Convert string to VoiceBundleType enum if needed."""
+        if isinstance(v, str):
+            try:
+                return VoiceBundleType(v)
+            except ValueError:
+                # Try to find by value
+                for enum_member in VoiceBundleType:
+                    if enum_member.value == v:
+                        return enum_member
+                raise ValueError(f"Invalid bundle_type value: {v}")
+        return v
+    
     # STT Configuration
-    stt_provider: ModelProvider
-    stt_model: str
+    stt_provider: Optional[ModelProvider]
+    stt_model: Optional[str]
     
     # LLM Configuration
-    llm_provider: ModelProvider
-    llm_model: str
+    llm_provider: Optional[ModelProvider]
+    llm_model: Optional[str]
     llm_temperature: Optional[float]
     llm_max_tokens: Optional[int]
     llm_config: Optional[Dict[str, Any]]
     
     # TTS Configuration
-    tts_provider: ModelProvider
-    tts_model: str
+    tts_provider: Optional[ModelProvider]
+    tts_model: Optional[str]
     tts_voice: Optional[str]
     tts_config: Optional[Dict[str, Any]]
+    
+    # S2S Configuration
+    s2s_provider: Optional[ModelProvider]
+    s2s_model: Optional[str]
+    s2s_config: Optional[Dict[str, Any]]
     
     # Additional metadata
     extra_metadata: Optional[Dict[str, Any]]

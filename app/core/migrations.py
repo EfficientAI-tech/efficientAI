@@ -91,15 +91,16 @@ class MigrationRunner:
         logger.info(f"Running migration: {version}")
         
         try:
-            # Import the migration module
-            sys.path.insert(0, str(MIGRATIONS_DIR.parent))
-            module_name = f"migrations.{version}"
+            # Use importlib to handle module names starting with numbers
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(f"migrations_{version}", migration_file)
+            if spec is None or spec.loader is None:
+                logger.error(f"Could not load migration file: {migration_file}")
+                return False
             
-            # Remove from cache if already imported
-            if module_name in sys.modules:
-                del sys.modules[module_name]
-            
-            migration_module = __import__(module_name, fromlist=["upgrade"])
+            migration_module = importlib.util.module_from_spec(spec)
+            sys.modules[f"migrations_{version}"] = migration_module
+            spec.loader.exec_module(migration_module)
             
             # Check if migration has upgrade function
             if not hasattr(migration_module, "upgrade"):
@@ -123,9 +124,9 @@ class MigrationRunner:
             self.db.rollback()
             return False
         finally:
-            # Clean up sys.path
-            if str(MIGRATIONS_DIR.parent) in sys.path:
-                sys.path.remove(str(MIGRATIONS_DIR.parent))
+            # Clean up
+            if f"migrations_{version}" in sys.modules:
+                del sys.modules[f"migrations_{version}"]
     
     def run_all(self) -> bool:
         """Run all pending migrations."""

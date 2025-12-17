@@ -4,12 +4,18 @@ import { useState } from 'react'
 import { Role, Invitation, OrganizationMember, InvitationCreate } from '../types/api'
 import { Users, Mail, UserPlus, Shield, ShieldCheck, ShieldAlert, X, Trash2 } from 'lucide-react'
 import Button from '../components/Button'
+import { useToast } from '../hooks/useToast'
 
 export default function IAM() {
   const queryClient = useQueryClient()
+  const { showToast, ToastContainer } = useToast()
   const [showInviteModal, setShowInviteModal] = useState(false)
   const [inviteEmail, setInviteEmail] = useState('')
   const [inviteRole, setInviteRole] = useState<Role>(Role.READER)
+  const [showRemoveModal, setShowRemoveModal] = useState(false)
+  const [memberToRemove, setMemberToRemove] = useState<OrganizationMember | null>(null)
+  const [showCancelModal, setShowCancelModal] = useState(false)
+  const [invitationToCancel, setInvitationToCancel] = useState<Invitation | null>(null)
 
   const { data: users, isLoading: usersLoading } = useQuery({
     queryKey: ['iam', 'users'],
@@ -36,6 +42,11 @@ export default function IAM() {
       apiClient.updateUserRole(userId, role),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['iam', 'users'] })
+      showToast('User role updated successfully', 'success')
+    },
+    onError: (error: any) => {
+      const errorMessage = error.response?.data?.detail || error.message || 'Failed to update user role'
+      showToast(errorMessage, 'error')
     },
   })
 
@@ -43,15 +54,52 @@ export default function IAM() {
     mutationFn: (userId: string) => apiClient.removeUser(userId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['iam', 'users'] })
+      setShowRemoveModal(false)
+      setMemberToRemove(null)
+      showToast('User removed successfully', 'success')
+    },
+    onError: (error: any) => {
+      const errorMessage = error.response?.data?.detail || error.message || 'Failed to remove user'
+      showToast(errorMessage, 'error')
+      // Don't close modal on error so user can see the error message
     },
   })
+
+  const handleRemoveClick = (member: OrganizationMember) => {
+    setMemberToRemove(member)
+    setShowRemoveModal(true)
+  }
+
+  const handleRemoveConfirm = () => {
+    if (memberToRemove) {
+      removeUserMutation.mutate(memberToRemove.user_id)
+    }
+  }
 
   const cancelInvitationMutation = useMutation({
     mutationFn: (invitationId: string) => apiClient.cancelInvitation(invitationId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['iam', 'invitations'] })
+      setShowCancelModal(false)
+      setInvitationToCancel(null)
+      showToast('Invitation cancelled successfully', 'success')
+    },
+    onError: (error: any) => {
+      const errorMessage = error.response?.data?.detail || error.message || 'Failed to cancel invitation'
+      showToast(errorMessage, 'error')
     },
   })
+
+  const handleCancelClick = (invitation: Invitation) => {
+    setInvitationToCancel(invitation)
+    setShowCancelModal(true)
+  }
+
+  const handleCancelConfirm = () => {
+    if (invitationToCancel) {
+      cancelInvitationMutation.mutate(invitationToCancel.id)
+    }
+  }
 
   const handleInvite = (e: React.FormEvent) => {
     e.preventDefault()
@@ -67,19 +115,6 @@ export default function IAM() {
       case Role.READER:
         return <Shield className="h-5 w-5 text-gray-500" />
     }
-  }
-
-  const getRoleBadge = (role: Role) => {
-    const colors = {
-      [Role.ADMIN]: 'bg-red-100 text-red-800',
-      [Role.WRITER]: 'bg-blue-100 text-blue-800',
-      [Role.READER]: 'bg-gray-100 text-gray-800',
-    }
-    return (
-      <span className={`px-2 py-1 rounded-full text-xs font-medium ${colors[role]}`}>
-        {role.charAt(0).toUpperCase() + role.slice(1)}
-      </span>
-    )
   }
 
   const getInvitationStatusBadge = (status: string) => {
@@ -98,6 +133,7 @@ export default function IAM() {
 
   return (
     <div className="space-y-6">
+      <ToastContainer />
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Identity & Access Management</h1>
@@ -126,57 +162,79 @@ export default function IAM() {
           {usersLoading ? (
             <div className="text-center py-8 text-gray-500">Loading users...</div>
           ) : users && users.length > 0 ? (
-            <div className="space-y-4">
-              {users.map((member: OrganizationMember) => (
-                <div
-                  key={member.id}
-                  className="flex items-center justify-between p-4 border border-gray-200 rounded-lg hover:bg-gray-50"
-                >
-                  <div className="flex items-center gap-4">
-                    <div className="flex items-center gap-2">
-                      {getRoleIcon(member.role)}
-                      <div>
-                        <div className="font-medium text-gray-900">
-                          {member.user.name || member.user.email}
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-gray-200">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      User
+                    </th>
+                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Email
+                    </th>
+                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Role
+                    </th>
+                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Joined
+                    </th>
+                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Actions
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {users.map((member: OrganizationMember) => (
+                    <tr key={member.id} className="hover:bg-gray-50">
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="flex items-center">
+                          {getRoleIcon(member.role)}
+                          <div className="ml-3">
+                            <div className="text-sm font-medium text-gray-900">
+                              {member.user.name || 'No name'}
+                            </div>
+                          </div>
                         </div>
-                        <div className="text-sm text-gray-500">{member.user.email}</div>
-                      </div>
-                    </div>
-                    {getRoleBadge(member.role)}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <select
-                      value={member.role}
-                      onChange={(e) =>
-                        updateRoleMutation.mutate({
-                          userId: member.user_id,
-                          role: e.target.value as Role,
-                        })
-                      }
-                      className="px-3 py-1 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
-                      disabled={updateRoleMutation.isPending}
-                    >
-                      <option value={Role.READER}>Reader</option>
-                      <option value={Role.WRITER}>Writer</option>
-                      <option value={Role.ADMIN}>Admin</option>
-                    </select>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => {
-                        if (confirm('Are you sure you want to remove this user?')) {
-                          removeUserMutation.mutate(member.user_id)
-                        }
-                      }}
-                      leftIcon={<Trash2 className="h-5 w-5" />}
-                      title="Remove user"
-                      className="text-red-600 hover:bg-red-50 hover:text-red-700"
-                    >
-                      Remove
-                    </Button>
-                  </div>
-                </div>
-              ))}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="text-sm text-gray-900">{member.user.email}</div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <select
+                          value={member.role}
+                          onChange={(e) =>
+                            updateRoleMutation.mutate({
+                              userId: member.user_id,
+                              role: e.target.value as Role,
+                            })
+                          }
+                          className="px-3 py-1.5 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                          disabled={updateRoleMutation.isPending}
+                        >
+                          <option value={Role.READER}>Reader</option>
+                          <option value={Role.WRITER}>Writer</option>
+                          <option value={Role.ADMIN}>Admin</option>
+                        </select>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {new Date(member.joined_at).toLocaleDateString()}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleRemoveClick(member)}
+                          leftIcon={<Trash2 className="h-4 w-4" />}
+                          title="Remove user"
+                          className="text-red-600 hover:bg-red-50 hover:text-red-700"
+                        >
+                          Remove
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           ) : (
             <div className="text-center py-8 text-gray-500">No users found</div>
@@ -214,11 +272,7 @@ export default function IAM() {
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => {
-                          if (confirm('Cancel this invitation?')) {
-                            cancelInvitationMutation.mutate(invitation.id)
-                          }
-                        }}
+                        onClick={() => handleCancelClick(invitation)}
                         leftIcon={<X className="h-5 w-5" />}
                         title="Cancel invitation"
                         className="text-gray-600 hover:bg-gray-50"
@@ -298,6 +352,124 @@ export default function IAM() {
                 </Button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Remove User Confirmation Modal */}
+      {showRemoveModal && memberToRemove && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={() => setShowRemoveModal(false)}>
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
+            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+              <h3 className="text-lg font-semibold text-gray-900">Remove User</h3>
+              <button
+                onClick={() => {
+                  setShowRemoveModal(false)
+                  setMemberToRemove(null)
+                }}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="p-6">
+              <div className="flex items-start gap-4 mb-6">
+                <div className="flex-shrink-0">
+                  <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center">
+                    <Trash2 className="h-6 w-6 text-red-600" />
+                  </div>
+                </div>
+                <div className="flex-1">
+                  <p className="text-sm text-gray-700 mb-2">
+                    Are you sure you want to remove <span className="font-semibold text-gray-900">{memberToRemove.user.name || memberToRemove.user.email}</span> from the organization?
+                  </p>
+                  <p className="text-xs text-gray-500">
+                    This action cannot be undone. The user will lose access to all organization resources.
+                  </p>
+                </div>
+              </div>
+              <div className="flex gap-3">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setShowRemoveModal(false)
+                    setMemberToRemove(null)
+                  }}
+                  disabled={removeUserMutation.isPending}
+                  className="flex-1"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="danger"
+                  onClick={handleRemoveConfirm}
+                  isLoading={removeUserMutation.isPending}
+                  leftIcon={!removeUserMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined}
+                  className="flex-1"
+                >
+                  Remove User
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Cancel Invitation Confirmation Modal */}
+      {showCancelModal && invitationToCancel && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={() => setShowCancelModal(false)}>
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
+            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+              <h3 className="text-lg font-semibold text-gray-900">Cancel Invitation</h3>
+              <button
+                onClick={() => {
+                  setShowCancelModal(false)
+                  setInvitationToCancel(null)
+                }}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="p-6">
+              <div className="flex items-start gap-4 mb-6">
+                <div className="flex-shrink-0">
+                  <div className="w-12 h-12 rounded-full bg-yellow-100 flex items-center justify-center">
+                    <X className="h-6 w-6 text-yellow-600" />
+                  </div>
+                </div>
+                <div className="flex-1">
+                  <p className="text-sm text-gray-700 mb-2">
+                    Are you sure you want to cancel the invitation for <span className="font-semibold text-gray-900">{invitationToCancel.email}</span>?
+                  </p>
+                  <p className="text-xs text-gray-500">
+                    This action cannot be undone. The invitation will be cancelled and the user will not be able to accept it.
+                  </p>
+                </div>
+              </div>
+              <div className="flex gap-3">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setShowCancelModal(false)
+                    setInvitationToCancel(null)
+                  }}
+                  disabled={cancelInvitationMutation.isPending}
+                  className="flex-1"
+                >
+                  Keep Invitation
+                </Button>
+                <Button
+                  variant="danger"
+                  onClick={handleCancelConfirm}
+                  isLoading={cancelInvitationMutation.isPending}
+                  leftIcon={!cancelInvitationMutation.isPending ? <X className="h-4 w-4" /> : undefined}
+                  className="flex-1"
+                >
+                  Cancel Invitation
+                </Button>
+              </div>
+            </div>
           </div>
         </div>
       )}

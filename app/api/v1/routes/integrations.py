@@ -184,3 +184,40 @@ async def test_integration(
     
     return {"message": f"Integration with {integration.platform.value} is valid"}
 
+
+@router.get("/{integration_id}/api-key")
+async def get_integration_api_key(
+    integration_id: UUID,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db)
+):
+    """
+    Get the decrypted API key for an integration.
+    This endpoint is used for client-side operations like web calls.
+    Requires at least READER role.
+    """
+    integration = db.query(Integration).filter(
+        Integration.id == integration_id,
+        Integration.organization_id == organization_id,
+        Integration.is_active == True
+    ).first()
+    
+    if not integration:
+        raise HTTPException(status_code=404, detail="Integration not found or inactive")
+    
+    # Only allow for Retell and Vapi platforms (for web calls)
+    if integration.platform not in [IntegrationPlatform.RETELL, IntegrationPlatform.VAPI]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="API key retrieval is only available for Retell and Vapi integrations"
+        )
+    
+    try:
+        decrypted_api_key = decrypt_api_key(integration.api_key)
+        return {"api_key": decrypted_api_key}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to decrypt API key: {str(e)}"
+        )

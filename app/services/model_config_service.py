@@ -60,11 +60,11 @@ class ModelConfigService:
     
     def get_models_by_type(self, provider: ModelProvider, model_type: str) -> List[str]:
         """
-        Get models by provider and type (stt, llm, tts).
+        Get models by provider and type (stt, llm, tts, s2s).
         
         Args:
             provider: The model provider
-            model_type: One of 'stt', 'llm', 'tts'
+            model_type: One of 'stt', 'llm', 'tts', 's2s'
         """
         if self._config is None:
             self._load_config()
@@ -82,12 +82,13 @@ class ModelConfigService:
         Get model options organized by type for a provider.
         
         Returns:
-            Dict with keys 'stt', 'llm', 'tts' and values as lists of model names
+            Dict with keys 'stt', 'llm', 'tts', 's2s' and values as lists of model names
         """
         return {
             "stt": self.get_models_by_type(provider, "stt"),
             "llm": self.get_models_by_type(provider, "llm"),
             "tts": self.get_models_by_type(provider, "tts"),
+            "s2s": self.get_models_by_type(provider, "s2s"),
         }
     
     def get_model_info(self, model_name: str) -> Optional[Dict[str, Any]]:

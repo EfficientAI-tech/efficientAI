@@ -9,6 +9,11 @@ export default defineConfig({
     alias: {
       '@': path.resolve(__dirname, './src'),
     },
+    extensions: ['.js', '.jsx', '.ts', '.tsx', '.json'],
+    conditions: ['import', 'module', 'browser', 'default'],
+  },
+  optimizeDeps: {
+    include: ['country-flag-icons/react/3x2'],
   },
   server: {
     port: 3000,
