@@ -15,9 +15,9 @@ WORKDIR /app
 
 # Copy dependency files and application code (needed for editable install)
 COPY pyproject.toml README.md ./
+COPY src/ ./src/
 COPY app/ ./app/
 COPY scripts/ ./scripts/
-COPY migrations/ ./migrations/
 
 # Install Python dependencies
 RUN uv pip install --system -e .
