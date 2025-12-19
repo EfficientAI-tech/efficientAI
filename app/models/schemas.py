@@ -973,11 +973,11 @@ class EvaluatorResultResponse(BaseModel):
     id: UUID
     result_id: str
     organization_id: UUID
-    evaluator_id: UUID
+    evaluator_id: Optional[UUID] = None  # Optional for playground test results
     agent_id: UUID
-    persona_id: UUID
-    scenario_id: UUID
-    name: str
+    persona_id: Optional[UUID] = None  # Optional for playground test results
+    scenario_id: Optional[UUID] = None  # Optional for playground test results
+    name: Optional[str] = None  # Optional for playground test results
     timestamp: datetime
     duration_seconds: Optional[float]
     status: EvaluatorResultStatus

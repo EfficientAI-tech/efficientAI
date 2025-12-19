@@ -173,7 +173,7 @@ class AudioRecorder(FrameProcessor):
             self.wave_file = None
 
 
-async def run_bot(websocket_client, google_api_key: str, system_instruction: str = None, organization_id: str = None, agent_id: str = None, persona_id: str = None, scenario_id: str = None, evaluator_id: str = None, result_id: str = None):
+async def run_bot(websocket_client, google_api_key: str, system_instruction: str = None, organization_id: str = None, agent_id: str = None, persona_id: str = None, scenario_id: str = None, evaluator_id: str = None, result_id: str = None, model_name: str = None):
     """
     Run the voice agent bot with the provided Google API key.
     
@@ -214,13 +214,25 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
         if not google_api_key or not google_api_key.strip():
             raise ValueError("Google API key is empty or invalid")
         
-        # Log API key validation (first few chars only for security)
+        # Determine model name - use from agent's voice bundle if provided, otherwise use default
+        if model_name:
+            # Format model name for Gemini Live API (add "models/" prefix if not present)
+            if not model_name.startswith("models/"):
+                formatted_model_name = f"models/{model_name}"
+            else:
+                formatted_model_name = model_name
+            logger.info(f"Using model from agent's voice bundle: {formatted_model_name}")
+        else:
+            # Fallback to default model if not provided
+            formatted_model_name = "models/gemini-2.5-flash-native-audio-preview-12-2025"
+            logger.info(f"Using default model: {formatted_model_name}")
         
         llm = GeminiLiveLLMService(
             api_key=google_api_key,
             voice_id="Puck",  # Aoede, Charon, Fenrir, Kore, Puck
             transcribe_model_audio=True,
             system_instruction=instruction,
+            model=formatted_model_name,
         )
         logger.info("GeminiLiveLLMService created")
         context = LLMContext(

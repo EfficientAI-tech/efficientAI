@@ -121,15 +121,28 @@ def process_evaluator_result_task(self, result_id: str):
             
             # Step 2: Get evaluator and related entities for context
             logger.info(f"[EvaluatorResult {result.result_id}] Step 2: Loading evaluator and context data")
-            evaluator = db.query(Evaluator).filter(Evaluator.id == result.evaluator_id).first()
-            if not evaluator:
-                raise ValueError("Evaluator not found")
+            
+            # Evaluator is optional - only load if evaluator_id is present
+            evaluator = None
+            if result.evaluator_id:
+                evaluator = db.query(Evaluator).filter(Evaluator.id == result.evaluator_id).first()
+                if not evaluator:
+                    logger.warning(f"[EvaluatorResult {result.result_id}] Evaluator {result.evaluator_id} not found, continuing without evaluator")
             
             agent = db.query(Agent).filter(Agent.id == result.agent_id).first()
-            persona = db.query(Persona).filter(Persona.id == result.persona_id).first()
-            scenario = db.query(Scenario).filter(Scenario.id == result.scenario_id).first()
+            if not agent:
+                raise ValueError("Agent not found")
             
-            logger.info(f"[EvaluatorResult {result.result_id}] ✓ Context loaded - Evaluator: {evaluator.evaluator_id}, Agent: {agent.name if agent else 'N/A'}, Scenario: {scenario.name if scenario else 'N/A'}")
+            # Persona and scenario are optional
+            persona = None
+            if result.persona_id:
+                persona = db.query(Persona).filter(Persona.id == result.persona_id).first()
+            
+            scenario = None
+            if result.scenario_id:
+                scenario = db.query(Scenario).filter(Scenario.id == result.scenario_id).first()
+            
+            logger.info(f"[EvaluatorResult {result.result_id}] ✓ Context loaded - Evaluator: {evaluator.evaluator_id if evaluator else 'None'}, Agent: {agent.name if agent else 'N/A'}, Persona: {persona.name if persona else 'None'}, Scenario: {scenario.name if scenario else 'None'}")
             
             # Step 3: Transcribe audio using TranscriptionService
             logger.info(f"[EvaluatorResult {result.result_id}] Step 3: Starting transcription")

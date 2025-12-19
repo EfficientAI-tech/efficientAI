@@ -53,6 +53,8 @@ interface EvaluatorResultDetail {
 export default function EvaluatorResultDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const location = window.location.pathname
+  const isFromPlayground = location.includes('/playground/test-agent-results')
   const [isPlaying, setIsPlaying] = useState(false)
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   const [currentTime, setCurrentTime] = useState(0)
@@ -259,12 +261,12 @@ export default function EvaluatorResultDetail() {
       {/* Header */}
       <div className="mb-6">
         <Button
-          onClick={() => navigate('/results')}
+          onClick={() => navigate(isFromPlayground ? '/playground' : '/results')}
           variant="outline"
           className="mb-4"
         >
           <ArrowLeft className="w-4 h-4 mr-2" />
-          Back to Results
+          Back to {isFromPlayground ? 'Playground' : 'Results'}
         </Button>
         <div className="flex items-center justify-between">
           <div>

@@ -781,14 +781,21 @@ class ApiClient {
   }
 
   // Evaluator Results endpoints
-  async listEvaluatorResults(evaluatorId?: string): Promise<any[]> {
-    const params = evaluatorId ? { evaluator_id: evaluatorId } : {}
+  async listEvaluatorResults(evaluatorId?: string, playground?: boolean): Promise<any[]> {
+    const params: any = {}
+    if (evaluatorId) {
+      params.evaluator_id = evaluatorId
+    }
+    if (playground !== undefined) {
+      params.playground = playground
+    }
     const response = await this.client.get('/api/v1/evaluator-results', { params })
     return response.data
   }
 
-  async getEvaluatorResult(id: string): Promise<any> {
-    const response = await this.client.get(`/api/v1/evaluator-results/${id}`)
+  async getEvaluatorResult(id: string, includeRelations: boolean = true): Promise<any> {
+    const params = includeRelations ? { include_relations: 'true' } : {}
+    const response = await this.client.get(`/api/v1/evaluator-results/${id}`, { params })
     return response.data
   }
 

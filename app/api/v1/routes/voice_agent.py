@@ -137,7 +137,9 @@ async def websocket_endpoint(
         # Build system instruction as a bundle: Agent + Persona + Scenario
         from app.models.database import Agent, Persona, Scenario
         
-        # 1. Add Agent description (base instruction)
+        # 1. Add Agent description (base instruction) and get voice bundle for model
+        voice_bundle = None
+        model_name = None
         if agent_id:
             try:
                 agent_uuid = UUID(agent_id)
@@ -145,8 +147,24 @@ async def websocket_endpoint(
                     Agent.id == agent_uuid,
                     Agent.organization_id == organization_id
                 ).first()
-                if agent and agent.description:
-                    instruction_parts.append(agent.description)
+                if agent:
+                    if agent.description:
+                        instruction_parts.append(agent.description)
+                    
+                    # Get voice bundle to extract model name
+                    if agent.voice_bundle_id:
+                        from app.models.database import VoiceBundle
+                        voice_bundle = db.query(VoiceBundle).filter(
+                            VoiceBundle.id == agent.voice_bundle_id,
+                            VoiceBundle.organization_id == organization_id
+                        ).first()
+                        
+                        # Extract model name from voice bundle
+                        if voice_bundle:
+                            # For S2S models, use s2s_model
+                            if voice_bundle.bundle_type == "s2s" and voice_bundle.s2s_model:
+                                model_name = voice_bundle.s2s_model
+                            # For STT_LLM_TTS, we could use llm_model, but for now S2S is the focus
             except ValueError:
                 pass
         
@@ -202,14 +220,38 @@ async def websocket_endpoint(
         if instruction_parts:
             system_instruction = "\n".join(instruction_parts)
         
-        # Find evaluator and generate result_id BEFORE running bot (for meaningful S3 path)
+        # Generate result_id BEFORE running bot (for meaningful S3 path)
+        # Evaluator is only created if persona_id and scenario_id are provided
+        # But evaluator results can be created even without persona/scenario
         evaluator = None
         result_id = None
-        scenario_name = "Unknown Scenario"
+        scenario_name = "Test Call"  # Default name for calls without scenario
         
+        # Generate result_id for all test calls (with or without persona/scenario)
+        if agent_id:
+            try:
+                from app.models.database import EvaluatorResult
+                import random
+                
+                # Generate unique 6-digit result ID
+                max_attempts = 100
+                for _ in range(max_attempts):
+                    candidate_id = f"{random.randint(100000, 999999)}"
+                    existing = db.query(EvaluatorResult).filter(EvaluatorResult.result_id == candidate_id).first()
+                    if not existing:
+                        result_id = candidate_id
+                        break
+                
+                if not result_id:
+                    logger.warning("Failed to generate unique result ID, will use UUID in S3 path")
+            except Exception as e:
+                logger.warning(f"Error generating result_id: {e}")
+        
+        # Find or create evaluator only if persona_id and scenario_id are provided
         if agent_id and persona_id and scenario_id:
             try:
                 from app.models.database import Evaluator, EvaluatorResult, EvaluatorResultStatus, Scenario
+                from app.api.v1.routes.evaluators import generate_unique_evaluator_id
                 import random
                 
                 # Find evaluator by agent, persona, scenario
@@ -220,24 +262,29 @@ async def websocket_endpoint(
                     Evaluator.organization_id == organization_id
                 ).first()
                 
+                # If no evaluator exists, create one automatically for test voice agent calls
+                if not evaluator:
+                    logger.info(f"Creating evaluator automatically for test voice agent: agent={agent_id}, persona={persona_id}, scenario={scenario_id}")
+                    evaluator_id = generate_unique_evaluator_id(db)
+                    evaluator = Evaluator(
+                        evaluator_id=evaluator_id,
+                        organization_id=organization_id,
+                        agent_id=UUID(agent_id),
+                        persona_id=UUID(persona_id),
+                        scenario_id=UUID(scenario_id),
+                        tags=["auto-created", "test-voice-agent"]
+                    )
+                    db.add(evaluator)
+                    db.commit()
+                    db.refresh(evaluator)
+                    logger.info(f"✅ Created evaluator {evaluator_id} for test voice agent")
+                
                 if evaluator:
                     # Get scenario name
                     scenario = db.query(Scenario).filter(Scenario.id == UUID(scenario_id)).first()
                     scenario_name = scenario.name if scenario else "Unknown Scenario"
-                    
-                    # Generate unique 6-digit result ID BEFORE upload
-                    max_attempts = 100
-                    for _ in range(max_attempts):
-                        candidate_id = f"{random.randint(100000, 999999)}"
-                        existing = db.query(EvaluatorResult).filter(EvaluatorResult.result_id == candidate_id).first()
-                        if not existing:
-                            result_id = candidate_id
-                            break
-                    
-                    if not result_id:
-                        logger.warning("Failed to generate unique result ID, will use UUID in S3 path")
             except Exception as e:
-                logger.warning(f"Error finding evaluator or generating result_id: {e}")
+                logger.warning(f"Error finding/creating evaluator or generating result_id: {e}")
         
         # Run the bot with the decrypted API key
         call_metadata = None
@@ -251,43 +298,133 @@ async def websocket_endpoint(
                 persona_id,
                 scenario_id,
                 evaluator_id=str(evaluator.id) if evaluator else None,
-                result_id=result_id
+                result_id=result_id,
+                model_name=model_name  # Pass model name from voice bundle
             )
         except Exception as bot_error:
             logger.error(f"Error in run_bot: {bot_error}", exc_info=True)
             # Continue to try creating evaluator result if we have metadata
         
         # Create evaluator result if we have the required data (only if no error)
-        if call_metadata and call_metadata.get("s3_key") and not call_metadata.get("error") and evaluator and result_id:
-            try:
-                from app.models.database import EvaluatorResult, EvaluatorResultStatus
-                from app.workers.celery_app import process_evaluator_result_task
-                
-                # Create evaluator result with QUEUED status
-                evaluator_result = EvaluatorResult(
-                    result_id=result_id,
-                    organization_id=organization_id,
-                    evaluator_id=evaluator.id,
-                    agent_id=UUID(agent_id),
-                    persona_id=UUID(persona_id),
-                    scenario_id=UUID(scenario_id),
-                    name=scenario_name,
-                    duration_seconds=call_metadata.get("duration"),
-                    status=EvaluatorResultStatus.QUEUED.value,  # Use .value to get the string
-                    audio_s3_key=call_metadata.get("s3_key")
-                )
-                db.add(evaluator_result)
-                db.commit()
-                db.refresh(evaluator_result)
-                
-                # Trigger Celery task
-                task = process_evaluator_result_task.delay(str(evaluator_result.id))
-                evaluator_result.celery_task_id = task.id
-                db.commit()
-                
-                logger.info(f"✅ Created evaluator result {result_id} and triggered processing task")
-            except Exception as e:
-                logger.error(f"Error creating evaluator result: {e}", exc_info=True)
+        # Create evaluator result for all test calls (with or without persona/scenario)
+        if call_metadata and call_metadata.get("s3_key") and not call_metadata.get("error") and agent_id and result_id:
+            # If we don't have evaluator but have persona/scenario, try to create one
+            if not evaluator and agent_id and persona_id and scenario_id:
+                try:
+                    from app.models.database import Evaluator, Scenario
+                    from app.api.v1.routes.evaluators import generate_unique_evaluator_id
+                    import random
+                    
+                    evaluator = db.query(Evaluator).filter(
+                        Evaluator.agent_id == UUID(agent_id),
+                        Evaluator.persona_id == UUID(persona_id),
+                        Evaluator.scenario_id == UUID(scenario_id),
+                        Evaluator.organization_id == organization_id
+                    ).first()
+                    
+                    if not evaluator:
+                        evaluator_id = generate_unique_evaluator_id(db)
+                        evaluator = Evaluator(
+                            evaluator_id=evaluator_id,
+                            organization_id=organization_id,
+                            agent_id=UUID(agent_id),
+                            persona_id=UUID(persona_id),
+                            scenario_id=UUID(scenario_id),
+                            tags=["auto-created", "test-voice-agent"]
+                        )
+                        db.add(evaluator)
+                        db.commit()
+                        db.refresh(evaluator)
+                    
+                    scenario = db.query(Scenario).filter(Scenario.id == UUID(scenario_id)).first()
+                    scenario_name = scenario.name if scenario else "Unknown Scenario"
+                    
+                    # Generate result_id
+                    max_attempts = 100
+                    for _ in range(max_attempts):
+                        candidate_id = f"{random.randint(100000, 999999)}"
+                        existing = db.query(EvaluatorResult).filter(EvaluatorResult.result_id == candidate_id).first()
+                        if not existing:
+                            result_id = candidate_id
+                            break
+                except Exception as e:
+                    logger.error(f"Error creating evaluator/result_id after bot run: {e}")
+            
+            # Create evaluator result for all test calls (with or without persona/scenario)
+            # evaluator_id is optional - can be None if no persona/scenario
+            if result_id and agent_id:
+                try:
+                    from app.models.database import EvaluatorResult, EvaluatorResultStatus
+                    from app.workers.celery_app import process_evaluator_result_task
+                    
+                    # Determine name for the result
+                    if scenario_name and scenario_name != "Test Call":
+                        result_name = scenario_name
+                    elif agent:
+                        result_name = f"Test Call - {agent.name}"
+                    else:
+                        result_name = "Test Call"
+                    
+                    logger.info(f"Creating evaluator result: result_id={result_id}, agent_id={agent_id}, persona_id={persona_id}, scenario_id={scenario_id}, s3_key={call_metadata.get('s3_key')}")
+                    
+                    # Create evaluator result with QUEUED status
+                    # persona_id and scenario_id can be None for test calls without persona/scenario
+                    evaluator_result = EvaluatorResult(
+                        result_id=result_id,
+                        organization_id=organization_id,
+                        evaluator_id=evaluator.id if evaluator else None,  # Optional
+                        agent_id=UUID(agent_id),
+                        persona_id=UUID(persona_id) if persona_id else None,  # Optional
+                        scenario_id=UUID(scenario_id) if scenario_id else None,  # Optional
+                        name=result_name,
+                        duration_seconds=call_metadata.get("duration"),
+                        status=EvaluatorResultStatus.QUEUED.value,  # Use .value to get the string
+                        audio_s3_key=call_metadata.get("s3_key")
+                    )
+                    db.add(evaluator_result)
+                    db.commit()
+                    db.refresh(evaluator_result)
+                    
+                    logger.info(f"✅ Evaluator result created in database: id={evaluator_result.id}, result_id={result_id}")
+                    
+                    # Trigger Celery task
+                    try:
+                        logger.info(f"Triggering Celery task for evaluator result: {evaluator_result.id}")
+                        
+                        # Check if Celery app is properly configured
+                        from app.workers.celery_app import celery_app
+                        logger.info(f"Celery broker URL: {celery_app.conf.broker_url}")
+                        logger.info(f"Celery result backend: {celery_app.conf.result_backend}")
+                        
+                        # Verify task is registered
+                        if 'process_evaluator_result' not in celery_app.tasks:
+                            logger.error("❌ Task 'process_evaluator_result' is not registered in Celery app!")
+                            logger.error(f"Available tasks: {list(celery_app.tasks.keys())}")
+                        else:
+                            logger.info("✅ Task 'process_evaluator_result' is registered")
+                        
+                        task = process_evaluator_result_task.delay(str(evaluator_result.id))
+                        logger.info(f"✅ Celery task triggered: task_id={task.id}, task_state={task.state}")
+                        
+                        # Try to get task info to verify it was queued
+                        try:
+                            task_info = task.info
+                            logger.info(f"Task info: {task_info}")
+                        except Exception as info_error:
+                            logger.warning(f"Could not get task info (this is normal for async tasks): {info_error}")
+                        
+                        evaluator_result.celery_task_id = task.id
+                        db.commit()
+                        logger.info(f"✅ Updated evaluator result with celery_task_id: {task.id}")
+                    except Exception as task_error:
+                        logger.error(f"❌ Failed to trigger Celery task: {task_error}", exc_info=True)
+                        # Still log that we created the result even if task trigger failed
+                        logger.warning(f"Evaluator result {result_id} created but Celery task was not triggered. Task may need to be triggered manually.")
+                        logger.warning(f"Please ensure Celery worker is running: celery -A app.workers.celery_app worker --loglevel=info")
+                    
+                    logger.info(f"✅ Created evaluator result {result_id} and triggered processing task")
+                except Exception as e:
+                    logger.error(f"❌ Error creating evaluator result: {e}", exc_info=True)
         
     except WebSocketDisconnect:
         print("WebSocket disconnected by client")

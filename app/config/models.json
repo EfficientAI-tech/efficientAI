@@ -103,7 +103,7 @@
     "provider": "google",
     "model_type": "tts"
   },
-  "gemini-2.5-flash-live-001": {
+  "gemini-2.5-flash-native-audio-preview-12-2025": {
     "provider": "google",
     "model_type": "s2s"
   },

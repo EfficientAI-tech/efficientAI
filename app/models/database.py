@@ -594,13 +594,13 @@ class EvaluatorResult(Base):
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
     
     # References
-    evaluator_id = Column(UUID(as_uuid=True), ForeignKey("evaluators.id"), nullable=False, index=True)
+    evaluator_id = Column(UUID(as_uuid=True), ForeignKey("evaluators.id"), nullable=True, index=True)  # Optional - can be None for test calls without persona/scenario
     agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False)
-    persona_id = Column(UUID(as_uuid=True), ForeignKey("personas.id"), nullable=False)
-    scenario_id = Column(UUID(as_uuid=True), ForeignKey("scenarios.id"), nullable=False)
+    persona_id = Column(UUID(as_uuid=True), ForeignKey("personas.id"), nullable=True)  # Optional - can be None for test calls
+    scenario_id = Column(UUID(as_uuid=True), ForeignKey("scenarios.id"), nullable=True)  # Optional - can be None for test calls
     
     # Result data
-    name = Column(String, nullable=False)  # Scenario name
+    name = Column(String, nullable=True)  # Scenario name or test call name (optional)
     timestamp = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     duration_seconds = Column(Float, nullable=True)  # Call duration
     status = Column(String(20), nullable=False, default=EvaluatorResultStatus.QUEUED.value)

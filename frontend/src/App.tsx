@@ -21,6 +21,7 @@ import EvaluatorResultDetail from './pages/EvaluatorResultDetail'
 import AgentDetail from './pages/AgentDetail'
 import Observability from './pages/Observability'
 import CallRecordingDetail from './pages/CallRecordingDetail'
+import TestAgentResultDetail from './pages/TestAgentResultDetail'
 
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -50,6 +51,7 @@ function App() {
           <Route path="evaluations/:id" element={<EvaluationDetail />} />
           <Route path="playground" element={<Playground />} />
           <Route path="playground/call-recordings/:callShortId" element={<CallRecordingDetail />} />
+          <Route path="playground/test-agent-results/:id" element={<TestAgentResultDetail />} />
           <Route path="agents" element={<Agents />} />
           <Route path="agents/:id" element={<AgentDetail />} />
           <Route path="personas" element={<Personas />} />
