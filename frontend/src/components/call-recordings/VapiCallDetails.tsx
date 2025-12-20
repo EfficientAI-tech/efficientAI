@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import {
-    DollarSign, MessageSquare, TrendingUp, Server, Activity
+    DollarSign, MessageSquare, Server, Activity
 } from 'lucide-react'
 import {
     PieChart, Pie, Cell, ResponsiveContainer, Tooltip
@@ -241,7 +241,7 @@ export default function VapiCallDetails({ callData }: VapiCallDetailsProps) {
                                             paddingAngle={5}
                                             dataKey="value"
                                         >
-                                            {costData.map((entry, index) => (
+                                            {costData.map((_, index) => (
                                                 <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                                             ))}
                                         </Pie>
