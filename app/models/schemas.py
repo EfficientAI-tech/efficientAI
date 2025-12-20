@@ -4,7 +4,13 @@ from pydantic import BaseModel, Field, validator, model_validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from uuid import UUID
-from app.models.database import EvaluationType, EvaluationStatus, RoleEnum, InvitationStatus, IntegrationPlatform, ModelProvider, MetricType, MetricTrigger, EvaluatorResultStatus, VoiceBundleType
+from app.models.enums import (
+    EvaluationType, EvaluationStatus, EvaluatorResultStatus, RoleEnum, InvitationStatus,
+    LanguageEnum, CallTypeEnum, CallMediumEnum, GenderEnum, AccentEnum, BackgroundNoiseEnum,
+    IntegrationPlatform, ModelProvider, VoiceBundleType, TestAgentConversationStatus,
+    MetricType, MetricTrigger, CallRecordingStatus
+)
+
 
 
 # Audio File Schemas
@@ -164,54 +170,7 @@ class ErrorResponse(BaseModel):
 # VAIOPS SCHEMAS - Voice AI Ops
 # ============================================
 
-from enum import Enum as PyEnum
-
-class LanguageEnum(str, PyEnum):
-    ENGLISH = "en"
-    SPANISH = "es"
-    FRENCH = "fr"
-    GERMAN = "de"
-    CHINESE = "zh"
-    JAPANESE = "ja"
-    HINDI = "hi"
-    ARABIC = "ar"
-
-
-class CallTypeEnum(str, PyEnum):
-    INBOUND = "inbound"
-    OUTBOUND = "outbound"
-
-
-class CallMediumEnum(str, PyEnum):
-    PHONE_CALL = "phone_call"
-    WEB_CALL = "web_call"
-
-
-class GenderEnum(str, PyEnum):
-    MALE = "male"
-    FEMALE = "female"
-    NEUTRAL = "neutral"
-
-
-class AccentEnum(str, PyEnum):
-    AMERICAN = "american"
-    BRITISH = "british"
-    AUSTRALIAN = "australian"
-    INDIAN = "indian"
-    CHINESE = "chinese"
-    SPANISH = "spanish"
-    FRENCH = "french"
-    GERMAN = "german"
-    NEUTRAL = "neutral"
-
-
-class BackgroundNoiseEnum(str, PyEnum):
-    NONE = "none"
-    OFFICE = "office"
-    STREET = "street"
-    CAFE = "cafe"
-    HOME = "home"
-    CALL_CENTER = "call_center"
+# Enums moved to enums.py
 
 
 # Agent Schemas
@@ -488,7 +447,8 @@ class ProfileResponse(BaseModel):
 class IntegrationCreate(BaseModel):
     """Schema for creating an integration."""
     platform: IntegrationPlatform
-    api_key: str = Field(..., description="API key for the platform")
+    api_key: str = Field(..., description="Private API key for the platform")
+    public_key: Optional[str] = Field(None, description="Optional public API key (e.g. for Vapi)")
     name: Optional[str] = Field(None, description="Optional friendly name for the integration")
 
 
@@ -496,6 +456,7 @@ class IntegrationUpdate(BaseModel):
     """Schema for updating an integration."""
     name: Optional[str] = None
     api_key: Optional[str] = None
+    public_key: Optional[str] = None
     is_active: Optional[bool] = None
 
 
@@ -505,6 +466,7 @@ class IntegrationResponse(BaseModel):
     organization_id: UUID
     platform: IntegrationPlatform
     name: Optional[str]
+    public_key: Optional[str] = None
     is_active: bool
     created_at: datetime
     updated_at: datetime
