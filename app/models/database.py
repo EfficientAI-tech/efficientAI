@@ -633,6 +633,13 @@ class CallRecordingStatus(str, enum.Enum):
     UPDATED = "UPDATED"
 
 
+class CallRecordingSource(str, enum.Enum):
+    """Source of the call recording data."""
+    
+    PLAYGROUND = "playground"
+    WEBHOOK = "webhook"
+
+
 class CallRecording(Base):
     """Call Recording model for tracking voice provider calls."""
     __tablename__ = "call_recordings"
@@ -641,6 +648,8 @@ class CallRecording(Base):
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
     call_short_id = Column(String(6), unique=True, nullable=False, index=True)  # 6-digit ID
     status = Column(Enum(CallRecordingStatus), nullable=False, default=CallRecordingStatus.PENDING, index=True)
+    call_event = Column(String, nullable=True, index=True)  # Latest webhook event (e.g., call_started, call_ended)
+    source = Column(Enum(CallRecordingSource), nullable=False, default=CallRecordingSource.PLAYGROUND, index=True)
     call_data = Column(JSON, nullable=True)  # JSON blob for provider response
     provider_call_id = Column(String, nullable=True, index=True)  # Provider's call_id (e.g., Retell call_id)
     provider_platform = Column(String, nullable=True)  # e.g., "retell", "vapi"

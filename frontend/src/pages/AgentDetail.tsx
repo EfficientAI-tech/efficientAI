@@ -370,38 +370,59 @@ export default function AgentDetail() {
             {/* Voice Configuration */}
             <div>
               <h3 className="text-lg font-medium text-gray-900 border-b border-gray-200 pb-2 mb-4">Voice Configuration</h3>
-              {agent.voice_bundle_id ? (
-                <div>
-                  <dt className="text-sm font-medium text-gray-500">Test Voice Bundle</dt>
-                  <dd className="mt-1 text-sm text-gray-900 font-medium bg-blue-50 text-blue-700 px-3 py-1 rounded-md inline-block border border-blue-100">
-                    {voiceBundles.find((v: any) => v.id === agent.voice_bundle_id)?.name || agent.voice_bundle_id}
-                  </dd>
-                </div>
-              ) : agent.voice_ai_integration_id ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div>
-                    <dt className="text-sm font-medium text-gray-500">Integration Provider</dt>
-                    <dd className="mt-1 flex items-center gap-2">
-                      {(() => {
-                        const integration = integrations.find((i: any) => i.id === agent.voice_ai_integration_id);
-                        if (integration?.platform === 'retell') {
-                          return <><img src="/retellai.png" alt="Retell" className="h-6 w-6 object-contain" /><span className="text-base font-medium text-gray-900">Retell AI</span></>;
-                        } else if (integration?.platform === 'vapi') {
-                          return <><img src="/vapiai.jpg" alt="Vapi" className="h-6 w-6 rounded-full object-contain" /><span className="text-base font-medium text-gray-900">Vapi AI</span></>;
-                        }
-                        return <span className="text-sm text-gray-900">{integration?.name || 'Unknown Provider'}</span>;
-                      })()}
-                    </dd>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Test Voice Agent */}
+                <div className="border border-gray-200 rounded-lg p-4 bg-gray-50 h-full">
+                  <div className="flex items-center justify-between mb-3">
+                    <h4 className="text-base font-semibold text-gray-900">Test Voice Agent</h4>
                   </div>
-                  <div>
-                    <dt className="text-sm font-medium text-gray-500">Agent ID</dt>
-                    <dd className="mt-1 text-sm text-gray-900 font-mono bg-gray-100 px-3 py-2 rounded border border-gray-200 inline-block select-all">
-                      {agent.voice_ai_agent_id}
-                    </dd>
-                  </div>
+                  {agent.voice_bundle_id ? (
+                    <div>
+                      <dt className="text-sm font-medium text-gray-500">Voice Bundle</dt>
+                      <dd className="mt-1 text-sm text-gray-900 font-medium bg-blue-50 text-blue-700 px-3 py-1 rounded-md inline-block border border-blue-100">
+                        {voiceBundles.find((v: any) => v.id === agent.voice_bundle_id)?.name || agent.voice_bundle_id}
+                      </dd>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-gray-500 italic">No test voice bundle configured.</p>
+                  )}
                 </div>
-              ) : (
-                <p className="text-sm text-gray-500 italic">No voice configuration detected.</p>
+
+                {/* Voice AI Agent */}
+                <div className="border border-gray-200 rounded-lg p-4 bg-gray-50 h-full">
+                  <div className="flex items-center justify-between mb-3">
+                    <h4 className="text-base font-semibold text-gray-900">Voice AI Agent</h4>
+                  </div>
+                  {agent.voice_ai_integration_id && agent.voice_ai_agent_id ? (
+                    <div className="grid grid-cols-1 gap-4">
+                      <div>
+                        <dt className="text-sm font-medium text-gray-500">Integration Provider</dt>
+                        <dd className="mt-1 flex items-center gap-2">
+                          {(() => {
+                            const integration = integrations.find((i: any) => i.id === agent.voice_ai_integration_id);
+                            if (integration?.platform === 'retell') {
+                              return <><img src="/retellai.png" alt="Retell" className="h-6 w-6 object-contain" /><span className="text-base font-medium text-gray-900">Retell AI</span></>;
+                            } else if (integration?.platform === 'vapi') {
+                              return <><img src="/vapiai.jpg" alt="Vapi" className="h-6 w-6 rounded-full object-contain" /><span className="text-base font-medium text-gray-900">Vapi AI</span></>;
+                            }
+                            return <span className="text-sm text-gray-900">{integration?.name || 'Unknown Provider'}</span>;
+                          })()}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-sm font-medium text-gray-500">Agent ID</dt>
+                        <dd className="mt-1 text-sm text-gray-900 font-mono bg-gray-100 px-3 py-2 rounded border border-gray-200 inline-block select-all">
+                          {agent.voice_ai_agent_id}
+                        </dd>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-gray-500 italic">No voice AI integration configured.</p>
+                  )}
+                </div>
+              </div>
+              {!agent.voice_bundle_id && !(agent.voice_ai_integration_id && agent.voice_ai_agent_id) && (
+                <p className="text-sm text-gray-500 italic mt-3">No voice configuration detected.</p>
               )}
             </div>
           </div>
@@ -427,32 +448,29 @@ export default function AgentDetail() {
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 Call Medium *
               </label>
-              <div className="flex items-center gap-4">
-                <span className={`text-sm ${formData.call_medium === 'phone_call' ? 'text-gray-500' : 'text-gray-700'}`}>
-                  Web Call
-                </span>
-                <button
-                  type="button"
-                  disabled={!isEditMode}
-                  onClick={() => {
-                    const newMedium = formData.call_medium === 'phone_call' ? 'web_call' : 'phone_call'
-                    setFormData({
-                      ...formData,
-                      call_medium: newMedium,
-                      phone_number: newMedium === 'web_call' ? '' : formData.phone_number
-                    })
-                  }}
-                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 ${formData.call_medium === 'phone_call' ? 'bg-primary-600' : 'bg-gray-200'
-                    } ${!isEditMode ? 'opacity-50 cursor-not-allowed' : ''}`}
-                >
-                  <span
-                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${formData.call_medium === 'phone_call' ? 'translate-x-6' : 'translate-x-1'
-                      }`}
-                  />
-                </button>
-                <span className={`text-sm ${formData.call_medium === 'phone_call' ? 'text-gray-700' : 'text-gray-500'}`}>
-                  Phone Call
-                </span>
+              <div className={`inline-flex rounded-lg border border-gray-300 overflow-hidden ${!isEditMode ? 'opacity-60 cursor-not-allowed' : ''}`}>
+                {(['web_call', 'phone_call'] as const).map((medium) => {
+                  const isActive = formData.call_medium === medium
+                  return (
+                    <button
+                      key={medium}
+                      type="button"
+                      disabled={!isEditMode}
+                      onClick={() => {
+                        if (!isEditMode) return
+                        setFormData({
+                          ...formData,
+                          call_medium: medium,
+                          phone_number: medium === 'web_call' ? '' : formData.phone_number
+                        })
+                      }}
+                      className={`px-4 py-2 text-sm font-medium transition-colors focus:outline-none ${isActive ? 'bg-primary-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'
+                        } ${medium === 'web_call' ? 'border-r border-gray-300' : ''}`}
+                    >
+                      {medium === 'web_call' ? 'Web Call' : 'Phone Call'}
+                    </button>
+                  )
+                })}
               </div>
             </div>
 
@@ -498,16 +516,26 @@ export default function AgentDetail() {
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 Call Type
               </label>
-              <select
-                value={formData.call_type}
-                disabled={!isEditMode}
-                onChange={(e) => setFormData({ ...formData, call_type: e.target.value })}
-                className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent ${!isEditMode ? 'bg-gray-50 text-gray-700 cursor-not-allowed' : ''
-                  }`}
-              >
-                <option value="outbound">Outbound</option>
-                <option value="inbound">Inbound</option>
-              </select>
+              <div className={`inline-flex rounded-lg border border-gray-300 overflow-hidden ${!isEditMode ? 'opacity-60 cursor-not-allowed' : ''}`}>
+                {(['outbound', 'inbound'] as const).map((type) => {
+                  const isActive = formData.call_type === type
+                  return (
+                    <button
+                      key={type}
+                      type="button"
+                      disabled={!isEditMode}
+                      onClick={() => {
+                        if (!isEditMode) return
+                        setFormData({ ...formData, call_type: type })
+                      }}
+                      className={`px-4 py-2 text-sm font-medium transition-colors focus:outline-none ${isActive ? 'bg-primary-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'
+                        } ${type === 'outbound' ? 'border-r border-gray-300' : ''}`}
+                    >
+                      {type === 'outbound' ? 'Outbound' : 'Inbound'}
+                    </button>
+                  )
+                })}
+              </div>
             </div>
 
             <div>

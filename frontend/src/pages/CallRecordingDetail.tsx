@@ -1,6 +1,7 @@
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
+import ConfirmModal from '../components/ConfirmModal'
 import { ArrowLeft, RefreshCw, Trash2 } from 'lucide-react'
 import Button from '../components/Button'
 import { useToast } from '../hooks/useToast'
@@ -11,6 +12,7 @@ export default function CallRecordingDetail() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
+  const [showDelete, setShowDelete] = React.useState(false)
 
   const { data: callRecording, refetch: refetchCallDetails, isLoading } = useQuery({
     queryKey: ['call-recording', callShortId],
@@ -44,9 +46,7 @@ export default function CallRecordingDetail() {
   })
 
   const handleDelete = () => {
-    if (window.confirm('Are you sure you want to delete this call recording? This action cannot be undone.')) {
-      deleteMutation.mutate()
-    }
+    setShowDelete(true)
   }
 
   if (isLoading) {
@@ -120,26 +120,18 @@ export default function CallRecordingDetail() {
               <div>
                 <p className="text-xs text-gray-500 font-medium mb-1">Status</p>
                 <span
-                  className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${callRecording.status === 'UPDATED'
+                  className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                    callRecording.status === 'UPDATED'
                       ? 'bg-green-100 text-green-800'
                       : 'bg-yellow-100 text-yellow-800'
-                    }`}
+                  }`}
                 >
                   {callRecording.status}
                 </span>
               </div>
               <div>
                 <p className="text-xs text-gray-500 font-medium mb-1">Platform</p>
-                <div className="flex items-center gap-2">
-                  {callRecording.provider_platform?.toLowerCase() === 'retell' && (
-                    <img
-                      src="/retellai.png"
-                      alt="Retell"
-                      className="h-5 w-5 object-contain"
-                    />
-                  )}
-                  <p className="text-sm text-gray-900 capitalize">{callRecording.provider_platform || 'N/A'}</p>
-                </div>
+                <p className="text-sm text-gray-900">{callRecording.provider_platform || 'N/A'}</p>
               </div>
               <div>
                 <p className="text-xs text-gray-500 font-medium mb-1">Provider Call ID</p>
@@ -173,7 +165,25 @@ export default function CallRecordingDetail() {
           )}
         </div>
       </div>
+
+      <ConfirmModal
+        title="Delete call recording"
+        description="This will permanently remove this playground call recording."
+        isOpen={showDelete}
+        isLoading={deleteMutation.isPending}
+        onCancel={() => setShowDelete(false)}
+        onConfirm={() => deleteMutation.mutate()}
+      />
     </>
   )
 }
+
+      <ConfirmModal
+        title="Delete call recording"
+        description="This will permanently remove this playground call recording."
+        isOpen={showDelete}
+        isLoading={deleteMutation.isPending}
+        onCancel={() => setShowDelete(false)}
+        onConfirm={() => deleteMutation.mutate()}
+      />
 

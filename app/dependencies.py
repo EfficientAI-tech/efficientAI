@@ -11,12 +11,16 @@ from app.core.exceptions import InvalidAPIKeyError
 
 def get_api_key(
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    x_efficientai_api_key: Optional[str] = Header(
+        None, alias="X-EFFICIENTAI-API-KEY"
+    ),
 ) -> str:
     """
-    Extract and validate API key from request header.
+    Extract and validate API key from request headers.
 
     Args:
-        x_api_key: API key from X-API-Key header
+        x_api_key: API key from X-API-Key header (legacy/SDK usage)
+        x_efficientai_api_key: API key from X-EFFICIENTAI-API-KEY header (webhooks)
 
     Returns:
         Validated API key
@@ -24,13 +28,15 @@ def get_api_key(
     Raises:
         HTTPException: If API key is missing or invalid
     """
-    if not x_api_key:
+    api_key = x_api_key or x_efficientai_api_key
+
+    if not api_key:
         raise HTTPException(status_code=401, detail="API key is required")
 
     db = next(get_db())
     try:
-        verify_api_key(x_api_key, db)
-        return x_api_key
+        verify_api_key(api_key, db)
+        return api_key
     except InvalidAPIKeyError as e:
         raise HTTPException(status_code=401, detail=str(e))
     finally:

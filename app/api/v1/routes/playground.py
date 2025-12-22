@@ -7,28 +7,21 @@ from sqlalchemy.orm import Session
 from typing import Dict, Any, Optional, List
 from uuid import UUID
 from pydantic import BaseModel
-import random
 
 from app.dependencies import get_db, get_organization_id, get_api_key
-from app.models.database import Agent, Integration, IntegrationPlatform, CallRecording, CallRecordingStatus
+from app.models.database import (
+    Agent,
+    Integration,
+    IntegrationPlatform,
+    CallRecording,
+    CallRecordingStatus,
+    CallRecordingSource,
+)
 from app.core.encryption import decrypt_api_key
 from app.services.voice_providers import get_voice_provider
+from app.utils.call_recordings import generate_unique_call_short_id
 
 router = APIRouter(prefix="/playground", tags=["playground"])
-
-
-def generate_unique_call_short_id(db: Session) -> str:
-    """Generate a unique 6-digit call short ID."""
-    max_attempts = 100
-    for _ in range(max_attempts):
-        call_short_id = f"{random.randint(100000, 999999)}"
-        existing = db.query(CallRecording).filter(CallRecording.call_short_id == call_short_id).first()
-        if not existing:
-            return call_short_id
-    raise HTTPException(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        detail="Failed to generate unique call short ID"
-    )
 
 
 def poll_call_metrics(
@@ -222,6 +215,7 @@ async def create_web_call(
                 organization_id=organization_id,
                 call_short_id=call_short_id,
                 status=CallRecordingStatus.PENDING,
+                source=CallRecordingSource.PLAYGROUND,
                 call_data=web_call_response,  # Store initial response
                 provider_call_id=provider_call_id,
                 provider_platform=integration.platform.value,
@@ -280,7 +274,8 @@ async def list_call_recordings(
     List all call recordings for the organization.
     """
     call_recordings = db.query(CallRecording).filter(
-        CallRecording.organization_id == organization_id
+        CallRecording.organization_id == organization_id,
+        CallRecording.source == CallRecordingSource.PLAYGROUND,
     ).order_by(CallRecording.created_at.desc()).offset(skip).limit(limit).all()
     
     return [
@@ -311,7 +306,8 @@ async def get_call_recording(
     """
     call_recording = db.query(CallRecording).filter(
         CallRecording.call_short_id == call_short_id,
-        CallRecording.organization_id == organization_id
+        CallRecording.organization_id == organization_id,
+        CallRecording.source == CallRecordingSource.PLAYGROUND,
     ).first()
     
     if not call_recording:
@@ -346,7 +342,8 @@ async def refresh_call_recording(
     """
     call_recording = db.query(CallRecording).filter(
         CallRecording.call_short_id == call_short_id,
-        CallRecording.organization_id == organization_id
+        CallRecording.organization_id == organization_id,
+        CallRecording.source == CallRecordingSource.PLAYGROUND,
     ).first()
     
     if not call_recording:
