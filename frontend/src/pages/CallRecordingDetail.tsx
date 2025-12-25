@@ -1,5 +1,6 @@
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
 import { apiClient } from '../lib/api'
 import ConfirmModal from '../components/ConfirmModal'
 import { ArrowLeft, RefreshCw, Trash2 } from 'lucide-react'
@@ -12,7 +13,7 @@ export default function CallRecordingDetail() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
-  const [showDelete, setShowDelete] = React.useState(false)
+  const [showDelete, setShowDelete] = useState(false)
 
   const { data: callRecording, refetch: refetchCallDetails, isLoading } = useQuery({
     queryKey: ['call-recording', callShortId],
@@ -177,13 +178,3 @@ export default function CallRecordingDetail() {
     </>
   )
 }
-
-      <ConfirmModal
-        title="Delete call recording"
-        description="This will permanently remove this playground call recording."
-        isOpen={showDelete}
-        isLoading={deleteMutation.isPending}
-        onCancel={() => setShowDelete(false)}
-        onConfirm={() => deleteMutation.mutate()}
-      />
-

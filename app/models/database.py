@@ -366,6 +366,8 @@ class ModelProvider(str, enum.Enum):
     AZURE = "azure"
     AWS = "aws"
     CUSTOM = "custom"
+    CARTESIA = "cartesia"
+    DEEPGRAM = "deepgram"
 
 
 class ManualTranscription(Base):

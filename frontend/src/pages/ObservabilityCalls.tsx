@@ -1,4 +1,5 @@
-import { useQuery } from '@tanstack/react-query'
+import React from 'react'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { Eye, RefreshCw, PhoneCall, Info, Sparkles } from 'lucide-react'
 
@@ -8,12 +9,6 @@ import ConfirmModal from '../components/ConfirmModal'
 
 export default function ObservabilityCalls() {
   const navigate = useNavigate()
-
-  const {
-    data: calls = [],
-    isLoading,
-    refetch,
-  } = useQuery({
   const [selectedCallId, setSelectedCallId] = React.useState<string | null>(null)
   const deleteMutation = useMutation({
     mutationFn: (callShortId: string) => apiClient.deleteObservabilityCall(callShortId),
@@ -22,6 +17,12 @@ export default function ObservabilityCalls() {
       refetch()
     },
   })
+
+  const {
+    data: calls = [],
+    isLoading,
+    refetch,
+  } = useQuery({
     queryKey: ['observability-calls'],
     queryFn: () => apiClient.listObservabilityCalls(),
   })

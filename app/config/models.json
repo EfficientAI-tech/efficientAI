@@ -51,6 +51,10 @@
     "provider": "openai",
     "model_type": "llm"
   },
+  "gpt-4.1": {
+    "provider": "openai",
+    "model_type": "llm"
+  },
   "tts-1": {
     "provider": "openai",
     "model_type": "tts"
@@ -129,6 +133,26 @@
   },
   "aws-polly": {
     "provider": "aws",
+    "model_type": "tts"
+  },
+  "deepgram-nova-3-general": {
+    "provider": "deepgram",
+    "model_type": "stt"
+  },
+  "deepgram-nova-3-general-preview-12-2025": {
+    "provider": "deepgram",
+    "model_type": "stt"
+  },
+  "cartesia-sonic-3": {
+    "provider": "cartesia",
+    "model_type": "tts"
+  },
+  "cartesia-sonic-3-mini": {
+    "provider": "cartesia",
+    "model_type": "tts"
+  },
+  "cartesia-sonic-3-nano": {
+    "provider": "cartesia",
     "model_type": "tts"
   }
 }

@@ -29,6 +29,8 @@ dependencies = [
     "aiofiles>=23.2.0",
     "boto3>=1.34.0",
     "pipecat-ai[silero,websocket,google]>=0.0.82",
+    "cartesia>=0.1.0",
+    "deepgram-sdk>=3.0.0,<4.0.0",
     "loguru>=0.7.0",
     "retell-sdk>=0.1.0",
 ]
@@ -41,6 +43,18 @@ dev = [
     "black>=23.11.0",
     "ruff>=0.1.0",
     "mypy>=1.7.0",
+]
+local-smart-turn-v3 = [
+    "transformers>=4.41.0",
+    "onnxruntime>=1.17.0",
+    "importlib-resources>=6.4.0",
+]
+cartesia = [
+    "cartesia>=0.1.0",
+    "websockets>=12.0",
+]
+deepgram = [
+    "deepgram-sdk>=3.0.0,<4.0.0",
 ]
 
 [build-system]

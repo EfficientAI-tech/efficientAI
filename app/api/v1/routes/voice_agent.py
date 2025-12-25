@@ -11,9 +11,10 @@ from loguru import logger
 
 from app.database import get_db
 from app.dependencies import get_organization_id, get_api_key
-from app.models.database import AIProvider, ModelProvider
+from app.models.database import AIProvider, ModelProvider, Integration, IntegrationPlatform
 from app.core.encryption import decrypt_api_key
 from app.services.voice_agent.bot_fast_api import run_bot
+from app.services.voice_agent.voice_bundle import run_voice_bundle_fastapi
 from app.services.s3_service import s3_service
 
 router = APIRouter(prefix="/voice-agent", tags=["voice-agent"])
@@ -66,70 +67,103 @@ async def websocket_endpoint(
         persona_id = websocket.query_params.get("persona_id")
         scenario_id = websocket.query_params.get("scenario_id")
         
-        # Determine which AI Provider to use
-        # Priority: 1) Agent's ai_provider_id, 2) Agent's voice_bundle's providers, 3) Default Google
-        ai_provider = None
+        # Fetch agent and voice bundle once for routing and instructions
         agent = None
-        
-        if agent_id:
-            try:
+        voice_bundle = None
+        try:
+            if agent_id:
                 from app.models.database import Agent, VoiceBundle
                 agent_uuid = UUID(agent_id)
                 agent = db.query(Agent).filter(
                     Agent.id == agent_uuid,
                     Agent.organization_id == organization_id
                 ).first()
-                
-                if agent:
-                    # If agent has ai_provider_id, use that
-                    if agent.ai_provider_id:
-                        ai_provider = db.query(AIProvider).filter(
-                            AIProvider.id == agent.ai_provider_id,
-                            AIProvider.organization_id == organization_id,
-                            AIProvider.is_active == True
-                        ).first()
-                    # If agent has voice_bundle_id, we could use it in the future
-                    # For now, fall back to Google
-                    elif agent.voice_bundle_id:
-                        # Voice Bundle support can be added here in the future
-                        # For now, use default Google provider
-                        pass
-            except ValueError:
-                pass
-        
-        # Fall back to Google AI Provider if no agent-specific provider found
-        if not ai_provider:
-            ai_provider = db.query(AIProvider).filter(
+                if agent and agent.voice_bundle_id:
+                    voice_bundle = db.query(VoiceBundle).filter(
+                        VoiceBundle.id == agent.voice_bundle_id,
+                        VoiceBundle.organization_id == organization_id
+                    ).first()
+        except ValueError:
+            pass
+
+        use_voice_bundle_pipeline = bool(voice_bundle and voice_bundle.bundle_type == "stt_llm_tts")
+
+        def resolve_api_key_for_provider(provider: ModelProvider) -> str | None:
+            """Resolve API key from AIProvider (preferred) or Integration for given provider."""
+            # 1) AIProvider
+            ai_provider_rec = db.query(AIProvider).filter(
                 AIProvider.organization_id == organization_id,
-                AIProvider.provider == ModelProvider.GOOGLE,
-                AIProvider.is_active == True
+                AIProvider.provider == provider,
+                AIProvider.is_active == True,
             ).first()
-        
-        if not ai_provider:
-            await websocket.close(
-                code=1008, 
-                reason="AI Provider not configured. Please configure an AI Provider in AI Providers settings or select one when creating the agent."
-            )
-            return
-        
-        # Decrypt API key
-        try:
-            google_api_key = decrypt_api_key(ai_provider.api_key)
-            # Validate the decrypted key
-            if not google_api_key or not google_api_key.strip():
-                logger.error("Decrypted API key is empty")
+            if ai_provider_rec:
+                try:
+                    return decrypt_api_key(ai_provider_rec.api_key)
+                except Exception as e:
+                    logger.error(f"Failed to decrypt AIProvider key for {provider}: {e}", exc_info=True)
+            # 2) Integration mapping (only for platforms that exist in IntegrationPlatform)
+            platform_map = {
+                ModelProvider.DEEPGRAM: IntegrationPlatform.DEEPGRAM,
+                ModelProvider.CARTESIA: IntegrationPlatform.CARTESIA,
+            }
+            plat = platform_map.get(provider)
+            if plat:
+                integ = db.query(Integration).filter(
+                    Integration.organization_id == organization_id,
+                    Integration.platform == plat,
+                    Integration.is_active == True,
+                ).first()
+                if integ:
+                    try:
+                        return decrypt_api_key(integ.api_key)
+                    except Exception as e:
+                        logger.error(f"Failed to decrypt Integration key for {provider}: {e}", exc_info=True)
+            return None
+
+        # Determine which AI Provider to use (only needed for S2S/Gemini path)
+        # Priority: 1) Agent's ai_provider_id, 2) Default Google
+        ai_provider = None
+        google_api_key = None
+        if not use_voice_bundle_pipeline:
+            if agent and agent.ai_provider_id:
+                ai_provider = db.query(AIProvider).filter(
+                    AIProvider.id == agent.ai_provider_id,
+                    AIProvider.organization_id == organization_id,
+                    AIProvider.is_active == True
+                ).first()
+
+            # Fall back to Google AI Provider if no agent-specific provider found
+            if not ai_provider:
+                ai_provider = db.query(AIProvider).filter(
+                    AIProvider.organization_id == organization_id,
+                    AIProvider.provider == ModelProvider.GOOGLE,
+                    AIProvider.is_active == True
+                ).first()
+
+            if not ai_provider:
                 await websocket.close(
                     code=1008,
-                    reason="API key is empty. Please configure a valid API key in AI Providers settings."
+                    reason="AI Provider not configured. Please configure an AI Provider in AI Providers settings or select one when creating the agent."
                 )
                 return
-        except Exception as e:
-            logger.error(f"Failed to decrypt API key: {e}", exc_info=True)
-            await websocket.close(
-                code=1008,
-                reason=f"Failed to decrypt API key: {str(e)}"
-            )
-            return
+
+            # Decrypt API key
+            try:
+                google_api_key = decrypt_api_key(ai_provider.api_key)
+                if not google_api_key or not google_api_key.strip():
+                    logger.error("Decrypted API key is empty")
+                    await websocket.close(
+                        code=1008,
+                        reason="API key is empty. Please configure a valid API key in AI Providers settings."
+                    )
+                    return
+            except Exception as e:
+                logger.error(f"Failed to decrypt API key: {e}", exc_info=True)
+                await websocket.close(
+                    code=1008,
+                    reason=f"Failed to decrypt API key: {str(e)}"
+                )
+                return
         
         system_instruction = None
         instruction_parts = []
@@ -138,35 +172,12 @@ async def websocket_endpoint(
         from app.models.database import Agent, Persona, Scenario
         
         # 1. Add Agent description (base instruction) and get voice bundle for model
-        voice_bundle = None
         model_name = None
-        if agent_id:
-            try:
-                agent_uuid = UUID(agent_id)
-                agent = db.query(Agent).filter(
-                    Agent.id == agent_uuid,
-                    Agent.organization_id == organization_id
-                ).first()
-                if agent:
-                    if agent.description:
-                        instruction_parts.append(agent.description)
-                    
-                    # Get voice bundle to extract model name
-                    if agent.voice_bundle_id:
-                        from app.models.database import VoiceBundle
-                        voice_bundle = db.query(VoiceBundle).filter(
-                            VoiceBundle.id == agent.voice_bundle_id,
-                            VoiceBundle.organization_id == organization_id
-                        ).first()
-                        
-                        # Extract model name from voice bundle
-                        if voice_bundle:
-                            # For S2S models, use s2s_model
-                            if voice_bundle.bundle_type == "s2s" and voice_bundle.s2s_model:
-                                model_name = voice_bundle.s2s_model
-                            # For STT_LLM_TTS, we could use llm_model, but for now S2S is the focus
-            except ValueError:
-                pass
+        if agent:
+            if agent.description:
+                instruction_parts.append(agent.description)
+            if voice_bundle and voice_bundle.bundle_type == "s2s" and voice_bundle.s2s_model:
+                model_name = voice_bundle.s2s_model
         
         # 2. Add Persona information (characteristics)
         if persona_id:
@@ -286,21 +297,46 @@ async def websocket_endpoint(
             except Exception as e:
                 logger.warning(f"Error finding/creating evaluator or generating result_id: {e}")
         
-        # Run the bot with the decrypted API key
+        # Run the bot with the appropriate pipeline
         call_metadata = None
         try:
-            call_metadata = await run_bot(
-                websocket, 
-                google_api_key, 
-                system_instruction, 
-                str(organization_id),
-                agent_id,
-                persona_id,
-                scenario_id,
-                evaluator_id=str(evaluator.id) if evaluator else None,
-                result_id=result_id,
-                model_name=model_name  # Pass model name from voice bundle
-            )
+            if use_voice_bundle_pipeline:
+                # Resolve per-provider keys for voice bundle
+                stt_provider = voice_bundle.stt_provider if voice_bundle else None
+                tts_provider = voice_bundle.tts_provider if voice_bundle else None
+                llm_provider = voice_bundle.llm_provider if voice_bundle else None
+
+                stt_api_key = resolve_api_key_for_provider(stt_provider) if stt_provider else None
+                tts_api_key = resolve_api_key_for_provider(tts_provider) if tts_provider else None
+                llm_api_key = resolve_api_key_for_provider(llm_provider) if llm_provider else None
+
+                call_metadata = await run_voice_bundle_fastapi(
+                    websocket,
+                    system_instruction,
+                    str(organization_id),
+                    agent_id,
+                    persona_id,
+                    scenario_id,
+                    evaluator_id=str(evaluator.id) if evaluator else None,
+                    result_id=result_id,
+                    voice_bundle=voice_bundle,
+                    stt_api_key=stt_api_key,
+                    tts_api_key=tts_api_key,
+                    llm_api_key=llm_api_key,
+                )
+            else:
+                call_metadata = await run_bot(
+                    websocket,
+                    google_api_key,
+                    system_instruction,
+                    str(organization_id),
+                    agent_id,
+                    persona_id,
+                    scenario_id,
+                    evaluator_id=str(evaluator.id) if evaluator else None,
+                    result_id=result_id,
+                    model_name=model_name,  # Pass model name from voice bundle
+                )
         except Exception as bot_error:
             logger.error(f"Error in run_bot: {bot_error}", exc_info=True)
             # Continue to try creating evaluator result if we have metadata

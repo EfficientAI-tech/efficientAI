@@ -1,5 +1,6 @@
 import { useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
 import { ArrowLeft } from 'lucide-react'
 
 import Button from '../components/Button'
@@ -11,7 +12,7 @@ export default function ObservabilityCallDetail() {
   const navigate = useNavigate()
   const { callShortId } = useParams<{ callShortId: string }>()
   const queryClient = useQueryClient()
-  const [showDelete, setShowDelete] = React.useState(false)
+  const [showDelete, setShowDelete] = useState(false)
 
   const {
     data: callRecording,

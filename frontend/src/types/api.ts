@@ -183,6 +183,8 @@ export enum ModelProvider {
   GOOGLE = 'google',
   AZURE = 'azure',
   AWS = 'aws',
+  DEEPGRAM = 'deepgram',
+  CARTESIA = 'cartesia',
   CUSTOM = 'custom',
 }
 

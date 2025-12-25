@@ -11,7 +11,7 @@ from loguru import logger
 
 __version__ = version("efficientai")
 
-logger.info(f"ᓚᘏᗢ EfficientAI {__version__} (Python {sys.version}) ᓚᘏᗢ")
+logger.info(f"EfficientAI {__version__} (Python {sys.version})")
 
 # We replace `asyncio.wait_for()` for `wait_for2.wait_for()` for Python < 3.12.
 #

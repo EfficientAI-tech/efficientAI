@@ -1,5 +1,3 @@
-import React from 'react'
-
 interface ConfirmModalProps {
   title: string
   description?: string
