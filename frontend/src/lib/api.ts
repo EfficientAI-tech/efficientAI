@@ -461,7 +461,7 @@ class ApiClient {
     return response.data
   }
 
-  async getIntegrationApiKey(integrationId: string): Promise<{ api_key: string }> {
+  async getIntegrationApiKey(integrationId: string): Promise<{ api_key: string; public_key?: string | null }> {
     const response = await this.client.get(`/api/v1/integrations/${integrationId}/api-key`)
     return response.data
   }
@@ -710,6 +710,13 @@ class ApiClient {
 
   async refreshCallRecording(callShortId: string): Promise<{ message: string }> {
     const response = await this.client.post(`/api/v1/playground/call-recordings/${callShortId}/refresh`)
+    return response.data
+  }
+
+  async updateCallRecording(callShortId: string, providerCallId: string): Promise<{ message: string; provider_call_id: string }> {
+    const response = await this.client.put(`/api/v1/playground/call-recordings/${callShortId}`, {
+      provider_call_id: providerCallId
+    })
     return response.data
   }
 

@@ -48,6 +48,7 @@ export default function Integrations() {
   const [showProviderDropdown, setShowProviderDropdown] = useState(false)
   const [showPlatformDropdown, setShowPlatformDropdown] = useState(false)
   const [apiKey, setApiKey] = useState('')
+  const [publicKey, setPublicKey] = useState('')
   const [name, setName] = useState('')
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [showDeleteAIProviderModal, setShowDeleteAIProviderModal] = useState(false)
@@ -102,6 +103,17 @@ export default function Integrations() {
     },
     onError: (error: any) => {
       showToast(`Failed to delete integration: ${error.response?.data?.detail || error.message}`, 'error')
+    },
+  })
+
+  const testIntegrationMutation = useMutation({
+    mutationFn: (id: string) => apiClient.testIntegration(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['integrations'] })
+      showToast('Integration test completed successfully!', 'success')
+    },
+    onError: (error: any) => {
+      showToast(`Integration test failed: ${error.response?.data?.detail || error.message}`, 'error')
     },
   })
 
@@ -185,6 +197,7 @@ export default function Integrations() {
     setShowProviderDropdown(false)
     setShowPlatformDropdown(false)
     setApiKey('')
+    setPublicKey('')
     setName('')
   }
 
@@ -194,6 +207,7 @@ export default function Integrations() {
     setSelectedPlatform(integration.platform as 'retell' | 'vapi' | 'cartesia' | 'elevenlabs' | 'deepgram')
     setName(integration.name || '')
     setApiKey('') // Don't pre-fill API key for security
+    setPublicKey(integration.public_key || '')
     setIsEditMode(true)
     setShowModal(true)
   }
@@ -222,6 +236,9 @@ export default function Integrations() {
         if (apiKey) {
           updateData.api_key = apiKey
         }
+        if (publicKey !== (selectedIntegration.public_key || '')) {
+          updateData.public_key = publicKey || undefined
+        }
 
         if (Object.keys(updateData).length > 0) {
           updateIntegrationMutation.mutate({ id: selectedIntegration.id, data: updateData })
@@ -235,6 +252,7 @@ export default function Integrations() {
         createIntegrationMutation.mutate({
           platform: selectedPlatform as IntegrationPlatform,
           api_key: apiKey,
+          public_key: publicKey || undefined,
           name: name || undefined,
         })
       }
@@ -291,6 +309,10 @@ export default function Integrations() {
 
   const handleTestAIProvider = (provider: AIProvider) => {
     testAIProviderMutation.mutate(provider.id)
+  }
+
+  const handleTestIntegration = (integration: Integration) => {
+    testIntegrationMutation.mutate(integration.id)
   }
 
   const platforms = [
@@ -425,6 +447,15 @@ export default function Integrations() {
                       <Button
                         variant="ghost"
                         size="sm"
+                        onClick={() => handleTestIntegration(integration)}
+                        isLoading={testIntegrationMutation.isPending && testIntegrationMutation.variables === integration.id}
+                        leftIcon={<Key className="h-4 w-4" />}
+                      >
+                        Test
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
                         onClick={() => handleEdit(integration)}
                         leftIcon={<Edit className="h-4 w-4" />}
                       >
@@ -455,12 +486,12 @@ export default function Integrations() {
                     <div className="flex-shrink-0">
                       {PROVIDER_LOGOS[provider.provider] ? (
                         <div className="w-12 h-12 bg-white rounded-lg flex items-center justify-center border border-gray-200 p-2">
-                            <img
-                              src={PROVIDER_LOGOS[provider.provider]!}
-                              alt={PROVIDER_LABELS[provider.provider]}
-                              className="w-full h-full object-contain"
-                            />
-                          </div>
+                          <img
+                            src={PROVIDER_LOGOS[provider.provider]!}
+                            alt={PROVIDER_LABELS[provider.provider]}
+                            className="w-full h-full object-contain"
+                          />
+                        </div>
                       ) : (
                         <div className="w-12 h-12 bg-gradient-to-br from-primary-100 to-primary-200 rounded-lg flex items-center justify-center">
                           <Brain className="h-6 w-6 text-primary-600" />
@@ -546,7 +577,7 @@ export default function Integrations() {
           <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
             <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
               <h3 className="text-lg font-semibold">
-                {isEditMode 
+                {isEditMode
                   ? (integrationType === 'ai_provider' ? 'Edit AI Provider' : 'Edit Integration')
                   : 'Add Integration'}
               </h3>
@@ -572,11 +603,10 @@ export default function Integrations() {
                         setSelectedPlatform(null)
                         setSelectedProvider(null)
                       }}
-                      className={`p-3 border-2 rounded-lg text-left transition-all ${
-                        integrationType === 'voice_platform'
-                          ? 'border-primary-500 bg-primary-50'
-                          : 'border-gray-200 hover:border-gray-300'
-                      }`}
+                      className={`p-3 border-2 rounded-lg text-left transition-all ${integrationType === 'voice_platform'
+                        ? 'border-primary-500 bg-primary-50'
+                        : 'border-gray-200 hover:border-gray-300'
+                        }`}
                     >
                       <div className="flex items-center gap-2">
                         <Plug className="h-5 w-5 text-primary-600" />
@@ -591,11 +621,10 @@ export default function Integrations() {
                         setSelectedPlatform(null)
                         setSelectedProvider(null)
                       }}
-                      className={`p-3 border-2 rounded-lg text-left transition-all ${
-                        integrationType === 'ai_provider'
-                          ? 'border-primary-500 bg-primary-50'
-                          : 'border-gray-200 hover:border-gray-300'
-                      }`}
+                      className={`p-3 border-2 rounded-lg text-left transition-all ${integrationType === 'ai_provider'
+                        ? 'border-primary-500 bg-primary-50'
+                        : 'border-gray-200 hover:border-gray-300'
+                        }`}
                     >
                       <div className="flex items-center gap-2">
                         <Brain className="h-5 w-5 text-primary-600" />
@@ -700,7 +729,7 @@ export default function Integrations() {
                   </div>
                   <div>
                     <label htmlFor="apiKey" className="block text-sm font-medium text-gray-700 mb-1">
-                      API Key {isEditMode && <span className="text-gray-500 font-normal">(leave empty to keep current)</span>}
+                      {selectedPlatform === IntegrationPlatform.VAPI ? 'Private API Key' : 'API Key'} {isEditMode && <span className="text-gray-500 font-normal">(leave empty to keep current)</span>}
                     </label>
                     <input
                       id="apiKey"
@@ -709,10 +738,28 @@ export default function Integrations() {
                       value={apiKey}
                       onChange={(e) => setApiKey(e.target.value)}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                      placeholder={isEditMode ? "Enter new API key (optional)" : "Enter API key"}
+                      placeholder={isEditMode ? "Enter new API key (optional)" : `Enter ${selectedPlatform === IntegrationPlatform.VAPI ? 'private ' : ''}API key`}
                     />
+
+                    {selectedPlatform === IntegrationPlatform.VAPI && (
+                      <div className="mt-4">
+                        <label htmlFor="publicKey" className="block text-sm font-medium text-gray-700 mb-1">
+                          Public API Key {isEditMode && <span className="text-gray-500 font-normal">(leave empty to keep current)</span>}
+                        </label>
+                        <input
+                          id="publicKey"
+                          type="text"
+                          required={!isEditMode}
+                          value={publicKey}
+                          onChange={(e) => setPublicKey(e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                          placeholder={isEditMode ? "Enter new public API key (optional)" : "Enter public API key"}
+                        />
+                      </div>
+                    )}
+
                     <p className="mt-1 text-xs text-gray-500">
-                      Your API key will be encrypted and stored securely
+                      Your {selectedPlatform === IntegrationPlatform.VAPI ? 'API keys' : 'API key'} will be encrypted and stored securely
                     </p>
                   </div>
                 </>
@@ -824,21 +871,21 @@ export default function Integrations() {
               {/* Error Messages */}
               {((integrationType === 'voice_platform' && (createIntegrationMutation.isError || updateIntegrationMutation.isError)) ||
                 (integrationType === 'ai_provider' && (createAIProviderMutation.isError || updateAIProviderMutation.isError))) && (
-                <div className="rounded-md bg-red-50 p-4">
-                  <div className="flex">
-                    <AlertCircle className="h-5 w-5 text-red-400" />
-                    <div className="ml-3">
-                      <p className="text-sm text-red-800">
-                        {integrationType === 'voice_platform'
-                          ? ((createIntegrationMutation.error || updateIntegrationMutation.error as any)?.response?.data?.detail ||
-                            (isEditMode ? 'Failed to update integration' : 'Failed to create integration'))
-                          : ((createAIProviderMutation.error || updateAIProviderMutation.error as any)?.response?.data?.detail ||
-                            (isEditMode ? 'Failed to update provider' : 'Failed to configure provider'))}
-                      </p>
+                  <div className="rounded-md bg-red-50 p-4">
+                    <div className="flex">
+                      <AlertCircle className="h-5 w-5 text-red-400" />
+                      <div className="ml-3">
+                        <p className="text-sm text-red-800">
+                          {integrationType === 'voice_platform'
+                            ? ((createIntegrationMutation.error || updateIntegrationMutation.error as any)?.response?.data?.detail ||
+                              (isEditMode ? 'Failed to update integration' : 'Failed to create integration'))
+                            : ((createAIProviderMutation.error || updateAIProviderMutation.error as any)?.response?.data?.detail ||
+                              (isEditMode ? 'Failed to update provider' : 'Failed to configure provider'))}
+                        </p>
+                      </div>
                     </div>
                   </div>
-                </div>
-              )}
+                )}
 
               <div className="flex gap-3 pt-4">
                 <Button

@@ -4,17 +4,18 @@ Modular structure for integrating with different voice AI providers (Retell, Vap
 """
 from app.services.voice_providers.base import BaseVoiceProvider
 from app.services.voice_providers.retell import RetellVoiceProvider
+from app.services.voice_providers.vapi import VapiVoiceProvider
 
 __all__ = [
     "BaseVoiceProvider",
     "RetellVoiceProvider",
+    "VapiVoiceProvider",
 ]
 
 # Registry of voice providers by platform
 VOICE_PROVIDERS = {
     "retell": RetellVoiceProvider,
-    # Add more providers here as they are implemented
-    # "vapi": VapiVoiceProvider,
+    "vapi": VapiVoiceProvider,
 }
 
 def get_voice_provider(platform: str) -> type[BaseVoiceProvider]:

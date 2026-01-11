@@ -12,6 +12,7 @@
     "@pipecat-ai/client-js": "^1.2.0",
     "@pipecat-ai/websocket-transport": "^1.2.0",
     "@tanstack/react-query": "^5.17.0",
+    "@vapi-ai/web": "^2.5.2",
     "axios": "^1.6.2",
     "clsx": "^2.1.0",
     "date-fns": "^3.0.6",

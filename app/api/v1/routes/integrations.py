@@ -8,11 +8,12 @@ from typing import List
 from uuid import UUID
 
 from app.dependencies import get_db, get_organization_id, get_api_key
-from app.models.database import Integration, IntegrationPlatform
+from app.models.database import Integration, IntegrationPlatform, Agent
 from app.models.schemas import (
     IntegrationCreate, IntegrationUpdate, IntegrationResponse, MessageResponse
 )
 from app.core.encryption import encrypt_api_key, decrypt_api_key
+from app.services.voice_providers import get_voice_provider
 
 router = APIRouter(prefix="/integrations", tags=["Integrations"])
 
@@ -49,6 +50,7 @@ async def create_integration(
         platform=integration_data.platform,
         name=integration_data.name,
         api_key=encrypted_api_key,
+        public_key=integration_data.public_key,
         is_active=True
     )
     
@@ -124,6 +126,9 @@ async def update_integration(
     if integration_update.api_key is not None:
         integration.api_key = encrypt_api_key(integration_update.api_key)
     
+    if integration_update.public_key is not None:
+        integration.public_key = integration_update.public_key
+    
     if integration_update.is_active is not None:
         integration.is_active = integration_update.is_active
     
@@ -144,13 +149,18 @@ async def delete_integration(
     Delete an integration.
     Requires at least WRITER role.
     """
-    integration = db.query(Integration).filter(
-        Integration.id == integration_id,
-        Integration.organization_id == organization_id
-    ).first()
-    
     if not integration:
         raise HTTPException(status_code=404, detail="Integration not found")
+    
+    # Unlink any agents using this integration
+    linked_agents = db.query(Agent).filter(
+        Agent.voice_ai_integration_id == integration_id,
+        Agent.organization_id == organization_id
+    ).all()
+    
+    for agent in linked_agents:
+        agent.voice_ai_integration_id = None
+        agent.voice_ai_agent_id = None  # Also clear the remote agent ID as it's no longer valid without integration
     
     db.delete(integration)
     db.commit()
@@ -176,13 +186,40 @@ async def test_integration(
     if not integration:
         raise HTTPException(status_code=404, detail="Integration not found")
     
-    # TODO: Implement actual API key validation for each platform
-    # For now, just mark as tested
+    # Decrypt API key
+    try:
+        decrypted_api_key = decrypt_api_key(integration.api_key)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to decrypt API key: {str(e)}"
+        )
+
+    # Get the appropriate voice provider
+    try:
+        provider_class = get_voice_provider(integration.platform)
+        provider = provider_class(api_key=decrypted_api_key)
+        
+        # Test connection
+        provider.test_connection()
+        
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Connection test failed: {str(e)}"
+        )
+    
+    # Mark as tested
     from datetime import datetime
     integration.last_tested_at = datetime.utcnow()
     db.commit()
     
-    return {"message": f"Integration with {integration.platform.value} is valid"}
+    return {"message": f"Integration with {integration.platform} is valid"}
 
 
 @router.get("/{integration_id}/api-key")
@@ -215,7 +252,10 @@ async def get_integration_api_key(
     
     try:
         decrypted_api_key = decrypt_api_key(integration.api_key)
-        return {"api_key": decrypted_api_key}
+        return {
+            "api_key": decrypted_api_key,
+            "public_key": integration.public_key
+        }
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
