@@ -11,6 +11,8 @@
 
 Test quality, measure performance, & ship with confidence.
 
+<img src="./assets/Readme%20logo.gif" alt="EfficientAI Demo" width="800">
+
  [📅 Book a Demo](https://calendly.com/aadhar-efficientai/30min) • [💻 GitHub](https://github.com/EfficientAI-tech/efficientAI)
 
 [![GitHub Stars](https://img.shields.io/github/stars/EfficientAI-tech/efficientAI?style=flat-square&logo=github)](https://github.com/EfficientAI-tech/efficientAI)
