@@ -1,5 +1,9 @@
 # Contributing to EfficientAI
 
+<p align="center">
+  <img src="./assets/Readme%20logo.gif" alt="EfficientAI Demo" width="800">
+</p>
+
 Thank you for your interest in contributing to **EfficientAI**! 🙌
 
 We are building an open-source evaluation platform for Voice AI, and every contribution—whether it's code, documentation, or just an idea—helps us improve the platform for everyone.
