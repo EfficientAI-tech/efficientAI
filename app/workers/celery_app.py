@@ -107,17 +107,27 @@ def process_evaluator_result_task(self, result_id: str):
         logger.info(f"[EvaluatorResult {result.result_id}] Starting processing task (Celery task: {self.request.id})")
         logger.info(f"[EvaluatorResult {result.result_id}] Current status: {result.status}")
         logger.info(f"[EvaluatorResult {result.result_id}] Audio S3 key: {result.audio_s3_key}")
+        logger.info(f"[EvaluatorResult {result.result_id}] Has existing transcription: {bool(result.transcription)}")
+        logger.info(f"[EvaluatorResult {result.result_id}] Has call_data: {bool(result.call_data)}")
         
         # Update Celery task ID
         result.celery_task_id = self.request.id
         db.commit()
         
+        # Check if transcript is already available (from provider call_data)
+        # This happens when using Retell/Vapi where transcript is provided directly
+        has_provider_transcript = bool(result.transcription) and bool(result.call_data)
+        
         try:
-            # Step 1: Verify audio S3 key exists
-            logger.info(f"[EvaluatorResult {result.result_id}] Step 1: Verifying audio S3 key")
-            if not result.audio_s3_key:
-                raise ValueError("No audio S3 key found")
-            logger.info(f"[EvaluatorResult {result.result_id}] ✓ Audio S3 key verified: {result.audio_s3_key}")
+            # Step 1: Verify we have either audio S3 key OR existing transcript from provider
+            logger.info(f"[EvaluatorResult {result.result_id}] Step 1: Verifying data source")
+            if not result.audio_s3_key and not has_provider_transcript:
+                raise ValueError("No audio S3 key or provider transcript found")
+            
+            if has_provider_transcript:
+                logger.info(f"[EvaluatorResult {result.result_id}] ✓ Using transcript from provider (call_data)")
+            elif result.audio_s3_key:
+                logger.info(f"[EvaluatorResult {result.result_id}] ✓ Audio S3 key verified: {result.audio_s3_key}")
             
             # Step 2: Get evaluator and related entities for context
             logger.info(f"[EvaluatorResult {result.result_id}] Step 2: Loading evaluator and context data")
@@ -144,58 +154,73 @@ def process_evaluator_result_task(self, result_id: str):
             
             logger.info(f"[EvaluatorResult {result.result_id}] ✓ Context loaded - Evaluator: {evaluator.evaluator_id if evaluator else 'None'}, Agent: {agent.name if agent else 'N/A'}, Persona: {persona.name if persona else 'None'}, Scenario: {scenario.name if scenario else 'None'}")
             
-            # Step 3: Transcribe audio using TranscriptionService
-            logger.info(f"[EvaluatorResult {result.result_id}] Step 3: Starting transcription")
-            
-            # Update status to TRANSCRIBING
-            result.status = EvaluatorResultStatus.TRANSCRIBING.value
-            db.commit()
-            logger.info(f"[EvaluatorResult {result.result_id}] Status updated: QUEUED -> TRANSCRIBING")
-            
-            # Determine transcription model - check for AI Provider configuration
-            # Default to OpenAI Whisper, but can be extended to other providers
-            stt_provider = ModelProvider.OPENAI
-            stt_model = "whisper-1"  # OpenAI Whisper API model
-            
-            # Check if organization has configured AI providers
+            # Step 3: Get or create transcription
+            # Check if organization has configured AI providers (needed for evaluation even if skipping transcription)
             ai_providers = db.query(AIProvider).filter(
                 AIProvider.organization_id == result.organization_id,
                 AIProvider.is_active == True
             ).all()
             
-            # Prefer OpenAI for transcription, but can be extended
-            openai_provider = next((p for p in ai_providers if p.provider == ModelProvider.OPENAI), None)
-            if not openai_provider:
-                logger.warning(f"[EvaluatorResult {result.result_id}] No OpenAI provider found, using default whisper-1")
+            if has_provider_transcript:
+                # Skip transcription - use transcript from provider (Retell/Vapi)
+                logger.info(f"[EvaluatorResult {result.result_id}] Step 3: SKIPPING transcription (using provider transcript)")
+                
+                transcription = result.transcription
+                speaker_segments = result.speaker_segments or []
+                transcription_time = 0.0  # No transcription time since we skipped it
+                
+                logger.info(f"[EvaluatorResult {result.result_id}] ✓ Using existing transcript: {len(transcription)} characters")
+                logger.info(f"[EvaluatorResult {result.result_id}] ✓ Using existing speaker segments: {len(speaker_segments)} segments")
+                
+                # Log provider info
+                provider_platform = result.provider_platform or "unknown"
+                logger.info(f"[EvaluatorResult {result.result_id}] Transcript source: {provider_platform} call_data")
             else:
-                logger.info(f"[EvaluatorResult {result.result_id}] Using OpenAI provider for transcription")
-            
-            transcription_start_time = time.time()
-            logger.info(f"[EvaluatorResult {result.result_id}] Calling transcription service with model: {stt_model}")
-            
-            transcription_result = transcription_service.transcribe(
-                audio_file_key=result.audio_s3_key,
-                stt_provider=stt_provider,
-                stt_model=stt_model,
-                organization_id=result.organization_id,
-                db=db,
-                language=None,  # Auto-detect
-                enable_speaker_diarization=True
-            )
-            
-            transcription_time = time.time() - transcription_start_time
-            transcription = transcription_result.get("transcript", "")
-            speaker_segments = transcription_result.get("speaker_segments", [])
-            transcription_length = len(transcription)
-            
-            logger.info(f"[EvaluatorResult {result.result_id}] ✓ Transcription completed in {transcription_time:.2f}s")
-            logger.info(f"[EvaluatorResult {result.result_id}] Transcription length: {transcription_length} characters")
-            logger.info(f"[EvaluatorResult {result.result_id}] Speaker segments: {len(speaker_segments)} segments detected")
-            logger.debug(f"[EvaluatorResult {result.result_id}] Transcription preview: {transcription[:200]}...")
-            
-            result.transcription = transcription
-            result.speaker_segments = speaker_segments if speaker_segments else None
-            db.commit()
+                # Transcribe audio using TranscriptionService
+                logger.info(f"[EvaluatorResult {result.result_id}] Step 3: Starting transcription from audio")
+                
+                # Update status to TRANSCRIBING
+                result.status = EvaluatorResultStatus.TRANSCRIBING.value
+                db.commit()
+                logger.info(f"[EvaluatorResult {result.result_id}] Status updated: QUEUED -> TRANSCRIBING")
+                
+                # Determine transcription model - check for AI Provider configuration
+                # Default to OpenAI Whisper, but can be extended to other providers
+                stt_provider = ModelProvider.OPENAI
+                stt_model = "whisper-1"  # OpenAI Whisper API model
+                
+                # Prefer OpenAI for transcription, but can be extended
+                openai_provider = next((p for p in ai_providers if p.provider == ModelProvider.OPENAI), None)
+                if not openai_provider:
+                    logger.warning(f"[EvaluatorResult {result.result_id}] No OpenAI provider found, using default whisper-1")
+                else:
+                    logger.info(f"[EvaluatorResult {result.result_id}] Using OpenAI provider for transcription")
+                
+                transcription_start_time = time.time()
+                logger.info(f"[EvaluatorResult {result.result_id}] Calling transcription service with model: {stt_model}")
+                
+                transcription_result = transcription_service.transcribe(
+                    audio_file_key=result.audio_s3_key,
+                    stt_provider=stt_provider,
+                    stt_model=stt_model,
+                    organization_id=result.organization_id,
+                    db=db,
+                    language=None,  # Auto-detect
+                    enable_speaker_diarization=True
+                )
+                
+                transcription_time = time.time() - transcription_start_time
+                transcription = transcription_result.get("transcript", "")
+                speaker_segments = transcription_result.get("speaker_segments", [])
+                
+                logger.info(f"[EvaluatorResult {result.result_id}] ✓ Transcription completed in {transcription_time:.2f}s")
+                logger.info(f"[EvaluatorResult {result.result_id}] Transcription length: {len(transcription)} characters")
+                logger.info(f"[EvaluatorResult {result.result_id}] Speaker segments: {len(speaker_segments)} segments detected")
+                logger.debug(f"[EvaluatorResult {result.result_id}] Transcription preview: {transcription[:200]}...")
+                
+                result.transcription = transcription
+                result.speaker_segments = speaker_segments if speaker_segments else None
+                db.commit()
             
             # Initialize evaluation_time for potential error handling
             evaluation_time = None
@@ -402,7 +427,7 @@ Only respond with valid JSON, no additional text."""
             total_time = time.time() - task_start_time
             logger.info(f"[EvaluatorResult {result.result_id}] Status updated: EVALUATING -> COMPLETED")
             logger.info(f"[EvaluatorResult {result.result_id}] ✓ Processing completed successfully in {total_time:.2f}s")
-            logger.info(f"[EvaluatorResult {result.result_id}] Summary - Transcription: {transcription_length} chars, Metrics: {len(metric_scores)}")
+            logger.info(f"[EvaluatorResult {result.result_id}] Summary - Transcription: {len(transcription) if transcription else 0} chars, Metrics: {len(metric_scores)}")
             
             return {
                 "result_id": result_id,
@@ -424,6 +449,183 @@ Only respond with valid JSON, no additional text."""
             raise
             
     except Exception as exc:
+        # Retry on failure
+        raise self.retry(exc=exc, countdown=60)
+    finally:
+        db.close()
+
+
+@celery_app.task(name="run_evaluator", bind=True, max_retries=3)
+def run_evaluator_task(self, evaluator_id: str, evaluator_result_id: str):
+    """
+    Celery task to run an evaluator: bridge test agent to Voice AI agent and record conversation.
+    
+    Args:
+        self: Task instance
+        evaluator_id: Evaluator ID as string
+        evaluator_result_id: Pre-created EvaluatorResult ID as string
+        
+    Returns:
+        Dictionary with execution results
+    """
+    db = SessionLocal()
+    task_start_time = time.time()
+    
+    try:
+        from app.models.database import (
+            Evaluator, EvaluatorResult, EvaluatorResultStatus,
+            Agent, Persona, Scenario
+        )
+        from app.services.test_agent_bridge_service import test_agent_bridge_service
+        import asyncio
+        
+        evaluator_uuid = UUID(evaluator_id)
+        result_uuid = UUID(evaluator_result_id)
+        
+        evaluator = db.query(Evaluator).filter(Evaluator.id == evaluator_uuid).first()
+        if not evaluator:
+            logger.error(f"[RunEvaluator {evaluator_id}] Evaluator not found")
+            return {"error": "Evaluator not found"}
+        
+        result = db.query(EvaluatorResult).filter(EvaluatorResult.id == result_uuid).first()
+        if not result:
+            logger.error(f"[RunEvaluator {evaluator_id}] EvaluatorResult not found")
+            return {"error": "EvaluatorResult not found"}
+        
+        agent = db.query(Agent).filter(Agent.id == evaluator.agent_id).first()
+        if not agent:
+            logger.error(f"[RunEvaluator {evaluator_id}] Agent not found")
+            result.status = EvaluatorResultStatus.FAILED.value
+            result.error_message = "Agent not found"
+            db.commit()
+            return {"error": "Agent not found"}
+        
+        logger.info(
+            f"[RunEvaluator {evaluator.evaluator_id}] Starting task "
+            f"(Celery task: {self.request.id}, Result: {result.result_id})"
+        )
+        logger.info(f"[RunEvaluator {evaluator.evaluator_id}] Current status: {result.status}")
+        
+        # Update Celery task ID and ensure status is QUEUED (should already be)
+        result.celery_task_id = self.request.id
+        if result.status != EvaluatorResultStatus.QUEUED.value:
+            logger.warning(f"[RunEvaluator {evaluator.evaluator_id}] Status was {result.status}, expected QUEUED")
+        db.commit()
+        logger.info(f"[RunEvaluator {evaluator.evaluator_id}] Task ID updated, proceeding with bridge")
+        
+        # Check if agent has both voice_bundle_id and voice_ai_integration_id
+        has_voice_bundle = agent.voice_bundle_id is not None
+        has_voice_ai_integration = agent.voice_ai_integration_id is not None and agent.voice_ai_agent_id is not None
+        
+        logger.info(
+            f"[RunEvaluator {evaluator.evaluator_id}] Agent configuration check: "
+            f"has_voice_bundle={has_voice_bundle}, has_voice_ai_integration={has_voice_ai_integration}"
+        )
+        
+        if has_voice_bundle and has_voice_ai_integration:
+            # Use bridge service to connect test agent to Voice AI agent
+            logger.info(
+                f"[RunEvaluator {evaluator.evaluator_id}] "
+                f"Agent has both voice_bundle and voice_ai_integration, using bridge service"
+            )
+            
+            try:
+                # Update status immediately to show we're starting the bridge
+                result.status = EvaluatorResultStatus.CALL_INITIATING.value
+                result.call_event = "task_started"
+                db.commit()
+                logger.info(f"[RunEvaluator {evaluator.evaluator_id}] ✅ Status updated to CALL_INITIATING")
+                
+                # Run async bridge function
+                logger.info(f"[RunEvaluator {evaluator.evaluator_id}] Setting up async event loop...")
+                loop = asyncio.get_event_loop()
+                if loop.is_closed():
+                    logger.info(f"[RunEvaluator {evaluator.evaluator_id}] Event loop was closed, creating new one")
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                
+                logger.info(f"[RunEvaluator {evaluator.evaluator_id}] Calling bridge service...")
+                bridge_result = loop.run_until_complete(
+                    test_agent_bridge_service.bridge_test_agent_to_voice_agent(
+                        evaluator_id=evaluator_uuid,
+                        evaluator_result_id=result_uuid,
+                        organization_id=evaluator.organization_id,
+                        db=db,
+                    )
+                )
+                
+                logger.info(
+                    f"[RunEvaluator {evaluator.evaluator_id}] "
+                    f"Bridge service completed: {bridge_result.get('call_id')}"
+                )
+                
+                # Don't reset status - the bridge service should have updated it
+                # Refresh the result to get the latest status from the bridge service
+                db.refresh(result)
+                
+                # Only update error_message if it was set to clear any temporary call info
+                if result.error_message and result.error_message.startswith("call_id:"):
+                    # Keep the call info for now, it will be cleared when call ends
+                    pass
+                
+                db.commit()
+                
+                return {
+                    "evaluator_id": evaluator_id,
+                    "result_id": evaluator_result_id,
+                    "status": "initiated",
+                    "bridge_result": bridge_result,
+                }
+                
+            except Exception as bridge_error:
+                logger.error(
+                    f"[RunEvaluator {evaluator.evaluator_id}] "
+                    f"❌ Bridge service error: {bridge_error}",
+                    exc_info=True
+                )
+                result.status = EvaluatorResultStatus.FAILED.value
+                result.error_message = str(bridge_error)
+                result.call_event = "bridge_error"
+                db.commit()
+                raise
+        
+        elif has_voice_bundle:
+            # Only voice bundle - use standard voice agent flow
+            logger.info(
+                f"[RunEvaluator {evaluator.evaluator_id}] "
+                f"Agent has voice_bundle only, using standard flow"
+            )
+            # This would trigger the standard voice agent WebSocket connection
+            # For now, mark as needing implementation
+            result.status = EvaluatorResultStatus.FAILED.value
+            result.error_message = "Standard voice agent flow not yet implemented for evaluator runs"
+            db.commit()
+            return {"error": "Standard flow not implemented"}
+        
+        else:
+            # No voice bundle configured
+            logger.error(
+                f"[RunEvaluator {evaluator.evaluator_id}] "
+                f"❌ Agent does not have required configuration: "
+                f"voice_bundle_id={has_voice_bundle}, voice_ai_integration={has_voice_ai_integration}"
+            )
+            result.status = EvaluatorResultStatus.FAILED.value
+            result.error_message = f"Agent missing required configuration: voice_bundle={has_voice_bundle}, voice_ai_integration={has_voice_ai_integration}"
+            result.call_event = "configuration_error"
+            db.commit()
+            return {"error": "Agent does not have required configuration for bridging"}
+            
+    except Exception as exc:
+        logger.error(f"[RunEvaluator {evaluator_id}] Task failed: {exc}", exc_info=True)
+        # Update result status
+        try:
+            result = db.query(EvaluatorResult).filter(EvaluatorResult.id == UUID(evaluator_result_id)).first()
+            if result:
+                result.status = EvaluatorResultStatus.FAILED.value
+                result.error_message = str(exc)
+                db.commit()
+        except:
+            pass
         # Retry on failure
         raise self.retry(exc=exc, countdown=60)
     finally:

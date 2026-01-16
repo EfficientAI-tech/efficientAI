@@ -801,6 +801,11 @@ class ApiClient {
     await this.client.delete(`/api/v1/evaluators/${evaluatorId}`)
   }
 
+  async runEvaluators(evaluatorIds: string[]): Promise<{ task_ids: string[]; evaluator_results: any[] }> {
+    const response = await this.client.post('/api/v1/evaluators/run', { evaluator_ids: evaluatorIds })
+    return response.data
+  }
+
   // Metric endpoints
   async createMetric(data: {
     name: string

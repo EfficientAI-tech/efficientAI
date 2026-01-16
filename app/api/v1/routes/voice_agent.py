@@ -297,6 +297,46 @@ async def websocket_endpoint(
             except Exception as e:
                 logger.warning(f"Error finding/creating evaluator or generating result_id: {e}")
         
+        # Check if this is a test agent that should bridge to Voice AI agent
+        # This happens when evaluator is run via the run_evaluator_task
+        test_agent_bridge_mode = False
+        retell_call_id = None
+        retell_access_token = None
+        retell_sample_rate = None
+        
+        if evaluator and agent and agent.voice_bundle_id and agent.voice_ai_integration_id:
+            # Check if there's an active call for this evaluator
+            # The call info is stored in the EvaluatorResult's error_message field temporarily
+            try:
+                from app.models.database import EvaluatorResult
+                # Find the most recent result for this evaluator that has call info
+                active_result = db.query(EvaluatorResult).filter(
+                    EvaluatorResult.evaluator_id == evaluator.id,
+                    EvaluatorResult.status == EvaluatorResultStatus.QUEUED.value,
+                    EvaluatorResult.error_message.isnot(None),
+                    EvaluatorResult.error_message.like("call_id:%")
+                ).order_by(EvaluatorResult.timestamp.desc()).first()
+                
+                if active_result and active_result.error_message:
+                    # Parse call info from error_message: "call_id:xxx|access_token:yyy|sample_rate:zzz"
+                    call_info_parts = active_result.error_message.split("|")
+                    for part in call_info_parts:
+                        if part.startswith("call_id:"):
+                            retell_call_id = part.split(":", 1)[1]
+                        elif part.startswith("access_token:"):
+                            retell_access_token = part.split(":", 1)[1]
+                        elif part.startswith("sample_rate:"):
+                            retell_sample_rate = int(part.split(":", 1)[1])
+                    
+                    if retell_call_id and retell_access_token:
+                        test_agent_bridge_mode = True
+                        logger.info(
+                            f"[VoiceAgent] Test agent bridge mode detected: "
+                            f"evaluator={evaluator.evaluator_id}, call_id={retell_call_id}"
+                        )
+            except Exception as e:
+                logger.warning(f"[VoiceAgent] Error checking for bridge mode: {e}", exc_info=True)
+        
         # Run the bot with the appropriate pipeline
         call_metadata = None
         try:
@@ -309,6 +349,20 @@ async def websocket_endpoint(
                 stt_api_key = resolve_api_key_for_provider(stt_provider) if stt_provider else None
                 tts_api_key = resolve_api_key_for_provider(tts_provider) if tts_provider else None
                 llm_api_key = resolve_api_key_for_provider(llm_provider) if llm_provider else None
+
+                # If in bridge mode, we need to bridge test agent to Retell call
+                # For now, we'll run the voice bundle normally and note that bridging
+                # requires WebRTC implementation on the backend
+                if test_agent_bridge_mode:
+                    logger.info(
+                        f"[VoiceAgent] Bridge mode: Test agent should connect to Retell call {retell_call_id}. "
+                        f"Full WebRTC bridging requires additional implementation."
+                    )
+                    # TODO: Implement WebRTC bridging between test agent WebSocket and Retell call
+                    # This would require:
+                    # 1. Joining Retell call using WebRTC (aiortc or similar)
+                    # 2. Bridging audio streams bidirectionally
+                    # 3. Recording the bridged conversation
 
                 call_metadata = await run_voice_bundle_fastapi(
                     websocket,

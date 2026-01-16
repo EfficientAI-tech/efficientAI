@@ -3,7 +3,7 @@ import { Loader2 } from 'lucide-react'
 import { clsx } from 'clsx'
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: 'primary' | 'secondary' | 'outline' | 'ghost' | 'danger'
+  variant?: 'primary' | 'secondary' | 'outline' | 'ghost' | 'danger' | 'success'
   size?: 'sm' | 'md' | 'lg'
   isLoading?: boolean
   leftIcon?: ReactNode
@@ -30,6 +30,7 @@ export default function Button({
     outline: 'border-2 border-primary-500 text-primary-700 bg-white hover:bg-primary-50 hover:border-primary-600 focus:ring-primary-500 active:scale-[0.98]',
     ghost: 'text-primary-700 hover:bg-primary-50 focus:ring-primary-500 active:scale-[0.98]',
     danger: 'bg-gradient-to-r from-red-500 to-red-600 text-white shadow-md hover:shadow-lg hover:from-red-600 hover:to-red-700 focus:ring-red-500 active:scale-[0.98]',
+    success: 'bg-gradient-to-r from-emerald-500 to-teal-600 text-white shadow-md hover:shadow-lg hover:from-emerald-600 hover:to-teal-700 focus:ring-emerald-500 active:scale-[0.98]',
   }
   
   const sizes = {

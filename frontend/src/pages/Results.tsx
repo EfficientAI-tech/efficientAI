@@ -11,7 +11,7 @@ interface EvaluatorResult {
   name: string
   timestamp: string
   duration_seconds: number | null
-  status: 'queued' | 'transcribing' | 'evaluating' | 'completed' | 'failed'
+  status: 'queued' | 'call_initiating' | 'call_connecting' | 'call_in_progress' | 'call_ended' | 'transcribing' | 'evaluating' | 'completed' | 'failed'
   metric_scores: Record<string, { value: any; type: string; metric_name: string }> | null
   error_message: string | null
 }
@@ -50,6 +50,23 @@ export default function Results() {
   const { data: results = [], isLoading: loadingResults } = useQuery({
     queryKey: ['evaluator-results'],
     queryFn: () => apiClient.listEvaluatorResults(),
+    refetchInterval: (query) => {
+      // Poll if there are any in-progress results
+      const data = query.state.data as any[]
+      if (data && Array.isArray(data)) {
+        const hasInProgress = data.some((result: any) => 
+          result.status === 'queued' || 
+          result.status === 'call_initiating' ||
+          result.status === 'call_connecting' ||
+          result.status === 'call_in_progress' ||
+          result.status === 'call_ended' ||
+          result.status === 'transcribing' || 
+          result.status === 'evaluating'
+        )
+        return hasInProgress ? 3000 : false // Poll every 3 seconds if in-progress
+      }
+      return false
+    },
   })
 
   const { data: metrics = [] } = useQuery({
@@ -144,7 +161,11 @@ export default function Results() {
       case 'failed':
         return <XCircle className="w-4 h-4 text-red-500" />
       case 'queued':
+      case 'call_initiating':
+      case 'call_connecting':
         return <Clock className="w-4 h-4 text-gray-500" />
+      case 'call_in_progress':
+      case 'call_ended':
       case 'transcribing':
       case 'evaluating':
         return <Loader className="w-4 h-4 text-blue-500 animate-spin" />
@@ -162,12 +183,45 @@ export default function Results() {
         return `${baseClasses} bg-red-100 text-red-800`
       case 'queued':
         return `${baseClasses} bg-gray-100 text-gray-800`
+      case 'call_initiating':
+        return `${baseClasses} bg-yellow-100 text-yellow-800`
+      case 'call_connecting':
+        return `${baseClasses} bg-orange-100 text-orange-800`
+      case 'call_in_progress':
+        return `${baseClasses} bg-blue-100 text-blue-800`
+      case 'call_ended':
+        return `${baseClasses} bg-indigo-100 text-indigo-800`
       case 'transcribing':
         return `${baseClasses} bg-blue-100 text-blue-800`
       case 'evaluating':
         return `${baseClasses} bg-purple-100 text-purple-800`
       default:
         return `${baseClasses} bg-gray-100 text-gray-800`
+    }
+  }
+  
+  const getStatusLabel = (status: string) => {
+    switch (status) {
+      case 'call_initiating':
+        return 'Initiating Call'
+      case 'call_connecting':
+        return 'Connecting'
+      case 'call_in_progress':
+        return 'Call In Progress'
+      case 'call_ended':
+        return 'Call Ended'
+      case 'queued':
+        return 'Queued'
+      case 'transcribing':
+        return 'Transcribing'
+      case 'evaluating':
+        return 'Evaluating'
+      case 'completed':
+        return 'Completed'
+      case 'failed':
+        return 'Failed'
+      default:
+        return status
     }
   }
 
@@ -329,7 +383,7 @@ export default function Results() {
                       <div className="flex items-center space-x-2">
                         {getStatusIcon(result.status)}
                         <span className={getStatusBadge(result.status)}>
-                          {result.status.toUpperCase().replace('_', ' ')}
+                          {getStatusLabel(result.status)}
                         </span>
                       </div>
                     </td>

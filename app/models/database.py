@@ -32,8 +32,13 @@ class EvaluatorResultStatus(str, enum.Enum):
     """Evaluator result status enumeration."""
 
     QUEUED = "queued"
-    TRANSCRIBING = "transcribing"
-    EVALUATING = "evaluating"
+    CALL_INITIATING = "call_initiating"  # Creating the web call to Retell/Vapi
+    CALL_CONNECTING = "call_connecting"  # WebRTC connecting to Voice AI agent
+    CALL_IN_PROGRESS = "call_in_progress"  # Call is active
+    CALL_ENDED = "call_ended"  # Call finished
+    FETCHING_DETAILS = "fetching_details"  # Fetching call details from provider
+    TRANSCRIBING = "transcribing"  # Only used for S3-based transcription (legacy)
+    EVALUATING = "evaluating"  # Running LLM evaluation on transcript
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -621,6 +626,12 @@ class EvaluatorResult(Base):
     
     # Error information
     error_message = Column(String, nullable=True)
+    
+    # Call event tracking (similar to CallRecording)
+    call_event = Column(String, nullable=True, index=True)  # Latest call event (e.g., call_started, call_ended)
+    provider_call_id = Column(String, nullable=True, index=True)  # Provider's call_id (e.g., Retell call_id)
+    provider_platform = Column(String, nullable=True)  # e.g., "retell", "vapi"
+    call_data = Column(JSON, nullable=True)  # Full call details from provider (like CallRecording)
     
     # Metadata
     created_at = Column(DateTime(timezone=True), server_default=func.now())

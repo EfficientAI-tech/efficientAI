@@ -1,9 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
 import { useParams, useNavigate } from 'react-router-dom'
 import { apiClient } from '../lib/api'
-import { ArrowLeft, Play, Pause, Clock, CheckCircle, XCircle, Loader, User, Bot, FileText, BarChart3 } from 'lucide-react'
+import { ArrowLeft, Play, Pause, Clock, CheckCircle, XCircle, Loader, User, Bot, FileText, BarChart3, Phone } from 'lucide-react'
 import { useState, useRef, useEffect } from 'react'
 import Button from '../components/Button'
+import RetellCallDetails from '../components/call-recordings/RetellCallDetails'
 
 interface EvaluatorResultDetail {
   id: string
@@ -11,7 +12,7 @@ interface EvaluatorResultDetail {
   name: string
   timestamp: string
   duration_seconds: number | null
-  status: 'queued' | 'transcribing' | 'evaluating' | 'completed' | 'failed'
+  status: 'queued' | 'transcribing' | 'evaluating' | 'completed' | 'failed' | 'call_initiating' | 'call_connecting' | 'call_in_progress' | 'call_ended' | 'fetching_details'
   audio_s3_key: string | null
   transcription: string | null
   speaker_segments?: Array<{
@@ -22,6 +23,10 @@ interface EvaluatorResultDetail {
   }> | null
   metric_scores: Record<string, { value: any; type: string; metric_name: string }> | null
   error_message: string | null
+  call_event?: string | null
+  provider_call_id?: string | null
+  provider_platform?: string | null
+  call_data?: any | null
   agent?: {
     id: string
     name: string
@@ -77,12 +82,20 @@ export default function EvaluatorResultDetail() {
     enabled: !!result?.audio_s3_key,
   })
 
-  // Load audio URL when presigned URL is available
+  // Load audio URL - prefer provider's recording_url, fallback to S3 presigned URL
   useEffect(() => {
+    // First try recording_url from call_data (Retell/Vapi provides this)
+    const providerRecordingUrl = result?.call_data?.recording_url
+    if (providerRecordingUrl) {
+      setAudioUrl(providerRecordingUrl)
+      return
+    }
+    
+    // Fallback to S3 presigned URL
     if (presignedUrl?.url) {
       setAudioUrl(presignedUrl.url)
     }
-  }, [presignedUrl])
+  }, [presignedUrl, result?.call_data])
 
   const handlePlayPause = () => {
     if (!audioRef.current || !audioUrl) return
@@ -185,6 +198,20 @@ export default function EvaluatorResultDetail() {
     const secs = Math.floor(seconds % 60)
     return `${mins}:${secs.toString().padStart(2, '0')}`
   }
+  
+  // Get duration from multiple sources (call_data takes precedence)
+  const getEffectiveDuration = (): number | null => {
+    // First try call_data.duration_ms
+    if (result?.call_data?.duration_ms) {
+      return result.call_data.duration_ms / 1000
+    }
+    // Then try audioDuration from audio element
+    if (audioDuration && audioDuration > 0) {
+      return audioDuration
+    }
+    // Finally use duration_seconds from result
+    return result?.duration_seconds ?? null
+  }
 
   const formatTimestamp = (timestamp: string): string => {
     return new Date(timestamp).toLocaleString()
@@ -200,7 +227,13 @@ export default function EvaluatorResultDetail() {
         return <Clock className="w-5 h-5 text-gray-500" />
       case 'transcribing':
       case 'evaluating':
+      case 'call_initiating':
+      case 'call_connecting':
+      case 'call_in_progress':
+      case 'fetching_details':
         return <Loader className="w-5 h-5 text-blue-500 animate-spin" />
+      case 'call_ended':
+        return <Phone className="w-5 h-5 text-emerald-500" />
       default:
         return null
     }
@@ -219,6 +252,16 @@ export default function EvaluatorResultDetail() {
         return `${baseClasses} bg-blue-100 text-blue-800`
       case 'evaluating':
         return `${baseClasses} bg-purple-100 text-purple-800`
+      case 'call_initiating':
+        return `${baseClasses} bg-yellow-100 text-yellow-800`
+      case 'call_connecting':
+        return `${baseClasses} bg-orange-100 text-orange-800`
+      case 'call_in_progress':
+        return `${baseClasses} bg-cyan-100 text-cyan-800`
+      case 'call_ended':
+        return `${baseClasses} bg-emerald-100 text-emerald-800`
+      case 'fetching_details':
+        return `${baseClasses} bg-indigo-100 text-indigo-800`
       default:
         return `${baseClasses} bg-gray-100 text-gray-800`
     }
@@ -315,12 +358,48 @@ export default function EvaluatorResultDetail() {
         </div>
       )}
 
-      {/* Main Content Grid */}
+      {/* Call Data from Provider (Retell/Vapi) - Show this prominently when available */}
+      {/* Show RetellCallDetails if provider_platform is 'retell' OR if call_data has retell-like structure */}
+      {resultData.call_data && (resultData.provider_platform === 'retell' || resultData.call_data.transcript_object || resultData.call_data.call_id?.startsWith('call_')) && (
+        <div className="mb-6 bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <h2 className="text-lg font-semibold text-gray-900 flex items-center mb-4">
+            <Phone className="w-5 h-5 mr-2" />
+            Call Details 
+            <span className="ml-2 px-2 py-0.5 text-xs bg-blue-100 text-blue-800 rounded-full capitalize">
+              {resultData.provider_platform || 'retell'}
+            </span>
+            {(resultData.provider_call_id || resultData.call_data.call_id) && (
+              <span className="ml-2 text-xs text-gray-500 font-mono">
+                {resultData.provider_call_id || resultData.call_data.call_id}
+              </span>
+            )}
+          </h2>
+          <RetellCallDetails callData={resultData.call_data} />
+        </div>
+      )}
+
+      {/* Non-Retell call_data - show raw JSON */}
+      {resultData.call_data && resultData.provider_platform && resultData.provider_platform !== 'retell' && !resultData.call_data.transcript_object && (
+        <div className="mb-6 bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <h2 className="text-lg font-semibold text-gray-900 flex items-center mb-4">
+            <Phone className="w-5 h-5 mr-2" />
+            Call Details 
+            <span className="ml-2 px-2 py-0.5 text-xs bg-blue-100 text-blue-800 rounded-full capitalize">
+              {resultData.provider_platform}
+            </span>
+          </h2>
+          <pre className="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-xs max-h-96">
+            {JSON.stringify(resultData.call_data, null, 2)}
+          </pre>
+        </div>
+      )}
+
+      {/* Main Content Grid - Only show old audio/transcription when NO call_data */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left Column - 2 columns */}
         <div className="lg:col-span-2 space-y-6">
-          {/* Playback Section - Audio Player */}
-          {resultData.audio_s3_key && (
+          {/* Playback Section - Audio Player (only when no call_data, since RetellCallDetails has its own player) */}
+          {!resultData.call_data && (resultData.audio_s3_key || resultData.call_data?.recording_url) && (
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-xl font-semibold text-gray-900 flex items-center">
@@ -329,7 +408,7 @@ export default function EvaluatorResultDetail() {
                 </h2>
                 <div className="flex items-center text-sm text-gray-500">
                   <Clock className="w-4 h-4 mr-1" />
-                  {formatDuration(audioDuration || resultData.duration_seconds)}
+                  {formatDuration(getEffectiveDuration())}
                 </div>
               </div>
               {audioUrl ? (
@@ -445,7 +524,7 @@ export default function EvaluatorResultDetail() {
                 </div>
               ) : (
                 <div className="text-gray-500 text-sm">
-                  {presignedUrl ? 'Loading audio...' : 'Audio not available'}
+                  {(resultData.audio_s3_key && !presignedUrl) ? 'Loading audio...' : 'Audio not available'}
                 </div>
               )}
             </div>
@@ -469,7 +548,7 @@ export default function EvaluatorResultDetail() {
                   <div className="text-gray-500">Duration</div>
                   <div className="text-gray-900 flex items-center">
                     <Clock className="w-4 h-4 mr-1" />
-                    {formatDuration(audioDuration || resultData.duration_seconds)}
+                    {formatDuration(getEffectiveDuration())}
                   </div>
                 </div>
               </div>
@@ -582,61 +661,64 @@ export default function EvaluatorResultDetail() {
               </div>
             </div>
           )}
+
         </div>
 
-        {/* Right Column - Transcription */}
-        <div className="lg:col-span-1">
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 sticky top-6">
-            <h2 className="text-xl font-semibold text-gray-900 flex items-center mb-4">
-              <FileText className="w-5 h-5 mr-2" />
-              Transcription
-            </h2>
-            <div className="max-h-[calc(100vh-200px)] overflow-y-auto">
-              {resultData.speaker_segments && resultData.speaker_segments.length > 0 ? (
-                <div className="space-y-3">
-                  {resultData.speaker_segments.map((segment, index) => {
-                    const isActive = activeSegmentIndex === index
-                    const speakerName = getSpeakerName(segment.speaker)
-                    const speakerColor = getSpeakerColor(segment.speaker)
-                    
-                    return (
-                      <div
-                        key={index}
-                        onClick={() => handleSegmentClick(segment.start)}
-                        className={`
-                          border-2 rounded-lg p-4 cursor-pointer transition-all
-                          ${isActive ? 'ring-2 ring-blue-500 shadow-md' : 'hover:shadow-sm'}
-                          ${speakerColor}
-                        `}
-                      >
-                        <div className="flex items-center justify-between mb-2">
-                          <div className="flex items-center space-x-2">
-                            <span className="font-semibold text-sm">{speakerName}</span>
-                            <span className="text-xs opacity-75">
-                              {formatTime(segment.start)} - {formatTime(segment.end)}
-                            </span>
+        {/* Right Column - Transcription (only show when no call_data, since RetellCallDetails has transcript) */}
+        {!resultData.call_data && (
+          <div className="lg:col-span-1">
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 sticky top-6">
+              <h2 className="text-xl font-semibold text-gray-900 flex items-center mb-4">
+                <FileText className="w-5 h-5 mr-2" />
+                Transcription
+              </h2>
+              <div className="max-h-[calc(100vh-200px)] overflow-y-auto">
+                {resultData.speaker_segments && resultData.speaker_segments.length > 0 ? (
+                  <div className="space-y-3">
+                    {resultData.speaker_segments.map((segment, index) => {
+                      const isActive = activeSegmentIndex === index
+                      const speakerName = getSpeakerName(segment.speaker)
+                      const speakerColor = getSpeakerColor(segment.speaker)
+                      
+                      return (
+                        <div
+                          key={index}
+                          onClick={() => handleSegmentClick(segment.start)}
+                          className={`
+                            border-2 rounded-lg p-4 cursor-pointer transition-all
+                            ${isActive ? 'ring-2 ring-blue-500 shadow-md' : 'hover:shadow-sm'}
+                            ${speakerColor}
+                          `}
+                        >
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center space-x-2">
+                              <span className="font-semibold text-sm">{speakerName}</span>
+                              <span className="text-xs opacity-75">
+                                {formatTime(segment.start)} - {formatTime(segment.end)}
+                              </span>
+                            </div>
+                            {isActive && isPlaying && (
+                              <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
+                            )}
                           </div>
-                          {isActive && isPlaying && (
-                            <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
-                          )}
+                          <p className="text-gray-900 whitespace-pre-wrap text-sm">{segment.text}</p>
                         </div>
-                        <p className="text-gray-900 whitespace-pre-wrap text-sm">{segment.text}</p>
-                      </div>
-                    )
-                  })}
-                </div>
-              ) : resultData.transcription ? (
-                <div className="prose max-w-none">
-                  <p className="text-gray-700 whitespace-pre-wrap text-sm">{resultData.transcription}</p>
-                </div>
-              ) : (
-                <div className="text-gray-500 italic text-sm">
-                  {resultData.status === 'transcribing' ? 'Transcription in progress...' : 'No transcription available'}
-                </div>
-              )}
+                      )
+                    })}
+                  </div>
+                ) : resultData.transcription ? (
+                  <div className="prose max-w-none">
+                    <p className="text-gray-700 whitespace-pre-wrap text-sm">{resultData.transcription}</p>
+                  </div>
+                ) : (
+                  <div className="text-gray-500 italic text-sm">
+                    {resultData.status === 'transcribing' ? 'Transcription in progress...' : 'No transcription available'}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   )

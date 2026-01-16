@@ -877,6 +877,20 @@ class EvaluatorBulkCreate(BaseModel):
     scenario_id: UUID
     persona_ids: List[UUID]
     tags: Optional[List[str]] = None
+
+
+class RunEvaluatorsRequest(BaseModel):
+    """Schema for running evaluators."""
+    evaluator_ids: List[UUID] = Field(..., description="List of evaluator IDs to run")
+
+
+class RunEvaluatorsResponse(BaseModel):
+    """Schema for run evaluators response."""
+    task_ids: List[str] = Field(..., description="List of Celery task IDs for tracking")
+    evaluator_results: List["EvaluatorResultResponse"] = Field(default_factory=list, description="List of created evaluator results")
+    
+    class Config:
+        from_attributes = True
     
     class Config:
         json_schema_extra = {
@@ -987,6 +1001,13 @@ class EvaluatorResultResponse(BaseModel):
     metric_scores: Optional[Dict[str, Any]]
     celery_task_id: Optional[str]
     error_message: Optional[str]
+    
+    # Call tracking fields (for voice AI integrations)
+    call_event: Optional[str] = None
+    provider_call_id: Optional[str] = None
+    provider_platform: Optional[str] = None
+    call_data: Optional[Dict[str, Any]] = None  # Full call details from provider
+    
     created_at: datetime
     updated_at: datetime
     created_by: Optional[str]
