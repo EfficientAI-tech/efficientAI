@@ -2,9 +2,16 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../store/authStore'
 import { apiClient } from '../lib/api'
-import { AlertCircle } from 'lucide-react'
+import { AlertCircle, ArrowLeft, CheckCircle2, Copy } from 'lucide-react'
 import Logo from '../components/Logo'
-import Button from '../components/Button'
+import {
+  Card,
+  CardBody,
+  Button,
+  Divider,
+  Snippet,
+  Chip,
+} from '@heroui/react'
 
 export default function Login() {
   const navigate = useNavigate()
@@ -22,7 +29,6 @@ export default function Login() {
     setIsLoading(true)
 
     try {
-      // Validate the API key by trying to use it
       apiClient.setApiKey(apiKey)
       const result = await apiClient.validateApiKey()
       
@@ -39,8 +45,7 @@ export default function Login() {
     }
   }
 
-  const handleGenerateKey = async (e: React.FormEvent) => {
-    e.preventDefault()
+  const handleGenerateKey = async () => {
     setError('')
     setIsLoading(true)
 
@@ -61,8 +66,14 @@ export default function Login() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary-50 to-primary-100 py-12 px-4 sm:px-6 lg:px-8">
-      <div className="max-w-md w-full space-y-8">
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-amber-50 via-yellow-50 to-orange-50 py-12 px-4 sm:px-6 lg:px-8">
+      {/* Background decoration */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute -top-40 -right-40 w-80 h-80 bg-primary-200 rounded-full mix-blend-multiply filter blur-xl opacity-30 animate-pulse" />
+        <div className="absolute -bottom-40 -left-40 w-80 h-80 bg-orange-200 rounded-full mix-blend-multiply filter blur-xl opacity-30 animate-pulse" />
+      </div>
+
+      <div className="max-w-md w-full space-y-8 relative z-10">
         <div className="text-center">
           <div className="flex justify-center mb-4">
             <Logo textSize="xl" />
@@ -72,133 +83,141 @@ export default function Login() {
           </p>
         </div>
 
-        <div className="bg-white py-8 px-6 shadow-xl rounded-lg">
-          {!showGenerate ? (
-            <>
-              <form onSubmit={handleLogin} className="space-y-6">
-                <div>
-                  <label htmlFor="apiKey" className="block text-sm font-medium text-gray-700">
-                    API Key
-                  </label>
+        <Card className="shadow-xl">
+          <CardBody className="p-8">
+            {!showGenerate ? (
+              <>
+                <form onSubmit={handleLogin} className="space-y-6">
                   <input
-                    id="apiKey"
-                    name="apiKey"
                     type="text"
-                    required
+                    placeholder="Enter your API key"
                     value={apiKey}
                     onChange={(e) => setApiKeyValue(e.target.value)}
-                    className="mt-1 appearance-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-md focus:outline-none focus:ring-primary-500 focus:border-primary-500 focus:z-10 sm:text-sm"
-                    placeholder="Enter your API key"
+                    required
+                    className="w-full px-5 py-4 text-base text-gray-900 bg-gray-50 border-2 border-gray-200 rounded-full focus:outline-none focus:border-[#1a73e8] focus:bg-white transition-all duration-200 placeholder:text-gray-400"
                   />
-                </div>
 
-                {error && (
-                  <div className="rounded-md bg-red-50 p-4">
-                    <div className="flex">
-                      <AlertCircle className="h-5 w-5 text-red-400" />
-                      <div className="ml-3">
-                        <p className="text-sm text-red-800">{error}</p>
-                      </div>
-                    </div>
-                  </div>
-                )}
+                  {error && (
+                    <Chip
+                      color="danger"
+                      variant="flat"
+                      startContent={<AlertCircle className="w-4 h-4" />}
+                      className="w-full max-w-full h-auto py-2"
+                    >
+                      {error}
+                    </Chip>
+                  )}
 
-                <div>
                   <Button
                     type="submit"
+                    color="primary"
                     isLoading={isLoading}
-                    className="w-full"
+                    className="w-full font-semibold bg-[#e8f0fe] hover:bg-[#d2e3fc] text-[#1a73e8]"
+                    size="lg"
+                    radius="full"
                   >
                     Sign in
                   </Button>
-                </div>
-              </form>
+                </form>
 
-              <div className="mt-6">
-                <div className="relative">
-                  <div className="absolute inset-0 flex items-center">
-                    <div className="w-full border-t border-gray-300" />
-                  </div>
-                  <div className="relative flex justify-center text-sm">
-                    <span className="px-2 bg-white text-gray-500">Or</span>
-                  </div>
+                <div className="my-6">
+                  <Divider />
+                  <p className="text-center text-sm text-gray-500 -mt-3 bg-white px-2 mx-auto w-fit">
+                    Or
+                  </p>
                 </div>
 
-                <div className="mt-6">
-                  <Button
-                    variant="outline"
-                    onClick={() => setShowGenerate(true)}
-                    className="w-full"
-                  >
-                    Generate New API Key
-                  </Button>
-                </div>
-              </div>
-            </>
-          ) : (
-            <div className="space-y-6">
-              <div>
-                <label htmlFor="keyName" className="block text-sm font-medium text-gray-700">
-                  Key Name (optional)
-                </label>
+                <Button
+                  variant="bordered"
+                  onPress={() => setShowGenerate(true)}
+                  className="w-full border-2 border-[#dadce0] text-gray-700 hover:bg-gray-50"
+                  size="lg"
+                  radius="full"
+                >
+                  Generate New API Key
+                </Button>
+              </>
+            ) : (
+              <div className="space-y-6">
                 <input
-                  id="keyName"
-                  name="keyName"
                   type="text"
+                  placeholder="Key name (optional)"
                   value={keyName}
                   onChange={(e) => setKeyName(e.target.value)}
-                  className="mt-1 appearance-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-md focus:outline-none focus:ring-primary-500 focus:border-primary-500 sm:text-sm"
-                  placeholder="e.g., My Development Key"
+                  className="w-full px-5 py-4 text-base text-gray-900 bg-gray-50 border-2 border-gray-200 rounded-full focus:outline-none focus:border-[#1a73e8] focus:bg-white transition-all duration-200 placeholder:text-gray-400"
                 />
-              </div>
 
-              <Button
-                onClick={handleGenerateKey}
-                isLoading={isLoading}
-                className="w-full"
-              >
-                Generate API Key
-              </Button>
+                <Button
+                  color="primary"
+                  onPress={handleGenerateKey}
+                  isLoading={isLoading}
+                  className="w-full font-semibold bg-[#e8f0fe] hover:bg-[#d2e3fc] text-[#1a73e8]"
+                  size="lg"
+                  radius="full"
+                >
+                  Generate API Key
+                </Button>
 
-              {generatedKey && (
-                <div className="rounded-md bg-green-50 p-4">
-                  <p className="text-sm font-medium text-green-800 mb-2">
-                    API Key generated successfully!
-                  </p>
-                  <div className="bg-white p-3 rounded border border-green-200">
-                    <code className="text-xs text-gray-900 break-all">{generatedKey}</code>
-                  </div>
-                  <p className="mt-2 text-xs text-green-700">
-                    Please save this key securely. You won't be able to see it again.
-                  </p>
-                  <button
-                    onClick={handleUseGeneratedKey}
-                    className="mt-3 w-full py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700"
+                {generatedKey && (
+                  <Card className="bg-[#e6f4ea] border border-[#ceead6]" radius="lg">
+                    <CardBody className="p-4 space-y-3">
+                      <div className="flex items-center gap-2 text-[#137333]">
+                        <CheckCircle2 className="w-5 h-5" />
+                        <span className="font-semibold">API Key generated successfully!</span>
+                      </div>
+                      
+                      <Snippet 
+                        symbol="" 
+                        variant="bordered"
+                        className="w-full rounded-xl"
+                        copyIcon={<Copy className="w-4 h-4" />}
+                      >
+                        {generatedKey}
+                      </Snippet>
+                      
+                      <p className="text-xs text-[#137333]">
+                        Please save this key securely. You won't be able to see it again.
+                      </p>
+                      
+                      <Button
+                        color="success"
+                        onPress={handleUseGeneratedKey}
+                        className="w-full bg-[#e6f4ea] hover:bg-[#ceead6] text-[#137333] font-semibold"
+                        radius="full"
+                      >
+                        Use This Key to Sign In
+                      </Button>
+                    </CardBody>
+                  </Card>
+                )}
+
+                {error && (
+                  <Chip
+                    color="danger"
+                    variant="flat"
+                    startContent={<AlertCircle className="w-4 h-4" />}
+                    className="w-full max-w-full h-auto py-2"
                   >
-                    Use This Key to Sign In
-                  </button>
-                </div>
-              )}
+                    {error}
+                  </Chip>
+                )}
 
-              {error && (
-                <div className="rounded-md bg-red-50 p-4">
-                  <p className="text-sm text-red-800">{error}</p>
-                </div>
-              )}
-
-              <button
-                onClick={() => {
-                  setShowGenerate(false)
-                  setGeneratedKey('')
-                  setError('')
-                }}
-                className="w-full text-sm text-gray-600 hover:text-gray-900"
-              >
-                ← Back to sign in
-              </button>
-            </div>
-          )}
-        </div>
+                <Button
+                  variant="light"
+                  onPress={() => {
+                    setShowGenerate(false)
+                    setGeneratedKey('')
+                    setError('')
+                  }}
+                  className="w-full"
+                  startContent={<ArrowLeft className="w-4 h-4" />}
+                >
+                  Back to sign in
+                </Button>
+              </div>
+            )}
+          </CardBody>
+        </Card>
       </div>
     </div>
   )

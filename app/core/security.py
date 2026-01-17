@@ -10,6 +10,7 @@ from app.database import get_db
 def verify_api_key(api_key: str, db: Session) -> bool:
     """
     Verify API key against database.
+    Updates last_used timestamp when key is used.
 
     Args:
         api_key: The API key to verify
@@ -28,6 +29,11 @@ def verify_api_key(api_key: str, db: Session) -> bool:
 
     if not db_key:
         raise InvalidAPIKeyError("Invalid API key")
+
+    # Update last_used timestamp
+    from datetime import datetime, timezone
+    db_key.last_used = datetime.now(timezone.utc)
+    db.commit()
 
     return True
 

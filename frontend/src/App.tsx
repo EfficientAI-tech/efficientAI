@@ -20,7 +20,11 @@ import Results from './pages/Results'
 import EvaluatorResultDetail from './pages/EvaluatorResultDetail'
 import AgentDetail from './pages/AgentDetail'
 import Observability from './pages/Observability'
+import ObservabilityCalls from './pages/ObservabilityCalls'
+import ObservabilityCallDetail from './pages/ObservabilityCallDetail'
 import CallRecordingDetail from './pages/CallRecordingDetail'
+import TestAgentResultDetail from './pages/TestAgentResultDetail'
+import Settings from './pages/Settings'
 
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -50,6 +54,7 @@ function App() {
           <Route path="evaluations/:id" element={<EvaluationDetail />} />
           <Route path="playground" element={<Playground />} />
           <Route path="playground/call-recordings/:callShortId" element={<CallRecordingDetail />} />
+          <Route path="playground/test-agent-results/:id" element={<TestAgentResultDetail />} />
           <Route path="agents" element={<Agents />} />
           <Route path="agents/:id" element={<AgentDetail />} />
           <Route path="personas" element={<Personas />} />
@@ -63,8 +68,11 @@ function App() {
           <Route path="results" element={<Results />} />
           <Route path="results/:id" element={<EvaluatorResultDetail />} />
           <Route path="observability" element={<Observability />} />
+          <Route path="observability/calls" element={<ObservabilityCalls />} />
+          <Route path="observability/calls/:callShortId" element={<ObservabilityCallDetail />} />
           <Route path="iam" element={<IAM />} />
           <Route path="profile" element={<Profile />} />
+          <Route path="settings" element={<Settings />} />
         </Route>
       </Routes>
     </BrowserRouter>

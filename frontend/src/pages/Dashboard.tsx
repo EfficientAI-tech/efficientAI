@@ -4,7 +4,6 @@ import {
   FileCheck,
   Clock,
   CheckCircle,
-  Loader,
   Users,
   Phone,
   Database,
@@ -14,11 +13,23 @@ import {
   Cloud,
   Rocket,
   ArrowRight,
+  TrendingUp,
+  Activity,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { EvaluationStatus, Evaluation } from '../types/api'
 import { format } from 'date-fns'
 import VoiceAIModelsCarousel from '../components/VoiceAIModelsCarousel'
+import {
+  Card,
+  CardBody,
+  CardHeader,
+  Chip,
+  Progress,
+  Divider,
+  Spinner,
+  Avatar,
+} from '@heroui/react'
 
 export default function Dashboard() {
   const { data: evaluations, isLoading: evalLoading } = useQuery({
@@ -45,7 +56,6 @@ export default function Dashboard() {
     queryKey: ['integrations'],
     queryFn: async () => {
       try {
-        // Using direct API call due to TypeScript type issue (method exists at runtime)
         const apiKey = localStorage.getItem('apiKey') || ''
         const API_BASE_URL = (import.meta as any).env?.VITE_API_URL || 'http://localhost:8000'
         const response = await fetch(`${API_BASE_URL}/api/v1/integrations`, {
@@ -74,7 +84,6 @@ export default function Dashboard() {
 
   const recentEvaluations = evaluations?.slice(0, 5) || []
 
-  // Organization resources
   const orgResources = {
     agents: agents?.length || 0,
     personas: personas?.length || 0,
@@ -84,262 +93,295 @@ export default function Dashboard() {
     completedEvaluations: stats.completedEvaluations,
   }
 
+  const completionRate = stats.totalEvaluations > 0 
+    ? Math.round((stats.completedEvaluations / stats.totalEvaluations) * 100) 
+    : 0
+
   return (
     <div className="space-y-6">
       {/* Quick Start Guide */}
-      <div className="bg-gradient-to-br from-primary-50 to-primary-100 rounded-lg p-6 -mt-6 border border-primary-200">
-        <div className="flex items-center gap-3 mb-6">
-          <div className="p-2 bg-primary-500 rounded-lg">
-            <Rocket className="h-6 w-6 text-white" />
+      <Card className="bg-gradient-to-br from-[#e8f0fe] to-[#f0f4ff] border-none shadow-sm" radius="lg">
+        <CardBody className="p-6">
+          <div className="flex items-center gap-3 mb-6">
+            <div className="p-3 bg-[#1a73e8] rounded-2xl">
+              <Rocket className="h-6 w-6 text-white" />
+            </div>
+            <div>
+              <h2 className="text-2xl font-bold text-gray-900">
+                Start Testing in 5 Minutes
+              </h2>
+              <p className="text-sm text-gray-600 mt-1">
+                Follow these quick steps to get started with voice AI testing
+              </p>
+            </div>
           </div>
-          <div>
-            <h2 className="text-2xl font-bold text-gray-900">
-              Start Testing in 5 Minutes
-            </h2>
-            <p className="text-sm text-gray-600 mt-1">
-              Follow these quick steps to get started with voice AI testing
-            </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <QuickStartCard
+              icon={Brain}
+              title="Configure AI Provider"
+              description="Set up your AI provider credentials (OpenAI, Anthropic, etc.)"
+              href="/integrations"
+              step={1}
+            />
+            <QuickStartCard
+              icon={Mic}
+              title="Create Voice Bundle"
+              description="Configure STT, LLM, and TTS models for your voice AI"
+              href="/voicebundles"
+              step={2}
+            />
+            <QuickStartCard
+              icon={Cloud}
+              title="Connect Data Sources"
+              description="Connect your S3 bucket to manage audio files"
+              href="/data-sources"
+              step={3}
+            />
+            <QuickStartCard
+              icon={Users}
+              title="Create Test Agent"
+              description="Set up agents, scenarios, and personas"
+              href="/agents"
+              step={4}
+            />
           </div>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          <QuickStartCard
-            icon={Brain}
-            title="Configure your AI Provider"
-            description="Set up your AI provider credentials (OpenAI, Anthropic, etc.) to enable voice AI capabilities."
-            href="/integrations"
-            step={1}
-          />
-          <QuickStartCard
-            icon={Mic}
-            title="Create your Voice AI Bundle"
-            description="Configure voice settings including STT, LLM, and TTS models for your voice AI agent."
-            href="/voicebundles"
-            step={2}
-          />
-          <QuickStartCard
-            icon={Cloud}
-            title="Integrate with Data Sources (S3)"
-            description="Connect your S3 bucket to upload and manage audio files for evaluation and transcription."
-            href="/data-sources"
-            step={3}
-          />
-          <QuickStartCard
-            icon={Users}
-            title="Create Test Agent, Scenario & Persona"
-            description="Set up a test agent, define conversation scenarios, and create personas to simulate different caller types."
-            href="/agents"
-            step={4}
-          />
-        </div>
-      </div>
+        </CardBody>
+      </Card>
 
       {/* Voice AI Models Carousel */}
-      <div className="bg-gradient-to-br from-gray-50 to-gray-100 rounded-lg p-6">
-        <div className="mb-4">
-          <h2 className="text-xl font-semibold text-gray-900 mb-1">
-            Latest Voice AI Models
-          </h2>
-          <p className="text-sm text-gray-600">
-            Explore the newest voice AI models from leading providers
-          </p>
-        </div>
-        <VoiceAIModelsCarousel />
+      <Card className="bg-gradient-to-br from-gray-50 to-gray-100/50 border-none shadow-sm" radius="lg">
+        <CardBody className="p-6">
+          <div className="mb-4">
+            <h2 className="text-xl font-semibold text-gray-900 mb-1">
+              Latest Voice AI Models
+            </h2>
+            <p className="text-sm text-gray-600">
+              Explore the newest voice AI models from leading providers
+            </p>
+          </div>
+          <VoiceAIModelsCarousel />
+        </CardBody>
+      </Card>
+
+      {/* Stats Overview Grid */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Main Stats Card */}
+        <Card className="lg:col-span-2 shadow-sm" radius="lg">
+          <CardHeader className="pb-0 pt-5 px-6">
+            <div className="flex items-center gap-2">
+              <Activity className="w-5 h-5 text-[#1a73e8]" />
+              <h3 className="text-lg font-semibold text-gray-900">Evaluation Overview</h3>
+            </div>
+          </CardHeader>
+          <CardBody className="p-6">
+            <div className="grid grid-cols-3 gap-6">
+              <StatItem
+                label="Total Evaluations"
+                value={stats.totalEvaluations}
+                icon={FileCheck}
+                color="blue"
+              />
+              <StatItem
+                label="Completed"
+                value={stats.completedEvaluations}
+                icon={CheckCircle}
+                color="green"
+              />
+              <StatItem
+                label="Pending"
+                value={stats.pendingEvaluations}
+                icon={Clock}
+                color="amber"
+              />
+            </div>
+            
+            <Divider className="my-6" />
+            
+            <div>
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-sm text-gray-600">Completion Rate</span>
+                <span className="text-sm font-semibold text-[#1a73e8]">{completionRate}%</span>
+              </div>
+              <Progress 
+                value={completionRate} 
+                className="h-2"
+                classNames={{
+                  indicator: "bg-gradient-to-r from-[#1a73e8] to-[#4285f4]",
+                  track: "bg-[#e8f0fe]",
+                }}
+              />
+            </div>
+          </CardBody>
+        </Card>
+
+        {/* Quick Stats Card */}
+        <Card className="shadow-sm" radius="lg">
+          <CardHeader className="pb-0 pt-5 px-6">
+            <div className="flex items-center gap-2">
+              <TrendingUp className="w-5 h-5 text-[#34a853]" />
+              <h3 className="text-lg font-semibold text-gray-900">Resources</h3>
+            </div>
+          </CardHeader>
+          <CardBody className="p-6">
+            <div className="space-y-4">
+              <ResourceItem icon={Phone} label="Agents" value={orgResources.agents} href="/agents" color="blue" />
+              <ResourceItem icon={Users} label="Personas" value={orgResources.personas} href="/personas" color="purple" />
+              <ResourceItem icon={FileCheck} label="Scenarios" value={orgResources.scenarios} href="/scenarios" color="green" />
+              <ResourceItem icon={Zap} label="Integrations" value={orgResources.integrations} href="/integrations" color="orange" />
+            </div>
+          </CardBody>
+        </Card>
       </div>
 
-      {/* Organization Resources Highlights */}
-      <div className="bg-white shadow rounded-lg p-6">
-        <div className="mb-4">
-          <h2 className="text-xl font-semibold text-gray-900 mb-1">
-            Organization Resources
-          </h2>
-          <p className="text-sm text-gray-600">
-            Overview of your provisioned resources
-          </p>
-        </div>
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
-          <ResourceCard
-            icon={Phone}
-            label="Agents"
-            value={orgResources.agents}
-            href="/agents"
-            color="blue"
-          />
-          <ResourceCard
-            icon={Users}
-            label="Personas"
-            value={orgResources.personas}
-            href="/personas"
-            color="purple"
-          />
-          <ResourceCard
-            icon={FileCheck}
-            label="Scenarios"
-            value={orgResources.scenarios}
-            href="/scenarios"
-            color="green"
-          />
-          <ResourceCard
-            icon={Zap}
-            label="Integrations"
-            value={orgResources.integrations}
-            href="/integrations"
-            color="orange"
-          />
-          <ResourceCard
-            icon={Database}
-            label="Total Evaluations"
-            value={orgResources.totalEvaluations}
-            href="/evaluations"
-            color="indigo"
-          />
-          <ResourceCard
-            icon={CheckCircle}
-            label="Completed"
-            value={orgResources.completedEvaluations}
-            href="/evaluations?status=completed"
-            color="emerald"
-          />
-        </div>
-      </div>
-
-      {/* Stats Grid */}
-      <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
-        <StatCard
-          title="Total Evaluations"
-          value={stats.totalEvaluations}
-          icon={FileCheck}
-          color="green"
-          href="/evaluations"
-        />
-        <StatCard
-          title="Completed"
-          value={stats.completedEvaluations}
-          icon={CheckCircle}
-          color="emerald"
-          href="/evaluations?status=completed"
-        />
-        <StatCard
-          title="Pending"
-          value={stats.pendingEvaluations}
-          icon={Clock}
-          color="amber"
-          href="/evaluations?status=pending"
-        />
-      </div>
+      {/* Organization Resources */}
+      <Card className="shadow-sm" radius="lg">
+        <CardHeader className="pb-0 pt-5 px-6">
+          <div className="flex items-center gap-2">
+            <Database className="w-5 h-5 text-[#1a73e8]" />
+            <h3 className="text-lg font-semibold text-gray-900">Organization Resources</h3>
+          </div>
+        </CardHeader>
+        <CardBody className="p-6">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+            <ResourceCard icon={Phone} label="Agents" value={orgResources.agents} href="/agents" color="blue" />
+            <ResourceCard icon={Users} label="Personas" value={orgResources.personas} href="/personas" color="purple" />
+            <ResourceCard icon={FileCheck} label="Scenarios" value={orgResources.scenarios} href="/scenarios" color="green" />
+            <ResourceCard icon={Zap} label="Integrations" value={orgResources.integrations} href="/integrations" color="orange" />
+            <ResourceCard icon={Database} label="Evaluations" value={orgResources.totalEvaluations} href="/evaluations" color="indigo" />
+            <ResourceCard icon={CheckCircle} label="Completed" value={orgResources.completedEvaluations} href="/evaluations?status=completed" color="emerald" />
+          </div>
+        </CardBody>
+      </Card>
 
       {/* Recent Evaluations */}
-      <div className="bg-white shadow rounded-lg">
-        <div className="px-4 py-5 sm:p-6 border-b border-gray-200">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-medium text-gray-900">Recent Evaluations</h2>
+      <Card className="shadow-sm" radius="lg">
+        <CardHeader className="px-6 py-4">
+          <div className="flex items-center justify-between w-full">
+            <h3 className="text-lg font-semibold text-gray-900">Recent Evaluations</h3>
             <Link
               to="/evaluations"
-              className="text-sm text-primary-600 hover:text-primary-700"
+              className="text-sm text-[#1a73e8] hover:text-[#1967d2] font-medium flex items-center gap-1"
             >
-              View all →
+              View all
+              <ArrowRight className="w-4 h-4" />
             </Link>
           </div>
-        </div>
-        <div className="px-4 py-5 sm:p-6">
+        </CardHeader>
+        <Divider />
+        <CardBody className="p-0">
           {evalLoading ? (
-            <div className="text-center py-8">
-              <Loader className="h-8 w-8 animate-spin text-primary-600 mx-auto" />
+            <div className="flex justify-center py-12">
+              <Spinner color="primary" size="lg" />
             </div>
           ) : recentEvaluations.length === 0 ? (
-            <div className="text-center py-8 text-gray-500">
-              <FileCheck className="h-12 w-12 mx-auto mb-4 text-gray-400" />
-              <p>No evaluations yet</p>
+            <div className="text-center py-12">
+              <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-[#e8f0fe] flex items-center justify-center">
+                <FileCheck className="h-8 w-8 text-[#1a73e8]" />
+              </div>
+              <p className="text-gray-500 mb-2">No evaluations yet</p>
               <Link
                 to="/evaluations"
-                className="mt-4 inline-block text-primary-600 hover:text-primary-700"
+                className="text-[#1a73e8] hover:text-[#1967d2] font-medium text-sm"
               >
                 Create your first evaluation →
               </Link>
             </div>
           ) : (
-            <div className="flow-root">
-              <ul className="-my-5 divide-y divide-gray-200">
-                {recentEvaluations.map((evaluation: Evaluation) => (
-                  <li key={evaluation.id} className="py-5">
-                    <Link
-                      to={`/evaluations/${evaluation.id}`}
-                      className="block hover:bg-gray-50 -mx-4 px-4 py-4 rounded-lg transition-colors"
-                    >
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center">
-                          <StatusBadge status={evaluation.status} />
-                          <div className="ml-4">
-                            <p className="text-sm font-medium text-gray-900">
-                              Evaluation {evaluation.id.slice(0, 8)}...
-                            </p>
-                            <p className="text-sm text-gray-500">
-                              {format(new Date(evaluation.created_at), 'MMM d, yyyy HH:mm')}
-                            </p>
-                          </div>
-                        </div>
-                        <div className="flex items-center">
-                          <span className="text-sm text-gray-500">
-                            {evaluation.evaluation_type}
-                          </span>
-                        </div>
-                      </div>
-                    </Link>
-                  </li>
-                ))}
-              </ul>
+            <div className="divide-y divide-gray-100">
+              {recentEvaluations.map((evaluation: Evaluation) => (
+                <Link
+                  key={evaluation.id}
+                  to={`/evaluations/${evaluation.id}`}
+                  className="flex items-center justify-between px-6 py-4 hover:bg-gray-50 transition-colors"
+                >
+                  <div className="flex items-center gap-4">
+                    <Avatar
+                      name={evaluation.id.slice(0, 2).toUpperCase()}
+                      size="sm"
+                      className="bg-[#e8f0fe] text-[#1a73e8]"
+                    />
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">
+                        Evaluation {evaluation.id.slice(0, 8)}...
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        {format(new Date(evaluation.created_at), 'MMM d, yyyy HH:mm')}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs text-gray-500">{evaluation.evaluation_type}</span>
+                    <StatusChip status={evaluation.status} />
+                  </div>
+                </Link>
+              ))}
             </div>
           )}
-        </div>
-      </div>
+        </CardBody>
+      </Card>
     </div>
   )
 }
 
-function StatCard({
-  title,
+function StatItem({
+  label,
   value,
   icon: Icon,
   color,
-  href,
 }: {
-  title: string
+  label: string
   value: number
   icon: React.ComponentType<{ className?: string }>
-  color: string
-  href?: string
+  color: 'blue' | 'green' | 'amber'
 }) {
-  const colorClasses = {
-    blue: 'bg-orange-500',
-    green: 'bg-green-500',
-    emerald: 'bg-emerald-500',
-    amber: 'bg-amber-500',
+  const colorStyles = {
+    blue: 'bg-[#e8f0fe] text-[#1a73e8]',
+    green: 'bg-[#e6f4ea] text-[#137333]',
+    amber: 'bg-[#fef7e0] text-[#e37400]',
   }
 
-  const content = (
-    <div className="bg-white overflow-hidden shadow rounded-lg">
-      <div className="p-5">
-        <div className="flex items-center">
-          <div className={`flex-shrink-0 rounded-md p-3 ${colorClasses[color as keyof typeof colorClasses]}`}>
-            <Icon className="h-6 w-6 text-white" />
-          </div>
-          <div className="ml-5 w-0 flex-1">
-            <dl>
-              <dt className="text-sm font-medium text-gray-500 truncate">{title}</dt>
-              <dd className="flex items-baseline">
-                <div className="text-2xl font-semibold text-gray-900">{value}</div>
-              </dd>
-            </dl>
-          </div>
-        </div>
+  return (
+    <div className="text-center">
+      <div className={`w-12 h-12 mx-auto rounded-2xl ${colorStyles[color]} flex items-center justify-center mb-3`}>
+        <Icon className="w-6 h-6" />
       </div>
+      <div className="text-3xl font-bold text-gray-900">{value}</div>
+      <div className="text-sm text-gray-500 mt-1">{label}</div>
     </div>
   )
+}
 
-  if (href) {
-    return <Link to={href}>{content}</Link>
+function ResourceItem({
+  icon: Icon,
+  label,
+  value,
+  href,
+  color,
+}: {
+  icon: React.ComponentType<{ className?: string }>
+  label: string
+  value: number
+  href: string
+  color: 'blue' | 'purple' | 'green' | 'orange'
+}) {
+  const colorStyles = {
+    blue: 'bg-[#e8f0fe] text-[#1a73e8]',
+    purple: 'bg-[#f3e8ff] text-[#7c3aed]',
+    green: 'bg-[#e6f4ea] text-[#137333]',
+    orange: 'bg-[#fef3e2] text-[#ea8600]',
   }
 
-  return content
+  return (
+    <Link to={href} className="flex items-center justify-between p-3 rounded-xl hover:bg-gray-50 transition-colors">
+      <div className="flex items-center gap-3">
+        <div className={`w-10 h-10 rounded-xl ${colorStyles[color]} flex items-center justify-center`}>
+          <Icon className="w-5 h-5" />
+        </div>
+        <span className="text-sm font-medium text-gray-700">{label}</span>
+      </div>
+      <span className="text-lg font-bold text-gray-900">{value}</span>
+    </Link>
+  )
 }
 
 function ResourceCard({
@@ -355,32 +397,32 @@ function ResourceCard({
   href: string
   color: string
 }) {
-  const colorClasses = {
-    blue: 'bg-blue-100 text-blue-600',
-    purple: 'bg-purple-100 text-purple-600',
-    green: 'bg-green-100 text-green-600',
-    orange: 'bg-orange-100 text-orange-600',
-    indigo: 'bg-indigo-100 text-indigo-600',
-    emerald: 'bg-emerald-100 text-emerald-600',
+  const colorStyles: Record<string, string> = {
+    blue: 'bg-[#e8f0fe] text-[#1a73e8]',
+    purple: 'bg-[#f3e8ff] text-[#7c3aed]',
+    green: 'bg-[#e6f4ea] text-[#137333]',
+    orange: 'bg-[#fef3e2] text-[#ea8600]',
+    indigo: 'bg-[#eef2ff] text-[#4f46e5]',
+    emerald: 'bg-[#d1fae5] text-[#059669]',
   }
 
-  const content = (
-    <div className="flex flex-col items-center p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
-      <div className={`p-3 rounded-full ${colorClasses[color as keyof typeof colorClasses]}`}>
-        <Icon className="h-5 w-5" />
-      </div>
-      <div className="mt-2 text-center">
-        <div className="text-2xl font-bold text-gray-900">{value}</div>
-        <div className="text-xs text-gray-600 mt-1">{label}</div>
-      </div>
-    </div>
+  return (
+    <Link to={href}>
+      <Card 
+        className="hover:shadow-md transition-all duration-200 hover:scale-[1.02] cursor-pointer border-none bg-gray-50/50" 
+        radius="lg"
+        isPressable
+      >
+        <CardBody className="p-4 text-center">
+          <div className={`w-12 h-12 mx-auto rounded-2xl ${colorStyles[color]} flex items-center justify-center mb-3`}>
+            <Icon className="w-6 h-6" />
+          </div>
+          <div className="text-2xl font-bold text-gray-900">{value}</div>
+          <div className="text-xs text-gray-500 mt-1">{label}</div>
+        </CardBody>
+      </Card>
+    </Link>
   )
-
-  if (href) {
-    return <Link to={href}>{content}</Link>
-  }
-
-  return content
 }
 
 function QuickStartCard({
@@ -396,62 +438,58 @@ function QuickStartCard({
   href: string
   step: number
 }) {
-  const content = (
-    <div className="bg-white rounded-lg p-5 shadow-sm hover:shadow-md transition-all duration-200 border border-gray-200 hover:border-primary-300 h-full flex flex-col">
-      <div className="flex items-start gap-3 mb-3">
-        <div className="flex-shrink-0">
-          <div className="w-10 h-10 rounded-lg bg-primary-100 flex items-center justify-center">
-            <Icon className="h-5 w-5 text-primary-600" />
-          </div>
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1">
-            <span className="text-xs font-semibold text-primary-600 bg-primary-50 px-2 py-0.5 rounded">
+  return (
+    <Link to={href}>
+      <Card 
+        className="h-full hover:shadow-md transition-all duration-200 hover:scale-[1.02] bg-white/80 backdrop-blur-sm border-none" 
+        radius="lg"
+        isPressable
+      >
+        <CardBody className="p-5">
+          <div className="flex items-start gap-3 mb-3">
+            <div className="w-10 h-10 rounded-xl bg-[#e8f0fe] flex items-center justify-center flex-shrink-0">
+              <Icon className="h-5 w-5 text-[#1a73e8]" />
+            </div>
+            <Chip 
+              size="sm" 
+              className="bg-[#1a73e8] text-white font-semibold"
+              radius="full"
+            >
               Step {step}
-            </span>
+            </Chip>
           </div>
           <h3 className="text-base font-semibold text-gray-900 mb-2">{title}</h3>
-        </div>
-      </div>
-      <p className="text-sm text-gray-600 mb-4 flex-1">{description}</p>
-      <Link
-        to={href}
-        className="inline-flex items-center gap-2 text-sm font-medium text-primary-600 hover:text-primary-700 group"
-      >
-        Get started
-        <ArrowRight className="h-4 w-4 group-hover:translate-x-1 transition-transform" />
-      </Link>
-    </div>
+          <p className="text-sm text-gray-600 mb-4">{description}</p>
+          <div className="flex items-center gap-1 text-sm font-medium text-[#1a73e8]">
+            Get started
+            <ArrowRight className="h-4 w-4" />
+          </div>
+        </CardBody>
+      </Card>
+    </Link>
   )
-
-  return content
 }
 
-function StatusBadge({ status }: { status: EvaluationStatus }) {
+function StatusChip({ status }: { status: EvaluationStatus }) {
   const statusConfig = {
     [EvaluationStatus.PENDING]: {
-      bg: 'bg-yellow-100',
-      text: 'text-yellow-800',
+      color: 'warning' as const,
       label: 'Pending',
     },
     [EvaluationStatus.PROCESSING]: {
-      bg: 'bg-orange-100',
-      text: 'text-orange-800',
+      color: 'primary' as const,
       label: 'Processing',
     },
     [EvaluationStatus.COMPLETED]: {
-      bg: 'bg-green-100',
-      text: 'text-green-800',
+      color: 'success' as const,
       label: 'Completed',
     },
     [EvaluationStatus.FAILED]: {
-      bg: 'bg-red-100',
-      text: 'text-red-800',
+      color: 'danger' as const,
       label: 'Failed',
     },
     [EvaluationStatus.CANCELLED]: {
-      bg: 'bg-gray-100',
-      text: 'text-gray-800',
+      color: 'default' as const,
       label: 'Cancelled',
     },
   }
@@ -459,9 +497,20 @@ function StatusBadge({ status }: { status: EvaluationStatus }) {
   const config = statusConfig[status]
 
   return (
-    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${config.bg} ${config.text}`}>
+    <Chip 
+      size="sm" 
+      color={config.color}
+      variant="flat"
+      radius="full"
+      classNames={{
+        base: config.color === 'success' ? 'bg-[#e6f4ea] text-[#137333]' :
+              config.color === 'warning' ? 'bg-[#fef7e0] text-[#e37400]' :
+              config.color === 'danger' ? 'bg-[#fce8e6] text-[#c5221f]' :
+              config.color === 'primary' ? 'bg-[#e8f0fe] text-[#1a73e8]' :
+              'bg-gray-100 text-gray-600',
+      }}
+    >
       {config.label}
-    </span>
+    </Chip>
   )
 }
-

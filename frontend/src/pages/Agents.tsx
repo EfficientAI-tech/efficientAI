@@ -470,31 +470,27 @@ export default function Agents() {
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   Call Medium *
                 </label>
-                <div className="flex items-center gap-4">
-                  <span className={`text-sm ${formData.call_medium === 'phone_call' ? 'text-gray-500' : 'text-gray-700'}`}>
-                    Web Call
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const newMedium = formData.call_medium === 'phone_call' ? 'web_call' : 'phone_call'
-                      setFormData({
-                        ...formData,
-                        call_medium: newMedium,
-                        phone_number: newMedium === 'web_call' ? '' : formData.phone_number
-                      })
-                    }}
-                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 ${formData.call_medium === 'phone_call' ? 'bg-primary-600' : 'bg-gray-200'
-                      }`}
-                  >
-                    <span
-                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${formData.call_medium === 'phone_call' ? 'translate-x-6' : 'translate-x-1'
-                        }`}
-                    />
-                  </button>
-                  <span className={`text-sm ${formData.call_medium === 'phone_call' ? 'text-gray-700' : 'text-gray-500'}`}>
-                    Phone Call
-                  </span>
+                <div className="inline-flex rounded-lg border border-gray-300 overflow-hidden">
+                  {(['web_call', 'phone_call'] as const).map((medium) => {
+                    const isActive = formData.call_medium === medium
+                    return (
+                      <button
+                        key={medium}
+                        type="button"
+                        onClick={() => {
+                          setFormData({
+                            ...formData,
+                            call_medium: medium,
+                            phone_number: medium === 'web_call' ? '' : formData.phone_number
+                          })
+                        }}
+                        className={`px-4 py-2 text-sm font-medium transition-colors focus:outline-none ${isActive ? 'bg-primary-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'
+                          } ${medium === 'web_call' ? 'border-r border-gray-300' : ''}`}
+                      >
+                        {medium === 'web_call' ? 'Web Call' : 'Phone Call'}
+                      </button>
+                    )
+                  })}
                 </div>
               </div>
 
@@ -536,27 +532,21 @@ export default function Agents() {
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   Call Type *
                 </label>
-                <div className="flex items-center gap-4">
-                  <span className={`text-sm ${formData.call_type === 'inbound' ? 'text-gray-500' : 'text-gray-700'}`}>
-                    Outbound
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const newType = formData.call_type === 'outbound' ? 'inbound' : 'outbound'
-                      setFormData({ ...formData, call_type: newType })
-                    }}
-                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 ${formData.call_type === 'inbound' ? 'bg-primary-600' : 'bg-gray-200'
-                      }`}
-                  >
-                    <span
-                      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${formData.call_type === 'inbound' ? 'translate-x-6' : 'translate-x-1'
-                        }`}
-                    />
-                  </button>
-                  <span className={`text-sm ${formData.call_type === 'inbound' ? 'text-gray-700' : 'text-gray-500'}`}>
-                    Inbound
-                  </span>
+                <div className="inline-flex rounded-lg border border-gray-300 overflow-hidden">
+                  {(['outbound', 'inbound'] as const).map((type) => {
+                    const isActive = formData.call_type === type
+                    return (
+                      <button
+                        key={type}
+                        type="button"
+                        onClick={() => setFormData({ ...formData, call_type: type })}
+                        className={`px-4 py-2 text-sm font-medium transition-colors focus:outline-none ${isActive ? 'bg-primary-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'
+                          } ${type === 'outbound' ? 'border-r border-gray-300' : ''}`}
+                      >
+                        {type === 'outbound' ? 'Outbound' : 'Inbound'}
+                      </button>
+                    )
+                  })}
                 </div>
               </div>
 

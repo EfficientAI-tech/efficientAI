@@ -1,0 +1,7 @@
+{
+  "dependencies": {
+    "@heroui/react": "^2.8.7",
+    "@vapi-ai/web": "^2.5.2",
+    "framer-motion": "^12.26.2"
+  }
+}

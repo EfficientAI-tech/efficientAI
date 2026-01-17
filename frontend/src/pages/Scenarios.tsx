@@ -13,6 +13,8 @@ const PROVIDER_LABELS: Record<ModelProvider, string> = {
   [ModelProvider.GOOGLE]: 'Google',
   [ModelProvider.AZURE]: 'Azure',
   [ModelProvider.AWS]: 'AWS',
+  [ModelProvider.DEEPGRAM]: 'Deepgram',
+  [ModelProvider.CARTESIA]: 'Cartesia',
   [ModelProvider.CUSTOM]: 'Custom',
 }
 
@@ -22,6 +24,8 @@ const PROVIDER_LOGOS: Record<ModelProvider, string | null> = {
   [ModelProvider.GOOGLE]: '/geminiai.png',
   [ModelProvider.AZURE]: '/azureai.png',
   [ModelProvider.AWS]: '/AWS_logo.png',
+  [ModelProvider.DEEPGRAM]: '/deepgram.png', // add asset if available
+  [ModelProvider.CARTESIA]: '/cartesia.jpg', // ensure asset exists in public/
   [ModelProvider.CUSTOM]: null,
 }
 

@@ -80,6 +80,26 @@ class ApiClient {
     return response.data
   }
 
+  // Settings / API Key Management endpoints
+  async listApiKeys(): Promise<any[]> {
+    const response = await this.client.get('/api/v1/settings/api-keys')
+    return response.data
+  }
+
+  async createApiKey(name?: string): Promise<any> {
+    const response = await this.client.post('/api/v1/settings/api-keys', { name })
+    return response.data
+  }
+
+  async deleteApiKey(keyId: string): Promise<void> {
+    await this.client.delete(`/api/v1/settings/api-keys/${keyId}`)
+  }
+
+  async regenerateApiKey(keyId: string): Promise<any> {
+    const response = await this.client.post(`/api/v1/settings/api-keys/${keyId}/regenerate`)
+    return response.data
+  }
+
   // Audio endpoints
   async uploadAudio(file: File): Promise<AudioFile> {
     const formData = new FormData()
@@ -725,6 +745,24 @@ class ApiClient {
     return response.data
   }
 
+  // Observability endpoints
+  async listObservabilityCalls(skip = 0, limit = 100): Promise<any[]> {
+    const response = await this.client.get('/api/v1/observability/calls', {
+      params: { skip, limit },
+    })
+    return response.data
+  }
+
+  async getObservabilityCall(callShortId: string): Promise<any> {
+    const response = await this.client.get(`/api/v1/observability/calls/${callShortId}`)
+    return response.data
+  }
+
+  async deleteObservabilityCall(callShortId: string): Promise<{ message: string }> {
+    const response = await this.client.delete(`/api/v1/observability/calls/${callShortId}`)
+    return response.data
+  }
+
   // Evaluator endpoints
   async createEvaluator(data: {
     agent_id: string
@@ -770,6 +808,11 @@ class ApiClient {
     await this.client.delete(`/api/v1/evaluators/${evaluatorId}`)
   }
 
+  async runEvaluators(evaluatorIds: string[]): Promise<{ task_ids: string[]; evaluator_results: any[] }> {
+    const response = await this.client.post('/api/v1/evaluators/run', { evaluator_ids: evaluatorIds })
+    return response.data
+  }
+
   // Metric endpoints
   async createMetric(data: {
     name: string
@@ -788,14 +831,21 @@ class ApiClient {
   }
 
   // Evaluator Results endpoints
-  async listEvaluatorResults(evaluatorId?: string): Promise<any[]> {
-    const params = evaluatorId ? { evaluator_id: evaluatorId } : {}
+  async listEvaluatorResults(evaluatorId?: string, playground?: boolean): Promise<any[]> {
+    const params: any = {}
+    if (evaluatorId) {
+      params.evaluator_id = evaluatorId
+    }
+    if (playground !== undefined) {
+      params.playground = playground
+    }
     const response = await this.client.get('/api/v1/evaluator-results', { params })
     return response.data
   }
 
-  async getEvaluatorResult(id: string): Promise<any> {
-    const response = await this.client.get(`/api/v1/evaluator-results/${id}`)
+  async getEvaluatorResult(id: string, includeRelations: boolean = true): Promise<any> {
+    const params = includeRelations ? { include_relations: 'true' } : {}
+    const response = await this.client.get(`/api/v1/evaluator-results/${id}`, { params })
     return response.data
   }
 

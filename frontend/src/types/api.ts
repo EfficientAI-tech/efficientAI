@@ -69,6 +69,8 @@ export interface APIKey {
   name?: string | null
   is_active: boolean
   created_at: string
+  last_used?: string | null
+  message?: string
 }
 
 export interface MessageResponse {
@@ -183,6 +185,8 @@ export enum ModelProvider {
   GOOGLE = 'google',
   AZURE = 'azure',
   AWS = 'aws',
+  DEEPGRAM = 'deepgram',
+  CARTESIA = 'cartesia',
   CUSTOM = 'custom',
 }
 

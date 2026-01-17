@@ -27,11 +27,9 @@ from efficientai.frames.frames import (
 )
 import wave
 import tempfile
-import subprocess
-import uuid
 import time
 import numpy as np
-from app.services.s3_service import s3_service
+from app.services.voice_agent.utils.audio_merge import merge_and_upload_audio
 
 
 
@@ -112,8 +110,6 @@ class AudioRecorder(FrameProcessor):
                     self.wave_file.setsampwidth(2) # 16-bit PCM
                     self.wave_file.setframerate(self.sample_rate)
                     self.params_set = True
-                    frame_type = type(frame).__name__
-                    logger.info(f"AudioRecorder initialized: {self.filename}, target_sample_rate={self.sample_rate}, channels={self.num_channels}, first_frame_type={frame_type}")
                 except Exception as e:
                     logger.error(f"Failed to open wave file {self.filename}: {e}")
             
@@ -163,7 +159,6 @@ class AudioRecorder(FrameProcessor):
             if self.wave_file:
                 self.wave_file.close()
                 self.wave_file = None
-                logger.info(f"{self.recorder_name} closed: {self.filename}, total_frames={self.frames_received}, audio_frames={self.audio_frames_received}")
         
         await self.push_frame(frame, direction)
 
@@ -173,7 +168,7 @@ class AudioRecorder(FrameProcessor):
             self.wave_file = None
 
 
-async def run_bot(websocket_client, google_api_key: str, system_instruction: str = None, organization_id: str = None, agent_id: str = None, persona_id: str = None, scenario_id: str = None, evaluator_id: str = None, result_id: str = None):
+async def run_bot(websocket_client, google_api_key: str, system_instruction: str = None, organization_id: str = None, agent_id: str = None, persona_id: str = None, scenario_id: str = None, evaluator_id: str = None, result_id: str = None, model_name: str = None):
     """
     Run the voice agent bot with the provided Google API key.
     
@@ -189,7 +184,6 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
     duration_result = None
     
     try:
-        logger.info("Setting up FastAPIWebsocketTransport...")
         ws_transport = FastAPIWebsocketTransport(
             websocket=websocket_client,
             params=FastAPIWebsocketParams(
@@ -200,7 +194,6 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
                 serializer=ProtobufFrameSerializer(),
             ),
         )
-        logger.info("FastAPIWebsocketTransport created")
 
         # Use provided system instruction or fallback to default
         # If system_instruction is None or empty, use the default
@@ -209,20 +202,29 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
         else:
             instruction = DEFAULT_SYSTEM_INSTRUCTION.strip()
 
-        logger.info("Setting up GeminiLiveLLMService...")
         # Validate API key before passing to Gemini
         if not google_api_key or not google_api_key.strip():
             raise ValueError("Google API key is empty or invalid")
         
-        # Log API key validation (first few chars only for security)
+        # Determine model name - use from agent's voice bundle if provided, otherwise use default
+        if model_name:
+            # Format model name for Gemini Live API (add "models/" prefix if not present)
+            if not model_name.startswith("models/"):
+                formatted_model_name = f"models/{model_name}"
+            else:
+                formatted_model_name = model_name
+        else:
+            # Fallback to default model if not provided
+            formatted_model_name = "models/gemini-2.5-flash-native-audio-preview-12-2025"
+        logger.info(f"Using Gemini Live model: {formatted_model_name}")
         
         llm = GeminiLiveLLMService(
             api_key=google_api_key,
             voice_id="Puck",  # Aoede, Charon, Fenrir, Kore, Puck
             transcribe_model_audio=True,
             system_instruction=instruction,
+            model=formatted_model_name,
         )
-        logger.info("GeminiLiveLLMService created")
         context = LLMContext(
             [
                 {
@@ -237,7 +239,6 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
         # RTVI events for efficientai client UI
         # RTVIProcessor handles the RTVI protocol handshake with the client
         rtvi = RTVIProcessor(config=RTVIConfig(config=[]))
-        logger.info("RTVIProcessor created - will handle RTVI protocol handshake")
 
         # Create temporary files for recording
         user_audio_fd, user_audio_path = tempfile.mkstemp(suffix=".wav")
@@ -245,15 +246,11 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
         bot_audio_fd, bot_audio_path = tempfile.mkstemp(suffix=".wav")
         os.close(bot_audio_fd)
         
-        logger.info(f"Recording user audio to: {user_audio_path}")
-        logger.info(f"Recording bot audio to: {bot_audio_path}")
-        
         # Use a common start time for synchronization
         start_time = time.time()
         user_recorder = AudioRecorder(user_audio_path, start_time, recorder_name="UserAudioRecorder")
         bot_recorder = AudioRecorder(bot_audio_path, start_time, recorder_name="BotAudioRecorder")
 
-        logger.info("Setting up Pipeline...")
         pipeline = Pipeline(
             [
                 ws_transport.input(),
@@ -267,8 +264,6 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
             ]
         )
 
-        logger.info("Pipeline created")
-
         task = PipelineTask(
             pipeline,
             params=PipelineParams(
@@ -277,22 +272,16 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
             ),
             observers=[RTVIObserver(rtvi)],
         )
-        logger.info("PipelineTask created")
 
         @rtvi.event_handler("on_client_ready")
         async def on_client_ready(rtvi):
-            logger.info("efficientai client ready - RTVI handshake complete!")
             await rtvi.set_bot_ready()
-            logger.info("Bot marked as ready, sending initial LLMRunFrame...")
             # Kick off the conversation.
             await task.queue_frames([LLMRunFrame()])
-            logger.info("Initial LLMRunFrame queued")
 
         @ws_transport.event_handler("on_client_connected")
         async def on_client_connected(transport, client):
-            logger.info("efficientai Client connected via WebSocket")
-            logger.info("Waiting for RTVI protocol handshake from client...")
-            logger.info("Client should send RTVI protocol messages to complete handshake")
+            logger.info("efficientai client connected via WebSocket")
             # Note: The RTVI handshake is typically initiated by the client
             # If the client uses transport.connect() directly instead of startBotAndConnect(),
             # it might not send RTVI protocol messages automatically
@@ -303,106 +292,27 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
             await task.cancel()
 
         # Verify WebSocket is still open before starting
-        logger.info(f"WebSocket state before starting runner: {websocket_client.client_state}")
         if websocket_client.client_state.name != "CONNECTED":
             raise Exception(f"WebSocket is not in CONNECTED state: {websocket_client.client_state.name}")
-        
-        # Log transport state
-        logger.info(f"Transport input processor: {ws_transport.input()}")
-        logger.info(f"Transport output processor: {ws_transport.output()}")
-        
-        # The FastAPIWebsocketTransport should automatically receive messages when the pipeline runs
-        # But let's verify the transport is set up correctly
-        logger.info("Transport setup complete. Messages should be received automatically when pipeline runs.")
-        
-        logger.info("Starting PipelineRunner...")
         runner = PipelineRunner(handle_sigint=False)
         
         try:
-            logger.info("PipelineRunner.run() starting - this should keep the connection alive...")
-            logger.info("The transport should now start receiving messages from the WebSocket...")
             await runner.run(task)
-            logger.info("PipelineRunner.run() completed")
         except Exception as run_error:
             logger.error(f"Error in runner.run(): {run_error}", exc_info=True)
             raise
         finally:
-            logger.info("PipelineRunner finished")
-            
             # Close recorders explicitly to ensure files are flushed
             await user_recorder.cleanup()
             await bot_recorder.cleanup()
-            
-            # Merge and upload audio
-            try:
-                if os.path.exists(user_audio_path) and os.path.exists(bot_audio_path):
-                    # Check if files have content
-                    user_size = os.path.getsize(user_audio_path)
-                    bot_size = os.path.getsize(bot_audio_path)
-                    
-                    if user_size > 100 and bot_size > 100: # Check for valid header + data
-                        merged_fd, merged_path = tempfile.mkstemp(suffix=".wav")
-                        os.close(merged_fd)
-                        
-                        logger.info(f"Merging audio files to {merged_path}...")
-                        
-                        # Use ffmpeg to mix audio with proper handling
-                        # amix with dropout_transition handles silence gaps better
-                        # duration=longest ensures we capture the full conversation
-                        # dropout_transition=2 helps with smooth transitions when one stream is silent
-                        cmd = [
-                            "ffmpeg",
-                            "-y", # Overwrite output
-                            "-i", user_audio_path,
-                            "-i", bot_audio_path,
-                            "-filter_complex", "amix=inputs=2:duration=longest:dropout_transition=2:normalize=0",
-                            "-ar", "24000",  # Ensure consistent sample rate (match target_sample_rate)
-                            merged_path
-                        ]
-                        
-                        process = subprocess.run(cmd, capture_output=True, text=True)
-                        
-                        if process.returncode == 0 and os.path.exists(merged_path):
-                            logger.info("Audio merged successfully. Uploading to S3...")
-                            
-                            with open(merged_path, "rb") as f:
-                                file_content = f.read()
-                                
-                            file_id = uuid.uuid4()
-                            # Use result_id as meaningful identifier if available, otherwise use timestamp-based ID
-                            meaningful_id = result_id if result_id else f"{int(time.time())}-{file_id.hex[:8]}"
-                            s3_key = s3_service.upload_file(
-                                file_content=file_content,
-                                file_id=file_id,
-                                file_format="wav",
-                                organization_id=organization_id,
-                                evaluator_id=evaluator_id,
-                                meaningful_id=meaningful_id
-                            )
-                            
-                            logger.info(f"✅ Conversation audio uploaded to S3: {s3_key}")
-                            s3_key_result = s3_key
-                            duration_result = time.time() - call_start_time
-                            
-                            # Clean up merged file
-                            os.unlink(merged_path)
-                        else:
-                            logger.warning("Audio merge completed but output file not found or FFmpeg failed")
-                            if process.stderr:
-                                logger.error(f"FFmpeg merge failed: {process.stderr}")
-                    else:
-                        logger.warning("Recorded audio files are too small, skipping merge/upload.")
-                else:
-                    logger.warning("Audio files not found, skipping merge/upload.")
-                
-                # Clean up temp files
-                if os.path.exists(user_audio_path):
-                    os.unlink(user_audio_path)
-                if os.path.exists(bot_audio_path):
-                    os.unlink(bot_audio_path)
-                    
-            except Exception as e:
-                logger.error(f"Error processing recorded audio: {e}")
+            s3_key_result, duration_result = merge_and_upload_audio(
+                user_audio_path=user_audio_path,
+                bot_audio_path=bot_audio_path,
+                call_start_time=call_start_time,
+                organization_id=organization_id,
+                evaluator_id=evaluator_id,
+                result_id=result_id,
+            )
 
     except Exception as e:
         logger.error(f"Error in run_bot: {e}", exc_info=True)

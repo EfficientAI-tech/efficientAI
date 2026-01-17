@@ -1,14 +1,20 @@
-import { ButtonHTMLAttributes, ReactNode } from 'react'
-import { Loader2 } from 'lucide-react'
+import { ReactNode, MouseEvent, FormEvent } from 'react'
+import { Button as HeroButton } from '@heroui/react'
+import { PressEvent } from '@react-types/shared'
 import { clsx } from 'clsx'
 
-interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: 'primary' | 'secondary' | 'outline' | 'ghost' | 'danger'
+interface ButtonProps {
+  variant?: 'primary' | 'secondary' | 'outline' | 'ghost' | 'danger' | 'success'
   size?: 'sm' | 'md' | 'lg'
   isLoading?: boolean
   leftIcon?: ReactNode
   rightIcon?: ReactNode
   children: ReactNode
+  className?: string
+  disabled?: boolean
+  type?: 'button' | 'submit' | 'reset'
+  onClick?: (e?: MouseEvent<HTMLButtonElement> | FormEvent | PressEvent | any) => any
+  title?: string  // For accessibility/tooltip
 }
 
 export default function Button({
@@ -20,48 +26,94 @@ export default function Button({
   children,
   className,
   disabled,
-  ...props
+  type = 'button',
+  onClick,
+  title,
 }: ButtonProps) {
-  const baseStyles = 'inline-flex items-center justify-center font-medium rounded-lg transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed'
-  
-  const variants = {
-    primary: '!bg-gradient-to-r !from-primary-500 !to-primary-600 !text-white shadow-md hover:shadow-lg hover:!from-primary-600 hover:!to-primary-700 focus:ring-primary-500 active:scale-[0.98]',
-    secondary: 'bg-gray-100 text-gray-900 shadow-sm hover:bg-gray-200 focus:ring-gray-500 active:scale-[0.98]',
-    outline: 'border-2 border-primary-500 text-primary-700 bg-white hover:bg-primary-50 hover:border-primary-600 focus:ring-primary-500 active:scale-[0.98]',
-    ghost: 'text-primary-700 hover:bg-primary-50 focus:ring-primary-500 active:scale-[0.98]',
-    danger: 'bg-gradient-to-r from-red-500 to-red-600 text-white shadow-md hover:shadow-lg hover:from-red-600 hover:to-red-700 focus:ring-red-500 active:scale-[0.98]',
+  // Map our variants to HeroUI color and variant props with light/tonal styles
+  const getHeroUIProps = () => {
+    switch (variant) {
+      case 'primary':
+        return { 
+          color: 'primary' as const, 
+          variant: 'flat' as const,
+          customClass: 'bg-[#e8f0fe] hover:bg-[#d2e3fc] text-[#1a73e8] font-semibold'
+        }
+      case 'secondary':
+        return { 
+          color: 'default' as const, 
+          variant: 'flat' as const,
+          customClass: 'bg-gray-100 hover:bg-gray-200 text-gray-700'
+        }
+      case 'outline':
+        return { 
+          color: 'primary' as const, 
+          variant: 'bordered' as const,
+          customClass: 'border-2 border-[#1a73e8] text-[#1a73e8] bg-transparent hover:bg-[#e8f0fe]'
+        }
+      case 'ghost':
+        return { 
+          color: 'default' as const, 
+          variant: 'light' as const,
+          customClass: 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+        }
+      case 'danger':
+        return { 
+          color: 'danger' as const, 
+          variant: 'flat' as const,
+          customClass: 'bg-[#fce8e6] hover:bg-[#fad2cf] text-[#c5221f] font-semibold'
+        }
+      case 'success':
+        return { 
+          color: 'success' as const, 
+          variant: 'flat' as const,
+          customClass: 'bg-[#e6f4ea] hover:bg-[#ceead6] text-[#137333] font-semibold'
+        }
+      default:
+        return { 
+          color: 'primary' as const, 
+          variant: 'flat' as const,
+          customClass: 'bg-[#e8f0fe] hover:bg-[#d2e3fc] text-[#1a73e8]'
+        }
+    }
   }
-  
-  const sizes = {
-    sm: 'px-3 py-1.5 text-sm gap-1.5',
-    md: 'px-4 py-2 text-sm gap-2',
-    lg: 'px-6 py-3 text-base gap-2.5',
+
+  const heroUIProps = getHeroUIProps()
+
+  // Handle press event and convert to something that can be used by onClick handlers
+  const handlePress = (e: PressEvent) => {
+    if (onClick) {
+      // Create a synthetic event-like object that has stopPropagation
+      const syntheticEvent = {
+        ...e,
+        preventDefault: () => {},
+        stopPropagation: () => {
+          // PressEvent from react-aria has continuePropagation, we invert the logic
+          e.continuePropagation()
+        },
+      }
+      onClick(syntheticEvent)
+    }
   }
-  
+
   return (
-    <button
-      className={clsx(
-        baseStyles,
-        variants[variant],
-        sizes[size],
-        className
-      )}
-      disabled={disabled || isLoading}
-      {...props}
+    <HeroButton
+      color={heroUIProps.color}
+      variant={heroUIProps.variant}
+      size={size}
+      radius="full"
+      isLoading={isLoading}
+      isDisabled={disabled}
+      startContent={leftIcon}
+      endContent={rightIcon}
+      className={clsx(heroUIProps.customClass, 'transition-all duration-200', className)}
+      type={type}
+      onPress={handlePress}
+      title={title}
+      aria-label={title}
     >
-      {isLoading ? (
-        <>
-          <Loader2 className={`animate-spin ${size === 'sm' ? 'h-3.5 w-3.5' : size === 'md' ? 'h-4 w-4' : 'h-5 w-5'}`} />
-          <span>Loading...</span>
-        </>
-      ) : (
-        <>
-          {leftIcon && <span className="flex-shrink-0">{leftIcon}</span>}
-          <span>{children}</span>
-          {rightIcon && <span className="flex-shrink-0">{rightIcon}</span>}
-        </>
-      )}
-    </button>
+      {children}
+    </HeroButton>
   )
 }
 

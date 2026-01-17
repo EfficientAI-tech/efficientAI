@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
 import { useState, useEffect, useRef } from 'react'
-import { Plus, Trash2, X, AlertCircle, CheckCircle, Plug, Edit, Brain, Key, ChevronDown } from 'lucide-react'
+import { Plus, Trash2, X, AlertCircle, Plug, Edit, Brain, ChevronDown, Key } from 'lucide-react'
 import { IntegrationCreate, IntegrationPlatform, Integration, AIProvider, AIProviderCreate, ModelProvider } from '../types/api'
 import Button from '../components/Button'
 import { useToast } from '../hooks/useToast'
@@ -12,6 +12,8 @@ const PROVIDER_LABELS: Record<ModelProvider, string> = {
   [ModelProvider.GOOGLE]: 'Google',
   [ModelProvider.AZURE]: 'Azure',
   [ModelProvider.AWS]: 'AWS',
+  [ModelProvider.DEEPGRAM]: 'Deepgram',
+  [ModelProvider.CARTESIA]: 'Cartesia',
   [ModelProvider.CUSTOM]: 'Custom',
 }
 
@@ -21,6 +23,8 @@ const PROVIDER_LOGOS: Record<ModelProvider, string | null> = {
   [ModelProvider.GOOGLE]: '/geminiai.png',
   [ModelProvider.AZURE]: '/azureai.png',
   [ModelProvider.AWS]: '/AWS_logo.png',
+  [ModelProvider.DEEPGRAM]: '/deepgram.png', // add asset if available
+  [ModelProvider.CARTESIA]: '/cartesia.jpg', // ensure asset exists in public/
   [ModelProvider.CUSTOM]: null,
 }
 
@@ -30,6 +34,8 @@ const PROVIDER_DESCRIPTIONS: Record<ModelProvider, string> = {
   [ModelProvider.GOOGLE]: 'Gemini, Google Speech, Google TTS',
   [ModelProvider.AZURE]: 'Azure OpenAI, Azure Speech Services',
   [ModelProvider.AWS]: 'AWS Bedrock, Transcribe, Polly',
+  [ModelProvider.DEEPGRAM]: 'Deepgram STT',
+  [ModelProvider.CARTESIA]: 'Cartesia TTS',
   [ModelProvider.CUSTOM]: 'Custom AI provider',
 }
 
@@ -156,16 +162,6 @@ export default function Integrations() {
     },
   })
 
-  const testAIProviderMutation = useMutation({
-    mutationFn: (id: string) => apiClient.testAIProvider(id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['aiproviders'] })
-      showToast('API key test completed successfully!', 'success')
-    },
-    onError: (error: any) => {
-      showToast(`API key test failed: ${error.response?.data?.detail || error.message}`, 'error')
-    },
-  })
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -307,10 +303,6 @@ export default function Integrations() {
     }
   }
 
-  const handleTestAIProvider = (provider: AIProvider) => {
-    testAIProviderMutation.mutate(provider.id)
-  }
-
   const handleTestIntegration = (integration: Integration) => {
     testIntegrationMutation.mutate(integration.id)
   }
@@ -426,21 +418,10 @@ export default function Integrations() {
                               Inactive
                             </span>
                           )}
-                          {integration.last_tested_at && (
-                            <span className="px-2 py-0.5 text-xs font-medium bg-green-100 text-green-700 rounded flex items-center gap-1">
-                              <CheckCircle className="h-3 w-3" />
-                              Tested
-                            </span>
-                          )}
                         </div>
                         <p className="text-sm text-gray-600 mt-1">
                           {platformInfo?.description || 'Voice AI platform integration'}
                         </p>
-                        {integration.last_tested_at && (
-                          <p className="text-xs text-gray-500 mt-1">
-                            Last tested: {new Date(integration.last_tested_at).toLocaleDateString()}
-                          </p>
-                        )}
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
@@ -511,33 +492,13 @@ export default function Integrations() {
                             Inactive
                           </span>
                         )}
-                        {provider.last_tested_at && (
-                          <span className="px-2 py-0.5 text-xs font-medium bg-green-100 text-green-700 rounded flex items-center gap-1">
-                            <CheckCircle className="h-3 w-3" />
-                            Tested
-                          </span>
-                        )}
                       </div>
                       <p className="text-sm text-gray-600 mt-1">
                         {PROVIDER_DESCRIPTIONS[provider.provider]}
                       </p>
-                      {provider.last_tested_at && (
-                        <p className="text-xs text-gray-500 mt-1">
-                          Last tested: {new Date(provider.last_tested_at).toLocaleDateString()}
-                        </p>
-                      )}
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handleTestAIProvider(provider)}
-                      isLoading={testAIProviderMutation.isPending && testAIProviderMutation.variables === provider.id}
-                      leftIcon={<Key className="h-4 w-4" />}
-                    >
-                      Test
-                    </Button>
                     <Button
                       variant="ghost"
                       size="sm"

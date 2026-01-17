@@ -1,0 +1,389 @@
+"""
+Test Agent Processor
+
+In-process test agent that simulates a caller based on persona/scenario.
+Uses LLM for generating responses and TTS for speech synthesis.
+Receives transcripts from Retell's real-time events (no STT needed).
+"""
+
+import asyncio
+import io
+import os
+from typing import Optional, Callable, Awaitable, List, Dict, Any
+from dataclasses import dataclass, field
+from loguru import logger
+
+# TTS service imports
+try:
+    from efficientai.services.cartesia.tts import CartesiaTTSService
+    from efficientai.services.openai.llm import OpenAILLMService
+    EFFICIENTAI_AVAILABLE = True
+except ImportError:
+    EFFICIENTAI_AVAILABLE = False
+    logger.warning("EfficientAI services not available, using fallback implementations")
+
+
+@dataclass
+class TestAgentConfig:
+    """Configuration for the test agent."""
+    persona_name: str = "Test Caller"
+    persona_description: str = "A customer calling for assistance"
+    scenario_description: str = "General inquiry call"
+    scenario_goal: str = "Have a conversation and evaluate the agent"
+    first_message: str = "Hello, I'm calling because I need some help."
+    
+    # Context about the voice AI agent being tested
+    agent_name: str = "Voice AI Agent"
+    agent_description: str = "A voice AI assistant"
+    
+    # LLM config
+    llm_model: str = "gpt-4o-mini"
+    llm_api_key: Optional[str] = None
+    
+    # TTS config
+    tts_provider: str = "cartesia"
+    tts_api_key: Optional[str] = None
+    tts_voice_id: str = "a0e99841-438c-4a64-b679-ae501e7d6091"  # Default Cartesia voice
+    
+    # Audio config
+    sample_rate: int = 24000
+    
+    # Behavior config
+    max_turns: int = 20
+    response_delay_ms: int = 500  # Delay before responding (more natural)
+
+
+class TestAgentProcessor:
+    """
+    Processes conversations as a test agent.
+    
+    Receives transcripts from the voice AI agent and generates
+    responses using LLM + TTS based on the configured persona/scenario.
+    """
+    
+    def __init__(self, config: TestAgentConfig):
+        """
+        Initialize the test agent processor.
+        
+        Args:
+            config: Configuration for the test agent
+        """
+        self.config = config
+        self.conversation_history: List[Dict[str, str]] = []
+        self.turn_count = 0
+        self.is_processing = False
+        self.should_end_call = False
+        
+        # Callbacks
+        self.on_audio_generated: Optional[Callable[[bytes], Awaitable[None]]] = None
+        self.on_response_text: Optional[Callable[[str], Awaitable[None]]] = None
+        self.on_call_should_end: Optional[Callable[[], Awaitable[None]]] = None
+        
+        # Services (initialized lazily)
+        self._llm_service = None
+        self._tts_service = None
+        
+        # Build system prompt
+        self._system_prompt = self._build_system_prompt()
+        
+        logger.info(f"[TestAgent] Initialized with persona: {config.persona_name}")
+    
+    def _build_system_prompt(self) -> str:
+        """Build the system prompt for the LLM based on persona/scenario."""
+        return f"""You are simulating a caller in a voice conversation. Your role is to test a voice AI agent.
+
+WHO YOU ARE CALLING:
+- Agent Name: {self.config.agent_name}
+- Agent Role: {self.config.agent_description}
+
+YOUR PERSONA (who you are pretending to be):
+- Name: {self.config.persona_name}
+- Description: {self.config.persona_description}
+
+SCENARIO:
+- Description: {self.config.scenario_description}
+- Goal: {self.config.scenario_goal}
+
+INSTRUCTIONS:
+1. You are CALLING the voice AI agent described above
+2. Stay in character as the persona described
+3. Follow the scenario and work toward the goal
+4. Speak naturally as if on a phone call
+5. Keep responses concise (1-3 sentences) for natural conversation flow
+6. Ask relevant questions to test the agent's capabilities
+7. Respond appropriately to what the agent says
+8. If the conversation naturally concludes or you've achieved the goal, say goodbye
+9. Respond ONLY with what you would say - no stage directions or descriptions
+
+Your first message should naturally introduce yourself or state your reason for calling.
+After {self.config.max_turns} exchanges, wrap up the conversation politely."""
+
+    async def initialize(self):
+        """Initialize LLM and TTS services."""
+        try:
+            # Initialize LLM
+            llm_api_key = self.config.llm_api_key or os.getenv("OPENAI_API_KEY")
+            if not llm_api_key:
+                raise ValueError("OpenAI API key not configured")
+            
+            if EFFICIENTAI_AVAILABLE:
+                self._llm_service = OpenAILLMService(
+                    api_key=llm_api_key,
+                    model=self.config.llm_model
+                )
+            else:
+                # Fallback to direct OpenAI
+                import openai
+                self._openai_client = openai.AsyncOpenAI(api_key=llm_api_key)
+            
+            # Initialize TTS
+            tts_api_key = self.config.tts_api_key or os.getenv("CARTESIA_API_KEY")
+            if not tts_api_key:
+                raise ValueError("Cartesia API key not configured")
+            
+            if EFFICIENTAI_AVAILABLE:
+                self._tts_service = CartesiaTTSService(
+                    api_key=tts_api_key,
+                    voice_id=self.config.tts_voice_id,
+                    sample_rate=self.config.sample_rate
+                )
+            else:
+                # Fallback to direct Cartesia
+                self._cartesia_api_key = tts_api_key
+            
+            logger.info("[TestAgent] Services initialized successfully")
+            
+        except Exception as e:
+            logger.error(f"[TestAgent] Failed to initialize services: {e}")
+            raise
+    
+    async def generate_first_message(self) -> Optional[bytes]:
+        """
+        Generate the first message to start the conversation.
+        
+        Returns:
+            Audio bytes of the first message, or None if failed
+        """
+        try:
+            # Use configured first message or generate one
+            first_text = self.config.first_message
+            
+            # Add to conversation history
+            self.conversation_history.append({
+                "role": "assistant",  # Our test agent's message
+                "content": first_text
+            })
+            
+            if self.on_response_text:
+                await self.on_response_text(first_text)
+            
+            # Convert to audio
+            audio = await self._text_to_speech(first_text)
+            
+            if audio and self.on_audio_generated:
+                await self.on_audio_generated(audio)
+            
+            self.turn_count += 1
+            logger.info(f"[TestAgent] Generated first message: {first_text[:50]}...")
+            
+            return audio
+            
+        except Exception as e:
+            logger.error(f"[TestAgent] Error generating first message: {e}")
+            return None
+    
+    async def process_agent_transcript(self, transcript: str) -> Optional[bytes]:
+        """
+        Process a transcript from the voice AI agent and generate a response.
+        
+        Args:
+            transcript: The text of what the agent said
+            
+        Returns:
+            Audio bytes of the response, or None if no response needed
+        """
+        if self.is_processing:
+            logger.debug("[TestAgent] Already processing, skipping")
+            return None
+        
+        if not transcript or not transcript.strip():
+            return None
+        
+        self.is_processing = True
+        
+        try:
+            logger.info(f"[TestAgent] Processing agent transcript: {transcript[:100]}...")
+            
+            # Add agent's message to history
+            self.conversation_history.append({
+                "role": "user",  # The agent we're testing
+                "content": transcript
+            })
+            
+            self.turn_count += 1
+            
+            # Check if we should end the call
+            if self.turn_count >= self.config.max_turns:
+                logger.info(f"[TestAgent] Max turns ({self.config.max_turns}) reached, ending call")
+                response_text = "Thank you so much for your help. I think I have everything I need. Goodbye!"
+                self.should_end_call = True
+            else:
+                # Generate response using LLM
+                response_text = await self._generate_llm_response()
+            
+            if not response_text:
+                logger.warning("[TestAgent] No response generated")
+                return None
+            
+            # Add our response to history
+            self.conversation_history.append({
+                "role": "assistant",
+                "content": response_text
+            })
+            
+            if self.on_response_text:
+                await self.on_response_text(response_text)
+            
+            # Add natural delay before responding
+            if self.config.response_delay_ms > 0:
+                await asyncio.sleep(self.config.response_delay_ms / 1000)
+            
+            # Convert to audio
+            audio = await self._text_to_speech(response_text)
+            
+            if audio and self.on_audio_generated:
+                await self.on_audio_generated(audio)
+            
+            # Check for call ending
+            if self.should_end_call and self.on_call_should_end:
+                await asyncio.sleep(2)  # Wait for audio to be sent
+                await self.on_call_should_end()
+            
+            logger.info(f"[TestAgent] Generated response (turn {self.turn_count}): {response_text[:50]}...")
+            
+            return audio
+            
+        except Exception as e:
+            logger.error(f"[TestAgent] Error processing transcript: {e}", exc_info=True)
+            return None
+        finally:
+            self.is_processing = False
+    
+    async def _generate_llm_response(self) -> Optional[str]:
+        """Generate a response using the LLM."""
+        try:
+            messages = [
+                {"role": "system", "content": self._system_prompt}
+            ] + self.conversation_history
+            
+            if EFFICIENTAI_AVAILABLE and self._llm_service:
+                # Use EfficientAI LLM service
+                # Note: This is a simplified version - actual implementation
+                # would need to handle the frame-based processing
+                pass
+            
+            # Use direct OpenAI API
+            import openai
+            client = getattr(self, '_openai_client', None)
+            if not client:
+                api_key = self.config.llm_api_key or os.getenv("OPENAI_API_KEY")
+                client = openai.AsyncOpenAI(api_key=api_key)
+            
+            response = await client.chat.completions.create(
+                model=self.config.llm_model,
+                messages=messages,
+                max_tokens=150,
+                temperature=0.7
+            )
+            
+            return response.choices[0].message.content.strip()
+            
+        except Exception as e:
+            logger.error(f"[TestAgent] LLM error: {e}")
+            return None
+    
+    async def _text_to_speech(self, text: str) -> Optional[bytes]:
+        """Convert text to speech audio."""
+        try:
+            # Use Cartesia API directly for simplicity
+            import httpx
+            
+            api_key = self.config.tts_api_key or os.getenv("CARTESIA_API_KEY")
+            
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    "https://api.cartesia.ai/tts/bytes",
+                    headers={
+                        "X-API-Key": api_key,
+                        "Cartesia-Version": "2024-06-10",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "model_id": "sonic-english",
+                        "transcript": text,
+                        "voice": {
+                            "mode": "id",
+                            "id": self.config.tts_voice_id
+                        },
+                        "output_format": {
+                            "container": "raw",
+                            "encoding": "pcm_s16le",
+                            "sample_rate": self.config.sample_rate
+                        }
+                    },
+                    timeout=30.0
+                )
+                
+                if response.status_code == 200:
+                    return response.content
+                else:
+                    logger.error(f"[TestAgent] TTS error: {response.status_code} - {response.text}")
+                    return None
+                    
+        except Exception as e:
+            logger.error(f"[TestAgent] TTS error: {e}")
+            return None
+
+    async def stream_audio_chunks(
+        self, 
+        audio_bytes: bytes, 
+        chunk_callback: Callable[[bytes], Awaitable[None]],
+        chunk_duration_ms: int = 20
+    ):
+        """
+        Stream audio in chunks suitable for real-time transmission.
+        
+        Args:
+            audio_bytes: Full audio buffer (PCM 16-bit)
+            chunk_callback: Async callback for each chunk
+            chunk_duration_ms: Duration of each chunk in milliseconds
+        """
+        # Calculate bytes per chunk (16-bit = 2 bytes per sample)
+        bytes_per_sample = 2
+        samples_per_chunk = (self.config.sample_rate * chunk_duration_ms) // 1000
+        bytes_per_chunk = samples_per_chunk * bytes_per_sample
+        
+        # Stream chunks with appropriate timing
+        offset = 0
+        while offset < len(audio_bytes):
+            chunk = audio_bytes[offset:offset + bytes_per_chunk]
+            if chunk:
+                await chunk_callback(chunk)
+                # Sleep to maintain real-time playback rate
+                await asyncio.sleep(chunk_duration_ms / 1000)
+            offset += bytes_per_chunk
+    
+    def get_conversation_transcript(self) -> str:
+        """Get the full conversation transcript."""
+        lines = []
+        for msg in self.conversation_history:
+            role = "Agent" if msg["role"] == "user" else "Caller"
+            lines.append(f"{role}: {msg['content']}")
+        return "\n".join(lines)
+    
+    async def cleanup(self):
+        """Clean up resources."""
+        logger.info("[TestAgent] Cleaning up")
+        # Any cleanup needed for services
+        pass
+

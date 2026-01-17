@@ -275,6 +275,59 @@ class AgentResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+    @validator('language', pre=True)
+    def convert_language(cls, v):
+        """Convert string to LanguageEnum (handles uppercase DB values like ENGLISH -> en)."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            v_lower = v.lower()
+            # Map old uppercase names to new values
+            language_map = {'english': 'en', 'spanish': 'es', 'french': 'fr', 'german': 'de', 
+                          'chinese': 'zh', 'japanese': 'ja', 'hindi': 'hi', 'arabic': 'ar'}
+            if v_lower in language_map:
+                return LanguageEnum(language_map[v_lower])
+            try:
+                return LanguageEnum(v_lower)
+            except ValueError:
+                for enum_member in LanguageEnum:
+                    if enum_member.name == v or enum_member.value == v:
+                        return enum_member
+                raise ValueError(f"Invalid LanguageEnum value: {v}")
+        return v
+
+    @validator('call_type', pre=True)
+    def convert_call_type(cls, v):
+        """Convert string to CallTypeEnum (handles uppercase DB values)."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            v_lower = v.lower()
+            try:
+                return CallTypeEnum(v_lower)
+            except ValueError:
+                for enum_member in CallTypeEnum:
+                    if enum_member.name == v or enum_member.value == v:
+                        return enum_member
+                raise ValueError(f"Invalid CallTypeEnum value: {v}")
+        return v
+
+    @validator('call_medium', pre=True)
+    def convert_call_medium(cls, v):
+        """Convert string to CallMediumEnum (handles uppercase DB values)."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            v_lower = v.lower()
+            try:
+                return CallMediumEnum(v_lower)
+            except ValueError:
+                for enum_member in CallMediumEnum:
+                    if enum_member.name == v or enum_member.value == v:
+                        return enum_member
+                raise ValueError(f"Invalid CallMediumEnum value: {v}")
+        return v
+
     class Config:
         from_attributes = True
 
@@ -308,6 +361,74 @@ class PersonaResponse(BaseModel):
     background_noise: BackgroundNoiseEnum
     created_at: datetime
     updated_at: datetime
+
+    @validator('language', pre=True)
+    def convert_language(cls, v):
+        """Convert string to LanguageEnum (handles uppercase DB values)."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            v_lower = v.lower()
+            language_map = {'english': 'en', 'spanish': 'es', 'french': 'fr', 'german': 'de', 
+                          'chinese': 'zh', 'japanese': 'ja', 'hindi': 'hi', 'arabic': 'ar'}
+            if v_lower in language_map:
+                return LanguageEnum(language_map[v_lower])
+            try:
+                return LanguageEnum(v_lower)
+            except ValueError:
+                for enum_member in LanguageEnum:
+                    if enum_member.name == v or enum_member.value == v:
+                        return enum_member
+                raise ValueError(f"Invalid LanguageEnum value: {v}")
+        return v
+
+    @validator('accent', pre=True)
+    def convert_accent(cls, v):
+        """Convert string to AccentEnum (handles uppercase DB values)."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            v_lower = v.lower()
+            try:
+                return AccentEnum(v_lower)
+            except ValueError:
+                for enum_member in AccentEnum:
+                    if enum_member.name == v or enum_member.value == v:
+                        return enum_member
+                raise ValueError(f"Invalid AccentEnum value: {v}")
+        return v
+
+    @validator('gender', pre=True)
+    def convert_gender(cls, v):
+        """Convert string to GenderEnum (handles uppercase DB values)."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            v_lower = v.lower()
+            try:
+                return GenderEnum(v_lower)
+            except ValueError:
+                for enum_member in GenderEnum:
+                    if enum_member.name == v or enum_member.value == v:
+                        return enum_member
+                raise ValueError(f"Invalid GenderEnum value: {v}")
+        return v
+
+    @validator('background_noise', pre=True)
+    def convert_background_noise(cls, v):
+        """Convert string to BackgroundNoiseEnum (handles uppercase DB values)."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            v_lower = v.lower()
+            try:
+                return BackgroundNoiseEnum(v_lower)
+            except ValueError:
+                for enum_member in BackgroundNoiseEnum:
+                    if enum_member.name == v or enum_member.value == v:
+                        return enum_member
+                raise ValueError(f"Invalid BackgroundNoiseEnum value: {v}")
+        return v
 
     class Config:
         from_attributes = True
@@ -473,6 +594,24 @@ class IntegrationResponse(BaseModel):
     last_tested_at: Optional[datetime] = None
     # Note: api_key is NOT included in response for security
 
+    @validator('platform', pre=True)
+    def convert_platform(cls, v):
+        """Convert string to IntegrationPlatform enum if needed (handles uppercase DB values)."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            # Try lowercase first (enum value)
+            v_lower = v.lower()
+            try:
+                return IntegrationPlatform(v_lower)
+            except ValueError:
+                # Try to find by enum name (uppercase)
+                for enum_member in IntegrationPlatform:
+                    if enum_member.name == v or enum_member.value == v:
+                        return enum_member
+                raise ValueError(f"Invalid IntegrationPlatform value: {v}")
+        return v
+
     class Config:
         from_attributes = True
 
@@ -545,6 +684,22 @@ class AIProviderResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     last_tested_at: Optional[datetime]
+
+    @validator('provider', pre=True)
+    def convert_provider(cls, v):
+        """Convert string to ModelProvider (handles uppercase DB values)."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            v_lower = v.lower()
+            try:
+                return ModelProvider(v_lower)
+            except ValueError:
+                for enum_member in ModelProvider:
+                    if enum_member.name == v or enum_member.value == v:
+                        return enum_member
+                raise ValueError(f"Invalid ModelProvider value: {v}")
+        return v
     
     class Config:
         from_attributes = True
@@ -656,6 +811,24 @@ class VoiceBundleResponse(BaseModel):
                     if enum_member.value == v:
                         return enum_member
                 raise ValueError(f"Invalid bundle_type value: {v}")
+        return v
+    
+    @validator('stt_provider', 'llm_provider', 'tts_provider', 's2s_provider', pre=True)
+    def convert_model_provider(cls, v):
+        """Convert string to ModelProvider enum if needed (handles uppercase DB values)."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            # Try lowercase first (enum value)
+            v_lower = v.lower()
+            try:
+                return ModelProvider(v_lower)
+            except ValueError:
+                # Try to find by enum name (uppercase)
+                for enum_member in ModelProvider:
+                    if enum_member.name == v or enum_member.value == v:
+                        return enum_member
+                raise ValueError(f"Invalid ModelProvider value: {v}")
         return v
     
     # STT Configuration
@@ -839,6 +1012,20 @@ class EvaluatorBulkCreate(BaseModel):
     scenario_id: UUID
     persona_ids: List[UUID]
     tags: Optional[List[str]] = None
+
+
+class RunEvaluatorsRequest(BaseModel):
+    """Schema for running evaluators."""
+    evaluator_ids: List[UUID] = Field(..., description="List of evaluator IDs to run")
+
+
+class RunEvaluatorsResponse(BaseModel):
+    """Schema for run evaluators response."""
+    task_ids: List[str] = Field(..., description="List of Celery task IDs for tracking")
+    evaluator_results: List["EvaluatorResultResponse"] = Field(default_factory=list, description="List of created evaluator results")
+    
+    class Config:
+        from_attributes = True
     
     class Config:
         json_schema_extra = {
@@ -897,6 +1084,38 @@ class MetricResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     created_by: Optional[str]
+
+    @validator('metric_type', pre=True)
+    def convert_metric_type(cls, v):
+        """Convert string to MetricType (handles uppercase DB values)."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            v_lower = v.lower()
+            try:
+                return MetricType(v_lower)
+            except ValueError:
+                for enum_member in MetricType:
+                    if enum_member.name == v or enum_member.value == v:
+                        return enum_member
+                raise ValueError(f"Invalid MetricType value: {v}")
+        return v
+
+    @validator('trigger', pre=True)
+    def convert_trigger(cls, v):
+        """Convert string to MetricTrigger (handles uppercase DB values)."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            v_lower = v.lower()
+            try:
+                return MetricTrigger(v_lower)
+            except ValueError:
+                for enum_member in MetricTrigger:
+                    if enum_member.name == v or enum_member.value == v:
+                        return enum_member
+                raise ValueError(f"Invalid MetricTrigger value: {v}")
+        return v
     
     class Config:
         from_attributes = True
@@ -935,11 +1154,11 @@ class EvaluatorResultResponse(BaseModel):
     id: UUID
     result_id: str
     organization_id: UUID
-    evaluator_id: UUID
+    evaluator_id: Optional[UUID] = None  # Optional for playground test results
     agent_id: UUID
-    persona_id: UUID
-    scenario_id: UUID
-    name: str
+    persona_id: Optional[UUID] = None  # Optional for playground test results
+    scenario_id: Optional[UUID] = None  # Optional for playground test results
+    name: Optional[str] = None  # Optional for playground test results
     timestamp: datetime
     duration_seconds: Optional[float]
     status: EvaluatorResultStatus
@@ -949,6 +1168,13 @@ class EvaluatorResultResponse(BaseModel):
     metric_scores: Optional[Dict[str, Any]]
     celery_task_id: Optional[str]
     error_message: Optional[str]
+    
+    # Call tracking fields (for voice AI integrations)
+    call_event: Optional[str] = None
+    provider_call_id: Optional[str] = None
+    provider_platform: Optional[str] = None
+    call_data: Optional[Dict[str, Any]] = None  # Full call details from provider
+    
     created_at: datetime
     updated_at: datetime
     created_by: Optional[str]
@@ -958,6 +1184,22 @@ class EvaluatorResultResponse(BaseModel):
     persona: Optional[PersonaResponse] = None
     scenario: Optional[ScenarioResponse] = None
     evaluator: Optional[EvaluatorResponse] = None
+
+    @validator('status', pre=True)
+    def convert_status(cls, v):
+        """Convert string to EvaluatorResultStatus (handles uppercase DB values)."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            v_lower = v.lower()
+            try:
+                return EvaluatorResultStatus(v_lower)
+            except ValueError:
+                for enum_member in EvaluatorResultStatus:
+                    if enum_member.name == v or enum_member.value == v:
+                        return enum_member
+                raise ValueError(f"Invalid EvaluatorResultStatus value: {v}")
+        return v
     
     class Config:
         from_attributes = True

@@ -26,13 +26,30 @@ def list_evaluator_results(
     skip: int = 0,
     limit: int = 100,
     evaluator_id: Optional[str] = None,
+    playground: Optional[bool] = Query(None, description="If true, only return playground test results (evaluator_id is NULL). If false, exclude playground results. If not provided, exclude playground results by default."),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ):
-    """List all evaluator results for the organization."""
+    """
+    List evaluator results for the organization.
+    
+    By default, excludes playground test results (where evaluator_id is NULL).
+    Use playground=true to get only playground results, or playground=false to explicitly exclude them.
+    """
     query = db.query(EvaluatorResult).filter(
         EvaluatorResult.organization_id == organization_id
     )
+    
+    # Handle playground filter
+    if playground is True:
+        # Only return playground results (evaluator_id is NULL)
+        query = query.filter(EvaluatorResult.evaluator_id.is_(None))
+    elif playground is False:
+        # Explicitly exclude playground results
+        query = query.filter(EvaluatorResult.evaluator_id.isnot(None))
+    else:
+        # Default: exclude playground results (evaluator_id is not NULL)
+        query = query.filter(EvaluatorResult.evaluator_id.isnot(None))
     
     if evaluator_id:
         try:
@@ -42,7 +59,63 @@ def list_evaluator_results(
             raise HTTPException(status_code=400, detail="Invalid evaluator_id")
     
     results = query.order_by(EvaluatorResult.timestamp.desc()).offset(skip).limit(limit).all()
-    return results
+    
+    # Include agent relations for all results to get voice bundle info
+    from app.models.database import Agent, VoiceBundle
+    from app.models.schemas import AgentResponse
+    
+    response_results = []
+    for result in results:
+        result_dict = {
+            "id": result.id,
+            "result_id": result.result_id,
+            "organization_id": result.organization_id,
+            "evaluator_id": result.evaluator_id,
+            "agent_id": result.agent_id,
+            "persona_id": result.persona_id,
+            "scenario_id": result.scenario_id,
+            "name": result.name,
+            "timestamp": result.timestamp,
+            "duration_seconds": result.duration_seconds,
+            "status": result.status,
+            "audio_s3_key": result.audio_s3_key,
+            "transcription": result.transcription,
+            "speaker_segments": result.speaker_segments,
+            "metric_scores": result.metric_scores,
+            "celery_task_id": result.celery_task_id,
+            "error_message": result.error_message,
+            # Call tracking fields (for voice AI integrations like Retell)
+            "call_event": result.call_event,
+            "provider_call_id": result.provider_call_id,
+            "provider_platform": result.provider_platform,
+            "call_data": result.call_data,
+            "created_at": result.created_at,
+            "updated_at": result.updated_at,
+            "created_by": result.created_by,
+        }
+        
+        # Get Agent with voice bundle info
+        agent = db.query(Agent).filter(Agent.id == result.agent_id).first()
+        if agent:
+            agent_data = AgentResponse.model_validate(agent).model_dump()
+            # Include voice bundle info if agent has voice_bundle_id
+            if agent.voice_bundle_id:
+                voice_bundle = db.query(VoiceBundle).filter(VoiceBundle.id == agent.voice_bundle_id).first()
+                if voice_bundle:
+                    agent_data["voice_bundle"] = {
+                        "id": str(voice_bundle.id),
+                        "name": voice_bundle.name,
+                        "bundle_type": voice_bundle.bundle_type,
+                        "s2s_model": voice_bundle.s2s_model if voice_bundle.bundle_type == "s2s" else None,
+                        "stt_model": voice_bundle.stt_model if voice_bundle.bundle_type == "stt_llm_tts" else None,
+                        "llm_model": voice_bundle.llm_model if voice_bundle.bundle_type == "stt_llm_tts" else None,
+                        "tts_model": voice_bundle.tts_model if voice_bundle.bundle_type == "stt_llm_tts" else None,
+                    }
+            result_dict["agent"] = agent_data
+        
+        response_results.append(EvaluatorResultResponse(**result_dict))
+    
+    return response_results
 
 
 @router.get("/{id}", response_model=EvaluatorResultResponse)
@@ -96,6 +169,11 @@ def get_evaluator_result(
         "metric_scores": result.metric_scores,
         "celery_task_id": result.celery_task_id,
         "error_message": result.error_message,
+        # Call tracking fields (for voice AI integrations like Retell)
+        "call_event": result.call_event,
+        "provider_call_id": result.provider_call_id,
+        "provider_platform": result.provider_platform,
+        "call_data": result.call_data,
         "created_at": result.created_at,
         "updated_at": result.updated_at,
         "created_by": result.created_by,
@@ -106,22 +184,46 @@ def get_evaluator_result(
         # Get Agent
         agent = db.query(Agent).filter(Agent.id == result.agent_id).first()
         if agent:
-            response_data["agent"] = AgentResponse.model_validate(agent)
+            agent_data = AgentResponse.model_validate(agent)
+            # Include voice bundle info if agent has voice_bundle_id
+            if agent.voice_bundle_id:
+                from app.models.database import VoiceBundle
+                voice_bundle = db.query(VoiceBundle).filter(VoiceBundle.id == agent.voice_bundle_id).first()
+                if voice_bundle:
+                    # Add voice bundle info to agent data
+                    agent_dict = agent_data.model_dump()
+                    agent_dict["voice_bundle"] = {
+                        "id": str(voice_bundle.id),
+                        "name": voice_bundle.name,
+                        "bundle_type": voice_bundle.bundle_type,
+                        "s2s_model": voice_bundle.s2s_model if voice_bundle.bundle_type == "s2s" else None,
+                        "stt_model": voice_bundle.stt_model if voice_bundle.bundle_type == "stt_llm_tts" else None,
+                        "llm_model": voice_bundle.llm_model if voice_bundle.bundle_type == "stt_llm_tts" else None,
+                        "tts_model": voice_bundle.tts_model if voice_bundle.bundle_type == "stt_llm_tts" else None,
+                    }
+                    response_data["agent"] = agent_dict
+                else:
+                    response_data["agent"] = agent_data
+            else:
+                response_data["agent"] = agent_data
         
-        # Get Persona
-        persona = db.query(Persona).filter(Persona.id == result.persona_id).first()
-        if persona:
-            response_data["persona"] = PersonaResponse.model_validate(persona)
+        # Get Persona (only if persona_id is not None)
+        if result.persona_id:
+            persona = db.query(Persona).filter(Persona.id == result.persona_id).first()
+            if persona:
+                response_data["persona"] = PersonaResponse.model_validate(persona)
         
-        # Get Scenario
-        scenario = db.query(Scenario).filter(Scenario.id == result.scenario_id).first()
-        if scenario:
-            response_data["scenario"] = ScenarioResponse.model_validate(scenario)
+        # Get Scenario (only if scenario_id is not None)
+        if result.scenario_id:
+            scenario = db.query(Scenario).filter(Scenario.id == result.scenario_id).first()
+            if scenario:
+                response_data["scenario"] = ScenarioResponse.model_validate(scenario)
         
-        # Get Evaluator
-        evaluator = db.query(Evaluator).filter(Evaluator.id == result.evaluator_id).first()
-        if evaluator:
-            response_data["evaluator"] = EvaluatorResponse.model_validate(evaluator)
+        # Get Evaluator (only if evaluator_id is not None)
+        if result.evaluator_id:
+            evaluator = db.query(Evaluator).filter(Evaluator.id == result.evaluator_id).first()
+            if evaluator:
+                response_data["evaluator"] = EvaluatorResponse.model_validate(evaluator)
     
     return EvaluatorResultResponse(**response_data)
 

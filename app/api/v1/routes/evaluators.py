@@ -6,15 +6,19 @@ from sqlalchemy import and_
 from uuid import UUID
 import random
 from typing import List
+from loguru import logger
 
 from app.database import get_db
 from app.dependencies import get_organization_id, get_api_key
-from app.models.database import Evaluator, Agent, Persona, Scenario
+from app.models.database import Evaluator, Agent, Persona, Scenario, EvaluatorResult, EvaluatorResultStatus
 from app.models.schemas import (
     EvaluatorCreate,
     EvaluatorUpdate,
     EvaluatorResponse,
     EvaluatorBulkCreate,
+    RunEvaluatorsRequest,
+    RunEvaluatorsResponse,
+    EvaluatorResultResponse,
 )
 
 router = APIRouter(prefix="/evaluators", tags=["evaluators"])
@@ -269,4 +273,96 @@ def delete_evaluator(
     db.commit()
 
     return None
+
+
+@router.post("/run", response_model=RunEvaluatorsResponse, status_code=200)
+def run_evaluators(
+    request: RunEvaluatorsRequest,
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+):
+    """Run multiple evaluators in parallel using Celery workers."""
+    from app.workers.celery_app import run_evaluator_task
+    
+    if not request.evaluator_ids:
+        raise HTTPException(status_code=400, detail="No evaluator IDs provided")
+    
+    task_ids = []
+    evaluator_results = []
+    
+    # Validate all evaluators exist and belong to organization
+    evaluators = db.query(Evaluator).filter(
+        and_(
+            Evaluator.id.in_(request.evaluator_ids),
+            Evaluator.organization_id == organization_id
+        )
+    ).all()
+    
+    if len(evaluators) != len(request.evaluator_ids):
+        raise HTTPException(
+            status_code=404,
+            detail=f"One or more evaluators not found. Found {len(evaluators)} of {len(request.evaluator_ids)}"
+        )
+    
+    # Create Celery tasks for each evaluator
+    for evaluator in evaluators:
+        try:
+            # Create a placeholder EvaluatorResult with QUEUED status
+            # The actual result will be created by the Celery task
+            scenario = db.query(Scenario).filter(Scenario.id == evaluator.scenario_id).first()
+            scenario_name = scenario.name if scenario else "Unknown Scenario"
+            
+            # Generate unique 6-digit result ID
+            max_attempts = 100
+            result_id = None
+            for _ in range(max_attempts):
+                candidate_id = f"{random.randint(100000, 999999)}"
+                existing = db.query(EvaluatorResult).filter(EvaluatorResult.result_id == candidate_id).first()
+                if not existing:
+                    result_id = candidate_id
+                    break
+            
+            if not result_id:
+                raise HTTPException(status_code=500, detail="Failed to generate unique result ID")
+            
+            # Create placeholder result
+            evaluator_result = EvaluatorResult(
+                result_id=result_id,
+                organization_id=organization_id,
+                evaluator_id=evaluator.id,
+                agent_id=evaluator.agent_id,
+                persona_id=evaluator.persona_id,
+                scenario_id=evaluator.scenario_id,
+                name=scenario_name,
+                status=EvaluatorResultStatus.QUEUED.value,
+                audio_s3_key=None,  # Will be set by task
+            )
+            db.add(evaluator_result)
+            db.commit()
+            db.refresh(evaluator_result)
+            
+            # Trigger Celery task
+            task = run_evaluator_task.delay(str(evaluator.id), str(evaluator_result.id))
+            task_ids.append(task.id)
+            
+            # Update result with task ID
+            evaluator_result.celery_task_id = task.id
+            db.commit()
+            
+            # Convert to response model
+            evaluator_results.append(EvaluatorResultResponse.model_validate(evaluator_result))
+            
+        except Exception as e:
+            # Use repr(e) to escape curly braces that could break loguru formatting
+            logger.error(f"Error creating task for evaluator {evaluator.id}: {repr(e)}", exc_info=True)
+            # Continue with other evaluators even if one fails
+            continue
+    
+    if not task_ids:
+        raise HTTPException(status_code=500, detail="Failed to create any tasks")
+    
+    return RunEvaluatorsResponse(
+        task_ids=task_ids,
+        evaluator_results=evaluator_results
+    )
 

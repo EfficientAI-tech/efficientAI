@@ -3,7 +3,7 @@ Vapi Voice Provider Implementation
 Handles integration with Vapi voice AI agents
 """
 from typing import Dict, Any, Optional
-from vapi import Vapi
+from vapi_python import Vapi
 
 from app.services.voice_providers.base import BaseVoiceProvider
 

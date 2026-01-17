@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
-import { VoiceBundle, VoiceBundleCreate, ModelProvider, AIProvider, VoiceBundleType } from '../types/api'
+import { VoiceBundle, VoiceBundleCreate, ModelProvider, AIProvider, VoiceBundleType, Integration, IntegrationPlatform } from '../types/api'
 import { Mic, Plus, Edit, Trash2, X, Loader, Volume2, Brain, MessageSquare, AlertCircle, ChevronDown } from 'lucide-react'
 import Button from '../components/Button'
 import { useToast } from '../hooks/useToast'
@@ -12,6 +12,8 @@ const PROVIDER_LABELS: Record<ModelProvider, string> = {
   [ModelProvider.GOOGLE]: 'Google',
   [ModelProvider.AZURE]: 'Azure',
   [ModelProvider.AWS]: 'AWS',
+  [ModelProvider.DEEPGRAM]: 'Deepgram',
+  [ModelProvider.CARTESIA]: 'Cartesia',
   [ModelProvider.CUSTOM]: 'Custom',
 }
 
@@ -21,6 +23,8 @@ const PROVIDER_LOGOS: Record<ModelProvider, string | null> = {
   [ModelProvider.GOOGLE]: '/geminiai.png',
   [ModelProvider.AZURE]: '/azureai.png',
   [ModelProvider.AWS]: '/AWS_logo.png',
+  [ModelProvider.DEEPGRAM]: '/deepgram.png', // add asset if available
+  [ModelProvider.CARTESIA]: '/cartesia.jpg', // ensure asset exists in public/
   [ModelProvider.CUSTOM]: null,
 }
 
@@ -58,6 +62,11 @@ export default function VoiceBundles() {
     queryFn: () => apiClient.listAIProviders(),
   })
 
+  const { data: integrations = [] } = useQuery({
+    queryKey: ['integrations'],
+    queryFn: () => apiClient.listIntegrations(),
+  })
+
   // Fetch model configurations for all providers
   const { data: modelConfigs = {} } = useQuery({
     queryKey: ['model-configs'],
@@ -85,10 +94,29 @@ export default function VoiceBundles() {
     staleTime: 5 * 60 * 1000, // Cache for 5 minutes
   })
 
-  // Get configured providers (only show these in dropdowns)
-  const configuredProviders = aiproviders
-    .filter((p: AIProvider) => p.is_active)
-    .map((p: AIProvider) => p.provider as ModelProvider)
+  const mapIntegrationToProvider = (platform: IntegrationPlatform): ModelProvider | null => {
+    switch (platform) {
+      case IntegrationPlatform.DEEPGRAM:
+        return ModelProvider.DEEPGRAM
+      case IntegrationPlatform.CARTESIA:
+        return ModelProvider.CARTESIA
+      default:
+        return null
+    }
+  }
+
+  // Get configured providers (union of active AI providers and integrations)
+  const configuredProviders = Array.from(
+    new Set([
+      ...(aiproviders
+        .filter((p: AIProvider) => p.is_active)
+        .map((p: AIProvider) => p.provider as ModelProvider)),
+      ...(integrations
+        .filter((i: Integration) => i.is_active)
+        .map((i: Integration) => mapIntegrationToProvider(i.platform))
+        .filter((p): p is ModelProvider => Boolean(p))),
+    ])
+  )
 
   // Helper function to get model options for a provider
   const getModelOptions = (provider: ModelProvider): { stt: string[]; llm: string[]; tts: string[]; s2s: string[] } => {

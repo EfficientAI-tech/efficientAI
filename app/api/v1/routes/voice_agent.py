@@ -11,9 +11,10 @@ from loguru import logger
 
 from app.database import get_db
 from app.dependencies import get_organization_id, get_api_key
-from app.models.database import AIProvider, ModelProvider
+from app.models.database import AIProvider, ModelProvider, Integration, IntegrationPlatform
 from app.core.encryption import decrypt_api_key
 from app.services.voice_agent.bot_fast_api import run_bot
+from app.services.voice_agent.voice_bundle import run_voice_bundle_fastapi
 from app.services.s3_service import s3_service
 
 router = APIRouter(prefix="/voice-agent", tags=["voice-agent"])
@@ -66,70 +67,103 @@ async def websocket_endpoint(
         persona_id = websocket.query_params.get("persona_id")
         scenario_id = websocket.query_params.get("scenario_id")
         
-        # Determine which AI Provider to use
-        # Priority: 1) Agent's ai_provider_id, 2) Agent's voice_bundle's providers, 3) Default Google
-        ai_provider = None
+        # Fetch agent and voice bundle once for routing and instructions
         agent = None
-        
-        if agent_id:
-            try:
+        voice_bundle = None
+        try:
+            if agent_id:
                 from app.models.database import Agent, VoiceBundle
                 agent_uuid = UUID(agent_id)
                 agent = db.query(Agent).filter(
                     Agent.id == agent_uuid,
                     Agent.organization_id == organization_id
                 ).first()
-                
-                if agent:
-                    # If agent has ai_provider_id, use that
-                    if agent.ai_provider_id:
-                        ai_provider = db.query(AIProvider).filter(
-                            AIProvider.id == agent.ai_provider_id,
-                            AIProvider.organization_id == organization_id,
-                            AIProvider.is_active == True
-                        ).first()
-                    # If agent has voice_bundle_id, we could use it in the future
-                    # For now, fall back to Google
-                    elif agent.voice_bundle_id:
-                        # Voice Bundle support can be added here in the future
-                        # For now, use default Google provider
-                        pass
-            except ValueError:
-                pass
-        
-        # Fall back to Google AI Provider if no agent-specific provider found
-        if not ai_provider:
-            ai_provider = db.query(AIProvider).filter(
+                if agent and agent.voice_bundle_id:
+                    voice_bundle = db.query(VoiceBundle).filter(
+                        VoiceBundle.id == agent.voice_bundle_id,
+                        VoiceBundle.organization_id == organization_id
+                    ).first()
+        except ValueError:
+            pass
+
+        use_voice_bundle_pipeline = bool(voice_bundle and voice_bundle.bundle_type == "stt_llm_tts")
+
+        def resolve_api_key_for_provider(provider: ModelProvider) -> str | None:
+            """Resolve API key from AIProvider (preferred) or Integration for given provider."""
+            # 1) AIProvider
+            ai_provider_rec = db.query(AIProvider).filter(
                 AIProvider.organization_id == organization_id,
-                AIProvider.provider == ModelProvider.GOOGLE,
-                AIProvider.is_active == True
+                AIProvider.provider == provider,
+                AIProvider.is_active == True,
             ).first()
-        
-        if not ai_provider:
-            await websocket.close(
-                code=1008, 
-                reason="AI Provider not configured. Please configure an AI Provider in AI Providers settings or select one when creating the agent."
-            )
-            return
-        
-        # Decrypt API key
-        try:
-            google_api_key = decrypt_api_key(ai_provider.api_key)
-            # Validate the decrypted key
-            if not google_api_key or not google_api_key.strip():
-                logger.error("Decrypted API key is empty")
+            if ai_provider_rec:
+                try:
+                    return decrypt_api_key(ai_provider_rec.api_key)
+                except Exception as e:
+                    logger.error(f"Failed to decrypt AIProvider key for {provider}: {e}", exc_info=True)
+            # 2) Integration mapping (only for platforms that exist in IntegrationPlatform)
+            platform_map = {
+                ModelProvider.DEEPGRAM: IntegrationPlatform.DEEPGRAM,
+                ModelProvider.CARTESIA: IntegrationPlatform.CARTESIA,
+            }
+            plat = platform_map.get(provider)
+            if plat:
+                integ = db.query(Integration).filter(
+                    Integration.organization_id == organization_id,
+                    Integration.platform == plat,
+                    Integration.is_active == True,
+                ).first()
+                if integ:
+                    try:
+                        return decrypt_api_key(integ.api_key)
+                    except Exception as e:
+                        logger.error(f"Failed to decrypt Integration key for {provider}: {e}", exc_info=True)
+            return None
+
+        # Determine which AI Provider to use (only needed for S2S/Gemini path)
+        # Priority: 1) Agent's ai_provider_id, 2) Default Google
+        ai_provider = None
+        google_api_key = None
+        if not use_voice_bundle_pipeline:
+            if agent and agent.ai_provider_id:
+                ai_provider = db.query(AIProvider).filter(
+                    AIProvider.id == agent.ai_provider_id,
+                    AIProvider.organization_id == organization_id,
+                    AIProvider.is_active == True
+                ).first()
+
+            # Fall back to Google AI Provider if no agent-specific provider found
+            if not ai_provider:
+                ai_provider = db.query(AIProvider).filter(
+                    AIProvider.organization_id == organization_id,
+                    AIProvider.provider == ModelProvider.GOOGLE,
+                    AIProvider.is_active == True
+                ).first()
+
+            if not ai_provider:
                 await websocket.close(
                     code=1008,
-                    reason="API key is empty. Please configure a valid API key in AI Providers settings."
+                    reason="AI Provider not configured. Please configure an AI Provider in AI Providers settings or select one when creating the agent."
                 )
                 return
-        except Exception as e:
-            logger.error(f"Failed to decrypt API key: {e}", exc_info=True)
-            await websocket.close(
-                code=1008,
-                reason=f"Failed to decrypt API key: {str(e)}"
-            )
-            return
+
+            # Decrypt API key
+            try:
+                google_api_key = decrypt_api_key(ai_provider.api_key)
+                if not google_api_key or not google_api_key.strip():
+                    logger.error("Decrypted API key is empty")
+                    await websocket.close(
+                        code=1008,
+                        reason="API key is empty. Please configure a valid API key in AI Providers settings."
+                    )
+                    return
+            except Exception as e:
+                logger.error(f"Failed to decrypt API key: {e}", exc_info=True)
+                await websocket.close(
+                    code=1008,
+                    reason=f"Failed to decrypt API key: {str(e)}"
+                )
+                return
         
         system_instruction = None
         instruction_parts = []
@@ -137,18 +171,13 @@ async def websocket_endpoint(
         # Build system instruction as a bundle: Agent + Persona + Scenario
         from app.models.database import Agent, Persona, Scenario
         
-        # 1. Add Agent description (base instruction)
-        if agent_id:
-            try:
-                agent_uuid = UUID(agent_id)
-                agent = db.query(Agent).filter(
-                    Agent.id == agent_uuid,
-                    Agent.organization_id == organization_id
-                ).first()
-                if agent and agent.description:
-                    instruction_parts.append(agent.description)
-            except ValueError:
-                pass
+        # 1. Add Agent description (base instruction) and get voice bundle for model
+        model_name = None
+        if agent:
+            if agent.description:
+                instruction_parts.append(agent.description)
+            if voice_bundle and voice_bundle.bundle_type == "s2s" and voice_bundle.s2s_model:
+                model_name = voice_bundle.s2s_model
         
         # 2. Add Persona information (characteristics)
         if persona_id:
@@ -202,14 +231,38 @@ async def websocket_endpoint(
         if instruction_parts:
             system_instruction = "\n".join(instruction_parts)
         
-        # Find evaluator and generate result_id BEFORE running bot (for meaningful S3 path)
+        # Generate result_id BEFORE running bot (for meaningful S3 path)
+        # Evaluator is only created if persona_id and scenario_id are provided
+        # But evaluator results can be created even without persona/scenario
         evaluator = None
         result_id = None
-        scenario_name = "Unknown Scenario"
+        scenario_name = "Test Call"  # Default name for calls without scenario
         
+        # Generate result_id for all test calls (with or without persona/scenario)
+        if agent_id:
+            try:
+                from app.models.database import EvaluatorResult
+                import random
+                
+                # Generate unique 6-digit result ID
+                max_attempts = 100
+                for _ in range(max_attempts):
+                    candidate_id = f"{random.randint(100000, 999999)}"
+                    existing = db.query(EvaluatorResult).filter(EvaluatorResult.result_id == candidate_id).first()
+                    if not existing:
+                        result_id = candidate_id
+                        break
+                
+                if not result_id:
+                    logger.warning("Failed to generate unique result ID, will use UUID in S3 path")
+            except Exception as e:
+                logger.warning(f"Error generating result_id: {e}")
+        
+        # Find or create evaluator only if persona_id and scenario_id are provided
         if agent_id and persona_id and scenario_id:
             try:
                 from app.models.database import Evaluator, EvaluatorResult, EvaluatorResultStatus, Scenario
+                from app.api.v1.routes.evaluators import generate_unique_evaluator_id
                 import random
                 
                 # Find evaluator by agent, persona, scenario
@@ -220,12 +273,163 @@ async def websocket_endpoint(
                     Evaluator.organization_id == organization_id
                 ).first()
                 
+                # If no evaluator exists, create one automatically for test voice agent calls
+                if not evaluator:
+                    logger.info(f"Creating evaluator automatically for test voice agent: agent={agent_id}, persona={persona_id}, scenario={scenario_id}")
+                    evaluator_id = generate_unique_evaluator_id(db)
+                    evaluator = Evaluator(
+                        evaluator_id=evaluator_id,
+                        organization_id=organization_id,
+                        agent_id=UUID(agent_id),
+                        persona_id=UUID(persona_id),
+                        scenario_id=UUID(scenario_id),
+                        tags=["auto-created", "test-voice-agent"]
+                    )
+                    db.add(evaluator)
+                    db.commit()
+                    db.refresh(evaluator)
+                    logger.info(f"✅ Created evaluator {evaluator_id} for test voice agent")
+                
                 if evaluator:
                     # Get scenario name
                     scenario = db.query(Scenario).filter(Scenario.id == UUID(scenario_id)).first()
                     scenario_name = scenario.name if scenario else "Unknown Scenario"
+            except Exception as e:
+                logger.warning(f"Error finding/creating evaluator or generating result_id: {e}")
+        
+        # Check if this is a test agent that should bridge to Voice AI agent
+        # This happens when evaluator is run via the run_evaluator_task
+        test_agent_bridge_mode = False
+        retell_call_id = None
+        retell_access_token = None
+        retell_sample_rate = None
+        
+        if evaluator and agent and agent.voice_bundle_id and agent.voice_ai_integration_id:
+            # Check if there's an active call for this evaluator
+            # The call info is stored in the EvaluatorResult's error_message field temporarily
+            try:
+                from app.models.database import EvaluatorResult
+                # Find the most recent result for this evaluator that has call info
+                active_result = db.query(EvaluatorResult).filter(
+                    EvaluatorResult.evaluator_id == evaluator.id,
+                    EvaluatorResult.status == EvaluatorResultStatus.QUEUED.value,
+                    EvaluatorResult.error_message.isnot(None),
+                    EvaluatorResult.error_message.like("call_id:%")
+                ).order_by(EvaluatorResult.timestamp.desc()).first()
+                
+                if active_result and active_result.error_message:
+                    # Parse call info from error_message: "call_id:xxx|access_token:yyy|sample_rate:zzz"
+                    call_info_parts = active_result.error_message.split("|")
+                    for part in call_info_parts:
+                        if part.startswith("call_id:"):
+                            retell_call_id = part.split(":", 1)[1]
+                        elif part.startswith("access_token:"):
+                            retell_access_token = part.split(":", 1)[1]
+                        elif part.startswith("sample_rate:"):
+                            retell_sample_rate = int(part.split(":", 1)[1])
                     
-                    # Generate unique 6-digit result ID BEFORE upload
+                    if retell_call_id and retell_access_token:
+                        test_agent_bridge_mode = True
+                        logger.info(
+                            f"[VoiceAgent] Test agent bridge mode detected: "
+                            f"evaluator={evaluator.evaluator_id}, call_id={retell_call_id}"
+                        )
+            except Exception as e:
+                logger.warning(f"[VoiceAgent] Error checking for bridge mode: {e}", exc_info=True)
+        
+        # Run the bot with the appropriate pipeline
+        call_metadata = None
+        try:
+            if use_voice_bundle_pipeline:
+                # Resolve per-provider keys for voice bundle
+                stt_provider = voice_bundle.stt_provider if voice_bundle else None
+                tts_provider = voice_bundle.tts_provider if voice_bundle else None
+                llm_provider = voice_bundle.llm_provider if voice_bundle else None
+
+                stt_api_key = resolve_api_key_for_provider(stt_provider) if stt_provider else None
+                tts_api_key = resolve_api_key_for_provider(tts_provider) if tts_provider else None
+                llm_api_key = resolve_api_key_for_provider(llm_provider) if llm_provider else None
+
+                # If in bridge mode, we need to bridge test agent to Retell call
+                # For now, we'll run the voice bundle normally and note that bridging
+                # requires WebRTC implementation on the backend
+                if test_agent_bridge_mode:
+                    logger.info(
+                        f"[VoiceAgent] Bridge mode: Test agent should connect to Retell call {retell_call_id}. "
+                        f"Full WebRTC bridging requires additional implementation."
+                    )
+                    # TODO: Implement WebRTC bridging between test agent WebSocket and Retell call
+                    # This would require:
+                    # 1. Joining Retell call using WebRTC (aiortc or similar)
+                    # 2. Bridging audio streams bidirectionally
+                    # 3. Recording the bridged conversation
+
+                call_metadata = await run_voice_bundle_fastapi(
+                    websocket,
+                    system_instruction,
+                    str(organization_id),
+                    agent_id,
+                    persona_id,
+                    scenario_id,
+                    evaluator_id=str(evaluator.id) if evaluator else None,
+                    result_id=result_id,
+                    voice_bundle=voice_bundle,
+                    stt_api_key=stt_api_key,
+                    tts_api_key=tts_api_key,
+                    llm_api_key=llm_api_key,
+                )
+            else:
+                call_metadata = await run_bot(
+                    websocket,
+                    google_api_key,
+                    system_instruction,
+                    str(organization_id),
+                    agent_id,
+                    persona_id,
+                    scenario_id,
+                    evaluator_id=str(evaluator.id) if evaluator else None,
+                    result_id=result_id,
+                    model_name=model_name,  # Pass model name from voice bundle
+                )
+        except Exception as bot_error:
+            logger.error(f"Error in run_bot: {bot_error}", exc_info=True)
+            # Continue to try creating evaluator result if we have metadata
+        
+        # Create evaluator result if we have the required data (only if no error)
+        # Create evaluator result for all test calls (with or without persona/scenario)
+        if call_metadata and call_metadata.get("s3_key") and not call_metadata.get("error") and agent_id and result_id:
+            # If we don't have evaluator but have persona/scenario, try to create one
+            if not evaluator and agent_id and persona_id and scenario_id:
+                try:
+                    from app.models.database import Evaluator, Scenario
+                    from app.api.v1.routes.evaluators import generate_unique_evaluator_id
+                    import random
+                    
+                    evaluator = db.query(Evaluator).filter(
+                        Evaluator.agent_id == UUID(agent_id),
+                        Evaluator.persona_id == UUID(persona_id),
+                        Evaluator.scenario_id == UUID(scenario_id),
+                        Evaluator.organization_id == organization_id
+                    ).first()
+                    
+                    if not evaluator:
+                        evaluator_id = generate_unique_evaluator_id(db)
+                        evaluator = Evaluator(
+                            evaluator_id=evaluator_id,
+                            organization_id=organization_id,
+                            agent_id=UUID(agent_id),
+                            persona_id=UUID(persona_id),
+                            scenario_id=UUID(scenario_id),
+                            tags=["auto-created", "test-voice-agent"]
+                        )
+                        db.add(evaluator)
+                        db.commit()
+                        db.refresh(evaluator)
+                    
+                    scenario = db.query(Scenario).filter(Scenario.id == UUID(scenario_id)).first()
+                    scenario_name = scenario.name if scenario else "Unknown Scenario"
+                    
+                    # Generate result_id
                     max_attempts = 100
                     for _ in range(max_attempts):
                         candidate_id = f"{random.randint(100000, 999999)}"
@@ -233,61 +437,84 @@ async def websocket_endpoint(
                         if not existing:
                             result_id = candidate_id
                             break
+                except Exception as e:
+                    logger.error(f"Error creating evaluator/result_id after bot run: {e}")
+            
+            # Create evaluator result for all test calls (with or without persona/scenario)
+            # evaluator_id is optional - can be None if no persona/scenario
+            if result_id and agent_id:
+                try:
+                    from app.models.database import EvaluatorResult, EvaluatorResultStatus
+                    from app.workers.celery_app import process_evaluator_result_task
                     
-                    if not result_id:
-                        logger.warning("Failed to generate unique result ID, will use UUID in S3 path")
-            except Exception as e:
-                logger.warning(f"Error finding evaluator or generating result_id: {e}")
-        
-        # Run the bot with the decrypted API key
-        call_metadata = None
-        try:
-            call_metadata = await run_bot(
-                websocket, 
-                google_api_key, 
-                system_instruction, 
-                str(organization_id),
-                agent_id,
-                persona_id,
-                scenario_id,
-                evaluator_id=str(evaluator.id) if evaluator else None,
-                result_id=result_id
-            )
-        except Exception as bot_error:
-            logger.error(f"Error in run_bot: {bot_error}", exc_info=True)
-            # Continue to try creating evaluator result if we have metadata
-        
-        # Create evaluator result if we have the required data (only if no error)
-        if call_metadata and call_metadata.get("s3_key") and not call_metadata.get("error") and evaluator and result_id:
-            try:
-                from app.models.database import EvaluatorResult, EvaluatorResultStatus
-                from app.workers.celery_app import process_evaluator_result_task
-                
-                # Create evaluator result with QUEUED status
-                evaluator_result = EvaluatorResult(
-                    result_id=result_id,
-                    organization_id=organization_id,
-                    evaluator_id=evaluator.id,
-                    agent_id=UUID(agent_id),
-                    persona_id=UUID(persona_id),
-                    scenario_id=UUID(scenario_id),
-                    name=scenario_name,
-                    duration_seconds=call_metadata.get("duration"),
-                    status=EvaluatorResultStatus.QUEUED.value,  # Use .value to get the string
-                    audio_s3_key=call_metadata.get("s3_key")
-                )
-                db.add(evaluator_result)
-                db.commit()
-                db.refresh(evaluator_result)
-                
-                # Trigger Celery task
-                task = process_evaluator_result_task.delay(str(evaluator_result.id))
-                evaluator_result.celery_task_id = task.id
-                db.commit()
-                
-                logger.info(f"✅ Created evaluator result {result_id} and triggered processing task")
-            except Exception as e:
-                logger.error(f"Error creating evaluator result: {e}", exc_info=True)
+                    # Determine name for the result
+                    if scenario_name and scenario_name != "Test Call":
+                        result_name = scenario_name
+                    elif agent:
+                        result_name = f"Test Call - {agent.name}"
+                    else:
+                        result_name = "Test Call"
+                    
+                    logger.info(f"Creating evaluator result: result_id={result_id}, agent_id={agent_id}, persona_id={persona_id}, scenario_id={scenario_id}, s3_key={call_metadata.get('s3_key')}")
+                    
+                    # Create evaluator result with QUEUED status
+                    # persona_id and scenario_id can be None for test calls without persona/scenario
+                    evaluator_result = EvaluatorResult(
+                        result_id=result_id,
+                        organization_id=organization_id,
+                        evaluator_id=evaluator.id if evaluator else None,  # Optional
+                        agent_id=UUID(agent_id),
+                        persona_id=UUID(persona_id) if persona_id else None,  # Optional
+                        scenario_id=UUID(scenario_id) if scenario_id else None,  # Optional
+                        name=result_name,
+                        duration_seconds=call_metadata.get("duration"),
+                        status=EvaluatorResultStatus.QUEUED.value,  # Use .value to get the string
+                        audio_s3_key=call_metadata.get("s3_key")
+                    )
+                    db.add(evaluator_result)
+                    db.commit()
+                    db.refresh(evaluator_result)
+                    
+                    logger.info(f"✅ Evaluator result created in database: id={evaluator_result.id}, result_id={result_id}")
+                    
+                    # Trigger Celery task
+                    try:
+                        logger.info(f"Triggering Celery task for evaluator result: {evaluator_result.id}")
+                        
+                        # Check if Celery app is properly configured
+                        from app.workers.celery_app import celery_app
+                        logger.info(f"Celery broker URL: {celery_app.conf.broker_url}")
+                        logger.info(f"Celery result backend: {celery_app.conf.result_backend}")
+                        
+                        # Verify task is registered
+                        if 'process_evaluator_result' not in celery_app.tasks:
+                            logger.error("❌ Task 'process_evaluator_result' is not registered in Celery app!")
+                            logger.error(f"Available tasks: {list(celery_app.tasks.keys())}")
+                        else:
+                            logger.info("✅ Task 'process_evaluator_result' is registered")
+                        
+                        task = process_evaluator_result_task.delay(str(evaluator_result.id))
+                        logger.info(f"✅ Celery task triggered: task_id={task.id}, task_state={task.state}")
+                        
+                        # Try to get task info to verify it was queued
+                        try:
+                            task_info = task.info
+                            logger.info(f"Task info: {task_info}")
+                        except Exception as info_error:
+                            logger.warning(f"Could not get task info (this is normal for async tasks): {info_error}")
+                        
+                        evaluator_result.celery_task_id = task.id
+                        db.commit()
+                        logger.info(f"✅ Updated evaluator result with celery_task_id: {task.id}")
+                    except Exception as task_error:
+                        logger.error(f"❌ Failed to trigger Celery task: {task_error}", exc_info=True)
+                        # Still log that we created the result even if task trigger failed
+                        logger.warning(f"Evaluator result {result_id} created but Celery task was not triggered. Task may need to be triggered manually.")
+                        logger.warning(f"Please ensure Celery worker is running: celery -A app.workers.celery_app worker --loglevel=info")
+                    
+                    logger.info(f"✅ Created evaluator result {result_id} and triggered processing task")
+                except Exception as e:
+                    logger.error(f"❌ Error creating evaluator result: {e}", exc_info=True)
         
     except WebSocketDisconnect:
         print("WebSocket disconnected by client")

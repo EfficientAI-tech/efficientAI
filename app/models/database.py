@@ -17,6 +17,16 @@ def get_enum_values(enum_class):
     """Helper to get values from enum class for SQLAlchemy."""
     return [e.value for e in enum_class]
 
+    QUEUED = "queued"
+    CALL_INITIATING = "call_initiating"  # Creating the web call to Retell/Vapi
+    CALL_CONNECTING = "call_connecting"  # WebRTC connecting to Voice AI agent
+    CALL_IN_PROGRESS = "call_in_progress"  # Call is active
+    CALL_ENDED = "call_ended"  # Call finished
+    FETCHING_DETAILS = "fetching_details"  # Fetching call details from provider
+    TRANSCRIBING = "transcribing"  # Only used for S3-based transcription (legacy)
+    EVALUATING = "evaluating"  # Running LLM evaluation on transcript
+    COMPLETED = "completed"
+    FAILED = "failed"
 
 from app.database import Base
 
@@ -286,7 +296,16 @@ class Integration(Base):
     last_tested_at = Column(DateTime(timezone=True), nullable=True)  # When API key was last validated
 
 
-# Enums moved to enums.py
+class ModelProvider(str, enum.Enum):
+    """Model provider enumeration for extensibility."""
+    OPENAI = "openai"
+    ANTHROPIC = "anthropic"
+    GOOGLE = "google"
+    AZURE = "azure"
+    AWS = "aws"
+    CUSTOM = "custom"
+    CARTESIA = "cartesia"
+    DEEPGRAM = "deepgram"
 
 
 class ManualTranscription(Base):
@@ -513,13 +532,13 @@ class EvaluatorResult(Base):
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
     
     # References
-    evaluator_id = Column(UUID(as_uuid=True), ForeignKey("evaluators.id"), nullable=False, index=True)
+    evaluator_id = Column(UUID(as_uuid=True), ForeignKey("evaluators.id"), nullable=True, index=True)  # Optional - can be None for test calls without persona/scenario
     agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False)
-    persona_id = Column(UUID(as_uuid=True), ForeignKey("personas.id"), nullable=False)
-    scenario_id = Column(UUID(as_uuid=True), ForeignKey("scenarios.id"), nullable=False)
+    persona_id = Column(UUID(as_uuid=True), ForeignKey("personas.id"), nullable=True)  # Optional - can be None for test calls
+    scenario_id = Column(UUID(as_uuid=True), ForeignKey("scenarios.id"), nullable=True)  # Optional - can be None for test calls
     
     # Result data
-    name = Column(String, nullable=False)  # Scenario name
+    name = Column(String, nullable=True)  # Scenario name or test call name (optional)
     timestamp = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     duration_seconds = Column(Float, nullable=True)  # Call duration
     status = Column(String(20), nullable=False, default=EvaluatorResultStatus.QUEUED.value)
@@ -539,6 +558,12 @@ class EvaluatorResult(Base):
     # Error information
     error_message = Column(String, nullable=True)
     
+    # Call event tracking (similar to CallRecording)
+    call_event = Column(String, nullable=True, index=True)  # Latest call event (e.g., call_started, call_ended)
+    provider_call_id = Column(String, nullable=True, index=True)  # Provider's call_id (e.g., Retell call_id)
+    provider_platform = Column(String, nullable=True)  # e.g., "retell", "vapi"
+    call_data = Column(JSON, nullable=True)  # Full call details from provider (like CallRecording)
+    
     # Metadata
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -548,6 +573,13 @@ class EvaluatorResult(Base):
 # Enums moved to enums.py
 
 
+class CallRecordingSource(str, enum.Enum):
+    """Source of the call recording data."""
+    
+    PLAYGROUND = "playground"
+    WEBHOOK = "webhook"
+
+
 class CallRecording(Base):
     """Call Recording model for tracking voice provider calls."""
     __tablename__ = "call_recordings"
@@ -555,10 +587,9 @@ class CallRecording(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
     call_short_id = Column(String(6), unique=True, nullable=False, index=True)  # 6-digit ID
-    status = Column(String, nullable=False, default=CallRecordingStatus.PENDING.value, index=True)
-
-
-
+    status = Column(Enum(CallRecordingStatus), nullable=False, default=CallRecordingStatus.PENDING, index=True)
+    call_event = Column(String, nullable=True, index=True)  # Latest webhook event (e.g., call_started, call_ended)
+    source = Column(Enum(CallRecordingSource), nullable=False, default=CallRecordingSource.PLAYGROUND, index=True)
     call_data = Column(JSON, nullable=True)  # JSON blob for provider response
     provider_call_id = Column(String, nullable=True, index=True)  # Provider's call_id (e.g., Retell call_id)
     provider_platform = Column(String, nullable=True)  # e.g., "retell", "vapi"

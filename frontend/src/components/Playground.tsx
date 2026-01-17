@@ -3,11 +3,12 @@ import { useNavigate } from 'react-router-dom'
 import { useAgentStore } from '../store/agentStore'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
-import { Play, X, Phone, PhoneOff, RefreshCw, Eye, Trash2 } from 'lucide-react'
+import { Play, X, Phone, PhoneOff, RefreshCw, Eye, Mic, Bot, PhoneCall, Trash2 } from 'lucide-react'
 import Button from './Button'
 import { useToast } from '../hooks/useToast'
 import { RetellWebClient } from 'retell-client-js-sdk'
 import Vapi from '@vapi-ai/web'
+import VoiceAgent from './VoiceAgent'
 
 // Type for RetellWebClient - using the actual SDK methods
 type RetellWebClientWithMethods = RetellWebClient & {
@@ -28,6 +29,8 @@ export default function Playground() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [showModal, setShowModal] = useState(false)
+  const [showTestModal, setShowTestModal] = useState(false)
+  const [selectedTestType, setSelectedTestType] = useState<'test_agent' | 'voice_ai_agent' | null>(null)
   const [isConnecting, setIsConnecting] = useState(false)
   const [isConnected, setIsConnected] = useState(false)
   const [transcripts, setTranscripts] = useState<Array<{ role: 'user' | 'agent', content: string }>>([])
@@ -51,11 +54,23 @@ export default function Playground() {
     enabled: !!selectedAgent?.id,
   })
 
-  // Fetch call recordings (always enabled)
+
+  // Fetch test voice agent evaluation results (playground results only)
+  const { data: testVoiceAgentResults = [], refetch: refetchTestResults } = useQuery({
+    queryKey: ['test-voice-agent-results'],
+    queryFn: async () => {
+      // Fetch only playground results (evaluator_id is NULL) - includes agent with voice bundle
+      return await apiClient.listEvaluatorResults(undefined, true)
+    },
+  })
+
+  // Fetch call recordings (for Voice AI Agents tab)
   const { data: callRecordings = [], refetch: refetchCallRecordings } = useQuery({
     queryKey: ['call-recordings'],
     queryFn: () => apiClient.listCallRecordings(),
   })
+
+  const [activeTab, setActiveTab] = useState<'test_agents' | 'voice_ai_agents'>('test_agents')
 
 
   // Find the integration for the agent
@@ -68,6 +83,11 @@ export default function Playground() {
   const hasWebCallEnabled = fullAgent?.call_medium === 'web_call'
 
   const canMakeCall = (isRetellAgent || isVapiAgent) && hasWebCallEnabled && fullAgent?.voice_ai_agent_id
+
+  // Check if agent has Test Agent capabilities (voice bundle with STT/TTS/LLM)
+  const hasTestAgent = fullAgent?.voice_bundle_id != null
+  // Check if agent has Voice AI Agent capabilities (Retell/Vapi integration)
+  const hasVoiceAIAgent = canMakeCall
 
   // Initialize Clients when modal opens
   useEffect(() => {
@@ -339,14 +359,47 @@ export default function Playground() {
       handleDisconnect()
     }
     setShowModal(false)
+    setShowTestModal(false)
+    setSelectedTestType(null)
     setIsConnecting(false)
     setIsConnected(false)
   }
 
-  const handleViewCallRecording = (callShortId: string) => {
-    navigate(`/playground/call-recordings/${callShortId}`)
+  const handleTestTypeSelection = (type: 'test_agent' | 'voice_ai_agent') => {
+    setSelectedTestType(type)
+    if (type === 'voice_ai_agent') {
+      setShowModal(true)
+      setShowTestModal(false)
+    } else {
+      setShowTestModal(false)
+    }
   }
 
+
+  const handleViewTestResult = (resultId: string) => {
+    navigate(`/playground/test-agent-results/${resultId}`)
+  }
+
+  // Delete mutation for test agent results
+  const deleteTestResultMutation = useMutation({
+    mutationFn: (resultId: string) => apiClient.deleteEvaluatorResult(resultId),
+    onSuccess: () => {
+      showToast('Test result deleted successfully', 'success')
+      queryClient.invalidateQueries({ queryKey: ['test-voice-agent-results'] })
+    },
+    onError: (error: any) => {
+      showToast(error?.response?.data?.detail || 'Failed to delete test result', 'error')
+    },
+  })
+
+  const handleDeleteTestResult = async (resultId: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (window.confirm('Are you sure you want to delete this test result? This action cannot be undone.')) {
+      deleteTestResultMutation.mutate(resultId)
+    }
+  }
+
+  // Delete mutation for call recordings
   const deleteMutation = useMutation({
     mutationFn: (callShortId: string) => apiClient.deleteCallRecording(callShortId),
     onSuccess: () => {
@@ -354,9 +407,23 @@ export default function Playground() {
       queryClient.invalidateQueries({ queryKey: ['call-recordings'] })
     },
     onError: (error: any) => {
-      showToast(`Failed to delete: ${error.response?.data?.detail || error.message}`, 'error')
+      showToast(error?.response?.data?.detail || 'Failed to delete call recording', 'error')
     },
   })
+
+  const handleViewCallRecording = (callShortId: string) => {
+    navigate(`/playground/call-recordings/${callShortId}`)
+  }
+
+  const handleRefreshCallRecording = async (callShortId: string) => {
+    try {
+      await apiClient.refreshCallRecording(callShortId)
+      refetchCallRecordings()
+      showToast('Call recording refreshed', 'success')
+    } catch (error: any) {
+      showToast(error?.response?.data?.detail || 'Failed to refresh call recording', 'error')
+    }
+  }
 
   const handleDeleteCallRecording = (callShortId: string, e: React.MouseEvent) => {
     e.stopPropagation()
@@ -365,18 +432,6 @@ export default function Playground() {
     }
   }
 
-  const handleRefreshCallRecording = async (callShortId: string) => {
-    try {
-      await apiClient.refreshCallRecording(callShortId)
-      showToast('Call recording refresh initiated', 'success')
-      // Refetch after a delay
-      setTimeout(() => {
-        refetchCallRecordings()
-      }, 2000)
-    } catch (error: any) {
-      showToast(`Failed to refresh: ${error.response?.data?.detail || error.message}`, 'error')
-    }
-  }
 
   return (
     <>
@@ -391,19 +446,12 @@ export default function Playground() {
           </div>
           <div className="flex gap-2">
             <Button
-              variant="outline"
-              onClick={() => refetchCallRecordings()}
-              leftIcon={<RefreshCw className="h-4 w-4" />}
-            >
-              Refresh Recordings
-            </Button>
-            <Button
               variant="primary"
-              onClick={() => setShowModal(true)}
+              onClick={() => setShowTestModal(true)}
               leftIcon={<Play className="h-5 w-5" />}
-              disabled={!selectedAgent || !canMakeCall}
+              disabled={!selectedAgent || (!hasTestAgent && !hasVoiceAIAgent)}
             >
-              Play
+              Test
             </Button>
           </div>
         </div>
@@ -415,7 +463,7 @@ export default function Playground() {
                 Please select an agent from the top bar to use the playground.
               </p>
             </div>
-          ) : !canMakeCall ? (
+          ) : !hasTestAgent && !hasVoiceAIAgent ? (
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
               <p className="text-sm text-blue-800">
                 <strong>Selected Agent:</strong> {selectedAgent.name}
@@ -438,126 +486,341 @@ export default function Playground() {
             </div>
           )}
 
-          {/* Call Recordings Section - Always Visible */}
+          {/* Tabs Section */}
           <div className="mt-6">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-md font-semibold text-gray-900">Call Recordings</h3>
+            <div className="border-b border-gray-200">
+              <nav className="-mb-px flex space-x-8" aria-label="Tabs">
+                <button
+                  onClick={() => setActiveTab('test_agents')}
+                  className={`
+                    flex items-center gap-2 py-4 px-1 border-b-2 font-medium text-sm
+                    ${
+                      activeTab === 'test_agents'
+                        ? 'border-blue-500 text-blue-600'
+                        : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                    }
+                  `}
+                >
+                  <Bot className="h-4 w-4" />
+                  Test Agents
+                </button>
+                <button
+                  onClick={() => setActiveTab('voice_ai_agents')}
+                  className={`
+                    flex items-center gap-2 py-4 px-1 border-b-2 font-medium text-sm
+                    ${
+                      activeTab === 'voice_ai_agents'
+                        ? 'border-blue-500 text-blue-600'
+                        : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                    }
+                  `}
+                >
+                  <PhoneCall className="h-4 w-4" />
+                  Voice AI Agents
+                </button>
+              </nav>
             </div>
-            {callRecordings.length === 0 ? (
-              <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
-                <p className="text-sm text-gray-600">No call recordings found</p>
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-gray-200">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Call ID
-                      </th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Status
-                      </th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Platform
-                      </th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Provider Call ID
-                      </th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Created
-                      </th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Actions
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="bg-white divide-y divide-gray-200">
-                    {callRecordings.map((recording: any) => (
-                      <tr key={recording.id} className="hover:bg-gray-50">
-                        <td className="px-4 py-3 whitespace-nowrap">
-                          <button
-                            onClick={() => handleViewCallRecording(recording.call_short_id)}
-                            className="font-mono text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline"
-                          >
-                            {recording.call_short_id}
-                          </button>
-                        </td>
-                        <td className="px-4 py-3 whitespace-nowrap">
-                          <span
-                            className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${recording.status === 'UPDATED'
-                              ? 'bg-green-100 text-green-800'
-                              : 'bg-yellow-100 text-yellow-800'
-                              }`}
-                          >
-                            {recording.status}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 whitespace-nowrap">
-                          <div className="flex items-center gap-2">
-                            {recording.provider_platform === 'retell' && (
-                              <img
-                                src="/retellai.png"
-                                alt="Retell"
-                                className="h-5 w-5 object-contain"
-                              />
-                            )}
-                            <span className="text-sm text-gray-500 capitalize">
-                              {recording.provider_platform || 'N/A'}
-                            </span>
-                          </div>
-                        </td>
-                        <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500 font-mono text-xs">
-                          {recording.provider_call_id || 'N/A'}
-                        </td>
-                        <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
-                          {recording.created_at
-                            ? new Date(recording.created_at).toLocaleString()
-                            : 'N/A'}
-                        </td>
-                        <td className="px-4 py-3 whitespace-nowrap text-sm font-medium">
-                          <div className="flex items-center gap-2">
-                            <button
-                              onClick={() => handleViewCallRecording(recording.call_short_id)}
-                              className="text-blue-600 hover:text-blue-900"
-                            >
-                              <Eye className="h-4 w-4" />
-                            </button>
-                            {recording.status === 'PENDING' && (
+            {/* Test Agents Tab Content */}
+            {activeTab === 'test_agents' && (
+              <div className="mt-4">
+                {testVoiceAgentResults.length === 0 ? (
+                  <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
+                    <p className="text-sm text-gray-600">No test agent results found</p>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full divide-y divide-gray-200">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Test ID
+                          </th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Status
+                          </th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Agent
+                          </th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Created
+                          </th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Actions
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody className="bg-white divide-y divide-gray-200">
+                        {testVoiceAgentResults.map((result: any) => (
+                          <tr key={result.id} className="hover:bg-gray-50">
+                            <td className="px-4 py-3 whitespace-nowrap">
                               <button
-                                onClick={() => handleRefreshCallRecording(recording.call_short_id)}
-                                className="text-gray-600 hover:text-gray-900"
-                                title="Refresh"
+                                onClick={() => handleViewTestResult(result.id)}
+                                className="font-mono text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline"
                               >
-                                <RefreshCw className="h-4 w-4" />
+                                {result.id.substring(0, 8)}...
                               </button>
-                            )}
-                            <button
-                              onClick={(e) => handleDeleteCallRecording(recording.call_short_id, e)}
-                              className="text-red-600 hover:text-red-900"
-                              title="Delete"
-                              disabled={deleteMutation.isPending}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap">
+                              <span
+                                className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                                  result.status === 'completed'
+                                    ? 'bg-green-100 text-green-800'
+                                    : result.status === 'failed'
+                                    ? 'bg-red-100 text-red-800'
+                                    : 'bg-yellow-100 text-yellow-800'
+                                }`}
+                              >
+                                {result.status}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                              {result.agent?.name || 'N/A'}
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                              {result.created_at
+                                ? new Date(result.created_at).toLocaleString()
+                                : 'N/A'}
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm font-medium">
+                              <div className="flex items-center gap-2">
+                                <button
+                                  onClick={() => handleViewTestResult(result.id)}
+                                  className="text-blue-600 hover:text-blue-900"
+                                >
+                                  <Eye className="h-4 w-4" />
+                                </button>
+                                <button
+                                  onClick={() => refetchTestResults()}
+                                  className="text-gray-600 hover:text-gray-900"
+                                  title="Refresh"
+                                >
+                                  <RefreshCw className="h-4 w-4" />
+                                </button>
+                                <button
+                                  onClick={(e) => handleDeleteTestResult(result.id, e)}
+                                  className="text-red-600 hover:text-red-900"
+                                  title="Delete"
+                                  disabled={deleteTestResultMutation.isPending}
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Voice AI Agents Tab Content */}
+            {activeTab === 'voice_ai_agents' && (
+              <div className="mt-4">
+                {callRecordings.length === 0 ? (
+                  <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
+                    <p className="text-sm text-gray-600">No call recordings found</p>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full divide-y divide-gray-200">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Call ID
+                          </th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Status
+                          </th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Platform
+                          </th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Provider Call ID
+                          </th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Created
+                          </th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Actions
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody className="bg-white divide-y divide-gray-200">
+                        {callRecordings.map((recording: any) => (
+                          <tr key={recording.id} className="hover:bg-gray-50">
+                            <td className="px-4 py-3 whitespace-nowrap">
+                              <button
+                                onClick={() => handleViewCallRecording(recording.call_short_id)}
+                                className="font-mono text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline"
+                              >
+                                {recording.call_short_id}
+                              </button>
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap">
+                              <span
+                                className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${recording.status === 'UPDATED'
+                                  ? 'bg-green-100 text-green-800'
+                                  : 'bg-yellow-100 text-yellow-800'
+                                  }`}
+                              >
+                                {recording.status}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap">
+                              <div className="flex items-center gap-2">
+                                {recording.provider_platform === 'retell' && (
+                                  <img
+                                    src="/retellai.png"
+                                    alt="Retell"
+                                    className="h-5 w-5 object-contain"
+                                  />
+                                )}
+                                {recording.provider_platform === 'vapi' && (
+                                  <img
+                                    src="/vapiai.jpg"
+                                    alt="Vapi"
+                                    className="h-5 w-5 object-contain"
+                                  />
+                                )}
+                                <span className="text-sm text-gray-500 capitalize">
+                                  {recording.provider_platform || 'N/A'}
+                                </span>
+                              </div>
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500 font-mono text-xs">
+                              {recording.provider_call_id || 'N/A'}
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                              {recording.created_at
+                                ? new Date(recording.created_at).toLocaleString()
+                                : 'N/A'}
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm font-medium">
+                              <div className="flex items-center gap-2">
+                                <button
+                                  onClick={() => handleViewCallRecording(recording.call_short_id)}
+                                  className="text-blue-600 hover:text-blue-900"
+                                >
+                                  <Eye className="h-4 w-4" />
+                                </button>
+                                {recording.status === 'PENDING' && (
+                                  <button
+                                    onClick={() => handleRefreshCallRecording(recording.call_short_id)}
+                                    className="text-gray-600 hover:text-gray-900"
+                                    title="Refresh"
+                                  >
+                                    <RefreshCw className="h-4 w-4" />
+                                  </button>
+                                )}
+                                <button
+                                  onClick={(e) => handleDeleteCallRecording(recording.call_short_id, e)}
+                                  className="text-red-600 hover:text-red-900"
+                                  title="Delete"
+                                  disabled={deleteMutation.isPending}
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             )}
           </div>
         </div>
       </div>
 
-      {/* Connect Modal */}
-      {showModal && (
+
+      {/* Test Type Selection Modal */}
+      {showTestModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
             <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-              <h3 className="text-lg font-semibold">Connect to Agent</h3>
+              <h3 className="text-lg font-semibold">Select Test Type</h3>
+              <button
+                onClick={handleCloseModal}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="p-6">
+              <div className="text-center mb-4">
+                <p className="text-sm text-gray-600 mb-2">
+                  Agent: <strong>{selectedAgent?.name}</strong>
+                </p>
+                <p className="text-xs text-gray-500">
+                  Choose how you want to test this agent
+                </p>
+              </div>
+
+              <div className="space-y-3">
+                {hasTestAgent && (
+                  <button
+                    onClick={() => handleTestTypeSelection('test_agent')}
+                    className="w-full p-4 border-2 border-gray-200 rounded-lg hover:border-blue-500 hover:bg-blue-50 transition-all text-left"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-blue-100 rounded-lg">
+                        <Mic className="h-5 w-5 text-blue-600" />
+                      </div>
+                      <div>
+                        <h4 className="font-semibold text-gray-900">Test Agent</h4>
+                        <p className="text-sm text-gray-600">Test with Voice Bundle (STT/TTS/LLM)</p>
+                      </div>
+                    </div>
+                  </button>
+                )}
+
+                {hasVoiceAIAgent && (
+                  <button
+                    onClick={() => handleTestTypeSelection('voice_ai_agent')}
+                    className="w-full p-4 border-2 border-gray-200 rounded-lg hover:border-blue-500 hover:bg-blue-50 transition-all text-left"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-green-100 rounded-lg">
+                        <Phone className="h-5 w-5 text-green-600" />
+                      </div>
+                      <div>
+                        <h4 className="font-semibold text-gray-900">Voice AI Agent</h4>
+                        <p className="text-sm text-gray-600">Test with Voice AI Integration (Retell, etc.)</p>
+                      </div>
+                    </div>
+                  </button>
+                )}
+
+                {!hasTestAgent && !hasVoiceAIAgent && (
+                  <div className="text-center py-4">
+                    <p className="text-sm text-gray-600 mb-4">
+                      This agent is not configured for testing.
+                    </p>
+                    <Button
+                      variant="outline"
+                      onClick={handleCloseModal}
+                    >
+                      Close
+                    </Button>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Voice AI Agent Connect Modal (Retell) */}
+      {showModal && selectedTestType === 'voice_ai_agent' && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
+            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+              <h3 className="text-lg font-semibold">Connect to Voice AI Agent</h3>
               <button
                 onClick={handleCloseModal}
                 className="text-gray-400 hover:text-gray-600"
@@ -645,6 +908,27 @@ export default function Playground() {
                   )}
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Test Agent Modal */}
+      {selectedTestType === 'test_agent' && !showTestModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+              <h3 className="text-lg font-semibold">Test Agent - {selectedAgent?.name}</h3>
+              <button
+                onClick={handleCloseModal}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="p-6">
+              <VoiceAgent agentId={selectedAgent?.id} />
             </div>
           </div>
         </div>

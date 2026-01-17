@@ -3,8 +3,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
 import { useAgentStore } from '../store/agentStore'
 import Button from '../components/Button'
-import { Plus, Edit, Trash2, Play, X, Tag, ChevronDown, ChevronUp, Phone } from 'lucide-react'
-import VoiceAgent from '../components/VoiceAgent'
+import { Plus, Edit, Trash2, Play, X, Tag, ChevronDown, ChevronUp, Phone, CheckSquare, Square } from 'lucide-react'
+import { useToast } from '../hooks/useToast'
 
 const DEFAULT_PERSONA_NAMES = [
   "Grumpy Old Man",
@@ -43,8 +43,9 @@ interface EvaluatorDetails {
 type EvaluatorDetailsOrNull = EvaluatorDetails | null
 
 export default function EvaluateTestAgents() {
-  const { selectedAgent, setSelectedAgent } = useAgentStore()
+  const { selectedAgent } = useAgentStore()
   const queryClient = useQueryClient()
+  const { showToast, ToastContainer } = useToast()
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [selectedScenario, setSelectedScenario] = useState<string>('')
   const [selectedPersonas, setSelectedPersonas] = useState<string[]>([])
@@ -53,9 +54,8 @@ export default function EvaluateTestAgents() {
   const [editTagInput, setEditTagInput] = useState('')
   const [expandedEvaluator, setExpandedEvaluator] = useState<string | null>(null)
   const [editingEvaluator, setEditingEvaluator] = useState<Evaluator | null>(null)
-  const [runningEvaluator, setRunningEvaluator] = useState<string | null>(null)
-  const [showRunModal, setShowRunModal] = useState(false)
-  const [selectedRunEvaluator, setSelectedRunEvaluator] = useState<Evaluator | null>(null)
+  const [runningEvaluatorIds, setRunningEvaluatorIds] = useState<Set<string>>(new Set())
+  const [selectedEvaluatorIds, setSelectedEvaluatorIds] = useState<Set<string>>(new Set())
 
   const { data: personas = [] } = useQuery({
     queryKey: ['personas'],
@@ -70,11 +70,6 @@ export default function EvaluateTestAgents() {
   const { data: evaluators = [], isLoading: loadingEvaluators } = useQuery({
     queryKey: ['evaluators'],
     queryFn: () => apiClient.listEvaluators(),
-  })
-
-  const { data: agents = [] } = useQuery({
-    queryKey: ['agents'],
-    queryFn: () => apiClient.listAgents(),
   })
 
   const filteredPersonas = personas.filter((p: any) => !DEFAULT_PERSONA_NAMES.includes(p.name))
@@ -171,29 +166,43 @@ export default function EvaluateTestAgents() {
     setSelectedTags(selectedTags.filter(t => t !== tag))
   }
 
-  const handleRun = (evaluator: Evaluator) => {
-    setSelectedRunEvaluator(evaluator)
-    setShowRunModal(true)
+  const toggleEvaluatorSelection = (evaluatorId: string) => {
+    setSelectedEvaluatorIds(prev => {
+      const newSet = new Set(prev)
+      if (newSet.has(evaluatorId)) {
+        newSet.delete(evaluatorId)
+      } else {
+        newSet.add(evaluatorId)
+      }
+      return newSet
+    })
   }
 
-  const handleStartRun = () => {
-    if (!selectedRunEvaluator) return
-    
-    // Use the agent from the evaluator, or fall back to globally selected agent
-    const evaluatorAgent = agents.find((a: any) => a.id === selectedRunEvaluator.agent_id)
-    if (evaluatorAgent) {
-      setSelectedAgent(evaluatorAgent)
-    } else if (selectedAgent) {
-      // Use globally selected agent if evaluator's agent not found
-      // This should not happen, but handle gracefully
-    } else {
-      alert('No agent available. Please select an agent first.')
+  const handleRunSelected = async () => {
+    if (selectedEvaluatorIds.size === 0) {
+      showToast('Please select at least one evaluator to run', 'error')
       return
     }
-    
-    setRunningEvaluator(selectedRunEvaluator.id)
-    setShowRunModal(false)
-    setSelectedRunEvaluator(null)
+
+    try {
+      const evaluatorIdsArray = Array.from(selectedEvaluatorIds)
+      setRunningEvaluatorIds(new Set(evaluatorIdsArray))
+      
+      await apiClient.runEvaluators(evaluatorIdsArray)
+      
+      // Invalidate queries to refresh results
+      queryClient.invalidateQueries({ queryKey: ['evaluator-results'] })
+      
+      // Clear selection after starting
+      setSelectedEvaluatorIds(new Set())
+      
+      // Show success toast
+      showToast(`🚀 Started ${evaluatorIdsArray.length} evaluation${evaluatorIdsArray.length > 1 ? 's' : ''}! Check Results for progress.`, 'success')
+    } catch (error: any) {
+      console.error('Failed to run evaluators:', error)
+      showToast(`Failed to run evaluators: ${error?.response?.data?.detail || error?.message || 'Unknown error'}`, 'error')
+      setRunningEvaluatorIds(new Set())
+    }
   }
 
   const handleEdit = (evaluator: Evaluator) => {
@@ -212,21 +221,33 @@ export default function EvaluateTestAgents() {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900">Evaluator</h1>
-          <p className="mt-2 text-sm text-gray-600">
-            Manage evaluator configurations for testing agents with personas and scenarios
-          </p>
+    <>
+      <ToastContainer />
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold text-gray-900">Evaluator</h1>
+            <p className="mt-2 text-sm text-gray-600">
+              Manage evaluator configurations for testing agents with personas and scenarios
+            </p>
+          </div>
+        <div className="flex items-center gap-3">
+          <Button
+            variant="success"
+            onClick={handleRunSelected}
+            disabled={selectedEvaluatorIds.size === 0 || runningEvaluatorIds.size > 0}
+            leftIcon={<Play className="w-4 h-4" />}
+          >
+            Run {selectedEvaluatorIds.size > 0 && `(${selectedEvaluatorIds.size})`}
+          </Button>
+          <Button
+            variant="primary"
+            onClick={() => setShowCreateModal(true)}
+            leftIcon={<Plus className="w-4 h-4" />}
+          >
+            Create Evaluator
+          </Button>
         </div>
-        <Button
-          variant="primary"
-          onClick={() => setShowCreateModal(true)}
-          leftIcon={<Plus className="w-4 h-4" />}
-        >
-          Create Evaluator
-        </Button>
       </div>
 
       {!selectedAgent && (
@@ -239,8 +260,13 @@ export default function EvaluateTestAgents() {
 
       {/* Evaluators List */}
       <div className="bg-white shadow rounded-lg overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-200">
+        <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
           <h2 className="text-lg font-semibold text-gray-900">Evaluators</h2>
+          {evaluators.length > 0 && selectedEvaluatorIds.size > 0 && (
+            <div className="text-sm text-gray-600">
+              {selectedEvaluatorIds.size} selected
+            </div>
+          )}
         </div>
         {loadingEvaluators ? (
           <div className="p-6 text-center text-gray-500">Loading...</div>
@@ -254,12 +280,25 @@ export default function EvaluateTestAgents() {
               const persona = personas.find((p: any) => p.id === evaluator.persona_id)
               const scenario = scenarios.find((s: any) => s.id === evaluator.scenario_id)
               const isExpanded = expandedEvaluator === evaluator.id || expandedEvaluator === evaluator.evaluator_id
-              const isRunning = runningEvaluator === evaluator.id
+              const isRunning = runningEvaluatorIds.has(evaluator.id)
+              const isSelected = selectedEvaluatorIds.has(evaluator.id)
 
               return (
                 <div key={evaluator.id} className="p-6 hover:bg-gray-50 transition-colors">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center space-x-4 flex-1">
+                      <button
+                        type="button"
+                        onClick={() => toggleEvaluatorSelection(evaluator.id)}
+                        className="flex-shrink-0"
+                        disabled={isRunning}
+                      >
+                        {isSelected ? (
+                          <CheckSquare className="w-5 h-5 text-primary-600" />
+                        ) : (
+                          <Square className="w-5 h-5 text-gray-400" />
+                        )}
+                      </button>
                       <button
                         onClick={() => setExpandedEvaluator(isExpanded ? null : evaluator.id)}
                         className="flex items-center space-x-2 text-left flex-1"
@@ -309,15 +348,9 @@ export default function EvaluateTestAgents() {
                       </button>
                     </div>
                     <div className="flex items-center space-x-2">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleRun(evaluator)}
-                        leftIcon={<Play className="w-4 h-4" />}
-                        disabled={isRunning}
-                      >
-                        Run
-                      </Button>
+                      {isRunning && (
+                        <span className="text-sm text-blue-600 font-medium">Running...</span>
+                      )}
                       <Button
                         variant="ghost"
                         size="sm"
@@ -632,106 +665,30 @@ export default function EvaluateTestAgents() {
         </div>
       )}
 
-      {/* Run Evaluator Modal */}
-      {showRunModal && selectedRunEvaluator && (
-        <div className="fixed inset-0 z-50 overflow-y-auto">
-          <div className="flex min-h-screen items-center justify-center p-4">
-            <div
-              className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"
-              onClick={() => {
-                setShowRunModal(false)
-                setSelectedRunEvaluator(null)
-              }}
-            />
-            <div className="relative bg-white rounded-lg shadow-xl max-w-4xl w-full p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-2xl font-bold text-gray-900">Run Evaluator</h2>
-                <button
-                  onClick={() => {
-                    setShowRunModal(false)
-                    setSelectedRunEvaluator(null)
-                  }}
-                  className="text-gray-400 hover:text-gray-500"
-                >
-                  <X className="h-6 w-6" />
-                </button>
-              </div>
-
-              <div className="space-y-4">
-                <div>
-                  <h3 className="text-sm font-semibold text-gray-700 mb-2">Evaluator Details</h3>
-                  <div className="bg-gray-50 rounded p-3 space-y-1">
-                    <p className="text-sm">
-                      <span className="font-medium">ID:</span> {selectedRunEvaluator.evaluator_id}
-                    </p>
-                    <p className="text-sm">
-                      <span className="font-medium">Persona:</span>{' '}
-                      {personas.find((p: any) => p.id === selectedRunEvaluator.persona_id)?.name || 'Unknown'}
-                    </p>
-                    <p className="text-sm">
-                      <span className="font-medium">Scenario:</span>{' '}
-                      {scenarios.find((s: any) => s.id === selectedRunEvaluator.scenario_id)?.name || 'Unknown'}
-                    </p>
-                    <p className="text-sm">
-                      <span className="font-medium">Agent:</span>{' '}
-                      {agents.find((a: any) => a.id === selectedRunEvaluator.agent_id)?.name || 'Unknown'}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex justify-end space-x-3 pt-4">
-                  <Button
-                    variant="ghost"
-                    onClick={() => {
-                      setShowRunModal(false)
-                      setSelectedRunEvaluator(null)
-                    }}
-                  >
-                    Cancel
-                  </Button>
-                  <Button
-                    variant="primary"
-                    onClick={handleStartRun}
-                  >
-                    Start Call
-                  </Button>
-                </div>
-              </div>
+      {/* Running Status Indicator */}
+      {runningEvaluatorIds.size > 0 && (
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 bg-blue-500 rounded-full animate-pulse"></div>
+              <span className="text-sm font-medium text-blue-800">
+                Running {runningEvaluatorIds.size} evaluator(s) in the background. Results will appear in the Results section.
+              </span>
             </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                // Optionally clear running IDs after a delay or keep them until results appear
+                queryClient.invalidateQueries({ queryKey: ['evaluator-results'] })
+              }}
+            >
+              Refresh Results
+            </Button>
           </div>
         </div>
       )}
-
-      {/* Voice Agent Modal for Running */}
-      {runningEvaluator && (() => {
-        const evaluator = evaluators.find((e: Evaluator) => e.id === runningEvaluator)
-        return (
-          <div className="fixed inset-0 z-50 overflow-y-auto">
-            <div className="flex min-h-screen items-center justify-center p-4">
-              <div
-                className="fixed inset-0 bg-gray-900 bg-opacity-75 transition-opacity backdrop-blur-sm"
-                onClick={() => setRunningEvaluator(null)}
-              />
-              <div className="relative bg-white rounded-lg shadow-2xl max-w-6xl w-full p-6 z-10 border border-gray-200">
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-2xl font-bold text-gray-900">Voice Agent</h2>
-                  <button
-                    onClick={() => setRunningEvaluator(null)}
-                    className="text-gray-400 hover:text-gray-600 transition-colors"
-                  >
-                    <X className="h-6 w-6" />
-                  </button>
-                </div>
-                <VoiceAgent
-                  agentId={evaluator?.agent_id}
-                  personaId={evaluator?.persona_id}
-                  scenarioId={evaluator?.scenario_id}
-                />
-              </div>
-            </div>
-          </div>
-        )
-      })()}
-    </div>
+      </div>
+    </>
   )
 }

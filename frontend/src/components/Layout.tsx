@@ -56,14 +56,15 @@ const navigationSections: NavSection[] = [
     items: [
       { name: 'Playground', href: '/playground', icon: Play },
       { name: 'Evaluators', href: '/evaluate-test-agents', icon: Mic },
+      { name: 'Evaluation Results', href: '/results', icon: BarChart3 },
     ],
   },
   {
-    title: 'Results',
+    title: 'Observability',
     icon: BarChart3,
     items: [
-      { name: 'Evaluation Results', href: '/results', icon: BarChart3 },
-      { name: 'Observability', href: '/observability', icon: Activity },
+      { name: 'Overview', href: '/observability', icon: Activity },
+      { name: 'Calls', href: '/observability/calls', icon: Phone },
     ],
   },
   {
@@ -73,6 +74,7 @@ const navigationSections: NavSection[] = [
       { name: 'S3 Integration', href: '/data-sources', icon: Database },
       { name: 'VoiceBundle', href: '/voicebundles', icon: Mic },
       { name: 'Integrations', href: '/integrations', icon: Plug },
+      { name: 'Settings', href: '/settings', icon: Settings },
     ],
   },
 ]
@@ -317,7 +319,7 @@ function SidebarContent({
   location: ReturnType<typeof useLocation>
 }) {
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
-    new Set(['Simulations', 'Evaluations', 'Results', 'Configurations'])
+    new Set(['Simulations', 'Evaluations', 'Observability', 'Configurations'])
   )
 
   const toggleSection = (title: string) => {

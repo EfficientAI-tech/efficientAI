@@ -23,7 +23,10 @@ try:
 except ModuleNotFoundError as e:
     logger.error(f"Exception: {e}")
     logger.error(
-        "In order to use LocalSmartTurnAnalyzerV3, you need to `pip install efficientai-ai[local-smart-turn-v3]`."
+        "In order to use LocalSmartTurnAnalyzerV3, install the optional extras:\n"
+        "  pip install 'efficientai[local-smart-turn-v3]'\n"
+        "or for editable installs:\n"
+        "  pip install -e '.[local-smart-turn-v3]'"
     )
     raise Exception(f"Missing module: {e}")
 
