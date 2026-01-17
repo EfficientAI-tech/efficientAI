@@ -1,3 +1,13 @@
+import {
+  Modal,
+  ModalContent,
+  ModalHeader,
+  ModalBody,
+  ModalFooter,
+  Button,
+} from '@heroui/react'
+import { AlertTriangle } from 'lucide-react'
+
 interface ConfirmModalProps {
   title: string
   description?: string
@@ -7,6 +17,7 @@ interface ConfirmModalProps {
   isLoading?: boolean
   onConfirm: () => void
   onCancel: () => void
+  variant?: 'danger' | 'warning' | 'default'
 }
 
 export default function ConfirmModal({
@@ -18,36 +29,86 @@ export default function ConfirmModal({
   isLoading,
   onConfirm,
   onCancel,
+  variant = 'danger',
 }: ConfirmModalProps) {
-  if (!isOpen) return null
+  // Get Google-style light colors for button and icon
+  const getStyles = () => {
+    switch (variant) {
+      case 'danger':
+        return {
+          buttonClass: 'bg-[#fce8e6] hover:bg-[#fad2cf] text-[#c5221f] font-semibold',
+          iconBgClass: 'bg-[#fce8e6]',
+          iconClass: 'text-[#ea4335]'
+        }
+      case 'warning':
+        return {
+          buttonClass: 'bg-[#fef7e0] hover:bg-[#feefc3] text-[#e37400] font-semibold',
+          iconBgClass: 'bg-[#fef7e0]',
+          iconClass: 'text-[#f29900]'
+        }
+      default:
+        return {
+          buttonClass: 'bg-[#e8f0fe] hover:bg-[#d2e3fc] text-[#1a73e8] font-semibold',
+          iconBgClass: 'bg-[#e8f0fe]',
+          iconClass: 'text-[#1a73e8]'
+        }
+    }
+  }
+
+  const styles = getStyles()
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40 px-4">
-      <div className="w-full max-w-md rounded-lg bg-white shadow-lg">
-        <div className="px-6 py-4 border-b border-gray-200">
-          <h3 className="text-lg font-semibold text-gray-900">{title}</h3>
-          {description && <p className="mt-1 text-sm text-gray-600">{description}</p>}
-        </div>
-        <div className="px-6 py-4 flex justify-end gap-3">
-          <button
-            type="button"
-            className="px-4 py-2 rounded-md border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50"
-            onClick={onCancel}
-            disabled={isLoading}
-          >
-            {cancelLabel}
-          </button>
-          <button
-            type="button"
-            className="px-4 py-2 rounded-md bg-red-600 text-sm font-semibold text-white shadow hover:bg-red-700 disabled:opacity-60"
-            onClick={onConfirm}
-            disabled={isLoading}
-          >
-            {isLoading ? 'Deleting...' : confirmLabel}
-          </button>
-        </div>
-      </div>
-    </div>
+    <Modal 
+      isOpen={isOpen} 
+      onOpenChange={(open) => !open && onCancel()}
+      backdrop="blur"
+      radius="lg"
+      classNames={{
+        backdrop: "bg-black/40",
+        base: "rounded-2xl",
+      }}
+    >
+      <ModalContent>
+        {() => (
+          <>
+            <ModalHeader className="flex flex-col gap-1">
+              <div className="flex items-center gap-3">
+                {variant === 'danger' && (
+                  <div className={`p-2 rounded-full ${styles.iconBgClass}`}>
+                    <AlertTriangle className={`w-5 h-5 ${styles.iconClass}`} />
+                  </div>
+                )}
+                <span className="text-gray-900 font-semibold">{title}</span>
+              </div>
+            </ModalHeader>
+            <ModalBody>
+              {description && (
+                <p className="text-gray-600">{description}</p>
+              )}
+            </ModalBody>
+            <ModalFooter>
+              <Button 
+                variant="light" 
+                onPress={onCancel}
+                isDisabled={isLoading}
+                className="text-gray-600 hover:bg-gray-100"
+                radius="full"
+              >
+                {cancelLabel}
+              </Button>
+              <Button 
+                onPress={onConfirm}
+                isLoading={isLoading}
+                className={styles.buttonClass}
+                radius="full"
+              >
+                {confirmLabel}
+              </Button>
+            </ModalFooter>
+          </>
+        )}
+      </ModalContent>
+    </Modal>
   )
 }
 

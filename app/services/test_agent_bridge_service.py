@@ -195,34 +195,43 @@ class TestAgentBridgeService:
                 f"Waiting for bridge connection and call to complete..."
             )
             
-            # Wait for both tasks to complete (or one to fail)
-            # The bridge task will complete when the call ends
-            # The poll task will complete when it gets results from Retell
+            # Wait for both tasks to complete
+            # The bridge task will complete when the call ends (WebRTC disconnect)
+            # The poll task will complete when it gets results from Retell and triggers evaluation
+            # IMPORTANT: We must wait for BOTH tasks because:
+            # - bridge_task detects call end via WebRTC (fast)
+            # - poll_task fetches results from Retell API and triggers evaluation (needs time)
             try:
-                # Wait for the bridge to connect and the call to complete
-                # Use wait with FIRST_COMPLETED to handle either task finishing
-                done, pending = await asyncio.wait(
-                    [bridge_task, poll_task],
-                    return_when=asyncio.FIRST_COMPLETED,
-                    timeout=600  # 10 minute max call duration
-                )
+                # Wait for bridge task first (it detects call end)
+                # Give poll task additional time to fetch results after bridge completes
+                logger.info(f"[Bridge] Waiting for bridge task to complete...")
                 
-                # Check results
-                for task in done:
-                    try:
-                        task.result()  # This will raise if the task failed
-                    except Exception as task_error:
-                        logger.error(f"[Bridge] Task failed: {task_error}")
+                try:
+                    await asyncio.wait_for(bridge_task, timeout=600)  # 10 minute max call duration
+                    logger.info(f"[Bridge] Bridge task completed for call {call_id}")
+                except asyncio.TimeoutError:
+                    logger.warning(f"[Bridge] Bridge task timed out for call {call_id}")
+                    bridge_task.cancel()
+                except Exception as bridge_error:
+                    logger.error(f"[Bridge] Bridge task error: {bridge_error}")
                 
-                # Cancel any pending tasks
-                for task in pending:
-                    task.cancel()
-                    try:
-                        await task
-                    except asyncio.CancelledError:
-                        pass
+                # Now wait for poll task to finish fetching results and triggering evaluation
+                # Give it extra time after bridge completes (Retell API may need time)
+                logger.info(f"[Bridge] Waiting for poll task to fetch results and trigger evaluation...")
                 
-                logger.info(f"[Bridge] Bridge/poll tasks completed for call {call_id}")
+                try:
+                    # Give poll task up to 2 minutes to fetch results after call ends
+                    await asyncio.wait_for(poll_task, timeout=120)
+                    logger.info(f"[Bridge] Poll task completed for call {call_id}")
+                except asyncio.TimeoutError:
+                    logger.warning(f"[Bridge] Poll task timed out for call {call_id}")
+                    poll_task.cancel()
+                except asyncio.CancelledError:
+                    logger.info(f"[Bridge] Poll task was cancelled")
+                except Exception as poll_error:
+                    logger.error(f"[Bridge] Poll task error: {poll_error}")
+                
+                logger.info(f"[Bridge] All tasks completed for call {call_id}")
                 
             except asyncio.TimeoutError:
                 logger.warning(f"[Bridge] Call {call_id} timed out after 10 minutes")

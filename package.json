@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "@heroui/react": "^2.8.7",
+    "framer-motion": "^12.26.2"
+  }
+}
