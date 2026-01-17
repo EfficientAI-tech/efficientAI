@@ -7,6 +7,7 @@ import { ArrowLeft, RefreshCw, Trash2 } from 'lucide-react'
 import Button from '../components/Button'
 import { useToast } from '../hooks/useToast'
 import RetellCallDetails from '../components/call-recordings/RetellCallDetails'
+import VapiCallDetails from '../components/call-recordings/VapiCallDetails'
 
 export default function CallRecordingDetail() {
   const { callShortId } = useParams<{ callShortId: string }>()
@@ -121,11 +122,10 @@ export default function CallRecordingDetail() {
               <div>
                 <p className="text-xs text-gray-500 font-medium mb-1">Status</p>
                 <span
-                  className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                    callRecording.status === 'UPDATED'
-                      ? 'bg-green-100 text-green-800'
-                      : 'bg-yellow-100 text-yellow-800'
-                  }`}
+                  className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${callRecording.status === 'UPDATED'
+                    ? 'bg-green-100 text-green-800'
+                    : 'bg-yellow-100 text-yellow-800'
+                    }`}
                 >
                   {callRecording.status}
                 </span>
@@ -156,6 +156,8 @@ export default function CallRecordingDetail() {
         <div className="bg-white shadow rounded-lg p-6">
           {callRecording.provider_platform === 'retell' && callRecording.call_data ? (
             <RetellCallDetails callData={callRecording.call_data} />
+          ) : callRecording.call_data ? (
+            <VapiCallDetails callData={callRecording.call_data} />
           ) : (
             <>
               <h2 className="text-lg font-semibold text-gray-900 mb-4">Call Data (JSON)</h2>

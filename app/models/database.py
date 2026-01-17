@@ -6,30 +6,16 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import uuid
 import enum
+from app.models.enums import (
+    EvaluationType, EvaluationStatus, EvaluatorResultStatus, RoleEnum, InvitationStatus,
+    LanguageEnum, CallTypeEnum, CallMediumEnum, GenderEnum, AccentEnum, BackgroundNoiseEnum,
+    IntegrationPlatform, ModelProvider, VoiceBundleType, TestAgentConversationStatus,
+    MetricType, MetricTrigger, CallRecordingStatus
+)
 
-from app.database import Base
-
-
-class EvaluationType(str, enum.Enum):
-    """Evaluation type enumeration."""
-
-    ASR = "asr"
-    TTS = "tts"
-    QUALITY = "quality"
-
-
-class EvaluationStatus(str, enum.Enum):
-    """Evaluation status enumeration."""
-
-    PENDING = "pending"
-    PROCESSING = "processing"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-
-
-class EvaluatorResultStatus(str, enum.Enum):
-    """Evaluator result status enumeration."""
+def get_enum_values(enum_class):
+    """Helper to get values from enum class for SQLAlchemy."""
+    return [e.value for e in enum_class]
 
     QUEUED = "queued"
     CALL_INITIATING = "call_initiating"  # Creating the web call to Retell/Vapi
@@ -42,22 +28,10 @@ class EvaluatorResultStatus(str, enum.Enum):
     COMPLETED = "completed"
     FAILED = "failed"
 
-
-class RoleEnum(str, enum.Enum):
-    """User role enumeration for RBAC."""
-    
-    READER = "reader"
-    WRITER = "writer"
-    ADMIN = "admin"
+from app.database import Base
 
 
-class InvitationStatus(str, enum.Enum):
-    """Invitation status enumeration."""
-    
-    PENDING = "pending"
-    ACCEPTED = "accepted"
-    DECLINED = "declined"
-    EXPIRED = "expired"
+# Enums moved to enums.py
 
 
 class Organization(Base):
@@ -105,7 +79,9 @@ class OrganizationMember(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
-    role = Column(Enum(RoleEnum), nullable=False, default=RoleEnum.READER)
+    role = Column(String, nullable=False, default=RoleEnum.READER.value)
+
+
     joined_at = Column(DateTime(timezone=True), server_default=func.now())
     
     # Unique constraint: one membership per user per organization
@@ -128,8 +104,11 @@ class Invitation(Base):
     invited_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True, index=True)  # Null if user doesn't exist yet
     invited_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     email = Column(String(255), nullable=False)  # Email of invited user
-    role = Column(Enum(RoleEnum), nullable=False, default=RoleEnum.READER)
-    status = Column(Enum(InvitationStatus), nullable=False, default=InvitationStatus.PENDING)
+    role = Column(String, nullable=False, default=RoleEnum.READER.value)
+    status = Column(String, nullable=False, default=InvitationStatus.PENDING.value)
+
+
+
     token = Column(String(255), unique=True, nullable=False, index=True)  # Invitation token
     expires_at = Column(DateTime(timezone=True), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -189,9 +168,12 @@ class Evaluation(Base):
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
     audio_id = Column(UUID(as_uuid=True), ForeignKey("audio_files.id"), nullable=False)
     reference_text = Column(String, nullable=True)  # For WER calculation
-    evaluation_type = Column(Enum(EvaluationType), nullable=False)
+    evaluation_type = Column(String, nullable=False)
     model_name = Column(String(100), nullable=True)
-    status = Column(Enum(EvaluationStatus), default=EvaluationStatus.PENDING, nullable=False)
+    status = Column(String, default=EvaluationStatus.PENDING.value, nullable=False)
+
+
+
     metrics_requested = Column(JSON, nullable=True)  # List of requested metrics
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     started_at = Column(DateTime(timezone=True), nullable=True)
@@ -225,58 +207,7 @@ class EvaluationResult(Base):
 # VAIOPS MODELS - Voice AI Ops
 # ============================================
 
-class LanguageEnum(str, enum.Enum):
-    """Supported languages"""
-    ENGLISH = "en"
-    SPANISH = "es"
-    FRENCH = "fr"
-    GERMAN = "de"
-    CHINESE = "zh"
-    JAPANESE = "ja"
-    HINDI = "hi"
-    ARABIC = "ar"
-
-
-class CallTypeEnum(str, enum.Enum):
-    """Call direction"""
-    INBOUND = "inbound"
-    OUTBOUND = "outbound"
-
-
-class CallMediumEnum(str, enum.Enum):
-    """Call medium"""
-    PHONE_CALL = "phone_call"
-    WEB_CALL = "web_call"
-
-
-class GenderEnum(str, enum.Enum):
-    """Gender options for personas"""
-    MALE = "male"
-    FEMALE = "female"
-    NEUTRAL = "neutral"
-
-
-class AccentEnum(str, enum.Enum):
-    """Accent options"""
-    AMERICAN = "american"
-    BRITISH = "british"
-    AUSTRALIAN = "australian"
-    INDIAN = "indian"
-    CHINESE = "chinese"
-    SPANISH = "spanish"
-    FRENCH = "french"
-    GERMAN = "german"
-    NEUTRAL = "neutral"
-
-
-class BackgroundNoiseEnum(str, enum.Enum):
-    """Background noise options"""
-    NONE = "none"
-    OFFICE = "office"
-    STREET = "street"
-    CAFE = "cafe"
-    HOME = "home"
-    CALL_CENTER = "call_center"
+# Enums moved to enums.py
 
 
 class Agent(Base):
@@ -288,10 +219,13 @@ class Agent(Base):
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
     name = Column(String, nullable=False)
     phone_number = Column(String, nullable=True)  # Optional, required only for phone_call
-    language = Column(Enum(LanguageEnum), nullable=False, default=LanguageEnum.ENGLISH)
+    language = Column(String, nullable=False, default=LanguageEnum.ENGLISH.value)
     description = Column(String)
-    call_type = Column(Enum(CallTypeEnum), nullable=False, default=CallTypeEnum.OUTBOUND)
-    call_medium = Column(Enum(CallMediumEnum), nullable=False, default=CallMediumEnum.PHONE_CALL)
+    call_type = Column(String, nullable=False, default=CallTypeEnum.OUTBOUND.value)
+    call_medium = Column(String, nullable=False, default=CallMediumEnum.PHONE_CALL.value)
+
+
+
     
     # Voice configuration - either voice_bundle_id OR ai_provider_id OR voice_ai_integration_id (mutually exclusive)
     voice_bundle_id = Column(UUID(as_uuid=True), ForeignKey("voicebundles.id"), nullable=True, index=True)
@@ -313,10 +247,12 @@ class Persona(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
     name = Column(String, nullable=False)
-    language = Column(Enum(LanguageEnum), nullable=False, default=LanguageEnum.ENGLISH)
-    accent = Column(Enum(AccentEnum), nullable=False, default=AccentEnum.AMERICAN)
-    gender = Column(Enum(GenderEnum), nullable=False, default=GenderEnum.NEUTRAL)
-    background_noise = Column(Enum(BackgroundNoiseEnum), nullable=False, default=BackgroundNoiseEnum.NONE)
+    language = Column(String, nullable=False, default=LanguageEnum.ENGLISH.value)
+    accent = Column(String, nullable=False, default=AccentEnum.AMERICAN.value)
+    gender = Column(String, nullable=False, default=GenderEnum.NEUTRAL.value)
+    background_noise = Column(String, nullable=False, default=BackgroundNoiseEnum.NONE.value)
+
+
     
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -338,14 +274,7 @@ class Scenario(Base):
     created_by = Column(String)
 
 
-class IntegrationPlatform(str, enum.Enum):
-    """Integration platform enumeration."""
-    
-    RETELL = "retell"
-    VAPI = "vapi"
-    CARTESIA = "cartesia"
-    ELEVENLABS = "elevenlabs"
-    DEEPGRAM = "deepgram"
+# Enums moved to enums.py
 
 
 class Integration(Base):
@@ -354,9 +283,13 @@ class Integration(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
-    platform = Column(Enum(IntegrationPlatform), nullable=False)
+    platform = Column(String, nullable=False)
+
+
+
     name = Column(String, nullable=True)  # Optional friendly name
-    api_key = Column(String, nullable=False)  # Encrypted API key for the platform
+    api_key = Column(String, nullable=False)  # Encrypted Private API key for the platform
+    public_key = Column(String, nullable=True)  # Optional Public API key (e.g. for Vapi)
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -387,7 +320,10 @@ class ManualTranscription(Base):
     transcript = Column(String, nullable=False)  # Full transcript text
     speaker_segments = Column(JSON, nullable=True)  # List of segments with speaker labels: [{"speaker": "Speaker 1", "text": "...", "start": 0.0, "end": 5.2}]
     stt_model = Column(String(100), nullable=True)  # STT model used (e.g., "whisper-1", "google-speech-v2")
-    stt_provider = Column(Enum(ModelProvider), nullable=True)  # Provider used
+    stt_provider = Column(String, nullable=True)  # Provider used
+
+
+
     language = Column(String(10), nullable=True)  # Detected or specified language
     processing_time = Column(Float, nullable=True)  # Processing time in seconds
     raw_output = Column(JSON, nullable=True)  # Full model output for reference
@@ -412,7 +348,8 @@ class ConversationEvaluation(Base):
     overall_score = Column(Float, nullable=True)  # Overall score (0.0 to 1.0)
     
     # LLM metadata
-    llm_provider = Column(Enum(ModelProvider), nullable=True)
+    llm_provider = Column(Enum(ModelProvider, native_enum=False), nullable=True)
+
     llm_model = Column(String(100), nullable=True)
     llm_response = Column(JSON, nullable=True)  # Full LLM response for reference
     
@@ -426,7 +363,10 @@ class AIProvider(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
-    provider = Column(Enum(ModelProvider), nullable=False)
+    provider = Column(String, nullable=False)
+
+
+
     api_key = Column(String, nullable=False)  # Encrypted API key
     name = Column(String, nullable=True)  # Optional friendly name
     is_active = Column(Boolean, default=True, nullable=False)
@@ -440,10 +380,7 @@ class AIProvider(Base):
     )
 
 
-class VoiceBundleType(str, enum.Enum):
-    """VoiceBundle type enumeration."""
-    STT_LLM_TTS = "stt_llm_tts"  # Traditional STT + LLM + TTS pipeline
-    S2S = "s2s"  # Speech-to-Speech model
+# Enums moved to enums.py
 
 
 class VoiceBundle(Base):
@@ -461,24 +398,30 @@ class VoiceBundle(Base):
     bundle_type = Column(String(50), nullable=False, default=VoiceBundleType.STT_LLM_TTS.value)
     
     # STT Configuration (references AIProvider via provider name) - required for STT_LLM_TTS, optional for S2S
-    stt_provider = Column(Enum(ModelProvider), nullable=True)
+    stt_provider = Column(String, nullable=True)
+
     stt_model = Column(String, nullable=True)  # e.g., "whisper-1", "google-speech-v2"
     
     # LLM Configuration (references AIProvider via provider name) - required for STT_LLM_TTS, optional for S2S
-    llm_provider = Column(Enum(ModelProvider), nullable=True)
+    llm_provider = Column(String, nullable=True)
+
     llm_model = Column(String, nullable=True)  # e.g., "gpt-4", "claude-3-opus"
     llm_temperature = Column(Float, nullable=True, default=0.7)
     llm_max_tokens = Column(Integer, nullable=True)
     llm_config = Column(JSON, nullable=True)  # Additional LLM configuration (extensible)
     
     # TTS Configuration (references AIProvider via provider name) - required for STT_LLM_TTS, optional for S2S
-    tts_provider = Column(Enum(ModelProvider), nullable=True)
+    tts_provider = Column(String, nullable=True)
+
     tts_model = Column(String, nullable=True)  # e.g., "tts-1", "neural-voice"
     tts_voice = Column(String, nullable=True)  # Voice selection if applicable
     tts_config = Column(JSON, nullable=True)  # Additional TTS configuration (extensible)
     
     # S2S Configuration - required for S2S type, optional for STT_LLM_TTS
-    s2s_provider = Column(Enum(ModelProvider), nullable=True)
+    s2s_provider = Column(String, nullable=True)
+
+
+
     s2s_model = Column(String, nullable=True)  # e.g., "gpt-4o-transcribe", speech-to-speech model
     s2s_config = Column(JSON, nullable=True)  # Additional S2S configuration (extensible)
     
@@ -491,15 +434,7 @@ class VoiceBundle(Base):
     created_by = Column(String, nullable=True)
 
 
-class TestAgentConversationStatus(str, enum.Enum):
-    """Test agent conversation status enumeration."""
-    
-    INITIALIZING = "initializing"
-    ACTIVE = "active"
-    PAUSED = "paused"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
+# Enums moved to enums.py
 
 
 class TestAgentConversation(Base):
@@ -516,7 +451,10 @@ class TestAgentConversation(Base):
     voice_bundle_id = Column(UUID(as_uuid=True), ForeignKey("voicebundles.id"), nullable=False)
     
     # Conversation data
-    status = Column(Enum(TestAgentConversationStatus), nullable=False, default=TestAgentConversationStatus.INITIALIZING)
+    status = Column(String, nullable=False, default=TestAgentConversationStatus.INITIALIZING.value)
+
+
+
     live_transcription = Column(JSON, nullable=True)  # Array of conversation turns with timestamps
     conversation_audio_key = Column(String, nullable=True)  # S3 key for recorded conversation audio
     full_transcript = Column(String, nullable=True)  # Full conversation transcript
@@ -556,17 +494,7 @@ class Evaluator(Base):
     created_by = Column(String, nullable=True)
 
 
-class MetricType(str, enum.Enum):
-    """Metric type enumeration."""
-    NUMBER = "number"
-    BOOLEAN = "boolean"
-    RATING = "rating"
-
-
-class MetricTrigger(str, enum.Enum):
-    """Metric trigger enumeration."""
-    ALWAYS = "always"
-    # Can add more triggers in the future like "on_error", "on_completion", etc.
+# Enums moved to enums.py
 
 
 class Metric(Base):
@@ -581,8 +509,11 @@ class Metric(Base):
     description = Column(String, nullable=True)
     
     # Configuration
-    metric_type = Column(Enum(MetricType), nullable=False, default=MetricType.RATING)
-    trigger = Column(Enum(MetricTrigger), nullable=False, default=MetricTrigger.ALWAYS)
+    metric_type = Column(String, nullable=False, default=MetricType.RATING.value)
+    trigger = Column(String, nullable=False, default=MetricTrigger.ALWAYS.value)
+
+
+
     enabled = Column(Boolean, nullable=False, default=True)
     
     # Metadata
@@ -639,11 +570,7 @@ class EvaluatorResult(Base):
     created_by = Column(String, nullable=True)
 
 
-class CallRecordingStatus(str, enum.Enum):
-    """Call recording status enumeration."""
-    
-    PENDING = "PENDING"
-    UPDATED = "UPDATED"
+# Enums moved to enums.py
 
 
 class CallRecordingSource(str, enum.Enum):

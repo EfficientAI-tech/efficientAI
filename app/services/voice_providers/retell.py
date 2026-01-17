@@ -282,3 +282,13 @@ class RetellVoiceProvider(BaseVoiceProvider):
         except Exception as e:
             raise ValueError(f"Failed to retrieve Retell call metrics: {str(e)}")
 
+    def test_connection(self) -> bool:
+        """
+        Test Retell connection by attempting to list agents.
+        """
+        try:
+            self.client.agent.list()
+            return True
+        except Exception as e:
+            raise ValueError(f"Retell connection test failed: {str(e)}")
+

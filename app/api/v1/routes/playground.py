@@ -53,6 +53,9 @@ def poll_call_metrics(
         if not call_recording:
             return
         
+        if not provider_call_id or provider_call_id == "None":
+            return
+
         # Get the appropriate voice provider
         try:
             provider_class = get_voice_provider(provider_platform)
@@ -68,7 +71,7 @@ def poll_call_metrics(
                     time.sleep(poll_interval)
                 
                 # Retrieve call metrics
-                if provider_platform == "retell" and hasattr(provider, "retrieve_call_metrics"):
+                if hasattr(provider, "retrieve_call_metrics"):
                     call_metrics = provider.retrieve_call_metrics(provider_call_id)
                 else:
                     # For other providers, implement similar method
@@ -85,7 +88,7 @@ def poll_call_metrics(
                 end_timestamp = call_metrics.get("end_timestamp")
                 
                 # If call is complete, stop polling
-                if end_timestamp or call_status in ["ended", "completed", "failed"]:
+                if end_timestamp or call_status in ["ended", "completed", "failed", "end-of-call-report"]:
                     break
                     
             except Exception as e:
@@ -96,6 +99,67 @@ def poll_call_metrics(
         
     finally:
         db.close()
+
+
+class CallRecordingUpdate(BaseModel):
+    """Schema for updating a call recording."""
+    provider_call_id: str
+
+
+@router.put("/call-recordings/{call_short_id}", response_model=Dict[str, Any])
+async def update_call_recording(
+    call_short_id: str,
+    update_data: CallRecordingUpdate,
+    background_tasks: BackgroundTasks,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db)
+):
+    """
+    Update a call recording, typically to set the provider_call_id.
+    Triggers polling.
+    """
+    call_recording = db.query(CallRecording).filter(
+        CallRecording.call_short_id == call_short_id,
+        CallRecording.organization_id == organization_id
+    ).first()
+    
+    if not call_recording:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Call recording not found"
+        )
+    
+    call_recording.provider_call_id = update_data.provider_call_id
+    db.commit()
+    db.refresh(call_recording)
+    
+    # Trigger polling if we have all info
+    if call_recording.provider_platform:
+        # Get integration api key
+        agent = db.query(Agent).filter(Agent.id == call_recording.agent_id).first()
+        if agent and agent.voice_ai_integration_id:
+            integration = db.query(Integration).filter(
+                Integration.id == agent.voice_ai_integration_id
+            ).first()
+            
+            if integration:
+                try:
+                    decrypted_api_key = decrypt_api_key(integration.api_key)
+                    background_tasks.add_task(
+                        poll_call_metrics,
+                        call_recording.id,
+                        call_recording.provider_call_id,
+                        call_recording.provider_platform,
+                        decrypted_api_key
+                    )
+                except:
+                    pass
+    
+    return {
+        "message": "Call recording updated", 
+        "provider_call_id": call_recording.provider_call_id
+    }
 
 
 class WebCallCreate(BaseModel):
@@ -140,7 +204,7 @@ async def create_web_call(
             )
         
         # Check if agent has web call enabled
-        if agent.call_medium.value != "web_call":
+        if agent.call_medium != "web_call":
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Agent is not configured for web calls"
@@ -170,7 +234,7 @@ async def create_web_call(
         
         # Get the appropriate voice provider
         try:
-            provider_class = get_voice_provider(integration.platform.value)
+            provider_class = get_voice_provider(integration.platform)
             provider = provider_class(api_key=decrypted_api_key)
         except ValueError as e:
             raise HTTPException(
@@ -187,7 +251,7 @@ async def create_web_call(
                     detail="Agent does not have a voice_ai_agent_id configured"
                 )
             
-            print(f"[Playground] Creating web call - Agent ID: {agent.id}, Retell Agent ID: {agent.voice_ai_agent_id}, Platform: {integration.platform.value}")
+            print(f"[Playground] Creating web call - Agent ID: {agent.id}, Retell Agent ID: {agent.voice_ai_agent_id}, Platform: {integration.platform}")
             
             # Build call parameters based on provider
             call_params = {
@@ -202,7 +266,7 @@ async def create_web_call(
             
             # Note: custom_sip_headers is not supported by Retell, but may be supported by other providers
             # For now, we'll skip it for Retell. Other providers can handle it in their implementation.
-            if integration.platform.value != "retell" and web_call_data.custom_sip_headers:
+            if integration.platform != "retell" and web_call_data.custom_sip_headers:
                 call_params["custom_sip_headers"] = web_call_data.custom_sip_headers
             
             web_call_response = provider.create_web_call(**call_params)
@@ -218,7 +282,7 @@ async def create_web_call(
                 source=CallRecordingSource.PLAYGROUND,
                 call_data=web_call_response,  # Store initial response
                 provider_call_id=provider_call_id,
-                provider_platform=integration.platform.value,
+                provider_platform=integration.platform,
                 agent_id=agent.id
             )
             db.add(call_recording)
@@ -229,13 +293,14 @@ async def create_web_call(
             # Note: We need to pass the decrypted API key, but we should be careful with security
             # For now, we'll pass it to the background task
             # In production, you might want to store it temporarily or use a different approach
-            background_tasks.add_task(
-                poll_call_metrics,
-                call_recording.id,
-                provider_call_id,
-                integration.platform.value,
-                decrypted_api_key
-            )
+            if provider_call_id:
+                background_tasks.add_task(
+                    poll_call_metrics,
+                    call_recording.id,
+                    provider_call_id,
+                    integration.platform,
+                    decrypted_api_key
+                )
             
             # Add call_short_id to response for frontend
             response = web_call_response.copy()
@@ -256,10 +321,13 @@ async def create_web_call(
     except Exception as e:
         if isinstance(e, HTTPException):
             raise e
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Internal server error: {str(e)}"
-            )
+        print(f"[Create Web Call] Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Internal server error: {str(e)}"
+        )
 
 
 @router.get("/call-recordings", response_model=List[Dict[str, Any]])
@@ -282,7 +350,7 @@ async def list_call_recordings(
         {
             "id": str(cr.id),
             "call_short_id": cr.call_short_id,
-            "status": cr.status.value if cr.status else None,
+            "status": cr.status if cr.status else None,
             "provider_platform": cr.provider_platform,
             "provider_call_id": cr.provider_call_id,
             "agent_id": str(cr.agent_id) if cr.agent_id else None,
@@ -319,7 +387,7 @@ async def get_call_recording(
     return {
         "id": str(call_recording.id),
         "call_short_id": call_recording.call_short_id,
-        "status": call_recording.status.value if call_recording.status else None,
+        "status": call_recording.status if call_recording.status else None,
         "provider_platform": call_recording.provider_platform,
         "provider_call_id": call_recording.provider_call_id,
         "agent_id": str(call_recording.agent_id) if call_recording.agent_id else None,

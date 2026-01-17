@@ -7,7 +7,7 @@ import { Play, X, Phone, PhoneOff, RefreshCw, Eye, Mic, Bot, PhoneCall, Trash2 }
 import Button from './Button'
 import { useToast } from '../hooks/useToast'
 import { RetellWebClient } from 'retell-client-js-sdk'
-import VoiceAgent from './VoiceAgent'
+import Vapi from '@vapi-ai/web'
 
 // Type for RetellWebClient - using the actual SDK methods
 type RetellWebClientWithMethods = RetellWebClient & {
@@ -32,7 +32,12 @@ export default function Playground() {
   const [selectedTestType, setSelectedTestType] = useState<'test_agent' | 'voice_ai_agent' | null>(null)
   const [isConnecting, setIsConnecting] = useState(false)
   const [isConnected, setIsConnected] = useState(false)
+  const [transcripts, setTranscripts] = useState<Array<{ role: 'user' | 'agent', content: string }>>([])
+
   const retellClientRef = useRef<RetellWebClientWithMethods | null>(null)
+  const vapiClientRef = useRef<any>(null)
+  const currentCallShortIdRef = useRef<string | null>(null)
+
   const userInitiatedDisconnectRef = useRef(false)
 
   // Fetch integrations to check if agent has Retell integration
@@ -73,175 +78,274 @@ export default function Playground() {
     : null
 
   const isRetellAgent = agentIntegration?.platform === 'retell'
+  const isVapiAgent = agentIntegration?.platform === 'vapi'
   const hasWebCallEnabled = fullAgent?.call_medium === 'web_call'
-  const canMakeCall = isRetellAgent && hasWebCallEnabled && fullAgent?.voice_ai_agent_id
-  
-  // Check if agent has Test Agent configuration (voice_bundle_id)
-  const hasTestAgent = !!fullAgent?.voice_bundle_id
-  // Check if agent has Voice AI Agent configuration (voice_ai_integration_id)
-  const hasVoiceAIAgent = !!fullAgent?.voice_ai_integration_id && !!fullAgent?.voice_ai_agent_id
 
-  // Initialize Retell client when Voice AI Agent modal opens
+  const canMakeCall = (isRetellAgent || isVapiAgent) && hasWebCallEnabled && fullAgent?.voice_ai_agent_id
+
+  // Initialize Clients when modal opens
   useEffect(() => {
-    if (showModal && selectedTestType === 'voice_ai_agent' && canMakeCall && !retellClientRef.current) {
-      const client = new RetellWebClient() as unknown as RetellWebClientWithMethods
-      // Debug: Log client structure
-      console.log('RetellWebClient instance:', client)
-      console.log('Available methods:', Object.getOwnPropertyNames(Object.getPrototypeOf(client)))
-      retellClientRef.current = client
+    if (showModal && canMakeCall) {
+      if (isRetellAgent && !retellClientRef.current) {
+        const client = new RetellWebClient() as unknown as RetellWebClientWithMethods
+        console.log('RetellWebClient initialized')
+        retellClientRef.current = client
+      } else if (isVapiAgent && !vapiClientRef.current && agentIntegration?.public_key) {
+        // Initialize Vapi with Public Key
+        const client = new Vapi(agentIntegration.public_key)
+        console.log('Vapi client initialized')
+        vapiClientRef.current = client
+      }
     }
-    
+
     return () => {
       // Cleanup on unmount
-      if (retellClientRef.current && isConnected && selectedTestType === 'voice_ai_agent') {
+      if (retellClientRef.current && isConnected) {
         try {
           retellClientRef.current.stopCall()
         } catch (e) {
-          console.error('Error stopping call on cleanup:', e)
+          console.error('Error stopping Retell call on cleanup:', e)
+        }
+      }
+      if (vapiClientRef.current && isConnected) {
+        try {
+          vapiClientRef.current.stop()
+        } catch (e) {
+          console.error('Error stopping Vapi call on cleanup:', e)
         }
       }
     }
-  }, [showModal, selectedTestType, canMakeCall, isConnected])
+  }, [showModal, canMakeCall, isConnected, isRetellAgent, isVapiAgent, agentIntegration])
 
   const handleConnect = async () => {
     if (!canMakeCall || !fullAgent?.id) {
-      showToast('Agent is not configured for Retell web calls', 'error')
+      showToast('Agent is not configured for web calls', 'error')
       return
     }
 
-    if (!retellClientRef.current) {
-      retellClientRef.current = new RetellWebClient() as unknown as RetellWebClientWithMethods
-    }
-
-    const client = retellClientRef.current
     setIsConnecting(true)
+    setTranscripts([])
 
-    try {
-      // IMPORTANT: Request microphone permission FIRST, before creating the web call
-      // This ensures we can start the conversation immediately after getting call_id
-      // Retell requires the user to join within 30 seconds of create_web_call
-      // We'll just verify permission is available, but let the SDK handle the actual stream
+    if (isRetellAgent) {
+      if (!retellClientRef.current) {
+        retellClientRef.current = new RetellWebClient() as unknown as RetellWebClientWithMethods
+      }
+
+      const client = retellClientRef.current
+
       try {
-        const testStream = await navigator.mediaDevices.getUserMedia({ audio: true })
-        console.log('Microphone access granted')
-        // Immediately stop the test stream - SDK will get its own
-        testStream.getTracks().forEach(track => track.stop())
-      } catch (micError: any) {
-        console.error('Microphone permission denied:', micError)
+        // IMPORTANT: Request microphone permission FIRST, before creating the web call
+        try {
+          const testStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+          console.log('Microphone access granted')
+          testStream.getTracks().forEach(track => track.stop())
+        } catch (micError: any) {
+          console.error('Microphone permission denied:', micError)
+          setIsConnecting(false)
+          showToast('Microphone permission is required for voice calls', 'error')
+          return
+        }
+
+        // Set up event handlers
+        client.on('call_started', () => {
+          console.log('Retell call started')
+          setIsConnected(true)
+          setIsConnecting(false)
+          showToast('Connected to agent', 'success')
+        })
+
+        // Handle updates (transcripts)
+        client.on('update', (update: any) => {
+          if (update.transcript) {
+            setTranscripts(prev => {
+              // Simple logic: if same role, update content (streaming), else new message
+              // Retell sends incremental updates, so we might need to handle partials better
+              // For now, let's just append finished sentences or major updates
+              if (update.transcript.length > 0) {
+                const role = update.role === 'user' ? 'user' : 'agent'
+                const content = update.transcript
+                return [...prev, { role, content }]
+              }
+              return prev
+            })
+          }
+        })
+
+        client.on('call_ended', (data?: any) => {
+          console.log('Retell call ended', data)
+          setIsConnected(false)
+          setIsConnecting(false)
+          if (!userInitiatedDisconnectRef.current) {
+            const reason = data?.reason || data?.code || 'Unknown reason'
+            showToast(`Call ended: ${reason}`)
+          }
+          userInitiatedDisconnectRef.current = false
+
+          // Trigger refresh of metrics
+          if (currentCallShortIdRef.current) {
+            apiClient.refreshCallRecording(currentCallShortIdRef.current)
+              .then(() => refetchCallRecordings())
+              .catch(err => console.error('Failed to refresh metrics', err))
+          }
+        })
+
+        client.on('error', (error: any) => {
+          console.error('Retell error:', error)
+          setIsConnecting(false)
+          setIsConnected(false)
+          showToast(`Error: ${error?.message || 'Unknown error'}`, 'error')
+        })
+
+        // Create web call
+        console.log('Creating web call...')
+        const webCallResponse = await apiClient.createWebCall({
+          agent_id: fullAgent.id,
+          metadata: {},
+          retell_llm_dynamic_variables: {},
+          custom_sip_headers: {},
+        })
+
+        if (!webCallResponse.call_id || !webCallResponse.access_token) {
+          throw new Error('No call_id or access_token received')
+        }
+
+        if (webCallResponse.call_short_id) {
+          currentCallShortIdRef.current = webCallResponse.call_short_id
+        }
+
+        // Start call
+        await client.startCall({
+          accessToken: webCallResponse.access_token,
+          callId: webCallResponse.call_id,
+          sampleRate: webCallResponse.sample_rate || 24000,
+        })
+      } catch (error: any) {
+        console.error('Failed to connect Retell:', error)
         setIsConnecting(false)
-        showToast('Microphone permission is required for voice calls', 'error')
+        setIsConnected(false)
+        showToast(`Failed to connect: ${error.message}`, 'error')
+      }
+    } else if (isVapiAgent) {
+      const client = vapiClientRef.current
+      if (!client) {
+        setIsConnecting(false)
+        showToast('Vapi client not initialized', 'error')
         return
       }
 
-      // Set up event handlers before creating the call
-      client.on('call_started', () => {
-        console.log('Call started')
-        setIsConnected(true)
-        setIsConnecting(false)
-        showToast('Connected to Retell agent', 'success')
-      })
+      try {
+        // Create backend record for Vapi call
+        console.log('Creating Vapi web call record...')
+        const webCallResponse = await apiClient.createWebCall({
+          agent_id: fullAgent.id,
+          metadata: {},
+        })
 
-      client.on('call_ended', (data?: any) => {
-        console.log('Call ended', data)
-        console.log('End reason:', data?.reason || 'No reason provided')
-        console.log('End code:', data?.code || 'No code provided')
+        if (webCallResponse.call_short_id) {
+          currentCallShortIdRef.current = webCallResponse.call_short_id
+        }
+
+        // Vapi Event Handlers
+        client.on('call-start', async (call: any) => {
+          console.log('Vapi call started', call)
+          setIsConnected(true)
+          setIsConnecting(false)
+          showToast('Connected to agent', 'success')
+
+          // Update backend with Vapi Call ID
+          if (currentCallShortIdRef.current && call?.id) {
+            try {
+              await apiClient.updateCallRecording(currentCallShortIdRef.current, call.id)
+              console.log('Updated call recording with Vapi ID:', call.id)
+            } catch (err) {
+              console.error('Failed to update call recording provider ID', err)
+            }
+          }
+        })
+
+        // Vapi Transcription Handling
+        client.on('message', (message: any) => {
+          if (message.type === 'transcript' && message.transcriptType === 'final') {
+            const role = message.role === 'user' ? 'user' : 'agent'
+            setTranscripts(prev => [...prev, { role, content: message.transcript }])
+          }
+        })
+
+        client.on('call-end', async (call: any) => {
+          console.log('Vapi call ended', call)
+          setIsConnected(false)
+          setIsConnecting(false)
+          if (!userInitiatedDisconnectRef.current) {
+            showToast('Call ended')
+          }
+          userInitiatedDisconnectRef.current = false
+
+          // Ensure we have provider ID before refreshing
+          if (currentCallShortIdRef.current) {
+            if (call?.id) {
+              try {
+                await apiClient.updateCallRecording(currentCallShortIdRef.current, call.id)
+              } catch (e) {
+                console.error('Failed to update call recording on end', e)
+              }
+            }
+
+            apiClient.refreshCallRecording(currentCallShortIdRef.current)
+              .then(() => refetchCallRecordings())
+              .catch(err => console.error('Failed to refresh metrics', err))
+          }
+        })
+
+        client.on('error', (error: any) => {
+          console.error('Vapi error:', error)
+          setIsConnecting(false)
+          setIsConnected(false)
+          showToast(`Error: ${error?.message || 'Unknown error'}`, 'error')
+        })
+
+        // Start Call
+        // Note: For Vapi, we just need the assistant ID (voice_ai_agent_id)
+        console.log('Starting Vapi call...')
+        const vapiCall = await client.start(fullAgent.voice_ai_agent_id)
+        console.log('Vapi start returned:', vapiCall)
+
+        // Try to get ID from return value immediately
+        if (currentCallShortIdRef.current && vapiCall?.id) {
+          try {
+            await apiClient.updateCallRecording(currentCallShortIdRef.current, vapiCall.id)
+            console.log('Updated call recording with Vapi ID (from start):', vapiCall.id)
+          } catch (err) {
+            console.error('Failed to update call recording provider ID', err)
+          }
+        }
+      } catch (error: any) {
+        console.error('Failed to connect Vapi:', error)
+        setIsConnecting(false)
         setIsConnected(false)
-        setIsConnecting(false)
-        // Only show toast if it wasn't a user-initiated disconnect
-        if (!userInitiatedDisconnectRef.current) {
-          const reason = data?.reason || data?.code || 'Unknown reason'
-          showToast(`Call ended unexpectedly: ${reason}`, 'error')
-        }
-        userInitiatedDisconnectRef.current = false // Reset flag
-      })
-
-      // Handle disconnect/reconnect events (for network issues)
-      client.on('disconnect', () => {
-        console.log('Disconnected (network issue)')
-        showToast('Connection lost. Attempting to reconnect...', 'error')
-      })
-
-      client.on('reconnect', () => {
-        console.log('Reconnected')
-        showToast('Connection restored', 'success')
-      })
-
-      client.on('update', (update: any) => {
-        console.log('Update:', update)
-        // You can access transcript with update.transcript
-        if (update.transcript) {
-          console.log('Transcript:', update.transcript)
-        }
-        // Check for any error information in the update
-        if (update.error) {
-          console.error('Update contains error:', update.error)
-        }
-      })
-
-      client.on('audio', (_audio: Uint8Array) => {
-        // Audio data received from server
-        // Audio data is available but not used in this implementation
-        console.log('Audio received')
-      })
-
-      client.on('error', (error: any) => {
-        console.error('Retell error:', error)
-        console.error('Error details:', JSON.stringify(error, null, 2))
-        setIsConnecting(false)
-        setIsConnected(false)
-        const errorMessage = error?.message || error?.error || String(error) || 'Unknown error'
-        showToast(`Error: ${errorMessage}`, 'error')
-        // Don't stop conversation here - let Retell SDK handle it
-      })
-
-      // NOW create the web call - we have mic permission ready
-      console.log('Creating web call...')
-      const webCallResponse = await apiClient.createWebCall({
-        agent_id: fullAgent.id,
-        metadata: {},
-        retell_llm_dynamic_variables: {},
-        custom_sip_headers: {},
-      })
-
-      if (!webCallResponse.call_id || !webCallResponse.access_token) {
-        throw new Error('No call_id or access_token received from server')
+        showToast(`Failed to connect: ${error.message}`, 'error')
       }
-
-      // Start the call IMMEDIATELY after getting access_token
-      // Retell requires joining within 30 seconds of create_web_call
-      const sampleRate = webCallResponse.sample_rate || 24000
-      console.log('Starting call immediately with accessToken and callId:', webCallResponse.call_id, 'sampleRate:', sampleRate)
-      
-      // Start call - SDK will handle getting the microphone stream
-      await client.startCall({
-        accessToken: webCallResponse.access_token,
-        callId: webCallResponse.call_id,
-        sampleRate: sampleRate,
-      })
-      console.log('startCall completed')
-    } catch (error: any) {
-      console.error('Failed to connect:', error)
-      setIsConnecting(false)
-      setIsConnected(false)
-      showToast(`Failed to connect: ${error.response?.data?.detail || error.message || 'Unknown error'}`, 'error')
     }
   }
 
   const handleDisconnect = async () => {
-    if (retellClientRef.current) {
+    userInitiatedDisconnectRef.current = true
+
+    if (isRetellAgent && retellClientRef.current) {
       try {
-        userInitiatedDisconnectRef.current = true // Mark as user-initiated
         retellClientRef.current.stopCall()
-        setIsConnected(false)
-        showToast('Disconnected', 'success')
       } catch (error: any) {
-        console.error('Failed to disconnect:', error)
-        showToast(`Failed to disconnect: ${error.message || 'Unknown error'}`, 'error')
-        // Force cleanup even if disconnect fails
-        setIsConnected(false)
-        userInitiatedDisconnectRef.current = false
+        console.error('Failed to disconnect Retell:', error)
+      }
+    } else if (isVapiAgent && vapiClientRef.current) {
+      try {
+        vapiClientRef.current.stop()
+      } catch (error: any) {
+        console.error('Failed to disconnect Vapi:', error)
       }
     }
+
+    setIsConnected(false)
+    showToast('Disconnected', 'success')
   }
 
   const handleCloseModal = () => {
@@ -326,11 +430,10 @@ export default function Playground() {
                 <strong>Selected Agent:</strong> {selectedAgent.name}
               </p>
               <p className="text-sm text-blue-700 mt-2">
-                This agent is not configured for testing. Please configure either:
-                <ul className="list-disc list-inside mt-2">
-                  <li>Test Agent (Voice Bundle) for testing with voice bundles</li>
-                  <li>Voice AI Agent (Integration + Agent ID) for testing with external providers like Retell</li>
-                </ul>
+                {!hasWebCallEnabled && 'This agent does not have web calling enabled. '}
+                {!canMakeCall && 'This agent is not correctly configured for web calls. '}
+                {(!fullAgent?.voice_ai_agent_id) && 'Agent ID is missing. '}
+                Please check your configuration.
               </p>
             </div>
           ) : (
@@ -339,9 +442,7 @@ export default function Playground() {
                 <strong>Ready to test:</strong> {selectedAgent.name}
               </p>
               <p className="text-sm text-green-700 mt-1">
-                {hasTestAgent && hasVoiceAIAgent && 'Click the Test button to choose between Test Agent or Voice AI Agent.'}
-                {hasTestAgent && !hasVoiceAIAgent && 'Click the Test button to test with your Test Agent (Voice Bundle).'}
-                {!hasTestAgent && hasVoiceAIAgent && 'Click the Test button to test with your Voice AI Agent.'}
+                Click the Play button to start a web call with your Voice Agent.
               </p>
             </div>
           )}
@@ -380,227 +481,111 @@ export default function Playground() {
                 </button>
               </nav>
             </div>
-
-            {/* Tab Content */}
-            <div className="mt-4">
-              {activeTab === 'test_agents' && (
-                <div>
-                  <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-md font-semibold text-gray-900">Test Agent Results</h3>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => refetchTestResults()}
-                      leftIcon={<RefreshCw className="h-4 w-4" />}
-                    >
-                      Refresh
-                    </Button>
-                  </div>
-                  {testVoiceAgentResults.length === 0 ? (
-                    <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
-                      <p className="text-sm text-gray-600">No test agent results found</p>
-                    </div>
-                  ) : (
-                    <div className="overflow-x-auto">
-                      <table className="min-w-full divide-y divide-gray-200">
-                        <thead className="bg-gray-50">
-                          <tr>
-                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                              Call ID
-                            </th>
-                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                              Status
-                            </th>
-                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                              Platform
-                            </th>
-                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                              Provider Call ID
-                            </th>
-                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                              Created
-                            </th>
-                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                              Actions
-                            </th>
-                          </tr>
-                        </thead>
-                        <tbody className="bg-white divide-y divide-gray-200">
-                          {testVoiceAgentResults.map((result: any) => (
-                            <tr key={result.id} className="hover:bg-gray-50">
-                              <td className="px-4 py-3 whitespace-nowrap">
-                                <button
-                                  onClick={() => handleViewTestResult(result.id)}
-                                  className="font-mono text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline"
-                                >
-                                  {result.result_id || result.id}
-                                </button>
-                              </td>
-                              <td className="px-4 py-3 whitespace-nowrap">
-                                <span
-                                  className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                                    result.status === 'completed'
-                                      ? 'bg-green-100 text-green-800'
-                                      : result.status === 'failed'
-                                      ? 'bg-red-100 text-red-800'
-                                      : result.status === 'transcribing' || result.status === 'evaluating'
-                                      ? 'bg-yellow-100 text-yellow-800'
-                                      : 'bg-gray-100 text-gray-800'
-                                  }`}
-                                >
-                                  {result.status || 'queued'}
-                                </span>
-                              </td>
-                              <td className="px-4 py-3 whitespace-nowrap">
-                                <div className="flex items-center gap-2">
-                                  <span className="text-sm text-gray-500 capitalize">
-                                    {result.agent?.voice_bundle?.name || 
-                                     (result.agent?.voice_bundle?.bundle_type === 's2s' 
-                                       ? result.agent?.voice_bundle?.s2s_model 
-                                       : result.agent?.voice_bundle?.llm_model) || 
-                                     'Test Agent'}
-                                  </span>
-                                </div>
-                              </td>
-                              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500 font-mono text-xs">
-                                {result.result_id || 'N/A'}
-                              </td>
-                              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
-                                {result.timestamp
-                                  ? new Date(result.timestamp).toLocaleString()
-                                  : 'N/A'}
-                              </td>
-                              <td className="px-4 py-3 whitespace-nowrap text-sm font-medium">
-                                <div className="flex items-center gap-2">
-                                  <button
-                                    onClick={() => handleViewTestResult(result.id)}
-                                    className="text-blue-600 hover:text-blue-900"
-                                    title="View details"
-                                  >
-                                    <Eye className="h-4 w-4" />
-                                  </button>
-                                  <button
-                                    onClick={(e) => handleDeleteTestResult(result.id, e)}
-                                    className="text-red-600 hover:text-red-900"
-                                    title="Delete"
-                                    disabled={deleteTestResultMutation.isPending}
-                                  >
-                                    <Trash2 className="h-4 w-4" />
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {activeTab === 'voice_ai_agents' && (
-                <div>
-                  <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-md font-semibold text-gray-900">Voice AI Agent Results</h3>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => refetchCallRecordings()}
-                      leftIcon={<RefreshCw className="h-4 w-4" />}
-                    >
-                      Refresh
-                    </Button>
-                  </div>
-                  {callRecordings.length === 0 ? (
-                    <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
-                      <p className="text-sm text-gray-600">No voice AI agent results found</p>
-                    </div>
-                  ) : (
-                    <div className="overflow-x-auto">
-                      <table className="min-w-full divide-y divide-gray-200">
-                        <thead className="bg-gray-50">
-                          <tr>
-                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                              Call ID
-                            </th>
-                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                              Status
-                            </th>
-                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                              Platform
-                            </th>
-                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                              Provider Call ID
-                            </th>
-                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                              Created
-                            </th>
-                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                              Actions
-                            </th>
-                          </tr>
-                        </thead>
-                        <tbody className="bg-white divide-y divide-gray-200">
-                          {callRecordings.map((recording: any) => (
-                            <tr key={recording.id} className="hover:bg-gray-50">
-                              <td className="px-4 py-3 whitespace-nowrap">
-                                <button
-                                  onClick={() => navigate(`/playground/call-recordings/${recording.call_short_id}`)}
-                                  className="font-mono text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline"
-                                >
-                                  {recording.call_short_id}
-                                </button>
-                              </td>
-                              <td className="px-4 py-3 whitespace-nowrap">
-                                <span
-                                  className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                                    recording.status === 'UPDATED'
-                                      ? 'bg-green-100 text-green-800'
-                                      : 'bg-yellow-100 text-yellow-800'
-                                  }`}
-                                >
-                                  {recording.status}
-                                </span>
-                              </td>
-                              <td className="px-4 py-3 whitespace-nowrap">
-                                <div className="flex items-center gap-2">
-                                  {recording.provider_platform === 'retell' && (
-                                    <img
-                                      src="/retellai.png"
-                                      alt="Retell"
-                                      className="h-5 w-5 object-contain"
-                                    />
-                                  )}
-                                  <span className="text-sm text-gray-500 capitalize">
-                                    {recording.provider_platform || 'N/A'}
-                                  </span>
-                                </div>
-                              </td>
-                              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500 font-mono text-xs">
-                                {recording.provider_call_id || 'N/A'}
-                              </td>
-                              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
-                                {recording.created_at
-                                  ? new Date(recording.created_at).toLocaleString()
-                                  : 'N/A'}
-                              </td>
-                              <td className="px-4 py-3 whitespace-nowrap text-sm font-medium">
-                                <button
-                                  onClick={() => navigate(`/playground/call-recordings/${recording.call_short_id}`)}
-                                  className="text-blue-600 hover:text-blue-900"
-                                >
-                                  <Eye className="h-4 w-4" />
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
+            {callRecordings.length === 0 ? (
+              <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
+                <p className="text-sm text-gray-600">No call recordings found</p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Call ID
+                      </th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Status
+                      </th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Platform
+                      </th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Provider Call ID
+                      </th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Created
+                      </th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Actions
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {callRecordings.map((recording: any) => (
+                      <tr key={recording.id} className="hover:bg-gray-50">
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <button
+                            onClick={() => handleViewCallRecording(recording.call_short_id)}
+                            className="font-mono text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline"
+                          >
+                            {recording.call_short_id}
+                          </button>
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <span
+                            className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${recording.status === 'UPDATED'
+                              ? 'bg-green-100 text-green-800'
+                              : 'bg-yellow-100 text-yellow-800'
+                              }`}
+                          >
+                            {recording.status}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <div className="flex items-center gap-2">
+                            {recording.provider_platform === 'retell' && (
+                              <img
+                                src="/retellai.png"
+                                alt="Retell"
+                                className="h-5 w-5 object-contain"
+                              />
+                            )}
+                            <span className="text-sm text-gray-500 capitalize">
+                              {recording.provider_platform || 'N/A'}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500 font-mono text-xs">
+                          {recording.provider_call_id || 'N/A'}
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                          {recording.created_at
+                            ? new Date(recording.created_at).toLocaleString()
+                            : 'N/A'}
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap text-sm font-medium">
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => handleViewCallRecording(recording.call_short_id)}
+                              className="text-blue-600 hover:text-blue-900"
+                            >
+                              <Eye className="h-4 w-4" />
+                            </button>
+                            {recording.status === 'PENDING' && (
+                              <button
+                                onClick={() => handleRefreshCallRecording(recording.call_short_id)}
+                                className="text-gray-600 hover:text-gray-900"
+                                title="Refresh"
+                              >
+                                <RefreshCw className="h-4 w-4" />
+                              </button>
+                            )}
+                            <button
+                              onClick={(e) => handleDeleteCallRecording(recording.call_short_id, e)}
+                              className="text-red-600 hover:text-red-900"
+                              title="Delete"
+                              disabled={deleteMutation.isPending}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -703,7 +688,7 @@ export default function Playground() {
               {!canMakeCall ? (
                 <div className="text-center py-4">
                   <p className="text-sm text-gray-600 mb-4">
-                    This agent is not configured for Retell web calls.
+                    This agent is not configured for web calls.
                   </p>
                   <Button
                     variant="outline"
@@ -719,9 +704,34 @@ export default function Playground() {
                       Agent: <strong>{selectedAgent?.name}</strong>
                     </p>
                     <p className="text-xs text-gray-500">
-                      Retell Agent ID: {fullAgent?.voice_ai_agent_id}
+                      Provider: {agentIntegration?.platform || 'Unknown'}
+                    </p>
+                    <p className="text-xs text-gray-500">
+                      Agent ID: {fullAgent?.voice_ai_agent_id}
                     </p>
                   </div>
+
+                  {isConnected && (
+                    <div className="h-48 overflow-y-auto bg-gray-50 rounded p-3 mb-4 space-y-2 border border-gray-200">
+                      {transcripts.length === 0 ? (
+                        <p className="text-gray-400 text-xs text-center italic">Waiting for connection...</p>
+                      ) : (
+                        transcripts.map((msg, idx) => (
+                          <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                            <div className={`max-w-[80%] rounded-lg px-3 py-2 text-sm ${msg.role === 'user'
+                              ? 'bg-blue-100 text-blue-900'
+                              : 'bg-white border border-gray-200 text-gray-800'
+                              }`}>
+                              <p className="text-xs font-semibold mb-0.5 opacity-70">
+                                {msg.role === 'user' ? 'You' : 'Agent'}
+                              </p>
+                              {msg.content}
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
 
                   {!isConnected ? (
                     <Button

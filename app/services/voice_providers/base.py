@@ -2,11 +2,11 @@
 Base Voice Provider Interface
 All voice providers should inherit from this class
 """
-from abc import ABC, abstractmethod
+from abc import ABC, abstractmethod 
 from typing import Dict, Any, Optional
 
 
-class BaseVoiceProvider(ABC):
+class BaseVoiceProvider(ABC): 
     """Base class for voice AI provider integrations."""
     
     def __init__(self, api_key: str):
@@ -62,6 +62,29 @@ class BaseVoiceProvider(ABC):
             
         Returns:
             Dictionary containing agent information
+        """
+        pass
+
+    @abstractmethod
+    def retrieve_call_metrics(self, call_id: str) -> Dict[str, Any]:
+        """
+        Retrieve call metrics and details from the voice provider.
+        
+        Args:
+            call_id: The call ID from the voice provider
+            
+        Returns:
+            Dictionary containing call information (transcript, metrics, etc.)
+        """
+        pass
+
+    @abstractmethod
+    def test_connection(self) -> bool:
+        """
+        Test the connection to the voice provider API.
+        
+        Returns:
+            True if connection is successful, raises an exception otherwise.
         """
         pass
 

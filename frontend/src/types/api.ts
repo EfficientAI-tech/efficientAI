@@ -164,6 +164,7 @@ export interface Integration {
   organization_id: string
   platform: IntegrationPlatform
   name?: string | null
+  public_key?: string | null
   is_active: boolean
   created_at: string
   updated_at: string
@@ -173,6 +174,7 @@ export interface Integration {
 export interface IntegrationCreate {
   platform: IntegrationPlatform
   api_key: string
+  public_key?: string
   name?: string | null
 }
 
