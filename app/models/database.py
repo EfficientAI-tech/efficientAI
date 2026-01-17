@@ -10,7 +10,8 @@ from app.models.enums import (
     EvaluationType, EvaluationStatus, EvaluatorResultStatus, RoleEnum, InvitationStatus,
     LanguageEnum, CallTypeEnum, CallMediumEnum, GenderEnum, AccentEnum, BackgroundNoiseEnum,
     IntegrationPlatform, ModelProvider, VoiceBundleType, TestAgentConversationStatus,
-    MetricType, MetricTrigger, CallRecordingStatus
+    MetricType, MetricTrigger, CallRecordingStatus, AlertMetricType, AlertAggregation,
+    AlertOperator, AlertNotifyFrequency, AlertStatus, AlertHistoryStatus
 )
 
 def get_enum_values(enum_class):
@@ -586,3 +587,79 @@ class CallRecording(Base):
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class Alert(Base):
+    """Alert model for configuring monitoring alerts."""
+    __tablename__ = "alerts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    
+    # Basic information
+    name = Column(String(255), nullable=False)
+    description = Column(String, nullable=True)
+    
+    # Metric condition configuration
+    metric_type = Column(String, nullable=False, default=AlertMetricType.NUMBER_OF_CALLS.value)
+    aggregation = Column(String, nullable=False, default=AlertAggregation.SUM.value)
+    operator = Column(String, nullable=False, default=AlertOperator.GREATER_THAN.value)
+    threshold_value = Column(Float, nullable=False)
+    time_window_minutes = Column(Integer, nullable=False, default=60)  # Time window for aggregation
+    
+    # Agent selection (JSON array of agent UUIDs, null means all agents)
+    agent_ids = Column(JSON, nullable=True)
+    
+    # Notification configuration
+    notify_frequency = Column(String, nullable=False, default=AlertNotifyFrequency.IMMEDIATE.value)
+    notify_emails = Column(JSON, nullable=True)  # Array of email addresses
+    notify_webhooks = Column(JSON, nullable=True)  # Array of webhook URLs (Slack, etc.)
+    
+    # Status
+    status = Column(String, nullable=False, default=AlertStatus.ACTIVE.value)
+    
+    # Metadata
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_by = Column(String, nullable=True)
+    
+    # Relationships
+    alert_history = relationship("AlertHistory", back_populates="alert", cascade="all, delete-orphan")
+
+
+class AlertHistory(Base):
+    """Alert history model for tracking triggered alerts."""
+    __tablename__ = "alert_history"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    alert_id = Column(UUID(as_uuid=True), ForeignKey("alerts.id"), nullable=False, index=True)
+    
+    # Trigger information
+    triggered_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    triggered_value = Column(Float, nullable=False)  # The actual value that triggered the alert
+    threshold_value = Column(Float, nullable=False)  # The threshold at time of trigger
+    
+    # Status tracking
+    status = Column(String, nullable=False, default=AlertHistoryStatus.TRIGGERED.value)
+    
+    # Notification tracking
+    notified_at = Column(DateTime(timezone=True), nullable=True)
+    notification_details = Column(JSON, nullable=True)  # Details of sent notifications
+    
+    # Resolution
+    acknowledged_at = Column(DateTime(timezone=True), nullable=True)
+    acknowledged_by = Column(String, nullable=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+    resolved_by = Column(String, nullable=True)
+    resolution_notes = Column(String, nullable=True)
+    
+    # Additional context
+    context_data = Column(JSON, nullable=True)  # Additional data about the trigger
+    
+    # Metadata
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    
+    # Relationships
+    alert = relationship("Alert", back_populates="alert_history")

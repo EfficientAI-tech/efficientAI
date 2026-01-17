@@ -27,6 +27,7 @@ from app.api.v1.routes import (
     playground,
     settings,
     observability,
+    alerts,
 )
 
 api_router = APIRouter()
@@ -57,4 +58,5 @@ api_router.include_router(chat.router)
 api_router.include_router(playground.router)
 api_router.include_router(settings.router)
 api_router.include_router(observability.router)
+api_router.include_router(alerts.router)
 

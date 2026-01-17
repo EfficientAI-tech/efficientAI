@@ -358,3 +358,119 @@ export interface S3Status {
   error?: string | null
 }
 
+// Alert Types
+export enum AlertMetricType {
+  NUMBER_OF_CALLS = 'number_of_calls',
+  CALL_DURATION = 'call_duration',
+  ERROR_RATE = 'error_rate',
+  SUCCESS_RATE = 'success_rate',
+  LATENCY = 'latency',
+  CUSTOM = 'custom',
+}
+
+export enum AlertAggregation {
+  SUM = 'sum',
+  AVG = 'avg',
+  COUNT = 'count',
+  MIN = 'min',
+  MAX = 'max',
+}
+
+export enum AlertOperator {
+  GREATER_THAN = '>',
+  LESS_THAN = '<',
+  GREATER_THAN_OR_EQUAL = '>=',
+  LESS_THAN_OR_EQUAL = '<=',
+  EQUAL = '=',
+  NOT_EQUAL = '!=',
+}
+
+export enum AlertNotifyFrequency {
+  IMMEDIATE = 'immediate',
+  HOURLY = 'hourly',
+  DAILY = 'daily',
+  WEEKLY = 'weekly',
+}
+
+export enum AlertStatus {
+  ACTIVE = 'active',
+  PAUSED = 'paused',
+  DISABLED = 'disabled',
+}
+
+export enum AlertHistoryStatus {
+  TRIGGERED = 'triggered',
+  NOTIFIED = 'notified',
+  ACKNOWLEDGED = 'acknowledged',
+  RESOLVED = 'resolved',
+}
+
+export interface Alert {
+  id: string
+  organization_id: string
+  name: string
+  description?: string | null
+  metric_type: AlertMetricType
+  aggregation: AlertAggregation
+  operator: AlertOperator
+  threshold_value: number
+  time_window_minutes: number
+  agent_ids?: string[] | null
+  notify_frequency: AlertNotifyFrequency
+  notify_emails?: string[] | null
+  notify_webhooks?: string[] | null
+  status: AlertStatus
+  created_at: string
+  updated_at: string
+  created_by?: string | null
+}
+
+export interface AlertCreate {
+  name: string
+  description?: string | null
+  metric_type?: AlertMetricType
+  aggregation?: AlertAggregation
+  operator?: AlertOperator
+  threshold_value: number
+  time_window_minutes?: number
+  agent_ids?: string[] | null
+  notify_frequency?: AlertNotifyFrequency
+  notify_emails?: string[]
+  notify_webhooks?: string[]
+}
+
+export interface AlertUpdate {
+  name?: string
+  description?: string | null
+  metric_type?: AlertMetricType
+  aggregation?: AlertAggregation
+  operator?: AlertOperator
+  threshold_value?: number
+  time_window_minutes?: number
+  agent_ids?: string[] | null
+  notify_frequency?: AlertNotifyFrequency
+  notify_emails?: string[]
+  notify_webhooks?: string[]
+  status?: AlertStatus
+}
+
+export interface AlertHistoryItem {
+  id: string
+  organization_id: string
+  alert_id: string
+  triggered_at: string
+  triggered_value: number
+  threshold_value: number
+  status: AlertHistoryStatus
+  notified_at?: string | null
+  notification_details?: Record<string, any> | null
+  acknowledged_at?: string | null
+  acknowledged_by?: string | null
+  resolved_at?: string | null
+  resolved_by?: string | null
+  resolution_notes?: string | null
+  context_data?: Record<string, any> | null
+  created_at: string
+  updated_at: string
+  alert?: Alert
+}

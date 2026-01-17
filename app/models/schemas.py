@@ -8,7 +8,8 @@ from app.models.enums import (
     EvaluationType, EvaluationStatus, EvaluatorResultStatus, RoleEnum, InvitationStatus,
     LanguageEnum, CallTypeEnum, CallMediumEnum, GenderEnum, AccentEnum, BackgroundNoiseEnum,
     IntegrationPlatform, ModelProvider, VoiceBundleType, TestAgentConversationStatus,
-    MetricType, MetricTrigger, CallRecordingStatus
+    MetricType, MetricTrigger, CallRecordingStatus, AlertMetricType, AlertAggregation,
+    AlertOperator, AlertNotifyFrequency, AlertStatus, AlertHistoryStatus
 )
 
 
@@ -1203,3 +1204,245 @@ class EvaluatorResultResponse(BaseModel):
     
     class Config:
         from_attributes = True
+
+
+# ============================================
+# ALERTING SCHEMAS
+# ============================================
+
+class AlertCreate(BaseModel):
+    """Schema for creating an alert."""
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
+    
+    # Metric condition
+    metric_type: AlertMetricType = AlertMetricType.NUMBER_OF_CALLS
+    aggregation: AlertAggregation = AlertAggregation.SUM
+    operator: AlertOperator = AlertOperator.GREATER_THAN
+    threshold_value: float = Field(..., description="Threshold value for the alert")
+    time_window_minutes: int = Field(default=60, ge=1, description="Time window in minutes for aggregation")
+    
+    # Agent selection (null means all agents)
+    agent_ids: Optional[List[UUID]] = None
+    
+    # Notification settings
+    notify_frequency: AlertNotifyFrequency = AlertNotifyFrequency.IMMEDIATE
+    notify_emails: Optional[List[str]] = Field(default=None, description="List of email addresses to notify")
+    notify_webhooks: Optional[List[str]] = Field(default=None, description="List of webhook URLs (Slack, etc.)")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "name": "High Call Volume Alert",
+                "description": "Alert when call volume exceeds threshold",
+                "metric_type": "number_of_calls",
+                "aggregation": "sum",
+                "operator": ">",
+                "threshold_value": 100,
+                "time_window_minutes": 60,
+                "agent_ids": None,
+                "notify_frequency": "immediate",
+                "notify_emails": ["admin@example.com"],
+                "notify_webhooks": ["https://hooks.slack.com/services/xxx"]
+            }
+        }
+
+
+class AlertUpdate(BaseModel):
+    """Schema for updating an alert."""
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    description: Optional[str] = None
+    
+    # Metric condition
+    metric_type: Optional[AlertMetricType] = None
+    aggregation: Optional[AlertAggregation] = None
+    operator: Optional[AlertOperator] = None
+    threshold_value: Optional[float] = None
+    time_window_minutes: Optional[int] = Field(default=None, ge=1)
+    
+    # Agent selection
+    agent_ids: Optional[List[UUID]] = None
+    
+    # Notification settings
+    notify_frequency: Optional[AlertNotifyFrequency] = None
+    notify_emails: Optional[List[str]] = None
+    notify_webhooks: Optional[List[str]] = None
+    
+    # Status
+    status: Optional[AlertStatus] = None
+
+
+class AlertResponse(BaseModel):
+    """Schema for alert response."""
+    id: UUID
+    organization_id: UUID
+    name: str
+    description: Optional[str]
+    
+    # Metric condition
+    metric_type: AlertMetricType
+    aggregation: AlertAggregation
+    operator: AlertOperator
+    threshold_value: float
+    time_window_minutes: int
+    
+    # Agent selection
+    agent_ids: Optional[List[UUID]]
+    
+    # Notification settings
+    notify_frequency: AlertNotifyFrequency
+    notify_emails: Optional[List[str]]
+    notify_webhooks: Optional[List[str]]
+    
+    # Status
+    status: AlertStatus
+    
+    # Metadata
+    created_at: datetime
+    updated_at: datetime
+    created_by: Optional[str]
+
+    @validator('metric_type', pre=True)
+    def convert_metric_type(cls, v):
+        """Convert string to AlertMetricType."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            v_lower = v.lower()
+            try:
+                return AlertMetricType(v_lower)
+            except ValueError:
+                for enum_member in AlertMetricType:
+                    if enum_member.name == v or enum_member.value == v:
+                        return enum_member
+                raise ValueError(f"Invalid AlertMetricType value: {v}")
+        return v
+
+    @validator('aggregation', pre=True)
+    def convert_aggregation(cls, v):
+        """Convert string to AlertAggregation."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            v_lower = v.lower()
+            try:
+                return AlertAggregation(v_lower)
+            except ValueError:
+                for enum_member in AlertAggregation:
+                    if enum_member.name == v or enum_member.value == v:
+                        return enum_member
+                raise ValueError(f"Invalid AlertAggregation value: {v}")
+        return v
+
+    @validator('operator', pre=True)
+    def convert_operator(cls, v):
+        """Convert string to AlertOperator."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            try:
+                return AlertOperator(v)
+            except ValueError:
+                for enum_member in AlertOperator:
+                    if enum_member.name == v or enum_member.value == v:
+                        return enum_member
+                raise ValueError(f"Invalid AlertOperator value: {v}")
+        return v
+
+    @validator('notify_frequency', pre=True)
+    def convert_notify_frequency(cls, v):
+        """Convert string to AlertNotifyFrequency."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            v_lower = v.lower()
+            try:
+                return AlertNotifyFrequency(v_lower)
+            except ValueError:
+                for enum_member in AlertNotifyFrequency:
+                    if enum_member.name == v or enum_member.value == v:
+                        return enum_member
+                raise ValueError(f"Invalid AlertNotifyFrequency value: {v}")
+        return v
+
+    @validator('status', pre=True)
+    def convert_status(cls, v):
+        """Convert string to AlertStatus."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            v_lower = v.lower()
+            try:
+                return AlertStatus(v_lower)
+            except ValueError:
+                for enum_member in AlertStatus:
+                    if enum_member.name == v or enum_member.value == v:
+                        return enum_member
+                raise ValueError(f"Invalid AlertStatus value: {v}")
+        return v
+    
+    class Config:
+        from_attributes = True
+
+
+class AlertHistoryResponse(BaseModel):
+    """Schema for alert history response."""
+    id: UUID
+    organization_id: UUID
+    alert_id: UUID
+    
+    # Trigger information
+    triggered_at: datetime
+    triggered_value: float
+    threshold_value: float
+    
+    # Status
+    status: AlertHistoryStatus
+    
+    # Notification tracking
+    notified_at: Optional[datetime]
+    notification_details: Optional[Dict[str, Any]]
+    
+    # Resolution
+    acknowledged_at: Optional[datetime]
+    acknowledged_by: Optional[str]
+    resolved_at: Optional[datetime]
+    resolved_by: Optional[str]
+    resolution_notes: Optional[str]
+    
+    # Additional context
+    context_data: Optional[Dict[str, Any]]
+    
+    # Metadata
+    created_at: datetime
+    updated_at: datetime
+    
+    # Related alert info (optional)
+    alert: Optional[AlertResponse] = None
+
+    @validator('status', pre=True)
+    def convert_status(cls, v):
+        """Convert string to AlertHistoryStatus."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            v_lower = v.lower()
+            try:
+                return AlertHistoryStatus(v_lower)
+            except ValueError:
+                for enum_member in AlertHistoryStatus:
+                    if enum_member.name == v or enum_member.value == v:
+                        return enum_member
+                raise ValueError(f"Invalid AlertHistoryStatus value: {v}")
+        return v
+    
+    class Config:
+        from_attributes = True
+
+
+class AlertHistoryUpdate(BaseModel):
+    """Schema for updating alert history (acknowledge/resolve)."""
+    status: Optional[AlertHistoryStatus] = None
+    acknowledged_by: Optional[str] = None
+    resolved_by: Optional[str] = None
+    resolution_notes: Optional[str] = None
