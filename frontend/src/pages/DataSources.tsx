@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import {
   Database,
   Upload,
@@ -12,6 +12,9 @@ import {
   FileAudio,
   X,
   Trash2,
+  Play,
+  Pause,
+  Volume2,
 } from 'lucide-react'
 import { S3FileInfo } from '../types/api'
 import Button from '../components/Button'
@@ -25,6 +28,13 @@ export default function DataSources() {
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [fileToDelete, setFileToDelete] = useState<S3FileInfo | null>(null)
   const [deletingFileKey, setDeletingFileKey] = useState<string | null>(null)
+  
+  // Audio player state
+  const [playingFileKey, setPlayingFileKey] = useState<string | null>(null)
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [audioUrl, setAudioUrl] = useState<string | null>(null)
+  const [loadingAudio, setLoadingAudio] = useState<string | null>(null)
+  const audioRef = useRef<HTMLAudioElement>(null)
 
   // Fetch S3 status
   const { data: s3Status, refetch: refetchStatus } = useQuery({
@@ -83,6 +93,60 @@ export default function DataSources() {
     setShowDeleteModal(false)
     setFileToDelete(null)
     setDeletingFileKey(null)
+  }
+
+  // Audio playback handlers
+  const handlePlayAudio = async (file: S3FileInfo) => {
+    // If clicking on the same file that's playing, toggle play/pause
+    if (playingFileKey === file.key && audioUrl) {
+      if (isPlaying) {
+        audioRef.current?.pause()
+        setIsPlaying(false)
+      } else {
+        audioRef.current?.play()
+        setIsPlaying(true)
+      }
+      return
+    }
+    
+    // Stop any currently playing audio
+    if (audioRef.current) {
+      audioRef.current.pause()
+      audioRef.current.currentTime = 0
+    }
+    
+    // Load new audio
+    setLoadingAudio(file.key)
+    try {
+      const { url } = await apiClient.getS3PresignedUrl(file.key)
+      setAudioUrl(url)
+      setPlayingFileKey(file.key)
+      setIsPlaying(true)
+      setLoadingAudio(null)
+      
+      // Play after state update
+      setTimeout(() => {
+        audioRef.current?.play()
+      }, 100)
+    } catch (error) {
+      console.error('Failed to get audio URL:', error)
+      setLoadingAudio(null)
+      alert('Failed to load audio file')
+    }
+  }
+
+  const handleAudioEnded = () => {
+    setIsPlaying(false)
+  }
+
+  const handleStopAudio = () => {
+    if (audioRef.current) {
+      audioRef.current.pause()
+      audioRef.current.currentTime = 0
+    }
+    setIsPlaying(false)
+    setPlayingFileKey(null)
+    setAudioUrl(null)
   }
 
   // Upload file mutation
@@ -250,7 +314,23 @@ export default function DataSources() {
                         {new Date(file.last_modified).toLocaleString()}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm">
-                        <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-2">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handlePlayAudio(file)}
+                            isLoading={loadingAudio === file.key}
+                            leftIcon={
+                              loadingAudio === file.key ? undefined :
+                              playingFileKey === file.key && isPlaying ? 
+                                <Pause className="h-4 w-4" /> : 
+                                <Play className="h-4 w-4" />
+                            }
+                            className={`${playingFileKey === file.key && isPlaying ? 'text-green-600 hover:text-green-700 bg-green-50' : 'text-blue-600 hover:text-blue-700'}`}
+                            title={playingFileKey === file.key && isPlaying ? 'Pause' : 'Play'}
+                          >
+                            {playingFileKey === file.key && isPlaying ? 'Pause' : 'Play'}
+                          </Button>
                           <Button
                             variant="ghost"
                             size="sm"
@@ -298,9 +378,55 @@ export default function DataSources() {
               </Button>
             </div>
           )}
+          
+          {/* Audio Player Bar */}
+          {playingFileKey && audioUrl && (
+            <div className="mt-4 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg p-4">
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <Volume2 className="h-5 w-5 text-blue-600" />
+                  <span className="text-sm font-medium text-gray-700">Now Playing:</span>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-gray-900 truncate">
+                    {s3Files?.files.find((f: S3FileInfo) => f.key === playingFileKey)?.filename || playingFileKey.split('/').pop()}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      const file = s3Files?.files.find((f: S3FileInfo) => f.key === playingFileKey)
+                      if (file) handlePlayAudio(file)
+                    }}
+                    className="p-2 rounded-full bg-blue-600 text-white hover:bg-blue-700 transition-colors"
+                  >
+                    {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+                  </button>
+                  <button
+                    onClick={handleStopAudio}
+                    className="p-2 rounded-full bg-gray-200 text-gray-600 hover:bg-gray-300 transition-colors"
+                    title="Stop"
+                  >
+                    <XCircle className="h-4 w-4" />
+                  </button>
+                </div>
+                <audio
+                  ref={audioRef}
+                  src={audioUrl}
+                  onEnded={handleAudioEnded}
+                  onPause={() => setIsPlaying(false)}
+                  onPlay={() => setIsPlaying(true)}
+                  controls
+                  className="h-8 flex-shrink-0"
+                />
+              </div>
+            </div>
+          )}
         </div>
       )}
-
+      
+      {/* Hidden audio element */}
+      <audio ref={audioRef} className="hidden" />
 
       {/* Upload Modal */}
       {showUploadModal && (

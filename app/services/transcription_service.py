@@ -62,11 +62,26 @@ class TranscriptionService:
 
     def _get_ai_provider(self, provider: ModelProvider, db: Session, organization_id: UUID) -> Optional[AIProvider]:
         """Get AI provider configuration from database."""
+        from sqlalchemy import func
+        
+        # Handle both string and enum comparisons (database might have uppercase or lowercase)
+        provider_value = provider.value if hasattr(provider, 'value') else provider
+        
+        # Try exact match first
         ai_provider = db.query(AIProvider).filter(
-            AIProvider.provider == provider,
+            AIProvider.provider == provider_value,
             AIProvider.organization_id == organization_id,
             AIProvider.is_active == True
         ).first()
+        
+        # If not found, try case-insensitive match
+        if not ai_provider:
+            ai_provider = db.query(AIProvider).filter(
+                func.lower(AIProvider.provider) == provider_value.lower(),
+                AIProvider.organization_id == organization_id,
+                AIProvider.is_active == True
+            ).first()
+        
         return ai_provider
 
     def _download_audio_to_temp(self, audio_file_key: str, db: Optional[Session] = None) -> str:

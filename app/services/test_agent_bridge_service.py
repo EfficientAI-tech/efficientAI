@@ -102,19 +102,21 @@ class TestAgentBridgeService:
             raise ValueError(f"Failed to decrypt integration API key: {e}")
         
         # Get voice provider
+        # Handle platform being either enum or string
+        platform_value = integration.platform.value if hasattr(integration.platform, 'value') else integration.platform
         try:
-            provider_class = get_voice_provider(integration.platform.value)
+            provider_class = get_voice_provider(platform_value)
             provider = provider_class(api_key=api_key)
         except ValueError as e:
-            raise ValueError(f"Unsupported voice provider platform: {integration.platform.value}")
+            raise ValueError(f"Unsupported voice provider platform: {platform_value}")
         
         logger.info(
             f"[Bridge] Starting bridge for evaluator {evaluator.evaluator_id}, "
-            f"agent {agent.name}, integration {integration.platform.value}"
+            f"agent {agent.name}, integration {platform_value}"
         )
         
         # Step 1: Create web call to Voice AI agent (Retell/Vapi)
-        logger.info(f"[Bridge] Step 1: Creating web call to {integration.platform.value} agent {agent.voice_ai_agent_id}")
+        logger.info(f"[Bridge] Step 1: Creating web call to {platform_value} agent {agent.voice_ai_agent_id}")
         try:
             web_call_response = provider.create_web_call(
                 agent_id=agent.voice_ai_agent_id,
@@ -171,7 +173,7 @@ class TestAgentBridgeService:
                     call_id=call_id,
                     access_token=access_token,
                     sample_rate=sample_rate,
-                    provider_platform=integration.platform.value,
+                    provider_platform=platform_value,
                     evaluator_result_id=evaluator_result_id,
                     voice_bundle_id=agent.voice_bundle_id,
                     db=db
@@ -183,7 +185,7 @@ class TestAgentBridgeService:
                 self._poll_call_results(
                     call_id=call_id,
                     provider=provider,
-                    provider_platform=integration.platform.value,
+                    provider_platform=platform_value,
                     evaluator_result_id=evaluator_result_id,
                     organization_id=organization_id,
                     db=db
@@ -410,17 +412,29 @@ class TestAgentBridgeService:
                 """Resolve API key from AIProvider (preferred), Integration, or environment."""
                 import os
                 
-                # 1) Check AIProvider table first
+                # 1) Check AIProvider table first (handle both string and enum comparisons)
+                from sqlalchemy import func
+                provider_value = provider.value if hasattr(provider, 'value') else provider
+                
                 ai_provider_rec = db.query(AIProvider).filter(
                     AIProvider.organization_id == organization_id,
-                    AIProvider.provider == provider,
+                    AIProvider.provider == provider_value,
                     AIProvider.is_active == True,
                 ).first()
+                
+                # If not found, try case-insensitive match
+                if not ai_provider_rec:
+                    ai_provider_rec = db.query(AIProvider).filter(
+                        AIProvider.organization_id == organization_id,
+                        func.lower(AIProvider.provider) == provider_value.lower(),
+                        AIProvider.is_active == True,
+                    ).first()
                 if ai_provider_rec:
                     try:
                         key = decrypt_api_key(ai_provider_rec.api_key)
                         if key:
-                            logger.debug(f"[Bridge WebRTC] Found API key for {provider.value} in AIProvider table")
+                            provider_val = provider.value if hasattr(provider, 'value') else provider
+                            logger.debug(f"[Bridge WebRTC] Found API key for {provider_val} in AIProvider table")
                             return key
                     except Exception as e:
                         logger.error(f"[Bridge WebRTC] Failed to decrypt AIProvider key for {provider}: {e}")
@@ -432,16 +446,27 @@ class TestAgentBridgeService:
                 }
                 plat = platform_map.get(provider)
                 if plat:
+                    # Handle both string and enum comparisons for platform
+                    plat_value = plat.value if hasattr(plat, 'value') else plat
                     integ = db.query(Integration).filter(
                         Integration.organization_id == organization_id,
-                        Integration.platform == plat,
+                        Integration.platform == plat_value,
                         Integration.is_active == True,
                     ).first()
+                    
+                    # If not found, try case-insensitive match
+                    if not integ:
+                        integ = db.query(Integration).filter(
+                            Integration.organization_id == organization_id,
+                            func.lower(Integration.platform) == plat_value.lower(),
+                            Integration.is_active == True,
+                        ).first()
                     if integ:
                         try:
                             key = decrypt_api_key(integ.api_key)
                             if key:
-                                logger.debug(f"[Bridge WebRTC] Found API key for {provider.value} in Integration table")
+                                provider_val = provider.value if hasattr(provider, 'value') else provider
+                                logger.debug(f"[Bridge WebRTC] Found API key for {provider_val} in Integration table")
                                 return key
                         except Exception as e:
                             logger.error(f"[Bridge WebRTC] Failed to decrypt Integration key for {provider}: {e}")
@@ -456,7 +481,8 @@ class TestAgentBridgeService:
                 if env_var:
                     env_key = os.getenv(env_var)
                     if env_key:
-                        logger.debug(f"[Bridge WebRTC] Found API key for {provider.value} in environment variable {env_var}")
+                        provider_val = provider.value if hasattr(provider, 'value') else provider
+                        logger.debug(f"[Bridge WebRTC] Found API key for {provider_val} in environment variable {env_var}")
                         return env_key
                 
                 return None
@@ -496,13 +522,17 @@ class TestAgentBridgeService:
                 
                 # Build persona description from available fields
                 # Persona model has: name, language, accent, gender, background_noise
+                # Handle enum values being either enum or string
                 persona_traits = []
                 if hasattr(persona, 'gender') and persona.gender:
-                    persona_traits.append(f"{persona.gender.value} caller")
+                    gender_val = persona.gender.value if hasattr(persona.gender, 'value') else persona.gender
+                    persona_traits.append(f"{gender_val} caller")
                 if hasattr(persona, 'accent') and persona.accent:
-                    persona_traits.append(f"with {persona.accent.value} accent")
+                    accent_val = persona.accent.value if hasattr(persona.accent, 'value') else persona.accent
+                    persona_traits.append(f"with {accent_val} accent")
                 if hasattr(persona, 'language') and persona.language:
-                    persona_traits.append(f"speaking {persona.language.value}")
+                    language_val = persona.language.value if hasattr(persona.language, 'value') else persona.language
+                    persona_traits.append(f"speaking {language_val}")
                 
                 persona_description = f"A caller named {persona.name}"
                 if persona_traits:

@@ -24,11 +24,22 @@ async def create_aiprovider(
     db: Session = Depends(get_db)
 ):
     """Create or update an AI Provider configuration"""
+    from sqlalchemy import func
     # Check if provider already exists for this organization
+    # Handle both string and enum comparisons
+    provider_value = aiprovider.provider.value if hasattr(aiprovider.provider, 'value') else aiprovider.provider
+    
     existing = db.query(AIProvider).filter(
         AIProvider.organization_id == organization_id,
-        AIProvider.provider == aiprovider.provider
+        AIProvider.provider == provider_value
     ).first()
+    
+    # If not found, try case-insensitive match
+    if not existing:
+        existing = db.query(AIProvider).filter(
+            AIProvider.organization_id == organization_id,
+            func.lower(AIProvider.provider) == provider_value.lower()
+        ).first()
     
     if existing:
         # Update existing provider

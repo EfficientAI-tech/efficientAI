@@ -17,17 +17,6 @@ def get_enum_values(enum_class):
     """Helper to get values from enum class for SQLAlchemy."""
     return [e.value for e in enum_class]
 
-    QUEUED = "queued"
-    CALL_INITIATING = "call_initiating"  # Creating the web call to Retell/Vapi
-    CALL_CONNECTING = "call_connecting"  # WebRTC connecting to Voice AI agent
-    CALL_IN_PROGRESS = "call_in_progress"  # Call is active
-    CALL_ENDED = "call_ended"  # Call finished
-    FETCHING_DETAILS = "fetching_details"  # Fetching call details from provider
-    TRANSCRIBING = "transcribing"  # Only used for S3-based transcription (legacy)
-    EVALUATING = "evaluating"  # Running LLM evaluation on transcript
-    COMPLETED = "completed"
-    FAILED = "failed"
-
 from app.database import Base
 
 

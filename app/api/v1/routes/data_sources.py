@@ -179,6 +179,57 @@ async def download_from_s3(file_key: str, api_key: str = Depends(get_api_key)):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to download file from S3: {str(e)}",
         )
+
+
+class PresignedUrlResponse(BaseModel):
+    """Schema for presigned URL response."""
+    url: str
+    expires_in: int
+
+
+@router.get("/files/{file_key:path}/presigned-url", response_model=PresignedUrlResponse, operation_id="getS3PresignedUrl")
+async def get_s3_presigned_url(
+    file_key: str,
+    expiration: int = 3600,
+    api_key: str = Depends(get_api_key),
+):
+    """
+    Get presigned URL for S3 file playback/access.
+    
+    Args:
+        file_key: S3 key (path) of the file
+        expiration: URL expiration time in seconds (default: 1 hour)
+    
+    Returns:
+        Presigned URL for file access
+    """
+    if not s3_service.is_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="S3 is not enabled or not configured.",
+        )
+    
+    try:
+        import urllib.parse
+        decoded_key = urllib.parse.unquote(file_key)
+        url = s3_service.generate_presigned_url_by_key(decoded_key, expiration=expiration)
+        return PresignedUrlResponse(url=url, expires_in=expiration)
+    except StorageError as e:
+        if "not found" in str(e).lower():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="File not found in S3.",
+            )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate presigned URL: {str(e)}",
+        )
+
  
 @router.delete("/files/{file_key:path}", response_model=MessageResponse, operation_id="deleteFromS3")
 async def delete_from_s3(file_key: str, api_key: str = Depends(get_api_key)):

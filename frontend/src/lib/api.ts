@@ -533,6 +533,13 @@ class ApiClient {
     window.URL.revokeObjectURL(url)
   }
 
+  async getS3PresignedUrl(fileKey: string, expiration: number = 3600): Promise<{ url: string; expires_in: number }> {
+    const response = await this.client.get(`/api/v1/data-sources/s3/files/${encodeURIComponent(fileKey)}/presigned-url`, {
+      params: { expiration },
+    })
+    return response.data
+  }
+
   async deleteFromS3(fileKey: string): Promise<MessageResponse> {
     const response = await this.client.delete(`/api/v1/data-sources/s3/files/${encodeURIComponent(fileKey)}`)
     return response.data

@@ -90,12 +90,23 @@ async def websocket_endpoint(
 
         def resolve_api_key_for_provider(provider: ModelProvider) -> str | None:
             """Resolve API key from AIProvider (preferred) or Integration for given provider."""
-            # 1) AIProvider
+            from sqlalchemy import func
+            # 1) AIProvider (handle both string and enum comparisons)
+            provider_value = provider.value if hasattr(provider, 'value') else provider
+            
             ai_provider_rec = db.query(AIProvider).filter(
                 AIProvider.organization_id == organization_id,
-                AIProvider.provider == provider,
+                AIProvider.provider == provider_value,
                 AIProvider.is_active == True,
             ).first()
+            
+            # If not found, try case-insensitive match
+            if not ai_provider_rec:
+                ai_provider_rec = db.query(AIProvider).filter(
+                    AIProvider.organization_id == organization_id,
+                    func.lower(AIProvider.provider) == provider_value.lower(),
+                    AIProvider.is_active == True,
+                ).first()
             if ai_provider_rec:
                 try:
                     return decrypt_api_key(ai_provider_rec.api_key)
@@ -108,11 +119,22 @@ async def websocket_endpoint(
             }
             plat = platform_map.get(provider)
             if plat:
+                # Handle both string and enum comparisons for platform
+                plat_value = plat.value if hasattr(plat, 'value') else plat
                 integ = db.query(Integration).filter(
                     Integration.organization_id == organization_id,
-                    Integration.platform == plat,
+                    Integration.platform == plat_value,
                     Integration.is_active == True,
                 ).first()
+                
+                # If not found, try case-insensitive match
+                if not integ:
+                    integ = db.query(Integration).filter(
+                        Integration.organization_id == organization_id,
+                        func.lower(Integration.platform) == plat_value.lower(),
+                        Integration.is_active == True,
+                    ).first()
+                
                 if integ:
                     try:
                         return decrypt_api_key(integ.api_key)
@@ -134,11 +156,20 @@ async def websocket_endpoint(
 
             # Fall back to Google AI Provider if no agent-specific provider found
             if not ai_provider:
+                from sqlalchemy import func
+                google_value = ModelProvider.GOOGLE.value
                 ai_provider = db.query(AIProvider).filter(
                     AIProvider.organization_id == organization_id,
-                    AIProvider.provider == ModelProvider.GOOGLE,
+                    AIProvider.provider == google_value,
                     AIProvider.is_active == True
                 ).first()
+                # If not found, try case-insensitive match
+                if not ai_provider:
+                    ai_provider = db.query(AIProvider).filter(
+                        AIProvider.organization_id == organization_id,
+                        func.lower(AIProvider.provider) == google_value.lower(),
+                        AIProvider.is_active == True
+                    ).first()
 
             if not ai_provider:
                 await websocket.close(
@@ -640,15 +671,27 @@ async def bot_connect(
     # Determine which AI Provider to use based on agent configuration
     ai_provider = None
     agent = None
+    voice_bundle = None
+    use_voice_bundle_pipeline = False
     
     if agent_id:
         try:
-            from app.models.database import Agent
+            from app.models.database import Agent, VoiceBundle
             agent_uuid = UUID(agent_id)
             agent = db.query(Agent).filter(
                 Agent.id == agent_uuid,
                 Agent.organization_id == organization_id
             ).first()
+            
+            # Check if agent has a voice bundle (stt_llm_tts type)
+            if agent and agent.voice_bundle_id:
+                voice_bundle = db.query(VoiceBundle).filter(
+                    VoiceBundle.id == agent.voice_bundle_id,
+                    VoiceBundle.organization_id == organization_id
+                ).first()
+                if voice_bundle and voice_bundle.bundle_type == "stt_llm_tts":
+                    use_voice_bundle_pipeline = True
+                    print(f"[BACKEND] ✅ Using custom voice bundle: {voice_bundle.name}")
             
             if agent and agent.ai_provider_id:
                 ai_provider = db.query(AIProvider).filter(
@@ -659,22 +702,95 @@ async def bot_connect(
         except ValueError:
             pass
     
-    # Fall back to Google AI Provider if no agent-specific provider found
-    if not ai_provider:
-        ai_provider = db.query(AIProvider).filter(
-            AIProvider.organization_id == organization_id,
-            AIProvider.provider == ModelProvider.GOOGLE,
-            AIProvider.is_active == True
-        ).first()
-    
-    if not ai_provider:
-        print("[BACKEND] ❌ AI Provider not configured")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="AI Provider not configured. Please configure an AI Provider in AI Providers settings or select one when creating the agent."
-        )
-    
-    print(f"[BACKEND] ✅ AI Provider found: {ai_provider.provider.value}")
+    # For custom voice bundles (stt_llm_tts), we don't need a Google provider
+    # The voice bundle has its own STT/LLM/TTS providers configured
+    if not use_voice_bundle_pipeline:
+        # Fall back to Google AI Provider if no agent-specific provider found (needed for S2S/Gemini path)
+        if not ai_provider:
+            from sqlalchemy import func
+            google_value = ModelProvider.GOOGLE.value
+            ai_provider = db.query(AIProvider).filter(
+                AIProvider.organization_id == organization_id,
+                AIProvider.provider == google_value,
+                AIProvider.is_active == True
+            ).first()
+            # If not found, try case-insensitive match
+            if not ai_provider:
+                ai_provider = db.query(AIProvider).filter(
+                    AIProvider.organization_id == organization_id,
+                    func.lower(AIProvider.provider) == google_value.lower(),
+                    AIProvider.is_active == True
+                ).first()
+        
+        if not ai_provider:
+            print("[BACKEND] ❌ AI Provider not configured")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="AI Provider not configured. Please configure an AI Provider in AI Providers settings or select one when creating the agent."
+            )
+        
+        provider_val = ai_provider.provider.value if hasattr(ai_provider.provider, 'value') else ai_provider.provider
+        print(f"[BACKEND] ✅ AI Provider found: {provider_val}")
+    else:
+        # For voice bundle pipeline, verify the required providers are configured
+        from sqlalchemy import func
+        missing_providers = []
+        
+        def check_provider(provider_enum):
+            """Check if a provider is configured (either as AIProvider or Integration)."""
+            if not provider_enum:
+                return True  # Not required
+            
+            provider_value = provider_enum.value if hasattr(provider_enum, 'value') else str(provider_enum)
+            
+            # Check AIProvider
+            found = db.query(AIProvider).filter(
+                AIProvider.organization_id == organization_id,
+                AIProvider.is_active == True,
+            ).filter(
+                (AIProvider.provider == provider_value) | 
+                (func.lower(AIProvider.provider) == provider_value.lower())
+            ).first()
+            
+            if found:
+                return True
+            
+            # Check Integration for Deepgram and Cartesia
+            platform_map = {
+                'deepgram': IntegrationPlatform.DEEPGRAM,
+                'cartesia': IntegrationPlatform.CARTESIA,
+            }
+            plat = platform_map.get(provider_value.lower())
+            if plat:
+                plat_value = plat.value if hasattr(plat, 'value') else plat
+                found = db.query(Integration).filter(
+                    Integration.organization_id == organization_id,
+                    Integration.is_active == True,
+                ).filter(
+                    (Integration.platform == plat_value) | 
+                    (func.lower(Integration.platform) == plat_value.lower())
+                ).first()
+                if found:
+                    return True
+            
+            return False
+        
+        # Check required providers for the voice bundle
+        if voice_bundle.stt_provider and not check_provider(voice_bundle.stt_provider):
+            missing_providers.append(f"STT: {voice_bundle.stt_provider}")
+        if voice_bundle.llm_provider and not check_provider(voice_bundle.llm_provider):
+            missing_providers.append(f"LLM: {voice_bundle.llm_provider}")
+        if voice_bundle.tts_provider and not check_provider(voice_bundle.tts_provider):
+            missing_providers.append(f"TTS: {voice_bundle.tts_provider}")
+        
+        if missing_providers:
+            print(f"[BACKEND] ❌ Missing providers for voice bundle: {missing_providers}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Missing AI providers for voice bundle: {', '.join(missing_providers)}. Please configure them in Integrations settings."
+            )
+        
+        print(f"[BACKEND] ✅ Voice bundle providers configured")
     
     # Determine WebSocket protocol based on request
     scheme = "wss" if request.url.scheme == "https" else "ws"

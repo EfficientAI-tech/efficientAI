@@ -97,6 +97,17 @@ def process_evaluator_result_task(self, result_id: str):
         import json
         import re
         
+        # Helper function to compare provider values (handles string vs enum)
+        def provider_matches(db_provider, target_enum):
+            """Compare provider field (could be string or enum) with target enum."""
+            if db_provider is None:
+                return False
+            if isinstance(db_provider, str):
+                return db_provider.lower() == target_enum.value.lower()
+            if hasattr(db_provider, 'value'):
+                return db_provider.value.lower() == target_enum.value.lower()
+            return db_provider == target_enum
+        
         result_uuid = UUID(result_id)
         result = db.query(EvaluatorResult).filter(EvaluatorResult.id == result_uuid).first()
         
@@ -190,7 +201,7 @@ def process_evaluator_result_task(self, result_id: str):
                 stt_model = "whisper-1"  # OpenAI Whisper API model
                 
                 # Prefer OpenAI for transcription, but can be extended
-                openai_provider = next((p for p in ai_providers if p.provider == ModelProvider.OPENAI), None)
+                openai_provider = next((p for p in ai_providers if provider_matches(p.provider, ModelProvider.OPENAI)), None)
                 if not openai_provider:
                     logger.warning(f"[EvaluatorResult {result.result_id}] No OpenAI provider found, using default whisper-1")
                 else:
@@ -234,7 +245,8 @@ def process_evaluator_result_task(self, result_id: str):
             
             logger.info(f"[EvaluatorResult {result.result_id}] ✓ Found {len(enabled_metrics)} enabled metrics")
             for metric in enabled_metrics:
-                logger.debug(f"[EvaluatorResult {result.result_id}]   - {metric.name} ({metric.metric_type.value})")
+                metric_type_val = metric.metric_type.value if hasattr(metric.metric_type, 'value') else metric.metric_type
+                logger.debug(f"[EvaluatorResult {result.result_id}]   - {metric.name} ({metric_type_val})")
             
             # Step 5: Evaluate against enabled metrics using LLM
             metric_scores = {}
@@ -246,57 +258,79 @@ def process_evaluator_result_task(self, result_id: str):
                 logger.info(f"[EvaluatorResult {result.result_id}] Status updated: TRANSCRIBING -> EVALUATING")
                 logger.info(f"[EvaluatorResult {result.result_id}] Step 5: Starting metric evaluation")
                 # Build context for evaluation
-                agent_objective = agent.description if agent and agent.description else f"The agent's objective is to handle {agent.call_type.value if agent and agent.call_type else 'conversations'}."
+                # Handle enum values being either enum or string
+                call_type_val = (agent.call_type.value if hasattr(agent.call_type, 'value') else agent.call_type) if agent and agent.call_type else 'conversations'
+                language_val = (persona.language.value if hasattr(persona.language, 'value') else persona.language) if persona and persona.language else 'N/A'
+                agent_objective = agent.description if agent and agent.description else f"The agent's objective is to handle {call_type_val}."
                 scenario_context = scenario.description if scenario and scenario.description else ""
                 scenario_goals = scenario.required_info if scenario and scenario.required_info else {}
                 
-                # Build evaluation prompt
-                evaluation_prompt = f"""You are evaluating a conversation transcript to determine how well the agent performed against specific metrics.
+                # Build metric key mapping for later use
+                metric_key_map = {}  # metric_key -> metric object
+                for metric in enabled_metrics:
+                    metric_key = metric.name.lower().replace(" ", "_")
+                    metric_key_map[metric_key] = metric
+                    # Also map original name for fuzzy matching
+                    metric_key_map[metric.name.lower()] = metric
+                
+                # Build evaluation prompt with STRICT format requirements
+                evaluation_prompt = f"""You are evaluating a conversation transcript. You MUST evaluate ONLY the specific metrics listed below and use the EXACT metric keys provided.
 
-Agent Information:
+## Agent Information
 - Name: {agent.name if agent else 'Unknown'}
 - Objective/Purpose: {agent_objective}
-- Call Type: {agent.call_type.value if agent and agent.call_type else 'N/A'}
-- Language: {persona.language.value if persona and persona.language else 'N/A'}
+- Call Type: {call_type_val if agent and agent.call_type else 'N/A'}
+- Language: {language_val}
 
-Scenario Information:
+## Scenario Information
 - Name: {scenario.name if scenario else 'Unknown'}
 - Description: {scenario_context}
 - Required Information: {json.dumps(scenario_goals) if scenario_goals else 'N/A'}
 
-Conversation Transcript:
+## Conversation Transcript
 {transcription}
 
-Please evaluate this conversation against the following metrics and provide scores:
+## Metrics to Evaluate (use EXACT keys below)
 """
                 
-                # Add metric descriptions to prompt
+                # Add metric descriptions to prompt with exact keys
                 for metric in enabled_metrics:
+                    metric_key = metric.name.lower().replace(" ", "_")
                     metric_desc = metric.description or f"Evaluate {metric.name}"
-                    if metric.metric_type.value == "rating":
-                        evaluation_prompt += f"\n- {metric.name} (rating 0.0-1.0): {metric_desc}"
-                    elif metric.metric_type.value == "boolean":
-                        evaluation_prompt += f"\n- {metric.name} (true/false): {metric_desc}"
-                    elif metric.metric_type.value == "number":
-                        evaluation_prompt += f"\n- {metric.name} (numeric value): {metric_desc}"
+                    m_type = metric.metric_type.value if hasattr(metric.metric_type, 'value') else metric.metric_type
+                    if m_type == "rating":
+                        evaluation_prompt += f'\n- "{metric_key}" (rating 0.0-1.0): {metric_desc}'
+                    elif m_type == "boolean":
+                        evaluation_prompt += f'\n- "{metric_key}" (true/false): {metric_desc}'
+                    elif m_type == "number":
+                        evaluation_prompt += f'\n- "{metric_key}" (numeric value): {metric_desc}'
                 
                 evaluation_prompt += f"""
 
-Respond in JSON format with the following structure:
+## REQUIRED Response Format
+You MUST respond with ONLY a JSON object using the EXACT metric keys listed above. No other keys allowed.
+
+Example format:
 {{
 """
                 for metric in enabled_metrics:
                     metric_key = metric.name.lower().replace(" ", "_")
-                    if metric.metric_type.value == "rating":
-                        evaluation_prompt += f'    "{metric_key}": 0.0-1.0,\n'
-                    elif metric.metric_type.value == "boolean":
-                        evaluation_prompt += f'    "{metric_key}": true/false,\n'
-                    elif metric.metric_type.value == "number":
-                        evaluation_prompt += f'    "{metric_key}": <numeric_value>,\n'
+                    m_type = metric.metric_type.value if hasattr(metric.metric_type, 'value') else metric.metric_type
+                    if m_type == "rating":
+                        evaluation_prompt += f'  "{metric_key}": 0.75,\n'
+                    elif m_type == "boolean":
+                        evaluation_prompt += f'  "{metric_key}": true,\n'
+                    elif m_type == "number":
+                        evaluation_prompt += f'  "{metric_key}": 5,\n'
                 
                 evaluation_prompt += """}
 
-Only respond with valid JSON, no additional text."""
+CRITICAL RULES:
+1. Use the EXACT metric keys shown above - copy them character-for-character
+2. Each value must be a SINGLE NUMBER (not an object with score/comments)
+3. Do NOT wrap in "metrics" or any other object
+4. Do NOT add comments or explanations
+5. Return ONLY the JSON object, nothing else"""
                 
                 # Call LLM service for evaluation
                 try:
@@ -305,8 +339,8 @@ Only respond with valid JSON, no additional text."""
                     llm_model = "gpt-4o"  # Default model (user mentioned GPT-5, but gpt-4o is current best)
                     
                     # Check for available AI providers - can be extended to Gemini, etc.
-                    openai_provider = next((p for p in ai_providers if p.provider == ModelProvider.OPENAI), None)
-                    google_provider = next((p for p in ai_providers if p.provider == ModelProvider.GOOGLE), None)
+                    openai_provider = next((p for p in ai_providers if provider_matches(p.provider, ModelProvider.OPENAI)), None)
+                    google_provider = next((p for p in ai_providers if provider_matches(p.provider, ModelProvider.GOOGLE)), None)
                     
                     # For now, prefer OpenAI. Can be extended to check for Gemini key:
                     # if google_provider:
@@ -316,13 +350,28 @@ Only respond with valid JSON, no additional text."""
                     if not openai_provider:
                         logger.warning(f"[EvaluatorResult {result.result_id}] No OpenAI provider found, evaluation may fail")
                     else:
-                        logger.info(f"[EvaluatorResult {result.result_id}] Using {llm_provider.value} provider with model: {llm_model}")
+                        llm_provider_val = llm_provider.value if hasattr(llm_provider, 'value') else llm_provider
+                        logger.info(f"[EvaluatorResult {result.result_id}] Using {llm_provider_val} provider with model: {llm_model}")
                     
                     logger.info(f"[EvaluatorResult {result.result_id}] Building evaluation prompt with {len(enabled_metrics)} metrics")
                     logger.debug(f"[EvaluatorResult {result.result_id}] Evaluation prompt length: {len(evaluation_prompt)} characters")
                     
+                    # Build the list of exact metric keys for system message
+                    exact_keys = [metric.name.lower().replace(" ", "_") for metric in enabled_metrics]
+                    
                     messages = [
-                        {"role": "system", "content": "You are an expert conversation evaluator. Analyze conversations objectively and provide structured evaluations in JSON format."},
+                        {"role": "system", "content": f"""You are an expert conversation evaluator. You MUST follow these rules STRICTLY:
+
+1. Return ONLY valid JSON - no markdown, no explanations, no comments
+2. Use ONLY these exact metric keys (copy-paste them exactly): {json.dumps(exact_keys)}
+3. Each value must be a single number (0.0-1.0 for ratings, 0 or 1 for boolean) - NO nested objects, NO comments
+4. Do NOT rename, abbreviate, or modify the metric keys in any way
+
+Example of CORRECT format:
+{{"follow_instructions": 0.8, "clarity_and_empathy": 0.7}}
+
+Example of WRONG format (DO NOT do this):
+{{"metrics": {{"Clarity": {{"score": 7}}}}}}"""},
                         {"role": "user", "content": evaluation_prompt}
                     ]
                     
@@ -361,32 +410,127 @@ Only respond with valid JSON, no additional text."""
                     except json.JSONDecodeError as e:
                         logger.warning(f"[EvaluatorResult {result.result_id}] JSON parsing failed, attempting regex extraction: {e}")
                         # If JSON parsing fails, try to extract JSON object from text
-                        json_match = re.search(r'\{[^{}]*\}', response_text, re.DOTALL)
+                        json_match = re.search(r'\{[\s\S]*\}', response_text)
                         if json_match:
-                            evaluation_data = json.loads(json_match.group())
-                            logger.info(f"[EvaluatorResult {result.result_id}] ✓ Extracted JSON using regex")
+                            try:
+                                evaluation_data = json.loads(json_match.group())
+                                logger.info(f"[EvaluatorResult {result.result_id}] ✓ Extracted JSON using regex")
+                            except json.JSONDecodeError:
+                                raise ValueError("Could not parse extracted JSON")
                         else:
                             raise ValueError("Could not parse LLM response as JSON")
                     
-                    # Map LLM response to metric scores
+                    # Handle nested response formats (e.g., {"metrics": {...}} or {"score": ..., "comments": ...})
+                    logger.info(f"[EvaluatorResult {result.result_id}] Normalizing LLM response format")
+                    logger.debug(f"[EvaluatorResult {result.result_id}] Raw evaluation_data keys: {list(evaluation_data.keys())}")
+                    
+                    # If response has a "metrics" wrapper, unwrap it
+                    if "metrics" in evaluation_data and isinstance(evaluation_data["metrics"], dict):
+                        evaluation_data = evaluation_data["metrics"]
+                        logger.debug(f"[EvaluatorResult {result.result_id}] Unwrapped 'metrics' object")
+                    
+                    # Helper function to extract score from various formats
+                    def extract_score(value):
+                        """Extract numeric/boolean score from various response formats."""
+                        if value is None:
+                            return None
+                        # Direct value
+                        if isinstance(value, (int, float, bool)):
+                            return value
+                        # Nested object with 'score' field
+                        if isinstance(value, dict):
+                            if 'score' in value:
+                                return value['score']
+                            if 'value' in value:
+                                return value['value']
+                            if 'rating' in value:
+                                return value['rating']
+                        # String that might be a number
+                        if isinstance(value, str):
+                            try:
+                                return float(value)
+                            except ValueError:
+                                if value.lower() in ('true', 'yes'):
+                                    return True
+                                if value.lower() in ('false', 'no'):
+                                    return False
+                        return None
+                    
+                    # Helper function to find matching key in response (case-insensitive, fuzzy)
+                    def find_matching_key(target_key, response_keys):
+                        """Find a matching key in the response, with fuzzy matching."""
+                        target_lower = target_key.lower().replace(" ", "_").replace("-", "_")
+                        target_words = set(target_lower.replace("_", " ").split())
+                        
+                        # Exact match (case-insensitive)
+                        for key in response_keys:
+                            if key.lower().replace(" ", "_").replace("-", "_") == target_lower:
+                                return key
+                        
+                        # Partial match (key contains target or target contains key)
+                        for key in response_keys:
+                            key_lower = key.lower().replace(" ", "_").replace("-", "_")
+                            if target_lower in key_lower or key_lower in target_lower:
+                                return key
+                        
+                        # Word overlap match
+                        best_match = None
+                        best_overlap = 0
+                        for key in response_keys:
+                            key_words = set(key.lower().replace("_", " ").replace("-", " ").split())
+                            overlap = len(target_words & key_words)
+                            if overlap > best_overlap:
+                                best_overlap = overlap
+                                best_match = key
+                        
+                        if best_overlap >= 1:  # At least one word matches
+                            return best_match
+                        
+                        return None
+                    
+                    # Map LLM response to metric scores with fuzzy matching
                     logger.info(f"[EvaluatorResult {result.result_id}] Mapping LLM response to metric scores")
+                    response_keys = list(evaluation_data.keys())
+                    logger.debug(f"[EvaluatorResult {result.result_id}] Response keys: {response_keys}")
+                    
                     for metric in enabled_metrics:
                         metric_key = metric.name.lower().replace(" ", "_")
-                        score = evaluation_data.get(metric_key)
+                        m_type = metric.metric_type.value if hasattr(metric.metric_type, 'value') else metric.metric_type
+                        
+                        # Try exact key first
+                        raw_score = evaluation_data.get(metric_key)
+                        
+                        # If not found, try fuzzy matching
+                        if raw_score is None:
+                            matched_key = find_matching_key(metric.name, response_keys)
+                            if matched_key:
+                                raw_score = evaluation_data.get(matched_key)
+                                logger.debug(f"[EvaluatorResult {result.result_id}]   Fuzzy matched '{metric.name}' -> '{matched_key}'")
+                        
+                        # Extract score from various formats
+                        score = extract_score(raw_score)
                         
                         # Validate and convert score based on metric type
-                        if metric.metric_type.value == "rating":
+                        if m_type == "rating":
                             if score is not None:
                                 try:
                                     score = float(score)
+                                    # If score is 0-10 range, normalize to 0-1
+                                    if score > 1.0:
+                                        score = score / 10.0
                                     # Clamp to 0.0-1.0 range
                                     score = max(0.0, min(1.0, score))
                                 except (ValueError, TypeError):
                                     score = None
-                        elif metric.metric_type.value == "boolean":
+                        elif m_type == "boolean":
                             if score is not None:
-                                score = bool(score)
-                        elif metric.metric_type.value == "number":
+                                if isinstance(score, bool):
+                                    pass  # Already boolean
+                                elif isinstance(score, (int, float)):
+                                    score = score > 0.5 if score <= 1 else score > 5  # Handle 0-1 or 0-10 ranges
+                                else:
+                                    score = bool(score)
+                        elif m_type == "number":
                             if score is not None:
                                 try:
                                     score = float(score)
@@ -395,20 +539,25 @@ Only respond with valid JSON, no additional text."""
                         
                         metric_scores[str(metric.id)] = {
                             "value": score,
-                            "type": metric.metric_type.value,
+                            "type": m_type.lower() if isinstance(m_type, str) else m_type,
                             "metric_name": metric.name
                         }
-                        logger.debug(f"[EvaluatorResult {result.result_id}]   - {metric.name}: {score}")
+                        logger.debug(f"[EvaluatorResult {result.result_id}]   - {metric.name}: {score} (raw: {raw_score})")
                     
-                    logger.info(f"[EvaluatorResult {result.result_id}] ✓ Successfully evaluated {len(metric_scores)} metrics")
+                    # Log summary of successful evaluations
+                    successful = sum(1 for m in metric_scores.values() if m.get("value") is not None)
+                    logger.info(f"[EvaluatorResult {result.result_id}] ✓ Successfully evaluated {successful}/{len(metric_scores)} metrics")
                         
                 except Exception as e:
-                    logger.error(f"[EvaluatorResult {result.result_id}] ✗ LLM evaluation failed: {e}", exc_info=True)
+                    # Use str() to avoid format issues with curly braces in error messages
+                    error_msg = str(e).replace("{", "{{").replace("}", "}}")
+                    logger.error(f"[EvaluatorResult {result.result_id}] ✗ LLM evaluation failed: {error_msg}", exc_info=True)
                     # If LLM evaluation fails, mark metrics as None but don't fail the whole task
                     for metric in enabled_metrics:
+                        m_type = metric.metric_type.value if hasattr(metric.metric_type, 'value') else metric.metric_type
                         metric_scores[str(metric.id)] = {
                             "value": None,
-                            "type": metric.metric_type.value,
+                            "type": m_type.lower() if isinstance(m_type, str) else m_type,
                             "metric_name": metric.name,
                             "error": str(e)
                         }

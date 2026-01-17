@@ -33,16 +33,28 @@ async def create_integration(
     encrypted_api_key = encrypt_api_key(integration_data.api_key)
     
     # Check if integration already exists for this platform
+    # Handle both string and enum comparisons for platform
+    from sqlalchemy import func
+    platform_value = integration_data.platform.value if hasattr(integration_data.platform, 'value') else integration_data.platform
+    
     existing = db.query(Integration).filter(
         Integration.organization_id == organization_id,
-        Integration.platform == integration_data.platform,
+        Integration.platform == platform_value,
         Integration.is_active == True
     ).first()
+    
+    # If not found, try case-insensitive match
+    if not existing:
+        existing = db.query(Integration).filter(
+            Integration.organization_id == organization_id,
+            func.lower(Integration.platform) == platform_value.lower(),
+            Integration.is_active == True
+        ).first()
     
     if existing:
         raise HTTPException(
             status_code=400,
-            detail=f"An active integration for {integration_data.platform.value} already exists"
+            detail=f"An active integration for {platform_value} already exists"
         )
     
     integration = Integration(
