@@ -533,6 +533,38 @@ class InvitationResponse(BaseModel):
     created_at: datetime
     organization_name: Optional[str] = None  # Include organization name
 
+    @validator('role', pre=True)
+    def convert_role(cls, v):
+        """Convert string to RoleEnum (handles uppercase DB values)."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            v_lower = v.lower()
+            try:
+                return RoleEnum(v_lower)
+            except ValueError:
+                for enum_member in RoleEnum:
+                    if enum_member.name == v or enum_member.value == v:
+                        return enum_member
+                raise ValueError(f"Invalid RoleEnum value: {v}")
+        return v
+
+    @validator('status', pre=True)
+    def convert_status(cls, v):
+        """Convert string to InvitationStatus (handles uppercase DB values)."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            v_lower = v.lower()
+            try:
+                return InvitationStatus(v_lower)
+            except ValueError:
+                for enum_member in InvitationStatus:
+                    if enum_member.name == v or enum_member.value == v:
+                        return enum_member
+                raise ValueError(f"Invalid InvitationStatus value: {v}")
+        return v
+
     class Config:
         from_attributes = True
 
