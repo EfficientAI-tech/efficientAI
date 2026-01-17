@@ -124,10 +124,12 @@ async def get_profile(
             Organization.id == membership.organization_id
         ).first()
         if org:
+            # Handle role being either enum or string
+            role_value = membership.role.value if hasattr(membership.role, 'value') else membership.role
             organizations.append({
                 "id": org.id,
                 "name": org.name,
-                "role": membership.role.value,
+                "role": role_value,
                 "joined_at": membership.joined_at.isoformat()
             })
     
@@ -187,10 +189,12 @@ async def update_profile(
             Organization.id == membership.organization_id
         ).first()
         if org:
+            # Handle role being either enum or string
+            role_value = membership.role.value if hasattr(membership.role, 'value') else membership.role
             organizations.append({
                 "id": org.id,
                 "name": org.name,
-                "role": membership.role.value,
+                "role": role_value,
                 "joined_at": membership.joined_at.isoformat()
             })
     

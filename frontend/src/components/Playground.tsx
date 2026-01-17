@@ -8,6 +8,7 @@ import Button from './Button'
 import { useToast } from '../hooks/useToast'
 import { RetellWebClient } from 'retell-client-js-sdk'
 import Vapi from '@vapi-ai/web'
+import VoiceAgent from './VoiceAgent'
 
 // Type for RetellWebClient - using the actual SDK methods
 type RetellWebClientWithMethods = RetellWebClient & {
@@ -82,6 +83,11 @@ export default function Playground() {
   const hasWebCallEnabled = fullAgent?.call_medium === 'web_call'
 
   const canMakeCall = (isRetellAgent || isVapiAgent) && hasWebCallEnabled && fullAgent?.voice_ai_agent_id
+
+  // Check if agent has Test Agent capabilities (voice bundle with STT/TTS/LLM)
+  const hasTestAgent = fullAgent?.voice_bundle_id != null
+  // Check if agent has Voice AI Agent capabilities (Retell/Vapi integration)
+  const hasVoiceAIAgent = canMakeCall
 
   // Initialize Clients when modal opens
   useEffect(() => {
@@ -393,6 +399,39 @@ export default function Playground() {
     }
   }
 
+  // Delete mutation for call recordings
+  const deleteMutation = useMutation({
+    mutationFn: (callShortId: string) => apiClient.deleteCallRecording(callShortId),
+    onSuccess: () => {
+      showToast('Call recording deleted successfully', 'success')
+      queryClient.invalidateQueries({ queryKey: ['call-recordings'] })
+    },
+    onError: (error: any) => {
+      showToast(error?.response?.data?.detail || 'Failed to delete call recording', 'error')
+    },
+  })
+
+  const handleViewCallRecording = (callShortId: string) => {
+    navigate(`/playground/call-recordings/${callShortId}`)
+  }
+
+  const handleRefreshCallRecording = async (callShortId: string) => {
+    try {
+      await apiClient.refreshCallRecording(callShortId)
+      refetchCallRecordings()
+      showToast('Call recording refreshed', 'success')
+    } catch (error: any) {
+      showToast(error?.response?.data?.detail || 'Failed to refresh call recording', 'error')
+    }
+  }
+
+  const handleDeleteCallRecording = (callShortId: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (window.confirm('Are you sure you want to delete this call recording? This action cannot be undone.')) {
+      deleteMutation.mutate(callShortId)
+    }
+  }
+
 
   return (
     <>
@@ -481,109 +520,216 @@ export default function Playground() {
                 </button>
               </nav>
             </div>
-            {callRecordings.length === 0 ? (
-              <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
-                <p className="text-sm text-gray-600">No call recordings found</p>
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-gray-200">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Call ID
-                      </th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Status
-                      </th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Platform
-                      </th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Provider Call ID
-                      </th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Created
-                      </th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Actions
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="bg-white divide-y divide-gray-200">
-                    {callRecordings.map((recording: any) => (
-                      <tr key={recording.id} className="hover:bg-gray-50">
-                        <td className="px-4 py-3 whitespace-nowrap">
-                          <button
-                            onClick={() => handleViewCallRecording(recording.call_short_id)}
-                            className="font-mono text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline"
-                          >
-                            {recording.call_short_id}
-                          </button>
-                        </td>
-                        <td className="px-4 py-3 whitespace-nowrap">
-                          <span
-                            className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${recording.status === 'UPDATED'
-                              ? 'bg-green-100 text-green-800'
-                              : 'bg-yellow-100 text-yellow-800'
-                              }`}
-                          >
-                            {recording.status}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 whitespace-nowrap">
-                          <div className="flex items-center gap-2">
-                            {recording.provider_platform === 'retell' && (
-                              <img
-                                src="/retellai.png"
-                                alt="Retell"
-                                className="h-5 w-5 object-contain"
-                              />
-                            )}
-                            <span className="text-sm text-gray-500 capitalize">
-                              {recording.provider_platform || 'N/A'}
-                            </span>
-                          </div>
-                        </td>
-                        <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500 font-mono text-xs">
-                          {recording.provider_call_id || 'N/A'}
-                        </td>
-                        <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
-                          {recording.created_at
-                            ? new Date(recording.created_at).toLocaleString()
-                            : 'N/A'}
-                        </td>
-                        <td className="px-4 py-3 whitespace-nowrap text-sm font-medium">
-                          <div className="flex items-center gap-2">
-                            <button
-                              onClick={() => handleViewCallRecording(recording.call_short_id)}
-                              className="text-blue-600 hover:text-blue-900"
-                            >
-                              <Eye className="h-4 w-4" />
-                            </button>
-                            {recording.status === 'PENDING' && (
+            {/* Test Agents Tab Content */}
+            {activeTab === 'test_agents' && (
+              <div className="mt-4">
+                {testVoiceAgentResults.length === 0 ? (
+                  <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
+                    <p className="text-sm text-gray-600">No test agent results found</p>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full divide-y divide-gray-200">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Test ID
+                          </th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Status
+                          </th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Agent
+                          </th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Created
+                          </th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Actions
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody className="bg-white divide-y divide-gray-200">
+                        {testVoiceAgentResults.map((result: any) => (
+                          <tr key={result.id} className="hover:bg-gray-50">
+                            <td className="px-4 py-3 whitespace-nowrap">
                               <button
-                                onClick={() => handleRefreshCallRecording(recording.call_short_id)}
-                                className="text-gray-600 hover:text-gray-900"
-                                title="Refresh"
+                                onClick={() => handleViewTestResult(result.id)}
+                                className="font-mono text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline"
                               >
-                                <RefreshCw className="h-4 w-4" />
+                                {result.id.substring(0, 8)}...
                               </button>
-                            )}
-                            <button
-                              onClick={(e) => handleDeleteCallRecording(recording.call_short_id, e)}
-                              className="text-red-600 hover:text-red-900"
-                              title="Delete"
-                              disabled={deleteMutation.isPending}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap">
+                              <span
+                                className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                                  result.status === 'completed'
+                                    ? 'bg-green-100 text-green-800'
+                                    : result.status === 'failed'
+                                    ? 'bg-red-100 text-red-800'
+                                    : 'bg-yellow-100 text-yellow-800'
+                                }`}
+                              >
+                                {result.status}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                              {result.agent?.name || 'N/A'}
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                              {result.created_at
+                                ? new Date(result.created_at).toLocaleString()
+                                : 'N/A'}
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm font-medium">
+                              <div className="flex items-center gap-2">
+                                <button
+                                  onClick={() => handleViewTestResult(result.id)}
+                                  className="text-blue-600 hover:text-blue-900"
+                                >
+                                  <Eye className="h-4 w-4" />
+                                </button>
+                                <button
+                                  onClick={() => refetchTestResults()}
+                                  className="text-gray-600 hover:text-gray-900"
+                                  title="Refresh"
+                                >
+                                  <RefreshCw className="h-4 w-4" />
+                                </button>
+                                <button
+                                  onClick={(e) => handleDeleteTestResult(result.id, e)}
+                                  className="text-red-600 hover:text-red-900"
+                                  title="Delete"
+                                  disabled={deleteTestResultMutation.isPending}
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Voice AI Agents Tab Content */}
+            {activeTab === 'voice_ai_agents' && (
+              <div className="mt-4">
+                {callRecordings.length === 0 ? (
+                  <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
+                    <p className="text-sm text-gray-600">No call recordings found</p>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full divide-y divide-gray-200">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Call ID
+                          </th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Status
+                          </th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Platform
+                          </th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Provider Call ID
+                          </th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Created
+                          </th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Actions
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody className="bg-white divide-y divide-gray-200">
+                        {callRecordings.map((recording: any) => (
+                          <tr key={recording.id} className="hover:bg-gray-50">
+                            <td className="px-4 py-3 whitespace-nowrap">
+                              <button
+                                onClick={() => handleViewCallRecording(recording.call_short_id)}
+                                className="font-mono text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline"
+                              >
+                                {recording.call_short_id}
+                              </button>
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap">
+                              <span
+                                className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${recording.status === 'UPDATED'
+                                  ? 'bg-green-100 text-green-800'
+                                  : 'bg-yellow-100 text-yellow-800'
+                                  }`}
+                              >
+                                {recording.status}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap">
+                              <div className="flex items-center gap-2">
+                                {recording.provider_platform === 'retell' && (
+                                  <img
+                                    src="/retellai.png"
+                                    alt="Retell"
+                                    className="h-5 w-5 object-contain"
+                                  />
+                                )}
+                                {recording.provider_platform === 'vapi' && (
+                                  <img
+                                    src="/vapiai.jpg"
+                                    alt="Vapi"
+                                    className="h-5 w-5 object-contain"
+                                  />
+                                )}
+                                <span className="text-sm text-gray-500 capitalize">
+                                  {recording.provider_platform || 'N/A'}
+                                </span>
+                              </div>
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500 font-mono text-xs">
+                              {recording.provider_call_id || 'N/A'}
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                              {recording.created_at
+                                ? new Date(recording.created_at).toLocaleString()
+                                : 'N/A'}
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap text-sm font-medium">
+                              <div className="flex items-center gap-2">
+                                <button
+                                  onClick={() => handleViewCallRecording(recording.call_short_id)}
+                                  className="text-blue-600 hover:text-blue-900"
+                                >
+                                  <Eye className="h-4 w-4" />
+                                </button>
+                                {recording.status === 'PENDING' && (
+                                  <button
+                                    onClick={() => handleRefreshCallRecording(recording.call_short_id)}
+                                    className="text-gray-600 hover:text-gray-900"
+                                    title="Refresh"
+                                  >
+                                    <RefreshCw className="h-4 w-4" />
+                                  </button>
+                                )}
+                                <button
+                                  onClick={(e) => handleDeleteCallRecording(recording.call_short_id, e)}
+                                  className="text-red-600 hover:text-red-900"
+                                  title="Delete"
+                                  disabled={deleteMutation.isPending}
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             )}
           </div>

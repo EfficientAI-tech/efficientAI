@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
 import { useState, useEffect, useRef } from 'react'
-import { Plus, Trash2, X, AlertCircle, Plug, Edit, Brain, ChevronDown } from 'lucide-react'
+import { Plus, Trash2, X, AlertCircle, Plug, Edit, Brain, ChevronDown, Key } from 'lucide-react'
 import { IntegrationCreate, IntegrationPlatform, Integration, AIProvider, AIProviderCreate, ModelProvider } from '../types/api'
 import Button from '../components/Button'
 import { useToast } from '../hooks/useToast'
@@ -301,10 +301,6 @@ export default function Integrations() {
     if (aiProviderToDelete) {
       deleteAIProviderMutation.mutate(aiProviderToDelete.id)
     }
-  }
-
-  const handleTestAIProvider = (provider: AIProvider) => {
-    testAIProviderMutation.mutate(provider.id)
   }
 
   const handleTestIntegration = (integration: Integration) => {

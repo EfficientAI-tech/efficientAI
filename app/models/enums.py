@@ -99,6 +99,8 @@ class ModelProvider(str, enum.Enum):
     GOOGLE = "google"
     AZURE = "azure"
     AWS = "aws"
+    DEEPGRAM = "deepgram"
+    CARTESIA = "cartesia"
     CUSTOM = "custom"
 
 class VoiceBundleType(str, enum.Enum):
