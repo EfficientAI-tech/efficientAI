@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
 import Button from '../components/Button'
+import ConfirmModal from '../components/ConfirmModal'
 import { Plus, Edit, Trash2, X, Play, Pause, Bell, Mail, Globe } from 'lucide-react'
 
 // Types
@@ -66,6 +67,8 @@ const NOTIFY_FREQUENCIES = [
 export default function Alerts() {
   const queryClient = useQueryClient()
   const [showCreateModal, setShowCreateModal] = useState(false)
+  const [showDeleteModal, setShowDeleteModal] = useState(false)
+  const [alertToDelete, setAlertToDelete] = useState<Alert | null>(null)
   const [editingAlert, setEditingAlert] = useState<Alert | null>(null)
   const [formData, setFormData] = useState({
     name: '',
@@ -114,6 +117,8 @@ export default function Alerts() {
     mutationFn: (id: string) => apiClient.deleteAlert(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['alerts'] })
+      setShowDeleteModal(false)
+      setAlertToDelete(null)
     },
   })
 
@@ -192,9 +197,19 @@ export default function Alerts() {
   }
 
   const handleDelete = (alertItem: Alert) => {
-    if (confirm(`Are you sure you want to delete "${alertItem.name}"?`)) {
-      deleteMutation.mutate(alertItem.id)
+    setAlertToDelete(alertItem)
+    setShowDeleteModal(true)
+  }
+
+  const confirmDelete = () => {
+    if (alertToDelete) {
+      deleteMutation.mutate(alertToDelete.id)
     }
+  }
+
+  const closeDeleteModal = () => {
+    setShowDeleteModal(false)
+    setAlertToDelete(null)
   }
 
   const addEmail = () => {
@@ -668,6 +683,19 @@ export default function Alerts() {
           </div>
         </div>
       )}
+
+      {/* Delete Confirmation Modal */}
+      <ConfirmModal
+        isOpen={showDeleteModal && alertToDelete !== null}
+        title="Delete Alert"
+        description={alertToDelete ? `Are you sure you want to delete "${alertToDelete.name}"? All associated alert history will also be deleted. This action cannot be undone.` : ''}
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        variant="danger"
+        isLoading={deleteMutation.isPending}
+        onConfirm={confirmDelete}
+        onCancel={closeDeleteModal}
+      />
     </div>
   )
 }
