@@ -100,10 +100,10 @@ export default function Dashboard() {
   return (
     <div className="space-y-6">
       {/* Quick Start Guide */}
-      <Card className="bg-gradient-to-br from-[#e8f0fe] to-[#f0f4ff] border-none shadow-sm" radius="lg">
+      <Card className="bg-gradient-to-br from-[#fef9c3] to-[#fefce8] border-none shadow-sm" radius="lg">
         <CardBody className="p-6">
           <div className="flex items-center gap-3 mb-6">
-            <div className="p-3 bg-[#1a73e8] rounded-2xl">
+            <div className="p-3 bg-[#ca8a04] rounded-2xl">
               <Rocket className="h-6 w-6 text-white" />
             </div>
             <div>
@@ -169,7 +169,7 @@ export default function Dashboard() {
         <Card className="lg:col-span-2 shadow-sm" radius="lg">
           <CardHeader className="pb-0 pt-5 px-6">
             <div className="flex items-center gap-2">
-              <Activity className="w-5 h-5 text-[#1a73e8]" />
+              <Activity className="w-5 h-5 text-[#ca8a04]" />
               <h3 className="text-lg font-semibold text-gray-900">Evaluation Overview</h3>
             </div>
           </CardHeader>
@@ -200,14 +200,14 @@ export default function Dashboard() {
             <div>
               <div className="flex justify-between items-center mb-2">
                 <span className="text-sm text-gray-600">Completion Rate</span>
-                <span className="text-sm font-semibold text-[#1a73e8]">{completionRate}%</span>
+                <span className="text-sm font-semibold text-[#a16207]">{completionRate}%</span>
               </div>
               <Progress 
                 value={completionRate} 
                 className="h-2"
                 classNames={{
-                  indicator: "bg-gradient-to-r from-[#1a73e8] to-[#4285f4]",
-                  track: "bg-[#e8f0fe]",
+                  indicator: "bg-gradient-to-r from-[#ca8a04] to-[#eab308]",
+                  track: "bg-[#fef9c3]",
                 }}
               />
             </div>
@@ -236,10 +236,10 @@ export default function Dashboard() {
       {/* Organization Resources */}
       <Card className="shadow-sm" radius="lg">
         <CardHeader className="pb-0 pt-5 px-6">
-          <div className="flex items-center gap-2">
-            <Database className="w-5 h-5 text-[#1a73e8]" />
-            <h3 className="text-lg font-semibold text-gray-900">Organization Resources</h3>
-          </div>
+            <div className="flex items-center gap-2">
+              <Database className="w-5 h-5 text-[#ca8a04]" />
+              <h3 className="text-lg font-semibold text-gray-900">Organization Resources</h3>
+            </div>
         </CardHeader>
         <CardBody className="p-6">
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
@@ -260,7 +260,7 @@ export default function Dashboard() {
             <h3 className="text-lg font-semibold text-gray-900">Recent Evaluations</h3>
             <Link
               to="/evaluations"
-              className="text-sm text-[#1a73e8] hover:text-[#1967d2] font-medium flex items-center gap-1"
+              className="text-sm text-[#a16207] hover:text-[#854d0e] font-medium flex items-center gap-1"
             >
               View all
               <ArrowRight className="w-4 h-4" />
@@ -275,13 +275,13 @@ export default function Dashboard() {
             </div>
           ) : recentEvaluations.length === 0 ? (
             <div className="text-center py-12">
-              <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-[#e8f0fe] flex items-center justify-center">
-                <FileCheck className="h-8 w-8 text-[#1a73e8]" />
+              <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-[#fef9c3] flex items-center justify-center">
+                <FileCheck className="h-8 w-8 text-[#ca8a04]" />
               </div>
               <p className="text-gray-500 mb-2">No evaluations yet</p>
               <Link
                 to="/evaluations"
-                className="text-[#1a73e8] hover:text-[#1967d2] font-medium text-sm"
+                className="text-[#a16207] hover:text-[#854d0e] font-medium text-sm"
               >
                 Create your first evaluation →
               </Link>
@@ -298,7 +298,7 @@ export default function Dashboard() {
                     <Avatar
                       name={evaluation.id.slice(0, 2).toUpperCase()}
                       size="sm"
-                      className="bg-[#e8f0fe] text-[#1a73e8]"
+                      className="bg-[#fef9c3] text-[#a16207]"
                     />
                     <div>
                       <p className="text-sm font-medium text-gray-900">
@@ -335,7 +335,7 @@ function StatItem({
   color: 'blue' | 'green' | 'amber'
 }) {
   const colorStyles = {
-    blue: 'bg-[#e8f0fe] text-[#1a73e8]',
+    blue: 'bg-[#fef9c3] text-[#a16207]',
     green: 'bg-[#e6f4ea] text-[#137333]',
     amber: 'bg-[#fef7e0] text-[#e37400]',
   }
@@ -365,7 +365,7 @@ function ResourceItem({
   color: 'blue' | 'purple' | 'green' | 'orange'
 }) {
   const colorStyles = {
-    blue: 'bg-[#e8f0fe] text-[#1a73e8]',
+    blue: 'bg-[#fef9c3] text-[#a16207]',
     purple: 'bg-[#f3e8ff] text-[#7c3aed]',
     green: 'bg-[#e6f4ea] text-[#137333]',
     orange: 'bg-[#fef3e2] text-[#ea8600]',
@@ -398,7 +398,7 @@ function ResourceCard({
   color: string
 }) {
   const colorStyles: Record<string, string> = {
-    blue: 'bg-[#e8f0fe] text-[#1a73e8]',
+    blue: 'bg-[#fef9c3] text-[#a16207]',
     purple: 'bg-[#f3e8ff] text-[#7c3aed]',
     green: 'bg-[#e6f4ea] text-[#137333]',
     orange: 'bg-[#fef3e2] text-[#ea8600]',
@@ -447,12 +447,12 @@ function QuickStartCard({
       >
         <CardBody className="p-5">
           <div className="flex items-start gap-3 mb-3">
-            <div className="w-10 h-10 rounded-xl bg-[#e8f0fe] flex items-center justify-center flex-shrink-0">
-              <Icon className="h-5 w-5 text-[#1a73e8]" />
+            <div className="w-10 h-10 rounded-xl bg-[#fef9c3] flex items-center justify-center flex-shrink-0">
+              <Icon className="h-5 w-5 text-[#ca8a04]" />
             </div>
             <Chip 
               size="sm" 
-              className="bg-[#1a73e8] text-white font-semibold"
+              className="bg-[#ca8a04] text-white font-semibold"
               radius="full"
             >
               Step {step}
@@ -460,7 +460,7 @@ function QuickStartCard({
           </div>
           <h3 className="text-base font-semibold text-gray-900 mb-2">{title}</h3>
           <p className="text-sm text-gray-600 mb-4">{description}</p>
-          <div className="flex items-center gap-1 text-sm font-medium text-[#1a73e8]">
+          <div className="flex items-center gap-1 text-sm font-medium text-[#a16207]">
             Get started
             <ArrowRight className="h-4 w-4" />
           </div>
@@ -506,7 +506,7 @@ function StatusChip({ status }: { status: EvaluationStatus }) {
         base: config.color === 'success' ? 'bg-[#e6f4ea] text-[#137333]' :
               config.color === 'warning' ? 'bg-[#fef7e0] text-[#e37400]' :
               config.color === 'danger' ? 'bg-[#fce8e6] text-[#c5221f]' :
-              config.color === 'primary' ? 'bg-[#e8f0fe] text-[#1a73e8]' :
+              config.color === 'primary' ? 'bg-[#fef9c3] text-[#a16207]' :
               'bg-gray-100 text-gray-600',
       }}
     >

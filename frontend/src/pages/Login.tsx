@@ -94,7 +94,7 @@ export default function Login() {
                     value={apiKey}
                     onChange={(e) => setApiKeyValue(e.target.value)}
                     required
-                    className="w-full px-5 py-4 text-base text-gray-900 bg-gray-50 border-2 border-gray-200 rounded-full focus:outline-none focus:border-[#1a73e8] focus:bg-white transition-all duration-200 placeholder:text-gray-400"
+                    className="w-full px-5 py-4 text-base text-gray-900 bg-gray-50 border-2 border-gray-200 rounded-full focus:outline-none focus:border-[#ca8a04] focus:bg-white transition-all duration-200 placeholder:text-gray-400"
                   />
 
                   {error && (
@@ -112,7 +112,7 @@ export default function Login() {
                     type="submit"
                     color="primary"
                     isLoading={isLoading}
-                    className="w-full font-semibold bg-[#e8f0fe] hover:bg-[#d2e3fc] text-[#1a73e8]"
+                    className="w-full font-semibold bg-[#fef9c3] hover:bg-[#fef08a] text-[#a16207] border border-[#facc15]"
                     size="lg"
                     radius="full"
                   >
@@ -144,14 +144,14 @@ export default function Login() {
                   placeholder="Key name (optional)"
                   value={keyName}
                   onChange={(e) => setKeyName(e.target.value)}
-                  className="w-full px-5 py-4 text-base text-gray-900 bg-gray-50 border-2 border-gray-200 rounded-full focus:outline-none focus:border-[#1a73e8] focus:bg-white transition-all duration-200 placeholder:text-gray-400"
+                  className="w-full px-5 py-4 text-base text-gray-900 bg-gray-50 border-2 border-gray-200 rounded-full focus:outline-none focus:border-[#ca8a04] focus:bg-white transition-all duration-200 placeholder:text-gray-400"
                 />
 
                 <Button
                   color="primary"
                   onPress={handleGenerateKey}
                   isLoading={isLoading}
-                  className="w-full font-semibold bg-[#e8f0fe] hover:bg-[#d2e3fc] text-[#1a73e8]"
+                  className="w-full font-semibold bg-[#fef9c3] hover:bg-[#fef08a] text-[#a16207]"
                   size="lg"
                   radius="full"
                 >

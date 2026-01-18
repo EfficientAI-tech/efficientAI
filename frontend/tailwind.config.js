@@ -15,16 +15,16 @@ export default {
       colors: {
         // Keep Tailwind colors for non-HeroUI components
         primary: {
-          50: '#e8f0fe',
-          100: '#d2e3fc',
-          200: '#aecbfa',
-          300: '#8ab4f8',
-          400: '#669df6',
-          500: '#4285f4',
-          600: '#1a73e8',
-          700: '#1967d2',
-          800: '#185abc',
-          900: '#174ea6',
+          50: '#fefce8',
+          100: '#fef9c3',
+          200: '#fef08a',
+          300: '#fde047',
+          400: '#facc15',
+          500: '#eab308',
+          600: '#ca8a04',
+          700: '#a16207',
+          800: '#854d0e',
+          900: '#713f12',
         },
       },
     },
@@ -36,19 +36,19 @@ export default {
       themes: {
         light: {
           colors: {
-            // Google Blue - Primary color (Pixel style)
+            // Light Yellow - Primary color
             primary: {
-              50: '#e8f0fe',
-              100: '#d2e3fc',
-              200: '#aecbfa',
-              300: '#8ab4f8',
-              400: '#669df6',
-              500: '#4285f4',
-              600: '#1a73e8',
-              700: '#1967d2',
-              800: '#185abc',
-              900: '#174ea6',
-              DEFAULT: '#1a73e8',
+              50: '#fefce8',
+              100: '#fef9c3',
+              200: '#fef08a',
+              300: '#fde047',
+              400: '#facc15',
+              500: '#eab308',
+              600: '#ca8a04',
+              700: '#a16207',
+              800: '#854d0e',
+              900: '#713f12',
+              DEFAULT: '#ca8a04',
               foreground: '#ffffff',
             },
             // Google Green - Success
@@ -113,7 +113,7 @@ export default {
             },
             background: '#ffffff',
             foreground: '#202124',
-            focus: '#1a73e8',
+            focus: '#ca8a04',
           },
         },
       },

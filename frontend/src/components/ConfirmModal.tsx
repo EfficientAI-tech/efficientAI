@@ -41,9 +41,9 @@ export default function ConfirmModal({
         }
       default:
         return {
-          buttonClass: 'bg-[#e8f0fe] hover:bg-[#d2e3fc] text-[#1a73e8] border-0',
-          iconBgClass: 'bg-[#e8f0fe]',
-          iconClass: 'text-[#1a73e8]'
+          buttonClass: 'bg-[#fef9c3] hover:bg-[#fef08a] text-[#a16207] border-0',
+          iconBgClass: 'bg-[#fef9c3]',
+          iconClass: 'text-[#ca8a04]'
         }
     }
   }
