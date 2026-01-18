@@ -25,6 +25,8 @@ import {
   Activity,
   Bell,
   History,
+  Key,
+  Clock,
 } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import Logo from './Logo'
@@ -84,7 +86,8 @@ const navigationSections: NavSection[] = [
       { name: 'S3 Integration', href: '/data-sources', icon: Database },
       { name: 'VoiceBundle', href: '/voicebundles', icon: Mic },
       { name: 'Integrations', href: '/integrations', icon: Plug },
-      { name: 'Settings', href: '/settings', icon: Settings },
+      { name: 'API Keys', href: '/settings', icon: Key },
+      { name: 'Cron Jobs', href: '/cron-jobs', icon: Clock },
     ],
   },
 ]
@@ -141,7 +144,7 @@ export default function Layout() {
           onClick={() => setSidebarOpen(false)}
         />
         <div
-          className={`fixed inset-y-0 left-0 flex w-64 flex-col bg-white shadow-xl transition-transform duration-300 ease-in-out ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'
+          className={`fixed inset-y-0 left-0 w-64 bg-white shadow-xl transition-transform duration-300 ease-in-out ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'
             }`}
         >
           <SidebarContent onLogout={logout} location={location} />
@@ -150,7 +153,7 @@ export default function Layout() {
 
       {/* Desktop sidebar */}
       <div className="hidden lg:fixed lg:inset-y-0 lg:flex lg:w-64 lg:flex-col">
-        <div className="flex flex-col flex-grow bg-white border-r border-gray-200 shadow-sm">
+        <div className="flex flex-col h-full bg-white border-r border-gray-200 shadow-sm">
           <SidebarContent onLogout={logout} location={location} />
         </div>
       </div>
@@ -347,12 +350,12 @@ function SidebarContent({
   }
 
   return (
-    <>
+    <div className="flex flex-col h-full">
       <div className="flex items-center flex-shrink-0 px-4 h-16 border-b border-gray-200">
         <Logo />
       </div>
-      <div className="flex-1 flex flex-col pb-4 overflow-y-auto">
-        <nav className="flex-1 px-2 space-y-1">
+      <div className="flex-1 flex flex-col min-h-0 overflow-y-auto">
+        <nav className="flex-1 px-2 py-4 space-y-1">
           {/* Other Navigation */}
           {otherNavigation.map((item) => {
             const isActive = location.pathname === item.href
@@ -453,10 +456,10 @@ function SidebarContent({
           })}
         </nav>
       </div>
-      <div className="flex-shrink-0 flex border-t border-gray-200 p-4">
+      <div className="flex-shrink-0 border-t border-gray-200 p-4">
         <button
           onClick={onLogout}
-          className="flex-shrink-0 w-full group block"
+          className="w-full group block"
         >
           <div className="flex items-center">
             <LogOut className="h-5 w-5 text-gray-400 group-hover:text-gray-500" />
@@ -466,7 +469,7 @@ function SidebarContent({
           </div>
         </button>
       </div>
-    </>
+    </div>
   )
 }
 

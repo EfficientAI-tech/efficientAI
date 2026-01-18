@@ -106,7 +106,12 @@ class TestAgentBridgeService:
         platform_value = integration.platform.value if hasattr(integration.platform, 'value') else integration.platform
         try:
             provider_class = get_voice_provider(platform_value)
-            provider = provider_class(api_key=api_key)
+            # For Vapi, pass the public_key as well (needed for web call creation)
+            if platform_value.lower() == "vapi":
+                logger.info(f"[Bridge] Creating Vapi provider with public_key={'set' if integration.public_key else 'NOT SET (will fail!)'}")
+                provider = provider_class(api_key=api_key, public_key=integration.public_key)
+            else:
+                provider = provider_class(api_key=api_key)
         except ValueError as e:
             raise ValueError(f"Unsupported voice provider platform: {platform_value}")
         
@@ -118,6 +123,7 @@ class TestAgentBridgeService:
         # Step 1: Create web call to Voice AI agent (Retell/Vapi)
         logger.info(f"[Bridge] Step 1: Creating web call to {platform_value} agent {agent.voice_ai_agent_id}")
         try:
+            logger.info(f"[Bridge] Calling provider.create_web_call()...")
             web_call_response = provider.create_web_call(
                 agent_id=agent.voice_ai_agent_id,
                 metadata={
@@ -129,15 +135,25 @@ class TestAgentBridgeService:
                     "scenario_id": str(scenario.id),
                 }
             )
+            logger.info(f"[Bridge] provider.create_web_call() returned: {list(web_call_response.keys()) if web_call_response else 'None'}")
             
             call_id = web_call_response.get("call_id")
-            access_token = web_call_response.get("access_token")
+            # For Retell: access_token (LiveKit token)
+            # For Vapi: web_call_url (Daily.co URL) - we pass it in the access_token field
+            access_token = web_call_response.get("access_token") or web_call_response.get("web_call_url")
             sample_rate = web_call_response.get("sample_rate", 24000)
             
+            logger.info(f"[Bridge] Extracted: call_id={call_id}, access_token={'set' if access_token else 'NOT SET'}, sample_rate={sample_rate}")
+            
             if not call_id:
+                logger.error(f"[Bridge] ❌ No call_id in response. Full response: {web_call_response}")
                 raise ValueError("No call_id received from web call creation")
             
-            logger.info(f"[Bridge] ✅ Created web call: call_id={call_id}, access_token={'***' if access_token else 'None'}")
+            if not access_token:
+                logger.error(f"[Bridge] ❌ No access_token/web_call_url in response. Full response: {web_call_response}")
+                raise ValueError("No access_token/web_call_url received from web call creation")
+            
+            logger.info(f"[Bridge] ✅ Created web call: call_id={call_id}, token/url={'***' if access_token else 'None'}")
             
             # Step 2: Store call info in evaluator result and update status
             logger.info(f"[Bridge] Step 2: Updating evaluator result status to CALL_INITIATING")
@@ -199,10 +215,10 @@ class TestAgentBridgeService:
             
             # Wait for both tasks to complete
             # The bridge task will complete when the call ends (WebRTC disconnect)
-            # The poll task will complete when it gets results from Retell and triggers evaluation
+            # The poll task will complete when it gets results from voice provider and triggers evaluation
             # IMPORTANT: We must wait for BOTH tasks because:
             # - bridge_task detects call end via WebRTC (fast)
-            # - poll_task fetches results from Retell API and triggers evaluation (needs time)
+            # - poll_task fetches results from voice provider API and triggers evaluation (needs time)
             try:
                 # Wait for bridge task first (it detects call end)
                 # Give poll task additional time to fetch results after bridge completes
@@ -311,6 +327,7 @@ class TestAgentBridgeService:
             db: Database session
         """
         from app.services.webrtc_bridge.retell_webrtc_bridge import RetellWebRTCBridge
+        from app.services.webrtc_bridge.vapi_webrtc_bridge import VapiWebRTCBridge
         from app.config import settings
         import websockets
         import json
@@ -352,23 +369,22 @@ class TestAgentBridgeService:
                 "call_connecting"
             )
             
-            # Step 1: Create WebRTC bridge to Retell
+            # Step 1: Create WebRTC bridge to Retell/Vapi
+            # Set up call ended callback (shared between providers)
+            async def on_call_ended():
+                logger.info("[Bridge WebRTC] Call ended, cleaning up")
+                await update_status(
+                    EvaluatorResultStatus.CALL_ENDED.value,
+                    "call_ended"
+                )
+                # Recording and result processing will be handled by polling
+            
             if provider_platform == "retell":
                 webrtc_bridge = RetellWebRTCBridge(
                     call_id=call_id,
                     access_token=access_token,
                     sample_rate=sample_rate
                 )
-                
-                # Set up call ended callback
-                async def on_call_ended():
-                    logger.info("[Bridge WebRTC] Call ended, cleaning up")
-                    await update_status(
-                        EvaluatorResultStatus.CALL_ENDED.value,
-                        "call_ended"
-                    )
-                    # Recording and result processing will be handled by polling
-                
                 webrtc_bridge.on_call_ended = on_call_ended
                 
                 # Connect to Retell
@@ -383,13 +399,37 @@ class TestAgentBridgeService:
                 
                 logger.info("[Bridge WebRTC] ✅ Connected to Retell WebRTC call")
                 
-                # Update status to in progress
-                await update_status(
-                    EvaluatorResultStatus.CALL_IN_PROGRESS.value,
-                    "call_started"
+            elif provider_platform == "vapi":
+                # For Vapi, access_token is actually the web_call_url (Daily.co URL)
+                web_call_url = access_token  # Passed as access_token from bridge_test_agent_to_voice_agent
+                
+                webrtc_bridge = VapiWebRTCBridge(
+                    call_id=call_id,
+                    web_call_url=web_call_url,
+                    sample_rate=sample_rate
                 )
+                webrtc_bridge.on_call_ended = on_call_ended
+                
+                # Connect to Vapi via Daily.co
+                connected = await webrtc_bridge.connect_to_vapi()
+                if not connected:
+                    await update_status(
+                        EvaluatorResultStatus.FAILED.value,
+                        "call_connection_failed",
+                        "Failed to connect to Vapi WebRTC call"
+                    )
+                    raise Exception("Failed to connect to Vapi WebRTC call")
+                
+                logger.info("[Bridge WebRTC] ✅ Connected to Vapi WebRTC call via Daily.co")
+                
             else:
                 raise ValueError(f"WebRTC bridging not yet implemented for platform: {provider_platform}")
+            
+            # Update status to in progress
+            await update_status(
+                EvaluatorResultStatus.CALL_IN_PROGRESS.value,
+                "call_started"
+            )
             
             # Step 2: Initialize in-process test agent (LLM + TTS)
             # This runs the test agent directly without WebSocket
@@ -569,22 +609,25 @@ class TestAgentBridgeService:
             logger.info("[Bridge WebRTC] ✅ Recording started")
             
             if test_agent:
-                # Set up callbacks to connect test agent with Retell
+                # Set up callbacks to connect test agent with voice provider
+                # Vapi uses 40ms chunks (640 samples at 16kHz), Retell uses 20ms chunks
+                chunk_ms = 40 if provider_platform == "vapi" else 20
+                
                 async def send_audio_chunks(audio: bytes):
-                    """Stream audio to Retell in real-time chunks."""
+                    """Stream audio to voice provider in real-time chunks."""
                     await test_agent.stream_audio_chunks(
                         audio,
                         webrtc_bridge.receive_audio_from_test_agent,
-                        chunk_duration_ms=20
+                        chunk_duration_ms=chunk_ms
                     )
                 
                 async def on_transcript_received(transcript: str):
-                    """When Retell agent finishes speaking, process with test agent."""
-                    logger.info(f"[Bridge WebRTC] Received transcript from Retell: {transcript[:50]}...")
+                    """When voice agent finishes speaking, process with test agent."""
+                    logger.info(f"[Bridge WebRTC] Received transcript from {provider_platform}: {transcript[:50]}...")
                     audio = await test_agent.process_agent_transcript(transcript)
                     if audio:
-                        # Stream test agent's response audio to Retell in chunks
-                        logger.info(f"[Bridge WebRTC] Streaming {len(audio)} bytes of audio to Retell...")
+                        # Stream test agent's response audio to voice agent in chunks
+                        logger.info(f"[Bridge WebRTC] Streaming {len(audio)} bytes of audio to {provider_platform}...")
                         await send_audio_chunks(audio)
                         logger.info("[Bridge WebRTC] Audio streaming complete")
                 
@@ -602,7 +645,7 @@ class TestAgentBridgeService:
                 if first_audio:
                     logger.info(f"[Bridge WebRTC] Streaming first message ({len(first_audio)} bytes)...")
                     await send_audio_chunks(first_audio)
-                    logger.info("[Bridge WebRTC] ✅ First message sent to Retell")
+                    logger.info(f"[Bridge WebRTC] ✅ First message sent to {provider_platform}")
                 
                 logger.info("[Bridge WebRTC] ✅ Test agent connected, conversation starting...")
             else:
@@ -632,19 +675,19 @@ class TestAgentBridgeService:
             recording_path = await webrtc_bridge.stop_recording()
             if recording_path:
                 logger.info(f"[Bridge WebRTC] Local recording saved: {recording_path}")
-                # Clean up local file - we use Retell's recording instead
+                # Clean up local file - we use voice provider's recording instead
                 try:
                     if os.path.exists(recording_path):
                         os.remove(recording_path)
-                        logger.info("[Bridge WebRTC] Local recording cleaned up (using Retell's recording)")
+                        logger.info(f"[Bridge WebRTC] Local recording cleaned up (using {provider_platform}'s recording)")
                 except Exception as e:
                     logger.warning(f"[Bridge WebRTC] Could not clean up local recording: {e}")
             
-            logger.info("[Bridge WebRTC] Bridge completed. Waiting for _poll_call_results to fetch call data from Retell...")
+            logger.info(f"[Bridge WebRTC] Bridge completed. Waiting for _poll_call_results to fetch call data from {provider_platform}...")
             
             # NOTE: We do NOT upload to S3 or trigger transcription here.
             # The _poll_call_results task handles everything:
-            # - Fetches call_data from Retell (includes transcript, recording_url, cost, latency)
+            # - Fetches call_data from voice provider (includes transcript, recording_url, cost, latency)
             # - Stores call_data in database
             # - Triggers evaluation task
             # This approach avoids:
@@ -778,7 +821,7 @@ class TestAgentBridgeService:
                         await asyncio.sleep(poll_interval)
                     
                     # Retrieve call metrics from provider
-                    if provider_platform == "retell" and hasattr(provider, "retrieve_call_metrics"):
+                    if provider_platform in ["retell", "vapi"] and hasattr(provider, "retrieve_call_metrics"):
                         call_metrics = provider.retrieve_call_metrics(call_id)
                     else:
                         logger.warning(f"[Bridge Poll] Platform {provider_platform} polling not yet implemented")
@@ -816,10 +859,14 @@ class TestAgentBridgeService:
                         result.call_data = call_metrics
                         logger.info(f"[Bridge Poll] ✅ Stored call_data with {len(call_metrics)} keys: {list(call_metrics.keys())}")
                         
-                        # Extract duration
+                        # Extract duration (Retell uses duration_ms, Vapi uses duration_seconds)
                         duration_ms = call_metrics.get("duration_ms")
+                        duration_seconds = call_metrics.get("duration_seconds")
                         if duration_ms:
                             result.duration_seconds = duration_ms / 1000.0
+                        elif duration_seconds:
+                            result.duration_seconds = duration_seconds
+                        if result.duration_seconds:
                             logger.info(f"[Bridge Poll] Duration: {result.duration_seconds:.1f}s")
                         
                         # Extract transcript and speaker segments
@@ -952,9 +999,75 @@ class TestAgentBridgeService:
                     )
         
         elif provider_platform == "vapi":
-            # Vapi format - adapt as needed
+            # Vapi format:
+            # - transcript: Plain text transcript (AI: ... \nUser: ...)
+            # - transcript_object: List of {role, content, seconds_from_start, duration_ms, words}
+            # - messages: Raw messages from Vapi
             transcript_text = call_data.get("transcript", "")
-            # Add Vapi-specific speaker segment extraction if needed
+            
+            # Get structured transcript object (preferred) or fall back to messages
+            transcript_obj = call_data.get("transcript_object", [])
+            messages = call_data.get("messages", [])
+            
+            # Use transcript_object if available (it's already cleaned up)
+            if transcript_obj:
+                for entry in transcript_obj:
+                    role = entry.get("role", "unknown")
+                    content = entry.get("content", "")
+                    seconds_from_start = entry.get("seconds_from_start", 0)
+                    duration_ms = entry.get("duration_ms", 0)
+                    
+                    # Map Vapi roles to speaker labels
+                    if role == "user":
+                        speaker = "Speaker 1"  # Test agent / caller
+                    elif role == "agent":
+                        speaker = "Speaker 2"  # Vapi agent
+                    else:
+                        continue
+                    
+                    if content and content.strip():
+                        speaker_segments.append({
+                            "speaker": speaker,
+                            "text": content.strip(),
+                            "start": seconds_from_start,
+                            "end": seconds_from_start + (duration_ms / 1000) if duration_ms else seconds_from_start,
+                            "words": entry.get("words")  # Word-level timing if available
+                        })
+            
+            # Fall back to messages if no transcript_object
+            elif messages:
+                for msg in messages:
+                    role = msg.get("role", "unknown")
+                    content = msg.get("message", "") or msg.get("content", "")
+                    seconds_from_start = msg.get("secondsFromStart", 0)
+                    duration_ms = msg.get("duration", 0)
+                    
+                    # Skip system messages
+                    if role == "system":
+                        continue
+                    
+                    # Map Vapi roles to speaker labels
+                    if role == "user":
+                        speaker = "Speaker 1"  # Test agent / caller
+                    elif role in ["bot", "assistant", "agent"]:
+                        speaker = "Speaker 2"  # Vapi agent
+                    else:
+                        continue
+                    
+                    if content and content.strip():
+                        speaker_segments.append({
+                            "speaker": speaker,
+                            "text": content.strip(),
+                            "start": seconds_from_start,
+                            "end": seconds_from_start + (duration_ms / 1000) if duration_ms else seconds_from_start
+                        })
+                
+            # If we have segments but no plain transcript, build it
+            if not transcript_text and speaker_segments:
+                transcript_text = "\n".join(
+                    f"{seg['speaker']}: {seg['text']}" 
+                    for seg in speaker_segments
+                )
         
         return transcript_text, speaker_segments
     

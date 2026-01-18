@@ -998,6 +998,49 @@ class ApiClient {
     })
     return response.data
   }
+
+  // Cron Job endpoints
+  async listCronJobs(): Promise<any[]> {
+    const response = await this.client.get('/api/v1/cron-jobs')
+    return response.data
+  }
+
+  async getCronJob(cronJobId: string): Promise<any> {
+    const response = await this.client.get(`/api/v1/cron-jobs/${cronJobId}`)
+    return response.data
+  }
+
+  async createCronJob(data: {
+    name: string
+    cron_expression: string
+    timezone: string
+    max_runs: number
+    evaluator_ids: string[]
+  }): Promise<any> {
+    const response = await this.client.post('/api/v1/cron-jobs', data)
+    return response.data
+  }
+
+  async updateCronJob(cronJobId: string, data: {
+    name?: string
+    cron_expression?: string
+    timezone?: string
+    max_runs?: number
+    evaluator_ids?: string[]
+    status?: string
+  }): Promise<any> {
+    const response = await this.client.put(`/api/v1/cron-jobs/${cronJobId}`, data)
+    return response.data
+  }
+
+  async deleteCronJob(cronJobId: string): Promise<void> {
+    await this.client.delete(`/api/v1/cron-jobs/${cronJobId}`)
+  }
+
+  async toggleCronJobStatus(cronJobId: string): Promise<any> {
+    const response = await this.client.post(`/api/v1/cron-jobs/${cronJobId}/toggle`)
+    return response.data
+  }
 }
 
 // Factory function to create ApiClient instance

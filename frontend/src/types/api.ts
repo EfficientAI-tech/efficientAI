@@ -474,3 +474,46 @@ export interface AlertHistoryItem {
   updated_at: string
   alert?: Alert
 }
+
+
+// Cron Job Types
+export enum CronJobStatus {
+  ACTIVE = 'active',
+  PAUSED = 'paused',
+  COMPLETED = 'completed',
+}
+
+export interface CronJob {
+  id: string
+  organization_id: string
+  name: string
+  cron_expression: string
+  timezone: string
+  max_runs: number
+  current_runs: number
+  evaluator_ids: string[]
+  status: CronJobStatus
+  next_run_at?: string | null
+  last_run_at?: string | null
+  created_at: string
+  updated_at: string
+  created_by?: string | null
+}
+
+export interface CronJobCreate {
+  name: string
+  cron_expression: string
+  timezone: string
+  max_runs: number
+  evaluator_ids: string[]
+}
+
+export interface CronJobUpdate {
+  name?: string
+  cron_expression?: string
+  timezone?: string
+  max_runs?: number
+  evaluator_ids?: string[]
+  status?: CronJobStatus
+}
+

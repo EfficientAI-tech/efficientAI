@@ -3,23 +3,30 @@ Vapi Voice Provider Implementation
 Handles integration with Vapi voice AI agents
 """
 from typing import Dict, Any, Optional
-from vapi_python import Vapi
+import requests
+from loguru import logger
 
 from app.services.voice_providers.base import BaseVoiceProvider
+
+# Vapi API configuration
+VAPI_API_URL = "https://api.vapi.ai"
+VAPI_SAMPLE_RATE = 16000  # Vapi uses 16kHz audio
 
 
 class VapiVoiceProvider(BaseVoiceProvider):
     """Vapi voice provider implementation."""
     
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, public_key: Optional[str] = None):
         """
         Initialize Vapi client.
         
         Args:
-            api_key: Vapi Private API key
+            api_key: Vapi Private API key (used for server-side operations like getting call metrics)
+            public_key: Vapi Public API key (used for creating web calls)
         """
         super().__init__(api_key)
-        self.client = Vapi(token=api_key)
+        self.public_key = public_key
+        self.api_url = VAPI_API_URL
     
     def create_web_call(
         self,
@@ -30,47 +37,100 @@ class VapiVoiceProvider(BaseVoiceProvider):
         """
         Create a web call with Vapi agent.
         
+        Makes a POST request to Vapi's /call/web endpoint to create
+        a web call session. Returns the call_id and webCallUrl (Daily.co URL)
+        needed to connect to the call.
+        
+        NOTE: Vapi's /call/web endpoint requires the PUBLIC key, not the private key.
+        
         Args:
-            agent_id: Vapi agent ID
+            agent_id: Vapi assistant ID
             metadata: Optional metadata to attach to the call
             **kwargs: Additional parameters
             
         Returns:
-            Dictionary containing call information
+            Dictionary containing:
+                - call_id: Vapi call ID
+                - web_call_url: Daily.co room URL for WebRTC connection
+                - sample_rate: Audio sample rate (16000 for Vapi)
+                - call_type: "web_call"
         """
         try:
-            # For Vapi, web calls are often initiated from the frontend using the public key.
-            # However, we can create a call object or register it if needed.
-            # Vapi's 'calls.create' is typically for outbound phone calls.
-            # For web calls, Vapi's SDK on the frontend handles most of it.
+            # Log the key configuration for debugging
+            logger.info(f"[VapiProvider] create_web_call called - public_key={'set' if self.public_key else 'NOT SET'}, api_key={'set' if self.api_key else 'NOT SET'}")
             
-            # If we need to provide some server-side initialization:
-            # Note: This implementation might need adjustment based on specific Vapi SDK version
+            # Vapi's /call/web endpoint requires the PUBLIC key
+            auth_key = self.public_key or self.api_key
+            if not self.public_key:
+                logger.warning("[VapiProvider] ⚠️ No public_key provided, using api_key. This WILL FAIL for /call/web endpoint!")
             
-            call_params = {
-                "agentId": agent_id,
+            if not auth_key:
+                raise ValueError("No authentication key available (neither public_key nor api_key)")
+            
+            url = f"{self.api_url}/call/web"
+            headers = {
+                'Authorization': f'Bearer {auth_key}',
+                'Content-Type': 'application/json'
             }
+            
+            # Build request payload
+            payload = {
+                'assistantId': agent_id,
+            }
+            
+            # Add assistant overrides if provided
+            if kwargs.get('assistant_overrides'):
+                payload['assistantOverrides'] = kwargs['assistant_overrides']
+            
+            # Add metadata if provided
             if metadata:
-                call_params["metadata"] = metadata
+                payload['metadata'] = metadata
             
-            call_params.update(kwargs)
+            logger.info(f"[VapiProvider] Creating web call with assistant_id={agent_id}, url={url}")
             
-            # Create a call (this is often for outbound, but Vapi also uses it for web call sessions sometimes)
-            # For pure web calls, Vapi often just needs the agentId on the frontend.
-            # But we implement this for consistency and future-proofing.
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
             
-            # web_call_response = self.client.calls.create(**call_params)
+            # Log raw response for debugging
+            logger.info(f"[VapiProvider] Response status: {response.status_code}")
             
-            # Returning a mock-up/predicted structure if 'calls.create' is not what we want for web.
-            # Most users just want the agent_id to pass to the frontend.
+            try:
+                data = response.json()
+            except Exception as json_err:
+                logger.error(f"[VapiProvider] Failed to parse response JSON: {json_err}, raw: {response.text[:500]}")
+                raise ValueError(f"Invalid JSON response from Vapi: {response.text[:200]}")
             
-            return {
-                "call_type": "web_call",
-                "agent_id": agent_id,
-                "metadata": metadata or {},
-                # Vapi specific fields would go here
-            }
+            if response.status_code == 201:
+                call_id = data.get('id')
+                web_call_url = data.get('webCallUrl')
+                
+                if not call_id:
+                    logger.error(f"[VapiProvider] ❌ Response missing 'id' field. Response data: {data}")
+                    raise ValueError(f"Vapi API returned success but no call ID. Response: {data}")
+                
+                if not web_call_url:
+                    logger.warning(f"[VapiProvider] ⚠️ Response missing 'webCallUrl' field. Response data: {data}")
+                
+                logger.info(f"[VapiProvider] ✅ Web call created: call_id={call_id}, web_call_url={'set' if web_call_url else 'NOT SET'}")
+                
+                return {
+                    "call_id": call_id,
+                    "web_call_url": web_call_url,
+                    "sample_rate": VAPI_SAMPLE_RATE,
+                    "call_type": "web_call",
+                    "agent_id": agent_id,
+                    "metadata": metadata or {},
+                    "raw_response": data
+                }
+            else:
+                error_msg = data.get('message', f'Unknown error (status {response.status_code})')
+                logger.error(f"[VapiProvider] ❌ Failed to create web call: {error_msg}, full response: {data}")
+                raise ValueError(f"Vapi API error: {error_msg}")
+                
+        except requests.exceptions.RequestException as e:
+            logger.error(f"[VapiProvider] Request error: {e}")
+            raise ValueError(f"Failed to create Vapi web call: {str(e)}")
         except Exception as e:
+            logger.error(f"[VapiProvider] Unexpected error: {e}")
             raise ValueError(f"Failed to create Vapi web call: {str(e)}")
 
     def create_agent(
@@ -123,6 +183,27 @@ class VapiVoiceProvider(BaseVoiceProvider):
         except Exception as e:
             raise ValueError(f"Failed to get Vapi agent: {str(e)}")
 
+    def _make_json_serializable(self, obj: Any) -> Any:
+        """
+        Recursively convert NumPy types and other non-JSON-serializable types to native Python types.
+        """
+        import numpy as np
+        
+        if isinstance(obj, dict):
+            return {k: self._make_json_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self._make_json_serializable(item) for item in obj]
+        elif isinstance(obj, (np.integer, np.int64, np.int32)):
+            return int(obj)
+        elif isinstance(obj, (np.floating, np.float64, np.float32)):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, np.bool_):
+            return bool(obj)
+        else:
+            return obj
+
     def retrieve_call_metrics(self, call_id: str) -> Dict[str, Any]:
         """
         Retrieve call metrics and details from Vapi.
@@ -131,136 +212,239 @@ class VapiVoiceProvider(BaseVoiceProvider):
             call_id: Vapi call ID
             
         Returns:
-            Dictionary containing call information
+            Dictionary containing comprehensive call information including:
+            - Basic call info (id, status, timestamps, duration)
+            - Cost breakdown (transport, STT, LLM, TTS, Vapi fees)
+            - Transcript (plain text and structured messages)
+            - Analysis (summary, success evaluation)
+            - Performance metrics (latencies, interruptions)
+            - Recording URLs (mono, stereo, assistant, customer)
         """
         try:
-            # We use direct HTTP request since the SDK Wrapper 'Vapi' 
-            # might not expose 'calls.get' in the version we are using, 
-            # or to ensure we get the exact raw data we expect.
-            # Vapi API base URL is usually https://api.vapi.ai
-            import requests
-            
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json"
             }
             
-            response = requests.get(f"https://api.vapi.ai/call/{call_id}", headers=headers)
+            response = requests.get(f"{self.api_url}/call/{call_id}", headers=headers, timeout=30)
             response.raise_for_status()
             data = response.json()
             
-            # Normalize to match our expected structure if needed
-            # For now, return the raw data with status normalized
-            # Normalize response data
+            # Log raw response for debugging
+            logger.info(f"[VapiProvider] Retrieved call {call_id}, status: {data.get('status')}, ended_reason: {data.get('endedReason')}")
+            logger.debug(f"[VapiProvider] Raw call data keys: {list(data.keys())}")
+            
+            # Extract nested fields safely
+            artifact = data.get("artifact") or {}
+            analysis = data.get("analysis") or {}
+            cost_breakdown = data.get("costBreakdown") or {}
+            
+            # Get transcript from multiple possible locations
+            transcript = data.get("transcript") or artifact.get("transcript", "")
+            
+            # Get messages (structured conversation) from multiple possible locations
+            messages = data.get("messages") or artifact.get("messages", []) or []
+            
+            # Filter out system messages for display (keep for raw_data)
+            display_messages = [m for m in messages if m.get("role") != "system"]
+            
+            logger.info(f"[VapiProvider] Call {call_id}: transcript_len={len(transcript) if transcript else 0}, messages_count={len(display_messages)}")
+            
+            # Log end reason for debugging
+            if data.get("endedReason"):
+                logger.info(f"[VapiProvider] Call ended reason: {data.get('endedReason')}")
+            
+            # === Timestamps and Duration ===
             started_at = data.get("startedAt")
             ended_at = data.get("endedAt")
             
-            # Calculate duration in seconds
             duration_seconds = 0
-            if data.get("durationMinutes"):
-                 duration_seconds = data.get("durationMinutes") * 60
-            elif started_at and ended_at:
+            if started_at and ended_at:
                 from dateutil import parser
                 try:
                     start_time = parser.parse(started_at)
                     end_time = parser.parse(ended_at)
                     duration_seconds = (end_time - start_time).total_seconds()
-                except:
-                    pass
+                except Exception as e:
+                    logger.warning(f"[VapiProvider] Failed to parse timestamps: {e}")
 
-            # Extract nested fields safely
-            analysis = data.get("analysis") or {}
-            artifact = data.get("artifact") or {}
-            messages = data.get("messages") or artifact.get("messages", []) or []
-            transcript = data.get("transcript") or artifact.get("transcript")
+            # === Recording URLs ===
+            recording = artifact.get("recording") or {}
+            mono_recording = recording.get("mono") or {}
+            
+            recording_urls = {
+                "combined_url": data.get("recordingUrl") or artifact.get("recordingUrl") or mono_recording.get("combinedUrl"),
+                "stereo_url": data.get("stereoRecordingUrl") or artifact.get("stereoRecordingUrl") or recording.get("stereoUrl"),
+                "assistant_url": mono_recording.get("assistantUrl"),
+                "customer_url": mono_recording.get("customerUrl"),
+            }
 
-            # Try to find summary in multiple places
-            summary = analysis.get("summary") or data.get("summary")
+            # === Performance Metrics (from Vapi's artifact) ===
+            perf_metrics = artifact.get("performanceMetrics") or {}
+            turn_latencies = perf_metrics.get("turnLatencies") or []
             
-            # --- Advanced Metrics Calculation ---
-            latencies = []
-            user_messages = [m for m in messages if m.get("role") == "user"]
-            agent_messages = [m for m in messages if m.get("role") == "assistant" or m.get("role") == "bot" or m.get("role") == "agent"]
-            
-            # Calculate Latency (Time from User End to Agent Start)
-            # We need to pair User -> Agent
-            # Note: This is an approximation based on message sequence and timestamps
-            import numpy as np
-            
-            for i, msg in enumerate(messages):
-                if msg.get("role") == "user" and i + 1 < len(messages):
-                    next_msg = messages[i+1]
-                    if next_msg.get("role") in ["assistant", "bot", "agent"]:
-                        user_end = (msg.get("secondsFromStart") or 0) + (msg.get("duration") or 0)
-                        agent_start = next_msg.get("secondsFromStart") or 0
-                        
-                        # Only count positive, reasonable latencies (e.g., < 10s)
-                        latency = (agent_start - user_end) * 1000 # Convert to ms
-                        if 0 < latency < 10000:
-                            latencies.append(latency)
-
+            # Use Vapi's pre-calculated averages if available
             latency_stats = {}
-            if latencies:
+            if perf_metrics:
                 latency_stats = {
-                    "p50": round(np.percentile(latencies, 50), 2),
-                    "p90": round(np.percentile(latencies, 90), 2),
-                    "p95": round(np.percentile(latencies, 95), 2),
-                    "p99": round(np.percentile(latencies, 99), 2),
-                    "max": round(np.max(latencies), 2),
-                    "min": round(np.min(latencies), 2),
-                    "avg": round(np.mean(latencies), 2),
-                    "num_turns": len(latencies)
+                    "model_latency_avg": perf_metrics.get("modelLatencyAverage"),
+                    "voice_latency_avg": perf_metrics.get("voiceLatencyAverage"),
+                    "transcriber_latency_avg": perf_metrics.get("transcriberLatencyAverage"),
+                    "endpointing_latency_avg": perf_metrics.get("endpointingLatencyAverage"),
+                    "turn_latency_avg": perf_metrics.get("turnLatencyAverage"),
+                    "from_transport_latency_avg": perf_metrics.get("fromTransportLatencyAverage"),
+                    "to_transport_latency_avg": perf_metrics.get("toTransportLatencyAverage"),
+                    "num_assistant_interrupted": perf_metrics.get("numAssistantInterrupted", 0),
+                    "turn_latencies": turn_latencies,
                 }
-
-            # Barge-in / Interruption Calculation
-            # Logic: If User starts speaking before Agent has finished their previous turn
-            interruption_count = 0
-            for i, msg in enumerate(messages):
-                if msg.get("role") == "user" and i > 0:
-                    prev_msg = messages[i-1]
-                    if prev_msg.get("role") in ["assistant", "bot", "agent"]:
-                        prev_agent_end = (prev_msg.get("secondsFromStart") or 0) + (prev_msg.get("duration") or 0)
-                        user_start = msg.get("secondsFromStart") or 0
-                        
-                        # Overlap: User started before Agent finished (allow small buffer of e.g. 500ms for 'natural' pauses)
-                        if user_start < (prev_agent_end - 0.5): 
-                            interruption_count += 1
             
-            # Normalize structure for frontend
-            normalized_analysis = analysis.copy()
-            if summary:
-                normalized_analysis["summary"] = summary
-            
-            # Add calculated stats to analysis
-            normalized_analysis["latency_stats"] = latency_stats
-            normalized_analysis["interruption_count"] = interruption_count
+            # Calculate additional latency percentiles if we have turn latencies
+            if turn_latencies:
+                import numpy as np
+                total_latencies = [t.get("turnLatency", 0) for t in turn_latencies if t.get("turnLatency")]
+                if total_latencies:
+                    # Convert NumPy types to native Python types for JSON serialization
+                    latency_stats.update({
+                        "p50": float(round(np.percentile(total_latencies, 50), 2)),
+                        "p90": float(round(np.percentile(total_latencies, 90), 2)),
+                        "p95": float(round(np.percentile(total_latencies, 95), 2)),
+                        "p99": float(round(np.percentile(total_latencies, 99), 2)),
+                        "max": float(round(np.max(total_latencies), 2)),
+                        "min": float(round(np.min(total_latencies), 2)),
+                        "num_turns": int(len(total_latencies))
+                    })
 
-            return {
+            # === Interruption Count ===
+            interruption_count = perf_metrics.get("numAssistantInterrupted", 0)
+            
+            # If not provided by Vapi, calculate manually
+            if not interruption_count and messages:
+                for i, msg in enumerate(messages):
+                    if msg.get("role") == "user" and i > 0:
+                        prev_msg = messages[i-1]
+                        if prev_msg.get("role") in ["assistant", "bot"]:
+                            prev_agent_end = (prev_msg.get("secondsFromStart") or 0) + ((prev_msg.get("duration") or 0) / 1000)
+                            user_start = msg.get("secondsFromStart") or 0
+                            if user_start < (prev_agent_end - 0.5):
+                                interruption_count += 1
+
+            # === Cost Breakdown (detailed) ===
+            analysis_cost = cost_breakdown.get("analysisCostBreakdown") or {}
+            
+            normalized_cost_breakdown = {
+                "transport": cost_breakdown.get("transport", 0),
+                "stt": cost_breakdown.get("stt", 0),
+                "llm": cost_breakdown.get("llm", 0),
+                "tts": cost_breakdown.get("tts", 0),
+                "vapi": cost_breakdown.get("vapi", 0),
+                "total": cost_breakdown.get("total", 0),
+                # Token usage
+                "llm_prompt_tokens": cost_breakdown.get("llmPromptTokens", 0),
+                "llm_completion_tokens": cost_breakdown.get("llmCompletionTokens", 0),
+                "llm_cached_prompt_tokens": cost_breakdown.get("llmCachedPromptTokens", 0),
+                "tts_characters": cost_breakdown.get("ttsCharacters", 0),
+                # Analysis costs
+                "analysis": {
+                    "summary": analysis_cost.get("summary", 0),
+                    "success_evaluation": analysis_cost.get("successEvaluation", 0),
+                    "structured_data": analysis_cost.get("structuredData", 0),
+                },
+            }
+
+            # === Analysis (summary, success evaluation) ===
+            summary = analysis.get("summary") or data.get("summary") or ""
+            success_evaluation = analysis.get("successEvaluation")
+            
+            normalized_analysis = {
+                "summary": summary,
+                "success_evaluation": success_evaluation,
+                "latency_stats": latency_stats,
+                "interruption_count": interruption_count,
+            }
+
+            # === Build Transcript Object (structured with timing) ===
+            # Filter to only user and bot messages for the transcript object
+            transcript_object = []
+            for msg in display_messages:
+                role = msg.get("role", "unknown")
+                content = msg.get("message", "") or msg.get("content", "")
+                
+                if not content or role == "system":
+                    continue
+                
+                # Map roles for consistency
+                if role in ["bot", "assistant"]:
+                    normalized_role = "agent"
+                elif role == "user":
+                    normalized_role = "user"
+                else:
+                    continue
+                
+                transcript_entry = {
+                    "role": normalized_role,
+                    "content": content,
+                    "seconds_from_start": msg.get("secondsFromStart", 0),
+                    "duration_ms": msg.get("duration", 0),
+                    "end_time_ms": msg.get("endTime"),
+                    "time_ms": msg.get("time"),
+                }
+                
+                # Include word-level confidence if available
+                metadata = msg.get("metadata") or {}
+                if metadata.get("wordLevelConfidence"):
+                    transcript_entry["words"] = metadata["wordLevelConfidence"]
+                
+                transcript_object.append(transcript_entry)
+
+            result = {
                 "call_id": data.get("id"),
                 "call_status": data.get("status"),
                 "start_timestamp": started_at,
                 "end_timestamp": ended_at,
                 "duration_seconds": duration_seconds,
                 "cost": data.get("cost", 0),
-                "cost_breakdown": data.get("costBreakdown"),
-                "transcript": data.get("transcript") or artifact.get("transcript"),
-                "messages": data.get("messages") or artifact.get("messages", []),
+                "cost_breakdown": normalized_cost_breakdown,
+                "transcript": transcript,
+                "transcript_object": transcript_object,
+                "messages": display_messages,
                 "analysis": normalized_analysis,
+                "recording_urls": recording_urls,
                 "monitor": data.get("monitor"),
                 "ended_reason": data.get("endedReason") or data.get("reason"),
+                "metadata": data.get("metadata"),
+                "assistant_id": data.get("assistantId"),
+                "call_type": data.get("type"),
                 "raw_data": data
             }
+            
+            # Ensure all values are JSON serializable (convert NumPy types, etc.)
+            return self._make_json_serializable(result)
         except Exception as e:
-            # For now, simplistic error handling
-            print(f"Error getting Vapi metrics: {e}")
+            logger.error(f"[VapiProvider] Error getting call metrics: {e}", exc_info=True)
             raise ValueError(f"Failed to retrieve Vapi call metrics: {str(e)}")
 
     def test_connection(self) -> bool:
         """
-        Test Vapi connection by attempting to list assistants.
+        Test Vapi connection by attempting to list assistants via HTTP API.
         """
         try:
-            self.client.assistants.list()
-            return True
+            url = f"{self.api_url}/assistant"
+            headers = {
+                'Authorization': f'Bearer {self.api_key}',
+                'Content-Type': 'application/json'
+            }
+            
+            response = requests.get(url, headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                return True
+            elif response.status_code == 401:
+                raise ValueError("Invalid API key")
+            else:
+                data = response.json()
+                raise ValueError(f"API error: {data.get('message', 'Unknown error')}")
+                
+        except requests.exceptions.RequestException as e:
+            raise ValueError(f"Vapi connection test failed: {str(e)}")
         except Exception as e:
             raise ValueError(f"Vapi connection test failed: {str(e)}")

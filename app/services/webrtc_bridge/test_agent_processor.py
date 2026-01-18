@@ -86,7 +86,7 @@ class TestAgentProcessor:
         # Build system prompt
         self._system_prompt = self._build_system_prompt()
         
-        logger.info(f"[TestAgent] Initialized with persona: {config.persona_name}")
+        logger.info(f"[TestAgent] Initialized with persona: {config.persona_name}, sample_rate={config.sample_rate}Hz")
     
     def _build_system_prompt(self) -> str:
         """Build the system prompt for the LLM based on persona/scenario."""

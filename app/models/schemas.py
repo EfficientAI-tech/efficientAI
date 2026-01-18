@@ -9,7 +9,7 @@ from app.models.enums import (
     LanguageEnum, CallTypeEnum, CallMediumEnum, GenderEnum, AccentEnum, BackgroundNoiseEnum,
     IntegrationPlatform, ModelProvider, VoiceBundleType, TestAgentConversationStatus,
     MetricType, MetricTrigger, CallRecordingStatus, AlertMetricType, AlertAggregation,
-    AlertOperator, AlertNotifyFrequency, AlertStatus, AlertHistoryStatus
+    AlertOperator, AlertNotifyFrequency, AlertStatus, AlertHistoryStatus, CronJobStatus
 )
 
 
@@ -1478,3 +1478,83 @@ class AlertHistoryUpdate(BaseModel):
     acknowledged_by: Optional[str] = None
     resolved_by: Optional[str] = None
     resolution_notes: Optional[str] = None
+
+
+# ============================================
+# CRON JOB SCHEMAS
+# ============================================
+
+class CronJobCreate(BaseModel):
+    """Schema for creating a cron job."""
+    name: str = Field(..., min_length=1, max_length=255)
+    cron_expression: str = Field(..., min_length=1, max_length=100, description="Cron expression (e.g., '0 9 * * 1-5')")
+    timezone: str = Field(default="UTC", max_length=100, description="Timezone for the cron schedule")
+    max_runs: int = Field(default=10, ge=1, le=1000, description="Maximum number of times to run")
+    evaluator_ids: List[UUID] = Field(..., min_length=1, description="List of evaluator IDs to trigger")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "name": "Daily Evaluation Run",
+                "cron_expression": "0 9 * * 1-5",
+                "timezone": "America/New_York",
+                "max_runs": 100,
+                "evaluator_ids": ["123e4567-e89b-12d3-a456-426614174000"]
+            }
+        }
+
+
+class CronJobUpdate(BaseModel):
+    """Schema for updating a cron job."""
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    cron_expression: Optional[str] = Field(None, min_length=1, max_length=100)
+    timezone: Optional[str] = Field(None, max_length=100)
+    max_runs: Optional[int] = Field(None, ge=1, le=1000)
+    evaluator_ids: Optional[List[UUID]] = None
+    status: Optional[CronJobStatus] = None
+
+
+class CronJobResponse(BaseModel):
+    """Schema for cron job response."""
+    id: UUID
+    organization_id: UUID
+    name: str
+    cron_expression: str
+    timezone: str
+    max_runs: int
+    current_runs: int
+    evaluator_ids: List[UUID]
+    status: CronJobStatus
+    next_run_at: Optional[datetime]
+    last_run_at: Optional[datetime]
+    created_at: datetime
+    updated_at: datetime
+    created_by: Optional[str]
+
+    @validator('status', pre=True)
+    def convert_status(cls, v):
+        """Convert string to CronJobStatus."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            v_lower = v.lower()
+            try:
+                return CronJobStatus(v_lower)
+            except ValueError:
+                for enum_member in CronJobStatus:
+                    if enum_member.value.lower() == v_lower:
+                        return enum_member
+                raise ValueError(f"Invalid status: {v}")
+        return v
+
+    @validator('evaluator_ids', pre=True)
+    def convert_evaluator_ids(cls, v):
+        """Convert evaluator_ids from JSON to list of UUIDs."""
+        if v is None:
+            return []
+        if isinstance(v, list):
+            return [UUID(str(id)) if not isinstance(id, UUID) else id for id in v]
+        return v
+
+    class Config:
+        from_attributes = True

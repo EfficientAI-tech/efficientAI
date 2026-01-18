@@ -235,7 +235,13 @@ async def create_web_call(
         # Get the appropriate voice provider
         try:
             provider_class = get_voice_provider(integration.platform)
-            provider = provider_class(api_key=decrypted_api_key)
+            
+            # For Vapi, pass the public_key as well (needed for web call creation)
+            platform_value = integration.platform.value if hasattr(integration.platform, 'value') else integration.platform
+            if platform_value.lower() == "vapi":
+                provider = provider_class(api_key=decrypted_api_key, public_key=integration.public_key)
+            else:
+                provider = provider_class(api_key=decrypted_api_key)
         except ValueError as e:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -305,6 +311,11 @@ async def create_web_call(
             # Add call_short_id to response for frontend
             response = web_call_response.copy()
             response["call_short_id"] = call_short_id
+            
+            # For Vapi, include the public key in the response (needed for frontend SDK)
+            platform_value = integration.platform.value if hasattr(integration.platform, 'value') else integration.platform
+            if platform_value.lower() == "vapi" and integration.public_key:
+                response["public_key"] = integration.public_key
             
             return response
         except Exception as e:
