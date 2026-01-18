@@ -5,6 +5,7 @@ import { ArrowLeft, Play, Pause, Clock, CheckCircle, XCircle, Loader, User, Bot,
 import { useState, useRef, useEffect } from 'react'
 import Button from '../components/Button'
 import RetellCallDetails from '../components/call-recordings/RetellCallDetails'
+import VapiCallDetails from '../components/call-recordings/VapiCallDetails'
 
 interface EvaluatorResultDetail {
   id: string
@@ -409,14 +410,14 @@ export default function EvaluatorResultDetail() {
       )}
 
       {/* Call Data from Provider (Retell/Vapi) - Show this prominently when available */}
-      {/* Show RetellCallDetails if provider_platform is 'retell' OR if call_data has retell-like structure */}
-      {resultData.call_data && (resultData.provider_platform === 'retell' || resultData.call_data.transcript_object || resultData.call_data.call_id?.startsWith('call_')) && (
+      {/* Show RetellCallDetails for Retell calls */}
+      {resultData.call_data && (resultData.provider_platform === 'retell' || resultData.call_data.call_id?.startsWith('call_')) && (
         <div className="mb-6 bg-white rounded-lg shadow-sm border border-gray-200 p-6">
           <h2 className="text-lg font-semibold text-gray-900 flex items-center mb-4">
             <Phone className="w-5 h-5 mr-2" />
             Call Details 
             <span className="ml-2 px-2 py-0.5 text-xs bg-blue-100 text-blue-800 rounded-full capitalize">
-              {resultData.provider_platform || 'retell'}
+              retell
             </span>
             {(resultData.provider_call_id || resultData.call_data.call_id) && (
               <span className="ml-2 text-xs text-gray-500 font-mono">
@@ -428,13 +429,32 @@ export default function EvaluatorResultDetail() {
         </div>
       )}
 
-      {/* Non-Retell call_data - show raw JSON */}
-      {resultData.call_data && resultData.provider_platform && resultData.provider_platform !== 'retell' && !resultData.call_data.transcript_object && (
+      {/* Show VapiCallDetails for Vapi calls */}
+      {resultData.call_data && resultData.provider_platform === 'vapi' && (
         <div className="mb-6 bg-white rounded-lg shadow-sm border border-gray-200 p-6">
           <h2 className="text-lg font-semibold text-gray-900 flex items-center mb-4">
             <Phone className="w-5 h-5 mr-2" />
             Call Details 
-            <span className="ml-2 px-2 py-0.5 text-xs bg-blue-100 text-blue-800 rounded-full capitalize">
+            <span className="ml-2 px-2 py-0.5 text-xs bg-violet-100 text-violet-800 rounded-full capitalize">
+              vapi
+            </span>
+            {(resultData.provider_call_id || resultData.call_data.call_id) && (
+              <span className="ml-2 text-xs text-gray-500 font-mono">
+                {resultData.provider_call_id || resultData.call_data.call_id}
+              </span>
+            )}
+          </h2>
+          <VapiCallDetails callData={resultData.call_data} />
+        </div>
+      )}
+
+      {/* Unknown provider - show raw JSON */}
+      {resultData.call_data && resultData.provider_platform && resultData.provider_platform !== 'retell' && resultData.provider_platform !== 'vapi' && (
+        <div className="mb-6 bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+          <h2 className="text-lg font-semibold text-gray-900 flex items-center mb-4">
+            <Phone className="w-5 h-5 mr-2" />
+            Call Details 
+            <span className="ml-2 px-2 py-0.5 text-xs bg-gray-100 text-gray-800 rounded-full capitalize">
               {resultData.provider_platform}
             </span>
           </h2>

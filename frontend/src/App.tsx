@@ -27,6 +27,7 @@ import TestAgentResultDetail from './pages/TestAgentResultDetail'
 import Settings from './pages/Settings'
 import Alerts from './pages/Alerts'
 import AlertHistory from './pages/AlertHistory'
+import CronJobs from './pages/CronJobs'
 
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -77,6 +78,7 @@ function App() {
           <Route path="settings" element={<Settings />} />
           <Route path="alerts" element={<Alerts />} />
           <Route path="alerts/history" element={<AlertHistory />} />
+          <Route path="cron-jobs" element={<CronJobs />} />
         </Route>
       </Routes>
     </BrowserRouter>

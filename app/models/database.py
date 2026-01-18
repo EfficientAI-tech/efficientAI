@@ -11,7 +11,7 @@ from app.models.enums import (
     LanguageEnum, CallTypeEnum, CallMediumEnum, GenderEnum, AccentEnum, BackgroundNoiseEnum,
     IntegrationPlatform, ModelProvider, VoiceBundleType, TestAgentConversationStatus,
     MetricType, MetricTrigger, CallRecordingStatus, AlertMetricType, AlertAggregation,
-    AlertOperator, AlertNotifyFrequency, AlertStatus, AlertHistoryStatus
+    AlertOperator, AlertNotifyFrequency, AlertStatus, AlertHistoryStatus, CronJobStatus
 )
 
 def get_enum_values(enum_class):
@@ -663,3 +663,35 @@ class AlertHistory(Base):
     
     # Relationships
     alert = relationship("Alert", back_populates="alert_history")
+
+
+class CronJob(Base):
+    """Cron job model for scheduling automated evaluator runs."""
+    __tablename__ = "cron_jobs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    
+    # Basic information
+    name = Column(String(255), nullable=False)
+    cron_expression = Column(String(100), nullable=False)  # e.g., "0 9 * * 1-5"
+    timezone = Column(String(100), nullable=False, default="UTC")
+    
+    # Run configuration
+    max_runs = Column(Integer, nullable=False, default=10)
+    current_runs = Column(Integer, nullable=False, default=0)
+    
+    # Evaluators to trigger (JSON array of evaluator UUIDs)
+    evaluator_ids = Column(JSON, nullable=False)
+    
+    # Status
+    status = Column(String, nullable=False, default=CronJobStatus.ACTIVE.value)
+    
+    # Run tracking
+    next_run_at = Column(DateTime(timezone=True), nullable=True)
+    last_run_at = Column(DateTime(timezone=True), nullable=True)
+    
+    # Metadata
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_by = Column(String, nullable=True)

@@ -188,3 +188,10 @@ class AlertHistoryStatus(str, enum.Enum):
     NOTIFIED = "notified"
     ACKNOWLEDGED = "acknowledged"
     RESOLVED = "resolved"
+
+
+class CronJobStatus(str, enum.Enum):
+    """Cron job status enumeration."""
+    ACTIVE = "active"
+    PAUSED = "paused"
+    COMPLETED = "completed"

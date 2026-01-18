@@ -154,17 +154,25 @@ export default function CallRecordingDetail() {
 
         {/* Call Data */}
         <div className="bg-white shadow rounded-lg p-6">
-          {callRecording.provider_platform === 'retell' && callRecording.call_data ? (
-            <RetellCallDetails callData={callRecording.call_data} />
-          ) : callRecording.call_data ? (
-            <VapiCallDetails callData={callRecording.call_data} />
-          ) : (
+          {callRecording.call_data ? (
             <>
-              <h2 className="text-lg font-semibold text-gray-900 mb-4">Call Data (JSON)</h2>
-              <pre className="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-xs">
-                {JSON.stringify(callRecording.call_data, null, 2)}
-              </pre>
+              {callRecording.provider_platform === 'retell' ? (
+                <RetellCallDetails callData={callRecording.call_data} />
+              ) : callRecording.provider_platform === 'vapi' ? (
+                <VapiCallDetails callData={callRecording.call_data} />
+              ) : (
+                <>
+                  <h2 className="text-lg font-semibold text-gray-900 mb-4">Call Data (JSON)</h2>
+                  <pre className="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-xs max-h-[600px]">
+                    {JSON.stringify(callRecording.call_data, null, 2)}
+                  </pre>
+                </>
+              )}
             </>
+          ) : (
+            <div className="text-center py-8 text-gray-500">
+              No call data available. Try refreshing if the call just ended.
+            </div>
           )}
         </div>
       </div>
