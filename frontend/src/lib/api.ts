@@ -533,6 +533,13 @@ class ApiClient {
     window.URL.revokeObjectURL(url)
   }
 
+  async getS3PresignedUrl(fileKey: string, expiration: number = 3600): Promise<{ url: string; expires_in: number }> {
+    const response = await this.client.get(`/api/v1/data-sources/s3/files/${encodeURIComponent(fileKey)}/presigned-url`, {
+      params: { expiration },
+    })
+    return response.data
+  }
+
   async deleteFromS3(fileKey: string): Promise<MessageResponse> {
     const response = await this.client.delete(`/api/v1/data-sources/s3/files/${encodeURIComponent(fileKey)}`)
     return response.data
@@ -897,6 +904,98 @@ class ApiClient {
 
   async seedDefaultMetrics(): Promise<any[]> {
     const response = await this.client.post('/api/v1/metrics/seed-defaults')
+    return response.data
+  }
+
+  // Alert endpoints
+  async listAlerts(status?: string): Promise<any[]> {
+    const params: any = {}
+    if (status) {
+      params.status_filter = status
+    }
+    const response = await this.client.get('/api/v1/alerts', { params })
+    return response.data
+  }
+
+  async getAlert(alertId: string): Promise<any> {
+    const response = await this.client.get(`/api/v1/alerts/${alertId}`)
+    return response.data
+  }
+
+  async createAlert(data: {
+    name: string
+    description?: string | null
+    metric_type: string
+    aggregation: string
+    operator: string
+    threshold_value: number
+    time_window_minutes: number
+    agent_ids?: string[] | null
+    notify_frequency: string
+    notify_emails?: string[]
+    notify_webhooks?: string[]
+  }): Promise<any> {
+    const response = await this.client.post('/api/v1/alerts', data)
+    return response.data
+  }
+
+  async updateAlert(alertId: string, data: {
+    name?: string
+    description?: string | null
+    metric_type?: string
+    aggregation?: string
+    operator?: string
+    threshold_value?: number
+    time_window_minutes?: number
+    agent_ids?: string[] | null
+    notify_frequency?: string
+    notify_emails?: string[]
+    notify_webhooks?: string[]
+    status?: string
+  }): Promise<any> {
+    const response = await this.client.put(`/api/v1/alerts/${alertId}`, data)
+    return response.data
+  }
+
+  async deleteAlert(alertId: string): Promise<void> {
+    await this.client.delete(`/api/v1/alerts/${alertId}`)
+  }
+
+  async toggleAlertStatus(alertId: string): Promise<any> {
+    const response = await this.client.post(`/api/v1/alerts/${alertId}/toggle`)
+    return response.data
+  }
+
+  // Alert History endpoints
+  async listAlertHistory(status?: string, alertId?: string, skip = 0, limit = 100): Promise<any[]> {
+    const params: any = { skip, limit }
+    if (status) {
+      params.status_filter = status
+    }
+    if (alertId) {
+      params.alert_id = alertId
+    }
+    const response = await this.client.get('/api/v1/alerts/history/all', { params })
+    return response.data
+  }
+
+  async getAlertHistoryItem(historyId: string): Promise<any> {
+    const response = await this.client.get(`/api/v1/alerts/history/${historyId}`)
+    return response.data
+  }
+
+  async acknowledgeAlertHistory(historyId: string): Promise<any> {
+    const response = await this.client.put(`/api/v1/alerts/history/${historyId}`, {
+      status: 'acknowledged'
+    })
+    return response.data
+  }
+
+  async resolveAlertHistory(historyId: string, resolutionNotes?: string): Promise<any> {
+    const response = await this.client.put(`/api/v1/alerts/history/${historyId}`, {
+      status: 'resolved',
+      resolution_notes: resolutionNotes
+    })
     return response.data
   }
 }

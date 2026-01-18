@@ -23,6 +23,8 @@ import {
   Mic,
   Bot,
   Activity,
+  Bell,
+  History,
 } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import Logo from './Logo'
@@ -65,6 +67,14 @@ const navigationSections: NavSection[] = [
     items: [
       { name: 'Overview', href: '/observability', icon: Activity },
       { name: 'Calls', href: '/observability/calls', icon: Phone },
+    ],
+  },
+  {
+    title: 'Alerting',
+    icon: Bell,
+    items: [
+      { name: 'Alerts', href: '/alerts', icon: Bell },
+      { name: 'Alert History', href: '/alerts/history', icon: History },
     ],
   },
   {
@@ -319,7 +329,7 @@ function SidebarContent({
   location: ReturnType<typeof useLocation>
 }) {
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
-    new Set(['Simulations', 'Evaluations', 'Observability', 'Configurations'])
+    new Set(['Simulations', 'Evaluations', 'Observability', 'Alerting', 'Configurations'])
   )
 
   const toggleSection = (title: string) => {

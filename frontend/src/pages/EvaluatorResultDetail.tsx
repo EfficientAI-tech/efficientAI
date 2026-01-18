@@ -267,12 +267,63 @@ export default function EvaluatorResultDetail() {
     }
   }
 
-  const formatMetricValue = (value: any, type: string): string => {
-    if (value === null || value === undefined) return 'N/A'
-    if (type === 'boolean') return value ? 'Yes' : 'No'
-    if (type === 'rating') return `${value}/5`
-    if (type === 'number') return typeof value === 'number' ? value.toFixed(2) : String(value)
-    return String(value)
+  const formatMetricValue = (value: any, type: string, _metricName?: string): React.ReactNode => {
+    if (value === null || value === undefined) return <span className="text-gray-400">N/A</span>
+    
+    // Normalize type to lowercase for consistent comparison
+    const normalizedType = type?.toLowerCase()
+    
+    // Handle boolean metrics
+    if (normalizedType === 'boolean') {
+      const boolValue = value === true || value === 1 || value === '1' || value === 'true'
+      return boolValue ? (
+        <div className="flex items-center space-x-1.5 text-green-600">
+          <CheckCircle className="w-5 h-5" />
+          <span className="font-semibold">Yes</span>
+        </div>
+      ) : (
+        <div className="flex items-center space-x-1.5 text-red-600">
+          <XCircle className="w-5 h-5" />
+          <span className="font-semibold">No</span>
+        </div>
+      )
+    }
+    
+    // Handle rating metrics with progress bar
+    if (normalizedType === 'rating') {
+      const numValue = typeof value === 'number' ? value : parseFloat(value)
+      if (isNaN(numValue)) return <span className="text-gray-400">N/A</span>
+      
+      const normalizedValue = Math.max(0, Math.min(1, numValue))
+      const percentage = Math.round(normalizedValue * 100)
+      
+      const getBarColor = (pct: number): string => {
+        if (pct >= 70) return 'bg-green-500'
+        if (pct >= 50) return 'bg-yellow-500'
+        return 'bg-red-500'
+      }
+      
+      return (
+        <div className="flex flex-col gap-2">
+          <span className="text-2xl font-bold text-gray-900">{percentage}%</span>
+          <div className="w-full h-3 bg-gray-200 rounded-full overflow-hidden">
+            <div 
+              className={`h-full rounded-full transition-all ${getBarColor(percentage)}`}
+              style={{ width: `${percentage}%` }}
+            />
+          </div>
+        </div>
+      )
+    }
+    
+    // Handle number metrics
+    if (normalizedType === 'number') {
+      const numValue = typeof value === 'number' ? value : parseFloat(value)
+      if (isNaN(numValue)) return <span className="text-gray-400">N/A</span>
+      return <span className="text-2xl font-bold text-gray-900">{numValue.toFixed(1)}</span>
+    }
+    
+    return <span className="text-2xl font-bold text-gray-900">{String(value)}</span>
   }
 
   if (isLoading) {
@@ -345,13 +396,12 @@ export default function EvaluatorResultDetail() {
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
             {Object.entries(resultData.metric_scores).map(([metricId, metric]) => (
               <div key={metricId} className="border border-gray-200 rounded-lg p-4">
-                <div className="text-sm font-medium text-gray-500 mb-1">
+                <div className="text-sm font-medium text-gray-500 mb-2">
                   {metric.metric_name || metricId}
                 </div>
-                <div className="text-2xl font-bold text-gray-900">
-                  {formatMetricValue(metric.value, metric.type)}
+                <div>
+                  {formatMetricValue(metric.value, metric.type, metric.metric_name)}
                 </div>
-                <div className="text-xs text-gray-400 mt-1">{metric.type}</div>
               </div>
             ))}
           </div>

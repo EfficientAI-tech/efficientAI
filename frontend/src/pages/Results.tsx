@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { apiClient } from '../lib/api'
-import { Clock, CheckCircle, XCircle, Loader, Plus, X, Trash2, RefreshCw, AlertCircle } from 'lucide-react'
+import { Clock, CheckCircle, XCircle, Loader, Plus, X, Trash2, RefreshCw } from 'lucide-react'
 import { useState } from 'react'
 import Button from '../components/Button'
 
@@ -225,27 +225,66 @@ export default function Results() {
     }
   }
 
-  const formatMetricValue = (value: any, type: string, metricName?: string): React.ReactNode => {
-    if (value === null || value === undefined) return 'N/A'
+  const formatMetricValue = (value: any, type: string, _metricName?: string): React.ReactNode => {
+    if (value === null || value === undefined) return <span className="text-gray-400">N/A</span>
     
-    // Special handling for Problem Resolution metric
-    if (type === 'boolean' && metricName?.toLowerCase().includes('problem resolution')) {
-      return value ? (
-        <div className="flex items-center space-x-1 text-green-600">
+    // Normalize type to lowercase for consistent comparison
+    const normalizedType = type?.toLowerCase()
+    
+    // Handle boolean metrics
+    if (normalizedType === 'boolean') {
+      // Convert various truthy/falsy values to boolean
+      const boolValue = value === true || value === 1 || value === '1' || value === 'true'
+      
+      return boolValue ? (
+        <div className="flex items-center space-x-1.5 text-green-600">
           <CheckCircle className="w-4 h-4" />
-          <span>Resolved</span>
+          <span className="font-medium">Yes</span>
         </div>
       ) : (
-        <div className="flex items-center space-x-1 text-red-600">
-          <AlertCircle className="w-4 h-4" />
-          <span>Not Resolved</span>
+        <div className="flex items-center space-x-1.5 text-red-600">
+          <XCircle className="w-4 h-4" />
+          <span className="font-medium">No</span>
         </div>
       )
     }
     
-    if (type === 'boolean') return value ? 'Yes' : 'No'
-    if (type === 'rating') return value?.toString() || 'N/A'
-    if (type === 'number') return value?.toString() || 'N/A'
+    // Handle rating metrics with progress bar
+    if (normalizedType === 'rating') {
+      const numValue = typeof value === 'number' ? value : parseFloat(value)
+      if (isNaN(numValue)) return <span className="text-gray-400">N/A</span>
+      
+      // Ensure value is between 0 and 1
+      const normalizedValue = Math.max(0, Math.min(1, numValue))
+      const percentage = Math.round(normalizedValue * 100)
+      
+      // Color based on score
+      const getBarColor = (pct: number): string => {
+        if (pct >= 70) return 'bg-green-500'
+        if (pct >= 50) return 'bg-yellow-500'
+        return 'bg-red-500'
+      }
+      
+      return (
+        <div className="flex items-center gap-2 min-w-[100px]">
+          <div className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden">
+            <div 
+              className={`h-full rounded-full transition-all ${getBarColor(percentage)}`}
+              style={{ width: `${percentage}%` }}
+            />
+          </div>
+          <span className="text-xs font-semibold text-gray-700 w-10 text-right">{percentage}%</span>
+        </div>
+      )
+    }
+    
+    // Handle number metrics
+    if (normalizedType === 'number') {
+      const numValue = typeof value === 'number' ? value : parseFloat(value)
+      if (isNaN(numValue)) return <span className="text-gray-400">N/A</span>
+      return <span className="font-medium">{numValue.toFixed(1)}</span>
+    }
+    
     return String(value)
   }
 
@@ -278,19 +317,16 @@ export default function Results() {
             Refresh
           </Button>
           {selectedResults.size > 0 && (
-            <div className="flex items-center space-x-2 bg-blue-50 border border-blue-200 rounded-lg px-4 py-2">
-              <span className="text-sm font-medium text-blue-900">
-                {selectedResults.size} selected
-              </span>
-              <button
-                onClick={handleDeleteSelected}
-                disabled={deleteBulkMutation.isPending}
-                className="p-2 text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                title="Delete selected"
-              >
-                <Trash2 className="w-5 h-5" />
-              </button>
-            </div>
+            <Button
+              variant="danger"
+              onClick={handleDeleteSelected}
+              disabled={deleteBulkMutation.isPending}
+              isLoading={deleteBulkMutation.isPending}
+              leftIcon={!deleteBulkMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined}
+              title="Delete selected"
+            >
+              Delete ({selectedResults.size})
+            </Button>
           )}
           <Button onClick={() => setShowManualModal(true)}>
             <Plus className="w-4 h-4 mr-2" />

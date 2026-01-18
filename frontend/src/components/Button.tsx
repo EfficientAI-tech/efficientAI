@@ -37,7 +37,7 @@ export default function Button({
         return { 
           color: 'primary' as const, 
           variant: 'flat' as const,
-          customClass: 'bg-[#e8f0fe] hover:bg-[#d2e3fc] text-[#1a73e8] font-semibold'
+          customClass: 'bg-[#fef9c3] hover:bg-[#fef08a] text-[#a16207] font-semibold border border-[#facc15]'
         }
       case 'secondary':
         return { 
@@ -49,7 +49,7 @@ export default function Button({
         return { 
           color: 'primary' as const, 
           variant: 'bordered' as const,
-          customClass: 'border-2 border-[#1a73e8] text-[#1a73e8] bg-transparent hover:bg-[#e8f0fe]'
+          customClass: 'border-2 border-[#ca8a04] text-[#a16207] bg-transparent hover:bg-[#fefce8]'
         }
       case 'ghost':
         return { 
@@ -73,7 +73,7 @@ export default function Button({
         return { 
           color: 'primary' as const, 
           variant: 'flat' as const,
-          customClass: 'bg-[#e8f0fe] hover:bg-[#d2e3fc] text-[#1a73e8]'
+          customClass: 'bg-[#fef9c3] hover:bg-[#fef08a] text-[#a16207] border border-[#facc15]'
         }
     }
   }

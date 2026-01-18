@@ -18,8 +18,13 @@ class EvaluationStatus(str, enum.Enum):
 class EvaluatorResultStatus(str, enum.Enum):
     """Evaluator result status enumeration."""
     QUEUED = "queued"
-    TRANSCRIBING = "transcribing"
-    EVALUATING = "evaluating"
+    CALL_INITIATING = "call_initiating"  # Creating the web call to Retell/Vapi
+    CALL_CONNECTING = "call_connecting"  # WebRTC connecting to Voice AI agent
+    CALL_IN_PROGRESS = "call_in_progress"  # Call is active
+    CALL_ENDED = "call_ended"  # Call finished
+    FETCHING_DETAILS = "fetching_details"  # Fetching call details from provider
+    TRANSCRIBING = "transcribing"  # Only used for S3-based transcription (legacy)
+    EVALUATING = "evaluating"  # Running LLM evaluation on transcript
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -131,3 +136,55 @@ class CallRecordingStatus(str, enum.Enum):
     """Call recording status enumeration."""
     PENDING = "pending"
     UPDATED = "updated"
+
+
+class AlertMetricType(str, enum.Enum):
+    """Alert metric type enumeration."""
+    NUMBER_OF_CALLS = "number_of_calls"
+    CALL_DURATION = "call_duration"
+    ERROR_RATE = "error_rate"
+    SUCCESS_RATE = "success_rate"
+    LATENCY = "latency"
+    CUSTOM = "custom"
+
+
+class AlertAggregation(str, enum.Enum):
+    """Alert aggregation type enumeration."""
+    SUM = "sum"
+    AVG = "avg"
+    COUNT = "count"
+    MIN = "min"
+    MAX = "max"
+
+
+class AlertOperator(str, enum.Enum):
+    """Alert comparison operator enumeration."""
+    GREATER_THAN = ">"
+    LESS_THAN = "<"
+    GREATER_THAN_OR_EQUAL = ">="
+    LESS_THAN_OR_EQUAL = "<="
+    EQUAL = "="
+    NOT_EQUAL = "!="
+
+
+class AlertNotifyFrequency(str, enum.Enum):
+    """Alert notification frequency enumeration."""
+    IMMEDIATE = "immediate"
+    HOURLY = "hourly"
+    DAILY = "daily"
+    WEEKLY = "weekly"
+
+
+class AlertStatus(str, enum.Enum):
+    """Alert status enumeration."""
+    ACTIVE = "active"
+    PAUSED = "paused"
+    DISABLED = "disabled"
+
+
+class AlertHistoryStatus(str, enum.Enum):
+    """Alert history status enumeration."""
+    TRIGGERED = "triggered"
+    NOTIFIED = "notified"
+    ACKNOWLEDGED = "acknowledged"
+    RESOLVED = "resolved"
