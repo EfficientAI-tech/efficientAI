@@ -161,6 +161,11 @@ async def delete_integration(
     Delete an integration.
     Requires at least WRITER role.
     """
+    integration = db.query(Integration).filter(
+        Integration.id == integration_id,
+        Integration.organization_id == organization_id
+    ).first()
+    
     if not integration:
         raise HTTPException(status_code=404, detail="Integration not found")
     
