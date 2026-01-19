@@ -41,6 +41,15 @@ async def lifespan(app: FastAPI):
     # Ensure migrations directory exists
     ensure_migrations_directory()
     
+    # Initialize database FIRST (creates tables if they don't exist)
+    # This must happen before migrations since migrations modify existing tables
+    try:
+        init_db()
+        logger.info("✅ Database tables initialized")
+    except Exception as e:
+        logger.error(f"❌ Error initializing database: {e}")
+        raise
+    
     # Run database migrations (this will raise if they fail)
     try:
         run_migrations()
@@ -54,14 +63,6 @@ async def lifespan(app: FastAPI):
         logger.error("Please fix the migration errors and try again.")
         logger.error("You can run migrations manually with: eai migrate --verbose")
         raise  # Re-raise to prevent app from starting
-    
-    # Initialize database (creates tables if they don't exist)
-    try:
-        init_db()
-        logger.info("✅ Database initialized")
-    except Exception as e:
-        logger.error(f"❌ Error initializing database: {e}")
-        raise
     
     # Verify migrations are up to date
     is_up_to_date, pending = check_migrations_status()

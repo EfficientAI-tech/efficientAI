@@ -27,7 +27,8 @@ RUN uv pip install --system -e .
 COPY frontend/package.json frontend/package-lock.json* ./frontend/
 WORKDIR /app/frontend
 # Install all dependencies (including dev dependencies needed for build)
-RUN npm ci || npm install
+# Use --legacy-peer-deps to resolve peer dependency conflicts with HeroUI and Tailwind
+RUN npm ci --legacy-peer-deps || npm install --legacy-peer-deps
 
 # Copy frontend source files
 COPY frontend/ ./
