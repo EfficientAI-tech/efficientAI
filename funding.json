@@ -1,50 +1,72 @@
 {
-    "$schema": "https://fundingjson.org/schema/v1.1.0.json",
     "version": "v1.0.0",
     "entity": {
-        "type": "organization",
-        "role": "owner",
-        "name": "EfficientAI",
-        "email": "tejas@efficientai.cloud",
-        "phone": "",
-        "description": "EfficientAI is a platform for evaluating voice AI agents. It is a open-source project and is free to use.",
-        "webpageUrl": {
-            "url": "https://efficientai.cloud",
-            "wellKnown": "https://efficientai.cloud/.well-known/funding-manifest-urls"
-        }
+      "type": "organisation",
+      "role": "owner",
+      "name": "EfficientAI",
+      "email": "tejas@efficientai.cloud",
+      "phone": "",
+      "description": "EfficientAI is a platform for evaluating voice AI agents. It is a open-source project and is free to use.",
+      "webpageUrl": {
+        "url": "https://efficientai.cloud",
+        "wellKnown": "https://efficientai.cloud/.well-known/funding-manifest-urls"
+      }
     },
-    "projects": [{
+    "projects": [
+      {
         "guid": "efficientai-platform",
         "name": "EfficientAI Platform",
         "description": "EfficientAI is a platform for evaluating voice AI agents. It is a open-source project and is free to use.",
         "webpageUrl": {
-            "url": "https://efficientai.cloud",
-            "wellKnown": "https://efficientai.cloud/.well-known/funding-manifest-urls"
-        }
-    }],
-    "funding": {
-        "channels": [
-            {
-                "guid": "efficientai-bank",
-                "type": "bank",
-                "address": "tejas@efficientai.cloud",
-                "description": "Will accept direct bank transfers. Please e-mail us for details."
-            }
+          "url": "https://efficientai.cloud",
+          "wellKnown": "https://efficientai.cloud/.well-known/funding-manifest-urls"
+        },
+        "repositoryUrl": {
+          "url": "https://github.com/EfficientAI-tech/efficientAI"
+        },
+        "licenses": [
+          "spdx:MIT"
         ],
-        "plans": [ {
-            "guid": "efficientai-hosting-monthly",
-            "status": "active",
-            "name": "Hosting support",
-            "description": "This will cover the monthly server hosting costs for the projects.",
-            "amount": 200,
-            "currency": "USD",
-            "frequency": "monthly",
-            "channels": ["efficientai-bank"]
-        }
-        ],
-        "history": [
-            {"year": 2026, "income": 0, "description": "Started accepting donations for the first time."}
+        "tags": [
+          "ai",
+          "voice-ai",
+          "evals",
+          "genai"
         ]
+      }
+    ],
+    "funding": {
+      "channels": [
+        {
+          "guid": "efficientai-bank",
+          "type": "bank",
+          "address": "tejas@efficientai.cloud",
+          "description": "Will accept direct bank transfers. Please e-mail us for details."
+        }
+      ],
+      "plans": [
+        {
+          "guid": "efficientai-hosting-monthly",
+          "status": "active",
+          "name": "Hosting support",
+          "description": "This will cover the monthly server hosting costs for the projects.",
+          "amount": 200,
+          "currency": "USD",
+          "frequency": "monthly",
+          "channels": [
+            "efficientai-bank"
+          ]
+        }
+      ],
+      "history": [
+        {
+          "year": 2026,
+          "income": 0,
+          "expenses": 1000,
+          "taxes": 0,
+          "currency": "USD",
+          "description": "Started accepting donations for the first time."
+        }
+      ]
     }
-}
-
+  }
