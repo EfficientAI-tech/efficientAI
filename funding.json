@@ -27,7 +27,7 @@
             {
                 "guid": "efficientai-bank",
                 "type": "bank",
-                "address": ["tejas@efficientai.cloud","aadhar@efficientai.cloud"],
+                "address": "tejas@efficientai.cloud",
                 "description": "Will accept direct bank transfers. Please e-mail us for details."
             }
         ],
