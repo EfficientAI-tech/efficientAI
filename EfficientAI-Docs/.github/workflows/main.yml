@@ -1,0 +1,35 @@
+name: Deploy to S3
+
+on:
+  push:
+    branches:
+      - main  # Change to the branch you want to deploy from
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies & Build
+        run: |
+          npm install  # Modify for your project (e.g., yarn install, pip install)
+          npm run build  # Modify if necessary
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Deploy to S3
+        run: |
+          aws s3 sync ./build s3://${{ secrets.AWS_S3_BUCKET }} --delete
+        # Replace ./dist with your actual build folder (e.g., build, public, etc.)
+
+      - name: Invalidating CloudFront cache
+        run: |
+          aws cloudfront create-invalidation --distribution-id ${{ secrets.AWS_CLOUDFRONT_DISTRIBUTION_ID }} --paths "/*"
