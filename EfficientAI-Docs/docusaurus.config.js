@@ -48,7 +48,7 @@ const config = {
       logo: {
         alt: "Efficient AI Logo",
         src: "img/favicon.png",
-        href: "/docs/docs/intro",
+        href: "/docs/intro",
       },
       items: [
         { to: "/docs/intro", label: "Docs", position: "left" },
