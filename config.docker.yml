@@ -1,0 +1,60 @@
+# EfficientAI Docker Configuration File
+# This config uses Docker service names for networking
+
+# Application Settings
+app:
+  name: "EfficientAI Voice AI Evaluation Platform"
+  version: "0.1.0"
+  debug: true
+  secret_key: "your-secret-key-here-change-in-production"
+
+# Server Settings
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+# Database Configuration (Docker service name)
+database:
+  url: "postgresql://efficientai:password@db:5432/efficientai"
+
+# Redis Configuration (Docker service name)
+redis:
+  url: "redis://redis:6379/0"
+
+# Celery Configuration (Docker service names)
+celery:
+  broker_url: "redis://redis:6379/0"
+  result_backend: "redis://redis:6379/0"
+
+# File Storage
+storage:
+  upload_dir: "/app/uploads"
+  max_file_size_mb: 500
+  allowed_audio_formats:
+    - "wav"
+    - "mp3"
+    - "flac"
+    - "m4a"
+
+# S3 Configuration (for data sources integration)
+# Copy your S3 settings from config.yml here
+s3:
+  enabled: true 
+  bucket_name: "your-bucket-name"
+  region: "us-east-1"
+  access_key_id: "YOUR_ACCESS_KEY_ID"
+  secret_access_key: "YOUR_SECRET_ACCESS_KEY"
+  endpoint_url: null
+  prefix: "audio/"
+
+# CORS Settings
+cors:
+  origins:
+    - "http://localhost:3000"
+    - "http://localhost:8000"
+
+# API Settings
+api:
+  prefix: "/api/v1"
+  key_header: "X-API-Key"
+  rate_limit_per_minute: 60

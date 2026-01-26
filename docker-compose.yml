@@ -33,6 +33,7 @@ services:
       dockerfile: docker/Dockerfile.api
     container_name: efficientai_api
     environment:
+      # These can be overridden by config.yml, but provide defaults for Docker networking
       DATABASE_URL: postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-efficientai}
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
@@ -41,9 +42,12 @@ services:
       UPLOAD_DIR: /app/uploads
       DEBUG: ${DEBUG:-True}
       FRONTEND_DIR: /app/frontend/dist
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
     volumes:
       - ./app:/app/app
       - ./uploads:/app/uploads
+      - ./.encryption_key:/app/.encryption_key:ro
+      - ./config.docker.yml:/app/config.yml:ro
       # Note: Frontend is built into the image, not mounted as volume
     ports:
       - "8000:8000"
@@ -52,29 +56,26 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: eai start --config /app/config.yml --host 0.0.0.0 --port 8000
 
   worker:
     build:
       context: .
       dockerfile: docker/Dockerfile.worker
     container_name: efficientai_worker
+    # Use host network mode for WebRTC connectivity (Retell/Vapi calls)
+    network_mode: host
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-efficientai}
-      REDIS_URL: redis://redis:6379/0
-      CELERY_BROKER_URL: redis://redis:6379/0
-      CELERY_RESULT_BACKEND: redis://redis:6379/0
-      SECRET_KEY: ${SECRET_KEY:-your-secret-key-change-in-production}
-      UPLOAD_DIR: /app/uploads
+      # When using host network, config.yml with localhost URLs works directly
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
     volumes:
       - ./app:/app/app
       - ./uploads:/app/uploads
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    command: celery -A app.workers.celery_app worker --loglevel=info
+      - ./.encryption_key:/app/.encryption_key:ro
+      # Worker uses host network, so regular config.yml with localhost URLs works
+      - ./config.yml:/app/config.yml:ro
+    # Note: depends_on doesn't work with network_mode: host, ensure db/redis are running
+    command: eai worker --config /app/config.yml --loglevel info
 
 volumes:
   postgres_data:
