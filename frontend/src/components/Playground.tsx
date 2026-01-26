@@ -163,17 +163,20 @@ export default function Playground() {
         // Handle updates (transcripts)
         client.on('update', (update: any) => {
           if (update.transcript) {
-            setTranscripts(prev => {
-              // Simple logic: if same role, update content (streaming), else new message
-              // Retell sends incremental updates, so we might need to handle partials better
-              // For now, let's just append finished sentences or major updates
-              if (update.transcript.length > 0) {
-                const role = update.role === 'user' ? 'user' : 'agent'
-                const content = update.transcript
-                return [...prev, { role, content }]
-              }
-              return prev
-            })
+            // Retell sends transcript as an array of {role, content, words} objects
+            // We need to convert this to our simpler format
+            const transcriptArray = Array.isArray(update.transcript) 
+              ? update.transcript 
+              : [{ role: update.role || 'agent', content: update.transcript }]
+            
+            setTranscripts(
+              transcriptArray
+                .filter((msg: any) => msg && msg.content && typeof msg.content === 'string')
+                .map((msg: any) => ({
+                  role: msg.role === 'user' ? 'user' as const : 'agent' as const,
+                  content: msg.content
+                }))
+            )
           }
         })
 

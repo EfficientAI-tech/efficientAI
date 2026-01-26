@@ -62,18 +62,13 @@ There are two ways to run the application:
    docker compose up -d --build
    
    # Or rebuild without cache for a clean build
-   docker compose build --no-cache api
+   docker compose build --no-cache api worker
    docker compose up -d
    ```
 
-2. **Initialize database** (migrations run automatically on startup, but you can also run manually)
-   ```bash
-   # Option 1: Let migrations run automatically on startup
-   # (No action needed - migrations run when the app starts)
+2. **Configure your settings**
    
-   # Option 2: Run migrations manually before starting
-   docker compose exec api eai migrate
-   ```
+   Edit `config.yml` and `config.docker.yml` with your settings (S3, API keys, etc.). See the [Configuration](#️-configuration) section for details.
 
 3. **Create an API key**
    ```bash
@@ -83,11 +78,6 @@ There are two ways to run the application:
 4. **Access the application**
    - Frontend: http://localhost:8000/
    - API Docs: http://localhost:8000/docs
-   
-   **Note:** The frontend is automatically built into the Docker image during the first `docker compose up -d` command. If you make frontend changes later, rebuild with:
-   ```bash
-   docker compose up -d --build
-   ```
 
 ### Method 2: Using Command Line (CLI)
 
@@ -301,11 +291,24 @@ eai migrate --verbose
 
 ## ⚙️ Configuration
 
-### YAML Configuration (for CLI)
+### YAML Configuration
 
-Edit `config.yml` to configure your application:
+EfficientAI uses YAML configuration files for both CLI and Docker deployments. Generate a default config with:
+
+```bash
+eai init-config
+```
+
+#### Complete Configuration Reference
 
 ```yaml
+# Application Settings
+app:
+  name: "EfficientAI Voice AI Evaluation Platform"
+  version: "0.1.0"
+  debug: true
+  secret_key: "your-secret-key-here-change-in-production"
+
 # Server Settings
 server:
   host: "0.0.0.0"
@@ -319,22 +322,52 @@ database:
 redis:
   url: "redis://host:port/db"
 
+# Celery Configuration (for background tasks)
+celery:
+  broker_url: "redis://host:port/db"
+  result_backend: "redis://host:port/db"
+
 # File Storage
 storage:
   upload_dir: "./uploads"
   max_file_size_mb: 500
+  allowed_audio_formats:
+    - "wav"
+    - "mp3"
+    - "flac"
+    - "m4a"
+
+# S3 Configuration (for data sources integration)
+s3:
+  enabled: false  # Set to true to enable S3 data sources
+  bucket_name: "your-bucket-name"
+  region: "us-east-1"
+  access_key_id: "YOUR_ACCESS_KEY_ID"
+  secret_access_key: "YOUR_SECRET_ACCESS_KEY"
+  endpoint_url: null  # For S3-compatible services (MinIO, etc.)
+  prefix: "audio/"  # Optional prefix for all objects
+
+# CORS Settings
+cors:
+  origins:
+    - "http://localhost:3000"
+    - "http://localhost:8000"
+
+# API Settings
+api:
+  prefix: "/api/v1"
+  key_header: "X-API-Key"
+  rate_limit_per_minute: 60
 ```
 
-### Environment Variables (for Docker)
+### Environment Variables (Optional)
 
-Create a `.env` file for Docker Compose:
+You can use a `.env` file to override Docker Compose defaults:
 
 ```env
-DATABASE_URL=postgresql://efficientai:password@db:5432/efficientai
 POSTGRES_USER=efficientai
 POSTGRES_PASSWORD=password
 POSTGRES_DB=efficientai
-REDIS_URL=redis://redis:6379/0
 SECRET_KEY=your-secret-key-here
 ```
 
