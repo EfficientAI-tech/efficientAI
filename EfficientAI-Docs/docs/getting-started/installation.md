@@ -77,15 +77,70 @@ pip install -e .
 eai init-config
 ```
 
-Edit `config.yml` with your database and Redis connection strings:
+Edit `config.yml` with your settings:
 
 ```yaml
+# EfficientAI Configuration File
+
+# Application Settings
+app:
+  name: "Voice AI Evaluation Platform"
+  version: "0.1.0"
+  debug: true  # Set to false in production
+  secret_key: "your-secret-key-here-change-in-production"
+
+# Server Settings
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+# Database Configuration (Required)
 database:
   url: "postgresql://efficientai:password@localhost:5432/efficientai"
 
+# Redis Configuration (Required)
 redis:
   url: "redis://localhost:6379/0"
+
+# Celery Configuration
+celery:
+  broker_url: "redis://localhost:6379/0"
+  result_backend: "redis://localhost:6379/0"
+
+# File Storage
+storage:
+  upload_dir: "./uploads"
+  max_file_size_mb: 500
+  allowed_audio_formats:
+    - "wav"
+    - "mp3"
+    - "flac"
+    - "m4a"
+
+# S3 Configuration (Optional - for cloud audio storage)
+s3:
+  enabled: false
+  bucket_name: "your-s3-bucket-name"
+  region: "us-east-1"
+  access_key_id: "your-access-key-id"
+  secret_access_key: "your-secret-access-key"
+  endpoint_url: null  # For S3-compatible services (MinIO, DigitalOcean Spaces)
+  prefix: "audio/"
+
+# CORS Settings
+cors:
+  origins:
+    - "http://localhost:3000"
+    - "http://localhost:8000"
+
+# API Settings
+api:
+  prefix: "/api/v1"
+  key_header: "X-API-Key"
+  rate_limit_per_minute: 60
 ```
+
+> **Important**: Make sure to change `secret_key` to a secure random value in production!
 
 ### Start the application and worker
 
