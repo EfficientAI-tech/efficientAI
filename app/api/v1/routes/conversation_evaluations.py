@@ -5,12 +5,15 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
 from uuid import UUID
+from loguru import logger
 
 from app.database import get_db
 from app.dependencies import get_api_key, get_organization_id
-from app.models.database import ConversationEvaluation, ManualTranscription, Agent, ModelProvider
+from app.models.database import ConversationEvaluation, ManualTranscription, Agent, ModelProvider, Metric
 from app.models.schemas import ConversationEvaluationCreate, ConversationEvaluationResponse, MessageResponse
 from app.services.llm_service import llm_service
+from app.services.voice_quality_service import is_audio_metric, calculate_audio_metrics, AUDIO_METRICS
+from app.services.s3_service import s3_service
 
 router = APIRouter(prefix="/conversation-evaluations", tags=["Conversation Evaluations"])
 
@@ -149,6 +152,52 @@ Only respond with valid JSON, no additional text."""
         objective_achieved_reason = evaluation_data.get("objective_achieved_reason", "")
         additional_metrics = evaluation_data.get("additional_metrics", {})
         overall_score = float(evaluation_data.get("overall_score", 0.0))
+        
+        # Calculate audio metrics if enabled and audio is available
+        try:
+            # Get enabled audio metrics for the organization
+            enabled_audio_metrics = db.query(Metric).filter(
+                Metric.organization_id == organization_id,
+                Metric.enabled == True,
+                Metric.name.in_(AUDIO_METRICS)
+            ).all()
+            
+            if enabled_audio_metrics and transcription.audio_file_key:
+                logger.info(f"[ConversationEvaluation] Calculating {len(enabled_audio_metrics)} audio metrics for transcription {transcription.id}")
+                
+                # Get presigned URL for the audio file
+                if s3_service.is_enabled():
+                    try:
+                        audio_url = s3_service.generate_presigned_url_by_key(
+                            transcription.audio_file_key, 
+                            expiration=300  # 5 minutes
+                        )
+                        
+                        # Calculate audio metrics
+                        audio_metric_names = [m.name for m in enabled_audio_metrics]
+                        audio_results = calculate_audio_metrics(
+                            audio_source=audio_url,
+                            metric_names=audio_metric_names,
+                            is_url=True
+                        )
+                        
+                        # Add audio metrics to additional_metrics with "voice_quality_" prefix
+                        for metric_name, value in audio_results.items():
+                            if value is not None:
+                                # Use snake_case key for consistency
+                                key = f"voice_{metric_name.lower().replace(' ', '_')}"
+                                additional_metrics[key] = value
+                        
+                        logger.info(f"[ConversationEvaluation] Audio metrics calculated: {audio_results}")
+                        
+                    except Exception as audio_err:
+                        logger.warning(f"[ConversationEvaluation] Failed to calculate audio metrics: {audio_err}")
+                else:
+                    logger.info("[ConversationEvaluation] S3 not enabled, skipping audio metrics")
+            elif enabled_audio_metrics:
+                logger.info(f"[ConversationEvaluation] Audio metrics enabled but no audio_file_key for transcription {transcription.id}")
+        except Exception as e:
+            logger.warning(f"[ConversationEvaluation] Error loading/calculating audio metrics: {e}")
         
         # Serialize LLM response to JSON-compatible format
         # Extract only the serializable parts, excluding the raw_response object

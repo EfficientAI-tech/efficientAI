@@ -2,7 +2,8 @@ import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
 import Button from '../components/Button'
-import { Plus, Edit, Trash2, X, ToggleLeft, ToggleRight } from 'lucide-react'
+import { useToast } from '../hooks/useToast'
+import { Plus, Edit, Trash2, X, ToggleLeft, ToggleRight, Mic, Brain, RefreshCw } from 'lucide-react'
 
 interface Metric {
   id: string
@@ -16,8 +17,22 @@ interface Metric {
   updated_at: string
 }
 
+// Audio-based voice quality metrics (calculated using Praat-Parselmouth)
+const AUDIO_METRICS = new Set(['Pitch Variance', 'Jitter', 'Shimmer', 'HNR'])
+
+// Deprecated default metrics that can be deleted
+const DEPRECATED_METRICS = new Set(['Response Time', 'Customer Satisfaction'])
+
+const isAudioMetric = (metricName: string): boolean => AUDIO_METRICS.has(metricName)
+const isDeprecatedMetric = (metricName: string): boolean => DEPRECATED_METRICS.has(metricName)
+
+// Quantitative metrics are objective numerical measurements (audio analysis)
+// Qualitative metrics are subjective assessments (LLM evaluation)
+const isQuantitativeMetric = (metricName: string): boolean => AUDIO_METRICS.has(metricName)
+
 export default function MetricsManagement() {
   const queryClient = useQueryClient()
+  const { showToast, ToastContainer } = useToast()
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [editingMetric, setEditingMetric] = useState<Metric | null>(null)
   const [formData, setFormData] = useState({
@@ -36,8 +51,16 @@ export default function MetricsManagement() {
   // Seed default metrics on first load if none exist
   const seedMutation = useMutation({
     mutationFn: () => apiClient.seedDefaultMetrics(),
-    onSuccess: () => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['metrics'] })
+      if (data && data.length > 0) {
+        showToast(`Added ${data.length} new default metric${data.length > 1 ? 's' : ''}`, 'success')
+      } else {
+        showToast('All default metrics already exist', 'success')
+      }
+    },
+    onError: () => {
+      showToast('Failed to sync default metrics', 'error')
     },
   })
 
@@ -125,11 +148,14 @@ export default function MetricsManagement() {
   }
 
   const handleDelete = (metric: Metric) => {
-    if (metric.is_default) {
+    if (metric.is_default && !isDeprecatedMetric(metric.name)) {
       alert('Cannot delete default metrics')
       return
     }
-    if (confirm(`Are you sure you want to delete "${metric.name}"?`)) {
+    const message = isDeprecatedMetric(metric.name)
+      ? `"${metric.name}" is a deprecated metric. Are you sure you want to delete it?`
+      : `Are you sure you want to delete "${metric.name}"?`
+    if (confirm(message)) {
       deleteMutation.mutate(metric.id)
     }
   }
@@ -142,6 +168,7 @@ export default function MetricsManagement() {
 
   return (
     <div className="space-y-6">
+      <ToastContainer />
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Metrics</h1>
@@ -149,17 +176,27 @@ export default function MetricsManagement() {
             Manage evaluation metrics for your conversations
           </p>
         </div>
-        <Button
-          variant="primary"
-          onClick={() => {
-            resetForm()
-            setEditingMetric(null)
-            setShowCreateModal(true)
-          }}
-          leftIcon={<Plus className="w-4 h-4" />}
-        >
-          Create Metric
-        </Button>
+        <div className="flex items-center space-x-3">
+          <Button
+            variant="outline"
+            onClick={() => seedMutation.mutate()}
+            isLoading={seedMutation.isPending}
+            leftIcon={<RefreshCw className="w-4 h-4" />}
+          >
+            Sync Default Metrics
+          </Button>
+          <Button
+            variant="primary"
+            onClick={() => {
+              resetForm()
+              setEditingMetric(null)
+              setShowCreateModal(true)
+            }}
+            leftIcon={<Plus className="w-4 h-4" />}
+          >
+            Create Metric
+          </Button>
+        </div>
       </div>
 
       {/* Metrics Table */}
@@ -188,10 +225,13 @@ export default function MetricsManagement() {
                     Type
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Trigger
+                    Data Type
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Evaluation
+                    Method
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Enabled
                   </th>
                   <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Actions
@@ -199,70 +239,93 @@ export default function MetricsManagement() {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {metrics.map((metric: Metric) => (
-                  <tr key={metric.id} className="hover:bg-gray-50">
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="flex items-center">
-                        <div className="text-sm font-medium text-gray-900">{metric.name}</div>
-                        {metric.is_default && (
-                          <span className="ml-2 px-2 py-0.5 text-xs bg-blue-100 text-blue-800 rounded">
-                            Default
+                {metrics.map((metric: Metric) => {
+                  const isAudio = isAudioMetric(metric.name)
+                  const isQuantitative = isQuantitativeMetric(metric.name)
+                  return (
+                    <tr key={metric.id} className="hover:bg-gray-50">
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="flex items-center">
+                          <div className="text-sm font-medium text-gray-900">{metric.name}</div>
+                          {metric.is_default && (
+                            <span className="ml-2 px-2 py-0.5 text-xs bg-blue-100 text-blue-800 rounded">
+                              Default
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="text-sm text-gray-500 max-w-md truncate">
+                          {metric.description || '-'}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        {isQuantitative ? (
+                          <span className="px-2.5 py-1 text-xs font-medium bg-blue-100 text-blue-800 rounded-full">
+                            Quantitative
+                          </span>
+                        ) : (
+                          <span className="px-2.5 py-1 text-xs font-medium bg-amber-100 text-amber-800 rounded-full">
+                            Qualitative
                           </span>
                         )}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4">
-                      <div className="text-sm text-gray-500 max-w-md truncate">
-                        {metric.description || '-'}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span className="px-2 py-1 text-xs font-medium bg-gray-100 text-gray-800 rounded capitalize">
-                        {metric.metric_type}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span className="px-2 py-1 text-xs font-medium bg-gray-100 text-gray-800 rounded capitalize">
-                        {metric.trigger}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <button
-                        onClick={() => handleToggleEnabled(metric)}
-                        className="flex items-center"
-                        disabled={toggleEnabledMutation.isPending}
-                      >
-                        {metric.enabled ? (
-                          <ToggleRight className="w-10 h-10 text-green-600" />
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <span className="px-2 py-1 text-xs font-medium bg-gray-100 text-gray-800 rounded capitalize">
+                          {metric.metric_type}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        {isAudio ? (
+                          <span className="inline-flex items-center px-2.5 py-1 text-xs font-medium bg-violet-100 text-violet-800 rounded-full">
+                            <Mic className="w-3 h-3 mr-1" />
+                            Audio
+                          </span>
                         ) : (
-                          <ToggleLeft className="w-10 h-10 text-gray-400" />
+                          <span className="inline-flex items-center px-2.5 py-1 text-xs font-medium bg-emerald-100 text-emerald-800 rounded-full">
+                            <Brain className="w-3 h-3 mr-1" />
+                            LLM
+                          </span>
                         )}
-                      </button>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                      <div className="flex items-center justify-end space-x-2">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleEdit(metric)}
-                          leftIcon={<Edit className="w-4 h-4" />}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <button
+                          onClick={() => handleToggleEnabled(metric)}
+                          className="flex items-center"
+                          disabled={toggleEnabledMutation.isPending}
                         >
-                          Edit
-                        </Button>
-                        {!metric.is_default && (
+                          {metric.enabled ? (
+                            <ToggleRight className="w-10 h-10 text-green-600" />
+                          ) : (
+                            <ToggleLeft className="w-10 h-10 text-gray-400" />
+                          )}
+                        </button>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                        <div className="flex items-center justify-end space-x-2">
                           <Button
                             variant="ghost"
                             size="sm"
-                            onClick={() => handleDelete(metric)}
-                            leftIcon={<Trash2 className="w-4 h-4" />}
+                            onClick={() => handleEdit(metric)}
+                            leftIcon={<Edit className="w-4 h-4" />}
                           >
-                            Delete
+                            Edit
                           </Button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                          {(!metric.is_default || isDeprecatedMetric(metric.name)) && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleDelete(metric)}
+                              leftIcon={<Trash2 className="w-4 h-4" />}
+                            >
+                              Delete
+                            </Button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>

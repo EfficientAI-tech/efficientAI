@@ -1,11 +1,22 @@
 import { useQuery } from '@tanstack/react-query'
 import { useParams, useNavigate } from 'react-router-dom'
 import { apiClient } from '../lib/api'
-import { ArrowLeft, Play, Pause, Clock, CheckCircle, XCircle, Loader, User, Bot, FileText, BarChart3, Phone } from 'lucide-react'
+import { ArrowLeft, Play, Pause, Clock, CheckCircle, XCircle, Loader, User, Bot, FileText, BarChart3, Phone, Mic, Brain } from 'lucide-react'
 import { useState, useRef, useEffect } from 'react'
 import Button from '../components/Button'
 import RetellCallDetails from '../components/call-recordings/RetellCallDetails'
 import VapiCallDetails from '../components/call-recordings/VapiCallDetails'
+
+// Audio-based voice quality metrics (calculated using Praat-Parselmouth)
+const AUDIO_METRICS: Record<string, { unit: string; description: string }> = {
+  'Pitch Variance': { unit: 'Hz', description: 'F0 variation - prosodic expressiveness' },
+  'Jitter': { unit: '%', description: 'Pitch period variation - vocal stability' },
+  'Shimmer': { unit: '%', description: 'Amplitude perturbation - voice quality' },
+  'HNR': { unit: 'dB', description: 'Harmonics-to-Noise Ratio - signal clarity' },
+}
+
+const isAudioMetric = (metricName: string): boolean => metricName in AUDIO_METRICS
+const getAudioMetricInfo = (metricName: string) => AUDIO_METRICS[metricName]
 
 interface EvaluatorResultDetail {
   id: string
@@ -268,7 +279,7 @@ export default function EvaluatorResultDetail() {
     }
   }
 
-  const formatMetricValue = (value: any, type: string, _metricName?: string): React.ReactNode => {
+  const formatMetricValue = (value: any, type: string, metricName?: string): React.ReactNode => {
     if (value === null || value === undefined) return <span className="text-gray-400">N/A</span>
     
     // Normalize type to lowercase for consistent comparison
@@ -317,10 +328,22 @@ export default function EvaluatorResultDetail() {
       )
     }
     
-    // Handle number metrics
+    // Handle number metrics (including audio metrics)
     if (normalizedType === 'number') {
       const numValue = typeof value === 'number' ? value : parseFloat(value)
       if (isNaN(numValue)) return <span className="text-gray-400">N/A</span>
+      
+      // Check if this is an audio metric and add the appropriate unit
+      if (metricName && isAudioMetric(metricName)) {
+        const audioInfo = getAudioMetricInfo(metricName)
+        return (
+          <div className="flex items-baseline gap-1">
+            <span className="text-2xl font-bold text-gray-900">{numValue.toFixed(2)}</span>
+            <span className="text-sm font-medium text-violet-600">{audioInfo?.unit}</span>
+          </div>
+        )
+      }
+      
       return <span className="text-2xl font-bold text-gray-900">{numValue.toFixed(1)}</span>
     }
     
@@ -394,18 +417,66 @@ export default function EvaluatorResultDetail() {
             <BarChart3 className="w-5 h-5 mr-2" />
             Evaluation Metrics
           </h2>
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-            {Object.entries(resultData.metric_scores).map(([metricId, metric]) => (
-              <div key={metricId} className="border border-gray-200 rounded-lg p-4">
-                <div className="text-sm font-medium text-gray-500 mb-2">
-                  {metric.metric_name || metricId}
-                </div>
-                <div>
-                  {formatMetricValue(metric.value, metric.type, metric.metric_name)}
-                </div>
+          
+          {/* Separate Audio and LLM metrics */}
+          {(() => {
+            const audioMetrics = Object.entries(resultData.metric_scores).filter(
+              ([, metric]) => isAudioMetric(metric.metric_name || '')
+            )
+            const llmMetrics = Object.entries(resultData.metric_scores).filter(
+              ([, metric]) => !isAudioMetric(metric.metric_name || '')
+            )
+            
+            return (
+              <div className="space-y-6">
+                {/* Voice Quality (Audio) Metrics */}
+                {audioMetrics.length > 0 && (
+                  <div>
+                    <div className="flex items-center gap-2 mb-3">
+                      <Mic className="w-4 h-4 text-violet-600" />
+                      <h3 className="text-sm font-semibold text-violet-800 uppercase tracking-wide">Voice Quality Metrics</h3>
+                      <span className="px-2 py-0.5 text-xs bg-violet-100 text-violet-700 rounded-full">Audio Analysis</span>
+                    </div>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                      {audioMetrics.map(([metricId, metric]) => (
+                        <div key={metricId} className="border border-violet-200 bg-violet-50/50 rounded-lg p-4">
+                          <div className="text-sm font-medium text-violet-700 mb-2">
+                            {metric.metric_name || metricId}
+                          </div>
+                          <div>
+                            {formatMetricValue(metric.value, metric.type, metric.metric_name)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                
+                {/* LLM-based Metrics */}
+                {llmMetrics.length > 0 && (
+                  <div>
+                    <div className="flex items-center gap-2 mb-3">
+                      <Brain className="w-4 h-4 text-emerald-600" />
+                      <h3 className="text-sm font-semibold text-emerald-800 uppercase tracking-wide">Conversation Metrics</h3>
+                      <span className="px-2 py-0.5 text-xs bg-emerald-100 text-emerald-700 rounded-full">LLM Evaluation</span>
+                    </div>
+                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+                      {llmMetrics.map(([metricId, metric]) => (
+                        <div key={metricId} className="border border-gray-200 rounded-lg p-4">
+                          <div className="text-sm font-medium text-gray-500 mb-2">
+                            {metric.metric_name || metricId}
+                          </div>
+                          <div>
+                            {formatMetricValue(metric.value, metric.type, metric.metric_name)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
-            ))}
-          </div>
+            )
+          })()}
         </div>
       )}
 
