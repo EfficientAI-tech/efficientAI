@@ -93,6 +93,9 @@ def process_evaluator_result_task(self, result_id: str):
         )
         from app.services.transcription_service import transcription_service
         from app.services.llm_service import llm_service
+        from app.services.voice_quality_service import (
+            is_audio_metric, calculate_audio_metrics_from_call_data, AUDIO_METRICS
+        )
         from app.core.encryption import decrypt_api_key
         import json
         import re
@@ -244,14 +247,26 @@ def process_evaluator_result_task(self, result_id: str):
             ).all()
             
             logger.info(f"[EvaluatorResult {result.result_id}] ✓ Found {len(enabled_metrics)} enabled metrics")
+            
+            # Split metrics into LLM-evaluated and audio-evaluated
+            llm_metrics = []
+            audio_metrics = []
             for metric in enabled_metrics:
                 metric_type_val = metric.metric_type.value if hasattr(metric.metric_type, 'value') else metric.metric_type
-                logger.debug(f"[EvaluatorResult {result.result_id}]   - {metric.name} ({metric_type_val})")
+                if is_audio_metric(metric.name):
+                    audio_metrics.append(metric)
+                    logger.debug(f"[EvaluatorResult {result.result_id}]   - {metric.name} ({metric_type_val}) [AUDIO]")
+                else:
+                    llm_metrics.append(metric)
+                    logger.debug(f"[EvaluatorResult {result.result_id}]   - {metric.name} ({metric_type_val}) [LLM]")
             
-            # Step 5: Evaluate against enabled metrics using LLM
+            logger.info(f"[EvaluatorResult {result.result_id}] Metrics split: {len(llm_metrics)} LLM, {len(audio_metrics)} AUDIO")
+            
+            # Step 5: Evaluate against enabled metrics
             metric_scores = {}
             
-            if enabled_metrics and transcription:
+            # Step 5a: Evaluate LLM metrics (requires transcription)
+            if llm_metrics and transcription:
                 # Update status to EVALUATING
                 result.status = EvaluatorResultStatus.EVALUATING.value
                 db.commit()
@@ -265,9 +280,9 @@ def process_evaluator_result_task(self, result_id: str):
                 scenario_context = scenario.description if scenario and scenario.description else ""
                 scenario_goals = scenario.required_info if scenario and scenario.required_info else {}
                 
-                # Build metric key mapping for later use
+                # Build metric key mapping for later use (LLM metrics only)
                 metric_key_map = {}  # metric_key -> metric object
-                for metric in enabled_metrics:
+                for metric in llm_metrics:
                     metric_key = metric.name.lower().replace(" ", "_")
                     metric_key_map[metric_key] = metric
                     # Also map original name for fuzzy matching
@@ -293,8 +308,8 @@ def process_evaluator_result_task(self, result_id: str):
 ## Metrics to Evaluate (use EXACT keys below)
 """
                 
-                # Add metric descriptions to prompt with exact keys
-                for metric in enabled_metrics:
+                # Add metric descriptions to prompt with exact keys (LLM metrics only)
+                for metric in llm_metrics:
                     metric_key = metric.name.lower().replace(" ", "_")
                     metric_desc = metric.description or f"Evaluate {metric.name}"
                     m_type = metric.metric_type.value if hasattr(metric.metric_type, 'value') else metric.metric_type
@@ -313,7 +328,7 @@ You MUST respond with ONLY a JSON object using the EXACT metric keys listed abov
 Example format:
 {{
 """
-                for metric in enabled_metrics:
+                for metric in llm_metrics:
                     metric_key = metric.name.lower().replace(" ", "_")
                     m_type = metric.metric_type.value if hasattr(metric.metric_type, 'value') else metric.metric_type
                     if m_type == "rating":
@@ -353,11 +368,11 @@ CRITICAL RULES:
                         llm_provider_val = llm_provider.value if hasattr(llm_provider, 'value') else llm_provider
                         logger.info(f"[EvaluatorResult {result.result_id}] Using {llm_provider_val} provider with model: {llm_model}")
                     
-                    logger.info(f"[EvaluatorResult {result.result_id}] Building evaluation prompt with {len(enabled_metrics)} metrics")
+                    logger.info(f"[EvaluatorResult {result.result_id}] Building evaluation prompt with {len(llm_metrics)} LLM metrics")
                     logger.debug(f"[EvaluatorResult {result.result_id}] Evaluation prompt length: {len(evaluation_prompt)} characters")
                     
                     # Build the list of exact metric keys for system message
-                    exact_keys = [metric.name.lower().replace(" ", "_") for metric in enabled_metrics]
+                    exact_keys = [metric.name.lower().replace(" ", "_") for metric in llm_metrics]
                     
                     messages = [
                         {"role": "system", "content": f"""You are an expert conversation evaluator. You MUST follow these rules STRICTLY:
@@ -493,7 +508,7 @@ Example of WRONG format (DO NOT do this):
                     response_keys = list(evaluation_data.keys())
                     logger.debug(f"[EvaluatorResult {result.result_id}] Response keys: {response_keys}")
                     
-                    for metric in enabled_metrics:
+                    for metric in llm_metrics:
                         metric_key = metric.name.lower().replace(" ", "_")
                         m_type = metric.metric_type.value if hasattr(metric.metric_type, 'value') else metric.metric_type
                         
@@ -552,8 +567,8 @@ Example of WRONG format (DO NOT do this):
                     # Use str() to avoid format issues with curly braces in error messages
                     error_msg = str(e).replace("{", "{{").replace("}", "}}")
                     logger.error(f"[EvaluatorResult {result.result_id}] ✗ LLM evaluation failed: {error_msg}", exc_info=True)
-                    # If LLM evaluation fails, mark metrics as None but don't fail the whole task
-                    for metric in enabled_metrics:
+                    # If LLM evaluation fails, mark LLM metrics as None but don't fail the whole task
+                    for metric in llm_metrics:
                         m_type = metric.metric_type.value if hasattr(metric.metric_type, 'value') else metric.metric_type
                         metric_scores[str(metric.id)] = {
                             "value": None,
@@ -561,12 +576,66 @@ Example of WRONG format (DO NOT do this):
                             "metric_name": metric.name,
                             "error": str(e)
                         }
-                    logger.warning(f"[EvaluatorResult {result.result_id}] Marked {len(enabled_metrics)} metrics as failed")
+                    logger.warning(f"[EvaluatorResult {result.result_id}] Marked {len(llm_metrics)} LLM metrics as failed")
             else:
-                if not enabled_metrics:
-                    logger.warning(f"[EvaluatorResult {result.result_id}] No enabled metrics found, skipping evaluation")
+                if not llm_metrics:
+                    logger.info(f"[EvaluatorResult {result.result_id}] No LLM metrics enabled, skipping LLM evaluation")
                 if not transcription:
-                    logger.warning(f"[EvaluatorResult {result.result_id}] No transcription available, skipping evaluation")
+                    logger.warning(f"[EvaluatorResult {result.result_id}] No transcription available, skipping LLM evaluation")
+            
+            # Step 5b: Evaluate audio metrics (requires recording from provider)
+            if audio_metrics and result.call_data:
+                logger.info(f"[EvaluatorResult {result.result_id}] Step 5b: Calculating {len(audio_metrics)} audio metrics")
+                
+                try:
+                    # Get audio metric names
+                    audio_metric_names = [m.name for m in audio_metrics]
+                    
+                    # Calculate audio metrics from provider call_data
+                    audio_results = calculate_audio_metrics_from_call_data(
+                        call_data=result.call_data,
+                        provider_platform=result.provider_platform,
+                        metric_names=audio_metric_names
+                    )
+                    
+                    # Map results to metric_scores
+                    for metric in audio_metrics:
+                        m_type = metric.metric_type.value if hasattr(metric.metric_type, 'value') else metric.metric_type
+                        value = audio_results.get(metric.name)
+                        metric_scores[str(metric.id)] = {
+                            "value": value,
+                            "type": m_type.lower() if isinstance(m_type, str) else m_type,
+                            "metric_name": metric.name
+                        }
+                        logger.debug(f"[EvaluatorResult {result.result_id}]   - {metric.name}: {value}")
+                    
+                    # Log summary
+                    successful_audio = sum(1 for m in audio_metrics if audio_results.get(m.name) is not None)
+                    logger.info(f"[EvaluatorResult {result.result_id}] ✓ Audio metrics calculated: {successful_audio}/{len(audio_metrics)} successful")
+                    
+                except Exception as e:
+                    error_msg = str(e).replace("{", "{{").replace("}", "}}")
+                    logger.error(f"[EvaluatorResult {result.result_id}] ✗ Audio metrics calculation failed: {error_msg}", exc_info=True)
+                    # Mark audio metrics as failed
+                    for metric in audio_metrics:
+                        m_type = metric.metric_type.value if hasattr(metric.metric_type, 'value') else metric.metric_type
+                        metric_scores[str(metric.id)] = {
+                            "value": None,
+                            "type": m_type.lower() if isinstance(m_type, str) else m_type,
+                            "metric_name": metric.name,
+                            "error": str(e)
+                        }
+                    logger.warning(f"[EvaluatorResult {result.result_id}] Marked {len(audio_metrics)} audio metrics as failed")
+            elif audio_metrics:
+                logger.warning(f"[EvaluatorResult {result.result_id}] No call_data available for audio metrics, marking as None")
+                for metric in audio_metrics:
+                    m_type = metric.metric_type.value if hasattr(metric.metric_type, 'value') else metric.metric_type
+                    metric_scores[str(metric.id)] = {
+                        "value": None,
+                        "type": m_type.lower() if isinstance(m_type, str) else m_type,
+                        "metric_name": metric.name,
+                        "error": "No call_data available for audio analysis"
+                    }
             
             # Update status to COMPLETED
             result.metric_scores = metric_scores

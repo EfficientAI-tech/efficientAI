@@ -153,6 +153,10 @@ def update_metric(
     return metric
 
 
+# Deprecated default metrics that can be deleted
+DEPRECATED_DEFAULT_METRICS = {"Response Time", "Customer Satisfaction"}
+
+
 @router.delete("/{metric_id}", status_code=204)
 def delete_metric(
     metric_id: UUID,
@@ -170,7 +174,8 @@ def delete_metric(
     if not metric:
         raise HTTPException(status_code=404, detail="Metric not found")
 
-    if metric.is_default:
+    # Allow deletion of deprecated default metrics
+    if metric.is_default and metric.name not in DEPRECATED_DEFAULT_METRICS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot delete default metrics"
@@ -189,6 +194,7 @@ def seed_default_metrics(
 ):
     """Seed default metrics for an organization."""
     default_metrics = [
+        # Qualitative Metrics (LLM-evaluated subjective assessments)
         {
             "name": "Follow Instructions",
             "description": "Measures how well the agent follows instructions and guidelines",
@@ -217,17 +223,32 @@ def seed_default_metrics(
             "trigger": MetricTrigger.ALWAYS,
             "enabled": True,
         },
+        # Quantitative Metrics (Audio analysis using Parselmouth - objective measurements)
         {
-            "name": "Response Time",
-            "description": "Tracks the average response time in seconds",
+            "name": "Pitch Variance",
+            "description": "Measures F0 (fundamental frequency) variation in Hz - indicates prosodic expressiveness. Higher values suggest more expressive speech.",
             "metric_type": MetricType.NUMBER,
             "trigger": MetricTrigger.ALWAYS,
             "enabled": True,
         },
         {
-            "name": "Customer Satisfaction",
-            "description": "Overall customer satisfaction rating",
-            "metric_type": MetricType.RATING,
+            "name": "Jitter",
+            "description": "Cycle-to-cycle pitch period variation as percentage - indicates vocal stability. Lower values (< 1%) indicate stable voice.",
+            "metric_type": MetricType.NUMBER,
+            "trigger": MetricTrigger.ALWAYS,
+            "enabled": True,
+        },
+        {
+            "name": "Shimmer",
+            "description": "Cycle-to-cycle amplitude variation as percentage - indicates voice quality. Lower values (< 3%) indicate consistent voice.",
+            "metric_type": MetricType.NUMBER,
+            "trigger": MetricTrigger.ALWAYS,
+            "enabled": True,
+        },
+        {
+            "name": "HNR",
+            "description": "Harmonics-to-Noise Ratio in dB - indicates voice clarity. Higher values (> 20 dB) indicate cleaner voice with less breathiness.",
+            "metric_type": MetricType.NUMBER,
             "trigger": MetricTrigger.ALWAYS,
             "enabled": True,
         },

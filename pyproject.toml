@@ -39,6 +39,7 @@ dependencies = [
     "av>=10.0.0",
     "croniter>=2.0.0",
     "pytz>=2024.1",
+    "praat-parselmouth>=0.4.3",
 ]
 
 [project.optional-dependencies]
