@@ -14,6 +14,7 @@ const PROVIDER_LABELS: Record<ModelProvider, string> = {
   [ModelProvider.AWS]: 'AWS',
   [ModelProvider.DEEPGRAM]: 'Deepgram',
   [ModelProvider.CARTESIA]: 'Cartesia',
+  [ModelProvider.ELEVENLABS]: 'ElevenLabs',
   [ModelProvider.CUSTOM]: 'Custom',
 }
 
@@ -23,8 +24,9 @@ const PROVIDER_LOGOS: Record<ModelProvider, string | null> = {
   [ModelProvider.GOOGLE]: '/geminiai.png',
   [ModelProvider.AZURE]: '/azureai.png',
   [ModelProvider.AWS]: '/AWS_logo.png',
-  [ModelProvider.DEEPGRAM]: '/deepgram.png', // add asset if available
-  [ModelProvider.CARTESIA]: '/cartesia.jpg', // ensure asset exists in public/
+  [ModelProvider.DEEPGRAM]: '/deepgram.png',
+  [ModelProvider.CARTESIA]: '/cartesia.jpg',
+  [ModelProvider.ELEVENLABS]: '/elevenLabs.png',
   [ModelProvider.CUSTOM]: null,
 }
 
@@ -36,6 +38,7 @@ const PROVIDER_DESCRIPTIONS: Record<ModelProvider, string> = {
   [ModelProvider.AWS]: 'AWS Bedrock, Transcribe, Polly',
   [ModelProvider.DEEPGRAM]: 'Deepgram STT',
   [ModelProvider.CARTESIA]: 'Cartesia TTS',
+  [ModelProvider.ELEVENLABS]: 'ElevenLabs TTS',
   [ModelProvider.CUSTOM]: 'Custom AI provider',
 }
 

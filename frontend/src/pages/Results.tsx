@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { apiClient } from '../lib/api'
-import { Clock, CheckCircle, XCircle, Loader, Plus, X, Trash2, RefreshCw } from 'lucide-react'
+import { Clock, CheckCircle, XCircle, Loader, Plus, X, Trash2, RefreshCw, Eye } from 'lucide-react'
 import { useState } from 'react'
 import Button from '../components/Button'
 
@@ -140,8 +140,39 @@ export default function Results() {
     })
   }
 
-  // Get enabled metrics for column headers
+  // Define which metrics to show as columns in the table
+  // These are the key conversation quality metrics
+  const COLUMN_METRICS = [
+    'Follow Instructions',
+    'Problem Resolution', 
+    'Professionalism',
+    'Clarity and Empathy'
+  ]
+
+  // Helper to check if a metric value is valid (not null, undefined, empty, or "N/A")
+  const hasValidValue = (value: any) => {
+    if (value === null || value === undefined) return false
+    if (value === '') return false
+    if (typeof value === 'string' && value.toLowerCase() === 'n/a') return false
+    if (typeof value === 'string' && value.toLowerCase() === 'na') return false
+    if (typeof value === 'string' && value.trim() === '') return false
+    return true
+  }
+
+  // Get enabled metrics for column headers - only show key metrics in table
   const enabledMetrics = metrics.filter((m: Metric) => m.enabled)
+  
+  // Filter to only show metrics that have at least one result with a valid value
+  const columnMetrics = enabledMetrics.filter((m: Metric) => {
+    // First check if it's in our desired column metrics list
+    if (!COLUMN_METRICS.includes(m.name)) return false
+    
+    // Then check if ANY result has a valid value for this metric
+    return results.some((result: EvaluatorResult) => {
+      const score = result.metric_scores?.[m.id]
+      return score && hasValidValue(score.value)
+    })
+  })
 
   const formatDuration = (seconds: number | null): string => {
     if (!seconds) return 'N/A'
@@ -225,11 +256,37 @@ export default function Results() {
     }
   }
 
-  const formatMetricValue = (value: any, type: string, _metricName?: string): React.ReactNode => {
+  const formatMetricValue = (value: any, type: string, metricName?: string): React.ReactNode => {
     if (value === null || value === undefined) return <span className="text-gray-400">N/A</span>
     
     // Normalize type to lowercase for consistent comparison
     const normalizedType = type?.toLowerCase()
+    
+    // Handle Emotion Category - categorical text values with styling
+    if (metricName === 'Emotion Category') {
+      const emotion = String(value).toLowerCase()
+      const emotionConfig: Record<string, { emoji: string; color: string; bg: string }> = {
+        'neutral': { emoji: '😐', color: 'text-gray-700', bg: 'bg-gray-100' },
+        'happy': { emoji: '😊', color: 'text-green-700', bg: 'bg-green-100' },
+        'sad': { emoji: '😢', color: 'text-blue-700', bg: 'bg-blue-100' },
+        'angry': { emoji: '😠', color: 'text-red-700', bg: 'bg-red-100' },
+        'fearful': { emoji: '😨', color: 'text-purple-700', bg: 'bg-purple-100' },
+        'fear': { emoji: '😨', color: 'text-purple-700', bg: 'bg-purple-100' },
+        'surprised': { emoji: '😲', color: 'text-yellow-700', bg: 'bg-yellow-100' },
+        'surprise': { emoji: '😲', color: 'text-yellow-700', bg: 'bg-yellow-100' },
+        'disgusted': { emoji: '🤢', color: 'text-green-800', bg: 'bg-green-200' },
+        'disgust': { emoji: '🤢', color: 'text-green-800', bg: 'bg-green-200' },
+        'calm': { emoji: '😌', color: 'text-teal-700', bg: 'bg-teal-100' },
+      }
+      const config = emotionConfig[emotion] || { emoji: '🎭', color: 'text-gray-700', bg: 'bg-gray-100' }
+      
+      return (
+        <div className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full ${config.bg}`}>
+          <span>{config.emoji}</span>
+          <span className={`text-xs font-semibold capitalize ${config.color}`}>{value}</span>
+        </div>
+      )
+    }
     
     // Handle boolean metrics
     if (normalizedType === 'boolean') {
@@ -251,6 +308,16 @@ export default function Results() {
     
     // Handle rating metrics with progress bar
     if (normalizedType === 'rating') {
+      // Check if value is a string (categorical) rather than a number
+      if (typeof value === 'string' && isNaN(parseFloat(value))) {
+        // Display as a styled text badge for categorical ratings
+        return (
+          <span className="inline-flex items-center px-2 py-1 rounded-full bg-purple-100 text-purple-700 text-xs font-semibold capitalize">
+            {value}
+          </span>
+        )
+      }
+      
       const numValue = typeof value === 'number' ? value : parseFloat(value)
       if (isNaN(numValue)) return <span className="text-gray-400">N/A</span>
       
@@ -371,7 +438,7 @@ export default function Results() {
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Status
                   </th>
-                  {enabledMetrics.map((metric: Metric) => (
+                  {columnMetrics.map((metric: Metric) => (
                     <th
                       key={metric.id}
                       className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
@@ -379,6 +446,9 @@ export default function Results() {
                       {metric.name}
                     </th>
                   ))}
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Actions
+                  </th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
@@ -423,7 +493,7 @@ export default function Results() {
                         </span>
                       </div>
                     </td>
-                    {enabledMetrics.map((metric: Metric) => {
+                    {columnMetrics.map((metric: Metric) => {
                       const score = result.metric_scores?.[metric.id]
                       return (
                         <td key={metric.id} className="px-6 py-4 whitespace-nowrap">
@@ -433,6 +503,17 @@ export default function Results() {
                         </td>
                       )
                     })}
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => navigate(`/results/${result.result_id}`)}
+                        className="text-blue-600 hover:text-blue-800"
+                        leftIcon={<Eye className="w-4 h-4" />}
+                      >
+                        View All
+                      </Button>
+                    </td>
                   </tr>
                 ))}
               </tbody>

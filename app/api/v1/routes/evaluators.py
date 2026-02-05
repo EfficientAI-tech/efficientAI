@@ -281,7 +281,11 @@ def run_evaluators(
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ):
-    """Run multiple evaluators in parallel using Celery workers."""
+    """Run multiple evaluators in parallel using Celery workers.
+    
+    The same evaluator ID can appear multiple times in the request to run
+    the same evaluator multiple times in parallel.
+    """
     from app.workers.celery_app import run_evaluator_task
     
     if not request.evaluator_ids:
@@ -290,22 +294,32 @@ def run_evaluators(
     task_ids = []
     evaluator_results = []
     
-    # Validate all evaluators exist and belong to organization
+    # Get unique evaluator IDs for validation
+    unique_evaluator_ids = list(set(request.evaluator_ids))
+    
+    # Validate all unique evaluators exist and belong to organization
     evaluators = db.query(Evaluator).filter(
         and_(
-            Evaluator.id.in_(request.evaluator_ids),
+            Evaluator.id.in_(unique_evaluator_ids),
             Evaluator.organization_id == organization_id
         )
     ).all()
     
-    if len(evaluators) != len(request.evaluator_ids):
+    if len(evaluators) != len(unique_evaluator_ids):
         raise HTTPException(
             status_code=404,
-            detail=f"One or more evaluators not found. Found {len(evaluators)} of {len(request.evaluator_ids)}"
+            detail=f"One or more evaluators not found. Found {len(evaluators)} of {len(unique_evaluator_ids)} unique evaluators"
         )
     
-    # Create Celery tasks for each evaluator
-    for evaluator in evaluators:
+    # Create a lookup map for quick access
+    evaluator_map = {str(e.id): e for e in evaluators}
+    
+    # Create Celery tasks for each evaluator ID in the request (including duplicates)
+    for evaluator_id in request.evaluator_ids:
+        evaluator = evaluator_map.get(str(evaluator_id))
+        if not evaluator:
+            continue
+            
         try:
             # Create a placeholder EvaluatorResult with QUEUED status
             # The actual result will be created by the Celery task

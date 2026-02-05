@@ -12,6 +12,8 @@ import type {
   InvitationCreate,
   Profile,
   UserUpdate,
+  UserPreferences,
+  UserPreferencesUpdate,
   Role,
   Integration,
   IntegrationCreate,
@@ -448,6 +450,17 @@ class ApiClient {
 
   async declineInvitation(invitationId: string): Promise<MessageResponse> {
     const response = await this.client.post(`/api/v1/profile/invitations/${invitationId}/decline`)
+    return response.data
+  }
+
+  // User Preferences endpoints
+  async getUserPreferences(): Promise<UserPreferences> {
+    const response = await this.client.get('/api/v1/profile/preferences')
+    return response.data
+  }
+
+  async updateUserPreferences(data: UserPreferencesUpdate): Promise<UserPreferences> {
+    const response = await this.client.put('/api/v1/profile/preferences', data)
     return response.data
   }
 

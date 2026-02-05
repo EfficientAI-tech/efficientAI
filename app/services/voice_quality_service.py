@@ -28,10 +28,19 @@ except ImportError:
 # Fixed set of audio metrics (identified by name)
 # These are industry-standard acoustic measures
 AUDIO_METRICS: Set[str] = {
+    # Traditional acoustic metrics (Parselmouth)
     "Pitch Variance",
     "Jitter",
     "Shimmer",
     "HNR",
+    # Qualitative Voice AI metrics (new)
+    "MOS Score",           # Mean Opinion Score (1.0-5.0) - Human-likeness
+    "Emotion Category",     # Categorical emotion (angry, happy, etc.)
+    "Emotion Confidence",   # Confidence of emotion prediction
+    "Valence",             # Emotional positivity (-1.0 to 1.0)
+    "Arousal",             # Emotional intensity (0.0 to 1.0)
+    "Speaker Consistency",  # Same voice throughout (0.0-1.0)
+    "Prosody Score",       # Expressiveness (0.0-1.0)
 }
 
 
@@ -287,6 +296,26 @@ def calculate_hnr(sound: "parselmouth.Sound") -> Optional[float]:
         return None
 
 
+# Traditional Parselmouth metrics
+PARSELMOUTH_METRICS: Set[str] = {
+    "Pitch Variance",
+    "Jitter",
+    "Shimmer",
+    "HNR",
+}
+
+# Qualitative AI metrics
+QUALITATIVE_METRICS: Set[str] = {
+    "MOS Score",
+    "Emotion Category",
+    "Emotion Confidence",
+    "Valence",
+    "Arousal",
+    "Speaker Consistency",
+    "Prosody Score",
+}
+
+
 def calculate_audio_metrics(
     audio_source: str,
     metric_names: List[str],
@@ -296,6 +325,7 @@ def calculate_audio_metrics(
     Calculate voice quality metrics from audio.
     
     This is the main entry point for voice quality analysis.
+    Handles both traditional Parselmouth metrics and new qualitative AI metrics.
     
     Args:
         audio_source: URL or file path to audio
@@ -306,10 +336,60 @@ def calculate_audio_metrics(
         Dictionary mapping metric names to their values.
         Values are None if calculation failed.
     """
-    if not PARSELMOUTH_AVAILABLE:
-        logger.error("[VoiceQuality] Parselmouth not installed, returning None for all metrics")
-        return {name: None for name in metric_names}
+    results: Dict[str, Any] = {}
     
+    # Separate metrics into Parselmouth and Qualitative
+    parselmouth_metrics = [m for m in metric_names if m in PARSELMOUTH_METRICS]
+    qualitative_metrics = [m for m in metric_names if m in QUALITATIVE_METRICS]
+    
+    # Calculate Parselmouth metrics
+    if parselmouth_metrics:
+        if not PARSELMOUTH_AVAILABLE:
+            logger.error("[VoiceQuality] Parselmouth not installed, returning None for Parselmouth metrics")
+            results.update({name: None for name in parselmouth_metrics})
+        else:
+            parselmouth_results = _calculate_parselmouth_metrics(audio_source, parselmouth_metrics, is_url)
+            results.update(parselmouth_results)
+    
+    # Calculate Qualitative metrics
+    if qualitative_metrics:
+        try:
+            from app.services.qualitative_voice_service import calculate_qualitative_metrics
+            qualitative_results = calculate_qualitative_metrics(audio_source, qualitative_metrics, is_url)
+            results.update(qualitative_results)
+        except ImportError as e:
+            logger.warning(f"[VoiceQuality] Qualitative voice service not available: {e}")
+            results.update({name: None for name in qualitative_metrics})
+        except Exception as e:
+            logger.error(f"[VoiceQuality] Error calculating qualitative metrics: {e}")
+            results.update({name: None for name in qualitative_metrics})
+    
+    # Handle any unknown metrics
+    unknown_metrics = [m for m in metric_names if m not in AUDIO_METRICS]
+    for metric_name in unknown_metrics:
+        logger.warning(f"[VoiceQuality] Unknown audio metric: {metric_name}")
+        results[metric_name] = None
+    
+    logger.info(f"[VoiceQuality] Calculated metrics: {results}")
+    return results
+
+
+def _calculate_parselmouth_metrics(
+    audio_source: str,
+    metric_names: List[str],
+    is_url: bool = True
+) -> Dict[str, Any]:
+    """
+    Calculate traditional Parselmouth-based metrics.
+    
+    Args:
+        audio_source: URL or file path to audio
+        metric_names: List of Parselmouth metric names to calculate
+        is_url: If True, download from URL first
+        
+    Returns:
+        Dictionary mapping metric names to values
+    """
     results: Dict[str, Any] = {}
     temp_file = None
     
@@ -334,11 +414,6 @@ def calculate_audio_metrics(
         
         # Calculate requested metrics
         for metric_name in metric_names:
-            if metric_name not in AUDIO_METRICS:
-                logger.warning(f"[VoiceQuality] Unknown audio metric: {metric_name}")
-                results[metric_name] = None
-                continue
-            
             if metric_name == "Pitch Variance":
                 results[metric_name] = calculate_pitch_variance(sound)
             elif metric_name == "Jitter":
@@ -348,11 +423,10 @@ def calculate_audio_metrics(
             elif metric_name == "HNR":
                 results[metric_name] = calculate_hnr(sound)
         
-        logger.info(f"[VoiceQuality] Calculated metrics: {results}")
         return results
         
     except Exception as e:
-        logger.error(f"[VoiceQuality] Error calculating metrics: {e}")
+        logger.error(f"[VoiceQuality] Error calculating Parselmouth metrics: {e}")
         return {name: None for name in metric_names}
         
     finally:

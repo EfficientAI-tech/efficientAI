@@ -154,5 +154,29 @@
   "cartesia-sonic-3-nano": {
     "provider": "cartesia",
     "model_type": "tts"
+  },
+  "eleven_multilingual_v2": {
+    "provider": "elevenlabs",
+    "model_type": "tts"
+  },
+  "eleven_turbo_v2_5": {
+    "provider": "elevenlabs",
+    "model_type": "tts"
+  },
+  "eleven_turbo_v2": {
+    "provider": "elevenlabs",
+    "model_type": "tts"
+  },
+  "eleven_monolingual_v1": {
+    "provider": "elevenlabs",
+    "model_type": "tts"
+  },
+  "eleven_flash_v2_5": {
+    "provider": "elevenlabs",
+    "model_type": "tts"
+  },
+  "eleven_flash_v2": {
+    "provider": "elevenlabs",
+    "model_type": "tts"
   }
 }

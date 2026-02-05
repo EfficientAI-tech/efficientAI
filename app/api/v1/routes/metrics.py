@@ -194,7 +194,9 @@ def seed_default_metrics(
 ):
     """Seed default metrics for an organization."""
     default_metrics = [
-        # Qualitative Metrics (LLM-evaluated subjective assessments)
+        # =========================================================================
+        # LLM-Evaluated Metrics (Subjective assessments from conversation text)
+        # =========================================================================
         {
             "name": "Follow Instructions",
             "description": "Measures how well the agent follows instructions and guidelines",
@@ -223,7 +225,9 @@ def seed_default_metrics(
             "trigger": MetricTrigger.ALWAYS,
             "enabled": True,
         },
-        # Quantitative Metrics (Audio analysis using Parselmouth - objective measurements)
+        # =========================================================================
+        # Acoustic Metrics (Parselmouth - traditional voice analysis)
+        # =========================================================================
         {
             "name": "Pitch Variance",
             "description": "Measures F0 (fundamental frequency) variation in Hz - indicates prosodic expressiveness. Higher values suggest more expressive speech.",
@@ -248,6 +252,58 @@ def seed_default_metrics(
         {
             "name": "HNR",
             "description": "Harmonics-to-Noise Ratio in dB - indicates voice clarity. Higher values (> 20 dB) indicate cleaner voice with less breathiness.",
+            "metric_type": MetricType.NUMBER,
+            "trigger": MetricTrigger.ALWAYS,
+            "enabled": True,
+        },
+        # =========================================================================
+        # AI Voice Metrics (ML models - human-likeness, emotion, consistency)
+        # =========================================================================
+        {
+            "name": "MOS Score",
+            "description": "Mean Opinion Score (1.0-5.0) - predicts human perception of audio quality. 1-2: Poor/robotic, 3: Telephone quality, 4-5: Studio/high fidelity.",
+            "metric_type": MetricType.NUMBER,
+            "trigger": MetricTrigger.ALWAYS,
+            "enabled": True,
+        },
+        {
+            "name": "Emotion Category",
+            "description": "Categorical emotion detected in the voice (angry, happy, sad, neutral, fearful, disgusted, surprised).",
+            "metric_type": MetricType.RATING,  # Stored as text category
+            "trigger": MetricTrigger.ALWAYS,
+            "enabled": True,
+        },
+        {
+            "name": "Emotion Confidence",
+            "description": "Confidence score (0.0-1.0) for the detected emotion category.",
+            "metric_type": MetricType.NUMBER,
+            "trigger": MetricTrigger.ALWAYS,
+            "enabled": True,
+        },
+        {
+            "name": "Valence",
+            "description": "Emotional positivity/negativity (-1.0 to +1.0). Negative = sad/angry, Positive = happy/excited.",
+            "metric_type": MetricType.NUMBER,
+            "trigger": MetricTrigger.ALWAYS,
+            "enabled": True,
+        },
+        {
+            "name": "Arousal",
+            "description": "Emotional intensity/energy (0.0-1.0). Low = calm/sleepy, High = excited/energetic.",
+            "metric_type": MetricType.NUMBER,
+            "trigger": MetricTrigger.ALWAYS,
+            "enabled": True,
+        },
+        {
+            "name": "Speaker Consistency",
+            "description": "Voice identity stability (0.0-1.0). Compares start vs end of call. >0.8 = same voice, <0.5 = voice change detected (possible glitch).",
+            "metric_type": MetricType.NUMBER,
+            "trigger": MetricTrigger.ALWAYS,
+            "enabled": True,
+        },
+        {
+            "name": "Prosody Score",
+            "description": "Expressiveness/Drama score (0.0-1.0). Low = monotone/flat, High = expressive/dynamic storyteller.",
             "metric_type": MetricType.NUMBER,
             "trigger": MetricTrigger.ALWAYS,
             "enabled": True,
