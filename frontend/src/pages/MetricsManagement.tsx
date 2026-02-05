@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
 import Button from '../components/Button'
 import { useToast } from '../hooks/useToast'
-import { Plus, Edit, Trash2, X, ToggleLeft, ToggleRight, Mic, Brain, RefreshCw } from 'lucide-react'
+import { Plus, Edit, Trash2, X, ToggleLeft, ToggleRight, Brain, RefreshCw, AudioWaveform, Sparkles } from 'lucide-react'
 
 interface Metric {
   id: string
@@ -17,18 +17,35 @@ interface Metric {
   updated_at: string
 }
 
-// Audio-based voice quality metrics (calculated using Praat-Parselmouth)
-const AUDIO_METRICS = new Set(['Pitch Variance', 'Jitter', 'Shimmer', 'HNR'])
+// Quantitative: Raw acoustic measurements (Parselmouth - signal processing)
+// These are pure physical/mathematical measurements of the audio signal
+const ACOUSTIC_METRICS = new Set(['Pitch Variance', 'Jitter', 'Shimmer', 'HNR'])
+
+// Qualitative: AI Voice metrics (ML models - human perception, emotion, quality)
+// These measure subjective qualities like human-likeness, emotion, expressiveness
+const AI_VOICE_METRICS = new Set([
+  'MOS Score',           // Mean Opinion Score (1.0-5.0) - Human-likeness perception
+  'Emotion Category',     // Categorical emotion (angry, happy, etc.)
+  'Emotion Confidence',   // Confidence of emotion prediction
+  'Valence',             // Emotional positivity (-1.0 to 1.0)
+  'Arousal',             // Emotional intensity (0.0 to 1.0)
+  'Speaker Consistency',  // Voice identity stability (0.0-1.0)
+  'Prosody Score',       // Expressiveness/Drama (0.0-1.0)
+])
+
+// All audio-based metrics (calculated from audio file, not from text)
+const AUDIO_METRICS = new Set([...ACOUSTIC_METRICS, ...AI_VOICE_METRICS])
 
 // Deprecated default metrics that can be deleted
 const DEPRECATED_METRICS = new Set(['Response Time', 'Customer Satisfaction'])
 
 const isAudioMetric = (metricName: string): boolean => AUDIO_METRICS.has(metricName)
 const isDeprecatedMetric = (metricName: string): boolean => DEPRECATED_METRICS.has(metricName)
+const isAIVoiceMetric = (metricName: string): boolean => AI_VOICE_METRICS.has(metricName)
 
-// Quantitative metrics are objective numerical measurements (audio analysis)
-// Qualitative metrics are subjective assessments (LLM evaluation)
-const isQuantitativeMetric = (metricName: string): boolean => AUDIO_METRICS.has(metricName)
+// Quantitative = raw physical measurements (acoustic signal analysis)
+// Qualitative = quality assessments (human perception, emotion, LLM evaluation)
+const isQuantitativeMetric = (metricName: string): boolean => ACOUSTIC_METRICS.has(metricName)
 
 export default function MetricsManagement() {
   const queryClient = useQueryClient()
@@ -276,10 +293,15 @@ export default function MetricsManagement() {
                         </span>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
-                        {isAudio ? (
+                        {isAIVoiceMetric(metric.name) ? (
+                          <span className="inline-flex items-center px-2.5 py-1 text-xs font-medium bg-purple-100 text-purple-800 rounded-full">
+                            <Sparkles className="w-3 h-3 mr-1" />
+                            AI Voice
+                          </span>
+                        ) : isAudio ? (
                           <span className="inline-flex items-center px-2.5 py-1 text-xs font-medium bg-violet-100 text-violet-800 rounded-full">
-                            <Mic className="w-3 h-3 mr-1" />
-                            Audio
+                            <AudioWaveform className="w-3 h-3 mr-1" />
+                            Acoustic
                           </span>
                         ) : (
                           <span className="inline-flex items-center px-2.5 py-1 text-xs font-medium bg-emerald-100 text-emerald-800 rounded-full">

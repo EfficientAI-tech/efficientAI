@@ -106,6 +106,7 @@ class ModelProvider(str, enum.Enum):
     AWS = "aws"
     DEEPGRAM = "deepgram"
     CARTESIA = "cartesia"
+    ELEVENLABS = "elevenlabs"
     CUSTOM = "custom"
 
 class VoiceBundleType(str, enum.Enum):

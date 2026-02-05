@@ -103,25 +103,33 @@ const bottomNavigation = [
 export default function Layout() {
   const location = useLocation()
   const { logout } = useAuthStore()
-  const { selectedAgent, setSelectedAgent } = useAgentStore()
+  const { selectedAgent, setSelectedAgent, loadPreferences, isInitialized } = useAgentStore()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [showAgentDropdown, setShowAgentDropdown] = useState(false)
 
   // Fetch agents
-  const { data: agents = [] } = useQuery({
+  const { data: agents = [], isSuccess: agentsLoaded } = useQuery({
     queryKey: ['agents'],
     queryFn: () => apiClient.listAgents(),
   })
 
-  // Auto-select first agent if none is selected and agents are available
+  // Load user preferences from backend on mount
   useEffect(() => {
-    if (!selectedAgent && agents.length > 0) {
+    loadPreferences()
+  }, [loadPreferences])
+
+  // Auto-select first agent if none is selected (after both preferences and agents are loaded)
+  useEffect(() => {
+    if (agentsLoaded && isInitialized && !selectedAgent && agents.length > 0) {
       setSelectedAgent(agents[0])
     }
-  }, [agents, selectedAgent, setSelectedAgent])
+  }, [agents, agentsLoaded, isInitialized, selectedAgent, setSelectedAgent])
 
-  // Clear selection if selected agent no longer exists
+  // Clear selection if selected agent no longer exists (only after both have loaded)
   useEffect(() => {
+    // Only run cleanup after agents query has completed AND preferences are initialized
+    if (!agentsLoaded || !isInitialized) return
+    
     if (selectedAgent && !agents.find((a: Agent) => a.id === selectedAgent.id)) {
       if (agents.length > 0) {
         setSelectedAgent(agents[0])
@@ -129,7 +137,7 @@ export default function Layout() {
         setSelectedAgent(null)
       }
     }
-  }, [agents, selectedAgent, setSelectedAgent])
+  }, [agents, agentsLoaded, isInitialized, selectedAgent, setSelectedAgent])
 
   return (
     <div className="min-h-screen bg-gray-50">

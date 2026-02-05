@@ -150,6 +150,25 @@ export interface UserUpdate {
   email?: string | null
 }
 
+// User Preferences Types
+export interface UserPreferences {
+  default_agent_id: string | null
+  default_agent: {
+    id: string
+    agent_id: string | null
+    name: string
+    phone_number: string | null
+    language: string
+    description: string | null
+    call_type: string
+    call_medium: string
+  } | null
+}
+
+export interface UserPreferencesUpdate {
+  default_agent_id: string | null
+}
+
 // Integration Types
 export enum IntegrationPlatform {
   RETELL = 'retell',
@@ -187,6 +206,7 @@ export enum ModelProvider {
   AWS = 'aws',
   DEEPGRAM = 'deepgram',
   CARTESIA = 'cartesia',
+  ELEVENLABS = 'elevenlabs',
   CUSTOM = 'custom',
 }
 
