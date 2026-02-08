@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session
 from typing import Dict, Any, Optional, List
 from uuid import UUID
 from pydantic import BaseModel
+from loguru import logger
+import random
 
 from app.dependencies import get_db, get_organization_id, get_api_key
 from app.models.database import (
@@ -16,12 +18,149 @@ from app.models.database import (
     CallRecording,
     CallRecordingStatus,
     CallRecordingSource,
+    EvaluatorResult,
+    EvaluatorResultStatus,
 )
 from app.core.encryption import decrypt_api_key
 from app.services.voice_providers import get_voice_provider
 from app.utils.call_recordings import generate_unique_call_short_id
 
 router = APIRouter(prefix="/playground", tags=["playground"])
+
+
+def extract_transcript_from_call_data(call_data: Dict[str, Any], provider_platform: str) -> tuple:
+    """
+    Extract transcript and speaker segments from provider call_data.
+    
+    Args:
+        call_data: Full call data from voice provider (Vapi/Retell)
+        provider_platform: The provider platform ("vapi" or "retell")
+        
+    Returns:
+        Tuple of (transcript_text, speaker_segments)
+        - transcript_text: Plain text transcript
+        - speaker_segments: List of segments with speaker labels
+    """
+    transcript_text = ""
+    speaker_segments = []
+    
+    if not call_data:
+        return transcript_text, speaker_segments
+    
+    provider_platform_lower = provider_platform.lower() if provider_platform else ""
+    
+    if provider_platform_lower == "vapi":
+        # Vapi: transcript is in call_data["transcript"] or build from transcript_object
+        transcript_text = call_data.get("transcript", "")
+        
+        # Get structured messages for speaker segments
+        transcript_object = call_data.get("transcript_object", [])
+        if not transcript_object:
+            # Try messages array
+            messages = call_data.get("messages", [])
+            for msg in messages:
+                role = msg.get("role", "unknown")
+                content = msg.get("message", "") or msg.get("content", "")
+                
+                if not content or role == "system":
+                    continue
+                
+                # Map roles
+                if role in ["bot", "assistant"]:
+                    normalized_role = "agent"
+                elif role == "user":
+                    normalized_role = "user"
+                else:
+                    continue
+                
+                speaker_segments.append({
+                    "speaker": "Agent" if normalized_role == "agent" else "User",
+                    "text": content,
+                    "start": msg.get("secondsFromStart", 0),
+                    "end": msg.get("secondsFromStart", 0) + (msg.get("duration", 0) / 1000),
+                })
+        else:
+            for entry in transcript_object:
+                role = entry.get("role", "unknown")
+                content = entry.get("content", "")
+                
+                if not content:
+                    continue
+                
+                speaker_segments.append({
+                    "speaker": "Agent" if role == "agent" else "User",
+                    "text": content,
+                    "start": entry.get("seconds_from_start", 0),
+                    "end": entry.get("seconds_from_start", 0) + (entry.get("duration_ms", 0) / 1000),
+                })
+        
+        # Build transcript text from segments if not available
+        if not transcript_text and speaker_segments:
+            transcript_text = "\n".join([
+                f"{seg['speaker']}: {seg['text']}" for seg in speaker_segments
+            ])
+            
+    elif provider_platform_lower == "retell":
+        # Retell: transcript can be a string or list of objects
+        transcript_raw = call_data.get("transcript", "")
+        
+        if isinstance(transcript_raw, str):
+            transcript_text = transcript_raw
+            # Parse transcript text into speaker segments if it has pattern like "Agent: text\nUser: text"
+            lines = transcript_raw.split("\n") if transcript_raw else []
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith("Agent:") or line.startswith("agent:"):
+                    speaker_segments.append({
+                        "speaker": "Agent",
+                        "text": line.split(":", 1)[1].strip() if ":" in line else line,
+                        "start": 0,
+                        "end": 0,
+                    })
+                elif line.startswith("User:") or line.startswith("user:"):
+                    speaker_segments.append({
+                        "speaker": "User",
+                        "text": line.split(":", 1)[1].strip() if ":" in line else line,
+                        "start": 0,
+                        "end": 0,
+                    })
+        elif isinstance(transcript_raw, list):
+            # Retell sometimes returns transcript as array of objects
+            for item in transcript_raw:
+                if isinstance(item, dict):
+                    role = item.get("role", "")
+                    content = item.get("content", "") or item.get("text", "")
+                    
+                    if not content:
+                        continue
+                    
+                    speaker = "Agent" if role in ["agent", "assistant", "bot"] else "User"
+                    speaker_segments.append({
+                        "speaker": speaker,
+                        "text": content,
+                        "start": item.get("start_time", 0) or item.get("timestamp", 0),
+                        "end": item.get("end_time", 0),
+                    })
+            
+            # Build transcript text from segments
+            transcript_text = "\n".join([
+                f"{seg['speaker']}: {seg['text']}" for seg in speaker_segments
+            ])
+    
+    return transcript_text, speaker_segments
+
+
+def generate_unique_result_id(db: Session) -> str:
+    """Generate a unique 6-digit result ID for EvaluatorResult."""
+    max_attempts = 100
+    for _ in range(max_attempts):
+        candidate_id = f"{random.randint(100000, 999999)}"
+        existing = db.query(EvaluatorResult).filter(EvaluatorResult.result_id == candidate_id).first()
+        if not existing:
+            return candidate_id
+    raise ValueError("Failed to generate unique result ID")
 
 
 def poll_call_metrics(
@@ -34,6 +173,7 @@ def poll_call_metrics(
 ):
     """
     Background task to poll for call metrics from the provider.
+    After call is complete, creates an EvaluatorResult and triggers metric evaluation.
     
     Args:
         call_recording_id: The CallRecording database ID
@@ -48,6 +188,9 @@ def poll_call_metrics(
     from app.services.voice_providers import get_voice_provider
     
     db = SessionLocal()
+    call_complete = False
+    call_metrics = None
+    
     try:
         call_recording = db.query(CallRecording).filter(CallRecording.id == call_recording_id).first()
         if not call_recording:
@@ -89,13 +232,93 @@ def poll_call_metrics(
                 
                 # If call is complete, stop polling
                 if end_timestamp or call_status in ["ended", "completed", "failed", "end-of-call-report"]:
+                    call_complete = True
                     break
                     
             except Exception as e:
                 # Log error but continue polling
-                print(f"[Poll Call Metrics] Error on attempt {attempt + 1}: {str(e)}")
+                logger.warning(f"[Poll Call Metrics] Error on attempt {attempt + 1}: {str(e)}")
                 # If it's a 404 or similar, the call might not exist yet, continue polling
                 continue
+        
+        # After polling is complete, create EvaluatorResult and trigger evaluation
+        if call_complete and call_metrics and call_recording.agent_id:
+            try:
+                logger.info(f"[Poll Call Metrics] Call complete, creating EvaluatorResult for call {provider_call_id}")
+                
+                # Extract transcript and speaker segments from call_data
+                transcript_text, speaker_segments = extract_transcript_from_call_data(
+                    call_metrics, 
+                    provider_platform
+                )
+                
+                if not transcript_text:
+                    logger.warning(f"[Poll Call Metrics] No transcript found in call_data for call {provider_call_id}")
+                
+                # Get agent info for naming
+                agent = db.query(Agent).filter(Agent.id == call_recording.agent_id).first()
+                result_name = f"Voice AI Call - {agent.name}" if agent else "Voice AI Call"
+                
+                # Calculate duration
+                duration_seconds = call_metrics.get("duration_seconds", 0)
+                if not duration_seconds:
+                    # Try to calculate from timestamps
+                    start_ts = call_metrics.get("start_timestamp")
+                    end_ts = call_metrics.get("end_timestamp")
+                    if start_ts and end_ts:
+                        try:
+                            from dateutil import parser
+                            start_time = parser.parse(start_ts)
+                            end_time = parser.parse(end_ts)
+                            duration_seconds = (end_time - start_time).total_seconds()
+                        except Exception:
+                            pass
+                
+                # Generate unique result ID
+                result_id = generate_unique_result_id(db)
+                
+                # Create EvaluatorResult
+                evaluator_result = EvaluatorResult(
+                    result_id=result_id,
+                    organization_id=call_recording.organization_id,
+                    evaluator_id=None,  # No evaluator for playground calls
+                    agent_id=call_recording.agent_id,
+                    persona_id=None,  # No persona for Voice AI agent playground calls
+                    scenario_id=None,  # No scenario for Voice AI agent playground calls
+                    name=result_name,
+                    duration_seconds=duration_seconds,
+                    status=EvaluatorResultStatus.QUEUED.value,
+                    audio_s3_key=None,  # Audio is in provider's storage, URL in call_data
+                    transcription=transcript_text,
+                    speaker_segments=speaker_segments if speaker_segments else None,
+                    provider_call_id=provider_call_id,
+                    provider_platform=provider_platform,
+                    call_data=call_metrics,
+                )
+                db.add(evaluator_result)
+                db.commit()
+                db.refresh(evaluator_result)
+                
+                # Link the EvaluatorResult to CallRecording
+                call_recording.evaluator_result_id = evaluator_result.id
+                db.commit()
+                
+                logger.info(f"[Poll Call Metrics] Created EvaluatorResult {result_id} for call {provider_call_id}")
+                
+                # Trigger Celery task to process evaluator result (run metrics evaluation)
+                try:
+                    from app.workers.celery_app import process_evaluator_result_task
+                    task = process_evaluator_result_task.delay(str(evaluator_result.id))
+                    evaluator_result.celery_task_id = task.id
+                    db.commit()
+                    logger.info(f"[Poll Call Metrics] Triggered evaluation task {task.id} for result {result_id}")
+                except Exception as task_error:
+                    logger.error(f"[Poll Call Metrics] Failed to trigger Celery task: {task_error}")
+                    # Mark the result as failed if we can't trigger the task
+                    # But keep the transcript available for manual review
+                    
+            except Exception as e:
+                logger.error(f"[Poll Call Metrics] Error creating EvaluatorResult: {str(e)}", exc_info=True)
         
     finally:
         db.close()
@@ -351,11 +574,26 @@ async def list_call_recordings(
 ):
     """
     List all call recordings for the organization.
+    Includes evaluator_result_id, evaluation status, and metric_scores if evaluation has been run.
     """
     call_recordings = db.query(CallRecording).filter(
         CallRecording.organization_id == organization_id,
         CallRecording.source == CallRecordingSource.PLAYGROUND,
     ).order_by(CallRecording.created_at.desc()).offset(skip).limit(limit).all()
+    
+    # Get evaluator result info for all linked results
+    result_ids = [cr.evaluator_result_id for cr in call_recordings if cr.evaluator_result_id]
+    result_info = {}
+    if result_ids:
+        results = db.query(EvaluatorResult).filter(EvaluatorResult.id.in_(result_ids)).all()
+        result_info = {
+            str(r.id): {
+                "status": r.status,
+                "metric_scores": r.metric_scores,
+                "result_id": r.result_id,
+            }
+            for r in results
+        }
     
     return [
         {
@@ -365,6 +603,10 @@ async def list_call_recordings(
             "provider_platform": cr.provider_platform,
             "provider_call_id": cr.provider_call_id,
             "agent_id": str(cr.agent_id) if cr.agent_id else None,
+            "evaluator_result_id": str(cr.evaluator_result_id) if cr.evaluator_result_id else None,
+            "evaluation_status": result_info.get(str(cr.evaluator_result_id), {}).get("status") if cr.evaluator_result_id else None,
+            "metric_scores": result_info.get(str(cr.evaluator_result_id), {}).get("metric_scores") if cr.evaluator_result_id else None,
+            "result_id": result_info.get(str(cr.evaluator_result_id), {}).get("result_id") if cr.evaluator_result_id else None,
             "created_at": cr.created_at.isoformat() if cr.created_at else None,
             "updated_at": cr.updated_at.isoformat() if cr.updated_at else None,
         }
@@ -381,7 +623,7 @@ async def get_call_recording(
 ):
     """
     Get a specific call recording by its 6-digit short ID.
-    Returns the full JSON data stored for the call.
+    Returns the full JSON data stored for the call and evaluation information.
     """
     call_recording = db.query(CallRecording).filter(
         CallRecording.call_short_id == call_short_id,
@@ -395,6 +637,21 @@ async def get_call_recording(
             detail="Call recording not found"
         )
     
+    # Get evaluator result info if available
+    evaluation_info = None
+    if call_recording.evaluator_result_id:
+        evaluator_result = db.query(EvaluatorResult).filter(
+            EvaluatorResult.id == call_recording.evaluator_result_id
+        ).first()
+        if evaluator_result:
+            evaluation_info = {
+                "id": str(evaluator_result.id),
+                "result_id": evaluator_result.result_id,
+                "status": evaluator_result.status,
+                "metric_scores": evaluator_result.metric_scores,
+                "transcription": evaluator_result.transcription,
+            }
+    
     return {
         "id": str(call_recording.id),
         "call_short_id": call_recording.call_short_id,
@@ -402,6 +659,8 @@ async def get_call_recording(
         "provider_platform": call_recording.provider_platform,
         "provider_call_id": call_recording.provider_call_id,
         "agent_id": str(call_recording.agent_id) if call_recording.agent_id else None,
+        "evaluator_result_id": str(call_recording.evaluator_result_id) if call_recording.evaluator_result_id else None,
+        "evaluation": evaluation_info,
         "call_data": call_recording.call_data,  # Full JSON blob
         "created_at": call_recording.created_at.isoformat() if call_recording.created_at else None,
         "updated_at": call_recording.updated_at.isoformat() if call_recording.updated_at else None,

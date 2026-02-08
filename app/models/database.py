@@ -576,6 +576,9 @@ class CallRecording(Base):
     provider_platform = Column(String, nullable=True)  # e.g., "retell", "vapi"
     agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True)  # Reference to our agent
     
+    # Link to EvaluatorResult for metric evaluations
+    evaluator_result_id = Column(UUID(as_uuid=True), ForeignKey("evaluator_results.id"), nullable=True, index=True)
+    
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

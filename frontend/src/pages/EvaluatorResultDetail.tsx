@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useParams, useNavigate } from 'react-router-dom'
 import { apiClient } from '../lib/api'
-import { ArrowLeft, Play, Pause, Clock, CheckCircle, XCircle, Loader, User, Bot, FileText, BarChart3, Phone, Brain, HelpCircle, Sparkles, AudioWaveform } from 'lucide-react'
+import { ArrowLeft, Clock, CheckCircle, XCircle, Loader, BarChart3, Phone, Brain, HelpCircle, Sparkles, AudioWaveform, MessageSquare, Download } from 'lucide-react'
 import { useState, useRef, useEffect } from 'react'
 import Button from '../components/Button'
 import RetellCallDetails from '../components/call-recordings/RetellCallDetails'
@@ -214,11 +214,10 @@ export default function EvaluatorResultDetail() {
   const navigate = useNavigate()
   const location = window.location.pathname
   const isFromPlayground = location.includes('/playground/test-agent-results')
-  const [isPlaying, setIsPlaying] = useState(false)
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
-  const [currentTime, setCurrentTime] = useState(0)
   const [audioDuration, setAudioDuration] = useState(0)
   const [activeSegmentIndex, setActiveSegmentIndex] = useState<number | null>(null)
+  const [activeTab, setActiveTab] = useState<'overview' | 'transcript'>('overview')
   const audioRef = useRef<HTMLAudioElement>(null)
 
   const { data: result, isLoading, error } = useQuery({
@@ -251,44 +250,10 @@ export default function EvaluatorResultDetail() {
     }
   }, [presignedUrl, result?.call_data])
 
-  const handlePlayPause = () => {
-    if (!audioRef.current || !audioUrl) return
-
-    if (isPlaying) {
-      audioRef.current.pause()
-      setIsPlaying(false)
-    } else {
-      audioRef.current.play()
-      setIsPlaying(true)
-    }
-  }
-
-  // Update current time and active segment
+  // Update audio duration when loaded
   useEffect(() => {
     const audio = audioRef.current
     if (!audio || !audioUrl) return
-
-    const updateTime = () => {
-      if (audio.readyState >= 2) { // HAVE_CURRENT_DATA or higher
-        setCurrentTime(audio.currentTime)
-        
-        // Update duration if available
-        if (audio.duration && audio.duration !== Infinity) {
-          setAudioDuration(audio.duration)
-        }
-        
-        // Find active segment based on current time
-        if (result && 'speaker_segments' in result) {
-          const resultData = result as EvaluatorResultDetail
-          if (resultData.speaker_segments) {
-            const activeIndex = resultData.speaker_segments.findIndex(
-              (seg) => audio.currentTime >= seg.start && audio.currentTime <= seg.end
-            )
-            setActiveSegmentIndex(activeIndex >= 0 ? activeIndex : null)
-          }
-        }
-      }
-    }
 
     const handleLoadedMetadata = () => {
       if (audio.duration && audio.duration !== Infinity) {
@@ -297,38 +262,26 @@ export default function EvaluatorResultDetail() {
     }
 
     const handleTimeUpdate = () => {
-      updateTime()
+      // Find active segment based on current time
+      if (result && 'speaker_segments' in result) {
+        const resultData = result as EvaluatorResultDetail
+        if (resultData.speaker_segments) {
+          const activeIndex = resultData.speaker_segments.findIndex(
+            (seg) => audio.currentTime >= seg.start && audio.currentTime <= seg.end
+          )
+          setActiveSegmentIndex(activeIndex >= 0 ? activeIndex : null)
+        }
+      }
     }
 
     audio.addEventListener('loadedmetadata', handleLoadedMetadata)
     audio.addEventListener('timeupdate', handleTimeUpdate)
-    audio.addEventListener('loadeddata', handleLoadedMetadata)
-    audio.addEventListener('canplay', handleLoadedMetadata)
     
-    // Initial update
-    updateTime()
-
     return () => {
       audio.removeEventListener('loadedmetadata', handleLoadedMetadata)
       audio.removeEventListener('timeupdate', handleTimeUpdate)
-      audio.removeEventListener('loadeddata', handleLoadedMetadata)
-      audio.removeEventListener('canplay', handleLoadedMetadata)
     }
   }, [result, audioUrl])
-
-  // Map speaker labels to friendly names
-  const getSpeakerName = (speaker: string): string => {
-    // Speaker 1 is typically the User/Test Agent, Speaker 2 is the Voice AI Agent
-    if (speaker === 'Speaker 1') return 'User / Test Agent'
-    if (speaker === 'Speaker 2') return 'Voice AI Agent'
-    return speaker
-  }
-
-  const getSpeakerColor = (speaker: string): string => {
-    if (speaker === 'Speaker 1') return 'bg-blue-50 border-blue-200 text-blue-900'
-    if (speaker === 'Speaker 2') return 'bg-green-50 border-green-200 text-green-900'
-    return 'bg-gray-50 border-gray-200 text-gray-900'
-  }
 
   const formatTime = (seconds: number): string => {
     const mins = Math.floor(seconds / 60)
@@ -339,10 +292,7 @@ export default function EvaluatorResultDetail() {
   const handleSegmentClick = (startTime: number) => {
     if (audioRef.current) {
       audioRef.current.currentTime = startTime
-      if (!isPlaying) {
-        audioRef.current.play()
-        setIsPlaying(true)
-      }
+      audioRef.current.play()
     }
   }
 
@@ -365,10 +315,6 @@ export default function EvaluatorResultDetail() {
     }
     // Finally use duration_seconds from result
     return result?.duration_seconds ?? null
-  }
-
-  const formatTimestamp = (timestamp: string): string => {
-    return new Date(timestamp).toLocaleString()
   }
 
   const getStatusIcon = (status: string) => {
@@ -553,7 +499,7 @@ export default function EvaluatorResultDetail() {
   const resultData = result as EvaluatorResultDetail
 
   return (
-    <div className="p-6 w-full">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
       {/* Header */}
       <div className="mb-6">
         <Button
@@ -564,18 +510,64 @@ export default function EvaluatorResultDetail() {
           <ArrowLeft className="w-4 h-4 mr-2" />
           Back to {isFromPlayground ? 'Playground' : 'Results'}
         </Button>
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-bold text-gray-900">
-              Evaluation Result: {resultData.result_id}
-            </h1>
-            <p className="text-gray-600 mt-1">{resultData.name}</p>
+        
+        <div className="bg-white shadow rounded-lg p-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-2xl font-bold text-gray-900">Test Agent Call Details</h1>
+              <p className="text-sm text-gray-500 mt-1">
+                Call ID: <span className="font-mono">{resultData.result_id}</span>
+              </p>
+            </div>
+            <div className="flex items-center space-x-3">
+              {getStatusIcon(resultData.status)}
+              <span className={getStatusBadge(resultData.status)}>
+                {resultData.status.toUpperCase().replace('_', ' ')}
+              </span>
+            </div>
           </div>
-          <div className="flex items-center space-x-3">
-            {getStatusIcon(resultData.status)}
-            <span className={getStatusBadge(resultData.status)}>
-              {resultData.status.toUpperCase().replace('_', ' ')}
-            </span>
+
+          {/* Metadata */}
+          <div className="mt-6 grid grid-cols-2 md:grid-cols-5 gap-4">
+            <div>
+              <p className="text-xs text-gray-500 font-medium mb-1">Status</p>
+              <span
+                className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                  resultData.status === 'completed'
+                    ? 'bg-green-100 text-green-800'
+                    : resultData.status === 'failed'
+                    ? 'bg-red-100 text-red-800'
+                    : 'bg-yellow-100 text-yellow-800'
+                }`}
+              >
+                {resultData.status}
+              </span>
+            </div>
+            <div>
+              <p className="text-xs text-gray-500 font-medium mb-1">Agent</p>
+              <p className="text-sm text-gray-900">{resultData.agent?.name || 'N/A'}</p>
+            </div>
+            <div>
+              <p className="text-xs text-gray-500 font-medium mb-1">Duration</p>
+              <p className="text-sm text-gray-900 flex items-center">
+                <Clock className="w-4 h-4 mr-1" />
+                {formatDuration(getEffectiveDuration())}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-gray-500 font-medium mb-1">Created</p>
+              <p className="text-sm text-gray-900">
+                {resultData.timestamp
+                  ? new Date(resultData.timestamp).toLocaleString()
+                  : 'N/A'}
+              </p>
+            </div>
+            {resultData.persona && (
+              <div>
+                <p className="text-xs text-gray-500 font-medium mb-1">Persona</p>
+                <p className="text-sm text-gray-900">{resultData.persona.name}</p>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -589,15 +581,34 @@ export default function EvaluatorResultDetail() {
       )}
 
       {/* Evaluation Metrics - Top Section */}
-      {resultData.metric_scores && Object.keys(resultData.metric_scores).length > 0 && (
-        <div className="mb-6 bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-          <h2 className="text-xl font-semibold text-gray-900 flex items-center mb-4">
-            <BarChart3 className="w-5 h-5 mr-2" />
-            Evaluation Metrics
-          </h2>
-          
-          {/* Separate Acoustic, AI Voice, and LLM metrics */}
-          {(() => {
+      <div className="mb-6 bg-white rounded-lg shadow p-6">
+        <h2 className="text-xl font-semibold text-gray-900 flex items-center mb-4">
+          <BarChart3 className="w-5 h-5 mr-2" />
+          Evaluation Metrics
+        </h2>
+        
+        {/* Show loading state when evaluation is in progress */}
+        {(resultData.status === 'evaluating' || resultData.status === 'transcribing' || resultData.status === 'queued') && (
+          <div className="flex items-center justify-center py-8">
+            <Loader className="w-6 h-6 text-blue-500 animate-spin mr-3" />
+            <span className="text-gray-600">
+              {resultData.status === 'transcribing' ? 'Transcribing audio...' : 
+               resultData.status === 'queued' ? 'Evaluation queued...' : 'Evaluating conversation...'}
+            </span>
+          </div>
+        )}
+        
+        {/* Show error state */}
+        {resultData.status === 'failed' && !resultData.metric_scores && (
+          <div className="text-center py-8 text-gray-500">
+            Evaluation failed. No metrics available.
+          </div>
+        )}
+        
+        {/* Show metrics when completed */}
+        {resultData.metric_scores && Object.keys(resultData.metric_scores).length > 0 &&
+          /* Separate Acoustic, AI Voice, and LLM metrics */
+          (() => {
             // Helper to check if a metric has a valid value (not null, undefined, empty, or "N/A")
             const hasValidValue = (metric: { value: any }) => {
               const val = metric.value
@@ -708,13 +719,19 @@ export default function EvaluatorResultDetail() {
               </div>
             )
           })()}
-        </div>
-      )}
+        
+        {/* Show message when no metrics and completed */}
+        {resultData.status === 'completed' && (!resultData.metric_scores || Object.keys(resultData.metric_scores).length === 0) && (
+          <div className="text-center py-8 text-gray-500">
+            No evaluation metrics available.
+          </div>
+        )}
+      </div>
 
       {/* Call Data from Provider (Retell/Vapi) - Show this prominently when available */}
       {/* Show RetellCallDetails for Retell calls */}
       {resultData.call_data && (resultData.provider_platform === 'retell' || resultData.call_data.call_id?.startsWith('call_')) && (
-        <div className="mb-6 bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+        <div className="mb-6 bg-white rounded-lg shadow p-6">
           <h2 className="text-lg font-semibold text-gray-900 flex items-center mb-4">
             <Phone className="w-5 h-5 mr-2" />
             Call Details 
@@ -733,7 +750,7 @@ export default function EvaluatorResultDetail() {
 
       {/* Show VapiCallDetails for Vapi calls */}
       {resultData.call_data && resultData.provider_platform === 'vapi' && (
-        <div className="mb-6 bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+        <div className="mb-6 bg-white rounded-lg shadow p-6">
           <h2 className="text-lg font-semibold text-gray-900 flex items-center mb-4">
             <Phone className="w-5 h-5 mr-2" />
             Call Details 
@@ -752,7 +769,7 @@ export default function EvaluatorResultDetail() {
 
       {/* Unknown provider - show raw JSON */}
       {resultData.call_data && resultData.provider_platform && resultData.provider_platform !== 'retell' && resultData.provider_platform !== 'vapi' && (
-        <div className="mb-6 bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+        <div className="mb-6 bg-white rounded-lg shadow p-6">
           <h2 className="text-lg font-semibold text-gray-900 flex items-center mb-4">
             <Phone className="w-5 h-5 mr-2" />
             Call Details 
@@ -766,332 +783,227 @@ export default function EvaluatorResultDetail() {
         </div>
       )}
 
-      {/* Main Content Grid - Only show old audio/transcription when NO call_data */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left Column - 2 columns */}
-        <div className="lg:col-span-2 space-y-6">
-          {/* Playback Section - Audio Player (only when no call_data, since RetellCallDetails has its own player) */}
-          {!resultData.call_data && (resultData.audio_s3_key || resultData.call_data?.recording_url) && (
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-xl font-semibold text-gray-900 flex items-center">
-                  <Play className="w-5 h-5 mr-2" />
-                  Audio Recording
-                </h2>
-                <div className="flex items-center text-sm text-gray-500">
-                  <Clock className="w-4 h-4 mr-1" />
-                  {formatDuration(getEffectiveDuration())}
-                </div>
-              </div>
-              {audioUrl ? (
-                <div className="space-y-4">
-                  <div className="flex items-center space-x-4">
-                    <button
-                      onClick={handlePlayPause}
-                      className="flex items-center justify-center w-12 h-12 rounded-full bg-blue-600 hover:bg-blue-700 text-white transition-colors"
-                    >
-                      {isPlaying ? (
-                        <Pause className="w-6 h-6" />
-                      ) : (
-                        <Play className="w-6 h-6 ml-1" />
-                      )}
-                    </button>
-                    <div className="flex-1">
-                      <div className="flex items-center justify-between text-sm text-gray-600 mb-2">
-                        <span>{formatTime(currentTime)}</span>
-                        <span>{formatTime(audioDuration || resultData?.duration_seconds || 0)}</span>
-                      </div>
-                      <div 
-                        className="relative h-4 bg-gray-200 rounded-full overflow-hidden cursor-pointer border border-gray-300"
-                        onClick={(e) => {
-                          if (!audioRef.current) return
-                          const duration = audioDuration || resultData?.duration_seconds || 1
-                          if (duration <= 0) return
-                          const rect = e.currentTarget.getBoundingClientRect()
-                          const clickX = e.clientX - rect.left
-                          const percentage = Math.max(0, Math.min(1, clickX / rect.width))
-                          const newTime = percentage * duration
-                          audioRef.current.currentTime = newTime
-                        }}
-                      >
-                        {/* Speaker segments timeline (background layer) */}
-                        {resultData?.speaker_segments && (audioDuration || resultData?.duration_seconds) && resultData.speaker_segments.map((segment, index) => {
-                          const duration = audioDuration || resultData.duration_seconds || 1
-                          const left = ((segment.start / duration) * 100)
-                          const width = (((segment.end - segment.start) / duration) * 100)
-                          const isActive = activeSegmentIndex === index
-                          const color = segment.speaker === 'Speaker 1' ? 'bg-blue-300' : 'bg-green-300'
-                          
-                          return (
-                            <div
-                              key={index}
-                              className={`absolute top-0 h-full ${color} ${isActive ? 'opacity-60' : 'opacity-30'} hover:opacity-50 transition-opacity`}
-                              style={{ left: `${left}%`, width: `${width}%`, zIndex: 1 }}
-                              title={`${getSpeakerName(segment.speaker)}: ${formatTime(segment.start)} - ${formatTime(segment.end)}`}
-                            />
-                          )
-                        })}
-                        {/* Progress bar (foreground layer) */}
-                        {(audioDuration || resultData?.duration_seconds) && (
-                          <div
-                            className="absolute top-0 left-0 h-full bg-blue-600 rounded-full transition-all duration-100 z-10 shadow-sm"
-                            style={{ 
-                              width: `${Math.min(100, Math.max(0, ((currentTime / (audioDuration || resultData?.duration_seconds || 1)) * 100)))}%` 
-                            }}
-                          />
-                        )}
-                        {/* Clickable overlay for segment navigation */}
-                        {resultData?.speaker_segments && (audioDuration || resultData?.duration_seconds) && resultData.speaker_segments.map((segment, index) => {
-                          const duration = audioDuration || resultData.duration_seconds || 1
-                          const left = ((segment.start / duration) * 100)
-                          const width = (((segment.end - segment.start) / duration) * 100)
-                          
-                          return (
-                            <div
-                              key={`clickable-${index}`}
-                              className="absolute top-0 h-full cursor-pointer"
-                              style={{ left: `${left}%`, width: `${width}%`, zIndex: 20 }}
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                handleSegmentClick(segment.start)
-                              }}
-                              title={`${getSpeakerName(segment.speaker)}: ${formatTime(segment.start)} - ${formatTime(segment.end)}`}
-                            />
-                          )
-                        })}
-                      </div>
-                    </div>
-                  </div>
-                  <audio
-                    ref={audioRef}
-                    src={audioUrl}
-                    preload="metadata"
-                    onEnded={() => {
-                      setIsPlaying(false)
-                      setCurrentTime(0)
-                      setActiveSegmentIndex(null)
-                    }}
-                    onPause={() => setIsPlaying(false)}
-                    onPlay={() => setIsPlaying(true)}
-                    onLoadedMetadata={() => {
-                      if (audioRef.current?.duration && audioRef.current.duration !== Infinity) {
-                        setAudioDuration(audioRef.current.duration)
-                      }
-                    }}
-                    className="hidden"
-                  />
-                  {/* Speaker legend */}
-                  {resultData?.speaker_segments && resultData.speaker_segments.length > 0 && (
-                    <div className="flex items-center space-x-4 text-xs">
-                      <div className="flex items-center space-x-2">
-                        <div className="w-3 h-3 bg-blue-400 rounded" />
-                        <span>User / Test Agent</span>
-                      </div>
-                      <div className="flex items-center space-x-2">
-                        <div className="w-3 h-3 bg-green-400 rounded" />
-                        <span>Voice AI Agent</span>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div className="text-gray-500 text-sm">
-                  {(resultData.audio_s3_key && !presignedUrl) ? 'Loading audio...' : 'Audio not available'}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Agent and Evaluation Details - Below Metrics */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {/* Evaluation Details */}
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-              <h2 className="text-lg font-semibold text-gray-900 mb-4">Evaluation Details</h2>
-              <div className="space-y-3 text-sm">
-                <div>
-                  <div className="text-gray-500">Result ID</div>
-                  <div className="font-mono font-semibold text-gray-900">{resultData.result_id}</div>
-                </div>
-                <div>
-                  <div className="text-gray-500">Timestamp</div>
-                  <div className="text-gray-900">{formatTimestamp(resultData.timestamp)}</div>
-                </div>
-                <div>
-                  <div className="text-gray-500">Duration</div>
-                  <div className="text-gray-900 flex items-center">
-                    <Clock className="w-4 h-4 mr-1" />
-                    {formatDuration(getEffectiveDuration())}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Agent */}
-            {resultData.agent && (
-              <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-                <h2 className="text-lg font-semibold text-gray-900 flex items-center mb-4">
-                  <Bot className="w-5 h-5 mr-2" />
-                  Agent
-                </h2>
-                <div className="space-y-2 text-sm">
-                  <div>
-                    <div className="text-gray-500">Name</div>
-                    <div className="font-medium text-gray-900">{resultData.agent.name}</div>
-                  </div>
-                  <div>
-                    <div className="text-gray-500">Phone</div>
-                    <div className="text-gray-900">
-                      {resultData.agent.call_medium === 'web_call' ? (
-                        <span className="italic text-gray-500">Not applicable - Web Call</span>
-                      ) : resultData.agent.phone_number ? (
-                        resultData.agent.phone_number
-                      ) : (
-                        <span className="text-gray-400">-</span>
-                      )}
-                    </div>
-                  </div>
-                  {resultData.agent.description && (
-                    <div>
-                      <div className="text-gray-500">Description</div>
-                      <div className="text-gray-900">{resultData.agent.description}</div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Persona and Scenario - Additional Details */}
-          {(resultData.persona || resultData.scenario) && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {/* Persona */}
-              {resultData.persona && (
-                <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-                  <h2 className="text-lg font-semibold text-gray-900 flex items-center mb-4">
-                    <User className="w-5 h-5 mr-2" />
-                    Persona
-                  </h2>
-                  <div className="space-y-2 text-sm">
-                    <div>
-                      <div className="text-gray-500">Name</div>
-                      <div className="font-medium text-gray-900">{resultData.persona.name}</div>
-                    </div>
-                    <div>
-                      <div className="text-gray-500">Language</div>
-                      <div className="text-gray-900 capitalize">{resultData.persona.language}</div>
-                    </div>
-                    <div>
-                      <div className="text-gray-500">Accent</div>
-                      <div className="text-gray-900 capitalize">{resultData.persona.accent}</div>
-                    </div>
-                    <div>
-                      <div className="text-gray-500">Gender</div>
-                      <div className="text-gray-900 capitalize">{resultData.persona.gender}</div>
-                    </div>
-                    <div>
-                      <div className="text-gray-500">Background Noise</div>
-                      <div className="text-gray-900 capitalize">{resultData.persona.background_noise}</div>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Scenario */}
-              {resultData.scenario && (
-                <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-                  <h2 className="text-lg font-semibold text-gray-900 mb-4">Scenario</h2>
-                  <div className="space-y-2 text-sm">
-                    <div>
-                      <div className="text-gray-500">Name</div>
-                      <div className="font-medium text-gray-900">{resultData.scenario.name}</div>
-                    </div>
-                    {resultData.scenario.description && (
-                      <div>
-                        <div className="text-gray-500">Description</div>
-                        <div className="text-gray-900">{resultData.scenario.description}</div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Evaluator */}
-          {resultData.evaluator && (
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-              <h2 className="text-lg font-semibold text-gray-900 mb-4">Evaluator</h2>
-              <div className="space-y-2 text-sm">
-                <div>
-                  <div className="text-gray-500">ID</div>
-                  <div className="font-mono font-semibold text-gray-900">{resultData.evaluator.evaluator_id}</div>
-                </div>
-                <div>
-                  <div className="text-gray-500">Name</div>
-                  <div className="font-medium text-gray-900">{resultData.evaluator.name}</div>
-                </div>
-              </div>
-            </div>
-          )}
-
+      {/* Call Details - Audio Recording and Transcription (Test Agents only - no provider call_data) */}
+      {!resultData.call_data && (resultData.audio_s3_key || resultData.transcription || resultData.speaker_segments) && (
+      <div className="bg-white shadow rounded-lg p-6">
+        {/* Navigation Tabs - matching RetellCallDetails style */}
+        <div className="flex border-b border-gray-200 mb-6">
+          <button
+            onClick={() => setActiveTab('overview')}
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'overview'
+              ? 'border-indigo-600 text-indigo-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            }`}
+          >
+            Overview
+          </button>
+          <button
+            onClick={() => setActiveTab('transcript')}
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'transcript'
+              ? 'border-indigo-600 text-indigo-600'
+              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            }`}
+          >
+            Transcript
+          </button>
         </div>
 
-        {/* Right Column - Transcription (only show when no call_data, since RetellCallDetails has transcript) */}
-        {!resultData.call_data && (
-          <div className="lg:col-span-1">
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 sticky top-6">
-              <h2 className="text-xl font-semibold text-gray-900 flex items-center mb-4">
-                <FileText className="w-5 h-5 mr-2" />
-                Transcription
-              </h2>
-              <div className="max-h-[calc(100vh-200px)] overflow-y-auto">
-                {resultData.speaker_segments && resultData.speaker_segments.length > 0 ? (
-                  <div className="space-y-3">
-                    {resultData.speaker_segments.map((segment, index) => {
+        {/* Overview Tab */}
+        {activeTab === 'overview' && (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Left Column - Transcript Card (2 cols) */}
+            <div className="lg:col-span-2">
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex flex-col h-[600px]">
+                <div className="flex items-center justify-between mb-4 flex-shrink-0">
+                  <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                    <MessageSquare className="h-5 w-5 text-indigo-600" />
+                    Transcript
+                  </h3>
+                  {audioUrl && (
+                    <div className="flex items-center gap-2 bg-gray-100 rounded-full px-3 py-1">
+                      <audio controls src={audioUrl} className="h-8 w-64" />
+                      <a href={audioUrl} download className="text-gray-500 hover:text-indigo-600 p-1">
+                        <Download className="h-4 w-4" />
+                      </a>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex-1 overflow-y-auto space-y-4 pr-2">
+                  {resultData.speaker_segments && resultData.speaker_segments.length > 0 ? (
+                    resultData.speaker_segments.map((segment, index) => {
+                      const isUser = segment.speaker === 'Speaker 1'
                       const isActive = activeSegmentIndex === index
-                      const speakerName = getSpeakerName(segment.speaker)
-                      const speakerColor = getSpeakerColor(segment.speaker)
                       
                       return (
-                        <div
-                          key={index}
+                        <div 
+                          key={index} 
+                          className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}
                           onClick={() => handleSegmentClick(segment.start)}
-                          className={`
-                            border-2 rounded-lg p-4 cursor-pointer transition-all
-                            ${isActive ? 'ring-2 ring-blue-500 shadow-md' : 'hover:shadow-sm'}
-                            ${speakerColor}
-                          `}
                         >
-                          <div className="flex items-center justify-between mb-2">
-                            <div className="flex items-center space-x-2">
-                              <span className="font-semibold text-sm">{speakerName}</span>
-                              <span className="text-xs opacity-75">
-                                {formatTime(segment.start)} - {formatTime(segment.end)}
+                          <div className={`max-w-[80%] rounded-2xl px-4 py-3 cursor-pointer transition-all ${
+                            isUser
+                              ? 'bg-indigo-600 text-white rounded-br-none'
+                              : 'bg-gray-100 text-gray-800 rounded-bl-none'
+                          } ${isActive ? 'ring-2 ring-indigo-400 shadow-lg' : ''}`}>
+                            <div className="flex items-center gap-2 mb-1 opacity-80">
+                              <span className="text-xs font-semibold uppercase tracking-wider">
+                                {isUser ? 'Test Agent (Caller)' : (resultData.agent?.name || 'Voice AI Agent')}
+                              </span>
+                              <span className="text-[10px]">
+                                {formatTime(segment.start)}
                               </span>
                             </div>
-                            {isActive && isPlaying && (
-                              <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
-                            )}
+                            <p className="text-sm leading-relaxed whitespace-pre-wrap">{segment.text}</p>
                           </div>
-                          <p className="text-gray-900 whitespace-pre-wrap text-sm">{segment.text}</p>
                         </div>
                       )
-                    })}
+                    })
+                  ) : resultData.transcription ? (
+                    <div className="prose max-w-none">
+                      <p className="text-gray-700 whitespace-pre-wrap text-sm">{resultData.transcription}</p>
+                    </div>
+                  ) : (
+                    <div className="text-center py-8 text-gray-500">
+                      {resultData.status === 'transcribing' ? 'Transcription in progress...' : 'No transcript available'}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Right Column - Call Info (1 col) */}
+            <div className="lg:col-span-1 space-y-6">
+              {/* Call Summary Card */}
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
+                  <Phone className="h-5 w-5 text-indigo-600" />
+                  Call Summary
+                </h3>
+                <div className="space-y-4">
+                  <div className="p-4 bg-gray-50 rounded-lg">
+                    <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-1">Duration</p>
+                    <p className="text-lg font-semibold text-gray-900">{formatDuration(getEffectiveDuration())}</p>
                   </div>
-                ) : resultData.transcription ? (
-                  <div className="prose max-w-none">
-                    <p className="text-gray-700 whitespace-pre-wrap text-sm">{resultData.transcription}</p>
+                  
+                  <div className="p-4 bg-gray-50 rounded-lg">
+                    <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-1">Status</p>
+                    <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                      resultData.status === 'completed'
+                        ? 'bg-green-100 text-green-800'
+                        : resultData.status === 'failed'
+                        ? 'bg-red-100 text-red-800'
+                        : 'bg-yellow-100 text-yellow-800'
+                    }`}>
+                      {resultData.status}
+                    </span>
                   </div>
-                ) : (
-                  <div className="text-gray-500 italic text-sm">
-                    {resultData.status === 'transcribing' ? 'Transcription in progress...' : 'No transcription available'}
-                  </div>
-                )}
+
+                  {resultData.agent && (
+                    <div className="p-4 bg-gray-50 rounded-lg">
+                      <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-1">Agent</p>
+                      <p className="text-sm font-medium text-gray-900">{resultData.agent.name}</p>
+                      {resultData.agent.description && (
+                        <p className="text-xs text-gray-500 mt-1 line-clamp-3">{resultData.agent.description}</p>
+                      )}
+                    </div>
+                  )}
+
+                  {resultData.persona && (
+                    <div className="p-4 bg-gray-50 rounded-lg">
+                      <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-1">Persona</p>
+                      <p className="text-sm font-medium text-gray-900">{resultData.persona.name}</p>
+                    </div>
+                  )}
+
+                  {resultData.scenario && (
+                    <div className="p-4 bg-gray-50 rounded-lg">
+                      <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-1">Scenario</p>
+                      <p className="text-sm font-medium text-gray-900">{resultData.scenario.name}</p>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>
         )}
+
+        {/* Transcript Tab - Full Width */}
+        {activeTab === 'transcript' && (
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 flex flex-col h-[700px]">
+            <div className="flex items-center justify-between mb-4 flex-shrink-0">
+              <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                <MessageSquare className="h-5 w-5 text-indigo-600" />
+                Full Transcript
+              </h3>
+              {audioUrl && (
+                <div className="flex items-center gap-2 bg-gray-100 rounded-full px-3 py-1">
+                  <audio controls src={audioUrl} className="h-8 w-64" />
+                  <a href={audioUrl} download className="text-gray-500 hover:text-indigo-600 p-1">
+                    <Download className="h-4 w-4" />
+                  </a>
+                </div>
+              )}
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-4 pr-2">
+              {resultData.speaker_segments && resultData.speaker_segments.length > 0 ? (
+                resultData.speaker_segments.map((segment, index) => {
+                  const isUser = segment.speaker === 'Speaker 1'
+                  const isActive = activeSegmentIndex === index
+                  
+                  return (
+                    <div 
+                      key={index} 
+                      className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}
+                      onClick={() => handleSegmentClick(segment.start)}
+                    >
+                      <div className={`max-w-[70%] rounded-2xl px-4 py-3 cursor-pointer transition-all ${
+                        isUser
+                          ? 'bg-indigo-600 text-white rounded-br-none'
+                          : 'bg-gray-100 text-gray-800 rounded-bl-none'
+                      } ${isActive ? 'ring-2 ring-indigo-400 shadow-lg' : ''}`}>
+                        <div className="flex items-center gap-2 mb-1 opacity-80">
+                          <span className="text-xs font-semibold uppercase tracking-wider">
+                            {isUser ? 'Test Agent (Caller)' : (resultData.agent?.name || 'Voice AI Agent')}
+                          </span>
+                          <span className="text-[10px]">
+                            {formatTime(segment.start)}
+                          </span>
+                        </div>
+                        <p className="text-sm leading-relaxed whitespace-pre-wrap">{segment.text}</p>
+                      </div>
+                    </div>
+                  )
+                })
+              ) : resultData.transcription ? (
+                <div className="prose max-w-none">
+                  <p className="text-gray-700 whitespace-pre-wrap text-sm">{resultData.transcription}</p>
+                </div>
+              ) : (
+                <div className="text-center py-8 text-gray-500">
+                  {resultData.status === 'transcribing' ? 'Transcription in progress...' : 'No transcript available'}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Hidden audio element for programmatic control (segment click navigation) */}
+        <audio
+          ref={audioRef}
+          src={audioUrl || ''}
+          preload="metadata"
+          onEnded={() => setActiveSegmentIndex(null)}
+          onLoadedMetadata={() => {
+            if (audioRef.current?.duration && audioRef.current.duration !== Infinity) {
+              setAudioDuration(audioRef.current.duration)
+            }
+          }}
+          className="hidden"
+        />
       </div>
+      )}
     </div>
   )
 }

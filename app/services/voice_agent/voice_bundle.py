@@ -5,8 +5,9 @@
 #
 
 import os
-import tempfile
 import time
+import wave
+import uuid
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -29,6 +30,7 @@ from efficientai.pipeline.task import PipelineParams, PipelineTask
 from efficientai.processors.aggregators.llm_context import LLMContext
 from efficientai.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from efficientai.processors.frameworks.rtvi import RTVIConfig, RTVIObserver, RTVIProcessor
+from efficientai.processors.audio.audio_buffer_processor import AudioBufferProcessor
 from efficientai.runner.types import RunnerArguments
 from efficientai.runner.utils import create_transport
 from efficientai.serializers.protobuf import ProtobufFrameSerializer
@@ -39,8 +41,7 @@ from efficientai.transports.websocket.fastapi import FastAPIWebsocketParams, Fas
 from efficientai.transports.base_transport import BaseTransport, TransportParams
 from efficientai.turns.bot.turn_analyzer_bot_turn_start_strategy import TurnAnalyzerBotTurnStartStrategy
 from efficientai.turns.turn_start_strategies import TurnStartStrategies
-from app.services.voice_agent.bot_fast_api import AudioRecorder
-from app.services.voice_agent.utils.audio_merge import merge_and_upload_audio
+from app.services.s3_service import s3_service
 
 load_dotenv(override=True)
 
@@ -150,13 +151,15 @@ async def run_voice_bundle_fastapi(
 ):
     """
     Run the STT+LLM+TTS voice bundle pipeline over a FastAPI WebSocket.
-    Mirrors the S2S path in bot_fast_api but swaps in Deepgram (STT),
-    OpenAI (LLM), and Cartesia (TTS).
+    Uses AudioBufferProcessor for proper conversation audio recording.
     """
 
     call_start_time = time.time()
     s3_key_result = None
     duration_result = None
+    
+    # Storage for audio data from the buffer processor
+    recorded_audio_data = {"audio": None, "sample_rate": None, "num_channels": None}
 
     # Resolve API keys: prefer provided values, otherwise fall back to environment
     stt_api_key = stt_api_key or os.getenv("DEEPGRAM_API_KEY")
@@ -191,7 +194,7 @@ async def run_voice_bundle_fastapi(
             model=getattr(voice_bundle, "stt_model", None),
         )
 
-        tts_voice_id =  "9626c31c-bec5-4cca-baa8-f8ba9e84c8bc" # British Reading Lady
+        tts_voice_id = "9626c31c-bec5-4cca-baa8-f8ba9e84c8bc"  # British Reading Lady
         tts = CartesiaTTSService(
             api_key=tts_api_key,
             voice_id=tts_voice_id,
@@ -222,26 +225,52 @@ async def run_voice_bundle_fastapi(
         # RTVI events for efficientai client UI
         rtvi = RTVIProcessor(config=RTVIConfig(config=[]))
 
-        # Temporary files for recording user/bot audio (merged later)
-        user_audio_fd, user_audio_path = tempfile.mkstemp(suffix=".wav")
-        os.close(user_audio_fd)
-        bot_audio_fd, bot_audio_path = tempfile.mkstemp(suffix=".wav")
-        os.close(bot_audio_fd)
+        # Use AudioBufferProcessor for proper conversation recording
+        # - sample_rate=24000 for consistency with TTS
+        # - num_channels=1 for mono (properly mixed user+bot audio via mix_audio)
+        # Place it right after transport.input() to capture InputAudioRawFrame
+        audio_buffer_input = AudioBufferProcessor(
+            sample_rate=24000,
+            num_channels=1,
+        )
+        
+        # Second buffer to capture OutputAudioRawFrame (bot audio)
+        audio_buffer_output = AudioBufferProcessor(
+            sample_rate=24000,
+            num_channels=1,
+        )
+        
+        # Track audio from both sources separately, then merge at the end
+        input_audio_chunks = []
+        output_audio_chunks = []
 
-        start_time = time.time()
-        user_recorder = AudioRecorder(user_audio_path, start_time, recorder_name="UserAudioRecorder")
-        bot_recorder = AudioRecorder(bot_audio_path, start_time, recorder_name="BotAudioRecorder")
+        # Event handler to capture user (input) audio data
+        @audio_buffer_input.event_handler("on_audio_data")
+        async def on_input_audio_data(buffer, audio, sample_rate, num_channels):
+            logger.debug(f"Input AudioBuffer captured {len(audio)} bytes")
+            if audio and len(audio) > 0:
+                input_audio_chunks.append(audio)
+
+        # Event handler to capture bot (output) audio data
+        @audio_buffer_output.event_handler("on_audio_data")
+        async def on_output_audio_data(buffer, audio, sample_rate, num_channels):
+            logger.debug(f"Output AudioBuffer captured {len(audio)} bytes")
+            if audio and len(audio) > 0:
+                output_audio_chunks.append(audio)
+            # Store the sample rate/channels for final merge
+            recorded_audio_data["sample_rate"] = sample_rate
+            recorded_audio_data["num_channels"] = num_channels
 
         pipeline = Pipeline(
             [
                 ws_transport.input(),
-                user_recorder,
+                audio_buffer_input,  # Capture user input audio here
                 stt,
                 context_aggregator.user(),
                 rtvi,
                 llm,
                 tts,
-                bot_recorder,
+                audio_buffer_output,  # Capture bot output audio here
                 ws_transport.output(),
                 context_aggregator.assistant(),
             ]
@@ -259,6 +288,10 @@ async def run_voice_bundle_fastapi(
         @rtvi.event_handler("on_client_ready")
         async def on_client_ready(rtvi):
             await rtvi.set_bot_ready()
+            # Start recording on both buffers when client is ready
+            await audio_buffer_input.start_recording()
+            await audio_buffer_output.start_recording()
+            logger.info("AudioBufferProcessors started recording (input + output)")
             await task.queue_frames([LLMRunFrame()])
 
         @ws_transport.event_handler("on_client_connected")
@@ -278,16 +311,63 @@ async def run_voice_bundle_fastapi(
         try:
             await runner.run(task)
         finally:
-            await user_recorder.cleanup()
-            await bot_recorder.cleanup()
-            s3_key_result, duration_result = merge_and_upload_audio(
-                user_audio_path=user_audio_path,
-                bot_audio_path=bot_audio_path,
-                call_start_time=call_start_time,
-                organization_id=organization_id,
-                evaluator_id=evaluator_id,
-                result_id=result_id,
-            )
+            # Stop recording and trigger final audio data handlers
+            await audio_buffer_input.stop_recording()
+            await audio_buffer_output.stop_recording()
+            logger.info("AudioBufferProcessors stopped recording")
+            
+            # Calculate duration
+            duration_result = time.time() - call_start_time
+            
+            # Merge captured audio chunks
+            total_input_audio = b''.join(input_audio_chunks) if input_audio_chunks else b''
+            total_output_audio = b''.join(output_audio_chunks) if output_audio_chunks else b''
+            
+            logger.info(f"Input audio: {len(total_input_audio)} bytes, Output audio: {len(total_output_audio)} bytes")
+            
+            # Upload the recorded audio to S3 if we have data
+            if len(total_input_audio) > 100 or len(total_output_audio) > 100:
+                try:
+                    import io
+                    from efficientai.audio.utils import mix_audio
+                    
+                    # Use the sample rate from the buffer (default to 24000 if not set)
+                    sample_rate = recorded_audio_data.get("sample_rate") or 24000
+                    num_channels = 1  # Output is always mono mixed audio
+                    
+                    # Mix the two audio streams into one mono stream
+                    # mix_audio handles padding if streams have different lengths
+                    mixed_audio = mix_audio(total_input_audio, total_output_audio)
+                    logger.info(f"Mixed audio: {len(mixed_audio)} bytes")
+                    
+                    # Create WAV file in memory and upload to S3
+                    wav_buffer = io.BytesIO()
+                    with wave.open(wav_buffer, 'wb') as wf:
+                        wf.setnchannels(num_channels)
+                        wf.setsampwidth(2)  # 16-bit audio
+                        wf.setframerate(sample_rate)
+                        wf.writeframes(mixed_audio)
+                    
+                    wav_buffer.seek(0)
+                    file_content = wav_buffer.read()
+                    
+                    file_id = uuid.uuid4()
+                    meaningful_id = result_id if result_id else f"{int(time.time())}-{file_id.hex[:8]}"
+                    
+                    s3_key_result = s3_service.upload_file(
+                        file_content=file_content,
+                        file_id=file_id,
+                        file_format="wav",
+                        organization_id=organization_id,
+                        evaluator_id=evaluator_id,
+                        meaningful_id=meaningful_id,
+                    )
+                    logger.info(f"✅ Conversation audio uploaded to S3: {s3_key_result}")
+                except Exception as e:
+                    logger.error(f"Failed to upload audio to S3: {e}", exc_info=True)
+            else:
+                logger.warning("No audio data captured or audio too small to upload")
+                
     except Exception as e:
         logger.error(f"Error in run_voice_bundle_fastapi: {e}", exc_info=True)
         return {

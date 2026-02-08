@@ -583,20 +583,40 @@ Example of WRONG format (DO NOT do this):
                 if not transcription:
                     logger.warning(f"[EvaluatorResult {result.result_id}] No transcription available, skipping LLM evaluation")
             
-            # Step 5b: Evaluate audio metrics (requires recording from provider)
-            if audio_metrics and result.call_data:
+            # Step 5b: Evaluate audio metrics (requires recording from provider OR S3 audio)
+            audio_source_available = result.call_data or result.audio_s3_key
+            if audio_metrics and audio_source_available:
                 logger.info(f"[EvaluatorResult {result.result_id}] Step 5b: Calculating {len(audio_metrics)} audio metrics")
                 
                 try:
                     # Get audio metric names
                     audio_metric_names = [m.name for m in audio_metrics]
                     
-                    # Calculate audio metrics from provider call_data
-                    audio_results = calculate_audio_metrics_from_call_data(
-                        call_data=result.call_data,
-                        provider_platform=result.provider_platform,
-                        metric_names=audio_metric_names
-                    )
+                    # Determine audio source
+                    if result.call_data:
+                        # Voice AI agents: Use provider call_data
+                        logger.info(f"[EvaluatorResult {result.result_id}] Using call_data for audio analysis")
+                        audio_results = calculate_audio_metrics_from_call_data(
+                            call_data=result.call_data,
+                            provider_platform=result.provider_platform,
+                            metric_names=audio_metric_names
+                        )
+                    elif result.audio_s3_key:
+                        # Test Agents: Use S3 audio file
+                        logger.info(f"[EvaluatorResult {result.result_id}] Using S3 audio for analysis: {result.audio_s3_key}")
+                        from app.services.s3_service import s3_service
+                        from app.services.voice_quality_service import calculate_audio_metrics
+                        
+                        # Generate presigned URL for S3 audio
+                        if s3_service.is_enabled():
+                            audio_url = s3_service.generate_presigned_url_by_key(result.audio_s3_key, expiration=3600)
+                            logger.info(f"[EvaluatorResult {result.result_id}] Generated presigned URL for S3 audio")
+                            audio_results = calculate_audio_metrics(audio_url, audio_metric_names, is_url=True)
+                        else:
+                            logger.warning(f"[EvaluatorResult {result.result_id}] S3 service not enabled, cannot analyze audio")
+                            audio_results = {name: None for name in audio_metric_names}
+                    else:
+                        audio_results = {name: None for name in audio_metric_names}
                     
                     # Map results to metric_scores
                     for metric in audio_metrics:
@@ -627,14 +647,14 @@ Example of WRONG format (DO NOT do this):
                         }
                     logger.warning(f"[EvaluatorResult {result.result_id}] Marked {len(audio_metrics)} audio metrics as failed")
             elif audio_metrics:
-                logger.warning(f"[EvaluatorResult {result.result_id}] No call_data available for audio metrics, marking as None")
+                logger.warning(f"[EvaluatorResult {result.result_id}] No audio source available for audio metrics (no call_data or audio_s3_key)")
                 for metric in audio_metrics:
                     m_type = metric.metric_type.value if hasattr(metric.metric_type, 'value') else metric.metric_type
                     metric_scores[str(metric.id)] = {
                         "value": None,
                         "type": m_type.lower() if isinstance(m_type, str) else m_type,
                         "metric_name": metric.name,
-                        "error": "No call_data available for audio analysis"
+                        "error": "No audio source available (no call_data or audio_s3_key)"
                     }
             
             # Update status to COMPLETED

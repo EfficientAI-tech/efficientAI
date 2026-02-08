@@ -851,13 +851,16 @@ class ApiClient {
   }
 
   // Evaluator Results endpoints
-  async listEvaluatorResults(evaluatorId?: string, playground?: boolean): Promise<any[]> {
+  async listEvaluatorResults(evaluatorId?: string, playground?: boolean, testAgentsOnly?: boolean): Promise<any[]> {
     const params: any = {}
     if (evaluatorId) {
       params.evaluator_id = evaluatorId
     }
     if (playground !== undefined) {
       params.playground = playground
+    }
+    if (testAgentsOnly !== undefined) {
+      params.test_agents_only = testAgentsOnly
     }
     const response = await this.client.get('/api/v1/evaluator-results', { params })
     return response.data
