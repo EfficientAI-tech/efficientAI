@@ -70,7 +70,9 @@ class OrganizationMember(Base):
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
     role = Column(String, nullable=False, default=RoleEnum.READER.value)
-
+    
+    # User preferences for this organization
+    default_agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id", ondelete="SET NULL"), nullable=True, index=True)
 
     joined_at = Column(DateTime(timezone=True), server_default=func.now())
     
@@ -82,6 +84,7 @@ class OrganizationMember(Base):
     # Relationships
     organization = relationship("Organization", back_populates="members")
     user = relationship("User", back_populates="organization_memberships")
+    default_agent = relationship("Agent", foreign_keys=[default_agent_id])
 
 
 class Invitation(Base):
@@ -284,18 +287,6 @@ class Integration(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     last_tested_at = Column(DateTime(timezone=True), nullable=True)  # When API key was last validated
-
-
-class ModelProvider(str, enum.Enum):
-    """Model provider enumeration for extensibility."""
-    OPENAI = "openai"
-    ANTHROPIC = "anthropic"
-    GOOGLE = "google"
-    AZURE = "azure"
-    AWS = "aws"
-    CUSTOM = "custom"
-    CARTESIA = "cartesia"
-    DEEPGRAM = "deepgram"
 
 
 class ManualTranscription(Base):
@@ -584,6 +575,9 @@ class CallRecording(Base):
     provider_call_id = Column(String, nullable=True, index=True)  # Provider's call_id (e.g., Retell call_id)
     provider_platform = Column(String, nullable=True)  # e.g., "retell", "vapi"
     agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True)  # Reference to our agent
+    
+    # Link to EvaluatorResult for metric evaluations
+    evaluator_result_id = Column(UUID(as_uuid=True), ForeignKey("evaluator_results.id"), nullable=True, index=True)
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

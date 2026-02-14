@@ -74,6 +74,10 @@ class TestAgentProcessor:
         self.is_processing = False
         self.should_end_call = False
         
+        # Turn-taking state
+        self.agent_is_talking = False          # Set by bridge when voice AI agent speaks
+        self._pending_transcript: Optional[str] = None  # Queued transcript for later processing
+        
         # Callbacks
         self.on_audio_generated: Optional[Callable[[bytes], Awaitable[None]]] = None
         self.on_response_text: Optional[Callable[[str], Awaitable[None]]] = None
@@ -196,19 +200,37 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
         """
         Process a transcript from the voice AI agent and generate a response.
         
+        Turn-taking guards:
+        - If the voice AI agent is still talking, queue the transcript for later.
+        - If we're already generating a response, queue the transcript instead of dropping it.
+        - After finishing, check for a queued transcript and process it.
+        
         Args:
             transcript: The text of what the agent said
             
         Returns:
             Audio bytes of the response, or None if no response needed
         """
-        if self.is_processing:
-            logger.debug("[TestAgent] Already processing, skipping")
-            return None
-        
         if not transcript or not transcript.strip():
             return None
         
+        if self.agent_is_talking:
+            logger.debug(f"[TestAgent] Agent still talking, queuing transcript: {transcript[:60]}...")
+            self._pending_transcript = transcript
+            return None
+        
+        if self.is_processing:
+            logger.debug(f"[TestAgent] Already processing, queuing transcript: {transcript[:60]}...")
+            self._pending_transcript = transcript
+            return None
+        
+        return await self._do_process_transcript(transcript)
+    
+    async def _do_process_transcript(self, transcript: str) -> Optional[bytes]:
+        """
+        Internal method to actually process a transcript and generate a response.
+        After processing, checks for any pending (queued) transcript and processes it.
+        """
         self.is_processing = True
         
         try:
@@ -268,6 +290,14 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
             return None
         finally:
             self.is_processing = False
+            
+            # Check for a queued transcript that arrived while we were processing
+            pending = self._pending_transcript
+            self._pending_transcript = None
+            if pending and not self.agent_is_talking and not self.should_end_call:
+                logger.info(f"[TestAgent] Processing queued transcript: {pending[:60]}...")
+                # Fire-and-forget so we don't block the caller
+                asyncio.create_task(self._do_process_transcript(pending))
     
     async def _generate_llm_response(self) -> Optional[str]:
         """Generate a response using the LLM."""

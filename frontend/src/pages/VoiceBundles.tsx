@@ -14,6 +14,7 @@ const PROVIDER_LABELS: Record<ModelProvider, string> = {
   [ModelProvider.AWS]: 'AWS',
   [ModelProvider.DEEPGRAM]: 'Deepgram',
   [ModelProvider.CARTESIA]: 'Cartesia',
+  [ModelProvider.ELEVENLABS]: 'ElevenLabs',
   [ModelProvider.CUSTOM]: 'Custom',
 }
 
@@ -23,8 +24,9 @@ const PROVIDER_LOGOS: Record<ModelProvider, string | null> = {
   [ModelProvider.GOOGLE]: '/geminiai.png',
   [ModelProvider.AZURE]: '/azureai.png',
   [ModelProvider.AWS]: '/AWS_logo.png',
-  [ModelProvider.DEEPGRAM]: '/deepgram.png', // add asset if available
-  [ModelProvider.CARTESIA]: '/cartesia.jpg', // ensure asset exists in public/
+  [ModelProvider.DEEPGRAM]: '/deepgram.png',
+  [ModelProvider.CARTESIA]: '/cartesia.jpg',
+  [ModelProvider.ELEVENLABS]: '/elevenlabs.jpg',
   [ModelProvider.CUSTOM]: null,
 }
 
@@ -94,12 +96,17 @@ export default function VoiceBundles() {
     staleTime: 5 * 60 * 1000, // Cache for 5 minutes
   })
 
-  const mapIntegrationToProvider = (platform: IntegrationPlatform): ModelProvider | null => {
-    switch (platform) {
-      case IntegrationPlatform.DEEPGRAM:
+  const mapIntegrationToProvider = (platform: IntegrationPlatform | string): ModelProvider | null => {
+    // Normalize to lowercase string for comparison (handles both enum and string values from API)
+    const platformLower = (typeof platform === 'string' ? platform : String(platform)).toLowerCase()
+    
+    switch (platformLower) {
+      case 'deepgram':
         return ModelProvider.DEEPGRAM
-      case IntegrationPlatform.CARTESIA:
+      case 'cartesia':
         return ModelProvider.CARTESIA
+      case 'elevenlabs':
+        return ModelProvider.ELEVENLABS
       default:
         return null
     }

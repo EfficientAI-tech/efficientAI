@@ -1,6 +1,7 @@
 """Alerts routes."""
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from uuid import UUID
@@ -18,6 +19,8 @@ from app.models.schemas import (
     AlertHistoryResponse,
     AlertHistoryUpdate,
 )
+from app.services.alert_evaluation_service import alert_evaluation_service
+from app.services.alert_notification_service import alert_notification_service
 
 router = APIRouter(prefix="/alerts", tags=["alerts"])
 
@@ -229,6 +232,191 @@ def toggle_alert_status(
     db.refresh(alert)
 
     return alert
+
+
+# ============================================
+# ALERT EVALUATION & NOTIFICATION ENDPOINTS
+# ============================================
+
+
+class TestNotificationRequest(BaseModel):
+    """Schema for testing notifications."""
+    webhook_url: Optional[str] = Field(None, description="Slack webhook URL to test")
+    email: Optional[str] = Field(None, description="Email address to test")
+
+
+class AlertEvaluationResponse(BaseModel):
+    """Schema for alert evaluation response."""
+    alert_id: str
+    alert_name: str
+    triggered: bool = False
+    metric_value: Optional[float] = None
+    threshold: Optional[float] = None
+    operator: Optional[str] = None
+    history_id: Optional[str] = None
+    notifications_sent: Optional[int] = None
+    notifications_successful: Optional[int] = None
+    skipped_cooldown: Optional[bool] = None
+    reason: Optional[str] = None
+    error: Optional[str] = None
+
+
+@router.post("/{alert_id}/trigger", response_model=AlertEvaluationResponse)
+def trigger_alert_evaluation(
+    alert_id: UUID,
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+):
+    """
+    Manually trigger evaluation of a specific alert.
+    Evaluates the alert condition right now and sends notifications if triggered.
+    """
+    alert = db.query(Alert).filter(
+        and_(
+            Alert.id == alert_id,
+            Alert.organization_id == organization_id
+        )
+    ).first()
+
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+
+    result = alert_evaluation_service.evaluate_single_alert(alert, db)
+    return result
+
+
+@router.post("/evaluate/all")
+def evaluate_all_alerts(
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+):
+    """
+    Evaluate all active alerts for the organization.
+    Checks all alert conditions and triggers notifications for any that are breached.
+    """
+    # Get only this organization's active alerts
+    active_alerts = db.query(Alert).filter(
+        and_(
+            Alert.organization_id == organization_id,
+            Alert.status == AlertStatus.ACTIVE.value,
+        )
+    ).all()
+
+    results = {
+        "total_alerts": len(active_alerts),
+        "triggered": 0,
+        "not_triggered": 0,
+        "errors": 0,
+        "skipped_cooldown": 0,
+        "details": [],
+    }
+
+    for alert in active_alerts:
+        try:
+            result = alert_evaluation_service.evaluate_single_alert(alert, db)
+            results["details"].append(result)
+            if result.get("triggered"):
+                results["triggered"] += 1
+            elif result.get("skipped_cooldown"):
+                results["skipped_cooldown"] += 1
+            else:
+                results["not_triggered"] += 1
+        except Exception as e:
+            results["errors"] += 1
+            results["details"].append({
+                "alert_id": str(alert.id),
+                "alert_name": alert.name,
+                "error": str(e),
+            })
+
+    return results
+
+
+@router.post("/{alert_id}/test-notification")
+def test_alert_notification(
+    alert_id: UUID,
+    request: TestNotificationRequest,
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+):
+    """
+    Send a test notification for an alert.
+    Tests the notification channels without actually triggering the alert.
+    """
+    alert = db.query(Alert).filter(
+        and_(
+            Alert.id == alert_id,
+            Alert.organization_id == organization_id
+        )
+    ).first()
+
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+
+    results = []
+    now = datetime.utcnow()
+
+    common_params = dict(
+        alert_name=f"[TEST] {alert.name}",
+        alert_description=alert.description or "This is a test notification",
+        metric_type=alert.metric_type,
+        aggregation=alert.aggregation,
+        operator=alert.operator,
+        threshold_value=alert.threshold_value,
+        triggered_value=alert.threshold_value * 1.5,  # Simulate 150% of threshold
+        time_window_minutes=alert.time_window_minutes,
+        triggered_at=now,
+        agent_names=None,
+        alert_id=str(alert.id),
+        history_id=None,
+    )
+
+    # Test specific webhook if provided, otherwise use alert's configured webhooks
+    if request.webhook_url:
+        result = alert_notification_service.send_slack_notification(
+            webhook_url=request.webhook_url,
+            **common_params,
+        )
+        results.append(result)
+    elif alert.notify_webhooks:
+        for webhook_url in alert.notify_webhooks:
+            if webhook_url and webhook_url.strip():
+                result = alert_notification_service.send_slack_notification(
+                    webhook_url=webhook_url.strip(),
+                    **common_params,
+                )
+                results.append(result)
+
+    # Test specific email if provided, otherwise use alert's configured emails
+    if request.email:
+        result = alert_notification_service.send_email_notification(
+            to_email=request.email,
+            **common_params,
+        )
+        results.append(result)
+    elif alert.notify_emails:
+        for email_addr in alert.notify_emails:
+            if email_addr and email_addr.strip():
+                result = alert_notification_service.send_email_notification(
+                    to_email=email_addr.strip(),
+                    **common_params,
+                )
+                results.append(result)
+
+    if not results:
+        raise HTTPException(
+            status_code=400,
+            detail="No notification channels configured. Provide a webhook_url or email, "
+                   "or configure notify_webhooks/notify_emails on the alert.",
+        )
+
+    return {
+        "message": "Test notifications sent",
+        "total": len(results),
+        "successful": sum(1 for r in results if r.get("success")),
+        "failed": sum(1 for r in results if not r.get("success")),
+        "details": results,
+    }
 
 
 # ============================================

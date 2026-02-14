@@ -1,16 +1,17 @@
 """
 Profile API Routes
-Manage user profile and invitations
+Manage user profile, invitations, and preferences
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 from uuid import UUID
 from datetime import datetime, timezone
+from pydantic import BaseModel
 
-from app.dependencies import get_db, get_api_key
+from app.dependencies import get_db, get_api_key, get_organization_id
 from app.models.database import (
-    User, OrganizationMember, Invitation, Organization,
+    User, OrganizationMember, Invitation, Organization, Agent,
     InvitationStatus, RoleEnum
 )
 from app.models.schemas import (
@@ -20,6 +21,21 @@ from app.models.schemas import (
 from app.core.password import hash_password
 
 router = APIRouter(prefix="/profile", tags=["Profile"])
+
+
+# Preferences schemas
+class UserPreferencesResponse(BaseModel):
+    """User preferences for the current organization."""
+    default_agent_id: Optional[UUID] = None
+    default_agent: Optional[dict] = None  # Include agent details if set
+
+    class Config:
+        from_attributes = True
+
+
+class UserPreferencesUpdate(BaseModel):
+    """Update user preferences."""
+    default_agent_id: Optional[UUID] = None
 
 
 def get_current_user(
@@ -331,4 +347,111 @@ async def decline_invitation(
     db.commit()
     
     return {"message": "Invitation declined"}
+
+
+# ============================================================================
+# User Preferences Endpoints
+# ============================================================================
+
+@router.get("/preferences", response_model=UserPreferencesResponse, operation_id="getUserPreferences")
+async def get_user_preferences(
+    current_user: User = Depends(get_current_user),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db)
+):
+    """
+    Get user preferences for the current organization.
+    Returns the default agent selection and other preferences.
+    """
+    # Get the organization membership
+    membership = db.query(OrganizationMember).filter(
+        OrganizationMember.organization_id == organization_id,
+        OrganizationMember.user_id == current_user.id
+    ).first()
+    
+    if not membership:
+        raise HTTPException(status_code=404, detail="Organization membership not found")
+    
+    # Build response with agent details if set
+    response = {
+        "default_agent_id": membership.default_agent_id,
+        "default_agent": None
+    }
+    
+    if membership.default_agent_id:
+        agent = db.query(Agent).filter(Agent.id == membership.default_agent_id).first()
+        if agent:
+            response["default_agent"] = {
+                "id": str(agent.id),
+                "agent_id": agent.agent_id,
+                "name": agent.name,
+                "phone_number": agent.phone_number,
+                "language": agent.language,
+                "description": agent.description,
+                "call_type": agent.call_type,
+                "call_medium": agent.call_medium
+            }
+    
+    return response
+
+
+@router.put("/preferences", response_model=UserPreferencesResponse, operation_id="updateUserPreferences")
+async def update_user_preferences(
+    preferences: UserPreferencesUpdate,
+    current_user: User = Depends(get_current_user),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db)
+):
+    """
+    Update user preferences for the current organization.
+    Set default_agent_id to null to clear the default agent.
+    """
+    # Get the organization membership
+    membership = db.query(OrganizationMember).filter(
+        OrganizationMember.organization_id == organization_id,
+        OrganizationMember.user_id == current_user.id
+    ).first()
+    
+    if not membership:
+        raise HTTPException(status_code=404, detail="Organization membership not found")
+    
+    # Validate agent exists in this organization if provided
+    if preferences.default_agent_id:
+        agent = db.query(Agent).filter(
+            Agent.id == preferences.default_agent_id,
+            Agent.organization_id == organization_id
+        ).first()
+        
+        if not agent:
+            raise HTTPException(
+                status_code=400, 
+                detail="Agent not found or does not belong to this organization"
+            )
+    
+    # Update the preference
+    membership.default_agent_id = preferences.default_agent_id
+    db.commit()
+    db.refresh(membership)
+    
+    # Build response with agent details if set
+    response = {
+        "default_agent_id": membership.default_agent_id,
+        "default_agent": None
+    }
+    
+    if membership.default_agent_id:
+        agent = db.query(Agent).filter(Agent.id == membership.default_agent_id).first()
+        if agent:
+            response["default_agent"] = {
+                "id": str(agent.id),
+                "agent_id": agent.agent_id,
+                "name": agent.name,
+                "phone_number": agent.phone_number,
+                "language": agent.language,
+                "description": agent.description,
+                "call_type": agent.call_type,
+                "call_medium": agent.call_medium
+            }
+    
+    return response
 

@@ -107,9 +107,11 @@ class VapiWebRTCBridge:
         self.on_agent_start_talking: Optional[Callable[[], Awaitable[None]]] = None
         self.on_agent_stop_talking: Optional[Callable[[], Awaitable[None]]] = None
         
-        # Transcript accumulator
+        # Transcript accumulator & turn-taking state
         self._current_transcript = ""
         self._agent_is_talking = False
+        self._current_model_output = ""       # accumulate model-output tokens
+        self._current_assistant_transcript = ""  # accumulate role=assistant transcripts
         
         # Background threads
         self._send_audio_thread: Optional[threading.Thread] = None
@@ -524,15 +526,45 @@ class VapiDailyEventHandler(daily.EventHandler):
                 except Exception as e:
                     logger.error(f"[VapiWebRTC] Failed to send playable signal: {e}")
     
+    def _deliver_accumulated_transcript(self):
+        """
+        Deliver the accumulated assistant transcript to the test agent.
+        
+        Prefers the assistant transcript (from role=assistant transcript events),
+        falls back to accumulated model-output tokens if no transcript was received.
+        Resets accumulators after delivery.
+        """
+        transcript = (
+            self.bridge._current_assistant_transcript.strip()
+            or self.bridge._current_model_output.strip()
+        )
+        
+        # Reset accumulators
+        self.bridge._current_assistant_transcript = ""
+        self.bridge._current_model_output = ""
+        
+        if transcript and self.bridge.on_transcript_received:
+            logger.info(f"[VapiWebRTC] Delivering accumulated assistant transcript ({len(transcript)} chars): {transcript[:100]}...")
+            self._run_async(self.bridge.on_transcript_received(transcript))
+        elif not transcript:
+            logger.debug("[VapiWebRTC] No accumulated transcript to deliver on agent stop")
+
     def on_app_message(self, message, sender):
         """
         Handle app messages from Vapi.
         
         Vapi sends various events and messages via the app message channel.
+        
+        Turn-taking strategy (mirrors Retell's approach):
+        - transcript events with role=user are IGNORED (test agent's own speech echo)
+        - transcript events with role=assistant are accumulated
+        - model-output tokens are accumulated as a fallback transcript source
+        - speech-update events with role=assistant track agent speaking state
+        - When the assistant stops speaking, the accumulated transcript is delivered
         """
         try:
             # Log raw message for debugging
-            logger.info(f"[VapiWebRTC] App message from {sender}: {str(message)[:300]}")
+            logger.debug(f"[VapiWebRTC] App message from {sender}: {str(message)[:300]}")
             
             if isinstance(message, str):
                 try:
@@ -547,25 +579,78 @@ class VapiDailyEventHandler(daily.EventHandler):
             # Try multiple possible type fields
             event_type = data.get("type") or data.get("event_type") or data.get("message_type")
             
-            logger.info(f"[VapiWebRTC] App message parsed: type={event_type}, keys={list(data.keys())}")
+            logger.debug(f"[VapiWebRTC] App message parsed: type={event_type}, keys={list(data.keys())}")
             
             if event_type == "transcript":
-                # Transcript update
+                role = data.get("role", "")
+                transcript_type = data.get("transcriptType", "")
                 transcript = data.get("transcript", "") or data.get("text", "")
-                if transcript:
-                    logger.info(f"[VapiWebRTC] Transcript update: {transcript[:100]}...")
-                    if self.bridge.on_transcript_received:
-                        self._run_async(self.bridge.on_transcript_received(transcript))
+                
+                if role == "user":
+                    # Ignore test agent's own speech being echoed back by Vapi's STT
+                    logger.debug(f"[VapiWebRTC] Ignoring user transcript echo ({transcript_type}): {transcript[:80]}...")
+                elif role in ("assistant", "bot", "agent"):
+                    if transcript_type == "final":
+                        # Accumulate final assistant transcripts (Vapi sends one per sentence)
+                        logger.info(f"[VapiWebRTC] Assistant transcript (final): {transcript[:100]}...")
+                        if self.bridge._current_assistant_transcript:
+                            self.bridge._current_assistant_transcript += " " + transcript
+                        else:
+                            self.bridge._current_assistant_transcript = transcript
+                    else:
+                        logger.debug(f"[VapiWebRTC] Assistant transcript (partial): {transcript[:80]}...")
+                else:
+                    logger.debug(f"[VapiWebRTC] Transcript with unknown role '{role}': {transcript[:80]}...")
+            
+            elif event_type == "speech-update":
+                role = data.get("role", "")
+                status = data.get("status", "")
+                turn = data.get("turn", "?")
+                
+                if role in ("assistant", "bot", "agent"):
+                    if status == "started":
+                        logger.info(f"[VapiWebRTC] Vapi agent started speaking (turn {turn})")
+                        self.bridge._agent_is_talking = True
+                        if self.bridge.on_agent_start_talking:
+                            self._run_async(self.bridge.on_agent_start_talking())
+                    elif status == "stopped":
+                        logger.info(f"[VapiWebRTC] Vapi agent stopped speaking (turn {turn})")
+                        self.bridge._agent_is_talking = False
+                        # Signal stop BEFORE delivering transcript, so
+                        # test_agent.agent_is_talking is False when transcript arrives
+                        if self.bridge.on_agent_stop_talking:
+                            self._run_async(self.bridge.on_agent_stop_talking())
+                        # Deliver accumulated transcript now that the agent finished speaking
+                        self._deliver_accumulated_transcript()
+                    else:
+                        logger.debug(f"[VapiWebRTC] speech-update role=assistant status={status}")
+                elif role == "user":
+                    # Test agent's own speech boundaries — log but don't act
+                    logger.debug(f"[VapiWebRTC] User speech-update: status={status}, turn={turn}")
+                else:
+                    logger.debug(f"[VapiWebRTC] speech-update unknown role={role}, status={status}")
+            
+            elif event_type == "model-output":
+                # Accumulate the Vapi agent's LLM output tokens as fallback transcript
+                token = data.get("output", "")
+                if token:
+                    self.bridge._current_model_output += token
+                    logger.debug(f"[VapiWebRTC] model-output token: '{token}' (accumulated {len(self.bridge._current_model_output)} chars)")
             
             elif event_type in ["speech_start", "speech-start", "agent_start", "start"]:
-                logger.info("[VapiWebRTC] Vapi agent started speaking")
+                # Legacy speech start events (some Vapi versions)
+                logger.info("[VapiWebRTC] Vapi agent started speaking (legacy event)")
+                self.bridge._agent_is_talking = True
                 if self.bridge.on_agent_start_talking:
                     self._run_async(self.bridge.on_agent_start_talking())
             
             elif event_type in ["speech_end", "speech-end", "agent_end", "end"]:
-                logger.info("[VapiWebRTC] Vapi agent stopped speaking")
+                # Legacy speech end events (some Vapi versions)
+                logger.info("[VapiWebRTC] Vapi agent stopped speaking (legacy event)")
+                self.bridge._agent_is_talking = False
                 if self.bridge.on_agent_stop_talking:
                     self._run_async(self.bridge.on_agent_stop_talking())
+                self._deliver_accumulated_transcript()
             
             elif event_type in ["call_ended", "call-ended", "ended"]:
                 logger.info("[VapiWebRTC] Call ended via app message")
@@ -573,14 +658,18 @@ class VapiDailyEventHandler(daily.EventHandler):
                 if self.bridge.on_call_ended:
                     self._run_async(self.bridge.on_call_ended())
             
+            elif event_type == "conversation-update":
+                # Full conversation history — can be used for debugging
+                logger.debug(f"[VapiWebRTC] Conversation update received (keys: {list(data.keys())})")
+            
             # Check for transcript in message content (some Vapi versions)
             elif "content" in data and data.get("role") in ["assistant", "bot", "agent"]:
                 # This is a message from the agent
                 transcript = data.get("content", "")
                 if transcript:
-                    logger.info(f"[VapiWebRTC] Agent message: {transcript[:100]}...")
-                    if self.bridge.on_transcript_received:
-                        self._run_async(self.bridge.on_transcript_received(transcript))
+                    logger.info(f"[VapiWebRTC] Agent message (content format): {transcript[:100]}...")
+                    # Accumulate as assistant transcript
+                    self.bridge._current_assistant_transcript = transcript
             
             else:
                 logger.info(f"[VapiWebRTC] Unhandled app message type: {event_type}, data: {str(data)[:200]}")

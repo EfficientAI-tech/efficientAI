@@ -4,6 +4,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from celery import Celery
+from celery.schedules import crontab
 from app.config import settings, load_config_from_file
 from app.database import SessionLocal
 from app.services.evaluation_service import evaluation_service
@@ -583,20 +584,40 @@ Example of WRONG format (DO NOT do this):
                 if not transcription:
                     logger.warning(f"[EvaluatorResult {result.result_id}] No transcription available, skipping LLM evaluation")
             
-            # Step 5b: Evaluate audio metrics (requires recording from provider)
-            if audio_metrics and result.call_data:
+            # Step 5b: Evaluate audio metrics (requires recording from provider OR S3 audio)
+            audio_source_available = result.call_data or result.audio_s3_key
+            if audio_metrics and audio_source_available:
                 logger.info(f"[EvaluatorResult {result.result_id}] Step 5b: Calculating {len(audio_metrics)} audio metrics")
                 
                 try:
                     # Get audio metric names
                     audio_metric_names = [m.name for m in audio_metrics]
                     
-                    # Calculate audio metrics from provider call_data
-                    audio_results = calculate_audio_metrics_from_call_data(
-                        call_data=result.call_data,
-                        provider_platform=result.provider_platform,
-                        metric_names=audio_metric_names
-                    )
+                    # Determine audio source
+                    if result.call_data:
+                        # Voice AI agents: Use provider call_data
+                        logger.info(f"[EvaluatorResult {result.result_id}] Using call_data for audio analysis")
+                        audio_results = calculate_audio_metrics_from_call_data(
+                            call_data=result.call_data,
+                            provider_platform=result.provider_platform,
+                            metric_names=audio_metric_names
+                        )
+                    elif result.audio_s3_key:
+                        # Test Agents: Use S3 audio file
+                        logger.info(f"[EvaluatorResult {result.result_id}] Using S3 audio for analysis: {result.audio_s3_key}")
+                        from app.services.s3_service import s3_service
+                        from app.services.voice_quality_service import calculate_audio_metrics
+                        
+                        # Generate presigned URL for S3 audio
+                        if s3_service.is_enabled():
+                            audio_url = s3_service.generate_presigned_url_by_key(result.audio_s3_key, expiration=3600)
+                            logger.info(f"[EvaluatorResult {result.result_id}] Generated presigned URL for S3 audio")
+                            audio_results = calculate_audio_metrics(audio_url, audio_metric_names, is_url=True)
+                        else:
+                            logger.warning(f"[EvaluatorResult {result.result_id}] S3 service not enabled, cannot analyze audio")
+                            audio_results = {name: None for name in audio_metric_names}
+                    else:
+                        audio_results = {name: None for name in audio_metric_names}
                     
                     # Map results to metric_scores
                     for metric in audio_metrics:
@@ -627,14 +648,14 @@ Example of WRONG format (DO NOT do this):
                         }
                     logger.warning(f"[EvaluatorResult {result.result_id}] Marked {len(audio_metrics)} audio metrics as failed")
             elif audio_metrics:
-                logger.warning(f"[EvaluatorResult {result.result_id}] No call_data available for audio metrics, marking as None")
+                logger.warning(f"[EvaluatorResult {result.result_id}] No audio source available for audio metrics (no call_data or audio_s3_key)")
                 for metric in audio_metrics:
                     m_type = metric.metric_type.value if hasattr(metric.metric_type, 'value') else metric.metric_type
                     metric_scores[str(metric.id)] = {
                         "value": None,
                         "type": m_type.lower() if isinstance(m_type, str) else m_type,
                         "metric_name": metric.name,
-                        "error": "No call_data available for audio analysis"
+                        "error": "No audio source available (no call_data or audio_s3_key)"
                     }
             
             # Update status to COMPLETED
@@ -848,3 +869,87 @@ def run_evaluator_task(self, evaluator_id: str, evaluator_result_id: str):
         raise self.retry(exc=exc, countdown=60)
     finally:
         db.close()
+
+
+# ============================================
+# ALERT EVALUATION TASKS
+# ============================================
+
+@celery_app.task(name="evaluate_alerts", bind=True, max_retries=2)
+def evaluate_alerts_task(self):
+    """
+    Celery task to evaluate all active alerts.
+    Runs periodically via Celery Beat to check alert conditions
+    and trigger notifications when thresholds are breached.
+
+    Returns:
+        Dictionary with evaluation summary
+    """
+    db = SessionLocal()
+    try:
+        from app.services.alert_evaluation_service import alert_evaluation_service
+
+        logger.info("[CeleryTask] Starting periodic alert evaluation")
+        result = alert_evaluation_service.evaluate_all_alerts(db)
+        logger.info(
+            f"[CeleryTask] Alert evaluation complete: "
+            f"{result['triggered']} triggered, {result['not_triggered']} ok, "
+            f"{result['errors']} errors"
+        )
+        return result
+    except Exception as exc:
+        logger.error(f"[CeleryTask] Alert evaluation failed: {exc}", exc_info=True)
+        raise self.retry(exc=exc, countdown=120)
+    finally:
+        db.close()
+
+
+@celery_app.task(name="evaluate_single_alert", bind=True, max_retries=2)
+def evaluate_single_alert_task(self, alert_id: str, organization_id: str):
+    """
+    Celery task to evaluate a single alert (for manual trigger).
+
+    Args:
+        self: Task instance
+        alert_id: Alert UUID as string
+        organization_id: Organization UUID as string
+
+    Returns:
+        Dictionary with evaluation result
+    """
+    db = SessionLocal()
+    try:
+        from app.services.alert_evaluation_service import alert_evaluation_service
+
+        logger.info(f"[CeleryTask] Evaluating single alert: {alert_id}")
+        result = alert_evaluation_service.evaluate_alert_by_id(
+            alert_id=UUID(alert_id),
+            organization_id=UUID(organization_id),
+            db=db,
+        )
+        logger.info(
+            f"[CeleryTask] Single alert evaluation complete: "
+            f"triggered={result.get('triggered', False)}"
+        )
+        return result
+    except Exception as exc:
+        logger.error(
+            f"[CeleryTask] Single alert evaluation failed: {exc}",
+            exc_info=True,
+        )
+        raise self.retry(exc=exc, countdown=60)
+    finally:
+        db.close()
+
+
+# ============================================
+# CELERY BEAT SCHEDULE
+# ============================================
+
+celery_app.conf.beat_schedule = {
+    "evaluate-alerts-every-minute": {
+        "task": "evaluate_alerts",
+        "schedule": 60.0,  # Run every 60 seconds
+        "options": {"queue": "default"},
+    },
+}

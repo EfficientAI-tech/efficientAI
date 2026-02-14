@@ -12,6 +12,8 @@ import type {
   InvitationCreate,
   Profile,
   UserUpdate,
+  UserPreferences,
+  UserPreferencesUpdate,
   Role,
   Integration,
   IntegrationCreate,
@@ -451,6 +453,17 @@ class ApiClient {
     return response.data
   }
 
+  // User Preferences endpoints
+  async getUserPreferences(): Promise<UserPreferences> {
+    const response = await this.client.get('/api/v1/profile/preferences')
+    return response.data
+  }
+
+  async updateUserPreferences(data: UserPreferencesUpdate): Promise<UserPreferences> {
+    const response = await this.client.put('/api/v1/profile/preferences', data)
+    return response.data
+  }
+
   // Integration endpoints
   async listIntegrations(): Promise<Integration[]> {
     const response = await this.client.get('/api/v1/integrations')
@@ -838,13 +851,16 @@ class ApiClient {
   }
 
   // Evaluator Results endpoints
-  async listEvaluatorResults(evaluatorId?: string, playground?: boolean): Promise<any[]> {
+  async listEvaluatorResults(evaluatorId?: string, playground?: boolean, testAgentsOnly?: boolean): Promise<any[]> {
     const params: any = {}
     if (evaluatorId) {
       params.evaluator_id = evaluatorId
     }
     if (playground !== undefined) {
       params.playground = playground
+    }
+    if (testAgentsOnly !== undefined) {
+      params.test_agents_only = testAgentsOnly
     }
     const response = await this.client.get('/api/v1/evaluator-results', { params })
     return response.data
@@ -996,6 +1012,25 @@ class ApiClient {
       status: 'resolved',
       resolution_notes: resolutionNotes
     })
+    return response.data
+  }
+
+  // Alert Evaluation & Notification endpoints
+  async triggerAlert(alertId: string): Promise<any> {
+    const response = await this.client.post(`/api/v1/alerts/${alertId}/trigger`)
+    return response.data
+  }
+
+  async evaluateAllAlerts(): Promise<any> {
+    const response = await this.client.post('/api/v1/alerts/evaluate/all')
+    return response.data
+  }
+
+  async testAlertNotification(alertId: string, data: {
+    webhook_url?: string
+    email?: string
+  }): Promise<any> {
+    const response = await this.client.post(`/api/v1/alerts/${alertId}/test-notification`, data)
     return response.data
   }
 

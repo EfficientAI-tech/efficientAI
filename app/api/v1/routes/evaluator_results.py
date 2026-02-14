@@ -27,6 +27,7 @@ def list_evaluator_results(
     limit: int = 100,
     evaluator_id: Optional[str] = None,
     playground: Optional[bool] = Query(None, description="If true, only return playground test results (evaluator_id is NULL). If false, exclude playground results. If not provided, exclude playground results by default."),
+    test_agents_only: Optional[bool] = Query(None, description="If true, only return Test Agent results (no provider_platform). If false, include all playground results."),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ):
@@ -35,6 +36,7 @@ def list_evaluator_results(
     
     By default, excludes playground test results (where evaluator_id is NULL).
     Use playground=true to get only playground results, or playground=false to explicitly exclude them.
+    Use test_agents_only=true to filter out Voice AI Agent results (those with provider_platform set).
     """
     query = db.query(EvaluatorResult).filter(
         EvaluatorResult.organization_id == organization_id
@@ -44,6 +46,10 @@ def list_evaluator_results(
     if playground is True:
         # Only return playground results (evaluator_id is NULL)
         query = query.filter(EvaluatorResult.evaluator_id.is_(None))
+        
+        # If test_agents_only is True, exclude Voice AI agent results (those with provider_platform)
+        if test_agents_only is True:
+            query = query.filter(EvaluatorResult.provider_platform.is_(None))
     elif playground is False:
         # Explicitly exclude playground results
         query = query.filter(EvaluatorResult.evaluator_id.isnot(None))

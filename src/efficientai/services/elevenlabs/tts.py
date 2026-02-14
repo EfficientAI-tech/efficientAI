@@ -62,6 +62,12 @@ ELEVENLABS_MULTILINGUAL_MODELS = {
     "eleven_turbo_v2_5",
 }
 
+# Models that do NOT support previous_text / next_text context parameters.
+# Sending these parameters to unsupported models causes a 400 error.
+ELEVENLABS_NO_CONTEXT_MODELS = {
+    "eleven_v3",
+}
+
 
 def language_to_elevenlabs_language(language: Language) -> Optional[str]:
     """Convert a Language enum to ElevenLabs language code.
@@ -1000,7 +1006,8 @@ class ElevenLabsHttpTTSService(WordTTSService):
         }
 
         # Include previous text as context if available
-        if self._previous_text:
+        # Some models (e.g. eleven_v3) do not support previous_text/next_text
+        if self._previous_text and self._model_name not in ELEVENLABS_NO_CONTEXT_MODELS:
             payload["previous_text"] = self._previous_text
 
         if self._voice_settings:

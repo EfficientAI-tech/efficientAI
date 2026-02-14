@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
 import { useAgentStore } from '../store/agentStore'
 import Button from '../components/Button'
-import { Plus, Edit, Trash2, Play, X, Tag, ChevronDown, ChevronUp, Phone, CheckSquare, Square } from 'lucide-react'
+import { Plus, Edit, Trash2, Play, X, CheckSquare, Square, Phone, Globe, Eye } from 'lucide-react'
 import { useToast } from '../hooks/useToast'
 
 const DEFAULT_PERSONA_NAMES = [
@@ -33,15 +33,6 @@ interface Evaluator {
   updated_at: string
 }
 
-interface EvaluatorDetails {
-  evaluator: Evaluator
-  agent: any
-  persona: any
-  scenario: any
-}
-
-type EvaluatorDetailsOrNull = EvaluatorDetails | null
-
 export default function EvaluateTestAgents() {
   const { selectedAgent } = useAgentStore()
   const queryClient = useQueryClient()
@@ -52,10 +43,12 @@ export default function EvaluateTestAgents() {
   const [selectedTags, setSelectedTags] = useState<string[]>([])
   const [tagInput, setTagInput] = useState('')
   const [editTagInput, setEditTagInput] = useState('')
-  const [expandedEvaluator, setExpandedEvaluator] = useState<string | null>(null)
   const [editingEvaluator, setEditingEvaluator] = useState<Evaluator | null>(null)
   const [runningEvaluatorIds, setRunningEvaluatorIds] = useState<Set<string>>(new Set())
   const [selectedEvaluatorIds, setSelectedEvaluatorIds] = useState<Set<string>>(new Set())
+  const [showRunModal, setShowRunModal] = useState(false)
+  const [runCount, setRunCount] = useState(1)
+  const [viewingEvaluator, setViewingEvaluator] = useState<Evaluator | null>(null)
 
   const { data: personas = [] } = useQuery({
     queryKey: ['personas'],
@@ -75,23 +68,19 @@ export default function EvaluateTestAgents() {
   const filteredPersonas = personas.filter((p: any) => !DEFAULT_PERSONA_NAMES.includes(p.name))
   const filteredScenarios = scenarios.filter((s: any) => !DEFAULT_SCENARIO_NAMES.includes(s.name))
 
-  // Fetch details for expanded evaluator
-  const { data: evaluatorDetails } = useQuery<EvaluatorDetailsOrNull>({
-    queryKey: ['evaluator-details', expandedEvaluator],
-    queryFn: async (): Promise<EvaluatorDetailsOrNull> => {
-      if (!expandedEvaluator) return null
-      const evaluator = evaluators.find((e: Evaluator) => e.id === expandedEvaluator || e.evaluator_id === expandedEvaluator)
-      if (!evaluator) return null
-
+  // Fetch details for viewing evaluator
+  const { data: evaluatorDetails, isLoading: loadingDetails } = useQuery({
+    queryKey: ['evaluator-details', viewingEvaluator?.id],
+    queryFn: async () => {
+      if (!viewingEvaluator) return null
       const [agent, persona, scenario] = await Promise.all([
-        apiClient.getAgent(evaluator.agent_id),
-        apiClient.getPersona(evaluator.persona_id),
-        apiClient.getScenario(evaluator.scenario_id),
+        apiClient.getAgent(viewingEvaluator.agent_id),
+        apiClient.getPersona(viewingEvaluator.persona_id),
+        apiClient.getScenario(viewingEvaluator.scenario_id),
       ])
-
-      return { evaluator, agent, persona, scenario }
+      return { agent, persona, scenario }
     },
-    enabled: !!expandedEvaluator,
+    enabled: !!viewingEvaluator,
   })
 
   const createMutation = useMutation({
@@ -119,9 +108,6 @@ export default function EvaluateTestAgents() {
     mutationFn: (id: string) => apiClient.deleteEvaluator(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['evaluators'] })
-      if (expandedEvaluator) {
-        setExpandedEvaluator(null)
-      }
     },
   })
 
@@ -178,17 +164,31 @@ export default function EvaluateTestAgents() {
     })
   }
 
-  const handleRunSelected = async () => {
+  const handleRunSelected = () => {
     if (selectedEvaluatorIds.size === 0) {
       showToast('Please select at least one evaluator to run', 'error')
       return
     }
+    // Show the run modal to select how many times to run
+    setRunCount(1)
+    setShowRunModal(true)
+  }
 
+  const executeRuns = async () => {
     try {
       const evaluatorIdsArray = Array.from(selectedEvaluatorIds)
       setRunningEvaluatorIds(new Set(evaluatorIdsArray))
+      setShowRunModal(false)
       
-      await apiClient.runEvaluators(evaluatorIdsArray)
+      // Create an array with each evaluator ID repeated runCount times
+      const expandedIds: string[] = []
+      for (const id of evaluatorIdsArray) {
+        for (let i = 0; i < runCount; i++) {
+          expandedIds.push(id)
+        }
+      }
+      
+      await apiClient.runEvaluators(expandedIds)
       
       // Invalidate queries to refresh results
       queryClient.invalidateQueries({ queryKey: ['evaluator-results'] })
@@ -197,7 +197,8 @@ export default function EvaluateTestAgents() {
       setSelectedEvaluatorIds(new Set())
       
       // Show success toast
-      showToast(`🚀 Started ${evaluatorIdsArray.length} evaluation${evaluatorIdsArray.length > 1 ? 's' : ''}! Check Results for progress.`, 'success')
+      const totalRuns = evaluatorIdsArray.length * runCount
+      showToast(`🚀 Queued ${totalRuns} evaluation${totalRuns > 1 ? 's' : ''}! Check Results for progress.`, 'success')
     } catch (error: any) {
       console.error('Failed to run evaluators:', error)
       showToast(`Failed to run evaluators: ${error?.response?.data?.detail || error?.message || 'Unknown error'}`, 'error')
@@ -207,7 +208,6 @@ export default function EvaluateTestAgents() {
 
   const handleEdit = (evaluator: Evaluator) => {
     setEditingEvaluator(evaluator)
-    setExpandedEvaluator(evaluator.id)
   }
 
   const handleSaveEdit = () => {
@@ -236,7 +236,8 @@ export default function EvaluateTestAgents() {
             variant="success"
             onClick={handleRunSelected}
             disabled={selectedEvaluatorIds.size === 0 || runningEvaluatorIds.size > 0}
-            leftIcon={<Play className="w-4 h-4" />}
+            leftIcon={<Play className="w-5 h-5" />}
+            className="!px-6 !py-3 !text-base font-semibold shadow-lg hover:shadow-xl transition-shadow"
           >
             Run {selectedEvaluatorIds.size > 0 && `(${selectedEvaluatorIds.size})`}
           </Button>
@@ -258,7 +259,7 @@ export default function EvaluateTestAgents() {
         </div>
       )}
 
-      {/* Evaluators List */}
+      {/* Evaluators List - Table Format */}
       <div className="bg-white shadow rounded-lg overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
           <h2 className="text-lg font-semibold text-gray-900">Evaluators</h2>
@@ -275,268 +276,425 @@ export default function EvaluateTestAgents() {
             <p className="text-gray-500 mb-4">No evaluators yet. Create your first evaluator to get started.</p>
           </div>
         ) : (
-          <div className="divide-y divide-gray-200">
-            {evaluators.map((evaluator: Evaluator) => {
-              const persona = personas.find((p: any) => p.id === evaluator.persona_id)
-              const scenario = scenarios.find((s: any) => s.id === evaluator.scenario_id)
-              const isExpanded = expandedEvaluator === evaluator.id || expandedEvaluator === evaluator.evaluator_id
-              const isRunning = runningEvaluatorIds.has(evaluator.id)
-              const isSelected = selectedEvaluatorIds.has(evaluator.id)
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-10">
+                    <span className="sr-only">Select</span>
+                  </th>
+                  <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    ID
+                  </th>
+                  <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Persona
+                  </th>
+                  <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider min-w-[300px]">
+                    Scenario
+                  </th>
+                  <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Tags
+                  </th>
+                  <th scope="col" className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Actions
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {evaluators.map((evaluator: Evaluator) => {
+                  const persona = personas.find((p: any) => p.id === evaluator.persona_id)
+                  const scenario = scenarios.find((s: any) => s.id === evaluator.scenario_id)
+                  const isRunning = runningEvaluatorIds.has(evaluator.id)
+                  const isSelected = selectedEvaluatorIds.has(evaluator.id)
 
-              return (
-                <div key={evaluator.id} className="p-6 hover:bg-gray-50 transition-colors">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-4 flex-1">
-                      <button
-                        type="button"
-                        onClick={() => toggleEvaluatorSelection(evaluator.id)}
-                        className="flex-shrink-0"
-                        disabled={isRunning}
-                      >
-                        {isSelected ? (
-                          <CheckSquare className="w-5 h-5 text-primary-600" />
-                        ) : (
-                          <Square className="w-5 h-5 text-gray-400" />
-                        )}
-                      </button>
-                      <button
-                        onClick={() => setExpandedEvaluator(isExpanded ? null : evaluator.id)}
-                        className="flex items-center space-x-2 text-left flex-1"
-                      >
-                        {isExpanded ? (
-                          <ChevronUp className="w-5 h-5 text-gray-400" />
-                        ) : (
-                          <ChevronDown className="w-5 h-5 text-gray-400" />
-                        )}
-                        <div>
-                          <div className="flex items-center space-x-2">
-                            <span className="font-mono font-semibold text-lg text-gray-900">
-                              {evaluator.evaluator_id}
-                            </span>
-                            {evaluator.tags && evaluator.tags.length > 0 && (
-                              <div className="flex items-center space-x-1">
-                                <Tag className="w-4 h-4 text-gray-400" />
-                                <div className="flex space-x-1">
-                                  {evaluator.tags.slice(0, 3).map((tag, idx) => (
-                                    <span
-                                      key={idx}
-                                      className="px-2 py-0.5 text-xs bg-blue-100 text-blue-800 rounded"
-                                    >
-                                      {tag}
-                                    </span>
-                                  ))}
-                                  {evaluator.tags.length > 3 && (
-                                    <span className="px-2 py-0.5 text-xs text-gray-500">
-                                      +{evaluator.tags.length - 3}
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-2 mt-2 flex-wrap">
-                            <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-gradient-to-r from-purple-100 to-purple-200 text-purple-800 border border-purple-300 shadow-sm">
-                              <span className="w-1.5 h-1.5 bg-purple-500 rounded-full mr-1.5"></span>
-                              {persona?.name || 'Unknown Persona'}
-                            </span>
-                            <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-gradient-to-r from-blue-100 to-blue-200 text-blue-800 border border-blue-300 shadow-sm">
-                              <span className="w-1.5 h-1.5 bg-blue-500 rounded-full mr-1.5"></span>
-                              {scenario?.name || 'Unknown Scenario'}
-                            </span>
-                          </div>
-                        </div>
-                      </button>
-                    </div>
-                    <div className="flex items-center space-x-2">
-                      {isRunning && (
-                        <span className="text-sm text-blue-600 font-medium">Running...</span>
-                      )}
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleEdit(evaluator)}
-                        leftIcon={<Edit className="w-4 h-4" />}
-                      >
-                        Edit
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => {
-                          if (confirm('Are you sure you want to delete this evaluator?')) {
-                            deleteMutation.mutate(evaluator.id)
-                          }
-                        }}
-                        leftIcon={<Trash2 className="w-4 h-4" />}
-                      >
-                        Delete
-                      </Button>
-                    </div>
-                  </div>
-
-                  {/* Expanded Details */}
-                  {isExpanded && evaluatorDetails && (
-                    <div className="mt-4 pt-4 border-t border-gray-200">
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div>
-                          <h3 className="text-sm font-semibold text-gray-700 mb-2">Agent</h3>
-                          <div className="space-y-3">
-                            <div className="bg-gray-50 rounded-lg p-3">
-                              <p className="text-sm font-medium">{evaluatorDetails.agent.name}</p>
-                              {evaluatorDetails.agent.description && (
-                                <p className="text-xs text-gray-600 mt-1">{evaluatorDetails.agent.description}</p>
-                              )}
-                            </div>
-                            {evaluatorDetails.agent.call_medium === 'web_call' ? (
-                              <span className="inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600 border border-gray-300 shadow-sm italic">
-                                Web Call - No phone required
-                              </span>
-                            ) : evaluatorDetails.agent.phone_number ? (
-                              <span className="inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium bg-gradient-to-r from-teal-100 to-teal-200 text-teal-800 border border-teal-300 shadow-sm">
-                                <Phone className="w-3.5 h-3.5 mr-1.5" />
-                                {evaluatorDetails.agent.phone_number}
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600 border border-gray-300 shadow-sm">
-                                No phone number
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                        <div>
-                          <h3 className="text-sm font-semibold text-gray-700 mb-2">Persona</h3>
-                          <div className="space-y-3">
-                            <span className="inline-flex items-center px-3 py-1.5 rounded-full text-sm font-medium bg-gradient-to-r from-purple-100 to-purple-200 text-purple-800 border border-purple-300 shadow-sm">
-                              <span className="w-2 h-2 bg-purple-500 rounded-full mr-2"></span>
-                              {evaluatorDetails.persona.name}
-                            </span>
-                            <div className="flex flex-wrap gap-2">
-                              <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-gradient-to-r from-emerald-100 to-emerald-200 text-emerald-800 border border-emerald-300 shadow-sm">
-                                <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full mr-1.5"></span>
-                                Language: {evaluatorDetails.persona.language}
-                              </span>
-                              <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-gradient-to-r from-amber-100 to-amber-200 text-amber-800 border border-amber-300 shadow-sm">
-                                <span className="w-1.5 h-1.5 bg-amber-500 rounded-full mr-1.5"></span>
-                                Accent: {evaluatorDetails.persona.accent}
-                              </span>
-                              <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-gradient-to-r from-pink-100 to-pink-200 text-pink-800 border border-pink-300 shadow-sm">
-                                <span className="w-1.5 h-1.5 bg-pink-500 rounded-full mr-1.5"></span>
-                                Gender: {evaluatorDetails.persona.gender}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                        <div className="md:col-span-2">
-                          <h3 className="text-sm font-semibold text-gray-700 mb-2">Scenario</h3>
-                          <div className="space-y-3">
-                            <span className="inline-flex items-center px-3 py-1.5 rounded-full text-sm font-medium bg-gradient-to-r from-blue-100 to-blue-200 text-blue-800 border border-blue-300 shadow-sm">
-                              <span className="w-2 h-2 bg-blue-500 rounded-full mr-2"></span>
-                              {evaluatorDetails.scenario.name}
-                            </span>
-                            {evaluatorDetails.scenario.description && (
-                              <div className="bg-gray-50 rounded-lg p-3">
-                                <p className="text-xs text-gray-600">{evaluatorDetails.scenario.description}</p>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                        <div className="md:col-span-2">
-                          <h3 className="text-sm font-semibold text-gray-700 mb-2">Tags</h3>
-                          {editingEvaluator?.id === evaluator.id ? (
-                            <div className="space-y-2">
-                              <div className="flex flex-wrap gap-2">
-                                {editingEvaluator.tags?.map((tag, idx) => (
-                                  <span
-                                    key={idx}
-                                    className="inline-flex items-center px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded"
-                                  >
-                                    {tag}
-                                    <button
-                                      onClick={() => {
-                                        const newTags = editingEvaluator.tags?.filter(t => t !== tag) || []
-                                        setEditingEvaluator({ ...editingEvaluator, tags: newTags })
-                                      }}
-                                      className="ml-1 text-blue-600 hover:text-blue-800"
-                                    >
-                                      <X className="w-3 h-3" />
-                                    </button>
-                                  </span>
-                                ))}
-                              </div>
-                              <div className="flex space-x-2">
-                                <input
-                                  type="text"
-                                  value={editTagInput}
-                                  onChange={(e) => setEditTagInput(e.target.value)}
-                                  onKeyPress={(e) => {
-                                    if (e.key === 'Enter') {
-                                      e.preventDefault()
-                                      if (editTagInput.trim() && !editingEvaluator.tags?.includes(editTagInput.trim())) {
-                                        setEditingEvaluator({
-                                          ...editingEvaluator,
-                                          tags: [...(editingEvaluator.tags || []), editTagInput.trim()]
-                                        })
-                                        setEditTagInput('')
-                                      }
-                                    }
-                                  }}
-                                  placeholder="Add tag"
-                                  className="flex-1 px-3 py-1 text-sm border border-gray-300 rounded-md"
-                                />
-                                <Button
-                                  size="sm"
-                                  onClick={() => {
-                                    if (editTagInput.trim() && !editingEvaluator.tags?.includes(editTagInput.trim())) {
-                                      setEditingEvaluator({
-                                        ...editingEvaluator,
-                                        tags: [...(editingEvaluator.tags || []), editTagInput.trim()]
-                                      })
-                                      setEditTagInput('')
-                                    }
-                                  }}
-                                >
-                                  Add
-                                </Button>
-                                <Button size="sm" variant="ghost" onClick={handleSaveEdit}>Save</Button>
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  onClick={() => {
-                                    setEditingEvaluator(null)
-                                    setEditTagInput('')
-                                  }}
-                                >
-                                  Cancel
-                                </Button>
-                              </div>
-                            </div>
+                  return (
+                    <tr 
+                      key={evaluator.id} 
+                      className={`hover:bg-gray-50 transition-colors ${isSelected ? 'bg-blue-50' : ''}`}
+                    >
+                      {/* Checkbox */}
+                      <td className="px-4 py-4 whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={() => toggleEvaluatorSelection(evaluator.id)}
+                          className="flex-shrink-0"
+                          disabled={isRunning}
+                        >
+                          {isSelected ? (
+                            <CheckSquare className="w-5 h-5 text-primary-600" />
                           ) : (
-                            <div className="flex flex-wrap gap-2">
-                              {evaluator.tags && evaluator.tags.length > 0 ? (
-                                evaluator.tags.map((tag, idx) => (
-                                  <span
-                                    key={idx}
-                                    className="px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded"
-                                  >
-                                    {tag}
-                                  </span>
-                                ))
-                              ) : (
-                                <span className="text-sm text-gray-500">No tags</span>
-                              )}
-                            </div>
+                            <Square className="w-5 h-5 text-gray-400" />
+                          )}
+                        </button>
+                      </td>
+
+                      {/* Evaluator ID */}
+                      <td className="px-4 py-4 whitespace-nowrap">
+                        <button
+                          onClick={() => setViewingEvaluator(evaluator)}
+                          className="font-mono font-semibold text-primary-600 hover:text-primary-800 hover:underline cursor-pointer"
+                        >
+                          {evaluator.evaluator_id}
+                        </button>
+                        {isRunning && (
+                          <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">
+                            Running...
+                          </span>
+                        )}
+                      </td>
+
+                      {/* Persona */}
+                      <td className="px-4 py-4 whitespace-nowrap">
+                        <div className="flex flex-col">
+                          <span className="text-sm font-medium text-gray-900">
+                            {persona?.name || 'Unknown'}
+                          </span>
+                          {persona && (
+                            <span className="text-xs text-gray-500">
+                              {persona.language} • {persona.accent} • {persona.gender}
+                            </span>
                           )}
                         </div>
-                      </div>
+                      </td>
 
-                    </div>
-                  )}
-                </div>
-              )
-            })}
+                      {/* Scenario - Plain Text */}
+                      <td className="px-4 py-4">
+                        <div className="max-w-md">
+                          <span className="text-sm font-medium text-gray-900">
+                            {scenario?.name || 'Unknown Scenario'}
+                          </span>
+                          {scenario?.description && (
+                            <p className="text-xs text-gray-500 mt-1 line-clamp-2">
+                              {scenario.description}
+                            </p>
+                          )}
+                        </div>
+                      </td>
+
+                      {/* Tags */}
+                      <td className="px-4 py-4">
+                        <div className="flex flex-wrap gap-1">
+                          {evaluator.tags && evaluator.tags.length > 0 ? (
+                            <>
+                              {evaluator.tags.slice(0, 2).map((tag, idx) => (
+                                <span
+                                  key={idx}
+                                  className="px-2 py-0.5 text-xs bg-blue-100 text-blue-800 rounded"
+                                >
+                                  {tag}
+                                </span>
+                              ))}
+                              {evaluator.tags.length > 2 && (
+                                <span className="px-2 py-0.5 text-xs text-gray-500">
+                                  +{evaluator.tags.length - 2}
+                                </span>
+                              )}
+                            </>
+                          ) : (
+                            <span className="text-xs text-gray-400">—</span>
+                          )}
+                        </div>
+                      </td>
+
+                      {/* Actions */}
+                      <td className="px-4 py-4 whitespace-nowrap text-right">
+                        <div className="flex items-center justify-end space-x-1">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleEdit(evaluator)}
+                            leftIcon={<Edit className="w-4 h-4" />}
+                          >
+                            Edit
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              if (confirm('Are you sure you want to delete this evaluator?')) {
+                                deleteMutation.mutate(evaluator.id)
+                              }
+                            }}
+                            leftIcon={<Trash2 className="w-4 h-4" />}
+                          >
+                            Delete
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
           </div>
         )}
       </div>
+
+      {/* View Evaluator Details Modal */}
+      {viewingEvaluator && (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+          <div className="flex min-h-screen items-center justify-center p-4">
+            <div
+              className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"
+              onClick={() => setViewingEvaluator(null)}
+            />
+            <div className="relative bg-white rounded-lg shadow-xl max-w-2xl w-full p-6 max-h-[90vh] overflow-y-auto">
+              <div className="flex items-center justify-between mb-6">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-primary-100 rounded-lg">
+                    <Eye className="w-5 h-5 text-primary-600" />
+                  </div>
+                  <div>
+                    <h2 className="text-xl font-semibold text-gray-900">Evaluator Details</h2>
+                    <p className="text-sm text-gray-500 font-mono">{viewingEvaluator.evaluator_id}</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setViewingEvaluator(null)}
+                  className="text-gray-400 hover:text-gray-500"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              {loadingDetails ? (
+                <div className="py-12 text-center text-gray-500">Loading details...</div>
+              ) : evaluatorDetails ? (
+                <div className="space-y-6">
+                  {/* Agent Section */}
+                  <div className="bg-gray-50 rounded-lg p-4">
+                    <h3 className="text-sm font-semibold text-gray-700 mb-3 uppercase tracking-wide">Agent</h3>
+                    <div className="space-y-2">
+                      <p className="text-base font-medium text-gray-900">{evaluatorDetails.agent.name}</p>
+                      {evaluatorDetails.agent.description && (
+                        <p className="text-sm text-gray-600">{evaluatorDetails.agent.description}</p>
+                      )}
+                      <div className="flex items-center gap-2 mt-2">
+                        {evaluatorDetails.agent.call_medium === 'web_call' ? (
+                          <span className="inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600 border border-gray-300">
+                            <Globe className="w-3.5 h-3.5 mr-1.5" />
+                            Web Call
+                          </span>
+                        ) : evaluatorDetails.agent.phone_number ? (
+                          <span className="inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium bg-teal-100 text-teal-800 border border-teal-300">
+                            <Phone className="w-3.5 h-3.5 mr-1.5" />
+                            {evaluatorDetails.agent.phone_number}
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600 border border-gray-300">
+                            No phone number
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Persona Section */}
+                  <div className="bg-purple-50 rounded-lg p-4">
+                    <h3 className="text-sm font-semibold text-purple-700 mb-3 uppercase tracking-wide">Persona</h3>
+                    <div className="space-y-2">
+                      <p className="text-base font-medium text-gray-900">{evaluatorDetails.persona.name}</p>
+                      <div className="flex flex-wrap gap-2 mt-2">
+                        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-white text-purple-800 border border-purple-200">
+                          Language: {evaluatorDetails.persona.language}
+                        </span>
+                        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-white text-purple-800 border border-purple-200">
+                          Accent: {evaluatorDetails.persona.accent}
+                        </span>
+                        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-white text-purple-800 border border-purple-200">
+                          Gender: {evaluatorDetails.persona.gender}
+                        </span>
+                        {evaluatorDetails.persona.background_noise && (
+                          <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-white text-purple-800 border border-purple-200">
+                            Noise: {evaluatorDetails.persona.background_noise}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Scenario Section */}
+                  <div className="bg-blue-50 rounded-lg p-4">
+                    <h3 className="text-sm font-semibold text-blue-700 mb-3 uppercase tracking-wide">Scenario</h3>
+                    <div className="space-y-2">
+                      <p className="text-base font-medium text-gray-900">{evaluatorDetails.scenario.name}</p>
+                      {evaluatorDetails.scenario.description && (
+                        <p className="text-sm text-gray-600 mt-2">{evaluatorDetails.scenario.description}</p>
+                      )}
+                      {evaluatorDetails.scenario.required_info && Object.keys(evaluatorDetails.scenario.required_info).length > 0 && (
+                        <div className="mt-3">
+                          <p className="text-xs font-medium text-blue-700 mb-2">Required Information:</p>
+                          <div className="bg-white rounded border border-blue-200 p-3">
+                            <dl className="space-y-1">
+                              {Object.entries(evaluatorDetails.scenario.required_info).map(([key, value]) => (
+                                <div key={key} className="flex">
+                                  <dt className="text-xs font-medium text-gray-500 w-32">{key}:</dt>
+                                  <dd className="text-xs text-gray-700">{String(value)}</dd>
+                                </div>
+                              ))}
+                            </dl>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Tags Section */}
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-700 mb-2 uppercase tracking-wide">Tags</h3>
+                    <div className="flex flex-wrap gap-2">
+                      {viewingEvaluator.tags && viewingEvaluator.tags.length > 0 ? (
+                        viewingEvaluator.tags.map((tag, idx) => (
+                          <span
+                            key={idx}
+                            className="px-3 py-1 text-sm bg-blue-100 text-blue-800 rounded-full"
+                          >
+                            {tag}
+                          </span>
+                        ))
+                      ) : (
+                        <span className="text-sm text-gray-400">No tags</span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Metadata */}
+                  <div className="pt-4 border-t border-gray-200">
+                    <div className="flex justify-between text-xs text-gray-500">
+                      <span>Created: {new Date(viewingEvaluator.created_at).toLocaleString()}</span>
+                      <span>Updated: {new Date(viewingEvaluator.updated_at).toLocaleString()}</span>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="py-12 text-center text-gray-500">Failed to load details</div>
+              )}
+
+              <div className="flex justify-end space-x-3 pt-6 mt-6 border-t border-gray-200">
+                <Button variant="ghost" onClick={() => setViewingEvaluator(null)}>
+                  Close
+                </Button>
+                <Button
+                  variant="primary"
+                  onClick={() => {
+                    setViewingEvaluator(null)
+                    handleEdit(viewingEvaluator)
+                  }}
+                  leftIcon={<Edit className="w-4 h-4" />}
+                >
+                  Edit Evaluator
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Tags Modal */}
+      {editingEvaluator && (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+          <div className="flex min-h-screen items-center justify-center p-4">
+            <div
+              className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"
+              onClick={() => {
+                setEditingEvaluator(null)
+                setEditTagInput('')
+              }}
+            />
+            <div className="relative bg-white rounded-lg shadow-xl max-w-md w-full p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-semibold text-gray-900">Edit Tags - {editingEvaluator.evaluator_id}</h2>
+                <button
+                  onClick={() => {
+                    setEditingEvaluator(null)
+                    setEditTagInput('')
+                  }}
+                  className="text-gray-400 hover:text-gray-500"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                <div className="flex flex-wrap gap-2 min-h-[40px] p-2 border border-gray-200 rounded-md bg-gray-50">
+                  {editingEvaluator.tags && editingEvaluator.tags.length > 0 ? (
+                    editingEvaluator.tags.map((tag, idx) => (
+                      <span
+                        key={idx}
+                        className="inline-flex items-center px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded"
+                      >
+                        {tag}
+                        <button
+                          onClick={() => {
+                            const newTags = editingEvaluator.tags?.filter(t => t !== tag) || []
+                            setEditingEvaluator({ ...editingEvaluator, tags: newTags })
+                          }}
+                          className="ml-1 text-blue-600 hover:text-blue-800"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </span>
+                    ))
+                  ) : (
+                    <span className="text-sm text-gray-400">No tags</span>
+                  )}
+                </div>
+
+                <div className="flex space-x-2">
+                  <input
+                    type="text"
+                    value={editTagInput}
+                    onChange={(e) => setEditTagInput(e.target.value)}
+                    onKeyPress={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        if (editTagInput.trim() && !editingEvaluator.tags?.includes(editTagInput.trim())) {
+                          setEditingEvaluator({
+                            ...editingEvaluator,
+                            tags: [...(editingEvaluator.tags || []), editTagInput.trim()]
+                          })
+                          setEditTagInput('')
+                        }
+                      }
+                    }}
+                    placeholder="Add tag and press Enter"
+                    className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-primary-500 focus:border-primary-500"
+                  />
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      if (editTagInput.trim() && !editingEvaluator.tags?.includes(editTagInput.trim())) {
+                        setEditingEvaluator({
+                          ...editingEvaluator,
+                          tags: [...(editingEvaluator.tags || []), editTagInput.trim()]
+                        })
+                        setEditTagInput('')
+                      }
+                    }}
+                  >
+                    Add
+                  </Button>
+                </div>
+
+                <div className="flex justify-end space-x-3 pt-4 border-t border-gray-200">
+                  <Button
+                    variant="ghost"
+                    onClick={() => {
+                      setEditingEvaluator(null)
+                      setEditTagInput('')
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                  <Button variant="primary" onClick={handleSaveEdit}>
+                    Save Changes
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Create Evaluator Modal */}
       {showCreateModal && (
@@ -685,6 +843,92 @@ export default function EvaluateTestAgents() {
             >
               Refresh Results
             </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Run Count Modal */}
+      {showRunModal && (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+          <div className="flex min-h-screen items-center justify-center p-4">
+            <div
+              className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"
+              onClick={() => setShowRunModal(false)}
+            />
+            <div className="relative bg-white rounded-lg shadow-xl max-w-md w-full p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-semibold text-gray-900">Run Evaluators</h2>
+                <button
+                  onClick={() => setShowRunModal(false)}
+                  className="text-gray-400 hover:text-gray-500"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                <div className="bg-gray-50 rounded-lg p-4">
+                  <p className="text-sm text-gray-600">
+                    <span className="font-medium text-gray-900">{selectedEvaluatorIds.size}</span> evaluator{selectedEvaluatorIds.size > 1 ? 's' : ''} selected
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    How many times to run each evaluator?
+                  </label>
+                  <div className="flex items-center space-x-3">
+                    <button
+                      type="button"
+                      onClick={() => setRunCount(Math.max(1, runCount - 1))}
+                      className="w-10 h-10 rounded-lg border border-gray-300 flex items-center justify-center text-gray-600 hover:bg-gray-50 transition-colors"
+                    >
+                      -
+                    </button>
+                    <input
+                      type="number"
+                      min="1"
+                      max="50"
+                      value={runCount}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value)
+                        if (!isNaN(val) && val >= 1 && val <= 50) {
+                          setRunCount(val)
+                        }
+                      }}
+                      className="w-20 text-center px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500 text-lg font-semibold"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setRunCount(Math.min(50, runCount + 1))}
+                      className="w-10 h-10 rounded-lg border border-gray-300 flex items-center justify-center text-gray-600 hover:bg-gray-50 transition-colors"
+                    >
+                      +
+                    </button>
+                  </div>
+                  <p className="text-xs text-gray-500 mt-2">Maximum 50 runs per evaluator</p>
+                </div>
+
+                <div className="bg-blue-50 border border-blue-100 rounded-lg p-4">
+                  <p className="text-sm text-blue-800">
+                    <span className="font-semibold">{selectedEvaluatorIds.size * runCount}</span> total evaluation{selectedEvaluatorIds.size * runCount > 1 ? 's' : ''} will be queued and run in parallel.
+                  </p>
+                </div>
+
+                <div className="flex justify-end space-x-3 pt-4 border-t border-gray-200">
+                  <Button variant="ghost" onClick={() => setShowRunModal(false)}>
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="success"
+                    onClick={executeRuns}
+                    leftIcon={<Play className="w-4 h-4" />}
+                  >
+                    Run {selectedEvaluatorIds.size * runCount} Evaluation{selectedEvaluatorIds.size * runCount > 1 ? 's' : ''}
+                  </Button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}

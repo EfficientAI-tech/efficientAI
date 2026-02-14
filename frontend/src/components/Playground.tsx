@@ -55,12 +55,12 @@ export default function Playground() {
   })
 
 
-  // Fetch test voice agent evaluation results (playground results only)
+  // Fetch test voice agent evaluation results (playground results only, excluding Voice AI agent results)
   const { data: testVoiceAgentResults = [], refetch: refetchTestResults } = useQuery({
     queryKey: ['test-voice-agent-results'],
     queryFn: async () => {
-      // Fetch only playground results (evaluator_id is NULL) - includes agent with voice bundle
-      return await apiClient.listEvaluatorResults(undefined, true)
+      // Fetch only playground results (evaluator_id is NULL) AND exclude Voice AI agent results (provider_platform is NULL)
+      return await apiClient.listEvaluatorResults(undefined, true, true)
     },
   })
 
@@ -68,6 +68,18 @@ export default function Playground() {
   const { data: callRecordings = [], refetch: refetchCallRecordings } = useQuery({
     queryKey: ['call-recordings'],
     queryFn: () => apiClient.listCallRecordings(),
+    // Refetch every 5 seconds if there are any evaluations in progress
+    refetchInterval: (query) => {
+      const data = query.state.data as any[]
+      if (data && Array.isArray(data)) {
+        const hasInProgress = data.some((recording: any) => 
+          recording.evaluation_status && 
+          ['queued', 'transcribing', 'evaluating'].includes(recording.evaluation_status)
+        )
+        return hasInProgress ? 5000 : false
+      }
+      return false
+    },
   })
 
   const [activeTab, setActiveTab] = useState<'test_agents' | 'voice_ai_agents'>('test_agents')
@@ -536,7 +548,7 @@ export default function Playground() {
                       <thead className="bg-gray-50">
                         <tr>
                           <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                            Test ID
+                            Call ID
                           </th>
                           <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                             Status
@@ -560,7 +572,7 @@ export default function Playground() {
                                 onClick={() => handleViewTestResult(result.id)}
                                 className="font-mono text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline"
                               >
-                                {result.id.substring(0, 8)}...
+                                {result.result_id || result.id.substring(0, 8)}
                               </button>
                             </td>
                             <td className="px-4 py-3 whitespace-nowrap">
@@ -637,10 +649,10 @@ export default function Playground() {
                             Status
                           </th>
                           <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                            Platform
+                            Evaluation
                           </th>
                           <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                            Provider Call ID
+                            Platform
                           </th>
                           <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                             Created
@@ -672,6 +684,29 @@ export default function Playground() {
                               </span>
                             </td>
                             <td className="px-4 py-3 whitespace-nowrap">
+                              {recording.evaluator_result_id ? (
+                                <span
+                                  className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                                    recording.evaluation_status === 'completed'
+                                      ? 'bg-green-100 text-green-800'
+                                      : recording.evaluation_status === 'failed'
+                                      ? 'bg-red-100 text-red-800'
+                                      : recording.evaluation_status === 'evaluating'
+                                      ? 'bg-blue-100 text-blue-800'
+                                      : 'bg-yellow-100 text-yellow-800'
+                                  }`}
+                                >
+                                  {recording.evaluation_status || 'queued'}
+                                </span>
+                              ) : recording.status === 'UPDATED' ? (
+                                <span className="inline-flex px-2 py-1 text-xs font-semibold rounded-full bg-gray-100 text-gray-600">
+                                  Pending
+                                </span>
+                              ) : (
+                                <span className="text-xs text-gray-400">—</span>
+                              )}
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap">
                               <div className="flex items-center gap-2">
                                 {recording.provider_platform === 'retell' && (
                                   <img
@@ -692,9 +727,6 @@ export default function Playground() {
                                 </span>
                               </div>
                             </td>
-                            <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500 font-mono text-xs">
-                              {recording.provider_call_id || 'N/A'}
-                            </td>
                             <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
                               {recording.created_at
                                 ? new Date(recording.created_at).toLocaleString()
@@ -705,6 +737,7 @@ export default function Playground() {
                                 <button
                                   onClick={() => handleViewCallRecording(recording.call_short_id)}
                                   className="text-blue-600 hover:text-blue-900"
+                                  title="View call details"
                                 >
                                   <Eye className="h-4 w-4" />
                                 </button>

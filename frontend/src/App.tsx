@@ -26,6 +26,7 @@ import CallRecordingDetail from './pages/CallRecordingDetail'
 import TestAgentResultDetail from './pages/TestAgentResultDetail'
 import Settings from './pages/Settings'
 import Alerts from './pages/Alerts'
+import AlertDetail from './pages/AlertDetail'
 import AlertHistory from './pages/AlertHistory'
 import CronJobs from './pages/CronJobs'
 
@@ -77,6 +78,7 @@ function App() {
           <Route path="profile" element={<Profile />} />
           <Route path="settings" element={<Settings />} />
           <Route path="alerts" element={<Alerts />} />
+          <Route path="alerts/:id" element={<AlertDetail />} />
           <Route path="alerts/history" element={<AlertHistory />} />
           <Route path="cron-jobs" element={<CronJobs />} />
         </Route>
