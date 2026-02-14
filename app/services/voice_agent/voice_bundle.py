@@ -36,6 +36,7 @@ from efficientai.runner.utils import create_transport
 from efficientai.serializers.protobuf import ProtobufFrameSerializer
 from efficientai.services.cartesia.tts import CartesiaTTSService
 from efficientai.services.deepgram.stt import DeepgramSTTService
+from efficientai.services.elevenlabs.tts import ElevenLabsHttpTTSService
 from efficientai.services.openai.llm import OpenAILLMService
 from efficientai.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from efficientai.transports.base_transport import BaseTransport, TransportParams
@@ -44,6 +45,88 @@ from efficientai.turns.turn_start_strategies import TurnStartStrategies
 from app.services.s3_service import s3_service
 
 load_dotenv(override=True)
+
+# ---------------------------------------------------------------------------
+# Provider Registries  (STT & TTS)
+# ---------------------------------------------------------------------------
+# Each entry contains:
+#   - "env_key"        : environment variable name for the API key
+#   - "default_model"  : fallback model name (None if the service doesn't need one)
+#   - "factory"        : callable(**kwargs) -> service instance
+#
+# TTS entries additionally have:
+#   - "default_voice"  : fallback voice ID when the voice bundle doesn't specify one
+#
+# To add a new provider, simply add a dict entry to the relevant registry.
+# ---------------------------------------------------------------------------
+
+# ---- STT Providers --------------------------------------------------------
+STT_PROVIDERS = {
+    "deepgram": {
+        "env_key": "DEEPGRAM_API_KEY",
+        "default_model": None,  # Deepgram defaults to nova-3-general internally
+        "factory": lambda api_key, model: DeepgramSTTService(
+            api_key=api_key,
+            **({"model": model} if model else {}),
+        ),
+    },
+    # To add a new STT provider, e.g. "assemblyai":
+    # "assemblyai": {
+    #     "env_key": "ASSEMBLYAI_API_KEY",
+    #     "default_model": None,
+    #     "factory": lambda api_key, model: AssemblyAISTTService(
+    #         api_key=api_key,
+    #     ),
+    # },
+}
+
+DEFAULT_STT_PROVIDER = "deepgram"
+
+# ---- TTS Providers --------------------------------------------------------
+TTS_PROVIDERS = {
+    "cartesia": {
+        "env_key": "CARTESIA_API_KEY",
+        "default_voice": "9626c31c-bec5-4cca-baa8-f8ba9e84c8bc",  # British Reading Lady
+        "default_model": None,
+        "factory": lambda api_key, voice_id, model: CartesiaTTSService(
+            api_key=api_key,
+            voice_id=voice_id,
+        ),
+    },
+    "elevenlabs": {
+        "env_key": "ELEVENLABS_API_KEY",
+        "default_voice": "JBFqnCBsd6RMkjVDRZzb",
+        "default_model": "eleven_multilingual_v2",
+        "factory": lambda api_key, voice_id, model: ElevenLabsHttpTTSService(
+            api_key=api_key,
+            voice_id=voice_id,
+            model=model,
+            aiohttp_session=__import__("aiohttp").ClientSession(),
+        ),
+    },
+    # To add a new TTS provider, e.g. "azure":
+    # "azure": {
+    #     "env_key": "AZURE_SPEECH_API_KEY",
+    #     "default_voice": "en-US-JennyNeural",
+    #     "default_model": None,
+    #     "factory": lambda api_key, voice_id, model: AzureTTSService(
+    #         api_key=api_key,
+    #         voice_id=voice_id,
+    #     ),
+    # },
+}
+
+DEFAULT_TTS_PROVIDER = "cartesia"
+
+
+def _resolve_provider(voice_bundle, attr: str, default: str) -> str:
+    """Return the normalised provider name from a voice bundle attribute, falling back to *default*."""
+    raw = getattr(voice_bundle, attr, None)
+    if raw is None:
+        return default
+    value = raw.value if hasattr(raw, "value") else str(raw)
+    return value.lower()
+
 
 # We store functions so objects (e.g. SileroVADAnalyzer) don't get
 # instantiated. The function will be called when the desired transport gets
@@ -161,16 +244,34 @@ async def run_voice_bundle_fastapi(
     # Storage for audio data from the buffer processor
     recorded_audio_data = {"audio": None, "sample_rate": None, "num_channels": None}
 
+    # Resolve STT provider config from the registry
+    stt_provider_value = _resolve_provider(voice_bundle, "stt_provider", DEFAULT_STT_PROVIDER)
+    stt_cfg = STT_PROVIDERS.get(stt_provider_value)
+    if stt_cfg is None:
+        supported = ", ".join(sorted(STT_PROVIDERS.keys()))
+        raise ValueError(
+            f"Unsupported STT provider '{stt_provider_value}'. Supported providers: {supported}"
+        )
+
+    # Resolve TTS provider config from the registry
+    tts_provider_value = _resolve_provider(voice_bundle, "tts_provider", DEFAULT_TTS_PROVIDER)
+    tts_cfg = TTS_PROVIDERS.get(tts_provider_value)
+    if tts_cfg is None:
+        supported = ", ".join(sorted(TTS_PROVIDERS.keys()))
+        raise ValueError(
+            f"Unsupported TTS provider '{tts_provider_value}'. Supported providers: {supported}"
+        )
+
     # Resolve API keys: prefer provided values, otherwise fall back to environment
-    stt_api_key = stt_api_key or os.getenv("DEEPGRAM_API_KEY")
-    tts_api_key = tts_api_key or os.getenv("CARTESIA_API_KEY")
+    stt_api_key = stt_api_key or os.getenv(stt_cfg["env_key"])
+    tts_api_key = tts_api_key or os.getenv(tts_cfg["env_key"])
     llm_api_key = llm_api_key or os.getenv("OPENAI_API_KEY")
 
     missing = []
     if not stt_api_key:
-        missing.append("DEEPGRAM_API_KEY")
+        missing.append(stt_cfg["env_key"])
     if not tts_api_key:
-        missing.append("CARTESIA_API_KEY")
+        missing.append(tts_cfg["env_key"])
     if not llm_api_key:
         missing.append("OPENAI_API_KEY")
     if missing:
@@ -188,17 +289,14 @@ async def run_voice_bundle_fastapi(
             ),
         )
 
-        # Configure STT/LLM/TTS services from the voice bundle when available
-        stt = DeepgramSTTService(
-            api_key=stt_api_key,
-            model=getattr(voice_bundle, "stt_model", None),
-        )
+        # Instantiate STT service from the provider registry
+        stt_model = getattr(voice_bundle, "stt_model", None) or stt_cfg["default_model"]
+        stt = stt_cfg["factory"](api_key=stt_api_key, model=stt_model)
 
-        tts_voice_id = "9626c31c-bec5-4cca-baa8-f8ba9e84c8bc"  # British Reading Lady
-        tts = CartesiaTTSService(
-            api_key=tts_api_key,
-            voice_id=tts_voice_id,
-        )
+        # Instantiate TTS service from the provider registry
+        tts_voice_id = getattr(voice_bundle, "tts_voice", None) or tts_cfg["default_voice"]
+        tts_model = getattr(voice_bundle, "tts_model", None) or tts_cfg["default_model"]
+        tts = tts_cfg["factory"](api_key=tts_api_key, voice_id=tts_voice_id, model=tts_model)
 
         llm_model = getattr(voice_bundle, "llm_model", None) or "gpt-4.1"
         llm = OpenAILLMService(api_key=llm_api_key, model=llm_model)

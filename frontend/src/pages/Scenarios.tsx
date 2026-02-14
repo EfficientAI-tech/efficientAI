@@ -27,7 +27,7 @@ const PROVIDER_LOGOS: Record<ModelProvider, string | null> = {
   [ModelProvider.AWS]: '/AWS_logo.png',
   [ModelProvider.DEEPGRAM]: '/deepgram.png',
   [ModelProvider.CARTESIA]: '/cartesia.jpg',
-  [ModelProvider.ELEVENLABS]: '/elevenLabs.png',
+  [ModelProvider.ELEVENLABS]: '/elevenlabs.jpg',
   [ModelProvider.CUSTOM]: null,
 }
 

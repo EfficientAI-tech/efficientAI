@@ -109,13 +109,22 @@ async def websocket_endpoint(
                 ).first()
             if ai_provider_rec:
                 try:
-                    return decrypt_api_key(ai_provider_rec.api_key)
+                    key = decrypt_api_key(ai_provider_rec.api_key)
+                    logger.debug(
+                        f"[resolve_api_key] Found AIProvider key for '{provider_value}': "
+                        f"starts={key[:6]}... ends=...{key[-4:]}, len={len(key)}"
+                    )
+                    return key
                 except Exception as e:
                     logger.error(f"Failed to decrypt AIProvider key for {provider}: {e}", exc_info=True)
+            else:
+                logger.debug(f"[resolve_api_key] No AIProvider record found for '{provider_value}'")
+
             # 2) Integration mapping (only for platforms that exist in IntegrationPlatform)
             platform_map = {
                 ModelProvider.DEEPGRAM: IntegrationPlatform.DEEPGRAM,
                 ModelProvider.CARTESIA: IntegrationPlatform.CARTESIA,
+                ModelProvider.ELEVENLABS: IntegrationPlatform.ELEVENLABS,
             }
             plat = platform_map.get(provider)
             if plat:
@@ -137,9 +146,20 @@ async def websocket_endpoint(
                 
                 if integ:
                     try:
-                        return decrypt_api_key(integ.api_key)
+                        key = decrypt_api_key(integ.api_key)
+                        logger.debug(
+                            f"[resolve_api_key] Found Integration key for '{provider_value}' (platform={plat_value}): "
+                            f"starts={key[:6]}... ends=...{key[-4:]}, len={len(key)}"
+                        )
+                        return key
                     except Exception as e:
                         logger.error(f"Failed to decrypt Integration key for {provider}: {e}", exc_info=True)
+                else:
+                    logger.debug(f"[resolve_api_key] No Integration record found for platform '{plat_value}'")
+            else:
+                logger.debug(f"[resolve_api_key] No platform mapping for provider '{provider_value}'")
+
+            logger.warning(f"[resolve_api_key] Could not resolve any API key for provider '{provider_value}'")
             return None
 
         # Determine which AI Provider to use (only needed for S2S/Gemini path)
@@ -755,10 +775,11 @@ async def bot_connect(
             if found:
                 return True
             
-            # Check Integration for Deepgram and Cartesia
+            # Check Integration for Deepgram, Cartesia, and ElevenLabs
             platform_map = {
                 'deepgram': IntegrationPlatform.DEEPGRAM,
                 'cartesia': IntegrationPlatform.CARTESIA,
+                'elevenlabs': IntegrationPlatform.ELEVENLABS,
             }
             plat = platform_map.get(provider_value.lower())
             if plat:

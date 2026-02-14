@@ -49,7 +49,7 @@ export const MODEL_PROVIDER_CONFIG: Record<ModelProvider, ProviderMetadata> = {
   },
   [ModelProvider.ELEVENLABS]: {
     label: 'ElevenLabs',
-    logo: '/elevenLabs.png',
+    logo: '/elevenlabs.jpg',
     description: 'ElevenLabs TTS',
   },
   [ModelProvider.CUSTOM]: {
@@ -88,7 +88,7 @@ export const INTEGRATION_PLATFORM_CONFIG: Record<IntegrationPlatform, Integratio
   },
   [IntegrationPlatform.ELEVENLABS]: {
     label: 'ElevenLabs',
-    logo: '/elevenLabs.png',
+    logo: '/elevenlabs.jpg',
     description: 'ElevenLabs TTS for voice synthesis',
     modelProvider: ModelProvider.ELEVENLABS,
   },

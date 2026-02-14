@@ -483,6 +483,7 @@ class TestAgentBridgeService:
                 platform_map = {
                     ModelProvider.DEEPGRAM: IntegrationPlatform.DEEPGRAM,
                     ModelProvider.CARTESIA: IntegrationPlatform.CARTESIA,
+                    ModelProvider.ELEVENLABS: IntegrationPlatform.ELEVENLABS,
                 }
                 plat = platform_map.get(provider)
                 if plat:
@@ -631,12 +632,35 @@ class TestAgentBridgeService:
                         await send_audio_chunks(audio)
                         logger.info("[Bridge WebRTC] Audio streaming complete")
                 
+                async def on_agent_start_talking():
+                    """Voice AI agent started speaking -- test agent should wait."""
+                    logger.info(f"[Bridge WebRTC] {provider_platform} agent started speaking")
+                    test_agent.agent_is_talking = True
+
+                async def on_agent_stop_talking():
+                    """Voice AI agent stopped speaking -- test agent can respond."""
+                    logger.info(f"[Bridge WebRTC] {provider_platform} agent stopped speaking")
+                    test_agent.agent_is_talking = False
+                    
+                    # Process any transcript that was queued while agent was talking
+                    pending = test_agent._pending_transcript
+                    if pending:
+                        test_agent._pending_transcript = None
+                        logger.info(f"[Bridge WebRTC] Processing pending transcript after agent stopped: {pending[:50]}...")
+                        audio = await test_agent.process_agent_transcript(pending)
+                        if audio:
+                            logger.info(f"[Bridge WebRTC] Streaming {len(audio)} bytes of audio to {provider_platform}...")
+                            await send_audio_chunks(audio)
+                            logger.info("[Bridge WebRTC] Audio streaming complete")
+
                 async def on_call_should_end():
                     """Test agent decided to end the call."""
                     logger.info("[Bridge WebRTC] Test agent requested call end")
                     webrtc_bridge.is_bridging = False
                 
                 webrtc_bridge.on_transcript_received = on_transcript_received
+                webrtc_bridge.on_agent_start_talking = on_agent_start_talking
+                webrtc_bridge.on_agent_stop_talking = on_agent_stop_talking
                 test_agent.on_call_should_end = on_call_should_end
                 
                 # Generate and send the first message to start the conversation

@@ -23,7 +23,7 @@ const models: VoiceAIModel[] = [
   {
     id: 'elevenlabs-1',
     company: 'ElevenLabs',
-    companyLogo: '/elevenLabs.png',
+    companyLogo: '/elevenlabs.jpg',
     modelName: 'ElevenLabs Turbo',
     features: [
       'State-of-the-art voice cloning with minimal audio samples required',

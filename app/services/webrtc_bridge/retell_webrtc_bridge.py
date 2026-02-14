@@ -373,6 +373,32 @@ class RetellWebRTCBridge:
         
         await self._handle_retell_data(data, participant_identity)
     
+    async def _deliver_accumulated_transcript(self):
+        """
+        Deliver the accumulated transcript to the test agent.
+        
+        Extracts the latest agent message from the full transcript,
+        delivers it via on_transcript_received, and resets the accumulator.
+        
+        Must be called AFTER on_agent_stop_talking so that
+        test_agent.agent_is_talking is False when the transcript arrives.
+        """
+        if not self._current_transcript:
+            logger.debug("[RetellWebRTC] No accumulated transcript to deliver on agent stop")
+            return
+
+        latest_agent_text = self._extract_latest_agent_message(self._current_transcript)
+        self._current_transcript = ""
+
+        if latest_agent_text and self.on_transcript_received:
+            logger.info(
+                f"[RetellWebRTC] Delivering accumulated agent transcript "
+                f"({len(latest_agent_text)} chars): {latest_agent_text[:100]}..."
+            )
+            await self.on_transcript_received(latest_agent_text)
+        elif not latest_agent_text:
+            logger.debug("[RetellWebRTC] No agent message extracted from transcript")
+
     async def _handle_retell_data(self, data: bytes, participant_identity: str = None):
         """
         Handle data messages from Retell.
@@ -383,6 +409,12 @@ class RetellWebRTCBridge:
         - agent_stop_talking: Agent finished speaking
         - metadata: Call metadata
         - node_transition: State machine transitions
+        
+        Turn-taking strategy:
+        - update events accumulate the full transcript during the agent's turn
+        - agent_start_talking sets agent speaking state
+        - agent_stop_talking signals stop BEFORE delivering transcript,
+          ensuring test_agent.agent_is_talking is False when transcript arrives
         
         Args:
             data: Raw bytes of the data message
@@ -403,7 +435,7 @@ class RetellWebRTCBridge:
                 # Transcript update from Retell
                 transcript = message.get("transcript", "")
                 if transcript:
-                    logger.debug(f"[RetellWebRTC] Transcript update: {transcript[:50]}...")
+                    logger.debug(f"[RetellWebRTC] Transcript update: {transcript[:50] if isinstance(transcript, str) else '(list)'}...")
                     self._current_transcript = transcript
                     
                     # Also check for turn completion
@@ -412,26 +444,20 @@ class RetellWebRTCBridge:
                         logger.debug(f"[RetellWebRTC] Turn ID: {turn_id}")
             
             elif event_type == "agent_start_talking":
-                logger.info("[RetellWebRTC] Agent started talking")
+                logger.info("[RetellWebRTC] Retell agent started speaking")
                 self._agent_is_talking = True
                 if self.on_agent_start_talking:
                     await self.on_agent_start_talking()
             
             elif event_type == "agent_stop_talking":
-                logger.info("[RetellWebRTC] Agent stopped talking")
+                logger.info("[RetellWebRTC] Retell agent stopped speaking")
                 self._agent_is_talking = False
-                
-                # When agent stops talking, extract the latest agent message and send it
-                if self._current_transcript and self.on_transcript_received:
-                    # Transcript is a list of {role, content} objects
-                    # Extract just the latest agent utterance
-                    latest_agent_text = self._extract_latest_agent_message(self._current_transcript)
-                    if latest_agent_text:
-                        await self.on_transcript_received(latest_agent_text)
-                    self._current_transcript = ""
-                
+                # Signal stop BEFORE delivering transcript, so
+                # test_agent.agent_is_talking is False when transcript arrives
                 if self.on_agent_stop_talking:
                     await self.on_agent_stop_talking()
+                # Deliver accumulated transcript now that the agent finished speaking
+                await self._deliver_accumulated_transcript()
             
             elif event_type == "metadata":
                 logger.debug(f"[RetellWebRTC] Metadata: {message}")

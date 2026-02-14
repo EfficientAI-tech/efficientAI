@@ -26,7 +26,7 @@ const PROVIDER_LOGOS: Record<ModelProvider, string | null> = {
   [ModelProvider.AWS]: '/AWS_logo.png',
   [ModelProvider.DEEPGRAM]: '/deepgram.png',
   [ModelProvider.CARTESIA]: '/cartesia.jpg',
-  [ModelProvider.ELEVENLABS]: '/elevenLabs.png',
+  [ModelProvider.ELEVENLABS]: '/elevenlabs.jpg',
   [ModelProvider.CUSTOM]: null,
 }
 
@@ -333,7 +333,7 @@ export default function Integrations() {
       id: IntegrationPlatform.ELEVENLABS,
       name: 'ElevenLabs',
       description: 'Connect your ElevenLabs voice AI agents',
-      image: '/elevenLabs.png',
+      image: '/elevenlabs.jpg',
     },
     {
       id: IntegrationPlatform.DEEPGRAM,
