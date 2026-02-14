@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
 import { useState, useMemo } from 'react'
+import { motion } from 'framer-motion'
 import {
   LineChart,
   Line,
@@ -18,7 +19,7 @@ import {
   Legend,
   ResponsiveContainer,
 } from 'recharts'
-import { TrendingUp, Activity, Clock, CheckCircle, Loader, BarChart3, Layers } from 'lucide-react'
+import { TrendingUp, Activity, Clock, CheckCircle, Loader, BarChart3, Layers, Target, Zap } from 'lucide-react'
 
 interface EvaluatorResult {
   id: string
@@ -41,12 +42,40 @@ interface Metric {
 type TimeFilter = 1 | 4 | 7 | 30
 type ChartType = 'bar' | 'line' | 'area'
 
-// Darker, more muted colors for graphs (amber/orange tones)
-const COLORS = ['#d97706', '#b45309', '#92400e', '#78350f', '#ca8a04', '#a16207', '#854d0e']
+// Modern color palette
+const CHART_COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#f43f5e', '#f97316', '#eab308', '#22c55e']
+const STATUS_COLORS: Record<string, string> = {
+  completed: '#10b981',
+  failed: '#f43f5e',
+  queued: '#94a3b8',
+  transcribing: '#3b82f6',
+  evaluating: '#8b5cf6',
+}
+
+// Custom tooltip for charts
+const CustomTooltip = ({ active, payload, label }: any) => {
+  if (!active || !payload?.length) return null
+  return (
+    <div className="bg-white/95 backdrop-blur-sm border border-gray-200 rounded-xl shadow-lg p-3 min-w-[160px]">
+      <p className="text-xs font-medium text-gray-500 mb-2">{label}</p>
+      {payload.map((entry: any, index: number) => (
+        <div key={index} className="flex items-center justify-between gap-4 py-0.5">
+          <div className="flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.color }} />
+            <span className="text-xs text-gray-700">{entry.name}</span>
+          </div>
+          <span className="text-xs font-semibold text-gray-900 tabular-nums">
+            {typeof entry.value === 'number' ? entry.value.toFixed(2) : entry.value}
+          </span>
+        </div>
+      ))}
+    </div>
+  )
+}
 
 export default function Observability() {
   const [timeFilter, setTimeFilter] = useState<TimeFilter>(7)
-  const [trendsChartType, setTrendsChartType] = useState<ChartType>('line')
+  const [trendsChartType, setTrendsChartType] = useState<ChartType>('area')
   const [averagesChartType, setAveragesChartType] = useState<ChartType>('bar')
 
   const { data: results = [], isLoading: loadingResults } = useQuery({
@@ -59,23 +88,19 @@ export default function Observability() {
     queryFn: () => apiClient.listMetrics(),
   })
 
-  // Filter results by time period
   const filteredResults = useMemo(() => {
     const now = new Date()
     const cutoffDate = new Date(now.getTime() - timeFilter * 24 * 60 * 60 * 1000)
-    
     return (results as EvaluatorResult[]).filter((result) => {
       const resultDate = new Date(result.timestamp)
       return resultDate >= cutoffDate
     })
   }, [results, timeFilter])
 
-  // Only consider completed results for metrics
   const completedResults = useMemo(() => {
     return filteredResults.filter((r) => r.status === 'completed' && r.metric_scores)
   }, [filteredResults])
 
-  // Calculate aggregate metrics
   const aggregateMetrics = useMemo(() => {
     const enabledMetrics = (metrics as Metric[]).filter((m) => m.enabled)
     const aggregates: Record<string, {
@@ -90,24 +115,20 @@ export default function Observability() {
 
     enabledMetrics.forEach((metric) => {
       const values: number[] = []
-      
       completedResults.forEach((result) => {
         const score = result.metric_scores?.[metric.id]
         if (score) {
           let numValue: number | null = null
-          
           if (metric.metric_type === 'rating' || metric.metric_type === 'number') {
             numValue = typeof score.value === 'number' ? score.value : parseFloat(score.value)
           } else if (metric.metric_type === 'boolean') {
             numValue = score.value === true ? 1 : 0
           }
-          
           if (numValue !== null && !isNaN(numValue)) {
             values.push(numValue)
           }
         }
       })
-
       if (values.length > 0) {
         aggregates[metric.id] = {
           name: metric.name,
@@ -120,28 +141,20 @@ export default function Observability() {
         }
       }
     })
-
     return aggregates
   }, [completedResults, metrics])
 
-  // Prepare time series data for trends
   const timeSeriesData = useMemo(() => {
     const enabledMetrics = (metrics as Metric[]).filter((m) => m.enabled && (m.metric_type === 'rating' || m.metric_type === 'number'))
-    
-    // Group by day
     const dayGroups: Record<string, Record<string, number[]>> = {}
     
     completedResults.forEach((result) => {
       const date = new Date(result.timestamp)
       const dayKey = date.toISOString().split('T')[0]
-      
       if (!dayGroups[dayKey]) {
         dayGroups[dayKey] = {}
-        enabledMetrics.forEach((m) => {
-          dayGroups[dayKey][m.id] = []
-        })
+        enabledMetrics.forEach((m) => { dayGroups[dayKey][m.id] = [] })
       }
-      
       enabledMetrics.forEach((metric) => {
         const score = result.metric_scores?.[metric.id]
         if (score) {
@@ -153,7 +166,6 @@ export default function Observability() {
       })
     })
     
-    // Calculate averages per day
     const sortedDays = Object.keys(dayGroups).sort()
     return sortedDays.map((day) => {
       const dayData: Record<string, any> = { date: day }
@@ -167,20 +179,17 @@ export default function Observability() {
     })
   }, [completedResults, metrics])
 
-  // Status distribution for pie chart
   const statusDistribution = useMemo(() => {
     const statusCounts: Record<string, number> = {}
     filteredResults.forEach((result) => {
       statusCounts[result.status] = (statusCounts[result.status] || 0) + 1
     })
-    
     return Object.entries(statusCounts).map(([status, count]) => ({
       name: status.charAt(0).toUpperCase() + status.slice(1),
       value: count,
     }))
   }, [filteredResults])
 
-  // Find Problem Resolution metric ID
   const problemResolutionMetricId = useMemo(() => {
     const metric = (metrics as Metric[]).find(
       (m) => m.name.toLowerCase().includes('problem resolution')
@@ -188,42 +197,28 @@ export default function Observability() {
     return metric?.id || null
   }, [metrics])
 
-  // Problem Resolution distribution for pie chart
   const problemResolutionDistribution = useMemo(() => {
-    if (!problemResolutionMetricId) {
-      return []
-    }
-
+    if (!problemResolutionMetricId) return []
     let resolvedCount = 0
     let notResolvedCount = 0
-
     completedResults.forEach((result) => {
       const problemResolutionScore = result.metric_scores?.[problemResolutionMetricId]
       if (problemResolutionScore !== undefined) {
-        if (problemResolutionScore.value === true) {
-          resolvedCount++
-        } else {
-          notResolvedCount++
-        }
+        if (problemResolutionScore.value === true) resolvedCount++
+        else notResolvedCount++
       }
     })
-
     const distribution = []
-    if (resolvedCount > 0) {
-      distribution.push({ name: 'Resolved', value: resolvedCount })
-    }
-    if (notResolvedCount > 0) {
-      distribution.push({ name: 'Not Resolved', value: notResolvedCount })
-    }
-
+    if (resolvedCount > 0) distribution.push({ name: 'Resolved', value: resolvedCount })
+    if (notResolvedCount > 0) distribution.push({ name: 'Not Resolved', value: notResolvedCount })
     return distribution
   }, [completedResults, problemResolutionMetricId])
 
-  // Metric averages for bar chart
   const metricAverages = useMemo(() => {
     return Object.entries(aggregateMetrics)
       .map(([, data]) => ({
         name: data.name.length > 20 ? data.name.substring(0, 20) + '...' : data.name,
+        fullName: data.name,
         average: data.average,
         min: data.min,
         max: data.max,
@@ -231,7 +226,6 @@ export default function Observability() {
       .sort((a, b) => b.average - a.average)
   }, [aggregateMetrics])
 
-  // Overall statistics
   const overallStats = useMemo(() => {
     const totalResults = filteredResults.length
     const completedCount = filteredResults.filter((r) => r.status === 'completed').length
@@ -239,19 +233,19 @@ export default function Observability() {
     const avgDuration = completedResults.length > 0
       ? completedResults.reduce((sum, r) => sum + (r.duration_seconds || 0), 0) / completedResults.length
       : 0
-    
-    // Calculate overall score (average of all metric averages)
-    const overallScore = Object.values(aggregateMetrics).length > 0
-      ? Object.values(aggregateMetrics).reduce((sum, m) => sum + m.average, 0) / Object.values(aggregateMetrics).length
-      : 0
-
-    // Calculate success rate based on Problem Resolution metric
+    // Calculate overall score (prefer rating metrics since they're 0-1 scale)
+    const ratingMetrics = Object.values(aggregateMetrics).filter(m => m.type === 'rating')
+    const overallScore = ratingMetrics.length > 0
+      ? ratingMetrics.reduce((sum, m) => sum + m.average, 0) / ratingMetrics.length
+      : (Object.values(aggregateMetrics).length > 0
+        ? Object.values(aggregateMetrics).reduce((sum, m) => sum + m.average, 0) / Object.values(aggregateMetrics).length
+        : 0)
+    const overallScoreIsRating = ratingMetrics.length > 0
     let successRate = 0
     if (problemResolutionMetricId) {
       const resultsWithProblemResolution = completedResults.filter(
         (r) => r.metric_scores && r.metric_scores[problemResolutionMetricId] !== undefined
       )
-      
       if (resultsWithProblemResolution.length > 0) {
         const resolvedCount = resultsWithProblemResolution.filter(
           (r) => r.metric_scores?.[problemResolutionMetricId]?.value === true
@@ -259,37 +253,11 @@ export default function Observability() {
         successRate = (resolvedCount / resultsWithProblemResolution.length) * 100
       }
     } else {
-      // Fallback to completed status if Problem Resolution metric not found
       successRate = totalResults > 0 ? (completedCount / totalResults) * 100 : 0
     }
-
-    return {
-      totalResults,
-      completedCount,
-      failedCount,
-      successRate,
-      avgDuration,
-      overallScore,
-    }
+    return { totalResults, completedCount, failedCount, successRate, avgDuration, overallScore, overallScoreIsRating }
   }, [filteredResults, completedResults, aggregateMetrics, problemResolutionMetricId])
 
-  const getStatusColor = (status: string) => {
-    switch (status.toLowerCase()) {
-      case 'completed':
-        return '#10b981' // green
-      case 'failed':
-        return '#ef4444' // red
-      case 'queued':
-        return '#6b7280' // gray
-      case 'transcribing':
-      case 'evaluating':
-        return '#3b82f6' // blue
-      default:
-        return '#9ca3af' // light gray
-    }
-  }
-
-  // Helper function to render chart type selector
   const ChartTypeSelector = ({ 
     value, 
     onChange 
@@ -302,21 +270,19 @@ export default function Observability() {
       { type: 'line', label: 'Line', icon: TrendingUp },
       { type: 'area', label: 'Area', icon: Layers },
     ]
-
     return (
-      <div className="flex items-center space-x-2 mb-4">
-        <span className="text-sm font-medium text-gray-700">Chart Type:</span>
+      <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
         {chartTypes.map(({ type, label, icon: Icon }) => (
           <button
             key={type}
             onClick={() => onChange(type)}
-            className={`flex items-center space-x-1 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+            className={`flex items-center gap-1 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
               value === type
-                ? 'bg-primary-500 text-white'
-                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                ? 'bg-white text-gray-900 shadow-sm'
+                : 'text-gray-500 hover:text-gray-700'
             }`}
           >
-            <Icon className="w-4 h-4" />
+            <Icon className="w-3.5 h-3.5" />
             <span>{label}</span>
           </button>
         ))}
@@ -324,213 +290,288 @@ export default function Observability() {
     )
   }
 
+  // Metric score color helper
+  const getScoreColor = (value: number, type: string) => {
+    if (type === 'rating') {
+      const pct = value * 100
+      if (pct >= 80) return { text: 'text-emerald-700', bg: 'bg-emerald-50', bar: 'bg-emerald-500', border: 'border-emerald-200' }
+      if (pct >= 60) return { text: 'text-amber-700', bg: 'bg-amber-50', bar: 'bg-amber-500', border: 'border-amber-200' }
+      return { text: 'text-rose-700', bg: 'bg-rose-50', bar: 'bg-rose-500', border: 'border-rose-200' }
+    }
+    if (type === 'boolean') {
+      const pct = value * 100
+      if (pct >= 70) return { text: 'text-emerald-700', bg: 'bg-emerald-50', bar: 'bg-emerald-500', border: 'border-emerald-200' }
+      if (pct >= 50) return { text: 'text-amber-700', bg: 'bg-amber-50', bar: 'bg-amber-500', border: 'border-amber-200' }
+      return { text: 'text-rose-700', bg: 'bg-rose-50', bar: 'bg-rose-500', border: 'border-rose-200' }
+    }
+    return { text: 'text-gray-700', bg: 'bg-gray-50', bar: 'bg-gray-500', border: 'border-gray-200' }
+  }
+
   return (
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Observability</h1>
-          <p className="mt-2 text-sm text-gray-600">
+          <h1 className="text-2xl font-semibold text-gray-900">Observability</h1>
+          <p className="mt-1 text-sm text-gray-500">
             Monitor and analyze evaluation results over time
           </p>
         </div>
       </div>
 
       {/* Time Filter */}
-      <div className="bg-white rounded-lg shadow p-4">
-        <div className="flex items-center space-x-2">
-          <span className="text-sm font-medium text-gray-700">Time Period:</span>
-          {([1, 4, 7, 30] as TimeFilter[]).map((days) => (
-            <button
-              key={days}
-              onClick={() => setTimeFilter(days)}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                timeFilter === days
-                  ? 'bg-primary-500 text-white'
-                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-              }`}
-            >
-              Last {days} {days === 1 ? 'Day' : 'Days'}
-            </button>
-          ))}
-        </div>
+      <div className="flex items-center gap-2">
+        {([1, 4, 7, 30] as TimeFilter[]).map((days) => (
+          <button
+            key={days}
+            onClick={() => setTimeFilter(days)}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+              timeFilter === days
+                ? 'bg-gray-900 text-white shadow-sm'
+                : 'bg-white text-gray-600 border border-gray-200 hover:bg-gray-50 hover:border-gray-300'
+            }`}
+          >
+            {days === 1 ? '24h' : `${days}d`}
+          </button>
+        ))}
       </div>
 
       {loadingResults ? (
-        <div className="flex items-center justify-center p-12">
-          <Loader className="w-8 h-8 animate-spin text-primary-500" />
-          <span className="ml-3 text-gray-600">Loading data...</span>
+        <div className="flex items-center justify-center py-24">
+          <Loader className="w-6 h-6 animate-spin text-gray-400" />
+          <span className="ml-3 text-sm text-gray-500">Loading data...</span>
         </div>
       ) : filteredResults.length === 0 ? (
-        <div className="bg-white rounded-lg shadow p-12 text-center">
-          <Activity className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-          <p className="text-gray-500">No results found for the selected time period.</p>
+        <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-16 text-center">
+          <div className="w-16 h-16 rounded-2xl bg-gray-50 flex items-center justify-center mx-auto mb-4">
+            <Activity className="w-8 h-8 text-gray-300" />
+          </div>
+          <p className="text-sm font-medium text-gray-900">No data available</p>
+          <p className="text-sm text-gray-500 mt-1">No results found for the selected time period.</p>
         </div>
       ) : (
         <>
           {/* Overall Statistics */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            <div className="bg-white rounded-lg shadow p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-gray-600">Total Results</p>
-                  <p className="text-2xl font-bold text-gray-900 mt-1">{overallStats.totalResults}</p>
+          <motion.div
+            className="grid grid-cols-2 md:grid-cols-4 gap-4"
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3 }}
+          >
+            <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5 hover:shadow-md transition-shadow">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-indigo-50 flex items-center justify-center flex-shrink-0">
+                  <Activity className="w-5 h-5 text-indigo-600" />
                 </div>
-                <Activity className="w-8 h-8 text-primary-500" />
+                <div>
+                  <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Total Runs</p>
+                  <p className="text-2xl font-bold text-gray-900 mt-0.5 tabular-nums">{overallStats.totalResults}</p>
+                </div>
               </div>
             </div>
 
-            <div className="bg-white rounded-lg shadow p-6">
-              <div className="flex items-center justify-between">
+            <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5 hover:shadow-md transition-shadow">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-emerald-50 flex items-center justify-center flex-shrink-0">
+                  <Target className="w-5 h-5 text-emerald-600" />
+                </div>
                 <div>
-                  <p className="text-sm font-medium text-gray-600">Success Rate</p>
-                  <p className="text-2xl font-bold text-gray-900 mt-1">
-                    {overallStats.successRate.toFixed(1)}%
+                  <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Success Rate</p>
+                  <p className="text-2xl font-bold text-gray-900 mt-0.5 tabular-nums">
+                    {overallStats.successRate.toFixed(0)}%
                   </p>
                 </div>
-                <CheckCircle className="w-8 h-8 text-primary-600" />
               </div>
             </div>
 
-            <div className="bg-white rounded-lg shadow p-6">
-              <div className="flex items-center justify-between">
+            <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5 hover:shadow-md transition-shadow">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-purple-50 flex items-center justify-center flex-shrink-0">
+                  <Zap className="w-5 h-5 text-purple-600" />
+                </div>
                 <div>
-                  <p className="text-sm font-medium text-gray-600">Overall Score</p>
-                  <p className="text-2xl font-bold text-gray-900 mt-1">
-                    {overallStats.overallScore.toFixed(1)}
+                  <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Avg Score</p>
+                  <p className="text-2xl font-bold text-gray-900 mt-0.5 tabular-nums">
+                    {overallStats.overallScoreIsRating
+                      ? `${(overallStats.overallScore * 100).toFixed(0)}%`
+                      : overallStats.overallScore.toFixed(1)}
                   </p>
                 </div>
-                <TrendingUp className="w-8 h-8 text-primary-500" />
               </div>
             </div>
 
-            <div className="bg-white rounded-lg shadow p-6">
-              <div className="flex items-center justify-between">
+            <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5 hover:shadow-md transition-shadow">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-amber-50 flex items-center justify-center flex-shrink-0">
+                  <Clock className="w-5 h-5 text-amber-600" />
+                </div>
                 <div>
-                  <p className="text-sm font-medium text-gray-600">Avg Duration</p>
-                  <p className="text-2xl font-bold text-gray-900 mt-1">
+                  <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Avg Duration</p>
+                  <p className="text-2xl font-bold text-gray-900 mt-0.5 tabular-nums">
                     {Math.round(overallStats.avgDuration)}s
                   </p>
                 </div>
-                <Clock className="w-8 h-8 text-primary-600" />
               </div>
             </div>
-          </div>
+          </motion.div>
 
-          {/* Status Distribution Section */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {/* Status Distribution Pie Chart */}
-            <div className="bg-white rounded-lg shadow p-6">
-              <h2 className="text-xl font-bold text-gray-900 mb-4">Status Distribution</h2>
-              <ResponsiveContainer width="100%" height={300}>
-                <PieChart>
-                  <Pie
-                    data={statusDistribution}
-                    cx="50%"
-                    cy="50%"
-                    labelLine={false}
-                    label={({ name, percent }: { name: string; percent: number }) => `${name}: ${(percent * 100).toFixed(0)}%`}
-                    outerRadius={100}
-                    fill="#d97706"
-                    dataKey="value"
-                  >
-                    {statusDistribution.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={getStatusColor(entry.name)} />
-                    ))}
-                  </Pie>
-                  <Tooltip />
-                </PieChart>
-              </ResponsiveContainer>
+          {/* Charts Row - Status & Resolution Donuts */}
+          <motion.div
+            className="grid grid-cols-1 md:grid-cols-2 gap-6"
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3, delay: 0.1 }}
+          >
+            {/* Status Distribution - Donut Chart */}
+            <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
+              <h2 className="text-sm font-semibold text-gray-900 mb-4">Status Distribution</h2>
+              <div className="flex items-center gap-6">
+                <div className="flex-1">
+                  <ResponsiveContainer width="100%" height={220}>
+                    <PieChart>
+                      <Pie
+                        data={statusDistribution}
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={55}
+                        outerRadius={85}
+                        paddingAngle={3}
+                        dataKey="value"
+                        strokeWidth={0}
+                      >
+                        {statusDistribution.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={STATUS_COLORS[entry.name.toLowerCase()] || '#94a3b8'} />
+                        ))}
+                      </Pie>
+                      <Tooltip content={<CustomTooltip />} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="space-y-2.5 min-w-[120px]">
+                  {statusDistribution.map((entry, index) => (
+                    <div key={index} className="flex items-center gap-2">
+                      <span
+                        className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                        style={{ backgroundColor: STATUS_COLORS[entry.name.toLowerCase()] || '#94a3b8' }}
+                      />
+                      <span className="text-xs text-gray-600 flex-1">{entry.name}</span>
+                      <span className="text-xs font-semibold text-gray-900 tabular-nums">{entry.value}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
 
-            {/* Problem Resolution Distribution Pie Chart */}
-            {problemResolutionDistribution.length > 0 && (
-              <div className="bg-white rounded-lg shadow p-6">
-                <h2 className="text-xl font-bold text-gray-900 mb-4">Problem Resolution</h2>
-                <ResponsiveContainer width="100%" height={300}>
-                  <PieChart>
-                    <Pie
-                      data={problemResolutionDistribution}
-                      cx="50%"
-                      cy="50%"
-                      labelLine={false}
-                      label={({ name, percent, value }: { name: string; percent: number; value: number }) => 
-                        `${name}: ${value} (${(percent * 100).toFixed(0)}%)`
-                      }
-                      outerRadius={100}
-                      fill="#d97706"
-                      dataKey="value"
-                    >
-                      {problemResolutionDistribution.map((entry, index) => (
-                        <Cell 
-                          key={`pr-cell-${index}`} 
-                          fill={entry.name === 'Resolved' ? '#d97706' : '#92400e'} 
+            {/* Problem Resolution - Donut Chart */}
+            {problemResolutionDistribution.length > 0 ? (
+              <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
+                <h2 className="text-sm font-semibold text-gray-900 mb-4">Problem Resolution</h2>
+                <div className="flex items-center gap-6">
+                  <div className="flex-1">
+                    <ResponsiveContainer width="100%" height={220}>
+                      <PieChart>
+                        <Pie
+                          data={problemResolutionDistribution}
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={55}
+                          outerRadius={85}
+                          paddingAngle={3}
+                          dataKey="value"
+                          strokeWidth={0}
+                        >
+                          {problemResolutionDistribution.map((entry, index) => (
+                            <Cell 
+                              key={`pr-cell-${index}`} 
+                              fill={entry.name === 'Resolved' ? '#10b981' : '#f43f5e'} 
+                            />
+                          ))}
+                        </Pie>
+                        <Tooltip content={<CustomTooltip />} />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div className="space-y-2.5 min-w-[120px]">
+                    {problemResolutionDistribution.map((entry, index) => (
+                      <div key={index} className="flex items-center gap-2">
+                        <span
+                          className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                          style={{ backgroundColor: entry.name === 'Resolved' ? '#10b981' : '#f43f5e' }}
                         />
-                      ))}
-                    </Pie>
-                    <Tooltip />
-                  </PieChart>
-                </ResponsiveContainer>
+                        <span className="text-xs text-gray-600 flex-1">{entry.name}</span>
+                        <span className="text-xs font-semibold text-gray-900 tabular-nums">{entry.value}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 flex items-center justify-center">
+                <div className="text-center">
+                  <div className="w-12 h-12 rounded-xl bg-gray-50 flex items-center justify-center mx-auto mb-3">
+                    <CheckCircle className="w-6 h-6 text-gray-300" />
+                  </div>
+                  <p className="text-xs text-gray-500">No problem resolution data yet</p>
+                </div>
               </div>
             )}
-          </div>
+          </motion.div>
 
           {/* Metric Trends Over Time */}
           {timeSeriesData.length > 0 && (
-            <div className="bg-white rounded-lg shadow p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-xl font-bold text-gray-900">Metric Trends Over Time</h2>
+            <motion.div
+              className="bg-white rounded-xl border border-gray-100 shadow-sm p-6"
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.3, delay: 0.15 }}
+            >
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <h2 className="text-sm font-semibold text-gray-900">Metric Trends</h2>
+                  <p className="text-xs text-gray-500 mt-0.5">Average metric scores over time</p>
+                </div>
                 <ChartTypeSelector value={trendsChartType} onChange={setTrendsChartType} />
               </div>
-              <ResponsiveContainer width="100%" height={400}>
+              <ResponsiveContainer width="100%" height={350}>
                 {trendsChartType === 'bar' ? (
                   <BarChart data={timeSeriesData}>
-                    <CartesianGrid strokeDasharray="3 3" />
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                     <XAxis 
                       dataKey="date" 
                       tickFormatter={(value: string) => {
                         const date = new Date(value)
                         return `${date.getMonth() + 1}/${date.getDate()}`
                       }}
+                      tick={{ fontSize: 11, fill: '#94a3b8' }}
+                      axisLine={{ stroke: '#e2e8f0' }}
+                      tickLine={false}
                     />
-                    <YAxis />
-                    <Tooltip 
-                      labelFormatter={(value: string) => {
-                        const date = new Date(value)
-                        return date.toLocaleDateString()
-                      }}
-                    />
-                    <Legend />
+                    <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                    <Tooltip content={<CustomTooltip />} />
+                    <Legend wrapperStyle={{ fontSize: '12px' }} />
                     {Object.keys(timeSeriesData[0] || {})
                       .filter((key) => key !== 'date')
                       .slice(0, 5)
                       .map((metricName, index) => (
-                        <Bar
-                          key={metricName}
-                          dataKey={metricName}
-                          fill={COLORS[index % COLORS.length]}
-                          name={metricName}
-                        />
+                        <Bar key={metricName} dataKey={metricName} fill={CHART_COLORS[index % CHART_COLORS.length]} radius={[4, 4, 0, 0]} />
                       ))}
                   </BarChart>
                 ) : trendsChartType === 'line' ? (
                   <LineChart data={timeSeriesData}>
-                    <CartesianGrid strokeDasharray="3 3" />
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                     <XAxis 
                       dataKey="date" 
                       tickFormatter={(value: string) => {
                         const date = new Date(value)
                         return `${date.getMonth() + 1}/${date.getDate()}`
                       }}
+                      tick={{ fontSize: 11, fill: '#94a3b8' }}
+                      axisLine={{ stroke: '#e2e8f0' }}
+                      tickLine={false}
                     />
-                    <YAxis />
-                    <Tooltip 
-                      labelFormatter={(value: string) => {
-                        const date = new Date(value)
-                        return date.toLocaleDateString()
-                      }}
-                    />
-                    <Legend />
+                    <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                    <Tooltip content={<CustomTooltip />} />
+                    <Legend wrapperStyle={{ fontSize: '12px' }} />
                     {Object.keys(timeSeriesData[0] || {})
                       .filter((key) => key !== 'date')
                       .slice(0, 5)
@@ -539,30 +580,40 @@ export default function Observability() {
                           key={metricName}
                           type="monotone"
                           dataKey={metricName}
-                          stroke={COLORS[index % COLORS.length]}
+                          stroke={CHART_COLORS[index % CHART_COLORS.length]}
                           strokeWidth={2}
-                          dot={{ r: 4 }}
+                          dot={{ r: 3, strokeWidth: 0, fill: CHART_COLORS[index % CHART_COLORS.length] }}
+                          activeDot={{ r: 5, strokeWidth: 2, stroke: '#fff' }}
                         />
                       ))}
                   </LineChart>
                 ) : (
                   <AreaChart data={timeSeriesData}>
-                    <CartesianGrid strokeDasharray="3 3" />
+                    <defs>
+                      {Object.keys(timeSeriesData[0] || {})
+                        .filter((key) => key !== 'date')
+                        .slice(0, 5)
+                        .map((metricName, index) => (
+                          <linearGradient key={`gradient-${metricName}`} id={`gradient-${index}`} x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor={CHART_COLORS[index % CHART_COLORS.length]} stopOpacity={0.3} />
+                            <stop offset="100%" stopColor={CHART_COLORS[index % CHART_COLORS.length]} stopOpacity={0.02} />
+                          </linearGradient>
+                        ))}
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                     <XAxis 
                       dataKey="date" 
                       tickFormatter={(value: string) => {
                         const date = new Date(value)
                         return `${date.getMonth() + 1}/${date.getDate()}`
                       }}
+                      tick={{ fontSize: 11, fill: '#94a3b8' }}
+                      axisLine={{ stroke: '#e2e8f0' }}
+                      tickLine={false}
                     />
-                    <YAxis />
-                    <Tooltip 
-                      labelFormatter={(value: string) => {
-                        const date = new Date(value)
-                        return date.toLocaleDateString()
-                      }}
-                    />
-                    <Legend />
+                    <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                    <Tooltip content={<CustomTooltip />} />
+                    <Legend wrapperStyle={{ fontSize: '12px' }} />
                     {Object.keys(timeSeriesData[0] || {})
                       .filter((key) => key !== 'date')
                       .slice(0, 5)
@@ -571,138 +622,163 @@ export default function Observability() {
                           key={metricName}
                           type="monotone"
                           dataKey={metricName}
-                          stroke={COLORS[index % COLORS.length]}
-                          fill={COLORS[index % COLORS.length]}
-                          fillOpacity={0.6}
+                          stroke={CHART_COLORS[index % CHART_COLORS.length]}
+                          fill={`url(#gradient-${index})`}
                           strokeWidth={2}
                         />
                       ))}
                   </AreaChart>
                 )}
               </ResponsiveContainer>
-            </div>
+            </motion.div>
           )}
 
           {/* Metric Averages Chart */}
           {metricAverages.length > 0 && (
-            <div className="bg-white rounded-lg shadow p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-xl font-bold text-gray-900">Metric Averages</h2>
+            <motion.div
+              className="bg-white rounded-xl border border-gray-100 shadow-sm p-6"
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.3, delay: 0.2 }}
+            >
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <h2 className="text-sm font-semibold text-gray-900">Metric Averages</h2>
+                  <p className="text-xs text-gray-500 mt-0.5">Aggregate scores across all evaluations</p>
+                </div>
                 <ChartTypeSelector value={averagesChartType} onChange={setAveragesChartType} />
               </div>
-              <ResponsiveContainer width="100%" height={400}>
+              <ResponsiveContainer width="100%" height={350}>
                 {averagesChartType === 'bar' ? (
                   <BarChart data={metricAverages}>
-                    <CartesianGrid strokeDasharray="3 3" />
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                     <XAxis 
                       dataKey="name" 
                       angle={-45}
                       textAnchor="end"
                       height={100}
+                      tick={{ fontSize: 11, fill: '#94a3b8' }}
+                      axisLine={{ stroke: '#e2e8f0' }}
+                      tickLine={false}
                     />
-                    <YAxis />
-                    <Tooltip />
-                    <Legend />
-                    <Bar dataKey="average" fill="#d97706" name="Average" />
-                    <Bar dataKey="min" fill="#b45309" name="Min" />
-                    <Bar dataKey="max" fill="#ca8a04" name="Max" />
+                    <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                    <Tooltip content={<CustomTooltip />} />
+                    <Legend wrapperStyle={{ fontSize: '12px' }} />
+                    <Bar dataKey="average" fill="#6366f1" name="Average" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="min" fill="#c7d2fe" name="Min" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="max" fill="#a78bfa" name="Max" radius={[4, 4, 0, 0]} />
                   </BarChart>
                 ) : averagesChartType === 'line' ? (
                   <LineChart data={metricAverages}>
-                    <CartesianGrid strokeDasharray="3 3" />
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                     <XAxis 
                       dataKey="name" 
                       angle={-45}
                       textAnchor="end"
                       height={100}
+                      tick={{ fontSize: 11, fill: '#94a3b8' }}
+                      axisLine={{ stroke: '#e2e8f0' }}
+                      tickLine={false}
                     />
-                    <YAxis />
-                    <Tooltip />
-                    <Legend />
-                    <Line type="monotone" dataKey="average" stroke="#d97706" strokeWidth={2} dot={{ r: 4 }} name="Average" />
-                    <Line type="monotone" dataKey="min" stroke="#b45309" strokeWidth={2} dot={{ r: 4 }} name="Min" />
-                    <Line type="monotone" dataKey="max" stroke="#ca8a04" strokeWidth={2} dot={{ r: 4 }} name="Max" />
+                    <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                    <Tooltip content={<CustomTooltip />} />
+                    <Legend wrapperStyle={{ fontSize: '12px' }} />
+                    <Line type="monotone" dataKey="average" stroke="#6366f1" strokeWidth={2} dot={{ r: 4, fill: '#6366f1', strokeWidth: 0 }} name="Average" />
+                    <Line type="monotone" dataKey="min" stroke="#c7d2fe" strokeWidth={2} dot={{ r: 4, fill: '#c7d2fe', strokeWidth: 0 }} name="Min" />
+                    <Line type="monotone" dataKey="max" stroke="#a78bfa" strokeWidth={2} dot={{ r: 4, fill: '#a78bfa', strokeWidth: 0 }} name="Max" />
                   </LineChart>
                 ) : (
                   <AreaChart data={metricAverages}>
-                    <CartesianGrid strokeDasharray="3 3" />
+                    <defs>
+                      <linearGradient id="avgGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#6366f1" stopOpacity={0.3} />
+                        <stop offset="100%" stopColor="#6366f1" stopOpacity={0.02} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                     <XAxis 
                       dataKey="name" 
                       angle={-45}
                       textAnchor="end"
                       height={100}
+                      tick={{ fontSize: 11, fill: '#94a3b8' }}
+                      axisLine={{ stroke: '#e2e8f0' }}
+                      tickLine={false}
                     />
-                    <YAxis />
-                    <Tooltip />
-                    <Legend />
-                    <Area type="monotone" dataKey="average" stroke="#d97706" fill="#d97706" fillOpacity={0.6} strokeWidth={2} name="Average" />
-                    <Area type="monotone" dataKey="min" stroke="#b45309" fill="#b45309" fillOpacity={0.6} strokeWidth={2} name="Min" />
-                    <Area type="monotone" dataKey="max" stroke="#ca8a04" fill="#ca8a04" fillOpacity={0.6} strokeWidth={2} name="Max" />
+                    <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                    <Tooltip content={<CustomTooltip />} />
+                    <Legend wrapperStyle={{ fontSize: '12px' }} />
+                    <Area type="monotone" dataKey="average" stroke="#6366f1" fill="url(#avgGrad)" strokeWidth={2} name="Average" />
+                    <Area type="monotone" dataKey="min" stroke="#c7d2fe" fill="#c7d2fe" fillOpacity={0.1} strokeWidth={2} name="Min" />
+                    <Area type="monotone" dataKey="max" stroke="#a78bfa" fill="#a78bfa" fillOpacity={0.1} strokeWidth={2} name="Max" />
                   </AreaChart>
                 )}
               </ResponsiveContainer>
-            </div>
+            </motion.div>
           )}
 
-          {/* Detailed Metric Breakdown */}
-          <div className="bg-white rounded-lg shadow p-6">
-            <h2 className="text-xl font-bold text-gray-900 mb-4">Detailed Metric Breakdown</h2>
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead className="bg-gray-50">
-                  <tr>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Metric
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Type
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Average
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Min
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Max
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Count
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
-                  {Object.entries(aggregateMetrics)
-                    .sort(([, a], [, b]) => b.average - a.average)
-                    .map(([id, data]) => (
-                      <tr key={id} className="hover:bg-gray-50">
-                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                          {data.name}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                          {data.type}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                          {data.average.toFixed(2)}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                          {data.min.toFixed(2)}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                          {data.max.toFixed(2)}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                          {data.count}
-                        </td>
-                      </tr>
-                    ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
+          {/* Detailed Metric Breakdown - Card Grid */}
+          {Object.keys(aggregateMetrics).length > 0 && (
+            <motion.div
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.3, delay: 0.25 }}
+            >
+              <div className="mb-4">
+                <h2 className="text-sm font-semibold text-gray-900">Metric Breakdown</h2>
+                <p className="text-xs text-gray-500 mt-0.5">Individual metric performance</p>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                {Object.entries(aggregateMetrics)
+                  .sort(([, a], [, b]) => b.average - a.average)
+                  .map(([id, data], index) => {
+                    const scoreColor = getScoreColor(data.average, data.type)
+                    const isRating = data.type === 'rating'
+                    const displayValue = isRating ? `${(data.average * 100).toFixed(0)}%` : data.average.toFixed(2)
+                    const barWidth = isRating ? data.average * 100 : Math.min(data.average * 100, 100)
+                    
+                    return (
+                      <motion.div
+                        key={id}
+                        className={`bg-white rounded-xl border shadow-sm p-4 hover:shadow-md transition-all ${scoreColor.border}`}
+                        initial={{ opacity: 0, y: 8 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.2, delay: 0.03 * index }}
+                      >
+                        <div className="flex items-start justify-between mb-3">
+                          <div>
+                            <h3 className="text-sm font-medium text-gray-900">{data.name}</h3>
+                            <span className="text-[10px] font-medium text-gray-400 uppercase tracking-wider">{data.type}</span>
+                          </div>
+                          <span className={`text-lg font-bold tabular-nums ${scoreColor.text}`}>
+                            {displayValue}
+                          </span>
+                        </div>
+                        
+                        {/* Progress bar */}
+                        <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden mb-3">
+                          <motion.div
+                            className={`h-full rounded-full ${scoreColor.bar}`}
+                            initial={{ width: 0 }}
+                            animate={{ width: `${barWidth}%` }}
+                            transition={{ duration: 0.8, ease: 'easeOut', delay: 0.1 * index }}
+                          />
+                        </div>
+                        
+                        {/* Min / Max / Count */}
+                        <div className="flex items-center gap-3 text-[11px] text-gray-500">
+                          <span>Min: <span className="font-medium text-gray-700 tabular-nums">{isRating ? `${(data.min * 100).toFixed(0)}%` : data.min.toFixed(2)}</span></span>
+                          <span>Max: <span className="font-medium text-gray-700 tabular-nums">{isRating ? `${(data.max * 100).toFixed(0)}%` : data.max.toFixed(2)}</span></span>
+                          <span className="ml-auto">n={data.count}</span>
+                        </div>
+                      </motion.div>
+                    )
+                  })}
+              </div>
+            </motion.div>
+          )}
         </>
       )}
     </div>
   )
 }
-

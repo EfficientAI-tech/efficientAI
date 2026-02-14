@@ -1,9 +1,10 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
 import Button from '../components/Button'
 import ConfirmModal from '../components/ConfirmModal'
-import { Plus, Edit, Trash2, X, Play, Pause, Bell, Mail, Globe } from 'lucide-react'
+import { Plus, Trash2, X, Bell, Mail, Globe, Zap, CheckCircle, AlertTriangle } from 'lucide-react'
 
 // Types
 interface Alert {
@@ -122,12 +123,25 @@ export default function Alerts() {
     },
   })
 
-  const toggleMutation = useMutation({
-    mutationFn: (id: string) => apiClient.toggleAlertStatus(id),
-    onSuccess: () => {
+  const navigate = useNavigate()
+
+  const [evaluatingAll, setEvaluatingAll] = useState(false)
+  const [evaluateAllResult, setEvaluateAllResult] = useState<any | null>(null)
+
+  const handleEvaluateAll = async () => {
+    setEvaluatingAll(true)
+    setEvaluateAllResult(null)
+    try {
+      const result = await apiClient.evaluateAllAlerts()
+      setEvaluateAllResult(result)
       queryClient.invalidateQueries({ queryKey: ['alerts'] })
-    },
-  })
+      queryClient.invalidateQueries({ queryKey: ['alertHistory'] })
+    } catch {
+      setEvaluateAllResult({ error: 'Failed to evaluate alerts' })
+    } finally {
+      setEvaluatingAll(false)
+    }
+  }
 
   const resetForm = () => {
     setFormData({
@@ -149,24 +163,6 @@ export default function Alerts() {
     setShowCreateModal(false)
     setEditingAlert(null)
     resetForm()
-  }
-
-  const handleEdit = (alert: Alert) => {
-    setEditingAlert(alert)
-    setFormData({
-      name: alert.name,
-      description: alert.description || '',
-      metric_type: alert.metric_type,
-      aggregation: alert.aggregation,
-      operator: alert.operator,
-      threshold_value: alert.threshold_value,
-      time_window_minutes: alert.time_window_minutes,
-      agent_ids: alert.agent_ids || [],
-      notify_frequency: alert.notify_frequency,
-      notify_emails: alert.notify_emails?.length ? alert.notify_emails : [''],
-      notify_webhooks: alert.notify_webhooks?.length ? alert.notify_webhooks : [''],
-    })
-    setShowCreateModal(true)
   }
 
   const handleSubmit = () => {
@@ -270,18 +266,72 @@ export default function Alerts() {
             Configure monitoring alerts for your voice AI agents
           </p>
         </div>
-        <Button
-          variant="primary"
-          onClick={() => {
-            resetForm()
-            setEditingAlert(null)
-            setShowCreateModal(true)
-          }}
-          leftIcon={<Plus className="w-4 h-4" />}
-        >
-          Create Alert
-        </Button>
+        <div className="flex items-center gap-3">
+          <Button
+            variant="secondary"
+            onClick={handleEvaluateAll}
+            isLoading={evaluatingAll}
+            leftIcon={<Zap className="w-4 h-4" />}
+          >
+            Evaluate All
+          </Button>
+          <Button
+            variant="primary"
+            onClick={() => {
+              resetForm()
+              setEditingAlert(null)
+              setShowCreateModal(true)
+            }}
+            leftIcon={<Plus className="w-4 h-4" />}
+          >
+            Create Alert
+          </Button>
+        </div>
       </div>
+
+      {/* Evaluate All Result Banner */}
+      {evaluateAllResult && (
+        <div className={`rounded-lg p-4 flex items-center justify-between ${
+          evaluateAllResult.error
+            ? 'bg-red-50 border border-red-200'
+            : evaluateAllResult.triggered > 0
+              ? 'bg-amber-50 border border-amber-200'
+              : 'bg-emerald-50 border border-emerald-200'
+        }`}>
+          <div className="flex items-center gap-3">
+            {evaluateAllResult.error ? (
+              <AlertTriangle className="w-5 h-5 text-red-500" />
+            ) : evaluateAllResult.triggered > 0 ? (
+              <AlertTriangle className="w-5 h-5 text-amber-500" />
+            ) : (
+              <CheckCircle className="w-5 h-5 text-emerald-500" />
+            )}
+            <div>
+              {evaluateAllResult.error ? (
+                <p className="text-sm font-medium text-red-800">{evaluateAllResult.error}</p>
+              ) : (
+                <p className="text-sm font-medium text-gray-800">
+                  Evaluated {evaluateAllResult.total_alerts} alert{evaluateAllResult.total_alerts !== 1 ? 's' : ''}:
+                  {' '}<span className="text-amber-700">{evaluateAllResult.triggered} triggered</span>,
+                  {' '}<span className="text-emerald-700">{evaluateAllResult.not_triggered} ok</span>
+                  {evaluateAllResult.skipped_cooldown > 0 && (
+                    <>, <span className="text-gray-500">{evaluateAllResult.skipped_cooldown} cooldown</span></>
+                  )}
+                  {evaluateAllResult.errors > 0 && (
+                    <>, <span className="text-red-600">{evaluateAllResult.errors} errors</span></>
+                  )}
+                </p>
+              )}
+            </div>
+          </div>
+          <button
+            onClick={() => setEvaluateAllResult(null)}
+            className="p-1 text-gray-400 hover:text-gray-600 rounded"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* Alerts Table */}
       <div className="bg-white shadow-sm rounded-xl border border-gray-200 overflow-hidden">
@@ -335,7 +385,11 @@ export default function Alerts() {
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {alerts.map((alertItem: Alert) => (
-                  <tr key={alertItem.id} className="hover:bg-gray-50 transition-colors">
+                  <tr
+                    key={alertItem.id}
+                    className="hover:bg-gray-50 transition-colors cursor-pointer"
+                    onClick={() => navigate(`/alerts/${alertItem.id}`)}
+                  >
                     <td className="px-6 py-4">
                       <div className="text-sm font-medium text-gray-900">{alertItem.name}</div>
                       {alertItem.description && (
@@ -370,23 +424,7 @@ export default function Alerts() {
                       {getStatusBadge(alertItem.status)}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-right">
-                      <div className="flex items-center justify-end gap-1">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => toggleMutation.mutate(alertItem.id)}
-                          leftIcon={alertItem.status === 'active' ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
-                        >
-                          {alertItem.status === 'active' ? 'Pause' : 'Resume'}
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleEdit(alertItem)}
-                          leftIcon={<Edit className="w-4 h-4" />}
-                        >
-                          Edit
-                        </Button>
+                      <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
                         <Button
                           variant="ghost"
                           size="sm"

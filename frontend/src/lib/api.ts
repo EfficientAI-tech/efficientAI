@@ -1015,6 +1015,25 @@ class ApiClient {
     return response.data
   }
 
+  // Alert Evaluation & Notification endpoints
+  async triggerAlert(alertId: string): Promise<any> {
+    const response = await this.client.post(`/api/v1/alerts/${alertId}/trigger`)
+    return response.data
+  }
+
+  async evaluateAllAlerts(): Promise<any> {
+    const response = await this.client.post('/api/v1/alerts/evaluate/all')
+    return response.data
+  }
+
+  async testAlertNotification(alertId: string, data: {
+    webhook_url?: string
+    email?: string
+  }): Promise<any> {
+    const response = await this.client.post(`/api/v1/alerts/${alertId}/test-notification`, data)
+    return response.data
+  }
+
   // Cron Job endpoints
   async listCronJobs(): Promise<any[]> {
     const response = await this.client.get('/api/v1/cron-jobs')

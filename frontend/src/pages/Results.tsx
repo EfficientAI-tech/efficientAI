@@ -1,8 +1,9 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { apiClient } from '../lib/api'
-import { Clock, CheckCircle, XCircle, Loader, Plus, X, Trash2, RefreshCw, Eye } from 'lucide-react'
-import { useState } from 'react'
+import { Clock, CheckCircle, XCircle, Loader, Plus, X, Trash2, RefreshCw, Eye, Activity, AlertTriangle } from 'lucide-react'
+import { useState, useMemo } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
 import Button from '../components/Button'
 
 interface EvaluatorResult {
@@ -46,12 +47,12 @@ export default function Results() {
   const [selectedEvaluator, setSelectedEvaluator] = useState<string>('')
   const [selectedResults, setSelectedResults] = useState<Set<string>>(new Set())
   const [showDeleteModal, setShowDeleteModal] = useState(false)
+  const [statusFilter, setStatusFilter] = useState<'all' | 'completed' | 'failed' | 'in_progress'>('all')
 
   const { data: results = [], isLoading: loadingResults } = useQuery({
     queryKey: ['evaluator-results'],
     queryFn: () => apiClient.listEvaluatorResults(),
     refetchInterval: (query) => {
-      // Poll if there are any in-progress results
       const data = query.state.data as any[]
       if (data && Array.isArray(data)) {
         const hasInProgress = data.some((result: any) => 
@@ -63,7 +64,7 @@ export default function Results() {
           result.status === 'transcribing' || 
           result.status === 'evaluating'
         )
-        return hasInProgress ? 3000 : false // Poll every 3 seconds if in-progress
+        return hasInProgress ? 3000 : false
       }
       return false
     },
@@ -74,21 +75,18 @@ export default function Results() {
     queryFn: () => apiClient.listMetrics(),
   })
 
-  // Fetch audio files from S3
   const { data: audioFiles } = useQuery({
     queryKey: ['manual-evaluations', 'audio-files'],
     queryFn: () => apiClient.listManualEvaluationAudioFiles(),
     enabled: showManualModal,
   })
 
-  // Fetch evaluators
   const { data: evaluators = [] } = useQuery({
     queryKey: ['evaluators'],
     queryFn: () => apiClient.listEvaluators(),
     enabled: showManualModal,
   })
 
-  // Create evaluator result mutation
   const createResultMutation = useMutation({
     mutationFn: (data: { evaluator_id: string; audio_s3_key: string; duration_seconds?: number }) =>
       apiClient.createEvaluatorResultManual(data),
@@ -100,7 +98,6 @@ export default function Results() {
     },
   })
 
-  // Bulk delete mutation
   const deleteBulkMutation = useMutation({
     mutationFn: (ids: string[]) => apiClient.deleteEvaluatorResultsBulk(ids),
     onSuccess: () => {
@@ -108,6 +105,32 @@ export default function Results() {
       setSelectedResults(new Set())
     },
   })
+
+  // Summary statistics
+  const summaryStats = useMemo(() => {
+    const total = results.length
+    const completed = results.filter((r: EvaluatorResult) => r.status === 'completed').length
+    const failed = results.filter((r: EvaluatorResult) => r.status === 'failed').length
+    const inProgress = results.filter((r: EvaluatorResult) => 
+      ['queued', 'call_initiating', 'call_connecting', 'call_in_progress', 'call_ended', 'transcribing', 'evaluating'].includes(r.status)
+    ).length
+    const avgDuration = completed > 0
+      ? results.filter((r: EvaluatorResult) => r.status === 'completed' && r.duration_seconds)
+          .reduce((sum: number, r: EvaluatorResult) => sum + (r.duration_seconds || 0), 0) / completed
+      : 0
+    return { total, completed, failed, inProgress, avgDuration }
+  }, [results])
+
+  // Filter results by status
+  const filteredResults = useMemo(() => {
+    if (statusFilter === 'all') return results as EvaluatorResult[]
+    if (statusFilter === 'completed') return (results as EvaluatorResult[]).filter(r => r.status === 'completed')
+    if (statusFilter === 'failed') return (results as EvaluatorResult[]).filter(r => r.status === 'failed')
+    // in_progress covers all active statuses
+    return (results as EvaluatorResult[]).filter(r =>
+      ['queued', 'call_initiating', 'call_connecting', 'call_in_progress', 'call_ended', 'transcribing', 'evaluating'].includes(r.status)
+    )
+  }, [results, statusFilter])
 
   const handleSelectResult = (resultId: string, checked: boolean) => {
     const newSelected = new Set(selectedResults)
@@ -119,13 +142,6 @@ export default function Results() {
     setSelectedResults(newSelected)
   }
 
-  const handleSelectAll = (checked: boolean) => {
-    if (checked) {
-      setSelectedResults(new Set(results.map((r: EvaluatorResult) => r.id)))
-    } else {
-      setSelectedResults(new Set())
-    }
-  }
 
   const handleDeleteSelected = () => {
     if (selectedResults.size === 0) return
@@ -140,8 +156,6 @@ export default function Results() {
     })
   }
 
-  // Define which metrics to show as columns in the table
-  // These are the key conversation quality metrics
   const COLUMN_METRICS = [
     'Follow Instructions',
     'Problem Resolution', 
@@ -149,7 +163,6 @@ export default function Results() {
     'Clarity and Empathy'
   ]
 
-  // Helper to check if a metric value is valid (not null, undefined, empty, or "N/A")
   const hasValidValue = (value: any) => {
     if (value === null || value === undefined) return false
     if (value === '') return false
@@ -159,15 +172,10 @@ export default function Results() {
     return true
   }
 
-  // Get enabled metrics for column headers - only show key metrics in table
   const enabledMetrics = metrics.filter((m: Metric) => m.enabled)
   
-  // Filter to only show metrics that have at least one result with a valid value
   const columnMetrics = enabledMetrics.filter((m: Metric) => {
-    // First check if it's in our desired column metrics list
     if (!COLUMN_METRICS.includes(m.name)) return false
-    
-    // Then check if ANY result has a valid value for this metric
     return results.some((result: EvaluatorResult) => {
       const score = result.metric_scores?.[m.id]
       return score && hasValidValue(score.value)
@@ -175,190 +183,142 @@ export default function Results() {
   })
 
   const formatDuration = (seconds: number | null): string => {
-    if (!seconds) return 'N/A'
+    if (!seconds) return '--'
     const mins = Math.floor(seconds / 60)
     const secs = Math.floor(seconds % 60)
     return `${mins}:${secs.toString().padStart(2, '0')}`
   }
 
   const formatTimestamp = (timestamp: string): string => {
-    return new Date(timestamp).toLocaleString()
+    const date = new Date(timestamp)
+    const now = new Date()
+    const diffMs = now.getTime() - date.getTime()
+    const diffMins = Math.floor(diffMs / 60000)
+    const diffHours = Math.floor(diffMs / 3600000)
+    const diffDays = Math.floor(diffMs / 86400000)
+
+    if (diffMins < 1) return 'Just now'
+    if (diffMins < 60) return `${diffMins}m ago`
+    if (diffHours < 24) return `${diffHours}h ago`
+    if (diffDays < 7) return `${diffDays}d ago`
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
   }
 
-  const getStatusIcon = (status: string) => {
+  const getStatusConfig = (status: string) => {
     switch (status) {
       case 'completed':
-        return <CheckCircle className="w-4 h-4 text-green-500" />
+        return { dot: 'bg-emerald-500', bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-200', label: 'Completed', icon: <CheckCircle className="w-3.5 h-3.5" /> }
       case 'failed':
-        return <XCircle className="w-4 h-4 text-red-500" />
+        return { dot: 'bg-rose-500', bg: 'bg-rose-50', text: 'text-rose-700', border: 'border-rose-200', label: 'Failed', icon: <XCircle className="w-3.5 h-3.5" /> }
       case 'queued':
+        return { dot: 'bg-slate-400', bg: 'bg-slate-50', text: 'text-slate-600', border: 'border-slate-200', label: 'Queued', icon: <Clock className="w-3.5 h-3.5" /> }
       case 'call_initiating':
+        return { dot: 'bg-amber-500', bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200', label: 'Initiating', icon: <Loader className="w-3.5 h-3.5 animate-spin" /> }
       case 'call_connecting':
-        return <Clock className="w-4 h-4 text-gray-500" />
+        return { dot: 'bg-orange-500', bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200', label: 'Connecting', icon: <Loader className="w-3.5 h-3.5 animate-spin" /> }
       case 'call_in_progress':
+        return { dot: 'bg-blue-500', bg: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-200', label: 'In Call', icon: <Loader className="w-3.5 h-3.5 animate-spin" /> }
       case 'call_ended':
+        return { dot: 'bg-indigo-500', bg: 'bg-indigo-50', text: 'text-indigo-700', border: 'border-indigo-200', label: 'Call Ended', icon: <Clock className="w-3.5 h-3.5" /> }
       case 'transcribing':
+        return { dot: 'bg-cyan-500', bg: 'bg-cyan-50', text: 'text-cyan-700', border: 'border-cyan-200', label: 'Transcribing', icon: <Loader className="w-3.5 h-3.5 animate-spin" /> }
       case 'evaluating':
-        return <Loader className="w-4 h-4 text-blue-500 animate-spin" />
+        return { dot: 'bg-purple-500', bg: 'bg-purple-50', text: 'text-purple-700', border: 'border-purple-200', label: 'Evaluating', icon: <Loader className="w-3.5 h-3.5 animate-spin" /> }
       default:
-        return null
-    }
-  }
-
-  const getStatusBadge = (status: string) => {
-    const baseClasses = "px-2 py-1 text-xs font-medium rounded"
-    switch (status) {
-      case 'completed':
-        return `${baseClasses} bg-green-100 text-green-800`
-      case 'failed':
-        return `${baseClasses} bg-red-100 text-red-800`
-      case 'queued':
-        return `${baseClasses} bg-gray-100 text-gray-800`
-      case 'call_initiating':
-        return `${baseClasses} bg-yellow-100 text-yellow-800`
-      case 'call_connecting':
-        return `${baseClasses} bg-orange-100 text-orange-800`
-      case 'call_in_progress':
-        return `${baseClasses} bg-blue-100 text-blue-800`
-      case 'call_ended':
-        return `${baseClasses} bg-indigo-100 text-indigo-800`
-      case 'transcribing':
-        return `${baseClasses} bg-blue-100 text-blue-800`
-      case 'evaluating':
-        return `${baseClasses} bg-purple-100 text-purple-800`
-      default:
-        return `${baseClasses} bg-gray-100 text-gray-800`
-    }
-  }
-  
-  const getStatusLabel = (status: string) => {
-    switch (status) {
-      case 'call_initiating':
-        return 'Initiating Call'
-      case 'call_connecting':
-        return 'Connecting'
-      case 'call_in_progress':
-        return 'Call In Progress'
-      case 'call_ended':
-        return 'Call Ended'
-      case 'queued':
-        return 'Queued'
-      case 'transcribing':
-        return 'Transcribing'
-      case 'evaluating':
-        return 'Evaluating'
-      case 'completed':
-        return 'Completed'
-      case 'failed':
-        return 'Failed'
-      default:
-        return status
+        return { dot: 'bg-gray-400', bg: 'bg-gray-50', text: 'text-gray-600', border: 'border-gray-200', label: status, icon: null }
     }
   }
 
   const formatMetricValue = (value: any, type: string, metricName?: string): React.ReactNode => {
-    if (value === null || value === undefined) return <span className="text-gray-400">N/A</span>
+    if (value === null || value === undefined) return <span className="text-gray-300">--</span>
     
-    // Normalize type to lowercase for consistent comparison
     const normalizedType = type?.toLowerCase()
     
-    // Handle Emotion Category - categorical text values with styling
     if (metricName === 'Emotion Category') {
       const emotion = String(value).toLowerCase()
-      const emotionConfig: Record<string, { emoji: string; color: string; bg: string }> = {
-        'neutral': { emoji: '😐', color: 'text-gray-700', bg: 'bg-gray-100' },
-        'happy': { emoji: '😊', color: 'text-green-700', bg: 'bg-green-100' },
-        'sad': { emoji: '😢', color: 'text-blue-700', bg: 'bg-blue-100' },
-        'angry': { emoji: '😠', color: 'text-red-700', bg: 'bg-red-100' },
-        'fearful': { emoji: '😨', color: 'text-purple-700', bg: 'bg-purple-100' },
-        'fear': { emoji: '😨', color: 'text-purple-700', bg: 'bg-purple-100' },
-        'surprised': { emoji: '😲', color: 'text-yellow-700', bg: 'bg-yellow-100' },
-        'surprise': { emoji: '😲', color: 'text-yellow-700', bg: 'bg-yellow-100' },
-        'disgusted': { emoji: '🤢', color: 'text-green-800', bg: 'bg-green-200' },
-        'disgust': { emoji: '🤢', color: 'text-green-800', bg: 'bg-green-200' },
-        'calm': { emoji: '😌', color: 'text-teal-700', bg: 'bg-teal-100' },
+      const emotionColors: Record<string, string> = {
+        'neutral': 'bg-slate-100 text-slate-700',
+        'happy': 'bg-emerald-100 text-emerald-700',
+        'sad': 'bg-blue-100 text-blue-700',
+        'angry': 'bg-rose-100 text-rose-700',
+        'fearful': 'bg-purple-100 text-purple-700',
+        'fear': 'bg-purple-100 text-purple-700',
+        'surprised': 'bg-amber-100 text-amber-700',
+        'surprise': 'bg-amber-100 text-amber-700',
+        'calm': 'bg-teal-100 text-teal-700',
       }
-      const config = emotionConfig[emotion] || { emoji: '🎭', color: 'text-gray-700', bg: 'bg-gray-100' }
-      
+      const colorClass = emotionColors[emotion] || 'bg-gray-100 text-gray-700'
       return (
-        <div className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full ${config.bg}`}>
-          <span>{config.emoji}</span>
-          <span className={`text-xs font-semibold capitalize ${config.color}`}>{value}</span>
-        </div>
+        <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ${colorClass}`}>
+          {value}
+        </span>
       )
     }
     
-    // Handle boolean metrics
     if (normalizedType === 'boolean') {
-      // Convert various truthy/falsy values to boolean
       const boolValue = value === true || value === 1 || value === '1' || value === 'true'
-      
       return boolValue ? (
-        <div className="flex items-center space-x-1.5 text-green-600">
-          <CheckCircle className="w-4 h-4" />
-          <span className="font-medium">Yes</span>
-        </div>
+        <span className="inline-flex items-center gap-1 text-emerald-600">
+          <CheckCircle className="w-3.5 h-3.5" />
+          <span className="text-xs font-medium">Yes</span>
+        </span>
       ) : (
-        <div className="flex items-center space-x-1.5 text-red-600">
-          <XCircle className="w-4 h-4" />
-          <span className="font-medium">No</span>
-        </div>
+        <span className="inline-flex items-center gap-1 text-rose-600">
+          <XCircle className="w-3.5 h-3.5" />
+          <span className="text-xs font-medium">No</span>
+        </span>
       )
     }
     
-    // Handle rating metrics with progress bar
     if (normalizedType === 'rating') {
-      // Check if value is a string (categorical) rather than a number
       if (typeof value === 'string' && isNaN(parseFloat(value))) {
-        // Display as a styled text badge for categorical ratings
         return (
-          <span className="inline-flex items-center px-2 py-1 rounded-full bg-purple-100 text-purple-700 text-xs font-semibold capitalize">
+          <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-purple-50 text-purple-700 text-xs font-medium capitalize">
             {value}
           </span>
         )
       }
       
       const numValue = typeof value === 'number' ? value : parseFloat(value)
-      if (isNaN(numValue)) return <span className="text-gray-400">N/A</span>
+      if (isNaN(numValue)) return <span className="text-gray-300">--</span>
       
-      // Ensure value is between 0 and 1
       const normalizedValue = Math.max(0, Math.min(1, numValue))
       const percentage = Math.round(normalizedValue * 100)
       
-      // Color based on score
-      const getBarColor = (pct: number): string => {
-        if (pct >= 70) return 'bg-green-500'
-        if (pct >= 50) return 'bg-yellow-500'
-        return 'bg-red-500'
+      const getColor = (pct: number) => {
+        if (pct >= 80) return { bar: 'bg-emerald-500', text: 'text-emerald-700' }
+        if (pct >= 60) return { bar: 'bg-amber-500', text: 'text-amber-700' }
+        return { bar: 'bg-rose-500', text: 'text-rose-700' }
       }
       
+      const color = getColor(percentage)
+      
       return (
-        <div className="flex items-center gap-2 min-w-[100px]">
-          <div className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden">
-            <div 
-              className={`h-full rounded-full transition-all ${getBarColor(percentage)}`}
-              style={{ width: `${percentage}%` }}
+        <div className="flex items-center gap-2.5 min-w-[120px]">
+          <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+            <motion.div 
+              className={`h-full rounded-full ${color.bar}`}
+              initial={{ width: 0 }}
+              animate={{ width: `${percentage}%` }}
+              transition={{ duration: 0.8, ease: 'easeOut' }}
             />
           </div>
-          <span className="text-xs font-semibold text-gray-700 w-10 text-right">{percentage}%</span>
+          <span className={`text-xs font-semibold tabular-nums ${color.text}`}>{percentage}%</span>
         </div>
       )
     }
     
-    // Handle number metrics
     if (normalizedType === 'number') {
       const numValue = typeof value === 'number' ? value : parseFloat(value)
-      if (isNaN(numValue)) return <span className="text-gray-400">N/A</span>
-      return <span className="font-medium">{numValue.toFixed(1)}</span>
+      if (isNaN(numValue)) return <span className="text-gray-300">--</span>
+      return <span className="text-sm font-semibold text-gray-900 tabular-nums">{numValue.toFixed(1)}</span>
     }
     
-    return String(value)
+    return <span className="text-sm text-gray-700">{String(value)}</span>
   }
 
   const handleManualEvaluation = () => {
-    if (!selectedAudioFile || !selectedEvaluator) {
-      return
-    }
+    if (!selectedAudioFile || !selectedEvaluator) return
     createResultMutation.mutate({
       evaluator_id: selectedEvaluator,
       audio_s3_key: selectedAudioFile.key,
@@ -367,14 +327,15 @@ export default function Results() {
 
   return (
     <div className="space-y-6">
+      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Results</h1>
+          <h1 className="text-3xl font-bold text-gray-900">Evaluation Results</h1>
           <p className="mt-2 text-sm text-gray-600">
-            View evaluation results from running evaluators
+            Monitor and review evaluation outcomes across your voice agents
           </p>
         </div>
-        <div className="flex items-center space-x-3">
+        <div className="flex items-center gap-3">
           <Button
             variant="outline"
             onClick={() => queryClient.invalidateQueries({ queryKey: ['evaluator-results'] })}
@@ -383,18 +344,25 @@ export default function Results() {
             <RefreshCw className={`w-4 h-4 mr-2 ${loadingResults ? 'animate-spin' : ''}`} />
             Refresh
           </Button>
-          {selectedResults.size > 0 && (
-            <Button
-              variant="danger"
-              onClick={handleDeleteSelected}
-              disabled={deleteBulkMutation.isPending}
-              isLoading={deleteBulkMutation.isPending}
-              leftIcon={!deleteBulkMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined}
-              title="Delete selected"
-            >
-              Delete ({selectedResults.size})
-            </Button>
-          )}
+          <AnimatePresence>
+            {selectedResults.size > 0 && (
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+              >
+                <Button
+                  variant="danger"
+                  onClick={handleDeleteSelected}
+                  disabled={deleteBulkMutation.isPending}
+                  isLoading={deleteBulkMutation.isPending}
+                  leftIcon={!deleteBulkMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined}
+                >
+                  Delete ({selectedResults.size})
+                </Button>
+              </motion.div>
+            )}
+          </AnimatePresence>
           <Button onClick={() => setShowManualModal(true)}>
             <Plus className="w-4 h-4 mr-2" />
             Run Manual Evaluation
@@ -402,173 +370,310 @@ export default function Results() {
         </div>
       </div>
 
-      <div className="bg-white shadow rounded-lg overflow-hidden">
-        <div className="overflow-x-auto">
-          {loadingResults ? (
-            <div className="p-6 text-center text-gray-500">Loading...</div>
-          ) : results.length === 0 ? (
-            <div className="p-12 text-center">
-              <p className="text-gray-500 mb-4">No results yet. Run an evaluator to see results here.</p>
+      {/* Summary Stats */}
+      {!loadingResults && results.length > 0 && (
+        <motion.div
+          className="grid grid-cols-2 md:grid-cols-4 gap-4"
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3 }}
+        >
+          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 hover:shadow-md transition-shadow">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Total</p>
+                <p className="text-2xl font-bold text-gray-900 mt-1">{summaryStats.total}</p>
+              </div>
+              <div className="w-10 h-10 rounded-lg bg-slate-100 flex items-center justify-center">
+                <Activity className="w-5 h-5 text-slate-600" />
+              </div>
             </div>
-          ) : (
+          </div>
+          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 hover:shadow-md transition-shadow">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Completed</p>
+                <p className="text-2xl font-bold text-emerald-600 mt-1">{summaryStats.completed}</p>
+              </div>
+              <div className="w-10 h-10 rounded-lg bg-emerald-50 flex items-center justify-center">
+                <CheckCircle className="w-5 h-5 text-emerald-500" />
+              </div>
+            </div>
+          </div>
+          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 hover:shadow-md transition-shadow">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Failed</p>
+                <p className="text-2xl font-bold text-rose-600 mt-1">{summaryStats.failed}</p>
+              </div>
+              <div className="w-10 h-10 rounded-lg bg-rose-50 flex items-center justify-center">
+                <AlertTriangle className="w-5 h-5 text-rose-500" />
+              </div>
+            </div>
+          </div>
+          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 hover:shadow-md transition-shadow">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">In Progress</p>
+                <p className="text-2xl font-bold text-blue-600 mt-1">{summaryStats.inProgress}</p>
+              </div>
+              <div className="w-10 h-10 rounded-lg bg-blue-50 flex items-center justify-center">
+                <Loader className={`w-5 h-5 text-blue-500 ${summaryStats.inProgress > 0 ? 'animate-spin' : ''}`} />
+              </div>
+            </div>
+          </div>
+        </motion.div>
+      )}
+
+      {/* Results Table */}
+      <div className="bg-white shadow rounded-lg overflow-hidden">
+        <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <h2 className="text-lg font-semibold text-gray-900">Results</h2>
+            {results.length > 0 && (
+              <div className="flex items-center gap-1">
+                {([
+                  { key: 'all' as const, label: 'All', count: summaryStats.total },
+                  { key: 'completed' as const, label: 'Completed', count: summaryStats.completed },
+                  { key: 'failed' as const, label: 'Failed', count: summaryStats.failed },
+                  { key: 'in_progress' as const, label: 'In Progress', count: summaryStats.inProgress },
+                ]).map(({ key, label, count }) => (
+                  <button
+                    key={key}
+                    onClick={() => setStatusFilter(key)}
+                    className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+                      statusFilter === key
+                        ? 'bg-primary-100 text-primary-800 border border-primary-300'
+                        : 'text-gray-600 hover:bg-gray-100 border border-transparent'
+                    }`}
+                  >
+                    {label} ({count})
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          {selectedResults.size > 0 && (
+            <div className="text-sm text-gray-600">
+              {selectedResults.size} selected
+            </div>
+          )}
+        </div>
+        {loadingResults ? (
+          <div className="p-6 text-center text-gray-500">Loading...</div>
+        ) : results.length === 0 ? (
+          <div className="p-12 text-center">
+            <p className="text-gray-500 mb-4">No results yet. Run an evaluator to see results here.</p>
+          </div>
+        ) : filteredResults.length === 0 ? (
+          <div className="p-12 text-center">
+            <p className="text-gray-500 mb-2">No {statusFilter === 'in_progress' ? 'in-progress' : statusFilter} results found.</p>
+            <button
+              onClick={() => setStatusFilter('all')}
+              className="text-sm text-primary-600 hover:text-primary-800 font-medium"
+            >
+              Show all results
+            </button>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-12">
+                  <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-10">
                     <input
                       type="checkbox"
-                      checked={selectedResults.size === results.length && results.length > 0}
-                      onChange={(e) => handleSelectAll(e.target.checked)}
-                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      checked={selectedResults.size === filteredResults.length && filteredResults.length > 0}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setSelectedResults(new Set(filteredResults.map(r => r.id)))
+                        } else {
+                          setSelectedResults(new Set())
+                        }
+                      }}
+                      className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
                       onClick={(e) => e.stopPropagation()}
                     />
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    ID
+                  <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Result ID
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Name
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Timestamp
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Duration
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Status
                   </th>
                   {columnMetrics.map((metric: Metric) => (
                     <th
                       key={metric.id}
-                      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+                      scope="col"
+                      className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
                     >
                       {metric.name}
                     </th>
                   ))}
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  <th scope="col" className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Actions
                   </th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {results.map((result: EvaluatorResult) => (
-                  <tr key={result.id} className="hover:bg-gray-50">
-                    <td className="px-6 py-4 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
-                      <input
-                        type="checkbox"
-                        checked={selectedResults.has(result.id)}
-                        onChange={(e) => {
-                          e.stopPropagation()
-                          handleSelectResult(result.id, e.target.checked)
-                        }}
-                        className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                      />
-                    </td>
-                    <td 
-                      className="px-6 py-4 whitespace-nowrap cursor-pointer"
+                {filteredResults.map((result: EvaluatorResult) => {
+                  const statusConfig = getStatusConfig(result.status)
+                  const isSelected = selectedResults.has(result.id)
+                  return (
+                    <tr
+                      key={result.id}
+                      className={`hover:bg-gray-50 transition-colors cursor-pointer ${isSelected ? 'bg-blue-50' : ''}`}
                       onClick={() => navigate(`/results/${result.result_id}`)}
                     >
-                      <span className="font-mono font-semibold text-sm text-blue-600 hover:text-blue-800 hover:underline">
-                        {result.result_id}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="text-sm font-medium text-gray-900">{result.name}</div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="text-sm text-gray-500">{formatTimestamp(result.timestamp)}</div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="flex items-center text-sm text-gray-500">
-                        <Clock className="w-4 h-4 mr-1" />
-                        {formatDuration(result.duration_seconds)}
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="flex items-center space-x-2">
-                        {getStatusIcon(result.status)}
-                        <span className={getStatusBadge(result.status)}>
-                          {getStatusLabel(result.status)}
+                      <td className="px-4 py-4 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={(e) => {
+                            e.stopPropagation()
+                            handleSelectResult(result.id, e.target.checked)
+                          }}
+                          className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                        />
+                      </td>
+                      <td className="px-4 py-4 whitespace-nowrap">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            navigate(`/results/${result.result_id}`)
+                          }}
+                          className="font-mono font-semibold text-primary-600 hover:text-primary-800 hover:underline cursor-pointer"
+                        >
+                          {result.result_id}
+                        </button>
+                      </td>
+                      <td className="px-4 py-4 whitespace-nowrap">
+                        <span className="text-sm font-medium text-gray-900">{result.name}</span>
+                      </td>
+                      <td className="px-4 py-4 whitespace-nowrap">
+                        <span className="text-sm text-gray-500">{formatTimestamp(result.timestamp)}</span>
+                      </td>
+                      <td className="px-4 py-4 whitespace-nowrap">
+                        <div className="flex items-center text-sm text-gray-500">
+                          <Clock className="w-4 h-4 mr-1" />
+                          {formatDuration(result.duration_seconds)}
+                        </div>
+                      </td>
+                      <td className="px-4 py-4 whitespace-nowrap">
+                        <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${statusConfig.bg} ${statusConfig.text} ${statusConfig.border}`}>
+                          <span className={`w-1.5 h-1.5 rounded-full ${statusConfig.dot}`} />
+                          {statusConfig.label}
                         </span>
-                      </div>
-                    </td>
-                    {columnMetrics.map((metric: Metric) => {
-                      const score = result.metric_scores?.[metric.id]
-                      return (
-                        <td key={metric.id} className="px-6 py-4 whitespace-nowrap">
-                          <div className="text-sm text-gray-900">
-                            {score ? formatMetricValue(score.value, score.type, score.metric_name) : 'N/A'}
-                          </div>
-                        </td>
-                      )
-                    })}
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => navigate(`/results/${result.result_id}`)}
-                        className="text-blue-600 hover:text-blue-800"
-                        leftIcon={<Eye className="w-4 h-4" />}
-                      >
-                        View All
-                      </Button>
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                      {columnMetrics.map((metric: Metric) => {
+                        const score = result.metric_scores?.[metric.id]
+                        return (
+                          <td key={metric.id} className="px-4 py-4 whitespace-nowrap">
+                            <div className="text-sm text-gray-900">
+                              {score ? formatMetricValue(score.value, score.type, score.metric_name) : <span className="text-gray-400">--</span>}
+                            </div>
+                          </td>
+                        )
+                      })}
+                      <td className="px-4 py-4 whitespace-nowrap text-right" onClick={(e) => e.stopPropagation()}>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => navigate(`/results/${result.result_id}`)}
+                          leftIcon={<Eye className="w-4 h-4" />}
+                        >
+                          View
+                        </Button>
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
       {/* Manual Evaluation Modal */}
-      {showManualModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
-            <div className="p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-2xl font-bold text-gray-900">Run Manual Evaluation</h2>
-                <button
-                  onClick={() => {
-                    setShowManualModal(false)
-                    setSelectedAudioFile(null)
-                    setSelectedEvaluator('')
-                  }}
-                  className="text-gray-400 hover:text-gray-600"
-                >
-                  <X className="w-6 h-6" />
-                </button>
+      <AnimatePresence>
+        {showManualModal && (
+          <motion.div
+            className="fixed inset-0 z-50 flex items-center justify-center"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <div
+              className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+              onClick={() => {
+                setShowManualModal(false)
+                setSelectedAudioFile(null)
+                setSelectedEvaluator('')
+              }}
+            />
+            <motion.div
+              className="relative bg-white rounded-2xl shadow-2xl max-w-2xl w-full mx-4 max-h-[85vh] overflow-hidden"
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              transition={{ duration: 0.2 }}
+            >
+              <div className="px-6 py-5 border-b border-gray-100">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-lg font-semibold text-gray-900">Run Manual Evaluation</h2>
+                    <p className="text-sm text-gray-500 mt-0.5">Select an audio file and evaluator to begin</p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setShowManualModal(false)
+                      setSelectedAudioFile(null)
+                      setSelectedEvaluator('')
+                    }}
+                    className="w-8 h-8 flex items-center justify-center rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
 
-              <div className="space-y-6">
+              <div className="p-6 overflow-y-auto max-h-[60vh] space-y-6">
                 {/* Audio File Selection */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Select Audio File
+                    Audio File
                   </label>
-                  <div className="border border-gray-300 rounded-lg max-h-64 overflow-y-auto">
+                  <div className="border border-gray-200 rounded-xl max-h-56 overflow-y-auto">
                     {audioFiles?.files && audioFiles.files.length > 0 ? (
-                      <div className="divide-y divide-gray-200">
+                      <div className="divide-y divide-gray-100">
                         {audioFiles.files.map((file: AudioFile) => (
                           <button
                             key={file.key}
                             onClick={() => setSelectedAudioFile(file)}
                             className={`w-full text-left px-4 py-3 hover:bg-gray-50 transition-colors ${
                               selectedAudioFile?.key === file.key
-                                ? 'bg-primary-50 border-l-4 border-primary-500'
+                                ? 'bg-indigo-50 border-l-3 border-l-indigo-500'
                                 : ''
                             }`}
                           >
-                            <div className="font-medium text-gray-900">{file.filename}</div>
-                            <div className="text-sm text-gray-500">
-                              {file.key} • {(file.size / 1024 / 1024).toFixed(2)} MB
+                            <div className="text-sm font-medium text-gray-900">{file.filename}</div>
+                            <div className="text-xs text-gray-500 mt-0.5">
+                              {(file.size / 1024 / 1024).toFixed(2)} MB
                             </div>
                           </button>
                         ))}
                       </div>
                     ) : (
-                      <div className="p-8 text-center text-gray-500">
+                      <div className="p-8 text-center text-sm text-gray-500">
                         No audio files found
                       </div>
                     )}
@@ -578,12 +683,12 @@ export default function Results() {
                 {/* Evaluator Selection */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Select Evaluator
+                    Evaluator
                   </label>
                   <select
                     value={selectedEvaluator}
                     onChange={(e) => setSelectedEvaluator(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                    className="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white"
                   >
                     <option value="">Choose an evaluator...</option>
                     {evaluators.map((evaluator: Evaluator) => (
@@ -593,60 +698,70 @@ export default function Results() {
                     ))}
                   </select>
                 </div>
-
-                {/* Submit Button */}
-                <div className="flex justify-end gap-3">
-                  <Button
-                    variant="secondary"
-                    onClick={() => {
-                      setShowManualModal(false)
-                      setSelectedAudioFile(null)
-                      setSelectedEvaluator('')
-                    }}
-                  >
-                    Cancel
-                  </Button>
-                  <Button
-                    onClick={handleManualEvaluation}
-                    disabled={!selectedAudioFile || !selectedEvaluator || createResultMutation.isPending}
-                  >
-                    {createResultMutation.isPending ? (
-                      <>
-                        <Loader className="w-4 h-4 animate-spin mr-2" />
-                        Creating...
-                      </>
-                    ) : (
-                      'Run Evaluation'
-                    )}
-                  </Button>
-                </div>
               </div>
-            </div>
-          </div>
-        </div>
-      )}
+
+              {/* Footer */}
+              <div className="px-6 py-4 border-t border-gray-100 bg-gray-50/50 flex justify-end gap-3">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setShowManualModal(false)
+                    setSelectedAudioFile(null)
+                    setSelectedEvaluator('')
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={handleManualEvaluation}
+                  disabled={!selectedAudioFile || !selectedEvaluator || createResultMutation.isPending}
+                  isLoading={createResultMutation.isPending}
+                >
+                  {createResultMutation.isPending ? 'Creating...' : 'Run Evaluation'}
+                </Button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Delete Confirmation Modal */}
-      {showDeleteModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={() => setShowDeleteModal(false)}>
-          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
-            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-              <h3 className="text-lg font-semibold text-gray-900">Confirm Delete</h3>
-              <button
-                onClick={() => setShowDeleteModal(false)}
-                className="text-gray-400 hover:text-gray-600"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            <div className="p-6">
-              <p className="text-gray-700 mb-6">
-                Are you sure you want to delete <span className="font-semibold">{selectedResults.size}</span> result(s)? 
-                This action cannot be undone.
-              </p>
-              <div className="flex justify-end space-x-3">
+      <AnimatePresence>
+        {showDeleteModal && (
+          <motion.div
+            className="fixed inset-0 z-50 flex items-center justify-center"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <div
+              className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+              onClick={() => setShowDeleteModal(false)}
+            />
+            <motion.div
+              className="relative bg-white rounded-2xl shadow-2xl max-w-md w-full mx-4"
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              transition={{ duration: 0.2 }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="p-6">
+                <div className="w-12 h-12 rounded-full bg-rose-100 flex items-center justify-center mx-auto mb-4">
+                  <Trash2 className="w-6 h-6 text-rose-600" />
+                </div>
+                <h3 className="text-lg font-semibold text-gray-900 text-center">Delete Results</h3>
+                <p className="text-sm text-gray-500 text-center mt-2">
+                  Are you sure you want to delete <span className="font-semibold text-gray-900">{selectedResults.size}</span> result{selectedResults.size !== 1 ? 's' : ''}? 
+                  This action cannot be undone.
+                </p>
+              </div>
+              <div className="px-6 py-4 border-t border-gray-100 flex justify-end gap-3">
                 <Button
-                  variant="outline"
+                  variant="ghost"
+                  size="sm"
                   onClick={() => setShowDeleteModal(false)}
                   disabled={deleteBulkMutation.isPending}
                 >
@@ -654,6 +769,7 @@ export default function Results() {
                 </Button>
                 <Button
                   variant="danger"
+                  size="sm"
                   onClick={confirmDelete}
                   disabled={deleteBulkMutation.isPending}
                   isLoading={deleteBulkMutation.isPending}
@@ -661,11 +777,10 @@ export default function Results() {
                   Delete
                 </Button>
               </div>
-            </div>
-          </div>
-        </div>
-      )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }
-

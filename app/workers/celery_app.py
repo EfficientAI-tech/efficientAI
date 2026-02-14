@@ -4,6 +4,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from celery import Celery
+from celery.schedules import crontab
 from app.config import settings, load_config_from_file
 from app.database import SessionLocal
 from app.services.evaluation_service import evaluation_service
@@ -868,3 +869,87 @@ def run_evaluator_task(self, evaluator_id: str, evaluator_result_id: str):
         raise self.retry(exc=exc, countdown=60)
     finally:
         db.close()
+
+
+# ============================================
+# ALERT EVALUATION TASKS
+# ============================================
+
+@celery_app.task(name="evaluate_alerts", bind=True, max_retries=2)
+def evaluate_alerts_task(self):
+    """
+    Celery task to evaluate all active alerts.
+    Runs periodically via Celery Beat to check alert conditions
+    and trigger notifications when thresholds are breached.
+
+    Returns:
+        Dictionary with evaluation summary
+    """
+    db = SessionLocal()
+    try:
+        from app.services.alert_evaluation_service import alert_evaluation_service
+
+        logger.info("[CeleryTask] Starting periodic alert evaluation")
+        result = alert_evaluation_service.evaluate_all_alerts(db)
+        logger.info(
+            f"[CeleryTask] Alert evaluation complete: "
+            f"{result['triggered']} triggered, {result['not_triggered']} ok, "
+            f"{result['errors']} errors"
+        )
+        return result
+    except Exception as exc:
+        logger.error(f"[CeleryTask] Alert evaluation failed: {exc}", exc_info=True)
+        raise self.retry(exc=exc, countdown=120)
+    finally:
+        db.close()
+
+
+@celery_app.task(name="evaluate_single_alert", bind=True, max_retries=2)
+def evaluate_single_alert_task(self, alert_id: str, organization_id: str):
+    """
+    Celery task to evaluate a single alert (for manual trigger).
+
+    Args:
+        self: Task instance
+        alert_id: Alert UUID as string
+        organization_id: Organization UUID as string
+
+    Returns:
+        Dictionary with evaluation result
+    """
+    db = SessionLocal()
+    try:
+        from app.services.alert_evaluation_service import alert_evaluation_service
+
+        logger.info(f"[CeleryTask] Evaluating single alert: {alert_id}")
+        result = alert_evaluation_service.evaluate_alert_by_id(
+            alert_id=UUID(alert_id),
+            organization_id=UUID(organization_id),
+            db=db,
+        )
+        logger.info(
+            f"[CeleryTask] Single alert evaluation complete: "
+            f"triggered={result.get('triggered', False)}"
+        )
+        return result
+    except Exception as exc:
+        logger.error(
+            f"[CeleryTask] Single alert evaluation failed: {exc}",
+            exc_info=True,
+        )
+        raise self.retry(exc=exc, countdown=60)
+    finally:
+        db.close()
+
+
+# ============================================
+# CELERY BEAT SCHEDULE
+# ============================================
+
+celery_app.conf.beat_schedule = {
+    "evaluate-alerts-every-minute": {
+        "task": "evaluate_alerts",
+        "schedule": 60.0,  # Run every 60 seconds
+        "options": {"queue": "default"},
+    },
+}

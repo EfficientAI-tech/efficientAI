@@ -64,6 +64,15 @@ class Settings(BaseSettings):
     # Frontend
     FRONTEND_DIR: str = "./frontend/dist"
     
+    # SMTP / Email Notifications (for Alerts)
+    SMTP_HOST: Optional[str] = None  # e.g., "smtp.gmail.com"
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: Optional[str] = None
+    SMTP_PASSWORD: Optional[str] = None
+    SMTP_FROM_EMAIL: Optional[str] = None  # e.g., "alerts@efficientai.dev"
+    SMTP_FROM_NAME: str = "EfficientAI Alerts"
+    SMTP_USE_TLS: bool = True
+    
     # Speaker Diarization (Optional)
     HUGGINGFACE_TOKEN: Optional[str] = None  # For pyannote.audio speaker diarization
 
@@ -258,6 +267,23 @@ def load_config_from_file(config_path: str) -> None:
             settings.S3_ENDPOINT_URL = s3_config["endpoint_url"]
         if "prefix" in s3_config:
             settings.S3_PREFIX = s3_config["prefix"]
+    
+    if "smtp" in config_data:
+        smtp_config = config_data["smtp"]
+        if "host" in smtp_config:
+            settings.SMTP_HOST = smtp_config["host"]
+        if "port" in smtp_config:
+            settings.SMTP_PORT = smtp_config["port"]
+        if "username" in smtp_config:
+            settings.SMTP_USERNAME = smtp_config["username"]
+        if "password" in smtp_config:
+            settings.SMTP_PASSWORD = smtp_config["password"]
+        if "from_email" in smtp_config:
+            settings.SMTP_FROM_EMAIL = smtp_config["from_email"]
+        if "from_name" in smtp_config:
+            settings.SMTP_FROM_NAME = smtp_config["from_name"]
+        if "use_tls" in smtp_config:
+            settings.SMTP_USE_TLS = smtp_config["use_tls"]
     
     if "cors" in config_data:
         cors_config = config_data["cors"]
