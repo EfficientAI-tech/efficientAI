@@ -28,15 +28,16 @@ import Settings from './pages/Settings'
 import Alerts from './pages/Alerts'
 import AlertHistory from './pages/AlertHistory'
 import CronJobs from './pages/CronJobs'
+import VoicePlayground from './pages/VoicePlayground'
 
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const { apiKey } = useAuthStore()
-  
+
   if (!apiKey) {
     return <Navigate to="/login" replace />
   }
-  
+
   return <>{children}</>
 }
 
@@ -66,6 +67,7 @@ function App() {
           <Route path="integrations" element={<Integrations />} />
           <Route path="data-sources" element={<DataSources />} />
           <Route path="voicebundles" element={<VoiceBundles />} />
+          <Route path="voice-playground" element={<VoicePlayground />} />
           <Route path="evaluate-test-agents" element={<EvaluateTestAgents />} />
           <Route path="metrics-management" element={<MetricsManagement />} />
           <Route path="results" element={<Results />} />
