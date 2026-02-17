@@ -59,6 +59,7 @@ const navigationSections: NavSection[] = [
     icon: FileCheck,
     items: [
       { name: 'Playground', href: '/playground', icon: Play },
+      { name: 'Voice Playground', href: '/voice-playground', icon: Mic },
       { name: 'Evaluators', href: '/evaluate-test-agents', icon: Mic },
       { name: 'Evaluation Results', href: '/results', icon: BarChart3 },
     ],
@@ -272,7 +273,7 @@ export default function Layout() {
                 </>
               )}
             </div>
-            
+
             {/* Profile Link */}
             <ProfileAvatar />
           </div>
@@ -317,11 +318,10 @@ function ProfileAvatar() {
     <div className="flex items-center">
       <Link
         to="/profile"
-        className={`flex items-center justify-center w-10 h-10 rounded-lg transition-colors ${
-          location.pathname === '/profile'
+        className={`flex items-center justify-center w-10 h-10 rounded-lg transition-colors ${location.pathname === '/profile'
             ? 'bg-gray-100'
             : 'hover:bg-gray-50'
-        }`}
+          }`}
         title="Profile"
       >
         <div className="w-8 h-8 rounded-full bg-transparent border-2 border-gray-400 flex items-center justify-center text-gray-700 text-sm font-semibold">
