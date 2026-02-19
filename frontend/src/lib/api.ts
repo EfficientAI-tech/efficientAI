@@ -1076,6 +1076,60 @@ class ApiClient {
     const response = await this.client.post(`/api/v1/cron-jobs/${cronJobId}/toggle`)
     return response.data
   }
+
+  // Voice Playground (TTS Comparison) endpoints
+  async listTTSProviders(): Promise<any[]> {
+    const response = await this.client.get('/api/v1/voice-playground/tts-providers')
+    return response.data
+  }
+
+  async createTTSComparison(data: {
+    name?: string
+    provider_a: string
+    model_a: string
+    voices_a: Array<{ id: string; name: string }>
+    provider_b: string
+    model_b: string
+    voices_b: Array<{ id: string; name: string }>
+    sample_texts: string[]
+  }): Promise<any> {
+    const response = await this.client.post('/api/v1/voice-playground/comparisons', data)
+    return response.data
+  }
+
+  async listTTSComparisons(skip = 0, limit = 50): Promise<any[]> {
+    const response = await this.client.get('/api/v1/voice-playground/comparisons', {
+      params: { skip, limit },
+    })
+    return response.data
+  }
+
+  async getTTSComparison(comparisonId: string): Promise<any> {
+    const response = await this.client.get(`/api/v1/voice-playground/comparisons/${comparisonId}`)
+    return response.data
+  }
+
+  async generateTTSComparison(comparisonId: string): Promise<{ message: string; task_id: string }> {
+    const response = await this.client.post(`/api/v1/voice-playground/comparisons/${comparisonId}/generate`)
+    return response.data
+  }
+
+  async submitBlindTest(comparisonId: string, results: Array<{
+    sample_index: number
+    preferred: 'A' | 'B'
+    voice_a_id: string
+    voice_b_id: string
+  }>): Promise<any> {
+    const response = await this.client.post(
+      `/api/v1/voice-playground/comparisons/${comparisonId}/blind-test`,
+      { results }
+    )
+    return response.data
+  }
+
+  async deleteTTSComparison(comparisonId: string): Promise<void> {
+    await this.client.delete(`/api/v1/voice-playground/comparisons/${comparisonId}`)
+  }
 }
 
 // Factory function to create ApiClient instance
