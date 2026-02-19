@@ -56,7 +56,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: eai start --config /app/config.yml --host 0.0.0.0 --port 8000
+    command: eai start --config /app/config.yml --host 0.0.0.0 --port 8000 --no-build-frontend
 
   worker:
     build:
