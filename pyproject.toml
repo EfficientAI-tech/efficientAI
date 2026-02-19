@@ -66,6 +66,7 @@ deepgram = [
 # Qualitative Voice AI Metrics (MOS, Emotion, Prosody)
 qualitative-voice = [
     "torch>=2.0.0",
+    "torchaudio>=2.0.0",
     "transformers>=4.41.0",
     "librosa>=0.10.0",
     "scipy>=1.11.0",
