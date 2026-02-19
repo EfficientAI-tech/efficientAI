@@ -30,6 +30,7 @@ import Alerts from './pages/Alerts'
 import AlertDetail from './pages/AlertDetail'
 import AlertHistory from './pages/AlertHistory'
 import CronJobs from './pages/CronJobs'
+import VoicePlayground from './pages/VoicePlayground'
 
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -82,6 +83,7 @@ function App() {
           <Route path="alerts" element={<Alerts />} />
           <Route path="alerts/:id" element={<AlertDetail />} />
           <Route path="alerts/history" element={<AlertHistory />} />
+          <Route path="voice-playground" element={<VoicePlayground />} />
           <Route path="cron-jobs" element={<CronJobs />} />
         </Route>
       </Routes>

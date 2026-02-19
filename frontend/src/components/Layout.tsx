@@ -27,6 +27,7 @@ import {
   History,
   Key,
   Clock,
+  Volume2,
 } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import Logo from './Logo'
@@ -59,6 +60,7 @@ const navigationSections: NavSection[] = [
     icon: FileCheck,
     items: [
       { name: 'Playground', href: '/playground', icon: Play },
+      { name: 'Voice Playground', href: '/voice-playground', icon: Volume2 },
       { name: 'Evaluators', href: '/evaluate-test-agents', icon: Mic },
       { name: 'Evaluation Results', href: '/results', icon: BarChart3 },
     ],
