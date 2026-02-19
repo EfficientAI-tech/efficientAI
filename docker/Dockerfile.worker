@@ -1,8 +1,11 @@
 FROM python:3.11-slim
 
-# Install system dependencies (git needed for torch.hub clone)
+# Install system dependencies (git needed for torch.hub clone, build-essential +
+# cmake needed for packages like praat-parselmouth on arm64/Apple Silicon)
 RUN apt-get update && apt-get install -y \
     git \
+    build-essential \
+    cmake \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv
