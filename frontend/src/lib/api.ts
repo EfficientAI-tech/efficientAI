@@ -1092,6 +1092,7 @@ class ApiClient {
     model_b: string
     voices_b: Array<{ id: string; name: string }>
     sample_texts: string[]
+    num_runs?: number
   }): Promise<any> {
     const response = await this.client.post('/api/v1/voice-playground/comparisons', data)
     return response.data

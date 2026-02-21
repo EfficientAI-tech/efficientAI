@@ -107,6 +107,7 @@ class TTSComparisonCreate(BaseModel):
     model_b: str
     voices_b: List[Dict[str, str]]
     sample_texts: List[str]
+    num_runs: int = 1
 
 
 class BlindTestSubmit(BaseModel):
@@ -184,6 +185,8 @@ async def create_comparison(
     if not data.voices_a or not data.voices_b:
         raise HTTPException(400, "At least one voice per provider is required")
 
+    num_runs = max(1, min(data.num_runs, 10))
+
     comparison = TTSComparison(
         organization_id=organization_id,
         name=data.name or f"{data.provider_a} vs {data.provider_b}",
@@ -195,43 +198,44 @@ async def create_comparison(
         model_b=data.model_b,
         voices_b=[v if isinstance(v, dict) else {"id": v} for v in data.voices_b],
         sample_texts=data.sample_texts,
+        num_runs=num_runs,
     )
     db.add(comparison)
     db.flush()
 
-    # Create sample records for every (text, voice) combination
-    for idx, text in enumerate(data.sample_texts):
-        for voice in data.voices_a:
-            vid = voice["id"] if isinstance(voice, dict) else voice
-            vname = voice.get("name", vid) if isinstance(voice, dict) else vid
-            sample = TTSSample(
-                comparison_id=comparison.id,
-                organization_id=organization_id,
-                provider=data.provider_a,
-                model=data.model_a,
-                voice_id=vid,
-                voice_name=vname,
-                sample_index=idx,
-                text=text,
-                status=TTSSampleStatus.PENDING.value,
-            )
-            db.add(sample)
+    for run in range(num_runs):
+        for idx, text in enumerate(data.sample_texts):
+            for voice in data.voices_a:
+                vid = voice["id"] if isinstance(voice, dict) else voice
+                vname = voice.get("name", vid) if isinstance(voice, dict) else vid
+                db.add(TTSSample(
+                    comparison_id=comparison.id,
+                    organization_id=organization_id,
+                    provider=data.provider_a,
+                    model=data.model_a,
+                    voice_id=vid,
+                    voice_name=vname,
+                    sample_index=idx,
+                    run_index=run,
+                    text=text,
+                    status=TTSSampleStatus.PENDING.value,
+                ))
 
-        for voice in data.voices_b:
-            vid = voice["id"] if isinstance(voice, dict) else voice
-            vname = voice.get("name", vid) if isinstance(voice, dict) else vid
-            sample = TTSSample(
-                comparison_id=comparison.id,
-                organization_id=organization_id,
-                provider=data.provider_b,
-                model=data.model_b,
-                voice_id=vid,
-                voice_name=vname,
-                sample_index=idx,
-                text=text,
-                status=TTSSampleStatus.PENDING.value,
-            )
-            db.add(sample)
+            for voice in data.voices_b:
+                vid = voice["id"] if isinstance(voice, dict) else voice
+                vname = voice.get("name", vid) if isinstance(voice, dict) else vid
+                db.add(TTSSample(
+                    comparison_id=comparison.id,
+                    organization_id=organization_id,
+                    provider=data.provider_b,
+                    model=data.model_b,
+                    voice_id=vid,
+                    voice_name=vname,
+                    sample_index=idx,
+                    run_index=run,
+                    text=text,
+                    status=TTSSampleStatus.PENDING.value,
+                ))
 
     db.commit()
     db.refresh(comparison)
@@ -320,6 +324,51 @@ async def submit_blind_test(
     return {"message": "Blind test results saved"}
 
 
+@router.get("/comparisons/{comparison_id}/samples/{sample_id}", operation_id="getTTSSample")
+async def get_sample(
+    comparison_id: UUID,
+    sample_id: UUID,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """Get a single TTS sample with full metrics (useful for analytics / future reference)."""
+    _get_comparison_or_404(comparison_id, organization_id, db)
+    sample = db.query(TTSSample).filter(
+        TTSSample.id == sample_id,
+        TTSSample.comparison_id == comparison_id,
+    ).first()
+    if not sample:
+        raise HTTPException(404, "TTS sample not found")
+
+    audio_url = None
+    if sample.audio_s3_key:
+        try:
+            audio_url = s3_service.generate_presigned_url_by_key(sample.audio_s3_key, expiration=3600)
+        except Exception:
+            pass
+
+    return {
+        "id": str(sample.id),
+        "comparison_id": str(sample.comparison_id),
+        "provider": sample.provider,
+        "model": sample.model,
+        "voice_id": sample.voice_id,
+        "voice_name": sample.voice_name,
+        "sample_index": sample.sample_index,
+        "run_index": sample.run_index if sample.run_index is not None else 0,
+        "text": sample.text,
+        "audio_url": audio_url,
+        "audio_s3_key": sample.audio_s3_key,
+        "duration_seconds": sample.duration_seconds,
+        "latency_ms": sample.latency_ms,
+        "evaluation_metrics": sample.evaluation_metrics,
+        "status": sample.status,
+        "error_message": sample.error_message,
+        "created_at": sample.created_at.isoformat() if sample.created_at else None,
+    }
+
+
 @router.delete("/comparisons/{comparison_id}", operation_id="deleteTTSComparison")
 async def delete_comparison(
     comparison_id: UUID,
@@ -358,6 +407,7 @@ def _serialize_comparison_summary(c: TTSComparison) -> Dict[str, Any]:
         "provider_b": c.provider_b,
         "model_b": c.model_b,
         "sample_count": len(c.sample_texts) if c.sample_texts else 0,
+        "num_runs": c.num_runs or 1,
         "created_at": c.created_at.isoformat() if c.created_at else None,
     }
 
@@ -366,7 +416,7 @@ def _serialize_comparison(c: TTSComparison, db: Session) -> Dict[str, Any]:
     samples = (
         db.query(TTSSample)
         .filter(TTSSample.comparison_id == c.id)
-        .order_by(TTSSample.sample_index, TTSSample.provider, TTSSample.voice_id)
+        .order_by(TTSSample.run_index, TTSSample.sample_index, TTSSample.provider, TTSSample.voice_id)
         .all()
     )
 
@@ -387,6 +437,7 @@ def _serialize_comparison(c: TTSComparison, db: Session) -> Dict[str, Any]:
             "voice_id": s.voice_id,
             "voice_name": s.voice_name,
             "sample_index": s.sample_index,
+            "run_index": s.run_index if s.run_index is not None else 0,
             "text": s.text,
             "audio_url": audio_url,
             "audio_s3_key": s.audio_s3_key,
@@ -408,6 +459,7 @@ def _serialize_comparison(c: TTSComparison, db: Session) -> Dict[str, Any]:
         "model_b": c.model_b,
         "voices_b": c.voices_b,
         "sample_texts": c.sample_texts,
+        "num_runs": c.num_runs or 1,
         "blind_test_results": c.blind_test_results,
         "evaluation_summary": c.evaluation_summary,
         "error_message": c.error_message,

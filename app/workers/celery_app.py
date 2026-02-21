@@ -831,16 +831,11 @@ def generate_tts_comparison_task(self, comparison_id: str):
                     voice=sample.voice_id,
                 )
 
-                # Upload to S3
-                import uuid as _uuid
                 from app.services.s3_service import s3_service
 
-                file_id = _uuid.uuid4()
-                s3_key = s3_service.upload_file(
-                    file_id=file_id,
+                s3_key = s3_service.upload_file_by_key(
                     file_content=audio_bytes,
-                    file_format="mp3",
-                    organization_id=comp.organization_id,
+                    key=f"{s3_service.prefix}organizations/{comp.organization_id}/voicePlayground/{comp.id}/{sample.id}.mp3",
                 )
 
                 # Estimate duration from file size (MP3 ~128kbps)

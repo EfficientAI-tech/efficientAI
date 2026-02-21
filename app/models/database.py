@@ -725,6 +725,7 @@ class TTSComparison(Base):
     voices_b = Column(JSON, nullable=False)
 
     sample_texts = Column(JSON, nullable=False)
+    num_runs = Column(Integer, nullable=False, default=1)
 
     blind_test_results = Column(JSON, nullable=True)
     evaluation_summary = Column(JSON, nullable=True)
@@ -752,6 +753,7 @@ class TTSSample(Base):
     voice_id = Column(String(255), nullable=False)
     voice_name = Column(String(255), nullable=True)
     sample_index = Column(Integer, nullable=False)
+    run_index = Column(Integer, nullable=False, default=0)
 
     text = Column(String, nullable=False)
     audio_s3_key = Column(String(512), nullable=True)

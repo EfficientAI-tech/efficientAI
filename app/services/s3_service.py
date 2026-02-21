@@ -195,6 +195,26 @@ class S3Service:
         except Exception as e:
             raise StorageError(f"Unexpected error uploading file to S3: {str(e)}")
 
+    def upload_file_by_key(self, file_content: bytes, key: str, content_type: str = "audio/mpeg") -> str:
+        """Upload file to S3 using an explicit key path."""
+        self._ensure_initialized()
+        if not self.is_enabled():
+            error_msg = self._initialization_error or "S3 is not enabled or not configured"
+            raise StorageError(error_msg)
+
+        try:
+            self.s3_client.put_object(
+                Bucket=self.bucket_name,
+                Key=key,
+                Body=file_content,
+                ContentType=content_type,
+            )
+            return key
+        except ClientError as e:
+            raise StorageError(f"Failed to upload file to S3: {str(e)}")
+        except Exception as e:
+            raise StorageError(f"Unexpected error uploading file to S3: {str(e)}")
+
     def download_file(self, file_id: uuid.UUID, file_format: str) -> bytes:
         """
         Download file from S3.

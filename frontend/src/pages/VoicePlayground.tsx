@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
+import { MODEL_PROVIDER_CONFIG } from '../config/providers'
+import { ModelProvider } from '../types/api'
 import Button from '../components/Button'
 import {
     Play,
@@ -18,7 +20,12 @@ import {
     ChevronDown,
     ChevronUp,
     ArrowRight,
+    ArrowLeft,
     Headphones,
+    Hash,
+    History,
+    Trash2,
+    Eye,
 } from 'lucide-react'
 
 // ============ TYPES ============
@@ -43,6 +50,7 @@ interface TTSSample {
     voice_id: string
     voice_name: string
     sample_index: number
+    run_index: number
     text: string
     audio_url: string | null
     audio_s3_key: string | null
@@ -64,12 +72,26 @@ interface TTSComparison {
     model_b: string
     voices_b: Array<{ id: string; name: string }>
     sample_texts: string[]
+    num_runs: number
     blind_test_results: Array<{ sample_index: number; preferred: string }> | null
     evaluation_summary: Record<string, any> | null
     error_message: string | null
     samples: TTSSample[]
     created_at: string
     updated_at: string
+}
+
+interface TTSComparisonSummary {
+    id: string
+    name: string
+    status: string
+    provider_a: string
+    model_a: string
+    provider_b: string
+    model_b: string
+    sample_count: number
+    num_runs: number
+    created_at: string
 }
 
 // ============ CONSTANTS ============
@@ -82,13 +104,33 @@ const DEFAULT_SAMPLE_TEXTS = [
     "Is there anything else I can help you with today? We appreciate your business!",
 ]
 
-const PROVIDER_DISPLAY: Record<string, string> = {
-    openai: 'OpenAI',
-    elevenlabs: 'ElevenLabs',
-    cartesia: 'Cartesia',
-    deepgram: 'Deepgram',
-    google: 'Google',
+function getProviderInfo(key: string): { label: string; logo: string | null } {
+    const enumKey = key.toUpperCase() as keyof typeof ModelProvider
+    const enumVal = ModelProvider[enumKey]
+    if (enumVal && MODEL_PROVIDER_CONFIG[enumVal]) {
+        return { label: MODEL_PROVIDER_CONFIG[enumVal].label, logo: MODEL_PROVIDER_CONFIG[enumVal].logo }
+    }
+    return { label: key.charAt(0).toUpperCase() + key.slice(1), logo: null }
 }
+
+function ProviderLogo({ provider, size = 'md' }: { provider: string; size?: 'sm' | 'md' | 'lg' }) {
+    const { logo, label } = getProviderInfo(provider)
+    const dims = size === 'sm' ? 'w-5 h-5' : size === 'lg' ? 'w-10 h-10' : 'w-7 h-7'
+    const containerDims = size === 'sm' ? 'w-6 h-6' : size === 'lg' ? 'w-12 h-12' : 'w-8 h-8'
+    if (!logo) {
+        return (
+            <div className={`${containerDims} bg-gray-100 rounded-lg flex items-center justify-center border border-gray-200`}>
+                <Volume2 className={`${size === 'sm' ? 'w-3 h-3' : 'w-4 h-4'} text-gray-400`} />
+            </div>
+        )
+    }
+    return (
+        <div className={`${containerDims} bg-white rounded-lg flex items-center justify-center border border-gray-200 p-0.5`}>
+            <img src={logo} alt={label} className={`${dims} object-contain`} />
+        </div>
+    )
+}
+
 
 // ============ AUDIO PLAYER HOOK ============
 
@@ -177,11 +219,19 @@ function MetricCard({ label, valueA, valueB, unit, higherIsBetter = true }: {
 
 export default function VoicePlayground() {
     const { playingId, play, stop } = useAudioPlayer()
+    const [activeTab, setActiveTab] = useState<'playground' | 'past-simulations'>('playground')
+    const [viewingPastId, setViewingPastId] = useState<string | null>(null)
 
     // --- Provider data ---
     const { data: providers = [], isLoading: providersLoading } = useQuery<TTSProvider[]>({
         queryKey: ['tts-providers'],
         queryFn: () => apiClient.listTTSProviders(),
+    })
+
+    // --- Past comparisons ---
+    const { data: pastComparisons = [], refetch: refetchPast } = useQuery<TTSComparisonSummary[]>({
+        queryKey: ['tts-comparisons-list'],
+        queryFn: () => apiClient.listTTSComparisons(),
     })
 
     // --- Configuration state ---
@@ -196,6 +246,7 @@ export default function VoicePlayground() {
     const [sampleTexts, setSampleTexts] = useState<string[]>(DEFAULT_SAMPLE_TEXTS.slice(0, 3))
     const [customText, setCustomText] = useState('')
     const [selectedTranscript, setSelectedTranscript] = useState(0)
+    const [numRuns, setNumRuns] = useState(1)
 
     // --- Active comparison ---
     const [activeComparisonId, setActiveComparisonId] = useState<string | null>(null)
@@ -211,6 +262,13 @@ export default function VoicePlayground() {
         queryFn: () => apiClient.getTTSComparison(activeComparisonId!),
         enabled: !!activeComparisonId,
         refetchInterval: activeComparisonId && (step === 'progress') ? 3000 : false,
+    })
+
+    // --- Fetch viewed past comparison (for Past Simulations tab) ---
+    const { data: viewedComparison, isLoading: viewedLoading } = useQuery<TTSComparison>({
+        queryKey: ['tts-comparison', viewingPastId],
+        queryFn: () => apiClient.getTTSComparison(viewingPastId!),
+        enabled: !!viewingPastId,
     })
 
     // Transition from progress to blind-test or results when generation/evaluation completes
@@ -239,6 +297,7 @@ export default function VoicePlayground() {
                 model_b: modelB,
                 voices_b: selectedVoicesB.map(v => ({ id: v.id, name: v.name })),
                 sample_texts: sampleTexts,
+                num_runs: numRuns,
             })
             await apiClient.generateTTSComparison(comp.id)
             return comp
@@ -246,6 +305,7 @@ export default function VoicePlayground() {
         onSuccess: (comp) => {
             setActiveComparisonId(comp.id)
             setStep('progress')
+            refetchPast()
         },
     })
 
@@ -289,6 +349,11 @@ export default function VoicePlayground() {
         setBlindChoices({})
     }
 
+    const deleteMutation = useMutation({
+        mutationFn: (id: string) => apiClient.deleteTTSComparison(id),
+        onSuccess: () => { refetchPast() },
+    })
+
     const canRun = providerA && providerB && providerA !== providerB &&
         modelA && modelB && selectedVoicesA.length > 0 && selectedVoicesB.length > 0 &&
         sampleTexts.length > 0
@@ -302,6 +367,7 @@ export default function VoicePlayground() {
         setSelectedVoicesA([])
         setSelectedVoicesB([])
         setSampleTexts(DEFAULT_SAMPLE_TEXTS.slice(0, 3))
+        setNumRuns(1)
         setActiveComparisonId(null)
         setStep('configure')
         setBlindChoices({})
@@ -329,161 +395,225 @@ export default function VoicePlayground() {
                         A/B test TTS providers &mdash; compare voice quality with real synthesis, blind tests, and automated evaluation
                     </p>
                 </div>
-                {step !== 'configure' && (
+                {step !== 'configure' && activeTab === 'playground' && (
                     <Button variant="ghost" onClick={resetPlayground} leftIcon={<RotateCcw className="w-4 h-4" />}>
                         New Comparison
                     </Button>
                 )}
             </div>
 
-            {/* =========== STEP: CONFIGURE =========== */}
-            {step === 'configure' && (
-                <>
-                    {/* Sample Texts */}
-                    <div className="bg-gradient-to-r from-indigo-50 to-violet-50 rounded-xl p-4 border border-indigo-100">
-                        <div className="flex items-center gap-2 mb-3">
-                            <FileText className="w-5 h-5 text-indigo-600" />
-                            <h3 className="font-semibold text-indigo-900">Sample Transcripts</h3>
-                        </div>
-                        <div className="flex gap-2 flex-wrap mb-3">
-                            {DEFAULT_SAMPLE_TEXTS.map((t, idx) => {
-                                const isActive = sampleTexts.includes(t)
-                                return (
-                                    <button
-                                        key={idx}
-                                        onClick={() => {
-                                            if (isActive) {
-                                                setSampleTexts(sampleTexts.filter(s => s !== t))
-                                            } else {
-                                                setSampleTexts([...sampleTexts, t])
-                                            }
-                                            setSelectedTranscript(idx)
-                                        }}
-                                        className={`px-3 py-2 text-xs rounded-lg transition-all ${isActive ? 'bg-indigo-600 text-white' : 'bg-white text-gray-600 hover:bg-indigo-100 border border-indigo-200'}`}
-                                    >
-                                        Sample {idx + 1}
-                                    </button>
-                                )
-                            })}
-                        </div>
-                        <p className="p-3 bg-white rounded-lg text-sm text-gray-700 italic border border-indigo-100">
-                            &ldquo;{DEFAULT_SAMPLE_TEXTS[selectedTranscript]}&rdquo;
-                        </p>
-                        {/* Custom text */}
-                        <div className="mt-3 flex gap-2">
-                            <input
-                                type="text"
-                                value={customText}
-                                onChange={e => setCustomText(e.target.value)}
-                                placeholder="Add custom text..."
-                                className="flex-1 px-3 py-2 text-sm border border-indigo-200 rounded-lg focus:ring-2 focus:ring-indigo-500"
-                                onKeyDown={e => {
-                                    if (e.key === 'Enter' && customText.trim()) {
-                                        setSampleTexts([...sampleTexts, customText.trim()])
-                                        setCustomText('')
-                                    }
-                                }}
-                            />
-                            <button
-                                onClick={() => {
-                                    if (customText.trim()) {
-                                        setSampleTexts([...sampleTexts, customText.trim()])
-                                        setCustomText('')
-                                    }
-                                }}
-                                disabled={!customText.trim()}
-                                className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
-                            >
-                                Add
-                            </button>
-                        </div>
-                        {/* Active text chips */}
-                        <div className="flex flex-wrap gap-2 mt-3">
-                            {sampleTexts.map((t, idx) => (
-                                <div key={idx} className="flex items-center gap-1 bg-indigo-100 text-indigo-800 text-xs px-2 py-1 rounded-full border border-indigo-200 max-w-xs">
-                                    <span className="truncate">{t.slice(0, 50)}{t.length > 50 ? '...' : ''}</span>
-                                    <button onClick={() => setSampleTexts(sampleTexts.filter((_, i) => i !== idx))} className="hover:text-indigo-600 rounded-full p-0.5">
-                                        <X className="w-3 h-3" />
-                                    </button>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-
-                    {/* Provider Config Panel */}
-                    <div className="bg-white rounded-xl shadow-lg p-6">
-                        <h2 className="text-lg font-semibold text-gray-900 mb-6">Configure Comparison</h2>
-
-                        {providersLoading ? (
-                            <div className="flex items-center justify-center py-12 text-gray-500">
-                                <Loader2 className="w-6 h-6 animate-spin mr-2" />
-                                Loading providers...
-                            </div>
-                        ) : providers.length === 0 ? (
-                            <div className="text-center py-12">
-                                <Volume2 className="w-12 h-12 mx-auto text-gray-300 mb-3" />
-                                <p className="text-gray-600 font-medium">No TTS providers configured</p>
-                                <p className="text-sm text-gray-500 mt-1">Go to Integrations to add API keys for ElevenLabs, Cartesia, OpenAI, Deepgram, or Google.</p>
-                            </div>
-                        ) : (
-                            <>
-                                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6 relative">
-                                    {/* Provider A */}
-                                    <ProviderPanel
-                                        label="A"
-                                        color="blue"
-                                        providers={providers}
-                                        otherProvider={providerB}
-                                        selectedProvider={providerA}
-                                        selectedModel={modelA}
-                                        selectedVoices={selectedVoicesA}
-                                        onProviderChange={p => { setProviderA(p); setModelA(''); setSelectedVoicesA([]) }}
-                                        onModelChange={setModelA}
-                                        onVoicesChange={setSelectedVoicesA}
-                                    />
-
-                                    {/* VS Badge */}
-                                    <div className="hidden lg:flex absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-10">
-                                        <span className="px-4 py-2 bg-gray-900 text-white rounded-full text-sm font-bold shadow-xl">VS</span>
-                                    </div>
-
-                                    {/* Provider B */}
-                                    <ProviderPanel
-                                        label="B"
-                                        color="purple"
-                                        providers={providers}
-                                        otherProvider={providerA}
-                                        selectedProvider={providerB}
-                                        selectedModel={modelB}
-                                        selectedVoices={selectedVoicesB}
-                                        onProviderChange={p => { setProviderB(p); setModelB(''); setSelectedVoicesB([]) }}
-                                        onModelChange={setModelB}
-                                        onVoicesChange={setSelectedVoicesB}
-                                    />
-                                </div>
-
-                                <div className="flex justify-center">
-                                    <Button
-                                        variant="primary"
-                                        size="lg"
-                                        onClick={() => createMutation.mutate()}
-                                        disabled={!canRun || createMutation.isPending}
-                                        leftIcon={createMutation.isPending ? <Loader2 className="w-5 h-5 animate-spin" /> : <Play className="w-5 h-5" />}
-                                        className="px-12"
-                                    >
-                                        {createMutation.isPending ? 'Starting...' : 'Run Comparison'}
-                                    </Button>
-                                </div>
-                                {createMutation.isError && (
-                                    <p className="text-sm text-red-600 text-center mt-3">
-                                        {(createMutation.error as any)?.response?.data?.detail || 'Failed to start comparison'}
-                                    </p>
-                                )}
-                            </>
+            {/* Tabs */}
+            <div className="border-b border-gray-200">
+                <nav className="-mb-px flex space-x-8">
+                    <button
+                        onClick={() => { setActiveTab('playground'); setViewingPastId(null) }}
+                        className={`flex items-center gap-2 py-3 px-1 border-b-2 font-medium text-sm transition-colors ${
+                            activeTab === 'playground'
+                                ? 'border-primary-600 text-primary-600'
+                                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                        }`}
+                    >
+                        <Mic className="w-4 h-4" />
+                        Playground
+                    </button>
+                    <button
+                        onClick={() => { setActiveTab('past-simulations'); setViewingPastId(null) }}
+                        className={`flex items-center gap-2 py-3 px-1 border-b-2 font-medium text-sm transition-colors ${
+                            activeTab === 'past-simulations'
+                                ? 'border-primary-600 text-primary-600'
+                                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                        }`}
+                    >
+                        <History className="w-4 h-4" />
+                        Past Simulations
+                        {pastComparisons.length > 0 && (
+                            <span className="ml-1 px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600">
+                                {pastComparisons.length}
+                            </span>
                         )}
-                    </div>
-                </>
-            )}
+                    </button>
+                </nav>
+            </div>
+
+            {/* =========== TAB: PLAYGROUND =========== */}
+            {activeTab === 'playground' && (
+                <>
+                    {/* =========== STEP: CONFIGURE =========== */}
+                    {step === 'configure' && (
+                        <>
+                            {/* Sample Texts */}
+                            <div className="bg-gradient-to-r from-indigo-50 to-violet-50 rounded-xl p-4 border border-indigo-100">
+                                <div className="flex items-center gap-2 mb-3">
+                                    <FileText className="w-5 h-5 text-indigo-600" />
+                                    <h3 className="font-semibold text-indigo-900">Sample Transcripts</h3>
+                                </div>
+                                <div className="flex gap-2 flex-wrap mb-3">
+                                    {DEFAULT_SAMPLE_TEXTS.map((t, idx) => {
+                                        const isActive = sampleTexts.includes(t)
+                                        return (
+                                            <button
+                                                key={idx}
+                                                onClick={() => {
+                                                    if (isActive) {
+                                                        setSampleTexts(sampleTexts.filter(s => s !== t))
+                                                    } else {
+                                                        setSampleTexts([...sampleTexts, t])
+                                                    }
+                                                    setSelectedTranscript(idx)
+                                                }}
+                                                className={`px-3 py-2 text-xs rounded-lg transition-all ${isActive ? 'bg-indigo-600 text-white' : 'bg-white text-gray-600 hover:bg-indigo-100 border border-indigo-200'}`}
+                                            >
+                                                Sample {idx + 1}
+                                            </button>
+                                        )
+                                    })}
+                                </div>
+                                <p className="p-3 bg-white rounded-lg text-sm text-gray-700 italic border border-indigo-100">
+                                    &ldquo;{DEFAULT_SAMPLE_TEXTS[selectedTranscript]}&rdquo;
+                                </p>
+                                {/* Custom text */}
+                                <div className="mt-3 flex gap-2">
+                                    <input
+                                        type="text"
+                                        value={customText}
+                                        onChange={e => setCustomText(e.target.value)}
+                                        placeholder="Add custom text..."
+                                        className="flex-1 px-3 py-2 text-sm border border-indigo-200 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                                        onKeyDown={e => {
+                                            if (e.key === 'Enter' && customText.trim()) {
+                                                setSampleTexts([...sampleTexts, customText.trim()])
+                                                setCustomText('')
+                                            }
+                                        }}
+                                    />
+                                    <button
+                                        onClick={() => {
+                                            if (customText.trim()) {
+                                                setSampleTexts([...sampleTexts, customText.trim()])
+                                                setCustomText('')
+                                            }
+                                        }}
+                                        disabled={!customText.trim()}
+                                        className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
+                                    >
+                                        Add
+                                    </button>
+                                </div>
+                                {/* Active text chips */}
+                                <div className="flex flex-wrap gap-2 mt-3">
+                                    {sampleTexts.map((t, idx) => (
+                                        <div key={idx} className="flex items-center gap-1 bg-indigo-100 text-indigo-800 text-xs px-2 py-1 rounded-full border border-indigo-200 max-w-xs">
+                                            <span className="truncate">{t.slice(0, 50)}{t.length > 50 ? '...' : ''}</span>
+                                            <button onClick={() => setSampleTexts(sampleTexts.filter((_, i) => i !== idx))} className="hover:text-indigo-600 rounded-full p-0.5">
+                                                <X className="w-3 h-3" />
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* Number of Runs */}
+                            <div className="bg-white rounded-xl shadow-sm p-4 border border-gray-100 flex items-center justify-between">
+                                <div className="flex items-center gap-3">
+                                    <Hash className="w-5 h-5 text-gray-500" />
+                                    <div>
+                                        <p className="font-medium text-gray-900 text-sm">Number of Runs</p>
+                                        <p className="text-xs text-gray-500">Repeat each voice+text combination multiple times to get averaged metrics</p>
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <button
+                                        onClick={() => setNumRuns(Math.max(1, numRuns - 1))}
+                                        disabled={numRuns <= 1}
+                                        className="w-8 h-8 rounded-lg border border-gray-300 flex items-center justify-center text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                                    >
+                                        −
+                                    </button>
+                                    <span className="w-10 text-center font-semibold text-gray-900">{numRuns}</span>
+                                    <button
+                                        onClick={() => setNumRuns(Math.min(10, numRuns + 1))}
+                                        disabled={numRuns >= 10}
+                                        className="w-8 h-8 rounded-lg border border-gray-300 flex items-center justify-center text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                                    >
+                                        +
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Provider Config Panel */}
+                            <div className="bg-white rounded-xl shadow-lg p-6">
+                                <h2 className="text-lg font-semibold text-gray-900 mb-6">Configure Comparison</h2>
+
+                                {providersLoading ? (
+                                    <div className="flex items-center justify-center py-12 text-gray-500">
+                                        <Loader2 className="w-6 h-6 animate-spin mr-2" />
+                                        Loading providers...
+                                    </div>
+                                ) : providers.length === 0 ? (
+                                    <div className="text-center py-12">
+                                        <Volume2 className="w-12 h-12 mx-auto text-gray-300 mb-3" />
+                                        <p className="text-gray-600 font-medium">No TTS providers configured</p>
+                                        <p className="text-sm text-gray-500 mt-1">Go to Integrations to add API keys for ElevenLabs, Cartesia, OpenAI, Deepgram, or Google.</p>
+                                    </div>
+                                ) : (
+                                    <>
+                                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6 relative">
+                                            {/* Provider A */}
+                                            <ProviderPanel
+                                                label="A"
+                                                color="blue"
+                                                providers={providers}
+                                                otherProvider={providerB}
+                                                selectedProvider={providerA}
+                                                selectedModel={modelA}
+                                                selectedVoices={selectedVoicesA}
+                                                onProviderChange={p => { setProviderA(p); setModelA(''); setSelectedVoicesA([]) }}
+                                                onModelChange={setModelA}
+                                                onVoicesChange={setSelectedVoicesA}
+                                            />
+
+                                            {/* VS Badge */}
+                                            <div className="hidden lg:flex absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-10">
+                                                <span className="px-4 py-2 bg-gray-900 text-white rounded-full text-sm font-bold shadow-xl">VS</span>
+                                            </div>
+
+                                            {/* Provider B */}
+                                            <ProviderPanel
+                                                label="B"
+                                                color="purple"
+                                                providers={providers}
+                                                otherProvider={providerA}
+                                                selectedProvider={providerB}
+                                                selectedModel={modelB}
+                                                selectedVoices={selectedVoicesB}
+                                                onProviderChange={p => { setProviderB(p); setModelB(''); setSelectedVoicesB([]) }}
+                                                onModelChange={setModelB}
+                                                onVoicesChange={setSelectedVoicesB}
+                                            />
+                                        </div>
+
+                                        <div className="flex justify-center">
+                                            <Button
+                                                variant="primary"
+                                                size="lg"
+                                                onClick={() => createMutation.mutate()}
+                                                disabled={!canRun || createMutation.isPending}
+                                                leftIcon={createMutation.isPending ? <Loader2 className="w-5 h-5 animate-spin" /> : <Play className="w-5 h-5" />}
+                                                className="px-12"
+                                            >
+                                                {createMutation.isPending ? 'Starting...' : 'Run Comparison'}
+                                            </Button>
+                                        </div>
+                                        {createMutation.isError && (
+                                            <p className="text-sm text-red-600 text-center mt-3">
+                                                {(createMutation.error as any)?.response?.data?.detail || 'Failed to start comparison'}
+                                            </p>
+                                        )}
+                                    </>
+                                )}
+                            </div>
+                        </>
+                    )}
 
             {/* =========== STEP: PROGRESS =========== */}
             {step === 'progress' && comparison && (
@@ -491,9 +621,16 @@ export default function VoicePlayground() {
                     <div className="flex items-center justify-between">
                         <div>
                             <h2 className="text-lg font-semibold text-gray-900">{comparison.name}</h2>
-                            <p className="text-sm text-gray-500 mt-1">
-                                {PROVIDER_DISPLAY[comparison.provider_a] || comparison.provider_a} vs {PROVIDER_DISPLAY[comparison.provider_b] || comparison.provider_b}
-                            </p>
+                            <div className="flex items-center gap-2 mt-1">
+                                <ProviderLogo provider={comparison.provider_a} size="sm" />
+                                <span className="text-sm text-gray-500">{getProviderInfo(comparison.provider_a).label}</span>
+                                <span className="text-xs text-gray-400">vs</span>
+                                <ProviderLogo provider={comparison.provider_b} size="sm" />
+                                <span className="text-sm text-gray-500">{getProviderInfo(comparison.provider_b).label}</span>
+                                {comparison.num_runs > 1 && (
+                                    <span className="ml-2 text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">{comparison.num_runs} runs</span>
+                                )}
+                            </div>
                         </div>
                         <StatusBadge status={comparison.status} />
                     </div>
@@ -634,6 +771,7 @@ export default function VoicePlayground() {
                                 <h2 className="text-lg font-semibold text-gray-900">{comparison.name}</h2>
                                 <p className="text-sm text-gray-500">
                                     {comparison.sample_texts?.length || 0} samples &middot; {comparison.samples?.length || 0} audio files
+                                    {comparison.num_runs > 1 && <> &middot; {comparison.num_runs} runs</>}
                                 </p>
                             </div>
                             <StatusBadge status={comparison.status} />
@@ -649,8 +787,8 @@ export default function VoicePlayground() {
                             const btScore = bt ? (bt.a_wins - bt.b_wins) : 0
                             const winner = (mosA + btScore * 0.1) >= (mosB) ? 'A' : 'B'
                             const winnerName = winner === 'A'
-                                ? (PROVIDER_DISPLAY[comparison.provider_a] || comparison.provider_a)
-                                : (PROVIDER_DISPLAY[comparison.provider_b] || comparison.provider_b)
+                                ? getProviderInfo(comparison.provider_a).label
+                                : getProviderInfo(comparison.provider_b).label
 
                             return (
                                 <div className="p-5 bg-gradient-to-r from-green-500 via-emerald-500 to-teal-500 rounded-xl text-white mb-6">
@@ -689,14 +827,16 @@ export default function VoicePlayground() {
                                         Blind Test Results
                                     </h4>
                                     <div className="flex items-center gap-6">
-                                        <div className="text-center">
-                                            <p className="text-xs text-gray-500">{PROVIDER_DISPLAY[comparison.provider_a] || comparison.provider_a}</p>
+                                        <div className="text-center flex flex-col items-center gap-1">
+                                            <ProviderLogo provider={comparison.provider_a} size="sm" />
+                                            <p className="text-xs text-gray-500">{getProviderInfo(comparison.provider_a).label}</p>
                                             <p className="text-2xl font-bold text-blue-600">{bt.a_pct}%</p>
                                             <p className="text-xs text-gray-400">{bt.a_wins} wins</p>
                                         </div>
                                         <span className="text-gray-300 text-xl">vs</span>
-                                        <div className="text-center">
-                                            <p className="text-xs text-gray-500">{PROVIDER_DISPLAY[comparison.provider_b] || comparison.provider_b}</p>
+                                        <div className="text-center flex flex-col items-center gap-1">
+                                            <ProviderLogo provider={comparison.provider_b} size="sm" />
+                                            <p className="text-xs text-gray-500">{getProviderInfo(comparison.provider_b).label}</p>
                                             <p className="text-2xl font-bold text-purple-600">{bt.b_pct}%</p>
                                             <p className="text-xs text-gray-400">{bt.b_wins} wins</p>
                                         </div>
@@ -709,14 +849,16 @@ export default function VoicePlayground() {
                         <div className="flex items-center justify-center gap-6 mb-4">
                             <div className="flex items-center gap-2">
                                 <span className="w-6 h-6 rounded-full bg-blue-600 text-white flex items-center justify-center text-xs font-bold">A</span>
+                                <ProviderLogo provider={comparison.provider_a} size="sm" />
                                 <span className="text-sm font-medium text-gray-700">
-                                    {PROVIDER_DISPLAY[comparison.provider_a] || comparison.provider_a} ({comparison.model_a})
+                                    {getProviderInfo(comparison.provider_a).label} ({comparison.model_a})
                                 </span>
                             </div>
                             <div className="flex items-center gap-2">
                                 <span className="w-6 h-6 rounded-full bg-purple-600 text-white flex items-center justify-center text-xs font-bold">B</span>
+                                <ProviderLogo provider={comparison.provider_b} size="sm" />
                                 <span className="text-sm font-medium text-gray-700">
-                                    {PROVIDER_DISPLAY[comparison.provider_b] || comparison.provider_b} ({comparison.model_b})
+                                    {getProviderInfo(comparison.provider_b).label} ({comparison.model_b})
                                 </span>
                             </div>
                         </div>
@@ -739,6 +881,7 @@ export default function VoicePlayground() {
                                     providerB={comparison.provider_b}
                                     playingId={playingId}
                                     onPlay={play}
+                                    numRuns={comparison.num_runs || 1}
                                 />
                             ))}
                         </div>
@@ -751,6 +894,244 @@ export default function VoicePlayground() {
                         </Button>
                     </div>
                 </div>
+            )}
+                </>
+            )}
+
+            {/* =========== TAB: PAST SIMULATIONS =========== */}
+            {activeTab === 'past-simulations' && (
+                <>
+                    {/* Detail view for a specific comparison */}
+                    {viewingPastId ? (
+                        <div className="space-y-6">
+                            {/* Back button */}
+                            <button
+                                onClick={() => { setViewingPastId(null); stop() }}
+                                className="inline-flex items-center gap-2 text-sm font-medium text-gray-600 hover:text-gray-900 transition-colors"
+                            >
+                                <ArrowLeft className="w-4 h-4" />
+                                Back to Past Simulations
+                            </button>
+
+                            {viewedLoading ? (
+                                <div className="flex items-center justify-center py-16 text-gray-500">
+                                    <Loader2 className="w-6 h-6 animate-spin mr-2" />
+                                    Loading comparison...
+                                </div>
+                            ) : viewedComparison ? (
+                                <>
+                                    {/* Summary Header */}
+                                    <div className="bg-white rounded-xl shadow-lg p-6">
+                                        <div className="flex items-center justify-between mb-4">
+                                            <div>
+                                                <h2 className="text-lg font-semibold text-gray-900">{viewedComparison.name}</h2>
+                                                <p className="text-sm text-gray-500">
+                                                    {viewedComparison.sample_texts?.length || 0} samples &middot; {viewedComparison.samples?.length || 0} audio files
+                                                    {viewedComparison.num_runs > 1 && <> &middot; {viewedComparison.num_runs} runs</>}
+                                                </p>
+                                            </div>
+                                            <StatusBadge status={viewedComparison.status} />
+                                        </div>
+
+                                        {/* Winner Banner */}
+                                        {viewedComparison.evaluation_summary && (() => {
+                                            const sumA = viewedComparison.evaluation_summary.provider_a || {}
+                                            const sumB = viewedComparison.evaluation_summary.provider_b || {}
+                                            const mosA = sumA['MOS Score'] ?? 0
+                                            const mosB = sumB['MOS Score'] ?? 0
+                                            const bt = viewedComparison.evaluation_summary.blind_test
+                                            const btScore = bt ? (bt.a_wins - bt.b_wins) : 0
+                                            const winner = (mosA + btScore * 0.1) >= (mosB) ? 'A' : 'B'
+                                            const winnerName = winner === 'A'
+                                                ? getProviderInfo(viewedComparison.provider_a).label
+                                                : getProviderInfo(viewedComparison.provider_b).label
+
+                                            return (
+                                                <div className="p-5 bg-gradient-to-r from-green-500 via-emerald-500 to-teal-500 rounded-xl text-white mb-6">
+                                                    <div className="flex items-center justify-center gap-3">
+                                                        <Trophy className="w-8 h-8" />
+                                                        <span className="text-xl font-bold">
+                                                            Recommended: {winnerName}
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                            )
+                                        })()}
+
+                                        {/* Metrics Table */}
+                                        {viewedComparison.evaluation_summary && (() => {
+                                            const sumA = viewedComparison.evaluation_summary.provider_a || {}
+                                            const sumB = viewedComparison.evaluation_summary.provider_b || {}
+                                            return (
+                                                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 mb-6">
+                                                    <MetricCard label="MOS Score" valueA={sumA['MOS Score']} valueB={sumB['MOS Score']} higherIsBetter />
+                                                    <MetricCard label="Valence" valueA={sumA['Valence']} valueB={sumB['Valence']} higherIsBetter />
+                                                    <MetricCard label="Arousal" valueA={sumA['Arousal']} valueB={sumB['Arousal']} higherIsBetter />
+                                                    <MetricCard label="Prosody" valueA={sumA['Prosody Score']} valueB={sumB['Prosody Score']} higherIsBetter />
+                                                    <MetricCard label="Avg Latency" valueA={sumA['avg_latency_ms']} valueB={sumB['avg_latency_ms']} unit="ms" higherIsBetter={false} />
+                                                </div>
+                                            )
+                                        })()}
+
+                                        {/* Blind Test Results */}
+                                        {viewedComparison.evaluation_summary?.blind_test && (() => {
+                                            const bt = viewedComparison.evaluation_summary.blind_test
+                                            return (
+                                                <div className="p-4 bg-gradient-to-r from-amber-50 to-orange-50 rounded-xl border border-amber-200 mb-6">
+                                                    <h4 className="font-semibold text-amber-900 mb-3 flex items-center gap-2">
+                                                        <Headphones className="w-5 h-5" />
+                                                        Blind Test Results
+                                                    </h4>
+                                                    <div className="flex items-center gap-6">
+                                                        <div className="text-center flex flex-col items-center gap-1">
+                                                            <ProviderLogo provider={viewedComparison.provider_a} size="sm" />
+                                                            <p className="text-xs text-gray-500">{getProviderInfo(viewedComparison.provider_a).label}</p>
+                                                            <p className="text-2xl font-bold text-blue-600">{bt.a_pct}%</p>
+                                                            <p className="text-xs text-gray-400">{bt.a_wins} wins</p>
+                                                        </div>
+                                                        <span className="text-gray-300 text-xl">vs</span>
+                                                        <div className="text-center flex flex-col items-center gap-1">
+                                                            <ProviderLogo provider={viewedComparison.provider_b} size="sm" />
+                                                            <p className="text-xs text-gray-500">{getProviderInfo(viewedComparison.provider_b).label}</p>
+                                                            <p className="text-2xl font-bold text-purple-600">{bt.b_pct}%</p>
+                                                            <p className="text-xs text-gray-400">{bt.b_wins} wins</p>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            )
+                                        })()}
+
+                                        {/* Provider Labels */}
+                                        <div className="flex items-center justify-center gap-6 mb-4">
+                                            <div className="flex items-center gap-2">
+                                                <span className="w-6 h-6 rounded-full bg-blue-600 text-white flex items-center justify-center text-xs font-bold">A</span>
+                                                <ProviderLogo provider={viewedComparison.provider_a} size="sm" />
+                                                <span className="text-sm font-medium text-gray-700">
+                                                    {getProviderInfo(viewedComparison.provider_a).label} ({viewedComparison.model_a})
+                                                </span>
+                                            </div>
+                                            <div className="flex items-center gap-2">
+                                                <span className="w-6 h-6 rounded-full bg-purple-600 text-white flex items-center justify-center text-xs font-bold">B</span>
+                                                <ProviderLogo provider={viewedComparison.provider_b} size="sm" />
+                                                <span className="text-sm font-medium text-gray-700">
+                                                    {getProviderInfo(viewedComparison.provider_b).label} ({viewedComparison.model_b})
+                                                </span>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Per-Sample Details */}
+                                    <div className="bg-white rounded-xl shadow-lg p-6">
+                                        <h3 className="font-semibold text-gray-900 mb-4 flex items-center gap-2">
+                                            <FileText className="w-5 h-5 text-gray-600" />
+                                            Audio Samples
+                                        </h3>
+                                        <div className="space-y-3 max-h-[700px] overflow-y-auto">
+                                            {viewedComparison.sample_texts?.map((text, idx) => (
+                                                <SampleGroup
+                                                    key={idx}
+                                                    sampleIndex={idx}
+                                                    text={text}
+                                                    samples={viewedComparison.samples.filter(s => s.sample_index === idx)}
+                                                    providerA={viewedComparison.provider_a}
+                                                    providerB={viewedComparison.provider_b}
+                                                    playingId={playingId}
+                                                    onPlay={play}
+                                                    numRuns={viewedComparison.num_runs || 1}
+                                                />
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    {/* Back action */}
+                                    <div className="flex justify-center">
+                                        <button
+                                            onClick={() => { setViewingPastId(null); stop() }}
+                                            className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+                                        >
+                                            <ArrowLeft className="w-4 h-4" />
+                                            Back to All Simulations
+                                        </button>
+                                    </div>
+                                </>
+                            ) : (
+                                <div className="text-center py-16 text-gray-500">
+                                    Comparison not found.
+                                    <button onClick={() => setViewingPastId(null)} className="ml-2 text-primary-600 hover:underline">
+                                        Go back
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                    ) : (
+                        /* Simulation list */
+                        <div className="bg-white rounded-xl shadow-lg p-6">
+                            <div className="flex items-center gap-2 mb-4">
+                                <History className="w-5 h-5 text-gray-600" />
+                                <h2 className="text-lg font-semibold text-gray-900">Past Simulations</h2>
+                                <span className="ml-auto text-xs text-gray-400">{pastComparisons.length} comparison{pastComparisons.length !== 1 ? 's' : ''}</span>
+                            </div>
+                            {pastComparisons.length === 0 ? (
+                                <div className="text-center py-16">
+                                    <History className="w-12 h-12 mx-auto text-gray-300 mb-3" />
+                                    <p className="text-gray-600 font-medium">No simulations yet</p>
+                                    <p className="text-sm text-gray-500 mt-1">Run a comparison from the Playground tab to see results here.</p>
+                                    <button
+                                        onClick={() => setActiveTab('playground')}
+                                        className="mt-4 inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-primary-600 bg-primary-50 rounded-lg hover:bg-primary-100 transition-colors"
+                                    >
+                                        <Play className="w-4 h-4" />
+                                        Go to Playground
+                                    </button>
+                                </div>
+                            ) : (
+                                <div className="space-y-2">
+                                    {pastComparisons.map(pc => (
+                                        <div
+                                            key={pc.id}
+                                            className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg border border-gray-100 hover:bg-gray-100 transition-colors group"
+                                        >
+                                            <div className="flex items-center gap-2 flex-shrink-0">
+                                                <ProviderLogo provider={pc.provider_a} size="sm" />
+                                                <span className="text-xs text-gray-400">vs</span>
+                                                <ProviderLogo provider={pc.provider_b} size="sm" />
+                                            </div>
+                                            <div className="flex-1 min-w-0">
+                                                <p className="text-sm font-medium text-gray-800 truncate">{pc.name}</p>
+                                                <p className="text-xs text-gray-500">
+                                                    {getProviderInfo(pc.provider_a).label} vs {getProviderInfo(pc.provider_b).label}
+                                                    {' '}&middot; {pc.sample_count} sample{pc.sample_count !== 1 ? 's' : ''}
+                                                    {pc.num_runs > 1 && <> &middot; {pc.num_runs} runs</>}
+                                                    {' '}&middot; {new Date(pc.created_at).toLocaleDateString()}
+                                                </p>
+                                            </div>
+                                            <StatusBadge status={pc.status} />
+                                            <button
+                                                onClick={() => setViewingPastId(pc.id)}
+                                                className="p-2 rounded-lg text-gray-500 hover:text-primary-600 hover:bg-primary-50 transition-colors"
+                                                title="View comparison"
+                                            >
+                                                <Eye className="w-4 h-4" />
+                                            </button>
+                                            <button
+                                                onClick={(e) => {
+                                                    e.stopPropagation()
+                                                    if (confirm('Delete this comparison and all its audio samples?')) {
+                                                        deleteMutation.mutate(pc.id)
+                                                    }
+                                                }}
+                                                className="p-2 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100"
+                                                title="Delete comparison"
+                                            >
+                                                <Trash2 className="w-4 h-4" />
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </>
             )}
         </div>
     )
@@ -789,7 +1170,10 @@ function ProviderPanel({
         <div className={`p-5 ${bgGrad} rounded-xl border-2 ${borderColor}`}>
             <div className="flex items-center gap-2 mb-4">
                 <span className={`w-8 h-8 rounded-full ${badgeBg} text-white flex items-center justify-center text-sm font-bold`}>{label}</span>
-                <span className={`font-semibold ${textColor}`}>Provider {label}</span>
+                {selectedProvider ? <ProviderLogo provider={selectedProvider} size="md" /> : null}
+                <span className={`font-semibold ${textColor}`}>
+                    {selectedProvider ? getProviderInfo(selectedProvider).label : `Provider ${label}`}
+                </span>
             </div>
             <div className="space-y-4">
                 {/* Provider select */}
@@ -803,7 +1187,7 @@ function ProviderPanel({
                         <option value="">Select provider...</option>
                         {providers.filter(p => p.provider !== otherProvider).map(p => (
                             <option key={p.provider} value={p.provider}>
-                                {PROVIDER_DISPLAY[p.provider] || p.provider}
+                                {getProviderInfo(p.provider).label}
                             </option>
                         ))}
                     </select>
@@ -868,7 +1252,7 @@ function ProviderPanel({
 // ============ SAMPLE GROUP SUB-COMPONENT ============
 
 function SampleGroup({
-    sampleIndex, text, samples, providerA, providerB, playingId, onPlay,
+    sampleIndex, text, samples, providerA, providerB, playingId, onPlay, numRuns,
 }: {
     sampleIndex: number
     text: string
@@ -877,6 +1261,7 @@ function SampleGroup({
     providerB: string
     playingId: string | null
     onPlay: (id: string, url: string) => void
+    numRuns: number
 }) {
     const [expanded, setExpanded] = useState(false)
     const aSamples = samples.filter(s => s.provider === providerA)
@@ -901,22 +1286,24 @@ function SampleGroup({
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                         {/* Provider A column */}
                         <div>
-                            <p className="text-xs font-semibold text-blue-700 mb-2 flex items-center gap-1">
+                            <p className="text-xs font-semibold text-blue-700 mb-2 flex items-center gap-1.5">
                                 <span className="w-5 h-5 rounded-full bg-blue-600 text-white flex items-center justify-center text-[10px] font-bold">A</span>
-                                {PROVIDER_DISPLAY[providerA] || providerA}
+                                <ProviderLogo provider={providerA} size="sm" />
+                                {getProviderInfo(providerA).label}
                             </p>
                             {aSamples.map(s => (
-                                <AudioCard key={s.id} sample={s} colorClass="blue" playingId={playingId} onPlay={onPlay} />
+                                <AudioCard key={s.id} sample={s} colorClass="blue" playingId={playingId} onPlay={onPlay} showRun={numRuns > 1} />
                             ))}
                         </div>
                         {/* Provider B column */}
                         <div>
-                            <p className="text-xs font-semibold text-purple-700 mb-2 flex items-center gap-1">
+                            <p className="text-xs font-semibold text-purple-700 mb-2 flex items-center gap-1.5">
                                 <span className="w-5 h-5 rounded-full bg-purple-600 text-white flex items-center justify-center text-[10px] font-bold">B</span>
-                                {PROVIDER_DISPLAY[providerB] || providerB}
+                                <ProviderLogo provider={providerB} size="sm" />
+                                {getProviderInfo(providerB).label}
                             </p>
                             {bSamples.map(s => (
-                                <AudioCard key={s.id} sample={s} colorClass="purple" playingId={playingId} onPlay={onPlay} />
+                                <AudioCard key={s.id} sample={s} colorClass="purple" playingId={playingId} onPlay={onPlay} showRun={numRuns > 1} />
                             ))}
                         </div>
                     </div>
@@ -927,8 +1314,8 @@ function SampleGroup({
 }
 
 
-function AudioCard({ sample, colorClass, playingId, onPlay }: {
-    sample: TTSSample; colorClass: 'blue' | 'purple'; playingId: string | null; onPlay: (id: string, url: string) => void
+function AudioCard({ sample, colorClass, playingId, onPlay, showRun = false }: {
+    sample: TTSSample; colorClass: 'blue' | 'purple'; playingId: string | null; onPlay: (id: string, url: string) => void; showRun?: boolean
 }) {
     const isPlaying = playingId === sample.id
     const borderC = colorClass === 'blue' ? 'border-blue-100' : 'border-purple-100'
@@ -951,7 +1338,12 @@ function AudioCard({ sample, colorClass, playingId, onPlay }: {
                     </div>
                 )}
                 <div className="flex-1 min-w-0">
-                    <p className={`text-sm font-medium ${textC}`}>{sample.voice_name || sample.voice_id}</p>
+                    <div className="flex items-center gap-2">
+                        <p className={`text-sm font-medium ${textC}`}>{sample.voice_name || sample.voice_id}</p>
+                        {showRun && (
+                            <span className="text-[10px] bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded">Run {(sample.run_index ?? 0) + 1}</span>
+                        )}
+                    </div>
                     <div className="flex items-center gap-3 text-xs text-gray-500 mt-0.5">
                         {sample.latency_ms != null && <span>Latency: {Math.round(sample.latency_ms)}ms</span>}
                         {sample.duration_seconds != null && <span>Duration: {sample.duration_seconds.toFixed(1)}s</span>}
