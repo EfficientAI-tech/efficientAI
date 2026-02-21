@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Phone, Edit2, Trash2, X, AlertCircle } from 'lucide-react'
+import { Plus, Phone, Trash2, X, AlertCircle } from 'lucide-react'
 import { apiClient } from '../lib/api'
 import { format } from 'date-fns'
 import Button from '../components/Button'
@@ -76,10 +76,6 @@ export default function Agents() {
       voice_ai_integration_id: '',
       voice_ai_agent_id: ''
     })
-  }
-
-  const openEditPage = (agent: Agent) => {
-    navigate(`/agents/${agent.agent_id || agent.id}`)
   }
 
   const handleSelectAgent = (agentId: string, checked: boolean) => {
@@ -218,24 +214,32 @@ export default function Agents() {
   const createAgent = async (e: React.FormEvent) => {
     e.preventDefault()
 
-    // Validate that at least one voice configuration is selected
-    const hasVoiceBundle = formData.voice_bundle_id && formData.voice_bundle_id.trim() !== ''
-    const hasVoiceAIIntegration = formData.voice_ai_integration_id && formData.voice_ai_integration_id.trim() !== '' &&
-      formData.voice_ai_agent_id && formData.voice_ai_agent_id.trim() !== ''
-
-    if (!hasVoiceBundle && !hasVoiceAIIntegration) {
-      showToast('Please configure at least one: Voice Bundle (Test Voice AI Agents) or Voice AI Integration (Provider + Agent ID)', 'error')
+    // Validate description (mandatory, at least 10 words)
+    const descriptionWords = formData.description.trim().split(/\s+/).filter(Boolean)
+    if (descriptionWords.length < 10) {
+      showToast('Description must be at least 10 words.', 'error')
       return
     }
 
-    // If Voice AI Integration is partially filled, validate it's complete
-    if (formData.voice_ai_integration_id && !formData.voice_ai_agent_id) {
-      showToast('Agent ID is required when Integration Provider is selected', 'error')
-      return
+    // Validate phone number format (digits and + only)
+    if (formData.call_medium === 'phone_call') {
+      if (!formData.phone_number || formData.phone_number.trim() === '') {
+        showToast('Phone number is required for phone calls.', 'error')
+        return
+      }
+      if (!/^[\d+]+$/.test(formData.phone_number)) {
+        showToast('Phone number must contain only digits and the + character.', 'error')
+        return
+      }
     }
 
-    if (formData.voice_ai_agent_id && !formData.voice_ai_integration_id) {
-      showToast('Integration Provider is required when Agent ID is provided', 'error')
+    // Validate Voice AI Agent configuration (mandatory)
+    if (!formData.voice_ai_integration_id || formData.voice_ai_integration_id.trim() === '') {
+      showToast('Voice AI Integration Provider is required.', 'error')
+      return
+    }
+    if (!formData.voice_ai_agent_id || formData.voice_ai_agent_id.trim() === '') {
+      showToast('Voice AI Agent ID is required.', 'error')
       return
     }
 
@@ -406,15 +410,6 @@ export default function Agents() {
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => openEditPage(agent)}
-                          leftIcon={<Edit2 className="h-4 w-4" />}
-                          title="Edit"
-                        >
-                          Edit
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
                           onClick={(e) => handleDelete(agent, e)}
                           leftIcon={<Trash2 className="h-4 w-4" />}
                           title="Delete"
@@ -502,9 +497,14 @@ export default function Agents() {
                     type="text"
                     required={formData.call_medium === 'phone_call'}
                     value={formData.phone_number}
-                    onChange={(e) => setFormData({ ...formData, phone_number: e.target.value })}
+                    onChange={(e) => {
+                      const value = e.target.value.replace(/[^\d+]/g, '')
+                      setFormData({ ...formData, phone_number: value })
+                    }}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                     placeholder="+1234567890"
+                    pattern="[\d+]+"
+                    title="Only digits and + are allowed"
                   />
                 </div>
               )}
@@ -551,15 +551,19 @@ export default function Agents() {
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Description
+                  Description *
                 </label>
                 <textarea
+                  required
                   value={formData.description}
                   onChange={(e) => setFormData({ ...formData, description: e.target.value })}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                   rows={3}
-                  placeholder="Optional description"
+                  placeholder="Describe the agent's purpose, behavior, and expected interactions (at least 10 words)"
                 />
+                <p className={`mt-1 text-xs ${formData.description.trim().split(/\s+/).filter(Boolean).length >= 10 ? 'text-green-600' : 'text-gray-500'}`}>
+                  {formData.description.trim().split(/\s+/).filter(Boolean).length}/10 words minimum
+                </p>
               </div>
 
               {/* Voice Configuration - Two Sections */}
@@ -598,9 +602,9 @@ export default function Agents() {
                 </div>
 
                 {/* Section 2: Voice AI Agent */}
-                <div className="border border-gray-200 rounded-lg p-4 bg-gray-50 flex flex-col h-full">
-                  <h3 className="text-lg font-semibold text-gray-900 mb-3">2. Voice AI Agent</h3>
-                  <p className="text-sm text-gray-600 mb-4 flex-grow">Configure agents using external Voice AI integrations (Retell, Vapi)</p>
+                <div className="border border-blue-200 rounded-lg p-4 bg-blue-50 flex flex-col h-full">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-3">2. Voice AI Agent *</h3>
+                  <p className="text-sm text-gray-600 mb-4 flex-grow">Configure agents using external Voice AI integrations (Retell, Vapi) — required</p>
                   <div className="space-y-4">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
