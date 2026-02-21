@@ -1,6 +1,6 @@
 """Pydantic schemas for request/response validation."""
 
-from pydantic import BaseModel, Field, validator, model_validator
+from pydantic import BaseModel, Field, field_validator, validator, model_validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from uuid import UUID
@@ -180,30 +180,30 @@ class AgentCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     phone_number: Optional[str] = None
     language: LanguageEnum = LanguageEnum.ENGLISH
-    description: Optional[str] = None
+    description: str = Field(..., min_length=1)
     call_type: CallTypeEnum = CallTypeEnum.OUTBOUND
     call_medium: CallMediumEnum = CallMediumEnum.PHONE_CALL
     voice_bundle_id: Optional[UUID] = None
     ai_provider_id: Optional[UUID] = None
-    voice_ai_integration_id: Optional[UUID] = None
-    voice_ai_agent_id: Optional[str] = None
+    voice_ai_integration_id: UUID = Field(..., description="Voice AI integration is required")
+    voice_ai_agent_id: str = Field(..., min_length=1, description="Voice AI agent ID is required")
 
-    @model_validator(mode='after')
-    def validate_voice_config(self):
-        """Validate voice configuration - both voice_bundle_id and voice_ai_integration_id can be provided independently"""
-        voice_bundle = self.voice_bundle_id
-        voice_ai_integration = self.voice_ai_integration_id
-        
-        # At least one must be provided
-        if not voice_bundle and not voice_ai_integration:
-            raise ValueError('Must specify at least one voice configuration: voice_bundle_id (Test Voice AI Agent) or voice_ai_integration_id (Voice AI Agent).')
-        
-        # If voice_ai_integration_id is provided, voice_ai_agent_id must also be provided
-        if voice_ai_integration and not self.voice_ai_agent_id:
-            raise ValueError('voice_ai_agent_id is required when voice_ai_integration_id is provided.')
-        
-        return self
-    
+    @field_validator('description')
+    @classmethod
+    def description_min_words(cls, v: str) -> str:
+        if len(v.split()) < 10:
+            raise ValueError('Description must be at least 10 words.')
+        return v
+
+    @field_validator('phone_number')
+    @classmethod
+    def phone_number_format(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v != '':
+            import re
+            if not re.fullmatch(r'[\d+]+', v):
+                raise ValueError('Phone number must contain only digits and the + character.')
+        return v
+
     @model_validator(mode='after')
     def validate_phone_number(self):
         """Ensure phone_number is provided when call_medium is phone_call"""
@@ -217,9 +217,11 @@ class AgentCreate(BaseModel):
                 "name": "Customer Support Bot",
                 "phone_number": "+1234567890",
                 "language": "en",
-                "description": "Handles customer support",
+                "description": "A customer support bot that handles inquiries about orders, returns, and general questions",
                 "call_type": "outbound",
-                "voice_bundle_id": "123e4567-e89b-12d3-a456-426614174000"
+                "voice_bundle_id": "123e4567-e89b-12d3-a456-426614174000",
+                "voice_ai_integration_id": "123e4567-e89b-12d3-a456-426614174001",
+                "voice_ai_agent_id": "agent_abc123"
             }
         }
 
