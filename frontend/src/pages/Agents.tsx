@@ -35,6 +35,7 @@ export default function Agents() {
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null)
   const [blockingConversations, setBlockingConversations] = useState<TestAgentConversation[]>([])
   const [showConversationsList, setShowConversationsList] = useState(false)
+  const [deleteDependencies, setDeleteDependencies] = useState<Record<string, number> | null>(null)
   const [selectedAgents, setSelectedAgents] = useState<Set<string>>(new Set())
   const [formData, setFormData] = useState({
     name: '',
@@ -156,9 +157,8 @@ export default function Agents() {
 
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => apiClient.deleteAgent(id),
-    onSuccess: (_, deletedId) => {
-      // Clear global selection if the deleted agent was selected
+    mutationFn: ({ id, force }: { id: string; force?: boolean }) => apiClient.deleteAgent(id, force),
+    onSuccess: (_, { id: deletedId }) => {
       if (globalSelectedAgent?.id === deletedId) {
         setGlobalSelectedAgent(null)
       }
@@ -167,23 +167,22 @@ export default function Agents() {
       setSelectedAgent(null)
       setBlockingConversations([])
       setShowConversationsList(false)
+      setDeleteDependencies(null)
       showToast('Agent deleted successfully!', 'success')
     },
     onError: async (error: any) => {
       console.error('Error deleting agent:', error)
-      const errorMessage = error.response?.data?.detail || error.message || 'Failed to delete agent. Please try again.'
+      const status = error.response?.status
+      const detail = error.response?.data?.detail
 
-      // If error mentions test conversations, fetch them
-      if (errorMessage.includes('test conversation') && selectedAgent) {
-        try {
-          const conversations = await apiClient.listTestAgentConversations()
-          const blocking = conversations.filter((conv: TestAgentConversation) => conv.agent_id === selectedAgent.id)
-          setBlockingConversations(blocking)
-          setShowConversationsList(true)
-        } catch (err) {
-          console.error('Error fetching conversations:', err)
-        }
+      if (status === 409 && detail?.dependencies) {
+        setDeleteDependencies(detail.dependencies)
+        return
       }
+
+      const errorMessage = typeof detail === 'string'
+        ? detail
+        : detail?.message || error.message || 'Failed to delete agent. Please try again.'
 
       showToast(errorMessage, 'error')
     },
@@ -251,8 +250,8 @@ export default function Agents() {
     setShowDeleteModal(true)
     setShowConversationsList(false)
     setBlockingConversations([])
+    setDeleteDependencies(null)
 
-    // Pre-fetch conversations to check if there are any
     try {
       const conversations = await apiClient.listTestAgentConversations()
       const blocking = conversations.filter((conv: TestAgentConversation) => conv.agent_id === agent.id)
@@ -264,9 +263,9 @@ export default function Agents() {
     }
   }
 
-  const confirmDelete = async () => {
+  const confirmDelete = async (force?: boolean) => {
     if (!selectedAgent) return
-    deleteMutation.mutate(selectedAgent.id)
+    deleteMutation.mutate({ id: selectedAgent.id, force })
   }
 
   if (loading) {
@@ -706,6 +705,7 @@ export default function Agents() {
           setSelectedAgent(null)
           setBlockingConversations([])
           setShowConversationsList(false)
+          setDeleteDependencies(null)
         }}>
           <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
@@ -716,6 +716,7 @@ export default function Agents() {
                   setSelectedAgent(null)
                   setBlockingConversations([])
                   setShowConversationsList(false)
+                  setDeleteDependencies(null)
                 }}
                 className="text-gray-400 hover:text-gray-600"
               >
@@ -723,16 +724,49 @@ export default function Agents() {
               </button>
             </div>
             <div className="p-6">
-              {blockingConversations.length > 0 && (
+              {deleteDependencies && (
+                <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+                  <div className="flex items-start gap-3">
+                    <AlertCircle className="h-5 w-5 text-amber-600 flex-shrink-0 mt-0.5" />
+                    <div className="flex-1">
+                      <p className="text-sm font-medium text-amber-800 mb-2">
+                        This agent has dependent records
+                      </p>
+                      <ul className="text-xs text-amber-700 space-y-1 mb-3">
+                        {deleteDependencies.evaluators && (
+                          <li>{deleteDependencies.evaluators} evaluator{deleteDependencies.evaluators !== 1 ? 's' : ''}</li>
+                        )}
+                        {deleteDependencies.evaluator_results && (
+                          <li>{deleteDependencies.evaluator_results} evaluator result{deleteDependencies.evaluator_results !== 1 ? 's' : ''}</li>
+                        )}
+                        {deleteDependencies.call_recordings && (
+                          <li>{deleteDependencies.call_recordings} call recording{deleteDependencies.call_recordings !== 1 ? 's' : ''} (will be unlinked, not deleted)</li>
+                        )}
+                        {deleteDependencies.conversation_evaluations && (
+                          <li>{deleteDependencies.conversation_evaluations} conversation evaluation{deleteDependencies.conversation_evaluations !== 1 ? 's' : ''}</li>
+                        )}
+                        {deleteDependencies.test_conversations && (
+                          <li>{deleteDependencies.test_conversations} test conversation{deleteDependencies.test_conversations !== 1 ? 's' : ''}</li>
+                        )}
+                      </ul>
+                      <p className="text-xs text-amber-700">
+                        You can force delete to remove this agent and all dependent records.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {blockingConversations.length > 0 && !deleteDependencies && (
                 <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
                   <div className="flex items-start gap-3">
                     <AlertCircle className="h-5 w-5 text-yellow-600 flex-shrink-0 mt-0.5" />
                     <div className="flex-1">
                       <p className="text-sm font-medium text-yellow-800 mb-2">
-                        Cannot delete agent - {blockingConversations.length} test conversation{blockingConversations.length !== 1 ? 's' : ''} found
+                        {blockingConversations.length} test conversation{blockingConversations.length !== 1 ? 's' : ''} found
                       </p>
                       <p className="text-xs text-yellow-700 mb-3">
-                        This agent is being used by test conversations. Please delete them first before deleting the agent.
+                        This agent is being used by test conversations. You can delete them individually or use force delete.
                       </p>
                       <Button
                         variant="outline"
@@ -747,7 +781,7 @@ export default function Agents() {
                 </div>
               )}
 
-              {showConversationsList && blockingConversations.length > 0 && (
+              {showConversationsList && blockingConversations.length > 0 && !deleteDependencies && (
                 <div className="mb-6 border border-gray-200 rounded-lg overflow-hidden">
                   <div className="bg-gray-50 px-4 py-2 border-b border-gray-200">
                     <h4 className="text-sm font-medium text-gray-900">Test Conversations</h4>
@@ -809,21 +843,33 @@ export default function Agents() {
                     setSelectedAgent(null)
                     setBlockingConversations([])
                     setShowConversationsList(false)
+                    setDeleteDependencies(null)
                   }}
                   className="flex-1"
                 >
                   Cancel
                 </Button>
-                <Button
-                  variant="danger"
-                  onClick={confirmDelete}
-                  isLoading={deleteMutation.isPending}
-                  disabled={blockingConversations.length > 0}
-                  leftIcon={!deleteMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined}
-                  className="flex-1"
-                >
-                  Delete
-                </Button>
+                {deleteDependencies ? (
+                  <Button
+                    variant="danger"
+                    onClick={() => confirmDelete(true)}
+                    isLoading={deleteMutation.isPending}
+                    leftIcon={!deleteMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined}
+                    className="flex-1"
+                  >
+                    Force Delete All
+                  </Button>
+                ) : (
+                  <Button
+                    variant="danger"
+                    onClick={() => confirmDelete()}
+                    isLoading={deleteMutation.isPending}
+                    leftIcon={!deleteMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined}
+                    className="flex-1"
+                  >
+                    Delete
+                  </Button>
+                )}
               </div>
             </div>
           </div>

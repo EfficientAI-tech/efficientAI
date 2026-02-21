@@ -63,6 +63,7 @@ export default function Integrations() {
   const [showDeleteAIProviderModal, setShowDeleteAIProviderModal] = useState(false)
   const [integrationToDelete, setIntegrationToDelete] = useState<Integration | null>(null)
   const [aiProviderToDelete, setAIProviderToDelete] = useState<AIProvider | null>(null)
+  const [deleteDependencies, setDeleteDependencies] = useState<Record<string, number> | null>(null)
   const providerDropdownRef = useRef<HTMLDivElement>(null)
   const platformDropdownRef = useRef<HTMLDivElement>(null)
 
@@ -103,15 +104,27 @@ export default function Integrations() {
   })
 
   const deleteIntegrationMutation = useMutation({
-    mutationFn: (id: string) => apiClient.deleteIntegration(id),
+    mutationFn: ({ id, force }: { id: string; force?: boolean }) => apiClient.deleteIntegration(id, force),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['integrations'] })
       showToast('Integration deleted successfully!', 'success')
       setShowDeleteModal(false)
       setIntegrationToDelete(null)
+      setDeleteDependencies(null)
     },
     onError: (error: any) => {
-      showToast(`Failed to delete integration: ${error.response?.data?.detail || error.message}`, 'error')
+      const status = error.response?.status
+      const detail = error.response?.data?.detail
+
+      if (status === 409 && detail?.dependencies) {
+        setDeleteDependencies(detail.dependencies)
+        return
+      }
+
+      const errorMessage = typeof detail === 'string'
+        ? detail
+        : detail?.message || error.message || 'Failed to delete integration.'
+      showToast(errorMessage, 'error')
     },
   })
 
@@ -286,6 +299,7 @@ export default function Integrations() {
 
   const handleDelete = (integration: Integration) => {
     setIntegrationToDelete(integration)
+    setDeleteDependencies(null)
     setShowDeleteModal(true)
   }
 
@@ -294,9 +308,9 @@ export default function Integrations() {
     setShowDeleteAIProviderModal(true)
   }
 
-  const confirmDeleteIntegration = () => {
+  const confirmDeleteIntegration = (force?: boolean) => {
     if (integrationToDelete) {
-      deleteIntegrationMutation.mutate(integrationToDelete.id)
+      deleteIntegrationMutation.mutate({ id: integrationToDelete.id, force })
     }
   }
 
@@ -886,6 +900,7 @@ export default function Integrations() {
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={() => {
           setShowDeleteModal(false)
           setIntegrationToDelete(null)
+          setDeleteDependencies(null)
         }}>
           <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
             <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
@@ -894,6 +909,7 @@ export default function Integrations() {
                 onClick={() => {
                   setShowDeleteModal(false)
                   setIntegrationToDelete(null)
+                  setDeleteDependencies(null)
                 }}
                 className="text-gray-400 hover:text-gray-600"
                 disabled={deleteIntegrationMutation.isPending}
@@ -902,6 +918,27 @@ export default function Integrations() {
               </button>
             </div>
             <div className="p-6">
+              {deleteDependencies && (
+                <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+                  <div className="flex items-start gap-3">
+                    <AlertCircle className="h-5 w-5 text-amber-600 flex-shrink-0 mt-0.5" />
+                    <div className="flex-1">
+                      <p className="text-sm font-medium text-amber-800 mb-2">
+                        This integration has dependent records
+                      </p>
+                      <ul className="text-xs text-amber-700 space-y-1 mb-3">
+                        {deleteDependencies.agents && (
+                          <li>{deleteDependencies.agents} agent{deleteDependencies.agents !== 1 ? 's' : ''} (will be unlinked, not deleted)</li>
+                        )}
+                      </ul>
+                      <p className="text-xs text-amber-700">
+                        Force deleting will remove the integration and unlink all agents using it.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <div className="flex items-start gap-4 mb-6">
                 <div className="flex-shrink-0">
                   <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center">
@@ -932,21 +969,34 @@ export default function Integrations() {
                   onClick={() => {
                     setShowDeleteModal(false)
                     setIntegrationToDelete(null)
+                    setDeleteDependencies(null)
                   }}
                   className="flex-1"
                   disabled={deleteIntegrationMutation.isPending}
                 >
                   Cancel
                 </Button>
-                <Button
-                  variant="danger"
-                  onClick={confirmDeleteIntegration}
-                  isLoading={deleteIntegrationMutation.isPending}
-                  leftIcon={!deleteIntegrationMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined}
-                  className="flex-1"
-                >
-                  Delete
-                </Button>
+                {deleteDependencies ? (
+                  <Button
+                    variant="danger"
+                    onClick={() => confirmDeleteIntegration(true)}
+                    isLoading={deleteIntegrationMutation.isPending}
+                    leftIcon={!deleteIntegrationMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined}
+                    className="flex-1"
+                  >
+                    Force Delete All
+                  </Button>
+                ) : (
+                  <Button
+                    variant="danger"
+                    onClick={() => confirmDeleteIntegration()}
+                    isLoading={deleteIntegrationMutation.isPending}
+                    leftIcon={!deleteIntegrationMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined}
+                    className="flex-1"
+                  >
+                    Delete
+                  </Button>
+                )}
               </div>
             </div>
           </div>

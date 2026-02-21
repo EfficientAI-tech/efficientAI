@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
 import { useAgentStore } from '../store/agentStore'
 import Button from '../components/Button'
-import { Plus, Edit, Trash2, Play, X, CheckSquare, Square, Phone, Globe, Eye } from 'lucide-react'
+import { Plus, Edit, Trash2, Play, X, CheckSquare, Square, Phone, Globe, Eye, AlertCircle } from 'lucide-react'
 import { useToast } from '../hooks/useToast'
 
 const DEFAULT_PERSONA_NAMES = [
@@ -49,6 +49,9 @@ export default function EvaluateTestAgents() {
   const [showRunModal, setShowRunModal] = useState(false)
   const [runCount, setRunCount] = useState(1)
   const [viewingEvaluator, setViewingEvaluator] = useState<Evaluator | null>(null)
+  const [showDeleteModal, setShowDeleteModal] = useState(false)
+  const [evaluatorToDelete, setEvaluatorToDelete] = useState<Evaluator | null>(null)
+  const [deleteDependencies, setDeleteDependencies] = useState<Record<string, number> | null>(null)
 
   const { data: personas = [] } = useQuery({
     queryKey: ['personas'],
@@ -105,9 +108,27 @@ export default function EvaluateTestAgents() {
   })
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => apiClient.deleteEvaluator(id),
+    mutationFn: ({ id, force }: { id: string; force?: boolean }) => apiClient.deleteEvaluator(id, force),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['evaluators'] })
+      setShowDeleteModal(false)
+      setEvaluatorToDelete(null)
+      setDeleteDependencies(null)
+      showToast('Evaluator deleted successfully!', 'success')
+    },
+    onError: (error: any) => {
+      const status = error.response?.status
+      const detail = error.response?.data?.detail
+
+      if (status === 409 && detail?.dependencies) {
+        setDeleteDependencies(detail.dependencies)
+        return
+      }
+
+      const errorMessage = typeof detail === 'string'
+        ? detail
+        : detail?.message || error.message || 'Failed to delete evaluator.'
+      showToast(errorMessage, 'error')
     },
   })
 
@@ -411,9 +432,9 @@ export default function EvaluateTestAgents() {
                             variant="ghost"
                             size="sm"
                             onClick={() => {
-                              if (confirm('Are you sure you want to delete this evaluator?')) {
-                                deleteMutation.mutate(evaluator.id)
-                              }
+                              setEvaluatorToDelete(evaluator)
+                              setDeleteDependencies(null)
+                              setShowDeleteModal(true)
                             }}
                             leftIcon={<Trash2 className="w-4 h-4" />}
                           >
@@ -927,6 +948,108 @@ export default function EvaluateTestAgents() {
                     Run {selectedEvaluatorIds.size * runCount} Evaluation{selectedEvaluatorIds.size * runCount > 1 ? 's' : ''}
                   </Button>
                 </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Delete Evaluator Confirmation Modal */}
+      {showDeleteModal && evaluatorToDelete && (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+          <div className="flex min-h-screen items-center justify-center p-4">
+            <div
+              className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"
+              onClick={() => {
+                setShowDeleteModal(false)
+                setEvaluatorToDelete(null)
+                setDeleteDependencies(null)
+              }}
+            />
+            <div className="relative bg-white rounded-lg shadow-xl max-w-md w-full p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-gray-900">Delete Evaluator</h3>
+                <button
+                  onClick={() => {
+                    setShowDeleteModal(false)
+                    setEvaluatorToDelete(null)
+                    setDeleteDependencies(null)
+                  }}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              {deleteDependencies && (
+                <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+                  <div className="flex items-start gap-3">
+                    <AlertCircle className="h-5 w-5 text-amber-600 flex-shrink-0 mt-0.5" />
+                    <div className="flex-1">
+                      <p className="text-sm font-medium text-amber-800 mb-2">
+                        This evaluator has dependent records
+                      </p>
+                      <ul className="text-xs text-amber-700 space-y-1 mb-3">
+                        {deleteDependencies.evaluator_results && (
+                          <li>{deleteDependencies.evaluator_results} evaluator result{deleteDependencies.evaluator_results !== 1 ? 's' : ''}</li>
+                        )}
+                      </ul>
+                      <p className="text-xs text-amber-700">
+                        Force deleting will remove the evaluator and all its results.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex items-start gap-4 mb-6">
+                <div className="flex-shrink-0">
+                  <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center">
+                    <Trash2 className="h-6 w-6 text-red-600" />
+                  </div>
+                </div>
+                <div className="flex-1">
+                  <p className="text-sm text-gray-700 mb-2">
+                    Are you sure you want to delete evaluator <span className="font-semibold text-gray-900">#{evaluatorToDelete.evaluator_id}</span>?
+                  </p>
+                  <p className="text-xs text-gray-500">
+                    This action cannot be undone.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex gap-3">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setShowDeleteModal(false)
+                    setEvaluatorToDelete(null)
+                    setDeleteDependencies(null)
+                  }}
+                  className="flex-1"
+                >
+                  Cancel
+                </Button>
+                {deleteDependencies ? (
+                  <Button
+                    variant="danger"
+                    onClick={() => deleteMutation.mutate({ id: evaluatorToDelete.id, force: true })}
+                    isLoading={deleteMutation.isPending}
+                    leftIcon={!deleteMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined}
+                    className="flex-1"
+                  >
+                    Force Delete All
+                  </Button>
+                ) : (
+                  <Button
+                    variant="danger"
+                    onClick={() => deleteMutation.mutate({ id: evaluatorToDelete.id })}
+                    isLoading={deleteMutation.isPending}
+                    leftIcon={!deleteMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined}
+                    className="flex-1"
+                  >
+                    Delete
+                  </Button>
+                )}
               </div>
             </div>
           </div>

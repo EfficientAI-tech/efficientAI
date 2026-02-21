@@ -246,8 +246,11 @@ class ApiClient {
     return response.data
   }
 
-  async deleteAgent(agentId: string): Promise<void> {
-    await this.client.delete(`/api/v1/agents/${agentId}`)
+  async deleteAgent(agentId: string, force?: boolean): Promise<any> {
+    const response = await this.client.delete(`/api/v1/agents/${agentId}`, {
+      params: force ? { force: true } : undefined,
+    })
+    return response.data
   }
 
   // Personas endpoints
@@ -279,8 +282,11 @@ class ApiClient {
     return response.data
   }
 
-  async deletePersona(personaId: string): Promise<void> {
-    await this.client.delete(`/api/v1/personas/${personaId}`)
+  async deletePersona(personaId: string, force?: boolean): Promise<any> {
+    const response = await this.client.delete(`/api/v1/personas/${personaId}`, {
+      params: force ? { force: true } : undefined,
+    })
+    return response.data
   }
 
   async clonePersona(personaId: string, name?: string): Promise<any> {
@@ -320,8 +326,11 @@ class ApiClient {
     return response.data
   }
 
-  async deleteScenario(scenarioId: string): Promise<void> {
-    await this.client.delete(`/api/v1/scenarios/${scenarioId}`)
+  async deleteScenario(scenarioId: string, force?: boolean): Promise<any> {
+    const response = await this.client.delete(`/api/v1/scenarios/${scenarioId}`, {
+      params: force ? { force: true } : undefined,
+    })
+    return response.data
   }
 
   // Chat/Inference endpoints
@@ -364,8 +373,11 @@ class ApiClient {
     return response.data
   }
 
-  async deleteVoiceBundle(voicebundleId: string): Promise<void> {
-    await this.client.delete(`/api/v1/voicebundles/${voicebundleId}`)
+  async deleteVoiceBundle(voicebundleId: string, force?: boolean): Promise<any> {
+    const response = await this.client.delete(`/api/v1/voicebundles/${voicebundleId}`, {
+      params: force ? { force: true } : undefined,
+    })
+    return response.data
   }
 
   // AI Provider endpoints
@@ -485,8 +497,11 @@ class ApiClient {
     return response.data
   }
 
-  async deleteIntegration(integrationId: string): Promise<void> {
-    await this.client.delete(`/api/v1/integrations/${integrationId}`)
+  async deleteIntegration(integrationId: string, force?: boolean): Promise<any> {
+    const response = await this.client.delete(`/api/v1/integrations/${integrationId}`, {
+      params: force ? { force: true } : undefined,
+    })
+    return response.data
   }
 
   async testIntegration(integrationId: string): Promise<MessageResponse> {
@@ -824,8 +839,11 @@ class ApiClient {
     return response.data
   }
 
-  async deleteEvaluator(evaluatorId: string): Promise<void> {
-    await this.client.delete(`/api/v1/evaluators/${evaluatorId}`)
+  async deleteEvaluator(evaluatorId: string, force?: boolean): Promise<any> {
+    const response = await this.client.delete(`/api/v1/evaluators/${evaluatorId}`, {
+      params: force ? { force: true } : undefined,
+    })
+    return response.data
   }
 
   async runEvaluators(evaluatorIds: string[]): Promise<{ task_ids: string[]; evaluator_results: any[] }> {
@@ -1074,6 +1092,73 @@ class ApiClient {
 
   async toggleCronJobStatus(cronJobId: string): Promise<any> {
     const response = await this.client.post(`/api/v1/cron-jobs/${cronJobId}/toggle`)
+    return response.data
+  }
+
+  // Voice Playground (TTS Comparison) endpoints
+  async listTTSProviders(): Promise<any[]> {
+    const response = await this.client.get('/api/v1/voice-playground/tts-providers')
+    return response.data
+  }
+
+  async createTTSComparison(data: {
+    name?: string
+    provider_a: string
+    model_a: string
+    voices_a: Array<{ id: string; name: string }>
+    provider_b: string
+    model_b: string
+    voices_b: Array<{ id: string; name: string }>
+    sample_texts: string[]
+    num_runs?: number
+  }): Promise<any> {
+    const response = await this.client.post('/api/v1/voice-playground/comparisons', data)
+    return response.data
+  }
+
+  async listTTSComparisons(skip = 0, limit = 50): Promise<any[]> {
+    const response = await this.client.get('/api/v1/voice-playground/comparisons', {
+      params: { skip, limit },
+    })
+    return response.data
+  }
+
+  async getTTSComparison(comparisonId: string): Promise<any> {
+    const response = await this.client.get(`/api/v1/voice-playground/comparisons/${comparisonId}`)
+    return response.data
+  }
+
+  async generateTTSComparison(comparisonId: string): Promise<{ message: string; task_id: string }> {
+    const response = await this.client.post(`/api/v1/voice-playground/comparisons/${comparisonId}/generate`)
+    return response.data
+  }
+
+  async submitBlindTest(comparisonId: string, results: Array<{
+    sample_index: number
+    preferred: 'A' | 'B'
+    voice_a_id: string
+    voice_b_id: string
+  }>): Promise<any> {
+    const response = await this.client.post(
+      `/api/v1/voice-playground/comparisons/${comparisonId}/blind-test`,
+      { results }
+    )
+    return response.data
+  }
+
+  async deleteTTSComparison(comparisonId: string): Promise<void> {
+    await this.client.delete(`/api/v1/voice-playground/comparisons/${comparisonId}`)
+  }
+
+  async generateSampleTexts(params: {
+    voice_bundle_id?: string
+    provider?: string
+    model?: string
+    scenario?: string
+    count?: number
+    temperature?: number
+  }): Promise<{ samples: string[]; provider: string; model: string }> {
+    const response = await this.client.post('/api/v1/voice-playground/generate-samples', params)
     return response.data
   }
 }

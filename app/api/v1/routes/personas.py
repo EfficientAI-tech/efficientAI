@@ -2,14 +2,15 @@
 Personas API Routes
 Complete CRUD operations for test personas
 """
-from fastapi import APIRouter, Depends, HTTPException, status, Body
+from fastapi import APIRouter, Depends, HTTPException, status, Body, Query
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from typing import List, Optional
 from uuid import UUID
 
 from app.dependencies import get_db, get_organization_id
-from app.models.database import Persona
+from app.models.database import Persona, Evaluator, EvaluatorResult, TestAgentConversation
 from app.models.schemas import (
     PersonaCreate, PersonaUpdate, PersonaResponse, PersonaCloneRequest
 )
@@ -171,49 +172,92 @@ async def update_persona(
         )
 
 
-@router.delete("/{persona_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{persona_id}")
 async def delete_persona(
     persona_id: UUID,
+    force: bool = Query(False, description="Force delete with all dependent records"),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db)
 ):
-    """Delete a persona"""
-    try:
-        db_persona = db.query(Persona).filter(
-            Persona.id == persona_id,
-            Persona.organization_id == organization_id
-        ).first()
-        if not db_persona:
-            raise HTTPException(status_code=404, detail=f"Persona {persona_id} not found")
-        
-        db.delete(db_persona)
-        db.commit()
-        return None
-    except HTTPException:
-        raise
-    except IntegrityError as e:
-        db.rollback()
-        if "foreign key constraint" in str(e.orig).lower():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Cannot delete persona: it is being used by other records"
-            )
+    """Delete a persona. Returns 409 if dependent records exist unless force=true."""
+    db_persona = db.query(Persona).filter(
+        Persona.id == persona_id,
+        Persona.organization_id == organization_id
+    ).first()
+    if not db_persona:
+        raise HTTPException(status_code=404, detail=f"Persona {persona_id} not found")
+
+    evaluators_count = db.query(Evaluator).filter(
+        Evaluator.persona_id == persona_id,
+        Evaluator.organization_id == organization_id,
+    ).count()
+
+    evaluator_results_count = db.query(EvaluatorResult).filter(
+        EvaluatorResult.persona_id == persona_id,
+        EvaluatorResult.organization_id == organization_id,
+    ).count()
+
+    test_conversations_count = db.query(TestAgentConversation).filter(
+        TestAgentConversation.persona_id == persona_id,
+        TestAgentConversation.organization_id == organization_id,
+    ).count()
+
+    dependencies = {}
+    if evaluators_count > 0:
+        dependencies["evaluators"] = evaluators_count
+    if evaluator_results_count > 0:
+        dependencies["evaluator_results"] = evaluator_results_count
+    if test_conversations_count > 0:
+        dependencies["test_conversations"] = test_conversations_count
+
+    if dependencies and not force:
+        parts = []
+        if evaluators_count > 0:
+            parts.append(f"{evaluators_count} evaluator(s)")
+        if evaluator_results_count > 0:
+            parts.append(f"{evaluator_results_count} evaluator result(s)")
+        if test_conversations_count > 0:
+            parts.append(f"{test_conversations_count} test conversation(s)")
+
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Database constraint violation"
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": f"Cannot delete persona. It is referenced by: {', '.join(parts)}.",
+                "dependencies": dependencies,
+                "hint": "Use force=true to delete this persona and all its dependent records.",
+            },
         )
-    except SQLAlchemyError as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Database error deleting persona: {str(e)}"
+
+    if dependencies:
+        # Delete in FK-safe order
+        db.query(EvaluatorResult).filter(
+            EvaluatorResult.persona_id == persona_id,
+            EvaluatorResult.organization_id == organization_id,
+        ).delete(synchronize_session=False)
+
+        db.query(Evaluator).filter(
+            Evaluator.persona_id == persona_id,
+            Evaluator.organization_id == organization_id,
+        ).delete(synchronize_session=False)
+
+        db.query(TestAgentConversation).filter(
+            TestAgentConversation.persona_id == persona_id,
+            TestAgentConversation.organization_id == organization_id,
+        ).delete(synchronize_session=False)
+
+    db.delete(db_persona)
+    db.commit()
+
+    if dependencies:
+        return JSONResponse(
+            status_code=200,
+            content={
+                "message": "Persona and all dependent records deleted successfully.",
+                "deleted": dependencies,
+            },
         )
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Unexpected error deleting persona: {str(e)}"
-        )
+
+    return JSONResponse(status_code=204, content=None)
 
 
 @router.post("/{persona_id}/clone", response_model=PersonaResponse, status_code=status.HTTP_201_CREATED)
