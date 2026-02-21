@@ -454,7 +454,7 @@ export default function Playground() {
       <div className="bg-white shadow rounded-lg">
         <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
           <div>
-            <h2 className="text-lg font-semibold text-gray-900">Playground</h2>
+            <h2 className="text-lg font-semibold text-gray-900">Agent Playground</h2>
             <p className="mt-1 text-sm text-gray-600">
               Test your voice AI agent with real-time web calls
             </p>
@@ -475,7 +475,7 @@ export default function Playground() {
           {!selectedAgent ? (
             <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
               <p className="text-sm text-yellow-800">
-                Please select an agent from the top bar to use the playground.
+                Please select an agent from the top bar to use the Agent Playground.
               </p>
             </div>
           ) : !hasTestAgent && !hasVoiceAIAgent ? (
