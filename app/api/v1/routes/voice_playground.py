@@ -20,9 +20,11 @@ from app.models.database import (
     TTSComparisonStatus,
     TTSSampleStatus,
     ModelProvider,
+    VoiceBundle,
 )
 from app.services.model_config_service import model_config_service
 from app.services.s3_service import s3_service
+from app.services.llm_service import llm_service
 
 router = APIRouter(prefix="/voice-playground", tags=["Voice Playground"])
 
@@ -115,9 +117,111 @@ class BlindTestSubmit(BaseModel):
     # Each entry: {"sample_index": 0, "preferred": "A" | "B", "voice_a_id": "...", "voice_b_id": "..."}
 
 
+class GenerateSamplesRequest(BaseModel):
+    voice_bundle_id: Optional[str] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    scenario: Optional[str] = None
+    count: int = 5
+    temperature: Optional[float] = 0.8
+
+
+SAMPLE_GENERATION_SYSTEM_PROMPT = """You are an expert at creating realistic text-to-speech sample scripts. \
+Generate short, natural-sounding sentences that would be spoken aloud by a voice AI agent. \
+Each sample should be 1-3 sentences, varied in tone and content, and suitable for evaluating TTS voice quality. \
+Include a mix of: greetings, questions, informational statements, numbers/dates, and emotional expressions. \
+Return ONLY a JSON array of strings, with no additional text or markdown formatting."""
+
+
 # ======================================================================
 # Endpoints
 # ======================================================================
+
+
+@router.post("/generate-samples", operation_id="generateTTSSamples")
+async def generate_sample_texts(
+    data: GenerateSamplesRequest,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """Generate TTS sample texts using an LLM from a voice bundle or specified provider."""
+    import json as json_mod
+
+    llm_provider_str = data.provider
+    llm_model_str = data.model
+    temperature = data.temperature or 0.8
+
+    if data.voice_bundle_id:
+        bundle = db.query(VoiceBundle).filter(
+            VoiceBundle.id == data.voice_bundle_id,
+            VoiceBundle.organization_id == organization_id,
+        ).first()
+        if not bundle:
+            raise HTTPException(404, "Voice bundle not found")
+        if not bundle.llm_provider or not bundle.llm_model:
+            raise HTTPException(400, "Selected voice bundle has no LLM configured")
+        llm_provider_str = bundle.llm_provider
+        llm_model_str = bundle.llm_model
+        if bundle.llm_temperature is not None:
+            temperature = bundle.llm_temperature
+
+    if not llm_provider_str or not llm_model_str:
+        raise HTTPException(400, "Either voice_bundle_id or both provider and model are required")
+
+    try:
+        provider_enum = ModelProvider(llm_provider_str.lower())
+    except ValueError:
+        raise HTTPException(400, f"Unsupported LLM provider: {llm_provider_str}")
+
+    count = max(1, min(data.count, 20))
+    scenario_text = data.scenario or "general customer service and voice assistant interactions"
+    user_prompt = (
+        f"Generate exactly {count} TTS sample texts for the following scenario:\n"
+        f"Scenario: {scenario_text}\n\n"
+        f"Return a JSON array of {count} strings."
+    )
+
+    messages = [
+        {"role": "system", "content": SAMPLE_GENERATION_SYSTEM_PROMPT},
+        {"role": "user", "content": user_prompt},
+    ]
+
+    try:
+        result = llm_service.generate_response(
+            messages=messages,
+            llm_provider=provider_enum,
+            llm_model=llm_model_str,
+            organization_id=organization_id,
+            db=db,
+            temperature=temperature,
+            max_tokens=1500,
+        )
+    except Exception as e:
+        logger.error(f"[VoicePlayground] LLM generation failed: {e}")
+        raise HTTPException(500, f"LLM generation failed: {str(e)}")
+
+    raw_text = result.get("text", "").strip()
+
+    # Parse JSON array from response, handling markdown code fences
+    if raw_text.startswith("```"):
+        lines = raw_text.split("\n")
+        lines = [l for l in lines if not l.strip().startswith("```")]
+        raw_text = "\n".join(lines).strip()
+
+    try:
+        samples = json_mod.loads(raw_text)
+        if not isinstance(samples, list):
+            raise ValueError("Expected a JSON array")
+        samples = [str(s).strip() for s in samples if s]
+    except (json_mod.JSONDecodeError, ValueError):
+        samples = [line.strip().strip('"').strip("'") for line in raw_text.split("\n") if line.strip() and not line.strip().startswith("[") and not line.strip().startswith("]")]
+
+    return {
+        "samples": samples[:count],
+        "provider": llm_provider_str,
+        "model": llm_model_str,
+    }
 
 
 @router.get("/tts-providers", operation_id="listTTSProviders")

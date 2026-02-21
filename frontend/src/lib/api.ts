@@ -1131,6 +1131,18 @@ class ApiClient {
   async deleteTTSComparison(comparisonId: string): Promise<void> {
     await this.client.delete(`/api/v1/voice-playground/comparisons/${comparisonId}`)
   }
+
+  async generateSampleTexts(params: {
+    voice_bundle_id?: string
+    provider?: string
+    model?: string
+    scenario?: string
+    count?: number
+    temperature?: number
+  }): Promise<{ samples: string[]; provider: string; model: string }> {
+    const response = await this.client.post('/api/v1/voice-playground/generate-samples', params)
+    return response.data
+  }
 }
 
 // Factory function to create ApiClient instance

@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
 import { MODEL_PROVIDER_CONFIG } from '../config/providers'
-import { ModelProvider } from '../types/api'
+import { ModelProvider, VoiceBundle } from '../types/api'
 import Button from '../components/Button'
 import {
     Play,
@@ -26,6 +26,10 @@ import {
     History,
     Trash2,
     Eye,
+    Sparkles,
+    Bot,
+    Pencil,
+    Check,
 } from 'lucide-react'
 
 // ============ TYPES ============
@@ -228,6 +232,12 @@ export default function VoicePlayground() {
         queryFn: () => apiClient.listTTSProviders(),
     })
 
+    // --- Voice bundles (for AI sample generation) ---
+    const { data: voiceBundles = [] } = useQuery<VoiceBundle[]>({
+        queryKey: ['voice-bundles'],
+        queryFn: () => apiClient.listVoiceBundles(),
+    })
+
     // --- Past comparisons ---
     const { data: pastComparisons = [], refetch: refetchPast } = useQuery<TTSComparisonSummary[]>({
         queryKey: ['tts-comparisons-list'],
@@ -247,6 +257,28 @@ export default function VoicePlayground() {
     const [customText, setCustomText] = useState('')
     const [selectedTranscript, setSelectedTranscript] = useState(0)
     const [numRuns, setNumRuns] = useState(1)
+    const [editingIdx, setEditingIdx] = useState<number | null>(null)
+    const [editingText, setEditingText] = useState('')
+
+    // --- AI sample generation ---
+    const [aiScenario, setAiScenario] = useState('')
+    const [showAiGenerate, setShowAiGenerate] = useState(false)
+    const [selectedBundleId, setSelectedBundleId] = useState('')
+    const [aiSampleCount, setAiSampleCount] = useState(5)
+
+    const bundlesWithLLM = voiceBundles.filter(
+        (b) => b.llm_provider && b.llm_model
+    )
+
+    const generateSamplesMutation = useMutation({
+        mutationFn: (params: { voice_bundle_id?: string; scenario?: string; count?: number }) =>
+            apiClient.generateSampleTexts(params),
+        onSuccess: (data) => {
+            setSampleTexts(prev => [...prev, ...data.samples])
+            setShowAiGenerate(false)
+            setAiScenario('')
+        },
+    })
 
     // --- Active comparison ---
     const [activeComparisonId, setActiveComparisonId] = useState<string | null>(null)
@@ -354,7 +386,7 @@ export default function VoicePlayground() {
         onSuccess: () => { refetchPast() },
     })
 
-    const canRun = providerA && providerB && providerA !== providerB &&
+    const canRun = providerA && providerB &&
         modelA && modelB && selectedVoicesA.length > 0 && selectedVoicesB.length > 0 &&
         sampleTexts.length > 0
 
@@ -471,7 +503,7 @@ export default function VoicePlayground() {
                                 <p className="p-3 bg-white rounded-lg text-sm text-gray-700 italic border border-indigo-100">
                                     &ldquo;{DEFAULT_SAMPLE_TEXTS[selectedTranscript]}&rdquo;
                                 </p>
-                                {/* Custom text */}
+                                {/* Custom text + AI generate */}
                                 <div className="mt-3 flex gap-2">
                                     <input
                                         type="text"
@@ -498,18 +530,186 @@ export default function VoicePlayground() {
                                     >
                                         Add
                                     </button>
+                                    <button
+                                        onClick={() => setShowAiGenerate(!showAiGenerate)}
+                                        className={`px-4 py-2 text-sm rounded-lg flex items-center gap-1.5 transition-all ${
+                                            showAiGenerate
+                                                ? 'bg-primary-600 text-white'
+                                                : 'bg-primary-100 text-primary-700 hover:bg-primary-200 border border-primary-400'
+                                        }`}
+                                    >
+                                        <Sparkles className="w-3.5 h-3.5" />
+                                        AI Generate
+                                    </button>
                                 </div>
-                                {/* Active text chips */}
-                                <div className="flex flex-wrap gap-2 mt-3">
-                                    {sampleTexts.map((t, idx) => (
-                                        <div key={idx} className="flex items-center gap-1 bg-indigo-100 text-indigo-800 text-xs px-2 py-1 rounded-full border border-indigo-200 max-w-xs">
-                                            <span className="truncate">{t.slice(0, 50)}{t.length > 50 ? '...' : ''}</span>
-                                            <button onClick={() => setSampleTexts(sampleTexts.filter((_, i) => i !== idx))} className="hover:text-indigo-600 rounded-full p-0.5">
-                                                <X className="w-3 h-3" />
+
+                                {/* AI Generate panel */}
+                                {showAiGenerate && (
+                                    <div className="mt-3 p-4 bg-primary-50 rounded-lg border border-primary-300">
+                                        <div className="flex items-center gap-2 mb-2">
+                                            <Sparkles className="w-4 h-4 text-primary-600" />
+                                            <span className="text-sm font-medium text-primary-900">Generate samples with AI</span>
+                                        </div>
+                                        <p className="text-xs text-primary-700 mb-3">
+                                            Pick an LLM provider, describe a scenario, and generate realistic TTS sample texts.
+                                        </p>
+
+                                        {/* LLM provider selector — shows provider/model from bundles */}
+                                        <div className="mb-3">
+                                            <label className="block text-xs font-medium text-primary-800 mb-1">
+                                                <Bot className="w-3.5 h-3.5 inline mr-1" />
+                                                LLM Provider
+                                            </label>
+                                            <select
+                                                value={selectedBundleId}
+                                                onChange={e => setSelectedBundleId(e.target.value)}
+                                                className="w-full px-3 py-2 text-sm border border-primary-300 rounded-lg focus:ring-2 focus:ring-primary-500 bg-white"
+                                            >
+                                                <option value="">Select LLM provider...</option>
+                                                {bundlesWithLLM.map(b => (
+                                                    <option key={b.id} value={b.id}>
+                                                        {getProviderInfo(b.llm_provider || '').label} / {b.llm_model}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                            {bundlesWithLLM.length === 0 && (
+                                                <p className="mt-1 text-xs text-primary-600">
+                                                    No voice bundles with LLM configured. Create one in Voice Bundles first.
+                                                </p>
+                                            )}
+                                        </div>
+
+                                        {/* Scenario + Count */}
+                                        <div className="flex gap-2 mb-3">
+                                            <input
+                                                type="text"
+                                                value={aiScenario}
+                                                onChange={e => setAiScenario(e.target.value)}
+                                                placeholder="e.g. Healthcare appointment reminders, Bank customer support..."
+                                                className="flex-1 px-3 py-2 text-sm border border-primary-300 rounded-lg focus:ring-2 focus:ring-primary-500 bg-white"
+                                                onKeyDown={e => {
+                                                    if (e.key === 'Enter' && !generateSamplesMutation.isPending && selectedBundleId) {
+                                                        generateSamplesMutation.mutate({
+                                                            voice_bundle_id: selectedBundleId,
+                                                            scenario: aiScenario || undefined,
+                                                            count: aiSampleCount,
+                                                        })
+                                                    }
+                                                }}
+                                            />
+                                            <div className="flex items-center gap-1">
+                                                <label className="text-xs text-primary-800 whitespace-nowrap">Count:</label>
+                                                <select
+                                                    value={aiSampleCount}
+                                                    onChange={e => setAiSampleCount(Number(e.target.value))}
+                                                    className="px-2 py-2 text-sm border border-primary-300 rounded-lg focus:ring-2 focus:ring-primary-500 bg-white"
+                                                >
+                                                    {[3, 5, 8, 10].map(n => (
+                                                        <option key={n} value={n}>{n}</option>
+                                                    ))}
+                                                </select>
+                                            </div>
+                                        </div>
+
+                                        <div className="flex justify-end">
+                                            <button
+                                                onClick={() => generateSamplesMutation.mutate({
+                                                    voice_bundle_id: selectedBundleId || undefined,
+                                                    scenario: aiScenario || undefined,
+                                                    count: aiSampleCount,
+                                                })}
+                                                disabled={generateSamplesMutation.isPending || !selectedBundleId}
+                                                className="px-4 py-2 text-sm bg-primary-100 text-primary-700 border border-primary-400 rounded-lg hover:bg-primary-200 disabled:opacity-60 flex items-center gap-1.5"
+                                            >
+                                                {generateSamplesMutation.isPending
+                                                    ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Generating...</>
+                                                    : <><Sparkles className="w-3.5 h-3.5" /> Generate Samples</>
+                                                }
                                             </button>
                                         </div>
-                                    ))}
-                                </div>
+
+                                        {generateSamplesMutation.isError && (
+                                            <p className="mt-2 text-xs text-red-600">
+                                                {(generateSamplesMutation.error as any)?.response?.data?.detail || 'Failed to generate samples'}
+                                            </p>
+                                        )}
+                                    </div>
+                                )}
+
+                                {/* Active sample texts — editable list */}
+                                {sampleTexts.length > 0 && (
+                                    <div className="mt-3 space-y-1.5">
+                                        {sampleTexts.map((t, idx) => (
+                                            <div key={idx} className="group flex items-start gap-2 bg-white rounded-lg border border-indigo-200 px-3 py-2">
+                                                <span className="flex-shrink-0 w-5 h-5 rounded bg-indigo-100 text-indigo-600 flex items-center justify-center text-[10px] font-bold mt-0.5">
+                                                    {idx + 1}
+                                                </span>
+                                                {editingIdx === idx ? (
+                                                    <textarea
+                                                        autoFocus
+                                                        value={editingText}
+                                                        onChange={e => setEditingText(e.target.value)}
+                                                        onKeyDown={e => {
+                                                            if (e.key === 'Enter' && !e.shiftKey) {
+                                                                e.preventDefault()
+                                                                if (editingText.trim()) {
+                                                                    setSampleTexts(sampleTexts.map((s, i) => i === idx ? editingText.trim() : s))
+                                                                }
+                                                                setEditingIdx(null)
+                                                            }
+                                                            if (e.key === 'Escape') {
+                                                                setEditingIdx(null)
+                                                            }
+                                                        }}
+                                                        className="flex-1 text-sm text-gray-800 bg-indigo-50 border border-indigo-300 rounded px-2 py-1 focus:ring-2 focus:ring-indigo-500 focus:outline-none resize-none min-h-[2.25rem]"
+                                                        rows={2}
+                                                    />
+                                                ) : (
+                                                    <span className="flex-1 text-sm text-gray-700 leading-snug pt-0.5">
+                                                        {t}
+                                                    </span>
+                                                )}
+                                                <div className="flex items-center gap-0.5 flex-shrink-0 mt-0.5">
+                                                    {editingIdx === idx ? (
+                                                        <button
+                                                            onClick={() => {
+                                                                if (editingText.trim()) {
+                                                                    setSampleTexts(sampleTexts.map((s, i) => i === idx ? editingText.trim() : s))
+                                                                }
+                                                                setEditingIdx(null)
+                                                            }}
+                                                            className="p-1 rounded hover:bg-green-100 text-green-600 transition-colors"
+                                                            title="Save"
+                                                        >
+                                                            <Check className="w-3.5 h-3.5" />
+                                                        </button>
+                                                    ) : (
+                                                        <button
+                                                            onClick={() => {
+                                                                setEditingIdx(idx)
+                                                                setEditingText(t)
+                                                            }}
+                                                            className="p-1 rounded hover:bg-indigo-100 text-gray-400 hover:text-indigo-600 transition-colors opacity-0 group-hover:opacity-100"
+                                                            title="Edit"
+                                                        >
+                                                            <Pencil className="w-3.5 h-3.5" />
+                                                        </button>
+                                                    )}
+                                                    <button
+                                                        onClick={() => {
+                                                            setSampleTexts(sampleTexts.filter((_, i) => i !== idx))
+                                                            if (editingIdx === idx) setEditingIdx(null)
+                                                        }}
+                                                        className="p-1 rounded hover:bg-red-100 text-gray-400 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100"
+                                                        title="Remove"
+                                                    >
+                                                        <X className="w-3.5 h-3.5" />
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
                             </div>
 
                             {/* Number of Runs */}
@@ -563,7 +763,6 @@ export default function VoicePlayground() {
                                                 label="A"
                                                 color="blue"
                                                 providers={providers}
-                                                otherProvider={providerB}
                                                 selectedProvider={providerA}
                                                 selectedModel={modelA}
                                                 selectedVoices={selectedVoicesA}
@@ -582,7 +781,6 @@ export default function VoicePlayground() {
                                                 label="B"
                                                 color="purple"
                                                 providers={providers}
-                                                otherProvider={providerA}
                                                 selectedProvider={providerB}
                                                 selectedModel={modelB}
                                                 selectedVoices={selectedVoicesB}
@@ -1141,13 +1339,12 @@ export default function VoicePlayground() {
 // ============ PROVIDER PANEL SUB-COMPONENT ============
 
 function ProviderPanel({
-    label, color, providers, otherProvider, selectedProvider, selectedModel, selectedVoices,
+    label, color, providers, selectedProvider, selectedModel, selectedVoices,
     onProviderChange, onModelChange, onVoicesChange,
 }: {
     label: string
     color: 'blue' | 'purple'
     providers: TTSProvider[]
-    otherProvider: string
     selectedProvider: string
     selectedModel: string
     selectedVoices: TTSVoice[]
@@ -1185,7 +1382,7 @@ function ProviderPanel({
                         className={`w-full px-3 py-2.5 border border-gray-300 rounded-lg ${ringColor} focus:ring-2 bg-white`}
                     >
                         <option value="">Select provider...</option>
-                        {providers.filter(p => p.provider !== otherProvider).map(p => (
+                        {providers.map(p => (
                             <option key={p.provider} value={p.provider}>
                                 {getProviderInfo(p.provider).label}
                             </option>
