@@ -2,14 +2,19 @@
 Agents API Routes
 Complete CRUD operations for test agents
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from typing import List
 from uuid import UUID
 import random
 
 from app.dependencies import get_db, get_organization_id
-from app.models.database import Agent, ConversationEvaluation, TestAgentConversation, VoiceBundle, AIProvider, Integration, IntegrationPlatform, CallMediumEnum
+from app.models.database import (
+    Agent, ConversationEvaluation, TestAgentConversation, VoiceBundle,
+    AIProvider, Integration, IntegrationPlatform, CallMediumEnum,
+    Evaluator, EvaluatorResult, CallRecording,
+)
 from sqlalchemy import and_
 from app.models.schemas import (
     AgentCreate, AgentUpdate, AgentResponse, CallMediumEnum as CallMediumEnumSchema
@@ -241,15 +246,15 @@ async def update_agent(
     return db_agent
 
 
-@router.delete("/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{agent_id}")
 async def delete_agent(
     agent_id: str,
+    force: bool = Query(False, description="Force delete with all dependent records"),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db)
 ):
-    """Delete an agent by ID (UUID) or agent_id (6-digit)."""
+    """Delete an agent by ID (UUID) or agent_id (6-digit). Returns 409 if dependent records exist unless force=true."""
     try:
-        # Try as UUID first
         agent_uuid = UUID(agent_id)
         db_agent = db.query(Agent).filter(
             and_(
@@ -258,7 +263,6 @@ async def delete_agent(
             )
         ).first()
     except ValueError:
-        # Try as 6-digit ID
         db_agent = db.query(Agent).filter(
             and_(
                 Agent.agent_id == agent_id,
@@ -269,35 +273,105 @@ async def delete_agent(
     if not db_agent:
         raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
     
-    # Use the UUID for checking references
     agent_uuid = db_agent.id
-    
-    # Check for references in ConversationEvaluation (Metrics Dashboard)
-    conversation_evaluations = db.query(ConversationEvaluation).filter(
-        ConversationEvaluation.agent_id == agent_id,
-        ConversationEvaluation.organization_id == organization_id
+
+    evaluators_count = db.query(Evaluator).filter(
+        Evaluator.agent_id == agent_uuid,
+        Evaluator.organization_id == organization_id,
     ).count()
-    
-    # Check for references in TestAgentConversation
-    test_conversations = db.query(TestAgentConversation).filter(
-        TestAgentConversation.agent_id == agent_id,
-        TestAgentConversation.organization_id == organization_id
+
+    evaluator_results_count = db.query(EvaluatorResult).filter(
+        EvaluatorResult.agent_id == agent_uuid,
+        EvaluatorResult.organization_id == organization_id,
     ).count()
-    
-    # Build error message if agent is referenced
-    references = []
-    if conversation_evaluations > 0:
-        references.append(f"{conversation_evaluations} conversation evaluation(s) in Metrics Dashboard")
-    if test_conversations > 0:
-        references.append(f"{test_conversations} test conversation(s)")
-    
-    if references:
+
+    call_recordings_count = db.query(CallRecording).filter(
+        CallRecording.agent_id == agent_uuid,
+        CallRecording.organization_id == organization_id,
+    ).count()
+
+    conversation_evaluations_count = db.query(ConversationEvaluation).filter(
+        ConversationEvaluation.agent_id == agent_uuid,
+        ConversationEvaluation.organization_id == organization_id,
+    ).count()
+
+    test_conversations_count = db.query(TestAgentConversation).filter(
+        TestAgentConversation.agent_id == agent_uuid,
+        TestAgentConversation.organization_id == organization_id,
+    ).count()
+
+    dependencies = {}
+    if evaluators_count > 0:
+        dependencies["evaluators"] = evaluators_count
+    if evaluator_results_count > 0:
+        dependencies["evaluator_results"] = evaluator_results_count
+    if call_recordings_count > 0:
+        dependencies["call_recordings"] = call_recordings_count
+    if conversation_evaluations_count > 0:
+        dependencies["conversation_evaluations"] = conversation_evaluations_count
+    if test_conversations_count > 0:
+        dependencies["test_conversations"] = test_conversations_count
+
+    if dependencies and not force:
+        parts = []
+        if evaluators_count > 0:
+            parts.append(f"{evaluators_count} evaluator(s)")
+        if evaluator_results_count > 0:
+            parts.append(f"{evaluator_results_count} evaluator result(s)")
+        if call_recordings_count > 0:
+            parts.append(f"{call_recordings_count} call recording(s)")
+        if conversation_evaluations_count > 0:
+            parts.append(f"{conversation_evaluations_count} conversation evaluation(s)")
+        if test_conversations_count > 0:
+            parts.append(f"{test_conversations_count} test conversation(s)")
+
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Cannot delete agent. It is currently being used by: {', '.join(references)}. Please remove these references before deleting the agent."
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": f"Cannot delete agent. It is referenced by: {', '.join(parts)}.",
+                "dependencies": dependencies,
+                "hint": "Use force=true to delete this agent and all its dependent records.",
+            },
         )
-    
+
+    if dependencies:
+        # Delete in FK-safe order:
+        # 1. EvaluatorResults (references evaluators and agents)
+        db.query(EvaluatorResult).filter(
+            EvaluatorResult.agent_id == agent_uuid,
+        ).delete(synchronize_session=False)
+
+        # 2. Evaluators (references agents)
+        db.query(Evaluator).filter(
+            Evaluator.agent_id == agent_uuid,
+        ).delete(synchronize_session=False)
+
+        # 3. Nullify call recordings (keep recordings, unlink agent)
+        db.query(CallRecording).filter(
+            CallRecording.agent_id == agent_uuid,
+        ).update({CallRecording.agent_id: None}, synchronize_session=False)
+
+        # 4. ConversationEvaluations
+        db.query(ConversationEvaluation).filter(
+            ConversationEvaluation.agent_id == agent_uuid,
+        ).delete(synchronize_session=False)
+
+        # 5. TestAgentConversations
+        db.query(TestAgentConversation).filter(
+            TestAgentConversation.agent_id == agent_uuid,
+        ).delete(synchronize_session=False)
+
     db.delete(db_agent)
     db.commit()
-    return None
+
+    if dependencies:
+        return JSONResponse(
+            status_code=200,
+            content={
+                "message": "Agent and all dependent records deleted successfully.",
+                "deleted": dependencies,
+            },
+        )
+
+    return JSONResponse(status_code=204, content=None)
 

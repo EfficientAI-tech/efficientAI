@@ -429,7 +429,7 @@ class TestAgentConversation(Base):
     agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False)
     persona_id = Column(UUID(as_uuid=True), ForeignKey("personas.id"), nullable=False)
     scenario_id = Column(UUID(as_uuid=True), ForeignKey("scenarios.id"), nullable=False)
-    voice_bundle_id = Column(UUID(as_uuid=True), ForeignKey("voicebundles.id"), nullable=False)
+    voice_bundle_id = Column(UUID(as_uuid=True), ForeignKey("voicebundles.id"), nullable=True)
     
     # Conversation data
     status = Column(String, nullable=False, default=TestAgentConversationStatus.INITIALIZING.value)
@@ -689,3 +689,82 @@ class CronJob(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     created_by = Column(String, nullable=True)
+
+
+class TTSComparisonStatus(str, enum.Enum):
+    PENDING = "pending"
+    GENERATING = "generating"
+    EVALUATING = "evaluating"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class TTSSampleStatus(str, enum.Enum):
+    PENDING = "pending"
+    GENERATING = "generating"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class TTSComparison(Base):
+    """TTS Comparison session for A/B testing voice providers."""
+    __tablename__ = "tts_comparisons"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+
+    name = Column(String(255), nullable=True)
+    status = Column(String(50), nullable=False, default=TTSComparisonStatus.PENDING.value)
+
+    provider_a = Column(String(100), nullable=False)
+    model_a = Column(String(100), nullable=False)
+    voices_a = Column(JSON, nullable=False)
+
+    provider_b = Column(String(100), nullable=False)
+    model_b = Column(String(100), nullable=False)
+    voices_b = Column(JSON, nullable=False)
+
+    sample_texts = Column(JSON, nullable=False)
+    num_runs = Column(Integer, nullable=False, default=1)
+
+    blind_test_results = Column(JSON, nullable=True)
+    evaluation_summary = Column(JSON, nullable=True)
+
+    celery_task_id = Column(String, nullable=True, index=True)
+    error_message = Column(String, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_by = Column(String, nullable=True)
+
+    samples = relationship("TTSSample", back_populates="comparison", cascade="all, delete-orphan")
+
+
+class TTSSample(Base):
+    """Individual TTS audio sample within a comparison."""
+    __tablename__ = "tts_samples"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    comparison_id = Column(UUID(as_uuid=True), ForeignKey("tts_comparisons.id", ondelete="CASCADE"), nullable=False, index=True)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+
+    provider = Column(String(100), nullable=False)
+    model = Column(String(100), nullable=False)
+    voice_id = Column(String(255), nullable=False)
+    voice_name = Column(String(255), nullable=True)
+    sample_index = Column(Integer, nullable=False)
+    run_index = Column(Integer, nullable=False, default=0)
+
+    text = Column(String, nullable=False)
+    audio_s3_key = Column(String(512), nullable=True)
+    duration_seconds = Column(Float, nullable=True)
+    latency_ms = Column(Float, nullable=True)
+
+    evaluation_metrics = Column(JSON, nullable=True)
+    status = Column(String(50), nullable=False, default=TTSSampleStatus.PENDING.value)
+    error_message = Column(String, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    comparison = relationship("TTSComparison", back_populates="samples")

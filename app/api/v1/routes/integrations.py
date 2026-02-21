@@ -2,7 +2,8 @@
 Integrations API Routes
 Manage integrations with external voice AI platforms (Retell, Vapi, etc.)
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from typing import List
 from uuid import UUID
@@ -150,38 +151,67 @@ async def update_integration(
     return integration
 
 
-@router.delete("/{integration_id}", status_code=status.HTTP_204_NO_CONTENT, operation_id="deleteIntegration")
+@router.delete("/{integration_id}", operation_id="deleteIntegration")
 async def delete_integration(
     integration_id: UUID,
+    force: bool = Query(False, description="Force delete and unlink all agents using this integration"),
     organization_id: UUID = Depends(get_organization_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db)
 ):
     """
-    Delete an integration.
+    Delete an integration. Returns 409 if agents are using it unless force=true.
     Requires at least WRITER role.
     """
     integration = db.query(Integration).filter(
         Integration.id == integration_id,
         Integration.organization_id == organization_id
     ).first()
-    
+
     if not integration:
         raise HTTPException(status_code=404, detail="Integration not found")
-    
-    # Unlink any agents using this integration
-    linked_agents = db.query(Agent).filter(
+
+    agents_count = db.query(Agent).filter(
         Agent.voice_ai_integration_id == integration_id,
-        Agent.organization_id == organization_id
-    ).all()
-    
-    for agent in linked_agents:
-        agent.voice_ai_integration_id = None
-        agent.voice_ai_agent_id = None  # Also clear the remote agent ID as it's no longer valid without integration
-    
+        Agent.organization_id == organization_id,
+    ).count()
+
+    dependencies = {}
+    if agents_count > 0:
+        dependencies["agents"] = agents_count
+
+    if dependencies and not force:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": f"Cannot delete integration. It is used by {agents_count} agent(s).",
+                "dependencies": dependencies,
+                "hint": "Use force=true to delete this integration and unlink all agents.",
+            },
+        )
+
+    if dependencies:
+        db.query(Agent).filter(
+            Agent.voice_ai_integration_id == integration_id,
+            Agent.organization_id == organization_id,
+        ).update(
+            {Agent.voice_ai_integration_id: None, Agent.voice_ai_agent_id: None},
+            synchronize_session=False,
+        )
+
     db.delete(integration)
     db.commit()
-    return None
+
+    if dependencies:
+        return JSONResponse(
+            status_code=200,
+            content={
+                "message": "Integration deleted and agents unlinked successfully.",
+                "deleted": dependencies,
+            },
+        )
+
+    return JSONResponse(status_code=204, content=None)
 
 
 @router.post("/{integration_id}/test", response_model=MessageResponse)

@@ -2,13 +2,14 @@
 Scenarios API Routes
 Complete CRUD operations for test scenarios
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from typing import List
 from uuid import UUID
 
 from app.dependencies import get_db, get_organization_id
-from app.models.database import Scenario
+from app.models.database import Scenario, Evaluator, EvaluatorResult, TestAgentConversation
 from app.models.schemas import (
     ScenarioCreate, ScenarioUpdate, ScenarioResponse
 )
@@ -89,21 +90,89 @@ async def update_scenario(
     return db_scenario
 
 
-@router.delete("/{scenario_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{scenario_id}")
 async def delete_scenario(
     scenario_id: UUID,
+    force: bool = Query(False, description="Force delete with all dependent records"),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db)
 ):
-    """Delete a scenario"""
+    """Delete a scenario. Returns 409 if dependent records exist unless force=true."""
     db_scenario = db.query(Scenario).filter(
         Scenario.id == scenario_id,
         Scenario.organization_id == organization_id
     ).first()
     if not db_scenario:
         raise HTTPException(status_code=404, detail=f"Scenario {scenario_id} not found")
-    
+
+    evaluators_count = db.query(Evaluator).filter(
+        Evaluator.scenario_id == scenario_id,
+        Evaluator.organization_id == organization_id,
+    ).count()
+
+    evaluator_results_count = db.query(EvaluatorResult).filter(
+        EvaluatorResult.scenario_id == scenario_id,
+        EvaluatorResult.organization_id == organization_id,
+    ).count()
+
+    test_conversations_count = db.query(TestAgentConversation).filter(
+        TestAgentConversation.scenario_id == scenario_id,
+        TestAgentConversation.organization_id == organization_id,
+    ).count()
+
+    dependencies = {}
+    if evaluators_count > 0:
+        dependencies["evaluators"] = evaluators_count
+    if evaluator_results_count > 0:
+        dependencies["evaluator_results"] = evaluator_results_count
+    if test_conversations_count > 0:
+        dependencies["test_conversations"] = test_conversations_count
+
+    if dependencies and not force:
+        parts = []
+        if evaluators_count > 0:
+            parts.append(f"{evaluators_count} evaluator(s)")
+        if evaluator_results_count > 0:
+            parts.append(f"{evaluator_results_count} evaluator result(s)")
+        if test_conversations_count > 0:
+            parts.append(f"{test_conversations_count} test conversation(s)")
+
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": f"Cannot delete scenario. It is referenced by: {', '.join(parts)}.",
+                "dependencies": dependencies,
+                "hint": "Use force=true to delete this scenario and all its dependent records.",
+            },
+        )
+
+    if dependencies:
+        db.query(EvaluatorResult).filter(
+            EvaluatorResult.scenario_id == scenario_id,
+            EvaluatorResult.organization_id == organization_id,
+        ).delete(synchronize_session=False)
+
+        db.query(Evaluator).filter(
+            Evaluator.scenario_id == scenario_id,
+            Evaluator.organization_id == organization_id,
+        ).delete(synchronize_session=False)
+
+        db.query(TestAgentConversation).filter(
+            TestAgentConversation.scenario_id == scenario_id,
+            TestAgentConversation.organization_id == organization_id,
+        ).delete(synchronize_session=False)
+
     db.delete(db_scenario)
     db.commit()
-    return None
+
+    if dependencies:
+        return JSONResponse(
+            status_code=200,
+            content={
+                "message": "Scenario and all dependent records deleted successfully.",
+                "deleted": dependencies,
+            },
+        )
+
+    return JSONResponse(status_code=204, content=None)
 

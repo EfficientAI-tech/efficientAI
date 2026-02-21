@@ -2,13 +2,14 @@
 VoiceBundle API Routes
 Complete CRUD operations for VoiceBundles (STT + LLM + TTS configurations)
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from typing import List
 from uuid import UUID
 
 from app.dependencies import get_db, get_organization_id
-from app.models.database import VoiceBundle
+from app.models.database import VoiceBundle, Agent, TestAgentConversation
 from app.models.schemas import (
     VoiceBundleCreate, VoiceBundleUpdate, VoiceBundleResponse
 )
@@ -120,25 +121,78 @@ async def update_voicebundle(
     return db_voicebundle
 
 
-@router.delete("/{voicebundle_id}", status_code=status.HTTP_204_NO_CONTENT, operation_id="deleteVoiceBundle")
+@router.delete("/{voicebundle_id}", operation_id="deleteVoiceBundle")
 async def delete_voicebundle(
     voicebundle_id: UUID,
+    force: bool = Query(False, description="Force delete with all dependent records"),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db)
 ):
-    """Delete a VoiceBundle"""
+    """Delete a VoiceBundle. Returns 409 if dependent records exist unless force=true."""
     db_voicebundle = db.query(VoiceBundle).filter(
         VoiceBundle.id == voicebundle_id,
         VoiceBundle.organization_id == organization_id
     ).first()
-    
+
     if not db_voicebundle:
         raise HTTPException(
             status_code=404, detail=f"VoiceBundle {voicebundle_id} not found"
         )
-    
+
+    agents_count = db.query(Agent).filter(
+        Agent.voice_bundle_id == voicebundle_id,
+        Agent.organization_id == organization_id,
+    ).count()
+
+    test_conversations_count = db.query(TestAgentConversation).filter(
+        TestAgentConversation.voice_bundle_id == voicebundle_id,
+        TestAgentConversation.organization_id == organization_id,
+    ).count()
+
+    dependencies = {}
+    if agents_count > 0:
+        dependencies["agents"] = agents_count
+    if test_conversations_count > 0:
+        dependencies["test_conversations"] = test_conversations_count
+
+    if dependencies and not force:
+        parts = []
+        if agents_count > 0:
+            parts.append(f"{agents_count} agent(s)")
+        if test_conversations_count > 0:
+            parts.append(f"{test_conversations_count} test conversation(s)")
+
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": f"Cannot delete VoiceBundle. It is referenced by: {', '.join(parts)}.",
+                "dependencies": dependencies,
+                "hint": "Use force=true to delete this VoiceBundle and unlink/remove dependent records.",
+            },
+        )
+
+    if dependencies:
+        db.query(Agent).filter(
+            Agent.voice_bundle_id == voicebundle_id,
+            Agent.organization_id == organization_id,
+        ).update({Agent.voice_bundle_id: None}, synchronize_session=False)
+
+        db.query(TestAgentConversation).filter(
+            TestAgentConversation.voice_bundle_id == voicebundle_id,
+            TestAgentConversation.organization_id == organization_id,
+        ).update({TestAgentConversation.voice_bundle_id: None}, synchronize_session=False)
+
     db.delete(db_voicebundle)
     db.commit()
-    
-    return None
+
+    if dependencies:
+        return JSONResponse(
+            status_code=200,
+            content={
+                "message": "VoiceBundle deleted and dependent records unlinked successfully.",
+                "unlinked": dependencies,
+            },
+        )
+
+    return JSONResponse(status_code=204, content=None)
 
