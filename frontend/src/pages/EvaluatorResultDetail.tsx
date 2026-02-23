@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useParams, useNavigate } from 'react-router-dom'
 import { apiClient } from '../lib/api'
-import { ArrowLeft, Clock, CheckCircle, XCircle, Loader, BarChart3, Phone, Brain, HelpCircle, Sparkles, AudioWaveform, MessageSquare, Download, RotateCcw } from 'lucide-react'
+import { ArrowLeft, Clock, CheckCircle, XCircle, Loader, BarChart3, Phone, Brain, HelpCircle, Sparkles, AudioWaveform, MessageSquare, Download, RotateCcw, PhoneIncoming, PhoneOutgoing, Tag, ExternalLink } from 'lucide-react'
 import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import Button from '../components/Button'
@@ -772,22 +772,20 @@ export default function EvaluatorResultDetailPage() {
         </div>
       </div>
 
-      {/* Call Data from Provider */}
+      {/* Provider-specific call details (Call Analysis, Cost, Latency, System Details) */}
       {resultData.call_data && (resultData.provider_platform === 'retell' || resultData.call_data.call_id?.startsWith('call_')) && (
         <div className="mb-6 bg-white rounded-lg shadow p-6">
           <h2 className="text-lg font-semibold text-gray-900 flex items-center mb-4">
             <Phone className="w-5 h-5 mr-2" />
-            Call Details 
-            <span className="ml-2 px-2 py-0.5 text-xs bg-blue-100 text-blue-800 rounded-full capitalize">
-              retell
-            </span>
+            Provider Call Details
+            <span className="ml-2 px-2 py-0.5 text-xs bg-blue-100 text-blue-800 rounded-full">retell</span>
             {(resultData.provider_call_id || resultData.call_data.call_id) && (
               <span className="ml-2 text-xs text-gray-500 font-mono">
                 {resultData.provider_call_id || resultData.call_data.call_id}
               </span>
             )}
           </h2>
-          <RetellCallDetails callData={resultData.call_data} />
+          <RetellCallDetails callData={resultData.call_data} hideTranscript />
         </div>
       )}
 
@@ -795,37 +793,20 @@ export default function EvaluatorResultDetailPage() {
         <div className="mb-6 bg-white rounded-lg shadow p-6">
           <h2 className="text-lg font-semibold text-gray-900 flex items-center mb-4">
             <Phone className="w-5 h-5 mr-2" />
-            Call Details 
-            <span className="ml-2 px-2 py-0.5 text-xs bg-violet-100 text-violet-800 rounded-full capitalize">
-              vapi
-            </span>
+            Provider Call Details
+            <span className="ml-2 px-2 py-0.5 text-xs bg-violet-100 text-violet-800 rounded-full">vapi</span>
             {(resultData.provider_call_id || resultData.call_data.call_id) && (
               <span className="ml-2 text-xs text-gray-500 font-mono">
                 {resultData.provider_call_id || resultData.call_data.call_id}
               </span>
             )}
           </h2>
-          <VapiCallDetails callData={resultData.call_data} />
+          <VapiCallDetails callData={resultData.call_data} hideTranscript />
         </div>
       )}
 
-      {resultData.call_data && resultData.provider_platform && resultData.provider_platform !== 'retell' && resultData.provider_platform !== 'vapi' && (
-        <div className="mb-6 bg-white rounded-lg shadow p-6">
-          <h2 className="text-lg font-semibold text-gray-900 flex items-center mb-4">
-            <Phone className="w-5 h-5 mr-2" />
-            Call Details 
-            <span className="ml-2 px-2 py-0.5 text-xs bg-gray-100 text-gray-800 rounded-full capitalize">
-              {resultData.provider_platform}
-            </span>
-          </h2>
-          <pre className="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-xs max-h-[600px]">
-            {JSON.stringify(resultData.call_data, null, 2)}
-          </pre>
-        </div>
-      )}
-
-      {/* Transcript Section - for test agents without provider call_data */}
-      {!resultData.call_data && (resultData.audio_s3_key || resultData.transcription || resultData.speaker_segments) && (
+      {/* Unified Transcript & Call Details Section */}
+      {(resultData.audio_s3_key || resultData.transcription || resultData.speaker_segments) ? (
         <div className="bg-white shadow rounded-lg overflow-hidden">
           {/* Tab Navigation */}
           <div className="px-6 border-b border-gray-100 flex items-center gap-0">
@@ -862,6 +843,11 @@ export default function EvaluatorResultDetailPage() {
                       <div className="flex items-center gap-2">
                         <MessageSquare className="h-4 w-4 text-indigo-500" />
                         <span className="text-sm font-medium text-gray-900">Transcript</span>
+                        {resultData.speaker_segments && resultData.speaker_segments.length > 0 && (
+                          <span className="px-2 py-0.5 text-xs bg-gray-100 text-gray-600 rounded-full">
+                            {resultData.speaker_segments.length} messages
+                          </span>
+                        )}
                       </div>
                       {audioUrl && (
                         <div className="flex items-center gap-2">
@@ -973,6 +959,68 @@ export default function EvaluatorResultDetailPage() {
                           )}
                         </div>
                       )}
+
+                      {/* Call metadata from call_data (live calls, provider calls) */}
+                      {(resultData.call_data?.from_phone_number || resultData.call_data?.to_phone_number) && (
+                        <div className="p-3 bg-white rounded-lg border border-gray-100">
+                          <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold mb-1">Phone Numbers</p>
+                          <div className="space-y-2 mt-1.5">
+                            {resultData.call_data.from_phone_number && (
+                              <div className="flex items-center gap-2">
+                                <PhoneOutgoing className="w-3.5 h-3.5 text-gray-400" />
+                                <span className="text-sm text-gray-700 font-mono">{resultData.call_data.from_phone_number}</span>
+                              </div>
+                            )}
+                            {resultData.call_data.to_phone_number && (
+                              <div className="flex items-center gap-2">
+                                <PhoneIncoming className="w-3.5 h-3.5 text-gray-400" />
+                                <span className="text-sm text-gray-700 font-mono">{resultData.call_data.to_phone_number}</span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {resultData.call_data?.endedReason && (
+                        <div className="p-3 bg-white rounded-lg border border-gray-100">
+                          <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold mb-1">End Reason</p>
+                          <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border bg-gray-50 text-gray-700 border-gray-200">
+                            {resultData.call_data.endedReason.replace(/-/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())}
+                          </span>
+                        </div>
+                      )}
+
+                      {resultData.call_data?.metadata && Object.keys(resultData.call_data.metadata).length > 0 && (
+                        <div className="p-3 bg-white rounded-lg border border-gray-100">
+                          <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold mb-2">Metadata</p>
+                          <div className="space-y-1.5">
+                            {Object.entries(resultData.call_data.metadata).map(([key, value]) => (
+                              <div key={key} className="flex items-start gap-2">
+                                <Tag className="w-3 h-3 text-gray-300 mt-0.5 flex-shrink-0" />
+                                <div className="min-w-0">
+                                  <span className="text-xs text-gray-500">{key}:</span>
+                                  <span className="text-xs text-gray-800 ml-1 font-medium">{String(value)}</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {resultData.call_data?.recording_url && (
+                        <div className="p-3 bg-white rounded-lg border border-gray-100">
+                          <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold mb-1">Recording</p>
+                          <a
+                            href={resultData.call_data.recording_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-sm text-indigo-600 hover:text-indigo-800 flex items-center gap-1.5 mt-1"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5" />
+                            Open Recording
+                          </a>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -1060,7 +1108,7 @@ export default function EvaluatorResultDetailPage() {
             />
           </div>
         </div>
-      )}
+      ) : null}
     </div>
   )
 }

@@ -806,6 +806,13 @@ class ApiClient {
     return response.data
   }
 
+  async evaluateObservabilityCall(callShortId: string, evaluatorId: string): Promise<any> {
+    const response = await this.client.post(`/api/v1/observability/calls/${callShortId}/evaluate`, {
+      evaluator_id: evaluatorId,
+    })
+    return response.data
+  }
+
   // Evaluator endpoints
   async createEvaluator(data: {
     name?: string

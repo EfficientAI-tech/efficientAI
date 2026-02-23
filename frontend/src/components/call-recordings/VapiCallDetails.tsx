@@ -103,12 +103,13 @@ interface VapiCallData {
 
 interface VapiCallDetailsProps {
   callData: VapiCallData
+  hideTranscript?: boolean
 }
 
 const COLORS = ['#8b5cf6', '#06b6d4', '#f59e0b', '#ef4444', '#10b981'];
 
-export default function VapiCallDetails({ callData }: VapiCallDetailsProps) {
-  const [activeTab, setActiveTab] = useState<'overview' | 'transcript' | 'debug'>('overview')
+export default function VapiCallDetails({ callData, hideTranscript = false }: VapiCallDetailsProps) {
+  const [activeTab, setActiveTab] = useState<'overview' | 'transcript'>('overview')
 
   const formatDuration = (seconds?: number) => {
     if (!seconds) return 'N/A'
@@ -551,30 +552,14 @@ export default function VapiCallDetails({ callData }: VapiCallDetailsProps) {
     </div>
   )
 
-  const DebugView = () => (
-    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div>
-          <h4 className="font-semibold text-gray-900 mb-2">Metadata</h4>
-          <pre className="text-xs bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto h-64 custom-scrollbar">
-            {JSON.stringify(callData.metadata || {}, null, 2)}
-          </pre>
-        </div>
-        <div>
-          <h4 className="font-semibold text-gray-900 mb-2">Analysis</h4>
-          <pre className="text-xs bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto h-64 custom-scrollbar">
-            {JSON.stringify(callData.analysis || {}, null, 2)}
-          </pre>
-        </div>
+  if (hideTranscript) {
+    return (
+      <div className="space-y-6">
+        <SummaryCard />
+        <StatsParams />
       </div>
-      <div className="mt-6">
-        <h4 className="font-semibold text-gray-900 mb-2">Raw Data</h4>
-        <pre className="text-xs bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto max-h-96 custom-scrollbar">
-          {JSON.stringify(callData.raw_data || callData, null, 2)}
-        </pre>
-      </div>
-    </div>
-  )
+    )
+  }
 
   return (
     <div className="space-y-6">
@@ -598,15 +583,6 @@ export default function VapiCallDetails({ callData }: VapiCallDetailsProps) {
         >
           Transcript
         </button>
-        <button
-          onClick={() => setActiveTab('debug')}
-          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'debug'
-            ? 'border-violet-600 text-violet-600'
-            : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-            }`}
-        >
-          Debug Data
-        </button>
       </div>
 
       {activeTab === 'overview' && (
@@ -626,8 +602,6 @@ export default function VapiCallDetails({ callData }: VapiCallDetailsProps) {
           <TranscriptCard />
         </div>
       )}
-
-      {activeTab === 'debug' && <DebugView />}
     </div>
   )
 }
