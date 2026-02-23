@@ -162,7 +162,6 @@ class TranscriptionService:
                 "words": []
             }
             
-            # Extract segments
             if hasattr(transcript, 'segments') and transcript.segments:
                 for seg in transcript.segments:
                     result["segments"].append({
@@ -170,7 +169,6 @@ class TranscriptionService:
                         "end": getattr(seg, 'end', 0),
                         "text": getattr(seg, 'text', '')
                     })
-                logger.info(f"OpenAI transcription returned {len(result['segments'])} segments")
             elif isinstance(transcript, dict) and 'segments' in transcript:
                 for seg in transcript['segments']:
                     result["segments"].append({
@@ -178,17 +176,8 @@ class TranscriptionService:
                         "end": seg.get('end', 0),
                         "text": seg.get('text', '')
                     })
-                logger.info(f"OpenAI transcription returned {len(result['segments'])} segments (dict format)")
             
-            # Extract word-level timestamps (critical for pyannote alignment)
             if hasattr(transcript, 'words') and transcript.words:
-                first_word = transcript.words[0]
-                # Log the raw object to diagnose timestamp extraction
-                logger.info(
-                    f"OpenAI word sample: repr={repr(first_word)}, "
-                    f"type={type(first_word).__name__}, "
-                    f"dir={[a for a in dir(first_word) if not a.startswith('_')]}"
-                )
                 for w in transcript.words:
                     # Handle both object attributes and dict-like access
                     if isinstance(w, dict):
@@ -211,9 +200,6 @@ class TranscriptionService:
                         "start": word_start,
                         "end": word_end
                     })
-                # Log first few words with their timestamps
-                sample_words = result["words"][:5]
-                logger.info(f"OpenAI transcription: {len(result['words'])} words. First 5: {sample_words}")
             elif isinstance(transcript, dict) and 'words' in transcript:
                 for w in transcript['words']:
                     result["words"].append({
@@ -221,11 +207,8 @@ class TranscriptionService:
                         "start": w.get('start', 0) or 0,
                         "end": w.get('end', 0) or 0
                     })
-                logger.info(f"OpenAI transcription returned {len(result['words'])} words (dict format)")
             
-            # Fallback: create segments from full text if none returned
             if not result["segments"] and result["text"]:
-                logger.warning("OpenAI transcription returned no segments, creating segments from full text")
                 import re
                 sentences = re.split(r'[.!?]+\s+', result["text"].strip())
                 sentences = [s.strip() for s in sentences if s.strip()]
@@ -244,7 +227,6 @@ class TranscriptionService:
                             "text": sentence
                         })
                         current_time += sentence_duration
-                    logger.info(f"Created {len(result['segments'])} segments from full text")
                 else:
                     word_count = len(result["text"].split())
                     estimated_duration = max(1.0, (word_count / 150.0) * 60.0)
@@ -381,16 +363,9 @@ class TranscriptionService:
             logger.warning("Pyannote returned no speaker turns")
             return []
 
-        # Normalize labels: SPEAKER_00 -> "Speaker 1", SPEAKER_01 -> "Speaker 2", etc.
         sorted_labels = sorted(raw_labels)
         label_map = {lbl: f"Speaker {i + 1}" for i, lbl in enumerate(sorted_labels)}
-        # Log speaker distribution
-        speaker_counts = {}
-        for _, _, lbl in diar_turns:
-            speaker_counts[label_map[lbl]] = speaker_counts.get(label_map[lbl], 0) + 1
-        logger.info(f"Pyannote detected {len(sorted_labels)} speakers, {len(diar_turns)} turns. Distribution: {speaker_counts}")
-        for i, (t_start, t_end, lbl) in enumerate(diar_turns):
-            logger.info(f"  Turn {i}: {label_map[lbl]} [{t_start:.2f}s - {t_end:.2f}s]")
+        logger.info(f"Pyannote detected {len(sorted_labels)} speakers, {len(diar_turns)} turns")
 
         def find_speaker(midpoint: float) -> str:
             """Find which speaker is active at a given timestamp."""
@@ -407,18 +382,7 @@ class TranscriptionService:
                     closest_label = label_map[lbl]
             return closest_label
 
-        # Prefer word-level alignment when words with timestamps are available
         if words and len(words) > 0:
-            logger.info(
-                f"Aligning {len(words)} words with pyannote speaker turns "
-                f"(sample: {words[:3]})"
-            )
-            # Debug: log speaker assignment for first 10 words
-            for i, w in enumerate(words[:10]):
-                mid = (w.get("start", 0) + w.get("end", 0)) / 2.0
-                spk = find_speaker(mid)
-                logger.info(f"  Word {i}: '{w.get('word', '')}' mid={mid:.3f}s -> {spk}")
-
             speaker_segments = []
             current_speaker = None
             current_words: List[str] = []
@@ -459,11 +423,9 @@ class TranscriptionService:
                     "end": round(current_end, 3)
                 })
 
-            logger.info(f"Word-level alignment produced {len(speaker_segments)} speaker segments")
             return speaker_segments
 
         # Fallback: align at segment level when word timestamps are not available
-        logger.info(f"No word timestamps available, aligning {len(segments)} segments with pyannote turns")
         speaker_segments = []
         for seg in segments:
             seg_start = seg.get("start", 0)
@@ -482,7 +444,6 @@ class TranscriptionService:
                 "end": round(seg_end, 3)
             })
 
-        logger.info(f"Segment-level alignment produced {len(speaker_segments)} speaker segments")
         return speaker_segments
 
     def _detect_speakers_heuristic(self, segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -698,9 +659,6 @@ class TranscriptionService:
                 
                 # If no segments from transcription, create a single segment from the full text
                 if not segments and result.get("text"):
-                    logger.warning("No segments returned from transcription, creating single segment from full text")
-                    # Create a single segment with the full transcription
-                    # We'll estimate duration if available, otherwise use a default
                     estimated_duration = 0.0
                     if hasattr(result, 'duration') and result.get('duration'):
                         estimated_duration = result.get('duration')
@@ -723,34 +681,19 @@ class TranscriptionService:
                     # Check if words actually have valid timestamps
                     valid_word_count = sum(1 for w in words if w.get("start", 0) > 0 or w.get("end", 0) > 0)
                     if words and valid_word_count == 0:
-                        logger.warning(
-                            f"All {len(words)} words have zero timestamps, will use segment-level alignment"
-                        )
                         words = []
-                    elif words:
-                        logger.info(f"{valid_word_count}/{len(words)} words have valid timestamps")
 
-                    diarization_method = "unknown"
                     try:
                         from app.config import settings as app_settings
                         num_spk = getattr(app_settings, 'DIARIZATION_NUM_SPEAKERS', 2)
                         speaker_segments = self._detect_speakers_with_pyannote(
                             temp_file_path, segments, words, num_speakers=num_spk
                         )
-                        if speaker_segments:
-                            alignment = "word-level" if words else "segment-level"
-                            diarization_method = f"pyannote.audio ({alignment})"
-                        else:
-                            logger.info("Pyannote returned no speaker segments, falling back to heuristic")
+                        if not speaker_segments:
                             speaker_segments = self._detect_speakers_heuristic(segments)
-                            diarization_method = "heuristic (pyannote returned empty)"
                     except Exception as e:
-                        logger.warning(f"Pyannote diarization failed: {str(e)}, falling back to heuristic")
+                        logger.warning(f"Pyannote diarization failed: {e}, falling back to heuristic")
                         speaker_segments = self._detect_speakers_heuristic(segments)
-                        diarization_method = f"heuristic (pyannote failed: {type(e).__name__})"
-                    logger.info(f"Speaker diarization method used: {diarization_method}")
-                else:
-                    logger.warning("No segments available for speaker diarization")
             
             processing_time = time.time() - start_time
             

@@ -115,11 +115,7 @@ def process_evaluator_result_task(self, result_id: str):
             logger.error(f"[EvaluatorResult {result_id}] Job not found in database")
             return {"error": "Evaluator result not found"}
         
-        logger.info(f"[EvaluatorResult {result.result_id}] Starting processing task (Celery task: {self.request.id})")
-        logger.info(f"[EvaluatorResult {result.result_id}] Current status: {result.status}")
-        logger.info(f"[EvaluatorResult {result.result_id}] Audio S3 key: {result.audio_s3_key}")
-        logger.info(f"[EvaluatorResult {result.result_id}] Has existing transcription: {bool(result.transcription)}")
-        logger.info(f"[EvaluatorResult {result.result_id}] Has call_data: {bool(result.call_data)}")
+        logger.info(f"[EvaluatorResult {result.result_id}] Starting processing task")
         
         # Update Celery task ID
         result.celery_task_id = self.request.id
@@ -129,18 +125,8 @@ def process_evaluator_result_task(self, result_id: str):
         has_existing_transcript = bool(result.transcription)
         
         try:
-            # Step 1: Verify we have either audio S3 key OR existing transcript
-            logger.info(f"[EvaluatorResult {result.result_id}] Step 1: Verifying data source")
             if not result.audio_s3_key and not has_existing_transcript:
                 raise ValueError("No audio S3 key or existing transcript found")
-            
-            if has_existing_transcript:
-                logger.info(f"[EvaluatorResult {result.result_id}] ✓ Existing transcript found ({len(result.transcription)} chars)")
-            elif result.audio_s3_key:
-                logger.info(f"[EvaluatorResult {result.result_id}] ✓ Audio S3 key verified: {result.audio_s3_key}")
-            
-            # Step 2: Get evaluator and related entities for context
-            logger.info(f"[EvaluatorResult {result.result_id}] Step 2: Loading evaluator and context data")
             
             # Evaluator is optional - only load if evaluator_id is present
             evaluator = None
@@ -165,10 +151,6 @@ def process_evaluator_result_task(self, result_id: str):
             
             if not is_custom_evaluator and not agent:
                 raise ValueError("Agent not found and no custom prompt available")
-            
-            logger.info(f"[EvaluatorResult {result.result_id}] ✓ Context loaded - Evaluator: {evaluator.evaluator_id if evaluator else 'None'}, Custom: {is_custom_evaluator}, Agent: {agent.name if agent else 'N/A'}, Persona: {persona.name if persona else 'None'}, Scenario: {scenario.name if scenario else 'None'}")
-            
-            # Step 3: Get or create transcription
             # Check if organization has configured AI providers (needed for evaluation even if skipping transcription)
             ai_providers = db.query(AIProvider).filter(
                 AIProvider.organization_id == result.organization_id,
@@ -176,44 +158,21 @@ def process_evaluator_result_task(self, result_id: str):
             ).all()
             
             if has_existing_transcript:
-                # Skip transcription - use existing transcript (from provider, previous run, or manual upload)
-                logger.info(f"[EvaluatorResult {result.result_id}] Step 3: SKIPPING transcription (existing transcript found)")
-                
                 transcription = result.transcription
                 speaker_segments = result.speaker_segments or []
                 transcription_time = 0.0
-                
-                logger.info(f"[EvaluatorResult {result.result_id}] ✓ Using existing transcript: {len(transcription)} characters")
-                logger.info(f"[EvaluatorResult {result.result_id}] ✓ Using existing speaker segments: {len(speaker_segments)} segments")
-                
-                if result.call_data:
-                    provider_platform = result.provider_platform or "unknown"
-                    logger.info(f"[EvaluatorResult {result.result_id}] Transcript source: {provider_platform} call_data")
-                else:
-                    logger.info(f"[EvaluatorResult {result.result_id}] Transcript source: previous transcription")
             else:
-                # Transcribe audio using TranscriptionService
-                logger.info(f"[EvaluatorResult {result.result_id}] Step 3: Starting transcription from audio")
-                
-                # Update status to TRANSCRIBING
                 result.status = EvaluatorResultStatus.TRANSCRIBING.value
                 db.commit()
-                logger.info(f"[EvaluatorResult {result.result_id}] Status updated: QUEUED -> TRANSCRIBING")
                 
-                # Determine transcription model - check for AI Provider configuration
-                # Default to OpenAI Whisper, but can be extended to other providers
                 stt_provider = ModelProvider.OPENAI
-                stt_model = "whisper-1"  # OpenAI Whisper API model
+                stt_model = "whisper-1"
                 
-                # Prefer OpenAI for transcription, but can be extended
                 openai_provider = next((p for p in ai_providers if provider_matches(p.provider, ModelProvider.OPENAI)), None)
                 if not openai_provider:
                     logger.warning(f"[EvaluatorResult {result.result_id}] No OpenAI provider found, using default whisper-1")
-                else:
-                    logger.info(f"[EvaluatorResult {result.result_id}] Using OpenAI provider for transcription")
                 
                 transcription_start_time = time.time()
-                logger.info(f"[EvaluatorResult {result.result_id}] Calling transcription service with model: {stt_model}")
                 
                 transcription_result = transcription_service.transcribe(
                     audio_file_key=result.audio_s3_key,
@@ -229,39 +188,23 @@ def process_evaluator_result_task(self, result_id: str):
                 transcription = transcription_result.get("transcript", "")
                 speaker_segments = transcription_result.get("speaker_segments", [])
                 
-                logger.info(f"[EvaluatorResult {result.result_id}] ✓ Transcription completed in {transcription_time:.2f}s")
-                logger.info(f"[EvaluatorResult {result.result_id}] Transcription length: {len(transcription)} characters")
-                logger.info(f"[EvaluatorResult {result.result_id}] Speaker segments: {len(speaker_segments)} segments detected")
-                logger.debug(f"[EvaluatorResult {result.result_id}] Transcription preview: {transcription[:200]}...")
-                
                 result.transcription = transcription
                 result.speaker_segments = speaker_segments if speaker_segments else None
                 db.commit()
             
-            # Initialize evaluation_time for potential error handling
             evaluation_time = None
             
-            # Step 4: Get enabled metrics for the organization
-            logger.info(f"[EvaluatorResult {result.result_id}] Step 4: Loading enabled metrics")
             enabled_metrics = db.query(Metric).filter(
                 Metric.organization_id == result.organization_id,
                 Metric.enabled == True
             ).all()
             
-            logger.info(f"[EvaluatorResult {result.result_id}] ✓ Found {len(enabled_metrics)} enabled metrics")
-            for metric in enabled_metrics:
-                metric_type_val = metric.metric_type.value if hasattr(metric.metric_type, 'value') else metric.metric_type
-                logger.debug(f"[EvaluatorResult {result.result_id}]   - {metric.name} ({metric_type_val})")
-            
             # Step 5: Evaluate against enabled metrics using LLM
             metric_scores = {}
             
             if enabled_metrics and transcription:
-                # Update status to EVALUATING
                 result.status = EvaluatorResultStatus.EVALUATING.value
                 db.commit()
-                logger.info(f"[EvaluatorResult {result.result_id}] Status updated: TRANSCRIBING -> EVALUATING")
-                logger.info(f"[EvaluatorResult {result.result_id}] Step 5: Starting metric evaluation")
                 # Build metric key mapping for later use
                 metric_key_map = {}  # metric_key -> metric object
                 for metric in enabled_metrics:
@@ -354,28 +297,18 @@ CRITICAL RULES:
                     evaluator_llm_model = getattr(evaluator, 'llm_model', None) if evaluator else None
                     
                     if evaluator_llm_provider and evaluator_llm_model:
-                        # Use the evaluator's configured model
                         if isinstance(evaluator_llm_provider, str):
                             llm_provider = ModelProvider(evaluator_llm_provider.lower())
                         else:
                             llm_provider = evaluator_llm_provider
                         llm_model = evaluator_llm_model
-                        logger.info(f"[EvaluatorResult {result.result_id}] Using evaluator-configured model: {llm_provider.value}/{llm_model}")
                     else:
-                        # Fallback: pick the first available AI provider
                         llm_provider = ModelProvider.OPENAI
                         llm_model = "gpt-4o"
-                        logger.info(f"[EvaluatorResult {result.result_id}] No evaluator model configured, using default: {llm_provider.value}/{llm_model}")
                     
-                    # Verify the chosen provider is configured for this organization
                     chosen_provider = next((p for p in ai_providers if provider_matches(p.provider, llm_provider)), None)
                     if not chosen_provider:
                         logger.warning(f"[EvaluatorResult {result.result_id}] Provider {llm_provider.value} not configured, evaluation may fail")
-                    else:
-                        logger.info(f"[EvaluatorResult {result.result_id}] Using {llm_provider.value} provider with model: {llm_model}")
-                    
-                    logger.info(f"[EvaluatorResult {result.result_id}] Building evaluation prompt with {len(enabled_metrics)} metrics")
-                    logger.debug(f"[EvaluatorResult {result.result_id}] Evaluation prompt length: {len(evaluation_prompt)} characters")
                     
                     # Build the list of exact metric keys for system message
                     exact_keys = [metric.name.lower().replace(" ", "_") for metric in enabled_metrics]
@@ -397,7 +330,6 @@ Example of WRONG format (DO NOT do this):
                     ]
                     
                     evaluation_start_time = time.time()
-                    logger.info(f"[EvaluatorResult {result.result_id}] Calling LLM service for evaluation...")
                     
                     llm_result = llm_service.generate_response(
                         messages=messages,
@@ -410,45 +342,30 @@ Example of WRONG format (DO NOT do this):
                     )
                     
                     evaluation_time = time.time() - evaluation_start_time
-                    logger.info(f"[EvaluatorResult {result.result_id}] ✓ LLM evaluation completed in {evaluation_time:.2f}s")
-                    logger.debug(f"[EvaluatorResult {result.result_id}] LLM response preview: {llm_result.get('text', '')[:200]}...")
                     
-                    # Parse LLM response
-                    logger.info(f"[EvaluatorResult {result.result_id}] Parsing LLM response")
                     response_text = llm_result["text"].strip()
                     
                     # Try to extract JSON from response (handle cases where LLM adds markdown formatting)
                     if response_text.startswith("```json"):
                         response_text = response_text.replace("```json", "").replace("```", "").strip()
-                        logger.debug(f"[EvaluatorResult {result.result_id}] Removed markdown JSON wrapper")
                     elif response_text.startswith("```"):
                         response_text = response_text.replace("```", "").strip()
-                        logger.debug(f"[EvaluatorResult {result.result_id}] Removed markdown code block wrapper")
                     
                     try:
                         evaluation_data = json.loads(response_text)
-                        logger.info(f"[EvaluatorResult {result.result_id}] ✓ Successfully parsed JSON response")
                     except json.JSONDecodeError as e:
-                        logger.warning(f"[EvaluatorResult {result.result_id}] JSON parsing failed, attempting regex extraction: {e}")
-                        # If JSON parsing fails, try to extract JSON object from text
+                        logger.warning(f"[EvaluatorResult {result.result_id}] JSON parsing failed, attempting regex extraction")
                         json_match = re.search(r'\{[\s\S]*\}', response_text)
                         if json_match:
                             try:
                                 evaluation_data = json.loads(json_match.group())
-                                logger.info(f"[EvaluatorResult {result.result_id}] ✓ Extracted JSON using regex")
                             except json.JSONDecodeError:
                                 raise ValueError("Could not parse extracted JSON")
                         else:
                             raise ValueError("Could not parse LLM response as JSON")
                     
-                    # Handle nested response formats (e.g., {"metrics": {...}} or {"score": ..., "comments": ...})
-                    logger.info(f"[EvaluatorResult {result.result_id}] Normalizing LLM response format")
-                    logger.debug(f"[EvaluatorResult {result.result_id}] Raw evaluation_data keys: {list(evaluation_data.keys())}")
-                    
-                    # If response has a "metrics" wrapper, unwrap it
                     if "metrics" in evaluation_data and isinstance(evaluation_data["metrics"], dict):
                         evaluation_data = evaluation_data["metrics"]
-                        logger.debug(f"[EvaluatorResult {result.result_id}] Unwrapped 'metrics' object")
                     
                     # Helper function to extract score from various formats
                     def extract_score(value):
@@ -509,10 +426,7 @@ Example of WRONG format (DO NOT do this):
                         
                         return None
                     
-                    # Map LLM response to metric scores with fuzzy matching
-                    logger.info(f"[EvaluatorResult {result.result_id}] Mapping LLM response to metric scores")
                     response_keys = list(evaluation_data.keys())
-                    logger.debug(f"[EvaluatorResult {result.result_id}] Response keys: {response_keys}")
                     
                     for metric in enabled_metrics:
                         metric_key = metric.name.lower().replace(" ", "_")
@@ -526,7 +440,6 @@ Example of WRONG format (DO NOT do this):
                             matched_key = find_matching_key(metric.name, response_keys)
                             if matched_key:
                                 raw_score = evaluation_data.get(matched_key)
-                                logger.debug(f"[EvaluatorResult {result.result_id}]   Fuzzy matched '{metric.name}' -> '{matched_key}'")
                         
                         # Extract score from various formats
                         score = extract_score(raw_score)
@@ -563,11 +476,6 @@ Example of WRONG format (DO NOT do this):
                             "type": m_type.lower() if isinstance(m_type, str) else m_type,
                             "metric_name": metric.name
                         }
-                        logger.debug(f"[EvaluatorResult {result.result_id}]   - {metric.name}: {score} (raw: {raw_score})")
-                    
-                    # Log summary of successful evaluations
-                    successful = sum(1 for m in metric_scores.values() if m.get("value") is not None)
-                    logger.info(f"[EvaluatorResult {result.result_id}] ✓ Successfully evaluated {successful}/{len(metric_scores)} metrics")
                         
                 except Exception as e:
                     # Use str() to avoid format issues with curly braces in error messages
@@ -582,7 +490,6 @@ Example of WRONG format (DO NOT do this):
                             "metric_name": metric.name,
                             "error": str(e)
                         }
-                    logger.warning(f"[EvaluatorResult {result.result_id}] Marked {len(enabled_metrics)} metrics as failed")
             else:
                 if not enabled_metrics:
                     logger.warning(f"[EvaluatorResult {result.result_id}] No enabled metrics found, skipping evaluation")
@@ -595,9 +502,7 @@ Example of WRONG format (DO NOT do this):
             db.commit()
             
             total_time = time.time() - task_start_time
-            logger.info(f"[EvaluatorResult {result.result_id}] Status updated: EVALUATING -> COMPLETED")
-            logger.info(f"[EvaluatorResult {result.result_id}] ✓ Processing completed successfully in {total_time:.2f}s")
-            logger.info(f"[EvaluatorResult {result.result_id}] Summary - Transcription: {len(transcription) if transcription else 0} chars, Metrics: {len(metric_scores)}")
+            logger.info(f"[EvaluatorResult {result.result_id}] Completed in {total_time:.2f}s, {len(metric_scores)} metrics evaluated")
             
             return {
                 "result_id": result_id,
@@ -611,11 +516,10 @@ Example of WRONG format (DO NOT do this):
             
         except Exception as e:
             # Mark as failed
-            logger.error(f"[EvaluatorResult {result.result_id}] ✗ Processing failed: {e}", exc_info=True)
+            logger.error(f"[EvaluatorResult {result.result_id}] Processing failed: {e}", exc_info=True)
             result.status = EvaluatorResultStatus.FAILED.value
             result.error_message = str(e)
             db.commit()
-            logger.error(f"[EvaluatorResult {result.result_id}] Status updated: -> FAILED")
             raise
             
     except Exception as exc:
@@ -670,51 +574,27 @@ def run_evaluator_task(self, evaluator_id: str, evaluator_result_id: str):
             db.commit()
             return {"error": "Agent not found"}
         
-        logger.info(
-            f"[RunEvaluator {evaluator.evaluator_id}] Starting task "
-            f"(Celery task: {self.request.id}, Result: {result.result_id})"
-        )
-        logger.info(f"[RunEvaluator {evaluator.evaluator_id}] Current status: {result.status}")
+        logger.info(f"[RunEvaluator {evaluator.evaluator_id}] Starting task (Result: {result.result_id})")
         
-        # Update Celery task ID and ensure status is QUEUED (should already be)
         result.celery_task_id = self.request.id
         if result.status != EvaluatorResultStatus.QUEUED.value:
             logger.warning(f"[RunEvaluator {evaluator.evaluator_id}] Status was {result.status}, expected QUEUED")
         db.commit()
-        logger.info(f"[RunEvaluator {evaluator.evaluator_id}] Task ID updated, proceeding with bridge")
         
-        # Check if agent has both voice_bundle_id and voice_ai_integration_id
         has_voice_bundle = agent.voice_bundle_id is not None
         has_voice_ai_integration = agent.voice_ai_integration_id is not None and agent.voice_ai_agent_id is not None
         
-        logger.info(
-            f"[RunEvaluator {evaluator.evaluator_id}] Agent configuration check: "
-            f"has_voice_bundle={has_voice_bundle}, has_voice_ai_integration={has_voice_ai_integration}"
-        )
-        
         if has_voice_bundle and has_voice_ai_integration:
-            # Use bridge service to connect test agent to Voice AI agent
-            logger.info(
-                f"[RunEvaluator {evaluator.evaluator_id}] "
-                f"Agent has both voice_bundle and voice_ai_integration, using bridge service"
-            )
             
             try:
-                # Update status immediately to show we're starting the bridge
                 result.status = EvaluatorResultStatus.CALL_INITIATING.value
                 result.call_event = "task_started"
                 db.commit()
-                logger.info(f"[RunEvaluator {evaluator.evaluator_id}] ✅ Status updated to CALL_INITIATING")
                 
-                # Run async bridge function
-                logger.info(f"[RunEvaluator {evaluator.evaluator_id}] Setting up async event loop...")
                 loop = asyncio.get_event_loop()
                 if loop.is_closed():
-                    logger.info(f"[RunEvaluator {evaluator.evaluator_id}] Event loop was closed, creating new one")
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
-                
-                logger.info(f"[RunEvaluator {evaluator.evaluator_id}] Calling bridge service...")
                 bridge_result = loop.run_until_complete(
                     test_agent_bridge_service.bridge_test_agent_to_voice_agent(
                         evaluator_id=evaluator_uuid,
@@ -722,11 +602,6 @@ def run_evaluator_task(self, evaluator_id: str, evaluator_result_id: str):
                         organization_id=evaluator.organization_id,
                         db=db,
                     )
-                )
-                
-                logger.info(
-                    f"[RunEvaluator {evaluator.evaluator_id}] "
-                    f"Bridge service completed: {bridge_result.get('call_id')}"
                 )
                 
                 # Don't reset status - the bridge service should have updated it
@@ -748,11 +623,7 @@ def run_evaluator_task(self, evaluator_id: str, evaluator_result_id: str):
                 }
                 
             except Exception as bridge_error:
-                logger.error(
-                    f"[RunEvaluator {evaluator.evaluator_id}] "
-                    f"❌ Bridge service error: {bridge_error}",
-                    exc_info=True
-                )
+                logger.error(f"[RunEvaluator {evaluator.evaluator_id}] Bridge service error: {bridge_error}", exc_info=True)
                 result.status = EvaluatorResultStatus.FAILED.value
                 result.error_message = str(bridge_error)
                 result.call_event = "bridge_error"
@@ -760,25 +631,13 @@ def run_evaluator_task(self, evaluator_id: str, evaluator_result_id: str):
                 raise
         
         elif has_voice_bundle:
-            # Only voice bundle - use standard voice agent flow
-            logger.info(
-                f"[RunEvaluator {evaluator.evaluator_id}] "
-                f"Agent has voice_bundle only, using standard flow"
-            )
-            # This would trigger the standard voice agent WebSocket connection
-            # For now, mark as needing implementation
             result.status = EvaluatorResultStatus.FAILED.value
             result.error_message = "Standard voice agent flow not yet implemented for evaluator runs"
             db.commit()
             return {"error": "Standard flow not implemented"}
         
         else:
-            # No voice bundle configured
-            logger.error(
-                f"[RunEvaluator {evaluator.evaluator_id}] "
-                f"❌ Agent does not have required configuration: "
-                f"voice_bundle_id={has_voice_bundle}, voice_ai_integration={has_voice_ai_integration}"
-            )
+            logger.error(f"[RunEvaluator {evaluator.evaluator_id}] Agent missing required configuration")
             result.status = EvaluatorResultStatus.FAILED.value
             result.error_message = f"Agent missing required configuration: voice_bundle={has_voice_bundle}, voice_ai_integration={has_voice_ai_integration}"
             result.call_event = "configuration_error"
