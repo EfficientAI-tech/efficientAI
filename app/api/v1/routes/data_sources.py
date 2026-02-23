@@ -1,26 +1,26 @@
 """Data source routes for S3."""
- 
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from typing import Optional
 from pydantic import BaseModel
 import io
- 
+
 from app.dependencies import get_api_key, get_organization_id
-from app.models.schemas import MessageResponse, S3ListFilesResponse, S3FileInfo
+from app.models.schemas import MessageResponse, S3ListFilesResponse, S3FileInfo, S3BrowseResponse, S3FolderInfo
 from app.services.s3_service import s3_service
 from app.core.exceptions import StorageError
 from uuid import UUID
- 
+
 router = APIRouter(prefix="/data-sources/s3", tags=["Data Sources"])
- 
- 
+
+
 class S3StatusResponse(BaseModel):
     """Schema for S3 status response."""
     enabled: bool
     error: Optional[str] = None
- 
- 
+
+
 @router.get("/status", response_model=S3StatusResponse, operation_id="getS3Status")
 async def get_s3_status(api_key: str = Depends(get_api_key)):
     """Get S3 connection status and configuration info."""
@@ -30,12 +30,11 @@ async def get_s3_status(api_key: str = Depends(get_api_key)):
         "enabled": enabled,
         "error": error
     }
- 
- 
+
+
 @router.post("/test", response_model=MessageResponse, operation_id="testS3Connection")
 async def test_s3_connection(api_key: str = Depends(get_api_key)):
     """Test S3 connection with current credentials."""
-    # Force re-initialization by resetting the client
     s3_service.s3_client = None
     s3_service._initialization_error = None
     
@@ -48,15 +47,16 @@ async def test_s3_connection(api_key: str = Depends(get_api_key)):
         )
     
     return {"message": "S3 connection successful"}
- 
- 
+
+
 @router.get("/files", response_model=S3ListFilesResponse, operation_id="listS3Files")
 async def list_s3_files(
     prefix: Optional[str] = None,
     max_keys: int = 1000,
     api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
 ):
-    """List files in the S3 bucket."""
+    """List all files in the organization's S3 namespace (recursive)."""
     if not s3_service.is_enabled():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -64,8 +64,11 @@ async def list_s3_files(
         )
     
     try:
-        files = s3_service.list_audio_files(prefix=prefix, max_keys=max_keys)
-        # Convert to S3FileInfo format
+        files = s3_service.list_audio_files(
+            prefix=prefix,
+            max_keys=max_keys,
+            organization_id=str(organization_id),
+        )
         file_list = [
             S3FileInfo(
                 key=f["key"],
@@ -90,15 +93,16 @@ async def list_s3_files(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to list files from S3: {str(e)}",
         )
- 
-@router.post("/upload", response_model=MessageResponse, operation_id="uploadToS3")
-async def upload_to_s3(
-    file: UploadFile = File(...),
-    filename: Optional[str] = None,
+
+
+@router.get("/browse", response_model=S3BrowseResponse, operation_id="browseS3")
+async def browse_s3(
+    path: str = "",
+    max_keys: int = 1000,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
 ):
-    """Upload a file to the S3 bucket."""
+    """Browse folders and files within the organization's S3 namespace."""
     if not s3_service.is_enabled():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -106,11 +110,56 @@ async def upload_to_s3(
         )
     
     try:
-        # Read file content
+        result = s3_service.browse_folder(
+            organization_id=str(organization_id),
+            path=path,
+            max_keys=max_keys,
+        )
+        return S3BrowseResponse(
+            folders=[S3FolderInfo(name=f["name"], path=f["path"]) for f in result["folders"]],
+            files=[
+                S3FileInfo(
+                    key=f["key"],
+                    filename=f["filename"],
+                    size=f["size"],
+                    last_modified=f["last_modified"],
+                )
+                for f in result["files"]
+            ],
+            current_path=result["current_path"],
+            organization_id=result["organization_id"],
+        )
+    except StorageError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to browse S3: {str(e)}",
+        )
+
+
+@router.post("/upload", response_model=MessageResponse, operation_id="uploadToS3")
+async def upload_to_s3(
+    file: UploadFile = File(...),
+    filename: Optional[str] = Form(None),
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+):
+    """Upload a file to the organization's S3 folder."""
+    if not s3_service.is_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="S3 is not enabled or not configured.",
+        )
+    
+    try:
         file_content = await file.read()
         
-        # Generate file_id and determine format
         from uuid import uuid4
+        import re
         file_id = uuid4()
         upload_filename = filename if filename else file.filename
         if not upload_filename:
@@ -119,7 +168,6 @@ async def upload_to_s3(
                 detail="Filename is required.",
             )
         
-        # Get file extension
         file_format = upload_filename.rsplit(".", 1)[-1].lower() if "." in upload_filename else ""
         if not file_format:
             raise HTTPException(
@@ -127,11 +175,19 @@ async def upload_to_s3(
                 detail="File must have an extension.",
             )
         
-        # Upload to S3
-        key = s3_service.upload_file(file_content, file_id, file_format)
+        name_without_ext = upload_filename.rsplit(".", 1)[0] if "." in upload_filename else upload_filename
+        sanitized_name = re.sub(r'[^a-zA-Z0-9_\-]', '-', name_without_ext).strip('-')
+        sanitized_name = re.sub(r'-+', '-', sanitized_name)
+        short_id = str(file_id)[:8]
+        meaningful_id = f"{sanitized_name}_{short_id}" if sanitized_name else str(file_id)
         
-        # TODO: Create AudioFile record in database if needed
-        # For now, just return success
+        key = s3_service.upload_file(
+            file_content,
+            file_id,
+            file_format,
+            organization_id=str(organization_id),
+            meaningful_id=meaningful_id,
+        )
         
         return {"message": f"File '{upload_filename}' uploaded successfully to S3."}
     except StorageError as e:
@@ -146,7 +202,7 @@ async def upload_to_s3(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to upload file to S3: {str(e)}",
         )
- 
+
 @router.get("/files/{file_key:path}/download", operation_id="downloadFromS3")
 async def download_from_s3(file_key: str, api_key: str = Depends(get_api_key)):
     """Download a file from the S3 bucket."""
@@ -193,16 +249,7 @@ async def get_s3_presigned_url(
     expiration: int = 3600,
     api_key: str = Depends(get_api_key),
 ):
-    """
-    Get presigned URL for S3 file playback/access.
-    
-    Args:
-        file_key: S3 key (path) of the file
-        expiration: URL expiration time in seconds (default: 1 hour)
-    
-    Returns:
-        Presigned URL for file access
-    """
+    """Get presigned URL for S3 file playback/access."""
     if not s3_service.is_enabled():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -230,7 +277,7 @@ async def get_s3_presigned_url(
             detail=f"Failed to generate presigned URL: {str(e)}",
         )
 
- 
+
 @router.delete("/files/{file_key:path}", response_model=MessageResponse, operation_id="deleteFromS3")
 async def delete_from_s3(file_key: str, api_key: str = Depends(get_api_key)):
     """Delete a file from the S3 bucket."""
@@ -258,4 +305,3 @@ async def delete_from_s3(file_key: str, api_key: str = Depends(get_api_key)):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to delete file from S3: {str(e)}",
         )
-

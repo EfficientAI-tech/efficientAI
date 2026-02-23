@@ -1,6 +1,6 @@
 """SQLAlchemy database models."""
 
-from sqlalchemy import Column, String, Integer, Float, DateTime, ForeignKey, Boolean, JSON, Enum, UniqueConstraint
+from sqlalchemy import Column, String, Integer, Float, DateTime, ForeignKey, Boolean, JSON, Enum, UniqueConstraint, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -454,17 +454,27 @@ class TestAgentConversation(Base):
 
 
 class Evaluator(Base):
-    """Evaluator - Configuration for testing agents with specific persona and scenario combinations."""
+    """Evaluator - Configuration for testing agents with specific persona and scenario combinations, or custom prompt evaluators."""
     __tablename__ = "evaluators"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     evaluator_id = Column(String(6), unique=True, nullable=False, index=True)  # 6-digit ID
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
     
-    # Configuration
-    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False)
-    persona_id = Column(UUID(as_uuid=True), ForeignKey("personas.id"), nullable=False)
-    scenario_id = Column(UUID(as_uuid=True), ForeignKey("scenarios.id"), nullable=False)
+    # Display name (required for custom evaluators, optional for standard)
+    name = Column(String, nullable=True)
+    
+    # Standard evaluator configuration (nullable for custom evaluators)
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True)
+    persona_id = Column(UUID(as_uuid=True), ForeignKey("personas.id"), nullable=True)
+    scenario_id = Column(UUID(as_uuid=True), ForeignKey("scenarios.id"), nullable=True)
+    
+    # Custom evaluator prompt (used instead of agent/persona/scenario)
+    custom_prompt = Column(Text, nullable=True)
+    
+    # LLM configuration for evaluation (overrides hardcoded defaults)
+    llm_provider = Column(String, nullable=True)  # e.g. "openai", "anthropic", "google"
+    llm_model = Column(String, nullable=True)  # e.g. "gpt-4.1", "claude-sonnet-4-20250514"
     
     # Tags for categorization
     tags = Column(JSON, nullable=True)  # Array of tag strings
@@ -514,7 +524,7 @@ class EvaluatorResult(Base):
     
     # References
     evaluator_id = Column(UUID(as_uuid=True), ForeignKey("evaluators.id"), nullable=True, index=True)  # Optional - can be None for test calls without persona/scenario
-    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False)
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=True)  # Nullable for custom evaluators
     persona_id = Column(UUID(as_uuid=True), ForeignKey("personas.id"), nullable=True)  # Optional - can be None for test calls
     scenario_id = Column(UUID(as_uuid=True), ForeignKey("scenarios.id"), nullable=True)  # Optional - can be None for test calls
     
@@ -712,6 +722,7 @@ class TTSComparison(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    simulation_id = Column(String(6), unique=True, index=True, nullable=True)
 
     name = Column(String(255), nullable=True)
     status = Column(String(50), nullable=False, default=TTSComparisonStatus.PENDING.value)

@@ -15,6 +15,7 @@ import Integrations from './pages/Integrations'
 import DataSources from './pages/DataSources'
 import VoiceBundles from './pages/VoiceBundles'
 import EvaluateTestAgents from './pages/EvaluateTestAgents'
+import EvaluatorDetail from './pages/EvaluatorDetail'
 import MetricsManagement from './pages/MetricsManagement'
 import Results from './pages/Results'
 import EvaluatorResultDetail from './pages/EvaluatorResultDetail'
@@ -68,6 +69,7 @@ function App() {
           <Route path="data-sources" element={<DataSources />} />
           <Route path="voicebundles" element={<VoiceBundles />} />
           <Route path="evaluate-test-agents" element={<EvaluateTestAgents />} />
+          <Route path="evaluate-test-agents/:id" element={<EvaluatorDetail />} />
           <Route path="metrics-management" element={<MetricsManagement />} />
           <Route path="results" element={<Results />} />
           <Route path="results/:id" element={<EvaluatorResultDetail />} />

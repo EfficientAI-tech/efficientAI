@@ -7,6 +7,7 @@ from sqlalchemy import and_
 from uuid import UUID
 import random
 from typing import List
+from pydantic import BaseModel
 from loguru import logger
 
 from app.database import get_db
@@ -39,44 +40,120 @@ def generate_unique_evaluator_id(db: Session) -> str:
     )
 
 
+class FormatPromptRequest(BaseModel):
+    prompt: str
+
+
+class FormatPromptResponse(BaseModel):
+    formatted_prompt: str
+
+
+@router.post("/format-prompt", response_model=FormatPromptResponse)
+def format_custom_prompt(
+    data: FormatPromptRequest,
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+):
+    """Reformat a raw custom prompt into well-structured markdown using the org's LLM."""
+    from app.services.llm_service import llm_service
+    from app.models.database import AIProvider
+    from app.models.enums import ModelProvider
+
+    if not data.prompt.strip():
+        raise HTTPException(status_code=400, detail="Prompt text is required")
+
+    openai_provider = db.query(AIProvider).filter(
+        AIProvider.organization_id == organization_id,
+        AIProvider.is_active == True,
+        AIProvider.provider == ModelProvider.OPENAI.value,
+    ).first()
+
+    if not openai_provider:
+        raise HTTPException(
+            status_code=400,
+            detail="No active OpenAI provider configured. Add one in AI Providers to use AI formatting.",
+        )
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a technical writer. Your job is to take a raw agent prompt or description "
+                "and reformat it into clean, well-structured markdown that an LLM evaluator can "
+                "easily parse. Organize the content into clear sections using markdown headings, "
+                "bullet points, and numbered lists where appropriate. Preserve ALL original meaning "
+                "and details — do not add, remove, or fabricate any information. "
+                "Return ONLY the formatted markdown, no preamble or explanation."
+            ),
+        },
+        {"role": "user", "content": data.prompt},
+    ]
+
+    try:
+        result = llm_service.generate_response(
+            messages=messages,
+            llm_provider=ModelProvider.OPENAI,
+            llm_model="gpt-4o-mini",
+            organization_id=organization_id,
+            db=db,
+            temperature=0.3,
+            max_tokens=4000,
+        )
+        return FormatPromptResponse(formatted_prompt=result["text"])
+    except Exception as e:
+        logger.error(f"Failed to format prompt: {repr(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to format prompt: {str(e)}")
+
+
 @router.post("", response_model=EvaluatorResponse, status_code=201)
 def create_evaluator(
     evaluator_data: EvaluatorCreate,
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ):
-    """Create a new evaluator."""
-    # Verify agent exists and belongs to organization
-    agent = db.query(Agent).filter(
-        and_(Agent.id == evaluator_data.agent_id, Agent.organization_id == organization_id)
-    ).first()
-    if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
+    """Create a new evaluator. Supports standard (agent+persona+scenario) or custom (custom_prompt) mode."""
+    is_custom = bool(evaluator_data.custom_prompt)
+    
+    if is_custom:
+        if not evaluator_data.name:
+            raise HTTPException(status_code=400, detail="Name is required for custom evaluators")
+    else:
+        if not evaluator_data.agent_id or not evaluator_data.persona_id or not evaluator_data.scenario_id:
+            raise HTTPException(
+                status_code=400,
+                detail="agent_id, persona_id, and scenario_id are required for standard evaluators"
+            )
+        
+        agent = db.query(Agent).filter(
+            and_(Agent.id == evaluator_data.agent_id, Agent.organization_id == organization_id)
+        ).first()
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
 
-    # Verify persona exists and belongs to organization
-    persona = db.query(Persona).filter(
-        and_(Persona.id == evaluator_data.persona_id, Persona.organization_id == organization_id)
-    ).first()
-    if not persona:
-        raise HTTPException(status_code=404, detail="Persona not found")
+        persona = db.query(Persona).filter(
+            and_(Persona.id == evaluator_data.persona_id, Persona.organization_id == organization_id)
+        ).first()
+        if not persona:
+            raise HTTPException(status_code=404, detail="Persona not found")
 
-    # Verify scenario exists and belongs to organization
-    scenario = db.query(Scenario).filter(
-        and_(Scenario.id == evaluator_data.scenario_id, Scenario.organization_id == organization_id)
-    ).first()
-    if not scenario:
-        raise HTTPException(status_code=404, detail="Scenario not found")
+        scenario = db.query(Scenario).filter(
+            and_(Scenario.id == evaluator_data.scenario_id, Scenario.organization_id == organization_id)
+        ).first()
+        if not scenario:
+            raise HTTPException(status_code=404, detail="Scenario not found")
 
-    # Generate unique 6-digit ID
     evaluator_id = generate_unique_evaluator_id(db)
 
-    # Create evaluator
     evaluator = Evaluator(
         evaluator_id=evaluator_id,
         organization_id=organization_id,
-        agent_id=evaluator_data.agent_id,
-        persona_id=evaluator_data.persona_id,
-        scenario_id=evaluator_data.scenario_id,
+        name=evaluator_data.name,
+        agent_id=evaluator_data.agent_id if not is_custom else None,
+        persona_id=evaluator_data.persona_id if not is_custom else None,
+        scenario_id=evaluator_data.scenario_id if not is_custom else None,
+        custom_prompt=evaluator_data.custom_prompt if is_custom else None,
+        llm_provider=evaluator_data.llm_provider.value if evaluator_data.llm_provider else None,
+        llm_model=evaluator_data.llm_model,
         tags=evaluator_data.tags,
     )
     db.add(evaluator)
@@ -236,6 +313,18 @@ def update_evaluator(
     if evaluator_data.tags is not None:
         evaluator.tags = evaluator_data.tags
 
+    if evaluator_data.name is not None:
+        evaluator.name = evaluator_data.name
+
+    if evaluator_data.custom_prompt is not None:
+        evaluator.custom_prompt = evaluator_data.custom_prompt
+
+    if evaluator_data.llm_provider is not None:
+        evaluator.llm_provider = evaluator_data.llm_provider.value
+    
+    if evaluator_data.llm_model is not None:
+        evaluator.llm_model = evaluator_data.llm_model
+
     db.commit()
     db.refresh(evaluator)
 
@@ -353,10 +442,12 @@ def run_evaluators(
             continue
             
         try:
-            # Create a placeholder EvaluatorResult with QUEUED status
-            # The actual result will be created by the Celery task
-            scenario = db.query(Scenario).filter(Scenario.id == evaluator.scenario_id).first()
-            scenario_name = scenario.name if scenario else "Unknown Scenario"
+            is_custom = bool(evaluator.custom_prompt)
+            if is_custom:
+                scenario_name = evaluator.name or "Custom Evaluation"
+            else:
+                scenario = db.query(Scenario).filter(Scenario.id == evaluator.scenario_id).first()
+                scenario_name = scenario.name if scenario else "Unknown Scenario"
             
             # Generate unique 6-digit result ID
             max_attempts = 100

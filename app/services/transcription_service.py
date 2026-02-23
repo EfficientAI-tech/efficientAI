@@ -32,9 +32,10 @@ Provider-Specific Formats:
 
 Speaker Diarization:
 - Whisper does NOT provide speaker diarization natively (only transcription)
-- We use improved heuristics by default (gap-based detection with balancing)
-- Optional: pyannote.audio for proper diarization (requires installation and HUGGINGFACE_TOKEN)
-- Install: pip install pyannote.audio torch
+- We use pyannote.audio (speaker-diarization-3.1) for accurate ML-based diarization
+- Whisper provides word-level timestamps, pyannote identifies speakers, then we align
+- Requires: pyannote.audio installed + diarization.huggingface_token in config.yml
+- Falls back to unreliable gap-based heuristics if pyannote is unavailable
 """
 
 import time
@@ -58,7 +59,7 @@ class TranscriptionService:
 
     def __init__(self):
         """Initialize transcription service."""
-        pass
+        self._pyannote_pipeline = None
 
     def _get_ai_provider(self, provider: ModelProvider, db: Session, organization_id: UUID) -> Optional[AIProvider]:
         """Get AI provider configuration from database."""
@@ -139,30 +140,28 @@ class TranscriptionService:
         raise StorageError(f"Failed to download audio file: S3 is not enabled and local file not found for key: {audio_file_key}")
 
     def _transcribe_with_openai(self, audio_file_path: str, model: str, api_key: str, language: Optional[str] = None) -> Dict[str, Any]:
-        """Transcribe audio using OpenAI Whisper API."""
+        """Transcribe audio using OpenAI Whisper API with word-level timestamps."""
         try:
             from openai import OpenAI
             
             client = OpenAI(api_key=api_key)
             
             with open(audio_file_path, 'rb') as audio_file:
-                # Use verbose_json format to get segments with timestamps
                 transcript = client.audio.transcriptions.create(
                     model=model,
                     file=audio_file,
                     language=language,
-                    response_format="verbose_json"
+                    response_format="verbose_json",
+                    timestamp_granularities=["word", "segment"]
                 )
             
-            # Format response - OpenAI returns different structures based on response_format
             result = {
                 "text": transcript.text if hasattr(transcript, 'text') else str(transcript),
                 "language": getattr(transcript, 'language', language) if language else getattr(transcript, 'language', 'en'),
-                "segments": []
+                "segments": [],
+                "words": []
             }
             
-            # Extract segments if available (verbose_json format includes segments)
-            # OpenAI's verbose_json format returns segments as a list
             if hasattr(transcript, 'segments') and transcript.segments:
                 for seg in transcript.segments:
                     result["segments"].append({
@@ -170,32 +169,53 @@ class TranscriptionService:
                         "end": getattr(seg, 'end', 0),
                         "text": getattr(seg, 'text', '')
                     })
-                logger.info(f"OpenAI transcription returned {len(result['segments'])} segments")
-            else:
-                # Check if transcript itself is a dict with segments (alternative format)
-                if isinstance(transcript, dict) and 'segments' in transcript:
-                    for seg in transcript['segments']:
-                        result["segments"].append({
-                            "start": seg.get('start', 0),
-                            "end": seg.get('end', 0),
-                            "text": seg.get('text', '')
-                        })
-                    logger.info(f"OpenAI transcription returned {len(result['segments'])} segments (dict format)")
+            elif isinstance(transcript, dict) and 'segments' in transcript:
+                for seg in transcript['segments']:
+                    result["segments"].append({
+                        "start": seg.get('start', 0),
+                        "end": seg.get('end', 0),
+                        "text": seg.get('text', '')
+                    })
             
-            # If no segments were extracted but we have text, create segments from the full text
-            # Split by sentences and estimate timestamps
+            if hasattr(transcript, 'words') and transcript.words:
+                for w in transcript.words:
+                    # Handle both object attributes and dict-like access
+                    if isinstance(w, dict):
+                        word_text = w.get('word', '')
+                        word_start = w.get('start', 0) or 0
+                        word_end = w.get('end', 0) or 0
+                    else:
+                        word_text = getattr(w, 'word', '') or ''
+                        word_start = getattr(w, 'start', None)
+                        word_end = getattr(w, 'end', None)
+                        # Some SDK versions may use 'start_time'/'end_time'
+                        if word_start is None:
+                            word_start = getattr(w, 'start_time', 0) or 0
+                        if word_end is None:
+                            word_end = getattr(w, 'end_time', 0) or 0
+                        word_start = float(word_start) if word_start else 0.0
+                        word_end = float(word_end) if word_end else 0.0
+                    result["words"].append({
+                        "word": word_text,
+                        "start": word_start,
+                        "end": word_end
+                    })
+            elif isinstance(transcript, dict) and 'words' in transcript:
+                for w in transcript['words']:
+                    result["words"].append({
+                        "word": w.get('word', ''),
+                        "start": w.get('start', 0) or 0,
+                        "end": w.get('end', 0) or 0
+                    })
+            
             if not result["segments"] and result["text"]:
-                logger.warning("OpenAI transcription returned no segments, creating segments from full text")
                 import re
-                # Split text into sentences
                 sentences = re.split(r'[.!?]+\s+', result["text"].strip())
                 sentences = [s.strip() for s in sentences if s.strip()]
                 
                 if sentences:
-                    # Estimate duration based on word count (average 150 words per minute)
                     total_words = len(result["text"].split())
                     estimated_duration = max(1.0, (total_words / 150.0) * 60.0)
-                    time_per_sentence = estimated_duration / len(sentences) if sentences else 1.0
                     
                     current_time = 0.0
                     for sentence in sentences:
@@ -207,9 +227,7 @@ class TranscriptionService:
                             "text": sentence
                         })
                         current_time += sentence_duration
-                    logger.info(f"Created {len(result['segments'])} segments from full text")
                 else:
-                    # Fallback: single segment
                     word_count = len(result["text"].split())
                     estimated_duration = max(1.0, (word_count / 150.0) * 60.0)
                     result["segments"] = [{
@@ -251,73 +269,192 @@ class TranscriptionService:
         except Exception as e:
             raise RuntimeError(f"Whisper transcription failed: {str(e)}")
 
-    def _detect_speakers_with_pyannote(self, audio_file_path: str, segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Use pyannote.audio for proper speaker diarization.
-        This requires pyannote.audio to be installed and HuggingFace token for model access.
-        """
-        try:
-            from pyannote.audio import Pipeline
-            import torch
-            
-            # Load the diarization pipeline
-            # Note: Requires HuggingFace token and accepting model terms
-            # Get token from: https://huggingface.co/settings/tokens
-            # Accept model terms at: https://huggingface.co/pyannote/speaker-diarization-3.1
-            from app.config import settings
-            hf_token = os.getenv("HUGGINGFACE_TOKEN") or settings.HUGGINGFACE_TOKEN
-            pipeline = Pipeline.from_pretrained(
-                "pyannote/speaker-diarization-3.1",
-                use_auth_token=hf_token  # Optional: for private models
+    def _get_pyannote_pipeline(self):
+        """Load and cache the pyannote diarization pipeline."""
+        if self._pyannote_pipeline is not None:
+            return self._pyannote_pipeline
+
+        # Compatibility shim: list_audio_backends was removed in torchaudio 2.4+
+        import torchaudio
+        if not hasattr(torchaudio, 'list_audio_backends'):
+            torchaudio.list_audio_backends = lambda: ["ffmpeg"]
+
+        from pyannote.audio import Pipeline
+        from app.config import settings
+
+        hf_token = settings.HUGGINGFACE_TOKEN
+        if not hf_token:
+            raise RuntimeError(
+                "HUGGINGFACE_TOKEN not configured. Set it under 'diarization.huggingface_token' "
+                "in config.yml. Required for pyannote speaker diarization."
             )
-            
-            # Run diarization
-            diarization = pipeline(audio_file_path)
-            
-            # Map timestamps to segments
+
+        logger.info("Loading pyannote speaker-diarization-3.1 pipeline (first call, will be cached)...")
+        self._pyannote_pipeline = Pipeline.from_pretrained(
+            "pyannote/speaker-diarization-3.1",
+            token=hf_token
+        )
+        logger.info("Pyannote pipeline loaded successfully")
+        return self._pyannote_pipeline
+
+    def _detect_speakers_with_pyannote(
+        self, audio_file_path: str, segments: List[Dict[str, Any]],
+        words: Optional[List[Dict[str, Any]]] = None,
+        num_speakers: Optional[int] = 2,
+        min_speakers: Optional[int] = None,
+        max_speakers: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Use pyannote.audio for ML-based speaker diarization, aligned with
+        Whisper word timestamps for accurate speaker-text mapping.
+
+        Args:
+            num_speakers: If set, forces pyannote to produce exactly this many
+                speaker clusters. Defaults to 2 (agent + customer), which greatly
+                improves accuracy on mono phone recordings.
+            min_speakers: Optional lower bound on speaker count.
+            max_speakers: Optional upper bound on speaker count.
+
+        Raises exceptions on failure so the caller can handle fallback and logging.
+        """
+        pipeline = self._get_pyannote_pipeline()
+
+        # Build pipeline kwargs for speaker count hints
+        pipeline_kwargs = {}
+        if num_speakers is not None:
+            pipeline_kwargs["num_speakers"] = num_speakers
+        if min_speakers is not None:
+            pipeline_kwargs["min_speakers"] = min_speakers
+        if max_speakers is not None:
+            pipeline_kwargs["max_speakers"] = max_speakers
+
+        logger.info(
+            f"Running pyannote diarization on {audio_file_path} "
+            f"(speaker hints: {pipeline_kwargs or 'auto'})"
+        )
+        raw_output = pipeline(audio_file_path, **pipeline_kwargs)
+
+        # Handle different return types across pyannote versions:
+        # - Older versions: Annotation directly (has itertracks)
+        # - Newer versions: DiarizeOutput with .speaker_diarization attribute
+        if hasattr(raw_output, 'itertracks'):
+            annotation = raw_output
+        elif hasattr(raw_output, 'speaker_diarization'):
+            annotation = raw_output.speaker_diarization
+        elif hasattr(raw_output, 'annotation'):
+            annotation = raw_output.annotation
+        elif isinstance(raw_output, tuple):
+            annotation = raw_output[0]
+        else:
+            attrs = [a for a in dir(raw_output) if not a.startswith('_')]
+            raise TypeError(
+                f"Unexpected pyannote output type: {type(raw_output).__name__}. "
+                f"Available attributes: {attrs}"
+            )
+
+        # Collect diarization turns as a sorted list for fast lookup
+        diar_turns = []
+        raw_labels = set()
+        for turn, _, speaker_label in annotation.itertracks(yield_label=True):
+            diar_turns.append((turn.start, turn.end, speaker_label))
+            raw_labels.add(speaker_label)
+
+        if not diar_turns:
+            logger.warning("Pyannote returned no speaker turns")
+            return []
+
+        sorted_labels = sorted(raw_labels)
+        label_map = {lbl: f"Speaker {i + 1}" for i, lbl in enumerate(sorted_labels)}
+        logger.info(f"Pyannote detected {len(sorted_labels)} speakers, {len(diar_turns)} turns")
+
+        def find_speaker(midpoint: float) -> str:
+            """Find which speaker is active at a given timestamp."""
+            for t_start, t_end, lbl in diar_turns:
+                if t_start <= midpoint <= t_end:
+                    return label_map[lbl]
+            # No exact match -- find the closest turn
+            min_dist = float('inf')
+            closest_label = label_map[diar_turns[0][2]]
+            for t_start, t_end, lbl in diar_turns:
+                dist = min(abs(midpoint - t_start), abs(midpoint - t_end))
+                if dist < min_dist:
+                    min_dist = dist
+                    closest_label = label_map[lbl]
+            return closest_label
+
+        if words and len(words) > 0:
             speaker_segments = []
-            for segment, _, speaker in diarization.itertracks(yield_label=True):
-                # Find transcription segments that overlap with this speaker segment
-                segment_start = segment.start
-                segment_end = segment.end
-                
-                # Find matching transcription segments
-                matching_text = []
-                for seg in segments:
-                    seg_start = seg.get("start", 0)
-                    seg_end = seg.get("end", 0)
-                    # Check if transcription segment overlaps with speaker segment
-                    if not (seg_end < segment_start or seg_start > segment_end):
-                        matching_text.append(seg.get("text", ""))
-                
-                if matching_text:
-                    speaker_segments.append({
-                        "speaker": speaker,
-                        "text": " ".join(matching_text),
-                        "start": segment_start,
-                        "end": segment_end
-                    })
-            
-            return speaker_segments if speaker_segments else self._detect_speakers_heuristic(segments)
-            
-        except ImportError:
-            # pyannote.audio not installed, fall back to heuristic
-            return self._detect_speakers_heuristic(segments)
-        except Exception as e:
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.warning(f"Pyannote diarization failed: {str(e)}, falling back to heuristic")
-            return self._detect_speakers_heuristic(segments)
+            current_speaker = None
+            current_words: List[str] = []
+            current_start = 0.0
+            current_end = 0.0
+
+            for w in words:
+                word_text = w.get("word", "").strip()
+                w_start = w.get("start", 0)
+                w_end = w.get("end", 0)
+                if not word_text:
+                    continue
+
+                midpoint = (w_start + w_end) / 2.0
+                speaker = find_speaker(midpoint)
+
+                if speaker != current_speaker:
+                    if current_words and current_speaker:
+                        speaker_segments.append({
+                            "speaker": current_speaker,
+                            "text": " ".join(current_words).strip(),
+                            "start": round(current_start, 3),
+                            "end": round(current_end, 3)
+                        })
+                    current_speaker = speaker
+                    current_words = [word_text]
+                    current_start = w_start
+                    current_end = w_end
+                else:
+                    current_words.append(word_text)
+                    current_end = w_end
+
+            if current_words and current_speaker:
+                speaker_segments.append({
+                    "speaker": current_speaker,
+                    "text": " ".join(current_words).strip(),
+                    "start": round(current_start, 3),
+                    "end": round(current_end, 3)
+                })
+
+            return speaker_segments
+
+        # Fallback: align at segment level when word timestamps are not available
+        speaker_segments = []
+        for seg in segments:
+            seg_start = seg.get("start", 0)
+            seg_end = seg.get("end", 0)
+            seg_text = seg.get("text", "").strip()
+            if not seg_text:
+                continue
+
+            midpoint = (seg_start + seg_end) / 2.0
+            speaker = find_speaker(midpoint)
+
+            speaker_segments.append({
+                "speaker": speaker,
+                "text": seg_text,
+                "start": round(seg_start, 3),
+                "end": round(seg_end, 3)
+            })
+
+        return speaker_segments
 
     def _detect_speakers_heuristic(self, segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Improved heuristic-based speaker diarization.
-        Uses multiple heuristics:
-        1. Gap-based detection (adaptive thresholds)
-        2. Alternating pattern detection
-        3. Segment duration analysis
-        4. Content-based patterns (questions/statements)
+        Heuristic-based speaker diarization fallback. Uses gap-based detection
+        which is unreliable -- pyannote.audio should be used for accurate results.
         """
+        logger.warning(
+            "Using heuristic speaker diarization (unreliable). For accurate results, "
+            "install pyannote.audio and configure diarization.huggingface_token in config.yml"
+        )
         if not segments:
             return []
         
@@ -522,9 +659,6 @@ class TranscriptionService:
                 
                 # If no segments from transcription, create a single segment from the full text
                 if not segments and result.get("text"):
-                    logger.warning("No segments returned from transcription, creating single segment from full text")
-                    # Create a single segment with the full transcription
-                    # We'll estimate duration if available, otherwise use a default
                     estimated_duration = 0.0
                     if hasattr(result, 'duration') and result.get('duration'):
                         estimated_duration = result.get('duration')
@@ -543,18 +677,23 @@ class TranscriptionService:
                     }]
                 
                 if segments:
-                    # Try pyannote.audio first (if available), fall back to heuristic
+                    words = result.get("words", [])
+                    # Check if words actually have valid timestamps
+                    valid_word_count = sum(1 for w in words if w.get("start", 0) > 0 or w.get("end", 0) > 0)
+                    if words and valid_word_count == 0:
+                        words = []
+
                     try:
-                        speaker_segments = self._detect_speakers_with_pyannote(temp_file_path, segments)
+                        from app.config import settings as app_settings
+                        num_spk = getattr(app_settings, 'DIARIZATION_NUM_SPEAKERS', 2)
+                        speaker_segments = self._detect_speakers_with_pyannote(
+                            temp_file_path, segments, words, num_speakers=num_spk
+                        )
                         if not speaker_segments:
-                            logger.info("Pyannote returned no speaker segments, falling back to heuristic")
                             speaker_segments = self._detect_speakers_heuristic(segments)
                     except Exception as e:
-                        logger.warning(f"Pyannote diarization failed: {str(e)}, falling back to heuristic")
-                        # Fall back to heuristic if pyannote fails
+                        logger.warning(f"Pyannote diarization failed: {e}, falling back to heuristic")
                         speaker_segments = self._detect_speakers_heuristic(segments)
-                else:
-                    logger.warning("No segments available for speaker diarization")
             
             processing_time = time.time() - start_time
             

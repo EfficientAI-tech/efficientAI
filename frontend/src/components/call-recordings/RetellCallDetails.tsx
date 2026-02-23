@@ -58,12 +58,13 @@ interface RetellCallData {
 
 interface RetellCallDetailsProps {
   callData: RetellCallData
+  hideTranscript?: boolean
 }
 
 const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8'];
 
-export default function RetellCallDetails({ callData }: RetellCallDetailsProps) {
-  const [activeTab, setActiveTab] = useState<'overview' | 'transcript' | 'debug'>('overview')
+export default function RetellCallDetails({ callData, hideTranscript = false }: RetellCallDetailsProps) {
+  const [activeTab, setActiveTab] = useState<'overview' | 'transcript'>('overview')
 
   const formatDuration = (ms?: number) => {
     if (!ms) return 'N/A'
@@ -305,24 +306,14 @@ export default function RetellCallDetails({ callData }: RetellCallDetailsProps) 
     </div>
   )
 
-  const DebugView = () => (
-    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div>
-          <h4 className="font-semibold text-gray-900 mb-2">Collected Variables</h4>
-          <pre className="text-xs bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto h-64 custom-scrollbar">
-            {JSON.stringify(callData.collected_dynamic_variables || {}, null, 2)}
-          </pre>
-        </div>
-        <div>
-          <h4 className="font-semibold text-gray-900 mb-2">Metadata</h4>
-          <pre className="text-xs bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto h-64 custom-scrollbar">
-            {JSON.stringify(callData.metadata || {}, null, 2)}
-          </pre>
-        </div>
+  if (hideTranscript) {
+    return (
+      <div className="space-y-6">
+        <SummaryCard />
+        <StatsParams />
       </div>
-    </div>
-  )
+    )
+  }
 
   return (
     <div className="space-y-6">
@@ -346,15 +337,6 @@ export default function RetellCallDetails({ callData }: RetellCallDetailsProps) 
         >
           Transcript
         </button>
-        <button
-          onClick={() => setActiveTab('debug')}
-          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'debug'
-            ? 'border-indigo-600 text-indigo-600'
-            : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-            }`}
-        >
-          Debug Data
-        </button>
       </div>
 
       {activeTab === 'overview' && (
@@ -372,11 +354,8 @@ export default function RetellCallDetails({ callData }: RetellCallDetailsProps) 
       {activeTab === 'transcript' && (
         <div className="space-y-6">
           <TranscriptCard />
-          {/* Detailed Word-Level Timing could go here if needed, specifically for deeply debugging timing */}
         </div>
       )}
-
-      {activeTab === 'debug' && <DebugView />}
     </div>
   )
 }

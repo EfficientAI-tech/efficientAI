@@ -150,23 +150,20 @@ export interface UserUpdate {
   email?: string | null
 }
 
-// User Preferences Types
 export interface UserPreferences {
-  default_agent_id: string | null
-  default_agent: {
-    id: string
-    agent_id: string | null
-    name: string
-    phone_number: string | null
-    language: string
-    description: string | null
-    call_type: string
-    call_medium: string
-  } | null
+  theme?: string
+  notifications_enabled?: boolean
+  email_notifications?: boolean
+  default_language?: string
+  [key: string]: any
 }
 
 export interface UserPreferencesUpdate {
-  default_agent_id: string | null
+  theme?: string
+  notifications_enabled?: boolean
+  email_notifications?: boolean
+  default_language?: string
+  [key: string]: any
 }
 
 // Integration Types
@@ -367,10 +364,22 @@ export interface S3FileInfo {
   last_modified: string
 }
 
+export interface S3FolderInfo {
+  name: string
+  path: string
+}
+
 export interface S3ListFilesResponse {
   files: S3FileInfo[]
   total: number
   prefix?: string | null
+}
+
+export interface S3BrowseResponse {
+  folders: S3FolderInfo[]
+  files: S3FileInfo[]
+  current_path: string
+  organization_id: string
 }
 
 export interface S3Status {

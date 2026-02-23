@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
-import { useState, useRef } from 'react'
+import { useState, useRef, useMemo } from 'react'
 import {
   Database,
   Upload,
@@ -15,8 +15,14 @@ import {
   Play,
   Pause,
   Volume2,
+  Folder,
+  ChevronRight,
+  Home,
+  ArrowUp,
+  ArrowDown,
+  ArrowUpDown,
 } from 'lucide-react'
-import { S3FileInfo } from '../types/api'
+import { S3FileInfo, S3FolderInfo } from '../types/api'
 import Button from '../components/Button'
 
 export default function DataSources() {
@@ -24,56 +30,50 @@ export default function DataSources() {
   const [showUploadModal, setShowUploadModal] = useState(false)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [customFilename, setCustomFilename] = useState('')
-  const [prefix, setPrefix] = useState('')
+  const [currentPath, setCurrentPath] = useState('')
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [fileToDelete, setFileToDelete] = useState<S3FileInfo | null>(null)
   const [deletingFileKey, setDeletingFileKey] = useState<string | null>(null)
   
-  // Audio player state
+  const [dateSortOrder, setDateSortOrder] = useState<'asc' | 'desc' | null>(null)
+
   const [playingFileKey, setPlayingFileKey] = useState<string | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   const [loadingAudio, setLoadingAudio] = useState<string | null>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
 
-  // Fetch S3 status
   const { data: s3Status, refetch: refetchStatus } = useQuery({
     queryKey: ['s3-status'],
     queryFn: () => apiClient.getS3Status(),
   })
 
-  // Fetch audio files from database (S3 files)
-  const { data: s3Files, isLoading: isLoadingFiles, refetch: refetchFiles } = useQuery({
-    queryKey: ['s3-files', prefix],
-    queryFn: () => apiClient.listS3Files(prefix || undefined),
+  const { data: browseData, isLoading: isLoadingBrowse, refetch: refetchBrowse } = useQuery({
+    queryKey: ['s3-browse', currentPath],
+    queryFn: () => apiClient.browseS3(currentPath),
     enabled: s3Status?.enabled === true,
   })
 
-  // Test connection mutation (uses existing config)
   const testConnectionMutation = useMutation({
     mutationFn: () => apiClient.testS3Connection(),
     onSuccess: () => {
-      // Refetch status to update connection state and clear any errors
       refetchStatus()
     },
     onError: () => {
-      // Refetch status to update error state
       refetchStatus()
     },
   })
 
-  // Delete file mutation
   const deleteFileMutation = useMutation({
     mutationFn: (fileKey: string) => apiClient.deleteFromS3(fileKey),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['s3-files'] })
+      queryClient.invalidateQueries({ queryKey: ['s3-browse'] })
       setShowDeleteModal(false)
       setFileToDelete(null)
       setDeletingFileKey(null)
     },
     onError: () => {
       setDeletingFileKey(null)
-      // Error will be shown in the modal via deleteFileMutation.error
     },
   })
 
@@ -95,9 +95,7 @@ export default function DataSources() {
     setDeletingFileKey(null)
   }
 
-  // Audio playback handlers
   const handlePlayAudio = async (file: S3FileInfo) => {
-    // If clicking on the same file that's playing, toggle play/pause
     if (playingFileKey === file.key && audioUrl) {
       if (isPlaying) {
         audioRef.current?.pause()
@@ -109,13 +107,11 @@ export default function DataSources() {
       return
     }
     
-    // Stop any currently playing audio
     if (audioRef.current) {
       audioRef.current.pause()
       audioRef.current.currentTime = 0
     }
     
-    // Load new audio
     setLoadingAudio(file.key)
     try {
       const { url } = await apiClient.getS3PresignedUrl(file.key)
@@ -124,7 +120,6 @@ export default function DataSources() {
       setIsPlaying(true)
       setLoadingAudio(null)
       
-      // Play after state update
       setTimeout(() => {
         audioRef.current?.play()
       }, 100)
@@ -149,19 +144,18 @@ export default function DataSources() {
     setAudioUrl(null)
   }
 
-  // Upload file mutation
   const uploadMutation = useMutation({
     mutationFn: ({ file, filename }: { file: File; filename?: string }) => apiClient.uploadToS3(file, filename),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['s3-files'] })
+      queryClient.invalidateQueries({ queryKey: ['s3-browse'] })
       queryClient.invalidateQueries({ queryKey: ['audio'] })
       setShowUploadModal(false)
       setSelectedFile(null)
       setCustomFilename('')
-      alert('✅ File uploaded successfully to S3!')
+      alert('File uploaded successfully to S3!')
     },
     onError: (error: any) => {
-      alert(`❌ Failed to upload file: ${error.response?.data?.detail || error.message}`)
+      alert(`Failed to upload file: ${error.response?.data?.detail || error.message}`)
     },
   })
 
@@ -175,6 +169,42 @@ export default function DataSources() {
     uploadMutation.mutate({ 
       file: selectedFile, 
       filename: customFilename.trim() || undefined 
+    })
+  }
+
+  const navigateToFolder = (folderPath: string) => {
+    handleStopAudio()
+    setCurrentPath(folderPath)
+  }
+
+  const navigateUp = () => {
+    if (!currentPath) return
+    const parts = currentPath.replace(/\/$/, '').split('/')
+    parts.pop()
+    const parentPath = parts.length > 0 ? parts.join('/') + '/' : ''
+    navigateToFolder(parentPath)
+  }
+
+  const breadcrumbSegments = currentPath
+    .replace(/\/$/, '')
+    .split('/')
+    .filter(Boolean)
+
+  const sortedFiles = useMemo(() => {
+    if (!browseData?.files) return []
+    if (!dateSortOrder) return browseData.files
+    return [...browseData.files].sort((a, b) => {
+      const dateA = new Date(a.last_modified).getTime()
+      const dateB = new Date(b.last_modified).getTime()
+      return dateSortOrder === 'asc' ? dateA - dateB : dateB - dateA
+    })
+  }, [browseData?.files, dateSortOrder])
+
+  const toggleDateSort = () => {
+    setDateSortOrder((prev) => {
+      if (prev === null) return 'desc'
+      if (prev === 'desc') return 'asc'
+      return null
     })
   }
 
@@ -192,7 +222,7 @@ export default function DataSources() {
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Data Sources</h1>
           <p className="mt-2 text-sm text-gray-600">
-            Connect to S3 buckets to retrieve and store audio files
+            Browse and manage audio files in your organization's S3 storage
           </p>
         </div>
         <div className="flex gap-3">
@@ -208,7 +238,7 @@ export default function DataSources() {
               </Button>
               <Button
                 variant="secondary"
-                onClick={() => refetchFiles()}
+                onClick={() => refetchBrowse()}
                 leftIcon={<RefreshCw className="h-5 w-5" />}
               >
                 Refresh
@@ -258,40 +288,85 @@ export default function DataSources() {
         )}
       </div>
 
-      {/* S3 Files List */}
+      {/* S3 Browser */}
       {s3Status?.enabled && (
         <div className="bg-white shadow rounded-lg p-6">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-xl font-semibold">Audio Files in S3</h2>
-            <div className="flex items-center gap-2">
-              <input
-                type="text"
-                placeholder="Filter by prefix..."
-                value={prefix}
-                onChange={(e) => setPrefix(e.target.value)}
-                className="px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-              />
-            </div>
+          {/* Breadcrumb Navigation */}
+          <div className="flex items-center gap-1 mb-4 text-sm overflow-x-auto pb-2">
+            <button
+              onClick={() => navigateToFolder('')}
+              className={`flex items-center gap-1 px-2 py-1 rounded hover:bg-gray-100 transition-colors flex-shrink-0 ${
+                currentPath === '' ? 'text-primary-700 font-semibold bg-primary-50' : 'text-gray-600'
+              }`}
+            >
+              <Home className="h-4 w-4" />
+              <span>Organization Root</span>
+            </button>
+            {breadcrumbSegments.map((segment, index) => {
+              const pathUpTo = breadcrumbSegments.slice(0, index + 1).join('/') + '/'
+              const isLast = index === breadcrumbSegments.length - 1
+              return (
+                <div key={pathUpTo} className="flex items-center gap-1 flex-shrink-0">
+                  <ChevronRight className="h-4 w-4 text-gray-400" />
+                  <button
+                    onClick={() => navigateToFolder(pathUpTo)}
+                    className={`px-2 py-1 rounded hover:bg-gray-100 transition-colors ${
+                      isLast ? 'text-primary-700 font-semibold bg-primary-50' : 'text-gray-600'
+                    }`}
+                  >
+                    {segment}
+                  </button>
+                </div>
+              )
+            })}
           </div>
 
-          {isLoadingFiles ? (
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-semibold">
+              {currentPath ? `/${currentPath.replace(/\/$/, '')}` : 'Organization Root'}
+            </h2>
+            {currentPath && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={navigateUp}
+                className="text-gray-600"
+              >
+                Go Up
+              </Button>
+            )}
+          </div>
+
+          {isLoadingBrowse ? (
             <div className="text-center py-8 text-gray-500">
               <RefreshCw className="h-8 w-8 mx-auto mb-2 animate-spin" />
-              <p>Loading files...</p>
+              <p>Loading...</p>
             </div>
-          ) : s3Files && s3Files.files.length > 0 ? (
+          ) : browseData && (browseData.folders.length > 0 || browseData.files.length > 0) ? (
             <div className="overflow-x-auto">
               <table className="min-w-full divide-y divide-gray-200">
                 <thead className="bg-gray-50">
                   <tr>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Filename
+                      Name
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Size
                     </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Last Modified
+                    <th
+                      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer select-none hover:text-gray-700 group"
+                      onClick={toggleDateSort}
+                    >
+                      <div className="flex items-center gap-1">
+                        Last Modified
+                        {dateSortOrder === 'desc' ? (
+                          <ArrowDown className="h-3.5 w-3.5 text-primary-600" />
+                        ) : dateSortOrder === 'asc' ? (
+                          <ArrowUp className="h-3.5 w-3.5 text-primary-600" />
+                        ) : (
+                          <ArrowUpDown className="h-3.5 w-3.5 text-gray-400 opacity-0 group-hover:opacity-100 transition-opacity" />
+                        )}
+                      </div>
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Actions
@@ -299,7 +374,37 @@ export default function DataSources() {
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
-                  {s3Files.files.map((file: S3FileInfo) => (
+                  {/* Folders */}
+                  {browseData.folders.map((folder: S3FolderInfo) => (
+                    <tr
+                      key={folder.path}
+                      className="hover:bg-blue-50 cursor-pointer group"
+                      onClick={() => navigateToFolder(folder.path)}
+                    >
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="flex items-center gap-2">
+                          <Folder className="h-5 w-5 text-yellow-500" />
+                          <span className="text-sm font-medium text-gray-900 group-hover:text-primary-700">
+                            {folder.name}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-400">
+                        &mdash;
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-400">
+                        &mdash;
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-400">
+                        <span className="text-xs text-gray-400 group-hover:text-primary-600">
+                          Open folder
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+
+                  {/* Files */}
+                  {sortedFiles.map((file: S3FileInfo) => (
                     <tr key={file.key} className="hover:bg-gray-50">
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="flex items-center gap-2">
@@ -360,22 +465,24 @@ export default function DataSources() {
               </table>
               <div className="px-6 py-3 bg-gray-50 border-t border-gray-200">
                 <p className="text-sm text-gray-600">
-                  Showing {s3Files.files.length} of {s3Files.total} files
+                  {browseData.folders.length} folder{browseData.folders.length !== 1 ? 's' : ''}, {browseData.files.length} file{browseData.files.length !== 1 ? 's' : ''}
                 </p>
               </div>
             </div>
           ) : (
             <div className="text-center py-8 text-gray-500">
               <Database className="h-12 w-12 mx-auto mb-3 text-gray-300" />
-              <p>No audio files found in S3 bucket</p>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setShowUploadModal(true)}
-                className="mt-3"
-              >
-                Upload your first file
-              </Button>
+              <p>This folder is empty</p>
+              {!currentPath && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowUploadModal(true)}
+                  className="mt-3"
+                >
+                  Upload your first file
+                </Button>
+              )}
             </div>
           )}
           
@@ -389,13 +496,13 @@ export default function DataSources() {
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-semibold text-gray-900 truncate">
-                    {s3Files?.files.find((f: S3FileInfo) => f.key === playingFileKey)?.filename || playingFileKey.split('/').pop()}
+                    {browseData?.files.find((f: S3FileInfo) => f.key === playingFileKey)?.filename || playingFileKey.split('/').pop()}
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => {
-                      const file = s3Files?.files.find((f: S3FileInfo) => f.key === playingFileKey)
+                      const file = browseData?.files.find((f: S3FileInfo) => f.key === playingFileKey)
                       if (file) handlePlayAudio(file)
                     }}
                     className="p-2 rounded-full bg-blue-600 text-white hover:bg-blue-700 transition-colors"
@@ -458,7 +565,6 @@ export default function DataSources() {
                   onChange={(e) => {
                     const file = e.target.files?.[0] || null
                     setSelectedFile(file)
-                    // Auto-fill filename with original name (without extension) if custom filename is empty
                     if (file && !customFilename) {
                       const nameWithoutExt = file.name.replace(/\.[^/.]+$/, '')
                       setCustomFilename(nameWithoutExt)
@@ -486,6 +592,11 @@ export default function DataSources() {
                 />
                 <p className="mt-1 text-xs text-gray-500">
                   If left empty, the original filename will be used. Extension will be added automatically.
+                </p>
+              </div>
+              <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3">
+                <p className="text-xs text-blue-700">
+                  Files will be uploaded to your organization's <code className="bg-blue-100 px-1 rounded">audio/</code> folder in S3.
                 </p>
               </div>
               {uploadMutation.isError && (
@@ -593,4 +704,3 @@ export default function DataSources() {
     </div>
   )
 }
-
