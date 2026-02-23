@@ -18,13 +18,32 @@ This is useful when you want to:
 
 ---
 
-## Endpoint
+## Webhook URLs
+
+API keys are embedded directly in the URL, just like Slack webhooks. No custom headers needed — just paste the URL into your provider's dashboard.
+
+### For Retell
+
+Retell sends its own payload format (`event` + `call` object). Use the dedicated Retell webhook:
 
 ```
-POST /api/v1/observability/calls
+POST https://your-domain.com/api/v1/observability/calls/webhook/retell/YOUR_API_KEY
 ```
 
-**Authentication**: Requires your EfficientAI API key in the `X-EFFICIENTAI-API-KEY` header.
+Configure this URL in your Retell dashboard under **Settings → Webhooks**. Retell will automatically send call events to this URL.
+
+### For custom sources (Vapi, your backend, scripts, etc.)
+
+Use the generic webhook with the flat JSON format documented below:
+
+```
+POST https://your-domain.com/api/v1/observability/calls/webhook/YOUR_API_KEY
+```
+
+**Example:**
+```
+POST https://xyz.com/api/v1/observability/calls/webhook/i7b7Kdhvg8HDYlY2q2TBvKuI1Na_rY6xpkDP-DEJ24A
+```
 
 ---
 
@@ -97,25 +116,34 @@ Each item in the `messages` array represents a single utterance in the conversat
 
 ---
 
-## Retell Webhook
+## Provider Setup
 
-Retell has a dedicated webhook endpoint that does **not** require an API key. Configure this URL in your Retell dashboard:
+### Retell
+
+In your Retell dashboard, go to **Settings → Webhooks** and set the webhook URL:
 
 ```
-POST https://your-domain.com/api/v1/observability/calls/retell/webhook
+https://your-domain.com/api/v1/observability/calls/webhook/retell/YOUR_API_KEY
 ```
 
-Retell sends its native payload format directly — no transformation needed on your side.
+Retell will automatically send its native call event payload (with `event`, `call`, `call_analysis`, `latency`, `cost`, etc.) to this URL after every call. No data transformation needed on your side.
 
----
+### Vapi
 
-## Vapi Webhook
+Set this as your Vapi `server-url`:
 
-For Vapi, use the generic call ingestion endpoint. You can forward Vapi's `server-url` call events or transform them into the flat format above:
+```
+https://your-domain.com/api/v1/observability/calls/webhook/YOUR_API_KEY
+```
+
+Send the flat JSON format documented above with the call messages, metadata, and recording URLs.
+
+### Custom / Other Providers
+
+Use the generic webhook URL and send the flat JSON format:
 
 ```bash
-curl -X POST https://your-domain.com/api/v1/observability/calls \
-  -H "X-EFFICIENTAI-API-KEY: your-api-key" \
+curl -X POST https://your-domain.com/api/v1/observability/calls/webhook/YOUR_API_KEY \
   -H "Content-Type: application/json" \
   -d '{
     "id": "call_abc123",
@@ -123,8 +151,7 @@ curl -X POST https://your-domain.com/api/v1/observability/calls \
     "startedAt": "2025-10-15T09:22:21.787Z",
     "endedAt": "2025-10-15T09:24:30.229Z",
     "messages": [...],
-    "endedReason": "assistant-ended-call",
-    "provider_platform": "vapi"
+    "endedReason": "assistant-ended-call"
   }'
 ```
 
@@ -237,24 +264,19 @@ ngrok also starts a local inspection dashboard at `http://localhost:4040` where 
 
 ### Step 5: Configure your Voice AI provider
 
-Use the ngrok URL as your webhook endpoint:
+Use the ngrok URL with your API key:
 
 **For Retell:**
 ```
-https://a1b2c3d4.ngrok-free.app/api/v1/observability/calls/retell/webhook
+https://a1b2c3d4.ngrok-free.app/api/v1/observability/calls/webhook/retell/YOUR_API_KEY
 ```
-Set this in the Retell dashboard under **Settings → Webhooks**.
 
-**For Vapi:**
+**For Vapi / custom sources:**
 ```
-https://a1b2c3d4.ngrok-free.app/api/v1/observability/calls
+https://a1b2c3d4.ngrok-free.app/api/v1/observability/calls/webhook/YOUR_API_KEY
 ```
-Set this as your Vapi `server-url` and include the `X-EFFICIENTAI-API-KEY` header.
 
-**For custom integrations:**
-```
-https://a1b2c3d4.ngrok-free.app/api/v1/observability/calls
-```
+Paste the appropriate URL into your provider's webhook/server-url configuration.
 
 ### Step 6: Test with a real call
 
@@ -271,8 +293,7 @@ The free tier of ngrok generates a new URL each time you restart it. If you need
 You can also send test call data manually using Postman or curl:
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/observability/calls \
-  -H "X-EFFICIENTAI-API-KEY: your-api-key" \
+curl -X POST http://localhost:8000/api/v1/observability/calls/webhook/your-api-key \
   -H "Content-Type: application/json" \
   -d '{
     "id": "test-call-001",
@@ -335,7 +356,7 @@ curl -X POST http://localhost:8000/api/v1/observability/calls \
 
 Here's the complete workflow from ingesting a call to evaluating it:
 
-1. **Ingest a call** → `POST /api/v1/observability/calls` with the call JSON
+1. **Ingest a call** → `POST /api/v1/observability/calls/webhook/YOUR_API_KEY` with the call JSON
 2. **View in dashboard** → Navigate to Calls in the sidebar, click the new call
 3. **Inspect transcript** → Review the chat bubbles, metadata, phone numbers, and end reason
 4. **Run evaluation** → Click "Run Evaluation", pick an evaluator, and submit
