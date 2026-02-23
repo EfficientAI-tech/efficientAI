@@ -75,6 +75,7 @@ class Settings(BaseSettings):
     
     # Speaker Diarization (Optional)
     HUGGINGFACE_TOKEN: Optional[str] = None  # For pyannote.audio speaker diarization
+    DIARIZATION_NUM_SPEAKERS: Optional[int] = 2  # Force pyannote to detect this many speakers (None = auto-detect)
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -285,6 +286,14 @@ def load_config_from_file(config_path: str) -> None:
         if "use_tls" in smtp_config:
             settings.SMTP_USE_TLS = smtp_config["use_tls"]
     
+    if "diarization" in config_data:
+        diarization_config = config_data["diarization"]
+        if "huggingface_token" in diarization_config and diarization_config["huggingface_token"]:
+            settings.HUGGINGFACE_TOKEN = diarization_config["huggingface_token"]
+        if "num_speakers" in diarization_config:
+            val = diarization_config["num_speakers"]
+            settings.DIARIZATION_NUM_SPEAKERS = int(val) if val is not None else None
+
     if "cors" in config_data:
         cors_config = config_data["cors"]
         if "origins" in cors_config:

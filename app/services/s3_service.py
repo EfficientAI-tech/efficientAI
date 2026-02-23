@@ -195,6 +195,26 @@ class S3Service:
         except Exception as e:
             raise StorageError(f"Unexpected error uploading file to S3: {str(e)}")
 
+    def upload_file_by_key(self, file_content: bytes, key: str, content_type: str = "audio/mpeg") -> str:
+        """Upload file to S3 using an explicit key path."""
+        self._ensure_initialized()
+        if not self.is_enabled():
+            error_msg = self._initialization_error or "S3 is not enabled or not configured"
+            raise StorageError(error_msg)
+
+        try:
+            self.s3_client.put_object(
+                Bucket=self.bucket_name,
+                Key=key,
+                Body=file_content,
+                ContentType=content_type,
+            )
+            return key
+        except ClientError as e:
+            raise StorageError(f"Failed to upload file to S3: {str(e)}")
+        except Exception as e:
+            raise StorageError(f"Unexpected error uploading file to S3: {str(e)}")
+
     def download_file(self, file_id: uuid.UUID, file_format: str) -> bytes:
         """
         Download file from S3.
@@ -336,7 +356,6 @@ class S3Service:
 
         try:
             if organization_id:
-                # List files for specific organization
                 search_prefix = f"{self.prefix}organizations/{organization_id}/audio/"
             else:
                 search_prefix = prefix if prefix else self.prefix
@@ -349,7 +368,6 @@ class S3Service:
             files = []
             if "Contents" in response:
                 for obj in response["Contents"]:
-                    # Filter to only audio files
                     key = obj["Key"]
                     if any(key.lower().endswith(f".{fmt}") for fmt in settings.ALLOWED_AUDIO_FORMATS):
                         files.append({
@@ -364,6 +382,81 @@ class S3Service:
             raise StorageError(f"Failed to list files in S3: {str(e)}")
         except Exception as e:
             raise StorageError(f"Unexpected error listing files in S3: {str(e)}")
+
+    def get_organization_root_prefix(self, organization_id: str) -> str:
+        """Get the root S3 prefix for a given organization."""
+        return f"{self.prefix}organizations/{organization_id}/"
+
+    def browse_folder(
+        self,
+        organization_id: str,
+        path: str = "",
+        max_keys: int = 1000,
+    ) -> dict:
+        """
+        Browse a folder within an organization's S3 namespace.
+        Uses S3 delimiter to return folders and files at the current level only.
+
+        Args:
+            organization_id: Organization ID to scope the browsing
+            path: Relative path within the org folder (e.g. "audio/" or "evaluators/abc/")
+            max_keys: Maximum number of keys to return
+
+        Returns:
+            Dict with 'folders' (list of folder names) and 'files' (list of file dicts)
+        """
+        self._ensure_initialized()
+        if not self.is_enabled():
+            error_msg = self._initialization_error or "S3 is not enabled or not configured"
+            raise StorageError(error_msg)
+
+        org_root = self.get_organization_root_prefix(organization_id)
+        full_prefix = f"{org_root}{path}"
+        if full_prefix and not full_prefix.endswith("/"):
+            full_prefix += "/"
+
+        try:
+            response = self.s3_client.list_objects_v2(
+                Bucket=self.bucket_name,
+                Prefix=full_prefix,
+                Delimiter="/",
+                MaxKeys=max_keys,
+            )
+
+            folders = []
+            if "CommonPrefixes" in response:
+                for cp in response["CommonPrefixes"]:
+                    folder_key = cp["Prefix"]
+                    relative = folder_key[len(org_root):]
+                    folder_name = relative.rstrip("/").rsplit("/", 1)[-1]
+                    folders.append({
+                        "name": folder_name,
+                        "path": relative,
+                    })
+
+            files = []
+            if "Contents" in response:
+                for obj in response["Contents"]:
+                    key = obj["Key"]
+                    if key == full_prefix:
+                        continue
+                    files.append({
+                        "key": key,
+                        "filename": Path(key).name,
+                        "size": obj["Size"],
+                        "last_modified": obj["LastModified"].isoformat(),
+                    })
+
+            return {
+                "folders": folders,
+                "files": files,
+                "current_path": path,
+                "organization_id": organization_id,
+            }
+        except ClientError as e:
+            raise StorageError(f"Failed to browse S3 folder: {str(e)}")
+        except Exception as e:
+            raise StorageError(f"Unexpected error browsing S3 folder: {str(e)}")
 
     def download_file_by_key(self, key: str) -> bytes:
         """

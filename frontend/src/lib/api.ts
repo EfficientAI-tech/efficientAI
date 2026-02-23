@@ -19,6 +19,7 @@ import type {
   IntegrationCreate,
   S3ConnectionTestResponse,
   S3ListFilesResponse,
+  S3BrowseResponse,
   S3Status,
 } from '../types/api'
 
@@ -516,7 +517,7 @@ class ApiClient {
 
   // Data Sources endpoints
   async testS3Connection(): Promise<S3ConnectionTestResponse> {
-    const response = await this.client.post('/api/v1/data-sources/s3/test-connection')
+    const response = await this.client.post('/api/v1/data-sources/s3/test')
     return response.data
   }
 
@@ -527,11 +528,18 @@ class ApiClient {
     return response.data
   }
 
-  async uploadToS3(file: File, customFilename?: string): Promise<AudioFile> {
+  async browseS3(path = '', maxKeys = 1000): Promise<S3BrowseResponse> {
+    const response = await this.client.get('/api/v1/data-sources/s3/browse', {
+      params: { path, max_keys: maxKeys },
+    })
+    return response.data
+  }
+
+  async uploadToS3(file: File, customFilename?: string): Promise<MessageResponse> {
     const formData = new FormData()
     formData.append('file', file)
     if (customFilename) {
-      formData.append('custom_filename', customFilename)
+      formData.append('filename', customFilename)
     }
     const response = await this.client.post('/api/v1/data-sources/s3/upload', formData, {
       headers: {
@@ -800,12 +808,21 @@ class ApiClient {
 
   // Evaluator endpoints
   async createEvaluator(data: {
-    agent_id: string
-    persona_id: string
-    scenario_id: string
+    name?: string
+    agent_id?: string
+    persona_id?: string
+    scenario_id?: string
+    custom_prompt?: string
+    llm_provider?: string
+    llm_model?: string
     tags?: string[]
   }): Promise<any> {
     const response = await this.client.post('/api/v1/evaluators', data)
+    return response.data
+  }
+
+  async formatCustomPrompt(prompt: string): Promise<{ formatted_prompt: string }> {
+    const response = await this.client.post('/api/v1/evaluators/format-prompt', { prompt })
     return response.data
   }
 
@@ -833,6 +850,10 @@ class ApiClient {
     agent_id?: string
     persona_id?: string
     scenario_id?: string
+    name?: string
+    custom_prompt?: string
+    llm_provider?: string
+    llm_model?: string
     tags?: string[]
   }): Promise<any> {
     const response = await this.client.put(`/api/v1/evaluators/${evaluatorId}`, data)
@@ -901,6 +922,11 @@ class ApiClient {
     duration_seconds?: number
   }): Promise<any> {
     const response = await this.client.post('/api/v1/evaluator-results', data)
+    return response.data
+  }
+
+  async reEvaluateResult(id: string): Promise<any> {
+    const response = await this.client.post(`/api/v1/evaluator-results/${id}/re-evaluate`)
     return response.data
   }
 
@@ -1159,6 +1185,22 @@ class ApiClient {
     temperature?: number
   }): Promise<{ samples: string[]; provider: string; model: string }> {
     const response = await this.client.post('/api/v1/voice-playground/generate-samples', params)
+    return response.data
+  }
+
+  async getTTSAnalytics(): Promise<Array<{
+    provider: string
+    model: string
+    voice_id: string
+    voice_name: string
+    sample_count: number
+    avg_mos: number | null
+    avg_valence: number | null
+    avg_arousal: number | null
+    avg_prosody: number | null
+    avg_latency_ms: number | null
+  }>> {
+    const response = await this.client.get('/api/v1/voice-playground/analytics')
     return response.data
   }
 }

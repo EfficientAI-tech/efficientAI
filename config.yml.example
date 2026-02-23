@@ -55,6 +55,16 @@ s3:
   endpoint_url: null  # Optional: for S3-compatible services (e.g., MinIO, DigitalOcean Spaces)
   prefix: "audio/"  # Prefix for audio files in bucket
 
+# Speaker Diarization (pyannote.audio)
+# For accurate speaker identification in transcripts, configure pyannote.audio:
+# 1. Create a HuggingFace account at https://huggingface.co
+# 2. Accept model terms at https://huggingface.co/pyannote/speaker-diarization-3.1
+#    and https://huggingface.co/pyannote/segmentation-3.0
+# 3. Generate a read-access token at https://huggingface.co/settings/tokens
+diarization:
+  huggingface_token: null  # e.g., "hf_xxxxx"
+  num_speakers: 2  # Force exact speaker count (2 = agent + customer). Set to null for auto-detect.
+
 # CORS Settings
 cors:
   origins:

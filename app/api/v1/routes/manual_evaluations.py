@@ -79,7 +79,11 @@ async def list_audio_files(
     
     try:
         # Fetch files directly from S3
-        files = s3_service.list_audio_files(prefix=prefix, max_keys=max_keys)
+        files = s3_service.list_audio_files(
+            prefix=prefix,
+            max_keys=max_keys,
+            organization_id=str(organization_id),
+        )
         
         return S3ListFilesResponse(
             files=files,

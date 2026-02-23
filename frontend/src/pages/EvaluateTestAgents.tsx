@@ -1,10 +1,36 @@
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
 import { useAgentStore } from '../store/agentStore'
+import { ModelProvider, AIProvider, Integration, IntegrationPlatform } from '../types/api'
 import Button from '../components/Button'
-import { Plus, Edit, Trash2, Play, X, CheckSquare, Square, Phone, Globe, Eye, AlertCircle } from 'lucide-react'
+import { Plus, Trash2, Play, X, CheckSquare, Square, AlertCircle, Sparkles, Eye, Brain, ChevronDown } from 'lucide-react'
 import { useToast } from '../hooks/useToast'
+
+const PROVIDER_LABELS: Record<ModelProvider, string> = {
+  [ModelProvider.OPENAI]: 'OpenAI',
+  [ModelProvider.ANTHROPIC]: 'Anthropic',
+  [ModelProvider.GOOGLE]: 'Google',
+  [ModelProvider.AZURE]: 'Azure',
+  [ModelProvider.AWS]: 'AWS',
+  [ModelProvider.DEEPGRAM]: 'Deepgram',
+  [ModelProvider.CARTESIA]: 'Cartesia',
+  [ModelProvider.ELEVENLABS]: 'ElevenLabs',
+  [ModelProvider.CUSTOM]: 'Custom',
+}
+
+const PROVIDER_LOGOS: Record<ModelProvider, string | null> = {
+  [ModelProvider.OPENAI]: '/openai-logo.png',
+  [ModelProvider.ANTHROPIC]: '/anthropic.png',
+  [ModelProvider.GOOGLE]: '/geminiai.png',
+  [ModelProvider.AZURE]: '/azureai.png',
+  [ModelProvider.AWS]: '/AWS_logo.png',
+  [ModelProvider.DEEPGRAM]: '/deepgram.png',
+  [ModelProvider.CARTESIA]: '/cartesia.jpg',
+  [ModelProvider.ELEVENLABS]: '/elevenlabs.jpg',
+  [ModelProvider.CUSTOM]: null,
+}
 
 const DEFAULT_PERSONA_NAMES = [
   "Grumpy Old Man",
@@ -25,9 +51,13 @@ const DEFAULT_SCENARIO_NAMES = [
 interface Evaluator {
   id: string
   evaluator_id: string
-  agent_id: string
-  persona_id: string
-  scenario_id: string
+  name?: string | null
+  agent_id?: string | null
+  persona_id?: string | null
+  scenario_id?: string | null
+  custom_prompt?: string | null
+  llm_provider?: string | null
+  llm_model?: string | null
   tags?: string[]
   created_at: string
   updated_at: string
@@ -35,23 +65,28 @@ interface Evaluator {
 
 export default function EvaluateTestAgents() {
   const { selectedAgent } = useAgentStore()
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
   const [showCreateModal, setShowCreateModal] = useState(false)
+  const [createMode, setCreateMode] = useState<'standard' | 'custom'>('standard')
   const [selectedScenario, setSelectedScenario] = useState<string>('')
   const [selectedPersonas, setSelectedPersonas] = useState<string[]>([])
   const [selectedTags, setSelectedTags] = useState<string[]>([])
   const [tagInput, setTagInput] = useState('')
-  const [editTagInput, setEditTagInput] = useState('')
-  const [editingEvaluator, setEditingEvaluator] = useState<Evaluator | null>(null)
+  const [customName, setCustomName] = useState('')
+  const [customPrompt, setCustomPrompt] = useState('')
   const [runningEvaluatorIds, setRunningEvaluatorIds] = useState<Set<string>>(new Set())
   const [selectedEvaluatorIds, setSelectedEvaluatorIds] = useState<Set<string>>(new Set())
   const [showRunModal, setShowRunModal] = useState(false)
   const [runCount, setRunCount] = useState(1)
-  const [viewingEvaluator, setViewingEvaluator] = useState<Evaluator | null>(null)
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [evaluatorToDelete, setEvaluatorToDelete] = useState<Evaluator | null>(null)
   const [deleteDependencies, setDeleteDependencies] = useState<Record<string, number> | null>(null)
+  const [selectedLlmProvider, setSelectedLlmProvider] = useState<ModelProvider | null>(null)
+  const [selectedLlmModel, setSelectedLlmModel] = useState<string>('')
+  const [showLlmDropdown, setShowLlmDropdown] = useState(false)
+  const llmDropdownRef = useRef<HTMLDivElement>(null)
 
   const { data: personas = [] } = useQuery({
     queryKey: ['personas'],
@@ -68,25 +103,75 @@ export default function EvaluateTestAgents() {
     queryFn: () => apiClient.listEvaluators(),
   })
 
+  const { data: aiproviders = [] } = useQuery({
+    queryKey: ['aiproviders'],
+    queryFn: () => apiClient.listAIProviders(),
+  })
+
+  const { data: integrations = [] } = useQuery({
+    queryKey: ['integrations'],
+    queryFn: () => apiClient.listIntegrations(),
+  })
+
+  const { data: modelConfigs = {} } = useQuery({
+    queryKey: ['model-configs'],
+    queryFn: async () => {
+      const providers = Object.values(ModelProvider)
+      const configs: Record<string, { stt: string[]; llm: string[]; tts: string[]; s2s: string[] }> = {}
+      for (const provider of providers) {
+        try {
+          const options = await apiClient.getModelOptions(provider)
+          configs[provider] = { stt: options.stt || [], llm: options.llm || [], tts: options.tts || [], s2s: options.s2s || [] }
+        } catch {
+          configs[provider] = { stt: [], llm: [], tts: [], s2s: [] }
+        }
+      }
+      return configs
+    },
+    staleTime: 5 * 60 * 1000,
+  })
+
+  const mapIntegrationToProvider = (platform: IntegrationPlatform | string): ModelProvider | null => {
+    const platformLower = (typeof platform === 'string' ? platform : String(platform)).toLowerCase()
+    switch (platformLower) {
+      case 'deepgram': return ModelProvider.DEEPGRAM
+      case 'cartesia': return ModelProvider.CARTESIA
+      case 'elevenlabs': return ModelProvider.ELEVENLABS
+      default: return null
+    }
+  }
+
+  const configuredProviders = Array.from(
+    new Set([
+      ...(aiproviders.filter((p: AIProvider) => p.is_active).map((p: AIProvider) => p.provider as ModelProvider)),
+      ...(integrations.filter((i: Integration) => i.is_active).map((i: Integration) => mapIntegrationToProvider(i.platform)).filter((p): p is ModelProvider => Boolean(p))),
+    ])
+  )
+
+  const llmProviders = configuredProviders.filter(p => {
+    const opts = modelConfigs[p]
+    return opts && opts.llm && opts.llm.length > 0
+  })
+
+  const getModelOptions = (provider: ModelProvider): { stt: string[]; llm: string[]; tts: string[]; s2s: string[] } => {
+    return modelConfigs[provider] || { stt: [], llm: [], tts: [], s2s: [] }
+  }
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (llmDropdownRef.current && !llmDropdownRef.current.contains(event.target as Node)) {
+        setShowLlmDropdown(false)
+      }
+    }
+    if (showLlmDropdown) document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [showLlmDropdown])
+
   const filteredPersonas = personas.filter((p: any) => !DEFAULT_PERSONA_NAMES.includes(p.name))
   const filteredScenarios = scenarios.filter((s: any) => !DEFAULT_SCENARIO_NAMES.includes(s.name))
 
-  // Fetch details for viewing evaluator
-  const { data: evaluatorDetails, isLoading: loadingDetails } = useQuery({
-    queryKey: ['evaluator-details', viewingEvaluator?.id],
-    queryFn: async () => {
-      if (!viewingEvaluator) return null
-      const [agent, persona, scenario] = await Promise.all([
-        apiClient.getAgent(viewingEvaluator.agent_id),
-        apiClient.getPersona(viewingEvaluator.persona_id),
-        apiClient.getScenario(viewingEvaluator.scenario_id),
-      ])
-      return { agent, persona, scenario }
-    },
-    enabled: !!viewingEvaluator,
-  })
-
-  const createMutation = useMutation({
+  const createBulkMutation = useMutation({
     mutationFn: (data: { agent_id: string; scenario_id: string; persona_ids: string[]; tags?: string[] }) =>
       apiClient.createEvaluatorsBulk(data),
     onSuccess: () => {
@@ -98,14 +183,36 @@ export default function EvaluateTestAgents() {
     },
   })
 
-  const updateMutation = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: any }) => apiClient.updateEvaluator(id, data),
+  const createCustomMutation = useMutation({
+    mutationFn: (data: { name: string; custom_prompt: string; llm_provider?: string; llm_model?: string; tags?: string[] }) =>
+      apiClient.createEvaluator(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['evaluators'] })
-      queryClient.invalidateQueries({ queryKey: ['evaluator-details'] })
-      setEditingEvaluator(null)
+      setShowCreateModal(false)
+      setCustomName('')
+      setCustomPrompt('')
+      setSelectedLlmProvider(null)
+      setSelectedLlmModel('')
+      setSelectedTags([])
+      setCreateMode('standard')
     },
   })
+
+  const [isFormattingPrompt, setIsFormattingPrompt] = useState(false)
+
+  const handleFormatPrompt = async () => {
+    if (!customPrompt.trim()) return
+    setIsFormattingPrompt(true)
+    try {
+      const { formatted_prompt } = await apiClient.formatCustomPrompt(customPrompt)
+      setCustomPrompt(formatted_prompt)
+    } catch (error: any) {
+      const msg = error.response?.data?.detail || error.message || 'Formatting failed'
+      alert(`Failed to format prompt: ${msg}`)
+    } finally {
+      setIsFormattingPrompt(false)
+    }
+  }
 
   const deleteMutation = useMutation({
     mutationFn: ({ id, force }: { id: string; force?: boolean }) => apiClient.deleteEvaluator(id, force),
@@ -133,6 +240,25 @@ export default function EvaluateTestAgents() {
   })
 
   const handleCreate = () => {
+    if (createMode === 'custom') {
+      if (!customName.trim()) {
+        alert('Please enter a name for the custom evaluator')
+        return
+      }
+      if (!customPrompt.trim()) {
+        alert('Please enter the agent prompt / instructions')
+        return
+      }
+      createCustomMutation.mutate({
+        name: customName.trim(),
+        custom_prompt: customPrompt.trim(),
+        llm_provider: selectedLlmProvider || undefined,
+        llm_model: selectedLlmModel || undefined,
+        tags: selectedTags.length > 0 ? selectedTags : undefined,
+      })
+      return
+    }
+
     if (!selectedAgent) {
       alert('Please select an agent first')
       return
@@ -146,7 +272,7 @@ export default function EvaluateTestAgents() {
       return
     }
 
-    createMutation.mutate({
+    createBulkMutation.mutate({
       agent_id: selectedAgent.id,
       scenario_id: selectedScenario,
       persona_ids: selectedPersonas,
@@ -225,20 +351,6 @@ export default function EvaluateTestAgents() {
       showToast(`Failed to run evaluators: ${error?.response?.data?.detail || error?.message || 'Unknown error'}`, 'error')
       setRunningEvaluatorIds(new Set())
     }
-  }
-
-  const handleEdit = (evaluator: Evaluator) => {
-    setEditingEvaluator(evaluator)
-  }
-
-  const handleSaveEdit = () => {
-    if (!editingEvaluator) return
-    updateMutation.mutate({
-      id: editingEvaluator.id,
-      data: {
-        tags: editingEvaluator.tags || [],
-      },
-    })
   }
 
   return (
@@ -323,8 +435,9 @@ export default function EvaluateTestAgents() {
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {evaluators.map((evaluator: Evaluator) => {
-                  const persona = personas.find((p: any) => p.id === evaluator.persona_id)
-                  const scenario = scenarios.find((s: any) => s.id === evaluator.scenario_id)
+                  const isCustom = !!evaluator.custom_prompt
+                  const persona = !isCustom ? personas.find((p: any) => p.id === evaluator.persona_id) : null
+                  const scenario = !isCustom ? scenarios.find((s: any) => s.id === evaluator.scenario_id) : null
                   const isRunning = runningEvaluatorIds.has(evaluator.id)
                   const isSelected = selectedEvaluatorIds.has(evaluator.id)
 
@@ -351,45 +464,73 @@ export default function EvaluateTestAgents() {
 
                       {/* Evaluator ID */}
                       <td className="px-4 py-4 whitespace-nowrap">
-                        <button
-                          onClick={() => setViewingEvaluator(evaluator)}
-                          className="font-mono font-semibold text-primary-600 hover:text-primary-800 hover:underline cursor-pointer"
-                        >
-                          {evaluator.evaluator_id}
-                        </button>
-                        {isRunning && (
-                          <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">
-                            Running...
-                          </span>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => navigate(`/evaluate-test-agents/${evaluator.id}`)}
+                            className="font-mono font-semibold text-primary-600 hover:text-primary-800 hover:underline cursor-pointer"
+                          >
+                            {evaluator.evaluator_id}
+                          </button>
+                          {isCustom && (
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800">
+                              Custom
+                            </span>
+                          )}
+                          {isRunning && (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">
+                              Running...
+                            </span>
+                          )}
+                        </div>
+                        {isCustom && evaluator.name && (
+                          <div className="text-xs text-gray-500 mt-0.5">{evaluator.name}</div>
+                        )}
+                        {evaluator.llm_model && (
+                          <div className="text-xs text-purple-600 mt-0.5 flex items-center gap-1">
+                            <Brain className="w-3 h-3" />
+                            {evaluator.llm_model}
+                          </div>
                         )}
                       </td>
 
                       {/* Persona */}
                       <td className="px-4 py-4 whitespace-nowrap">
-                        <div className="flex flex-col">
-                          <span className="text-sm font-medium text-gray-900">
-                            {persona?.name || 'Unknown'}
-                          </span>
-                          {persona && (
-                            <span className="text-xs text-gray-500">
-                              {persona.language} • {persona.accent} • {persona.gender}
+                        {isCustom ? (
+                          <span className="text-xs text-gray-400 italic">Custom prompt</span>
+                        ) : (
+                          <div className="flex flex-col">
+                            <span className="text-sm font-medium text-gray-900">
+                              {persona?.name || 'Unknown'}
                             </span>
-                          )}
-                        </div>
+                            {persona && (
+                              <span className="text-xs text-gray-500">
+                                {persona.language} • {persona.accent} • {persona.gender}
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </td>
 
                       {/* Scenario - Plain Text */}
                       <td className="px-4 py-4">
-                        <div className="max-w-md">
-                          <span className="text-sm font-medium text-gray-900">
-                            {scenario?.name || 'Unknown Scenario'}
-                          </span>
-                          {scenario?.description && (
-                            <p className="text-xs text-gray-500 mt-1 line-clamp-2">
-                              {scenario.description}
+                        {isCustom ? (
+                          <div className="max-w-md">
+                            <p className="text-xs text-gray-500 line-clamp-2">
+                              {evaluator.custom_prompt}
                             </p>
-                          )}
-                        </div>
+                          </div>
+                        ) : (
+                          <div className="max-w-md">
+                            <span className="text-sm font-medium text-gray-900">
+                              {scenario?.name || 'Unknown Scenario'}
+                            </span>
+                            {scenario?.description && (
+                              <p className="text-xs text-gray-500 mt-1 line-clamp-2">
+                                {scenario.description}
+                              </p>
+                            )}
+                          </div>
+                        )}
                       </td>
 
                       {/* Tags */}
@@ -423,10 +564,10 @@ export default function EvaluateTestAgents() {
                           <Button
                             variant="ghost"
                             size="sm"
-                            onClick={() => handleEdit(evaluator)}
-                            leftIcon={<Edit className="w-4 h-4" />}
+                            onClick={() => navigate(`/evaluate-test-agents/${evaluator.id}`)}
+                            leftIcon={<Eye className="w-4 h-4" />}
                           >
-                            Edit
+                            View
                           </Button>
                           <Button
                             variant="ghost"
@@ -451,272 +592,6 @@ export default function EvaluateTestAgents() {
         )}
       </div>
 
-      {/* View Evaluator Details Modal */}
-      {viewingEvaluator && (
-        <div className="fixed inset-0 z-50 overflow-y-auto">
-          <div className="flex min-h-screen items-center justify-center p-4">
-            <div
-              className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"
-              onClick={() => setViewingEvaluator(null)}
-            />
-            <div className="relative bg-white rounded-lg shadow-xl max-w-2xl w-full p-6 max-h-[90vh] overflow-y-auto">
-              <div className="flex items-center justify-between mb-6">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 bg-primary-100 rounded-lg">
-                    <Eye className="w-5 h-5 text-primary-600" />
-                  </div>
-                  <div>
-                    <h2 className="text-xl font-semibold text-gray-900">Evaluator Details</h2>
-                    <p className="text-sm text-gray-500 font-mono">{viewingEvaluator.evaluator_id}</p>
-                  </div>
-                </div>
-                <button
-                  onClick={() => setViewingEvaluator(null)}
-                  className="text-gray-400 hover:text-gray-500"
-                >
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
-
-              {loadingDetails ? (
-                <div className="py-12 text-center text-gray-500">Loading details...</div>
-              ) : evaluatorDetails ? (
-                <div className="space-y-6">
-                  {/* Agent Section */}
-                  <div className="bg-gray-50 rounded-lg p-4">
-                    <h3 className="text-sm font-semibold text-gray-700 mb-3 uppercase tracking-wide">Agent</h3>
-                    <div className="space-y-2">
-                      <p className="text-base font-medium text-gray-900">{evaluatorDetails.agent.name}</p>
-                      {evaluatorDetails.agent.description && (
-                        <p className="text-sm text-gray-600">{evaluatorDetails.agent.description}</p>
-                      )}
-                      <div className="flex items-center gap-2 mt-2">
-                        {evaluatorDetails.agent.call_medium === 'web_call' ? (
-                          <span className="inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600 border border-gray-300">
-                            <Globe className="w-3.5 h-3.5 mr-1.5" />
-                            Web Call
-                          </span>
-                        ) : evaluatorDetails.agent.phone_number ? (
-                          <span className="inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium bg-teal-100 text-teal-800 border border-teal-300">
-                            <Phone className="w-3.5 h-3.5 mr-1.5" />
-                            {evaluatorDetails.agent.phone_number}
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600 border border-gray-300">
-                            No phone number
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Persona Section */}
-                  <div className="bg-purple-50 rounded-lg p-4">
-                    <h3 className="text-sm font-semibold text-purple-700 mb-3 uppercase tracking-wide">Persona</h3>
-                    <div className="space-y-2">
-                      <p className="text-base font-medium text-gray-900">{evaluatorDetails.persona.name}</p>
-                      <div className="flex flex-wrap gap-2 mt-2">
-                        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-white text-purple-800 border border-purple-200">
-                          Language: {evaluatorDetails.persona.language}
-                        </span>
-                        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-white text-purple-800 border border-purple-200">
-                          Accent: {evaluatorDetails.persona.accent}
-                        </span>
-                        <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-white text-purple-800 border border-purple-200">
-                          Gender: {evaluatorDetails.persona.gender}
-                        </span>
-                        {evaluatorDetails.persona.background_noise && (
-                          <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-white text-purple-800 border border-purple-200">
-                            Noise: {evaluatorDetails.persona.background_noise}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Scenario Section */}
-                  <div className="bg-blue-50 rounded-lg p-4">
-                    <h3 className="text-sm font-semibold text-blue-700 mb-3 uppercase tracking-wide">Scenario</h3>
-                    <div className="space-y-2">
-                      <p className="text-base font-medium text-gray-900">{evaluatorDetails.scenario.name}</p>
-                      {evaluatorDetails.scenario.description && (
-                        <p className="text-sm text-gray-600 mt-2">{evaluatorDetails.scenario.description}</p>
-                      )}
-                      {evaluatorDetails.scenario.required_info && Object.keys(evaluatorDetails.scenario.required_info).length > 0 && (
-                        <div className="mt-3">
-                          <p className="text-xs font-medium text-blue-700 mb-2">Required Information:</p>
-                          <div className="bg-white rounded border border-blue-200 p-3">
-                            <dl className="space-y-1">
-                              {Object.entries(evaluatorDetails.scenario.required_info).map(([key, value]) => (
-                                <div key={key} className="flex">
-                                  <dt className="text-xs font-medium text-gray-500 w-32">{key}:</dt>
-                                  <dd className="text-xs text-gray-700">{String(value)}</dd>
-                                </div>
-                              ))}
-                            </dl>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Tags Section */}
-                  <div>
-                    <h3 className="text-sm font-semibold text-gray-700 mb-2 uppercase tracking-wide">Tags</h3>
-                    <div className="flex flex-wrap gap-2">
-                      {viewingEvaluator.tags && viewingEvaluator.tags.length > 0 ? (
-                        viewingEvaluator.tags.map((tag, idx) => (
-                          <span
-                            key={idx}
-                            className="px-3 py-1 text-sm bg-blue-100 text-blue-800 rounded-full"
-                          >
-                            {tag}
-                          </span>
-                        ))
-                      ) : (
-                        <span className="text-sm text-gray-400">No tags</span>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Metadata */}
-                  <div className="pt-4 border-t border-gray-200">
-                    <div className="flex justify-between text-xs text-gray-500">
-                      <span>Created: {new Date(viewingEvaluator.created_at).toLocaleString()}</span>
-                      <span>Updated: {new Date(viewingEvaluator.updated_at).toLocaleString()}</span>
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div className="py-12 text-center text-gray-500">Failed to load details</div>
-              )}
-
-              <div className="flex justify-end space-x-3 pt-6 mt-6 border-t border-gray-200">
-                <Button variant="ghost" onClick={() => setViewingEvaluator(null)}>
-                  Close
-                </Button>
-                <Button
-                  variant="primary"
-                  onClick={() => {
-                    setViewingEvaluator(null)
-                    handleEdit(viewingEvaluator)
-                  }}
-                  leftIcon={<Edit className="w-4 h-4" />}
-                >
-                  Edit Evaluator
-                </Button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Edit Tags Modal */}
-      {editingEvaluator && (
-        <div className="fixed inset-0 z-50 overflow-y-auto">
-          <div className="flex min-h-screen items-center justify-center p-4">
-            <div
-              className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"
-              onClick={() => {
-                setEditingEvaluator(null)
-                setEditTagInput('')
-              }}
-            />
-            <div className="relative bg-white rounded-lg shadow-xl max-w-md w-full p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-semibold text-gray-900">Edit Tags - {editingEvaluator.evaluator_id}</h2>
-                <button
-                  onClick={() => {
-                    setEditingEvaluator(null)
-                    setEditTagInput('')
-                  }}
-                  className="text-gray-400 hover:text-gray-500"
-                >
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
-
-              <div className="space-y-4">
-                <div className="flex flex-wrap gap-2 min-h-[40px] p-2 border border-gray-200 rounded-md bg-gray-50">
-                  {editingEvaluator.tags && editingEvaluator.tags.length > 0 ? (
-                    editingEvaluator.tags.map((tag, idx) => (
-                      <span
-                        key={idx}
-                        className="inline-flex items-center px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded"
-                      >
-                        {tag}
-                        <button
-                          onClick={() => {
-                            const newTags = editingEvaluator.tags?.filter(t => t !== tag) || []
-                            setEditingEvaluator({ ...editingEvaluator, tags: newTags })
-                          }}
-                          className="ml-1 text-blue-600 hover:text-blue-800"
-                        >
-                          <X className="w-3 h-3" />
-                        </button>
-                      </span>
-                    ))
-                  ) : (
-                    <span className="text-sm text-gray-400">No tags</span>
-                  )}
-                </div>
-
-                <div className="flex space-x-2">
-                  <input
-                    type="text"
-                    value={editTagInput}
-                    onChange={(e) => setEditTagInput(e.target.value)}
-                    onKeyPress={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault()
-                        if (editTagInput.trim() && !editingEvaluator.tags?.includes(editTagInput.trim())) {
-                          setEditingEvaluator({
-                            ...editingEvaluator,
-                            tags: [...(editingEvaluator.tags || []), editTagInput.trim()]
-                          })
-                          setEditTagInput('')
-                        }
-                      }
-                    }}
-                    placeholder="Add tag and press Enter"
-                    className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-primary-500 focus:border-primary-500"
-                  />
-                  <Button
-                    size="sm"
-                    onClick={() => {
-                      if (editTagInput.trim() && !editingEvaluator.tags?.includes(editTagInput.trim())) {
-                        setEditingEvaluator({
-                          ...editingEvaluator,
-                          tags: [...(editingEvaluator.tags || []), editTagInput.trim()]
-                        })
-                        setEditTagInput('')
-                      }
-                    }}
-                  >
-                    Add
-                  </Button>
-                </div>
-
-                <div className="flex justify-end space-x-3 pt-4 border-t border-gray-200">
-                  <Button
-                    variant="ghost"
-                    onClick={() => {
-                      setEditingEvaluator(null)
-                      setEditTagInput('')
-                    }}
-                  >
-                    Cancel
-                  </Button>
-                  <Button variant="primary" onClick={handleSaveEdit}>
-                    Save Changes
-                  </Button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Create Evaluator Modal */}
       {showCreateModal && (
         <div className="fixed inset-0 z-50 overflow-y-auto">
@@ -736,58 +611,215 @@ export default function EvaluateTestAgents() {
                 </button>
               </div>
 
+              {/* Mode Tabs */}
+              <div className="flex border-b border-gray-200 mb-4">
+                <button
+                  onClick={() => setCreateMode('standard')}
+                  className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+                    createMode === 'standard'
+                      ? 'border-primary-600 text-primary-700'
+                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                  }`}
+                >
+                  Standard
+                </button>
+                <button
+                  onClick={() => setCreateMode('custom')}
+                  className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+                    createMode === 'custom'
+                      ? 'border-primary-600 text-primary-700'
+                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                  }`}
+                >
+                  Custom Prompt
+                </button>
+              </div>
+
               <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Scenario *
-                  </label>
-                  <select
-                    value={selectedScenario}
-                    onChange={(e) => setSelectedScenario(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
-                  >
-                    <option value="">Select a scenario</option>
-                    {filteredScenarios.map((scenario: any) => (
-                      <option key={scenario.id} value={scenario.id}>
-                        {scenario.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Personas * ({selectedPersonas.length} selected)
-                  </label>
-                  <div className="border border-gray-300 rounded-md max-h-48 overflow-y-auto">
-                    {filteredPersonas.length === 0 ? (
-                      <div className="p-4 text-center text-gray-500">No personas available</div>
-                    ) : (
-                      <div className="divide-y divide-gray-200">
-                        {filteredPersonas.map((persona: any) => (
-                          <label
-                            key={persona.id}
-                            className="flex items-center p-3 hover:bg-gray-50 cursor-pointer"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={selectedPersonas.includes(persona.id)}
-                              onChange={() => togglePersona(persona.id)}
-                              className="mr-3 h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
-                            />
-                            <div>
-                              <div className="text-sm font-medium text-gray-900">{persona.name}</div>
-                              <div className="text-xs text-gray-500">
-                                {persona.language} • {persona.accent} • {persona.gender}
-                              </div>
-                            </div>
-                          </label>
-                        ))}
+                {createMode === 'custom' ? (
+                  <>
+                    <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
+                      <p className="text-xs text-amber-800">
+                        Use this mode to evaluate recordings from third-party voice agents. Paste the agent's instructions/prompt below so the evaluator knows what the agent was supposed to do.
+                      </p>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Evaluator Name *
+                      </label>
+                      <input
+                        type="text"
+                        value={customName}
+                        onChange={(e) => setCustomName(e.target.value)}
+                        placeholder="e.g. Customer Support Bot v2"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
+                      />
+                    </div>
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-sm font-medium text-gray-700">
+                          Agent Prompt / Instructions *
+                        </label>
+                        <button
+                          type="button"
+                          disabled={!customPrompt.trim() || isFormattingPrompt}
+                          onClick={() => handleFormatPrompt()}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md bg-violet-50 text-violet-700 border border-violet-200 hover:bg-violet-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                        >
+                          <Sparkles className={`h-3.5 w-3.5 ${isFormattingPrompt ? 'animate-spin' : ''}`} />
+                          {isFormattingPrompt ? 'Formatting...' : 'Format with AI'}
+                        </button>
                       </div>
-                    )}
-                  </div>
-                </div>
+                      <textarea
+                        value={customPrompt}
+                        onChange={(e) => setCustomPrompt(e.target.value)}
+                        rows={8}
+                        placeholder={"Paste the full system prompt or detailed description of what the agent is supposed to do.\n\nExample:\nYou are a customer support agent for Acme Corp. Your goal is to help customers with billing inquiries, process refunds, and resolve account issues. You should be polite, efficient, and always verify the customer's identity before making changes..."}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500 text-sm"
+                      />
+                      <p className="mt-1 text-xs text-gray-500">
+                        The more detailed the prompt, the better the evaluation will be. Use "Format with AI" to structure your prompt into clean markdown.
+                      </p>
+                    </div>
 
+                    {/* Evaluation LLM Model */}
+                    <div className="space-y-3 p-4 bg-purple-50 rounded-lg border border-purple-200">
+                      <div className="flex items-center gap-2">
+                        <Brain className="h-4 w-4 text-purple-600" />
+                        <h4 className="text-sm font-semibold text-gray-900">Evaluation Model</h4>
+                      </div>
+                      <p className="text-xs text-gray-500">
+                        Select which LLM to use for evaluating transcripts against your metrics.
+                      </p>
+                      {llmProviders.length === 0 ? (
+                        <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+                          No AI providers with LLM models configured. Add one in Integrations to select a model. Default (gpt-4o) will be used.
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <div>
+                            <label className="block text-xs font-medium text-gray-700 mb-1">Provider</label>
+                            <div className="relative" ref={llmDropdownRef}>
+                              <button
+                                type="button"
+                                onClick={() => setShowLlmDropdown(!showLlmDropdown)}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-left flex items-center justify-between text-sm"
+                              >
+                                <div className="flex items-center gap-2">
+                                  {selectedLlmProvider && PROVIDER_LOGOS[selectedLlmProvider] ? (
+                                    <img src={PROVIDER_LOGOS[selectedLlmProvider]!} alt="" className="w-4 h-4 object-contain" />
+                                  ) : (
+                                    <Brain className="h-4 w-4 text-gray-400" />
+                                  )}
+                                  <span className={selectedLlmProvider ? 'text-gray-900' : 'text-gray-400'}>
+                                    {selectedLlmProvider ? PROVIDER_LABELS[selectedLlmProvider] : 'Select provider'}
+                                  </span>
+                                </div>
+                                <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${showLlmDropdown ? 'rotate-180' : ''}`} />
+                              </button>
+                              {showLlmDropdown && (
+                                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-48 overflow-auto">
+                                  {llmProviders.map((provider) => (
+                                    <button
+                                      key={provider}
+                                      type="button"
+                                      onClick={() => {
+                                        setSelectedLlmProvider(provider)
+                                        const models = getModelOptions(provider).llm
+                                        setSelectedLlmModel(models.length > 0 ? models[0] : '')
+                                        setShowLlmDropdown(false)
+                                      }}
+                                      className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center gap-2 text-sm"
+                                    >
+                                      {PROVIDER_LOGOS[provider] ? (
+                                        <img src={PROVIDER_LOGOS[provider]!} alt="" className="w-4 h-4 object-contain" />
+                                      ) : (
+                                        <Brain className="h-4 w-4 text-purple-600" />
+                                      )}
+                                      <span>{PROVIDER_LABELS[provider]}</span>
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-gray-700 mb-1">Model</label>
+                            <select
+                              value={selectedLlmModel}
+                              onChange={(e) => setSelectedLlmModel(e.target.value)}
+                              disabled={!selectedLlmProvider}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-50 disabled:text-gray-400"
+                            >
+                              {selectedLlmProvider ? (
+                                getModelOptions(selectedLlmProvider).llm.map((model) => (
+                                  <option key={model} value={model}>{model}</option>
+                                ))
+                              ) : (
+                                <option value="">Select provider first</option>
+                              )}
+                            </select>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Scenario *
+                      </label>
+                      <select
+                        value={selectedScenario}
+                        onChange={(e) => setSelectedScenario(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
+                      >
+                        <option value="">Select a scenario</option>
+                        {filteredScenarios.map((scenario: any) => (
+                          <option key={scenario.id} value={scenario.id}>
+                            {scenario.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Personas * ({selectedPersonas.length} selected)
+                      </label>
+                      <div className="border border-gray-300 rounded-md max-h-48 overflow-y-auto">
+                        {filteredPersonas.length === 0 ? (
+                          <div className="p-4 text-center text-gray-500">No personas available</div>
+                        ) : (
+                          <div className="divide-y divide-gray-200">
+                            {filteredPersonas.map((persona: any) => (
+                              <label
+                                key={persona.id}
+                                className="flex items-center p-3 hover:bg-gray-50 cursor-pointer"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={selectedPersonas.includes(persona.id)}
+                                  onChange={() => togglePersona(persona.id)}
+                                  className="mr-3 h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
+                                />
+                                <div>
+                                  <div className="text-sm font-medium text-gray-900">{persona.name}</div>
+                                  <div className="text-xs text-gray-500">
+                                    {persona.language} • {persona.accent} • {persona.gender}
+                                  </div>
+                                </div>
+                              </label>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                {/* Tags (shared between both modes) */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     Tags
@@ -833,9 +865,9 @@ export default function EvaluateTestAgents() {
                   <Button
                     variant="primary"
                     onClick={handleCreate}
-                    isLoading={createMutation.isPending}
+                    isLoading={createMode === 'custom' ? createCustomMutation.isPending : createBulkMutation.isPending}
                   >
-                    Create Evaluators
+                    {createMode === 'custom' ? 'Create Custom Evaluator' : 'Create Evaluators'}
                   </Button>
                 </div>
               </div>

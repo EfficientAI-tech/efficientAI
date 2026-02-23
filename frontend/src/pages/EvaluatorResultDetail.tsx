@@ -1,7 +1,7 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useParams, useNavigate } from 'react-router-dom'
 import { apiClient } from '../lib/api'
-import { ArrowLeft, Clock, CheckCircle, XCircle, Loader, BarChart3, Phone, Brain, HelpCircle, Sparkles, AudioWaveform, MessageSquare, Download } from 'lucide-react'
+import { ArrowLeft, Clock, CheckCircle, XCircle, Loader, BarChart3, Phone, Brain, HelpCircle, Sparkles, AudioWaveform, MessageSquare, Download, RotateCcw } from 'lucide-react'
 import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import Button from '../components/Button'
@@ -166,6 +166,7 @@ interface EvaluatorResultDetail {
   id: string
   result_id: string
   name: string
+  evaluator_id: string | null
   timestamp: string
   duration_seconds: number | null
   status: 'queued' | 'transcribing' | 'evaluating' | 'completed' | 'failed' | 'call_initiating' | 'call_connecting' | 'call_in_progress' | 'call_ended' | 'fetching_details'
@@ -214,6 +215,7 @@ interface EvaluatorResultDetail {
 export default function EvaluatorResultDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const location = window.location.pathname
   const isFromPlayground = location.includes('/playground/test-agent-results')
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
@@ -226,6 +228,13 @@ export default function EvaluatorResultDetailPage() {
     queryKey: ['evaluator-result', id],
     queryFn: () => apiClient.getEvaluatorResult(id!),
     enabled: !!id,
+    refetchInterval: (query) => {
+      const data = query.state.data as any
+      if (data && ['queued', 'call_initiating', 'call_connecting', 'call_in_progress', 'call_ended', 'transcribing', 'evaluating', 'fetching_details'].includes(data.status)) {
+        return 3000
+      }
+      return false
+    },
   })
 
   const { data: presignedUrl } = useQuery({
@@ -235,6 +244,14 @@ export default function EvaluatorResultDetailPage() {
       return apiClient.getAudioPresignedUrl(result.audio_s3_key)
     },
     enabled: !!result?.audio_s3_key,
+  })
+
+  const reEvaluateMutation = useMutation({
+    mutationFn: (resultId: string) => apiClient.reEvaluateResult(resultId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['evaluator-result', id] })
+      queryClient.invalidateQueries({ queryKey: ['evaluator-results'] })
+    },
   })
 
   useEffect(() => {
@@ -496,7 +513,19 @@ export default function EvaluatorResultDetailPage() {
                 Result ID: <span className="font-mono font-semibold text-primary-600">{resultData.result_id}</span>
               </p>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-3">
+              {(resultData.status === 'completed' || resultData.status === 'failed') && resultData.evaluator_id && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => reEvaluateMutation.mutate(resultData.id)}
+                  disabled={reEvaluateMutation.isPending}
+                  isLoading={reEvaluateMutation.isPending}
+                  leftIcon={!reEvaluateMutation.isPending ? <RotateCcw className="w-4 h-4" /> : undefined}
+                >
+                  Re-evaluate
+                </Button>
+              )}
               <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-semibold ${statusConfig.bg} ${statusConfig.text}`}>
                 <span className={`w-1.5 h-1.5 rounded-full ${statusConfig.dot}`} />
                 {statusConfig.label}

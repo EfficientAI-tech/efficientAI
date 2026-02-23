@@ -686,6 +686,20 @@ class S3ListFilesResponse(BaseModel):
     prefix: Optional[str] = None
 
 
+class S3FolderInfo(BaseModel):
+    """Schema for S3 folder information."""
+    name: str
+    path: str
+
+
+class S3BrowseResponse(BaseModel):
+    """Schema for browsing S3 folders within an organization."""
+    folders: List[S3FolderInfo]
+    files: List[S3FileInfo]
+    current_path: str
+    organization_id: str
+
+
 class S3UploadResponse(BaseModel):
     """Schema for S3 upload response."""
     key: str
@@ -999,28 +1013,26 @@ class ConversationEvaluationResponse(BaseModel):
 
 # Evaluator Schemas
 class EvaluatorCreate(BaseModel):
-    """Schema for creating an evaluator."""
-    agent_id: UUID
-    persona_id: UUID
-    scenario_id: UUID
+    """Schema for creating an evaluator. Either provide agent_id+persona_id+scenario_id (standard) or custom_prompt (custom)."""
+    name: Optional[str] = None
+    agent_id: Optional[UUID] = None
+    persona_id: Optional[UUID] = None
+    scenario_id: Optional[UUID] = None
+    custom_prompt: Optional[str] = None
+    llm_provider: Optional[ModelProvider] = None
+    llm_model: Optional[str] = None
     tags: Optional[List[str]] = None
-    
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "agent_id": "123e4567-e89b-12d3-a456-426614174000",
-                "persona_id": "123e4567-e89b-12d3-a456-426614174001",
-                "scenario_id": "123e4567-e89b-12d3-a456-426614174002",
-                "tags": ["test", "production"]
-            }
-        }
 
 
 class EvaluatorUpdate(BaseModel):
     """Schema for updating an evaluator."""
+    name: Optional[str] = None
     agent_id: Optional[UUID] = None
     persona_id: Optional[UUID] = None
     scenario_id: Optional[UUID] = None
+    custom_prompt: Optional[str] = None
+    llm_provider: Optional[ModelProvider] = None
+    llm_model: Optional[str] = None
     tags: Optional[List[str]] = None
 
 
@@ -1029,13 +1041,33 @@ class EvaluatorResponse(BaseModel):
     id: UUID
     evaluator_id: str
     organization_id: UUID
-    agent_id: UUID
-    persona_id: UUID
-    scenario_id: UUID
+    name: Optional[str] = None
+    agent_id: Optional[UUID] = None
+    persona_id: Optional[UUID] = None
+    scenario_id: Optional[UUID] = None
+    custom_prompt: Optional[str] = None
+    llm_provider: Optional[ModelProvider] = None
+    llm_model: Optional[str] = None
     tags: Optional[List[str]]
     created_at: datetime
     updated_at: datetime
     created_by: Optional[str]
+
+    @validator('llm_provider', pre=True)
+    def convert_llm_provider(cls, v):
+        """Convert string to ModelProvider (handles uppercase DB values)."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            v_lower = v.lower()
+            try:
+                return ModelProvider(v_lower)
+            except ValueError:
+                for enum_member in ModelProvider:
+                    if enum_member.name == v or enum_member.value == v:
+                        return enum_member
+                raise ValueError(f"Invalid ModelProvider value: {v}")
+        return v
     
     class Config:
         from_attributes = True
@@ -1160,10 +1192,10 @@ class MetricResponse(BaseModel):
 class EvaluatorResultCreate(BaseModel):
     """Schema for creating an evaluator result."""
     evaluator_id: UUID
-    agent_id: UUID
-    persona_id: UUID
-    scenario_id: UUID
-    name: str
+    agent_id: Optional[UUID] = None
+    persona_id: Optional[UUID] = None
+    scenario_id: Optional[UUID] = None
+    name: Optional[str] = None
     duration_seconds: Optional[float] = None
     audio_s3_key: Optional[str] = None
 
@@ -1190,7 +1222,7 @@ class EvaluatorResultResponse(BaseModel):
     result_id: str
     organization_id: UUID
     evaluator_id: Optional[UUID] = None  # Optional for playground test results
-    agent_id: UUID
+    agent_id: Optional[UUID] = None  # Nullable for custom evaluators
     persona_id: Optional[UUID] = None  # Optional for playground test results
     scenario_id: Optional[UUID] = None  # Optional for playground test results
     name: Optional[str] = None  # Optional for playground test results

@@ -4,7 +4,6 @@ import time
 from datetime import datetime
 from pathlib import Path
 from celery import Celery
-from celery.schedules import crontab
 from app.config import settings, load_config_from_file
 from app.database import SessionLocal
 from app.services.evaluation_service import evaluation_service
@@ -94,9 +93,6 @@ def process_evaluator_result_task(self, result_id: str):
         )
         from app.services.transcription_service import transcription_service
         from app.services.llm_service import llm_service
-        from app.services.voice_quality_service import (
-            is_audio_metric, calculate_audio_metrics_from_call_data, AUDIO_METRICS
-        )
         from app.core.encryption import decrypt_api_key
         import json
         import re
@@ -129,18 +125,17 @@ def process_evaluator_result_task(self, result_id: str):
         result.celery_task_id = self.request.id
         db.commit()
         
-        # Check if transcript is already available (from provider call_data)
-        # This happens when using Retell/Vapi where transcript is provided directly
-        has_provider_transcript = bool(result.transcription) and bool(result.call_data)
+        # Check if transcript is already available (from provider call_data, or from a previous run)
+        has_existing_transcript = bool(result.transcription)
         
         try:
-            # Step 1: Verify we have either audio S3 key OR existing transcript from provider
+            # Step 1: Verify we have either audio S3 key OR existing transcript
             logger.info(f"[EvaluatorResult {result.result_id}] Step 1: Verifying data source")
-            if not result.audio_s3_key and not has_provider_transcript:
-                raise ValueError("No audio S3 key or provider transcript found")
+            if not result.audio_s3_key and not has_existing_transcript:
+                raise ValueError("No audio S3 key or existing transcript found")
             
-            if has_provider_transcript:
-                logger.info(f"[EvaluatorResult {result.result_id}] ✓ Using transcript from provider (call_data)")
+            if has_existing_transcript:
+                logger.info(f"[EvaluatorResult {result.result_id}] ✓ Existing transcript found ({len(result.transcription)} chars)")
             elif result.audio_s3_key:
                 logger.info(f"[EvaluatorResult {result.result_id}] ✓ Audio S3 key verified: {result.audio_s3_key}")
             
@@ -154,11 +149,10 @@ def process_evaluator_result_task(self, result_id: str):
                 if not evaluator:
                     logger.warning(f"[EvaluatorResult {result.result_id}] Evaluator {result.evaluator_id} not found, continuing without evaluator")
             
-            agent = db.query(Agent).filter(Agent.id == result.agent_id).first()
-            if not agent:
-                raise ValueError("Agent not found")
+            agent = None
+            if result.agent_id:
+                agent = db.query(Agent).filter(Agent.id == result.agent_id).first()
             
-            # Persona and scenario are optional
             persona = None
             if result.persona_id:
                 persona = db.query(Persona).filter(Persona.id == result.persona_id).first()
@@ -167,7 +161,12 @@ def process_evaluator_result_task(self, result_id: str):
             if result.scenario_id:
                 scenario = db.query(Scenario).filter(Scenario.id == result.scenario_id).first()
             
-            logger.info(f"[EvaluatorResult {result.result_id}] ✓ Context loaded - Evaluator: {evaluator.evaluator_id if evaluator else 'None'}, Agent: {agent.name if agent else 'N/A'}, Persona: {persona.name if persona else 'None'}, Scenario: {scenario.name if scenario else 'None'}")
+            is_custom_evaluator = evaluator and bool(evaluator.custom_prompt)
+            
+            if not is_custom_evaluator and not agent:
+                raise ValueError("Agent not found and no custom prompt available")
+            
+            logger.info(f"[EvaluatorResult {result.result_id}] ✓ Context loaded - Evaluator: {evaluator.evaluator_id if evaluator else 'None'}, Custom: {is_custom_evaluator}, Agent: {agent.name if agent else 'N/A'}, Persona: {persona.name if persona else 'None'}, Scenario: {scenario.name if scenario else 'None'}")
             
             # Step 3: Get or create transcription
             # Check if organization has configured AI providers (needed for evaluation even if skipping transcription)
@@ -176,20 +175,22 @@ def process_evaluator_result_task(self, result_id: str):
                 AIProvider.is_active == True
             ).all()
             
-            if has_provider_transcript:
-                # Skip transcription - use transcript from provider (Retell/Vapi)
-                logger.info(f"[EvaluatorResult {result.result_id}] Step 3: SKIPPING transcription (using provider transcript)")
+            if has_existing_transcript:
+                # Skip transcription - use existing transcript (from provider, previous run, or manual upload)
+                logger.info(f"[EvaluatorResult {result.result_id}] Step 3: SKIPPING transcription (existing transcript found)")
                 
                 transcription = result.transcription
                 speaker_segments = result.speaker_segments or []
-                transcription_time = 0.0  # No transcription time since we skipped it
+                transcription_time = 0.0
                 
                 logger.info(f"[EvaluatorResult {result.result_id}] ✓ Using existing transcript: {len(transcription)} characters")
                 logger.info(f"[EvaluatorResult {result.result_id}] ✓ Using existing speaker segments: {len(speaker_segments)} segments")
                 
-                # Log provider info
-                provider_platform = result.provider_platform or "unknown"
-                logger.info(f"[EvaluatorResult {result.result_id}] Transcript source: {provider_platform} call_data")
+                if result.call_data:
+                    provider_platform = result.provider_platform or "unknown"
+                    logger.info(f"[EvaluatorResult {result.result_id}] Transcript source: {provider_platform} call_data")
+                else:
+                    logger.info(f"[EvaluatorResult {result.result_id}] Transcript source: previous transcription")
             else:
                 # Transcribe audio using TranscriptionService
                 logger.info(f"[EvaluatorResult {result.result_id}] Step 3: Starting transcription from audio")
@@ -248,49 +249,47 @@ def process_evaluator_result_task(self, result_id: str):
             ).all()
             
             logger.info(f"[EvaluatorResult {result.result_id}] ✓ Found {len(enabled_metrics)} enabled metrics")
-            
-            # Split metrics into LLM-evaluated and audio-evaluated
-            llm_metrics = []
-            audio_metrics = []
             for metric in enabled_metrics:
                 metric_type_val = metric.metric_type.value if hasattr(metric.metric_type, 'value') else metric.metric_type
-                if is_audio_metric(metric.name):
-                    audio_metrics.append(metric)
-                    logger.debug(f"[EvaluatorResult {result.result_id}]   - {metric.name} ({metric_type_val}) [AUDIO]")
-                else:
-                    llm_metrics.append(metric)
-                    logger.debug(f"[EvaluatorResult {result.result_id}]   - {metric.name} ({metric_type_val}) [LLM]")
+                logger.debug(f"[EvaluatorResult {result.result_id}]   - {metric.name} ({metric_type_val})")
             
-            logger.info(f"[EvaluatorResult {result.result_id}] Metrics split: {len(llm_metrics)} LLM, {len(audio_metrics)} AUDIO")
-            
-            # Step 5: Evaluate against enabled metrics
+            # Step 5: Evaluate against enabled metrics using LLM
             metric_scores = {}
             
-            # Step 5a: Evaluate LLM metrics (requires transcription)
-            if llm_metrics and transcription:
+            if enabled_metrics and transcription:
                 # Update status to EVALUATING
                 result.status = EvaluatorResultStatus.EVALUATING.value
                 db.commit()
                 logger.info(f"[EvaluatorResult {result.result_id}] Status updated: TRANSCRIBING -> EVALUATING")
                 logger.info(f"[EvaluatorResult {result.result_id}] Step 5: Starting metric evaluation")
-                # Build context for evaluation
-                # Handle enum values being either enum or string
-                call_type_val = (agent.call_type.value if hasattr(agent.call_type, 'value') else agent.call_type) if agent and agent.call_type else 'conversations'
-                language_val = (persona.language.value if hasattr(persona.language, 'value') else persona.language) if persona and persona.language else 'N/A'
-                agent_objective = agent.description if agent and agent.description else f"The agent's objective is to handle {call_type_val}."
-                scenario_context = scenario.description if scenario and scenario.description else ""
-                scenario_goals = scenario.required_info if scenario and scenario.required_info else {}
-                
-                # Build metric key mapping for later use (LLM metrics only)
+                # Build metric key mapping for later use
                 metric_key_map = {}  # metric_key -> metric object
-                for metric in llm_metrics:
+                for metric in enabled_metrics:
                     metric_key = metric.name.lower().replace(" ", "_")
                     metric_key_map[metric_key] = metric
-                    # Also map original name for fuzzy matching
                     metric_key_map[metric.name.lower()] = metric
                 
-                # Build evaluation prompt with STRICT format requirements
-                evaluation_prompt = f"""You are evaluating a conversation transcript. You MUST evaluate ONLY the specific metrics listed below and use the EXACT metric keys provided.
+                if is_custom_evaluator:
+                    evaluation_prompt = f"""You are evaluating a conversation transcript against the agent's system prompt. You MUST evaluate ONLY the specific metrics listed below and use the EXACT metric keys provided.
+
+## Agent System Prompt
+The following is the system prompt / instructions that the agent was configured with. Use this to understand the agent's goals, rules, and expected behavior when evaluating the conversation.
+
+{evaluator.custom_prompt}
+
+## Conversation Transcript
+{transcription}
+
+## Metrics to Evaluate (use EXACT keys below)
+"""
+                else:
+                    call_type_val = (agent.call_type.value if hasattr(agent.call_type, 'value') else agent.call_type) if agent and agent.call_type else 'conversations'
+                    language_val = (persona.language.value if hasattr(persona.language, 'value') else persona.language) if persona and persona.language else 'N/A'
+                    agent_objective = agent.description if agent and agent.description else f"The agent's objective is to handle {call_type_val}."
+                    scenario_context = scenario.description if scenario and scenario.description else ""
+                    scenario_goals = scenario.required_info if scenario and scenario.required_info else {}
+                    
+                    evaluation_prompt = f"""You are evaluating a conversation transcript. You MUST evaluate ONLY the specific metrics listed below and use the EXACT metric keys provided.
 
 ## Agent Information
 - Name: {agent.name if agent else 'Unknown'}
@@ -309,8 +308,8 @@ def process_evaluator_result_task(self, result_id: str):
 ## Metrics to Evaluate (use EXACT keys below)
 """
                 
-                # Add metric descriptions to prompt with exact keys (LLM metrics only)
-                for metric in llm_metrics:
+                # Add metric descriptions to prompt with exact keys
+                for metric in enabled_metrics:
                     metric_key = metric.name.lower().replace(" ", "_")
                     metric_desc = metric.description or f"Evaluate {metric.name}"
                     m_type = metric.metric_type.value if hasattr(metric.metric_type, 'value') else metric.metric_type
@@ -329,7 +328,7 @@ You MUST respond with ONLY a JSON object using the EXACT metric keys listed abov
 Example format:
 {{
 """
-                for metric in llm_metrics:
+                for metric in enabled_metrics:
                     metric_key = metric.name.lower().replace(" ", "_")
                     m_type = metric.metric_type.value if hasattr(metric.metric_type, 'value') else metric.metric_type
                     if m_type == "rating":
@@ -350,30 +349,36 @@ CRITICAL RULES:
                 
                 # Call LLM service for evaluation
                 try:
-                    # Determine LLM provider and model - extensible to other providers
-                    llm_provider = ModelProvider.OPENAI  # Default to OpenAI
-                    llm_model = "gpt-4o"  # Default model (user mentioned GPT-5, but gpt-4o is current best)
+                    # Determine LLM provider and model from evaluator config, falling back to defaults
+                    evaluator_llm_provider = getattr(evaluator, 'llm_provider', None) if evaluator else None
+                    evaluator_llm_model = getattr(evaluator, 'llm_model', None) if evaluator else None
                     
-                    # Check for available AI providers - can be extended to Gemini, etc.
-                    openai_provider = next((p for p in ai_providers if provider_matches(p.provider, ModelProvider.OPENAI)), None)
-                    google_provider = next((p for p in ai_providers if provider_matches(p.provider, ModelProvider.GOOGLE)), None)
-                    
-                    # For now, prefer OpenAI. Can be extended to check for Gemini key:
-                    # if google_provider:
-                    #     llm_provider = ModelProvider.GOOGLE
-                    #     llm_model = "gemini-pro"
-                    
-                    if not openai_provider:
-                        logger.warning(f"[EvaluatorResult {result.result_id}] No OpenAI provider found, evaluation may fail")
+                    if evaluator_llm_provider and evaluator_llm_model:
+                        # Use the evaluator's configured model
+                        if isinstance(evaluator_llm_provider, str):
+                            llm_provider = ModelProvider(evaluator_llm_provider.lower())
+                        else:
+                            llm_provider = evaluator_llm_provider
+                        llm_model = evaluator_llm_model
+                        logger.info(f"[EvaluatorResult {result.result_id}] Using evaluator-configured model: {llm_provider.value}/{llm_model}")
                     else:
-                        llm_provider_val = llm_provider.value if hasattr(llm_provider, 'value') else llm_provider
-                        logger.info(f"[EvaluatorResult {result.result_id}] Using {llm_provider_val} provider with model: {llm_model}")
+                        # Fallback: pick the first available AI provider
+                        llm_provider = ModelProvider.OPENAI
+                        llm_model = "gpt-4o"
+                        logger.info(f"[EvaluatorResult {result.result_id}] No evaluator model configured, using default: {llm_provider.value}/{llm_model}")
                     
-                    logger.info(f"[EvaluatorResult {result.result_id}] Building evaluation prompt with {len(llm_metrics)} LLM metrics")
+                    # Verify the chosen provider is configured for this organization
+                    chosen_provider = next((p for p in ai_providers if provider_matches(p.provider, llm_provider)), None)
+                    if not chosen_provider:
+                        logger.warning(f"[EvaluatorResult {result.result_id}] Provider {llm_provider.value} not configured, evaluation may fail")
+                    else:
+                        logger.info(f"[EvaluatorResult {result.result_id}] Using {llm_provider.value} provider with model: {llm_model}")
+                    
+                    logger.info(f"[EvaluatorResult {result.result_id}] Building evaluation prompt with {len(enabled_metrics)} metrics")
                     logger.debug(f"[EvaluatorResult {result.result_id}] Evaluation prompt length: {len(evaluation_prompt)} characters")
                     
                     # Build the list of exact metric keys for system message
-                    exact_keys = [metric.name.lower().replace(" ", "_") for metric in llm_metrics]
+                    exact_keys = [metric.name.lower().replace(" ", "_") for metric in enabled_metrics]
                     
                     messages = [
                         {"role": "system", "content": f"""You are an expert conversation evaluator. You MUST follow these rules STRICTLY:
@@ -509,7 +514,7 @@ Example of WRONG format (DO NOT do this):
                     response_keys = list(evaluation_data.keys())
                     logger.debug(f"[EvaluatorResult {result.result_id}] Response keys: {response_keys}")
                     
-                    for metric in llm_metrics:
+                    for metric in enabled_metrics:
                         metric_key = metric.name.lower().replace(" ", "_")
                         m_type = metric.metric_type.value if hasattr(metric.metric_type, 'value') else metric.metric_type
                         
@@ -568,8 +573,8 @@ Example of WRONG format (DO NOT do this):
                     # Use str() to avoid format issues with curly braces in error messages
                     error_msg = str(e).replace("{", "{{").replace("}", "}}")
                     logger.error(f"[EvaluatorResult {result.result_id}] ✗ LLM evaluation failed: {error_msg}", exc_info=True)
-                    # If LLM evaluation fails, mark LLM metrics as None but don't fail the whole task
-                    for metric in llm_metrics:
+                    # If LLM evaluation fails, mark metrics as None but don't fail the whole task
+                    for metric in enabled_metrics:
                         m_type = metric.metric_type.value if hasattr(metric.metric_type, 'value') else metric.metric_type
                         metric_scores[str(metric.id)] = {
                             "value": None,
@@ -577,86 +582,12 @@ Example of WRONG format (DO NOT do this):
                             "metric_name": metric.name,
                             "error": str(e)
                         }
-                    logger.warning(f"[EvaluatorResult {result.result_id}] Marked {len(llm_metrics)} LLM metrics as failed")
+                    logger.warning(f"[EvaluatorResult {result.result_id}] Marked {len(enabled_metrics)} metrics as failed")
             else:
-                if not llm_metrics:
-                    logger.info(f"[EvaluatorResult {result.result_id}] No LLM metrics enabled, skipping LLM evaluation")
+                if not enabled_metrics:
+                    logger.warning(f"[EvaluatorResult {result.result_id}] No enabled metrics found, skipping evaluation")
                 if not transcription:
-                    logger.warning(f"[EvaluatorResult {result.result_id}] No transcription available, skipping LLM evaluation")
-            
-            # Step 5b: Evaluate audio metrics (requires recording from provider OR S3 audio)
-            audio_source_available = result.call_data or result.audio_s3_key
-            if audio_metrics and audio_source_available:
-                logger.info(f"[EvaluatorResult {result.result_id}] Step 5b: Calculating {len(audio_metrics)} audio metrics")
-                
-                try:
-                    # Get audio metric names
-                    audio_metric_names = [m.name for m in audio_metrics]
-                    
-                    # Determine audio source
-                    if result.call_data:
-                        # Voice AI agents: Use provider call_data
-                        logger.info(f"[EvaluatorResult {result.result_id}] Using call_data for audio analysis")
-                        audio_results = calculate_audio_metrics_from_call_data(
-                            call_data=result.call_data,
-                            provider_platform=result.provider_platform,
-                            metric_names=audio_metric_names
-                        )
-                    elif result.audio_s3_key:
-                        # Test Agents: Use S3 audio file
-                        logger.info(f"[EvaluatorResult {result.result_id}] Using S3 audio for analysis: {result.audio_s3_key}")
-                        from app.services.s3_service import s3_service
-                        from app.services.voice_quality_service import calculate_audio_metrics
-                        
-                        # Generate presigned URL for S3 audio
-                        if s3_service.is_enabled():
-                            audio_url = s3_service.generate_presigned_url_by_key(result.audio_s3_key, expiration=3600)
-                            logger.info(f"[EvaluatorResult {result.result_id}] Generated presigned URL for S3 audio")
-                            audio_results = calculate_audio_metrics(audio_url, audio_metric_names, is_url=True)
-                        else:
-                            logger.warning(f"[EvaluatorResult {result.result_id}] S3 service not enabled, cannot analyze audio")
-                            audio_results = {name: None for name in audio_metric_names}
-                    else:
-                        audio_results = {name: None for name in audio_metric_names}
-                    
-                    # Map results to metric_scores
-                    for metric in audio_metrics:
-                        m_type = metric.metric_type.value if hasattr(metric.metric_type, 'value') else metric.metric_type
-                        value = audio_results.get(metric.name)
-                        metric_scores[str(metric.id)] = {
-                            "value": value,
-                            "type": m_type.lower() if isinstance(m_type, str) else m_type,
-                            "metric_name": metric.name
-                        }
-                        logger.debug(f"[EvaluatorResult {result.result_id}]   - {metric.name}: {value}")
-                    
-                    # Log summary
-                    successful_audio = sum(1 for m in audio_metrics if audio_results.get(m.name) is not None)
-                    logger.info(f"[EvaluatorResult {result.result_id}] ✓ Audio metrics calculated: {successful_audio}/{len(audio_metrics)} successful")
-                    
-                except Exception as e:
-                    error_msg = str(e).replace("{", "{{").replace("}", "}}")
-                    logger.error(f"[EvaluatorResult {result.result_id}] ✗ Audio metrics calculation failed: {error_msg}", exc_info=True)
-                    # Mark audio metrics as failed
-                    for metric in audio_metrics:
-                        m_type = metric.metric_type.value if hasattr(metric.metric_type, 'value') else metric.metric_type
-                        metric_scores[str(metric.id)] = {
-                            "value": None,
-                            "type": m_type.lower() if isinstance(m_type, str) else m_type,
-                            "metric_name": metric.name,
-                            "error": str(e)
-                        }
-                    logger.warning(f"[EvaluatorResult {result.result_id}] Marked {len(audio_metrics)} audio metrics as failed")
-            elif audio_metrics:
-                logger.warning(f"[EvaluatorResult {result.result_id}] No audio source available for audio metrics (no call_data or audio_s3_key)")
-                for metric in audio_metrics:
-                    m_type = metric.metric_type.value if hasattr(metric.metric_type, 'value') else metric.metric_type
-                    metric_scores[str(metric.id)] = {
-                        "value": None,
-                        "type": m_type.lower() if isinstance(m_type, str) else m_type,
-                        "metric_name": metric.name,
-                        "error": "No audio source available (no call_data or audio_s3_key)"
-                    }
+                    logger.warning(f"[EvaluatorResult {result.result_id}] No transcription available, skipping evaluation")
             
             # Update status to COMPLETED
             result.metric_scores = metric_scores
@@ -871,85 +802,200 @@ def run_evaluator_task(self, evaluator_id: str, evaluator_result_id: str):
         db.close()
 
 
-# ============================================
-# ALERT EVALUATION TASKS
-# ============================================
+# ======================================================================
+# TTS Comparison Tasks (Voice Playground)
+# ======================================================================
 
-@celery_app.task(name="evaluate_alerts", bind=True, max_retries=2)
-def evaluate_alerts_task(self):
-    """
-    Celery task to evaluate all active alerts.
-    Runs periodically via Celery Beat to check alert conditions
-    and trigger notifications when thresholds are breached.
 
-    Returns:
-        Dictionary with evaluation summary
+@celery_app.task(name="generate_tts_comparison", bind=True, max_retries=1)
+def generate_tts_comparison_task(self, comparison_id: str):
     """
+    Generate TTS audio for every sample in a comparison, upload to S3,
+    then dispatch evaluation.
+    """
+    from app.models.database import (
+        TTSComparison, TTSSample,
+        TTSComparisonStatus, TTSSampleStatus, ModelProvider,
+    )
+    from app.services.tts_service import tts_service
+
     db = SessionLocal()
     try:
-        from app.services.alert_evaluation_service import alert_evaluation_service
+        comp = db.query(TTSComparison).filter(TTSComparison.id == UUID(comparison_id)).first()
+        if not comp:
+            logger.error(f"[TTS Generate] Comparison {comparison_id} not found")
+            return {"error": "not found"}
 
-        logger.info("[CeleryTask] Starting periodic alert evaluation")
-        result = alert_evaluation_service.evaluate_all_alerts(db)
-        logger.info(
-            f"[CeleryTask] Alert evaluation complete: "
-            f"{result['triggered']} triggered, {result['not_triggered']} ok, "
-            f"{result['errors']} errors"
+        comp.status = TTSComparisonStatus.GENERATING.value
+        db.commit()
+
+        samples = (
+            db.query(TTSSample)
+            .filter(TTSSample.comparison_id == comp.id)
+            .order_by(TTSSample.sample_index)
+            .all()
         )
-        return result
+
+        failed_count = 0
+        for sample in samples:
+            try:
+                sample.status = TTSSampleStatus.GENERATING.value
+                db.commit()
+
+                provider_enum = ModelProvider(sample.provider)
+                audio_bytes, latency_ms = tts_service.synthesize_timed(
+                    text=sample.text,
+                    tts_provider=provider_enum,
+                    tts_model=sample.model,
+                    organization_id=comp.organization_id,
+                    db=db,
+                    voice=sample.voice_id,
+                )
+
+                from app.services.s3_service import s3_service
+
+                s3_key = s3_service.upload_file_by_key(
+                    file_content=audio_bytes,
+                    key=f"{s3_service.prefix}organizations/{comp.organization_id}/voicePlayground/{comp.id}/{sample.id}.mp3",
+                )
+
+                # Estimate duration from file size (MP3 ~128kbps)
+                duration_est = len(audio_bytes) / (128000 / 8) if audio_bytes else None
+
+                sample.audio_s3_key = s3_key
+                sample.latency_ms = round(latency_ms, 1)
+                sample.duration_seconds = round(duration_est, 2) if duration_est else None
+                sample.status = TTSSampleStatus.COMPLETED.value
+                db.commit()
+
+                logger.info(
+                    f"[TTS Generate] Sample {sample.id} done – "
+                    f"{sample.provider}/{sample.voice_name} latency={latency_ms:.0f}ms"
+                )
+
+            except Exception as e:
+                logger.error(f"[TTS Generate] Sample {sample.id} failed: {e}")
+                sample.status = TTSSampleStatus.FAILED.value
+                sample.error_message = str(e)[:500]
+                db.commit()
+                failed_count += 1
+
+        total = len(samples)
+        if failed_count == total:
+            comp.status = TTSComparisonStatus.FAILED.value
+            comp.error_message = "All samples failed to generate"
+            db.commit()
+            return {"error": "all failed"}
+
+        # Dispatch evaluation
+        comp.status = TTSComparisonStatus.EVALUATING.value
+        db.commit()
+        evaluate_tts_comparison_task.delay(comparison_id)
+
+        return {"generated": total - failed_count, "failed": failed_count}
+
     except Exception as exc:
-        logger.error(f"[CeleryTask] Alert evaluation failed: {exc}", exc_info=True)
-        raise self.retry(exc=exc, countdown=120)
+        logger.error(f"[TTS Generate] Task failed: {exc}", exc_info=True)
+        try:
+            comp = db.query(TTSComparison).filter(TTSComparison.id == UUID(comparison_id)).first()
+            if comp:
+                comp.status = TTSComparisonStatus.FAILED.value
+                comp.error_message = str(exc)[:500]
+                db.commit()
+        except Exception:
+            pass
+        raise self.retry(exc=exc, countdown=30)
     finally:
         db.close()
 
 
-@celery_app.task(name="evaluate_single_alert", bind=True, max_retries=2)
-def evaluate_single_alert_task(self, alert_id: str, organization_id: str):
+@celery_app.task(name="evaluate_tts_comparison", bind=True, max_retries=1)
+def evaluate_tts_comparison_task(self, comparison_id: str):
     """
-    Celery task to evaluate a single alert (for manual trigger).
-
-    Args:
-        self: Task instance
-        alert_id: Alert UUID as string
-        organization_id: Organization UUID as string
-
-    Returns:
-        Dictionary with evaluation result
+    Download each completed sample from S3 and run qualitative voice
+    metrics (MOS, Valence, Arousal, Prosody).
     """
+    import tempfile
+    import os
+    from app.models.database import (
+        TTSComparison, TTSSample, TTSComparisonStatus, TTSSampleStatus,
+    )
+    from app.services.s3_service import s3_service
+
     db = SessionLocal()
     try:
-        from app.services.alert_evaluation_service import alert_evaluation_service
+        comp = db.query(TTSComparison).filter(TTSComparison.id == UUID(comparison_id)).first()
+        if not comp:
+            return {"error": "not found"}
 
-        logger.info(f"[CeleryTask] Evaluating single alert: {alert_id}")
-        result = alert_evaluation_service.evaluate_alert_by_id(
-            alert_id=UUID(alert_id),
-            organization_id=UUID(organization_id),
-            db=db,
+        samples = (
+            db.query(TTSSample)
+            .filter(
+                TTSSample.comparison_id == comp.id,
+                TTSSample.status == TTSSampleStatus.COMPLETED.value,
+                TTSSample.audio_s3_key.isnot(None),
+            )
+            .all()
         )
-        logger.info(
-            f"[CeleryTask] Single alert evaluation complete: "
-            f"triggered={result.get('triggered', False)}"
-        )
-        return result
+
+        if not samples:
+            comp.status = TTSComparisonStatus.COMPLETED.value
+            db.commit()
+            return {"evaluated": 0}
+
+        # Lazy-load qualitative service inside the worker
+        from app.services.qualitative_voice_service import qualitative_voice_service
+
+        evaluated = 0
+        for sample in samples:
+            tmp_path = None
+            try:
+                # Download from S3 to temp file
+                audio_bytes = s3_service.download_file_by_key(sample.audio_s3_key)
+                if not audio_bytes:
+                    continue
+
+                tmp_fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
+                os.close(tmp_fd)
+                with open(tmp_path, "wb") as f:
+                    f.write(audio_bytes)
+
+                metrics = qualitative_voice_service.calculate_all_metrics(tmp_path)
+                sample.evaluation_metrics = metrics
+                db.commit()
+                evaluated += 1
+
+                logger.info(f"[TTS Eval] Sample {sample.id} metrics: {metrics}")
+
+            except Exception as e:
+                logger.warning(f"[TTS Eval] Sample {sample.id} eval failed: {e}")
+            finally:
+                if tmp_path and os.path.exists(tmp_path):
+                    try:
+                        os.unlink(tmp_path)
+                    except Exception:
+                        pass
+
+        # Build summary
+        from app.api.v1.routes.voice_playground import _recompute_summary
+        _recompute_summary(comp, db)
+
+        comp.status = TTSComparisonStatus.COMPLETED.value
+        db.commit()
+
+        logger.info(f"[TTS Eval] Comparison {comparison_id} complete – {evaluated}/{len(samples)} evaluated")
+        return {"evaluated": evaluated}
+
     except Exception as exc:
-        logger.error(
-            f"[CeleryTask] Single alert evaluation failed: {exc}",
-            exc_info=True,
-        )
-        raise self.retry(exc=exc, countdown=60)
+        logger.error(f"[TTS Eval] Task failed: {exc}", exc_info=True)
+        try:
+            comp = db.query(TTSComparison).filter(TTSComparison.id == UUID(comparison_id)).first()
+            if comp:
+                comp.status = TTSComparisonStatus.FAILED.value
+                comp.error_message = f"Evaluation failed: {str(exc)[:400]}"
+                db.commit()
+        except Exception:
+            pass
+        raise self.retry(exc=exc, countdown=30)
     finally:
         db.close()
-
-
-# ============================================
-# CELERY BEAT SCHEDULE
-# ============================================
-
-celery_app.conf.beat_schedule = {
-    "evaluate-alerts-every-minute": {
-        "task": "evaluate_alerts",
-        "schedule": 60.0,  # Run every 60 seconds
-        "options": {"queue": "default"},
-    },
-}

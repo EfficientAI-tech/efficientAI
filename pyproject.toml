@@ -63,13 +63,14 @@ cartesia = [
 deepgram = [
     "deepgram-sdk>=3.0.0,<4.0.0",
 ]
-# Qualitative Voice AI Metrics (MOS, Emotion, Prosody)
+# Qualitative Voice AI Metrics (MOS, Emotion, Prosody) + Speaker Diarization
 qualitative-voice = [
     "torch>=2.0.0",
-    "torchaudio>=2.0.0",
+    "torchaudio>=2.1.0",
     "transformers>=4.41.0",
     "librosa>=0.10.0",
     "scipy>=1.11.0",
+    "pyannote.audio>=3.1.0",
 ]
 # Optional: Speaker Consistency metric (has version conflicts with torchaudio)
 # speechbrain = ["speechbrain>=1.0.0"]

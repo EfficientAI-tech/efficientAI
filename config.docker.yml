@@ -47,6 +47,12 @@ s3:
   endpoint_url: null
   prefix: "audio/"
 
+# Speaker Diarization (pyannote.audio)
+# Requires accepting model terms at https://huggingface.co/pyannote/speaker-diarization-3.1
+diarization:
+  huggingface_token:   # Set your HuggingFace token here (e.g., "hf_xxxxx")
+  num_speakers: 2  # Force exact speaker count (2 = agent + customer). Set to null for auto-detect.
+
 # CORS Settings
 cors:
   origins:

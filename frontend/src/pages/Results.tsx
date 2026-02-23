@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { apiClient } from '../lib/api'
-import { Clock, CheckCircle, XCircle, Loader, Plus, X, Trash2, RefreshCw, Eye, Activity, AlertTriangle } from 'lucide-react'
+import { Clock, CheckCircle, XCircle, Loader, Plus, X, Trash2, RefreshCw, Eye, Activity, AlertTriangle, RotateCcw } from 'lucide-react'
 import { useState, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import Button from '../components/Button'
@@ -10,6 +10,7 @@ interface EvaluatorResult {
   id: string
   result_id: string
   name: string
+  evaluator_id: string | null
   timestamp: string
   duration_seconds: number | null
   status: 'queued' | 'call_initiating' | 'call_connecting' | 'call_in_progress' | 'call_ended' | 'transcribing' | 'evaluating' | 'completed' | 'failed'
@@ -34,9 +35,11 @@ interface AudioFile {
 interface Evaluator {
   id: string
   evaluator_id: string
-  agent_id: string
-  persona_id: string
-  scenario_id: string
+  name?: string | null
+  agent_id?: string | null
+  persona_id?: string | null
+  scenario_id?: string | null
+  custom_prompt?: string | null
 }
 
 export default function Results() {
@@ -103,6 +106,19 @@ export default function Results() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['evaluator-results'] })
       setSelectedResults(new Set())
+    },
+  })
+
+  const [reEvaluatingIds, setReEvaluatingIds] = useState<Set<string>>(new Set())
+
+  const reEvaluateMutation = useMutation({
+    mutationFn: (id: string) => apiClient.reEvaluateResult(id),
+    onSuccess: (_data, id) => {
+      queryClient.invalidateQueries({ queryKey: ['evaluator-results'] })
+      setReEvaluatingIds(prev => { const s = new Set(prev); s.delete(id); return s })
+    },
+    onError: (_error, id) => {
+      setReEvaluatingIds(prev => { const s = new Set(prev); s.delete(id); return s })
     },
   })
 
@@ -585,14 +601,30 @@ export default function Results() {
                         )
                       })}
                       <td className="px-4 py-4 whitespace-nowrap text-right" onClick={(e) => e.stopPropagation()}>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => navigate(`/results/${result.result_id}`)}
-                          leftIcon={<Eye className="w-4 h-4" />}
-                        >
-                          View
-                        </Button>
+                        <div className="flex items-center justify-end gap-1">
+                          {(result.status === 'completed' || result.status === 'failed') && result.evaluator_id && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => {
+                                setReEvaluatingIds(prev => new Set(prev).add(result.id))
+                                reEvaluateMutation.mutate(result.id)
+                              }}
+                              disabled={reEvaluatingIds.has(result.id)}
+                              leftIcon={<RotateCcw className={`w-3.5 h-3.5 ${reEvaluatingIds.has(result.id) ? 'animate-spin' : ''}`} />}
+                            >
+                              Re-evaluate
+                            </Button>
+                          )}
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => navigate(`/results/${result.result_id}`)}
+                            leftIcon={<Eye className="w-4 h-4" />}
+                          >
+                            View
+                          </Button>
+                        </div>
                       </td>
                     </tr>
                   )
@@ -693,7 +725,10 @@ export default function Results() {
                     <option value="">Choose an evaluator...</option>
                     {evaluators.map((evaluator: Evaluator) => (
                       <option key={evaluator.id} value={evaluator.id}>
-                        {evaluator.evaluator_id} - Agent: {evaluator.agent_id.substring(0, 8)}...
+                        {evaluator.evaluator_id} - {evaluator.custom_prompt
+                          ? `Custom: ${evaluator.name || 'Unnamed'}`
+                          : `Agent: ${evaluator.agent_id?.substring(0, 8) || '?'}...`
+                        }
                       </option>
                     ))}
                   </select>

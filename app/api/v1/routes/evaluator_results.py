@@ -364,7 +364,6 @@ def create_evaluator_result_manual(
     Manually create an evaluator result from an existing audio file.
     This will trigger transcription and metric evaluation automatically.
     """
-    # Get evaluator
     evaluator = db.query(Evaluator).filter(
         Evaluator.id == result_data.evaluator_id,
         Evaluator.organization_id == organization_id
@@ -373,11 +372,14 @@ def create_evaluator_result_manual(
     if not evaluator:
         raise HTTPException(status_code=404, detail="Evaluator not found")
     
-    # Get scenario for name
-    scenario = db.query(Scenario).filter(Scenario.id == evaluator.scenario_id).first()
-    scenario_name = scenario.name if scenario else "Unknown Scenario"
+    is_custom = bool(evaluator.custom_prompt)
     
-    # Generate unique 6-digit result ID
+    if is_custom:
+        result_name = evaluator.name or "Custom Evaluation"
+    else:
+        scenario = db.query(Scenario).filter(Scenario.id == evaluator.scenario_id).first()
+        result_name = scenario.name if scenario else "Unknown Scenario"
+    
     max_attempts = 100
     result_id = None
     for _ in range(max_attempts):
@@ -390,7 +392,6 @@ def create_evaluator_result_manual(
     if not result_id:
         raise HTTPException(status_code=500, detail="Failed to generate unique result ID")
     
-    # Create evaluator result with QUEUED status
     evaluator_result = EvaluatorResult(
         result_id=result_id,
         organization_id=organization_id,
@@ -398,9 +399,9 @@ def create_evaluator_result_manual(
         agent_id=evaluator.agent_id,
         persona_id=evaluator.persona_id,
         scenario_id=evaluator.scenario_id,
-        name=scenario_name,
+        name=result_name,
         duration_seconds=result_data.duration_seconds,
-        status=EvaluatorResultStatus.QUEUED.value,  # Use .value to get the string
+        status=EvaluatorResultStatus.QUEUED.value,
         audio_s3_key=result_data.audio_s3_key
     )
     
@@ -420,4 +421,69 @@ def create_evaluator_result_manual(
         logger.error(f"Failed to trigger Celery task for evaluator result {result_id}: {e}")
     
     return evaluator_result
+
+
+@router.post("/{id}/re-evaluate", response_model=EvaluatorResultResponse)
+def re_evaluate_result(
+    id: str,
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+):
+    """
+    Re-evaluate an existing evaluator result. Keeps the existing transcription
+    but re-runs the LLM metric evaluation using the current evaluator config
+    (system prompt, LLM model, etc.). Useful after updating the evaluator's
+    prompt or switching models.
+    """
+    try:
+        result_uuid = UUID(id)
+        result = db.query(EvaluatorResult).filter(
+            and_(EvaluatorResult.id == result_uuid, EvaluatorResult.organization_id == organization_id)
+        ).first()
+    except ValueError:
+        result = db.query(EvaluatorResult).filter(
+            and_(EvaluatorResult.result_id == id, EvaluatorResult.organization_id == organization_id)
+        ).first()
+
+    if not result:
+        raise HTTPException(status_code=404, detail="Evaluator result not found")
+
+    if not result.transcription:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot re-evaluate: this result has no transcription. It must be transcribed first."
+        )
+
+    if not result.evaluator_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot re-evaluate: this result is not linked to an evaluator."
+        )
+
+    # Verify the evaluator still exists
+    evaluator = db.query(Evaluator).filter(Evaluator.id == result.evaluator_id).first()
+    if not evaluator:
+        raise HTTPException(status_code=404, detail="Linked evaluator no longer exists")
+
+    # Reset evaluation state but keep transcription and audio
+    result.metric_scores = None
+    result.error_message = None
+    result.status = EvaluatorResultStatus.QUEUED.value
+    db.commit()
+
+    # Dispatch Celery task (it will skip transcription since transcript already exists)
+    try:
+        task = process_evaluator_result_task.delay(str(result.id))
+        result.celery_task_id = task.id
+        db.commit()
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Failed to trigger re-evaluate task for result {result.result_id}: {e}")
+        result.status = EvaluatorResultStatus.FAILED.value
+        result.error_message = f"Failed to queue re-evaluation: {str(e)}"
+        db.commit()
+
+    db.refresh(result)
+    return result
 

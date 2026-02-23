@@ -36,6 +36,43 @@ def get_db():
 
 
 def init_db():
-    """Initialize database by creating all tables."""
+    """Initialize database by creating all tables and run column migrations."""
     Base.metadata.create_all(bind=engine)
+    _run_column_migrations()
+
+
+def _run_column_migrations():
+    """Add new columns to existing tables if they don't exist yet."""
+    from sqlalchemy import text, inspect
+    
+    inspector = inspect(engine)
+    
+    migrations = [
+        ("evaluators", "name", "ALTER TABLE evaluators ADD COLUMN name VARCHAR"),
+        ("evaluators", "custom_prompt", "ALTER TABLE evaluators ADD COLUMN custom_prompt TEXT"),
+        ("evaluators", "agent_id", None),  # ALTER nullable handled below
+        ("evaluators", "persona_id", None),
+        ("evaluators", "scenario_id", None),
+        ("evaluators", "llm_provider", "ALTER TABLE evaluators ADD COLUMN llm_provider VARCHAR"),
+        ("evaluators", "llm_model", "ALTER TABLE evaluators ADD COLUMN llm_model VARCHAR"),
+    ]
+    
+    with engine.begin() as conn:
+        existing_cols = {c["name"] for c in inspector.get_columns("evaluators")}
+        
+        for table, column, ddl in migrations:
+            if ddl and column not in existing_cols:
+                conn.execute(text(ddl))
+        
+        nullable_changes = [
+            ("evaluators", "agent_id"),
+            ("evaluators", "persona_id"),
+            ("evaluators", "scenario_id"),
+            ("evaluator_results", "agent_id"),
+        ]
+        for table, column in nullable_changes:
+            try:
+                conn.execute(text(f"ALTER TABLE {table} ALTER COLUMN {column} DROP NOT NULL"))
+            except Exception:
+                pass
 
