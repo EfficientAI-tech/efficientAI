@@ -128,6 +128,43 @@ class TTSService:
             error_details = traceback.format_exc()
             raise RuntimeError(f"Google TTS synthesis failed: {str(e)}\nDetails: {error_details}")
 
+    def _synthesize_with_murf(
+        self,
+        text: str,
+        model: str,
+        api_key: str,
+        voice: Optional[str] = None,
+        config: Optional[Dict[str, Any]] = None
+    ) -> bytes:
+        """Synthesize speech using Murf TTS API."""
+        import requests
+        try:
+            url = "https://global.api.murf.ai/v1/speech/stream"
+            headers = {
+                "Content-Type": "application/json",
+                "api-key": api_key,
+            }
+            
+            payload = {
+                "voiceId": voice if voice else "en-US-matthew",
+                "text": text,
+                "format": "MP3",
+                "modelId": model,
+            }
+            
+            if config:
+                if "multi_native_locale" in config:
+                    payload["multiNativeLocale"] = config["multi_native_locale"]
+                
+            response = requests.post(url, headers=headers, json=payload, stream=True)
+            response.raise_for_status()
+            
+            return response.content
+        except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            raise RuntimeError(f"Murf TTS synthesis failed: {str(e)}\nDetails: {error_details}")
+
     def synthesize(
         self,
         text: str,
@@ -172,6 +209,8 @@ class TTSService:
             audio_bytes = self._synthesize_with_openai(text, tts_model, api_key, voice, config)
         elif tts_provider == ModelProvider.GOOGLE:
             audio_bytes = self._synthesize_with_google(text, tts_model, api_key, voice, config)
+        elif tts_provider == ModelProvider.MURF:
+            audio_bytes = self._synthesize_with_murf(text, tts_model, api_key, voice, config)
         else:
             raise NotImplementedError(f"TTS provider {tts_provider} not yet implemented")
         

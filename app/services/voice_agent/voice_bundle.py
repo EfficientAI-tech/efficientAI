@@ -38,6 +38,7 @@ from efficientai.services.cartesia.tts import CartesiaTTSService
 from efficientai.services.deepgram.stt import DeepgramSTTService
 from efficientai.services.elevenlabs.tts import ElevenLabsHttpTTSService
 from efficientai.services.openai.llm import OpenAILLMService
+from efficientai.services.murf.tts import MurfTTSService
 from efficientai.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from efficientai.transports.base_transport import BaseTransport, TransportParams
 from efficientai.turns.bot.turn_analyzer_bot_turn_start_strategy import TurnAnalyzerBotTurnStartStrategy
@@ -88,7 +89,7 @@ TTS_PROVIDERS = {
         "env_key": "CARTESIA_API_KEY",
         "default_voice": "9626c31c-bec5-4cca-baa8-f8ba9e84c8bc",  # British Reading Lady
         "default_model": None,
-        "factory": lambda api_key, voice_id, model: CartesiaTTSService(
+        "factory": lambda api_key, voice_id, model, config=None: CartesiaTTSService(
             api_key=api_key,
             voice_id=voice_id,
         ),
@@ -97,11 +98,22 @@ TTS_PROVIDERS = {
         "env_key": "ELEVENLABS_API_KEY",
         "default_voice": "JBFqnCBsd6RMkjVDRZzb",
         "default_model": "eleven_multilingual_v2",
-        "factory": lambda api_key, voice_id, model: ElevenLabsHttpTTSService(
+        "factory": lambda api_key, voice_id, model, config=None: ElevenLabsHttpTTSService(
             api_key=api_key,
             voice_id=voice_id,
             model=model,
             aiohttp_session=__import__("aiohttp").ClientSession(),
+        ),
+    },
+    "murf": {
+        "env_key": "MURF_API_KEY",
+        "default_voice": "en-US-matthew",
+        "default_model": "GEN2",
+        "factory": lambda api_key, voice_id, model, config=None: MurfTTSService(
+            api_key=api_key,
+            voice=voice_id,
+            model=model,
+            params=MurfTTSService.InputParams(**config) if config else None,
         ),
     },
     # To add a new TTS provider, e.g. "azure":
@@ -109,7 +121,7 @@ TTS_PROVIDERS = {
     #     "env_key": "AZURE_SPEECH_API_KEY",
     #     "default_voice": "en-US-JennyNeural",
     #     "default_model": None,
-    #     "factory": lambda api_key, voice_id, model: AzureTTSService(
+    #     "factory": lambda api_key, voice_id, model, config=None: AzureTTSService(
     #         api_key=api_key,
     #         voice_id=voice_id,
     #     ),
@@ -296,7 +308,8 @@ async def run_voice_bundle_fastapi(
         # Instantiate TTS service from the provider registry
         tts_voice_id = getattr(voice_bundle, "tts_voice", None) or tts_cfg["default_voice"]
         tts_model = getattr(voice_bundle, "tts_model", None) or tts_cfg["default_model"]
-        tts = tts_cfg["factory"](api_key=tts_api_key, voice_id=tts_voice_id, model=tts_model)
+        tts_config = getattr(voice_bundle, "tts_config", None) or None
+        tts = tts_cfg["factory"](api_key=tts_api_key, voice_id=tts_voice_id, model=tts_model, config=tts_config)
 
         llm_model = getattr(voice_bundle, "llm_model", None) or "gpt-4.1"
         llm = OpenAILLMService(api_key=llm_api_key, model=llm_model)

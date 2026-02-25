@@ -15,6 +15,7 @@ const PROVIDER_LABELS: Record<ModelProvider, string> = {
   [ModelProvider.DEEPGRAM]: 'Deepgram',
   [ModelProvider.CARTESIA]: 'Cartesia',
   [ModelProvider.ELEVENLABS]: 'ElevenLabs',
+  [ModelProvider.MURF]: 'Murf',
   [ModelProvider.CUSTOM]: 'Custom',
 }
 
@@ -27,6 +28,7 @@ const PROVIDER_LOGOS: Record<ModelProvider, string | null> = {
   [ModelProvider.DEEPGRAM]: '/deepgram.png',
   [ModelProvider.CARTESIA]: '/cartesia.jpg',
   [ModelProvider.ELEVENLABS]: '/elevenlabs.jpg',
+  [ModelProvider.MURF]: null,
   [ModelProvider.CUSTOM]: null,
 }
 
@@ -51,6 +53,7 @@ export default function VoiceBundles() {
     tts_provider: ModelProvider.OPENAI,
     tts_model: 'tts-1',
     tts_voice: '',
+    tts_config: null,
     s2s_provider: null,
     s2s_model: null,
   })
@@ -76,7 +79,7 @@ export default function VoiceBundles() {
     queryFn: async () => {
       const providers = Object.values(ModelProvider)
       const configs: Record<string, { stt: string[]; llm: string[]; tts: string[]; s2s: string[] }> = {}
-      
+
       for (const provider of providers) {
         try {
           const options = await apiClient.getModelOptions(provider)
@@ -100,7 +103,7 @@ export default function VoiceBundles() {
   const mapIntegrationToProvider = (platform: IntegrationPlatform | string): ModelProvider | null => {
     // Normalize to lowercase string for comparison (handles both enum and string values from API)
     const platformLower = (typeof platform === 'string' ? platform : String(platform)).toLowerCase()
-    
+
     switch (platformLower) {
       case 'deepgram':
         return ModelProvider.DEEPGRAM
@@ -108,6 +111,8 @@ export default function VoiceBundles() {
         return ModelProvider.CARTESIA
       case 'elevenlabs':
         return ModelProvider.ELEVENLABS
+      case 'murf':
+        return ModelProvider.MURF
       default:
         return null
     }
@@ -130,7 +135,7 @@ export default function VoiceBundles() {
   const getModelOptions = (provider: ModelProvider): { stt: string[]; llm: string[]; tts: string[]; s2s: string[] } => {
     return modelConfigs[provider] || { stt: [], llm: [], tts: [], s2s: [] }
   }
-  
+
   // Default to first configured provider if current selection is not configured
   const getDefaultProvider = (current: ModelProvider) => {
     if (configuredProviders.includes(current)) return current
@@ -196,7 +201,7 @@ export default function VoiceBundles() {
     const defaultSttModel = options.stt[0] || ''
     const defaultLlmModel = options.llm[0] || ''
     const defaultTtsModel = options.tts[0] || ''
-    
+
     setFormData({
       name: '',
       description: '',
@@ -210,6 +215,7 @@ export default function VoiceBundles() {
       tts_provider: defaultProvider,
       tts_model: defaultTtsModel,
       tts_voice: '',
+      tts_config: null,
       s2s_provider: null,
       s2s_model: null,
     })
@@ -235,7 +241,8 @@ export default function VoiceBundles() {
       tts_provider: bundle.tts_provider ? getDefaultProvider(bundle.tts_provider as ModelProvider) : null,
       tts_model: bundle.tts_model || null,
       tts_voice: bundle.tts_voice || '',
-      s2s_provider: bundle.s2s_provider ? getDefaultProvider(bundle.s2s_provider as ModelProvider) : null,
+      tts_config: bundle.tts_config || null,
+      s2s_provider: bundle.tts_provider ? getDefaultProvider(bundle.s2s_provider as ModelProvider) : null,
       s2s_model: bundle.s2s_model || null,
     })
     setShowEditModal(true)
@@ -798,11 +805,10 @@ function VoiceBundleModal({
                       s2s_model: null,
                     })
                   }}
-                  className={`p-3 border-2 rounded-lg text-left transition-all ${
-                    formData.bundle_type === VoiceBundleType.STT_LLM_TTS
-                      ? 'border-primary-500 bg-primary-50'
-                      : 'border-gray-200 hover:border-gray-300'
-                  }`}
+                  className={`p-3 border-2 rounded-lg text-left transition-all ${formData.bundle_type === VoiceBundleType.STT_LLM_TTS
+                    ? 'border-primary-500 bg-primary-50'
+                    : 'border-gray-200 hover:border-gray-300'
+                    }`}
                 >
                   <div className="flex items-center gap-2">
                     <Brain className="h-5 w-5 text-primary-600" />
@@ -828,11 +834,10 @@ function VoiceBundleModal({
                       tts_model: null,
                     })
                   }}
-                  className={`p-3 border-2 rounded-lg text-left transition-all ${
-                    formData.bundle_type === VoiceBundleType.S2S
-                      ? 'border-primary-500 bg-primary-50'
-                      : 'border-gray-200 hover:border-gray-300'
-                  }`}
+                  className={`p-3 border-2 rounded-lg text-left transition-all ${formData.bundle_type === VoiceBundleType.S2S
+                    ? 'border-primary-500 bg-primary-50'
+                    : 'border-gray-200 hover:border-gray-300'
+                    }`}
                 >
                   <div className="flex items-center gap-2">
                     <Mic className="h-5 w-5 text-primary-600" />
@@ -846,403 +851,427 @@ function VoiceBundleModal({
 
           {/* STT Configuration - Only show for STT_LLM_TTS type */}
           {formData.bundle_type === VoiceBundleType.STT_LLM_TTS && (
-          <div className="space-y-4 p-4 bg-blue-50 rounded-lg border border-blue-200">
-            <div className="flex items-center gap-2 mb-2">
-              <MessageSquare className="h-5 w-5 text-blue-600" />
-              <h4 className="text-sm font-semibold text-gray-900 uppercase tracking-wide">Speech-to-Text (STT)</h4>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label htmlFor="stt_provider" className="block text-sm font-medium text-gray-700 mb-1">
-                  Provider *
-                </label>
-                <div className="relative" ref={sttDropdownRef}>
-                  <button
-                    type="button"
-                    onClick={() => setShowSttDropdown(!showSttDropdown)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white text-left flex items-center justify-between"
+            <div className="space-y-4 p-4 bg-blue-50 rounded-lg border border-blue-200">
+              <div className="flex items-center gap-2 mb-2">
+                <MessageSquare className="h-5 w-5 text-blue-600" />
+                <h4 className="text-sm font-semibold text-gray-900 uppercase tracking-wide">Speech-to-Text (STT)</h4>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label htmlFor="stt_provider" className="block text-sm font-medium text-gray-700 mb-1">
+                    Provider *
+                  </label>
+                  <div className="relative" ref={sttDropdownRef}>
+                    <button
+                      type="button"
+                      onClick={() => setShowSttDropdown(!showSttDropdown)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white text-left flex items-center justify-between"
+                    >
+                      <div className="flex items-center gap-2">
+                        {formData.stt_provider && PROVIDER_LOGOS[formData.stt_provider] ? (
+                          <img
+                            src={PROVIDER_LOGOS[formData.stt_provider]!}
+                            alt={PROVIDER_LABELS[formData.stt_provider]}
+                            className="w-5 h-5 object-contain"
+                          />
+                        ) : (
+                          <Brain className="h-5 w-5 text-primary-600" />
+                        )}
+                        <span>{formData.stt_provider ? PROVIDER_LABELS[formData.stt_provider] : 'Select provider'}</span>
+                      </div>
+                      <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${showSttDropdown ? 'transform rotate-180' : ''}`} />
+                    </button>
+                    {showSttDropdown && (
+                      <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-auto">
+                        {configuredProviders.map((provider: ModelProvider) => (
+                          <button
+                            key={provider}
+                            type="button"
+                            onClick={() => {
+                              updateModelOptions('stt', provider)
+                              setShowSttDropdown(false)
+                            }}
+                            className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center gap-2 transition-colors"
+                          >
+                            {PROVIDER_LOGOS[provider] ? (
+                              <img
+                                src={PROVIDER_LOGOS[provider]!}
+                                alt={PROVIDER_LABELS[provider]}
+                                className="w-5 h-5 object-contain"
+                              />
+                            ) : (
+                              <Brain className="h-5 w-5 text-primary-600" />
+                            )}
+                            <span>{PROVIDER_LABELS[provider]}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div>
+                  <label htmlFor="stt_model" className="block text-sm font-medium text-gray-700 mb-1">
+                    Model *
+                  </label>
+                  <select
+                    id="stt_model"
+                    required={formData.bundle_type === VoiceBundleType.STT_LLM_TTS}
+                    value={formData.stt_model || ''}
+                    onChange={(e) => setFormData({ ...formData, stt_model: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    disabled={!formData.stt_provider}
                   >
-                    <div className="flex items-center gap-2">
-                      {formData.stt_provider && PROVIDER_LOGOS[formData.stt_provider] ? (
-                        <img
-                          src={PROVIDER_LOGOS[formData.stt_provider]!}
-                          alt={PROVIDER_LABELS[formData.stt_provider]}
-                          className="w-5 h-5 object-contain"
-                        />
-                      ) : (
-                        <Brain className="h-5 w-5 text-primary-600" />
-                      )}
-                      <span>{formData.stt_provider ? PROVIDER_LABELS[formData.stt_provider] : 'Select provider'}</span>
-                    </div>
-                    <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${showSttDropdown ? 'transform rotate-180' : ''}`} />
-                  </button>
-                  {showSttDropdown && (
-                    <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-auto">
-                      {configuredProviders.map((provider: ModelProvider) => (
-                        <button
-                          key={provider}
-                          type="button"
-                          onClick={() => {
-                            updateModelOptions('stt', provider)
-                            setShowSttDropdown(false)
-                          }}
-                          className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center gap-2 transition-colors"
-                        >
-                          {PROVIDER_LOGOS[provider] ? (
-                            <img
-                              src={PROVIDER_LOGOS[provider]!}
-                              alt={PROVIDER_LABELS[provider]}
-                              className="w-5 h-5 object-contain"
-                            />
-                          ) : (
-                            <Brain className="h-5 w-5 text-primary-600" />
-                          )}
-                          <span>{PROVIDER_LABELS[provider]}</span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
+                    {formData.stt_provider ? (
+                      getModelOptions(formData.stt_provider).stt.map((model: string) => (
+                        <option key={model} value={model}>
+                          {model}
+                        </option>
+                      ))
+                    ) : (
+                      <option value="">Select provider first</option>
+                    )}
+                  </select>
                 </div>
               </div>
-              <div>
-                <label htmlFor="stt_model" className="block text-sm font-medium text-gray-700 mb-1">
-                  Model *
-                </label>
-                <select
-                  id="stt_model"
-                  required={formData.bundle_type === VoiceBundleType.STT_LLM_TTS}
-                  value={formData.stt_model || ''}
-                  onChange={(e) => setFormData({ ...formData, stt_model: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                  disabled={!formData.stt_provider}
-                >
-                  {formData.stt_provider ? (
-                    getModelOptions(formData.stt_provider).stt.map((model: string) => (
-                      <option key={model} value={model}>
-                        {model}
-                      </option>
-                    ))
-                  ) : (
-                    <option value="">Select provider first</option>
-                  )}
-                </select>
-              </div>
             </div>
-          </div>
           )}
 
           {/* LLM Configuration - Only show for STT_LLM_TTS type */}
           {formData.bundle_type === VoiceBundleType.STT_LLM_TTS && (
-          <div className="space-y-4 p-4 bg-purple-50 rounded-lg border border-purple-200">
-            <div className="flex items-center gap-2 mb-2">
-              <Brain className="h-5 w-5 text-purple-600" />
-              <h4 className="text-sm font-semibold text-gray-900 uppercase tracking-wide">Large Language Model (LLM)</h4>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label htmlFor="llm_provider" className="block text-sm font-medium text-gray-700 mb-1">
-                  Provider *
-                </label>
-                <div className="relative" ref={llmDropdownRef}>
-                  <button
-                    type="button"
-                    onClick={() => setShowLlmDropdown(!showLlmDropdown)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white text-left flex items-center justify-between"
+            <div className="space-y-4 p-4 bg-purple-50 rounded-lg border border-purple-200">
+              <div className="flex items-center gap-2 mb-2">
+                <Brain className="h-5 w-5 text-purple-600" />
+                <h4 className="text-sm font-semibold text-gray-900 uppercase tracking-wide">Large Language Model (LLM)</h4>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label htmlFor="llm_provider" className="block text-sm font-medium text-gray-700 mb-1">
+                    Provider *
+                  </label>
+                  <div className="relative" ref={llmDropdownRef}>
+                    <button
+                      type="button"
+                      onClick={() => setShowLlmDropdown(!showLlmDropdown)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white text-left flex items-center justify-between"
+                    >
+                      <div className="flex items-center gap-2">
+                        {formData.llm_provider && PROVIDER_LOGOS[formData.llm_provider] ? (
+                          <img
+                            src={PROVIDER_LOGOS[formData.llm_provider]!}
+                            alt={PROVIDER_LABELS[formData.llm_provider]}
+                            className="w-5 h-5 object-contain"
+                          />
+                        ) : (
+                          <Brain className="h-5 w-5 text-primary-600" />
+                        )}
+                        <span>{formData.llm_provider ? PROVIDER_LABELS[formData.llm_provider] : 'Select provider'}</span>
+                      </div>
+                      <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${showLlmDropdown ? 'transform rotate-180' : ''}`} />
+                    </button>
+                    {showLlmDropdown && (
+                      <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-auto">
+                        {configuredProviders.map((provider: ModelProvider) => (
+                          <button
+                            key={provider}
+                            type="button"
+                            onClick={() => {
+                              updateModelOptions('llm', provider)
+                              setShowLlmDropdown(false)
+                            }}
+                            className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center gap-2 transition-colors"
+                          >
+                            {PROVIDER_LOGOS[provider] ? (
+                              <img
+                                src={PROVIDER_LOGOS[provider]!}
+                                alt={PROVIDER_LABELS[provider]}
+                                className="w-5 h-5 object-contain"
+                              />
+                            ) : (
+                              <Brain className="h-5 w-5 text-primary-600" />
+                            )}
+                            <span>{PROVIDER_LABELS[provider]}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div>
+                  <label htmlFor="llm_model" className="block text-sm font-medium text-gray-700 mb-1">
+                    Model *
+                  </label>
+                  <select
+                    id="llm_model"
+                    required={formData.bundle_type === VoiceBundleType.STT_LLM_TTS}
+                    value={formData.llm_model || ''}
+                    onChange={(e) => setFormData({ ...formData, llm_model: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    disabled={!formData.llm_provider}
                   >
-                    <div className="flex items-center gap-2">
-                      {formData.llm_provider && PROVIDER_LOGOS[formData.llm_provider] ? (
-                        <img
-                          src={PROVIDER_LOGOS[formData.llm_provider]!}
-                          alt={PROVIDER_LABELS[formData.llm_provider]}
-                          className="w-5 h-5 object-contain"
-                        />
-                      ) : (
-                        <Brain className="h-5 w-5 text-primary-600" />
-                      )}
-                      <span>{formData.llm_provider ? PROVIDER_LABELS[formData.llm_provider] : 'Select provider'}</span>
-                    </div>
-                    <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${showLlmDropdown ? 'transform rotate-180' : ''}`} />
-                  </button>
-                  {showLlmDropdown && (
-                    <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-auto">
-                      {configuredProviders.map((provider: ModelProvider) => (
-                        <button
-                          key={provider}
-                          type="button"
-                          onClick={() => {
-                            updateModelOptions('llm', provider)
-                            setShowLlmDropdown(false)
-                          }}
-                          className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center gap-2 transition-colors"
-                        >
-                          {PROVIDER_LOGOS[provider] ? (
-                            <img
-                              src={PROVIDER_LOGOS[provider]!}
-                              alt={PROVIDER_LABELS[provider]}
-                              className="w-5 h-5 object-contain"
-                            />
-                          ) : (
-                            <Brain className="h-5 w-5 text-primary-600" />
-                          )}
-                          <span>{PROVIDER_LABELS[provider]}</span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
+                    {formData.llm_provider ? (
+                      getModelOptions(formData.llm_provider).llm.map((model: string) => (
+                        <option key={model} value={model}>
+                          {model}
+                        </option>
+                      ))
+                    ) : (
+                      <option value="">Select provider first</option>
+                    )}
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="llm_temperature" className="block text-sm font-medium text-gray-700 mb-1">
+                    Temperature (0-2)
+                  </label>
+                  <input
+                    id="llm_temperature"
+                    type="number"
+                    min="0"
+                    max="2"
+                    step="0.1"
+                    value={formData.llm_temperature || 0.7}
+                    onChange={(e) => setFormData({ ...formData, llm_temperature: parseFloat(e.target.value) || 0.7 })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="llm_max_tokens" className="block text-sm font-medium text-gray-700 mb-1">
+                    Max Tokens (Optional)
+                  </label>
+                  <input
+                    id="llm_max_tokens"
+                    type="number"
+                    min="1"
+                    value={formData.llm_max_tokens || ''}
+                    onChange={(e) => setFormData({ ...formData, llm_max_tokens: e.target.value ? parseInt(e.target.value) : null })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    placeholder="Leave empty for default"
+                  />
                 </div>
               </div>
-              <div>
-                <label htmlFor="llm_model" className="block text-sm font-medium text-gray-700 mb-1">
-                  Model *
-                </label>
-                <select
-                  id="llm_model"
-                  required={formData.bundle_type === VoiceBundleType.STT_LLM_TTS}
-                  value={formData.llm_model || ''}
-                  onChange={(e) => setFormData({ ...formData, llm_model: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                  disabled={!formData.llm_provider}
-                >
-                  {formData.llm_provider ? (
-                    getModelOptions(formData.llm_provider).llm.map((model: string) => (
-                      <option key={model} value={model}>
-                        {model}
-                      </option>
-                    ))
-                  ) : (
-                    <option value="">Select provider first</option>
-                  )}
-                </select>
-              </div>
-              <div>
-                <label htmlFor="llm_temperature" className="block text-sm font-medium text-gray-700 mb-1">
-                  Temperature (0-2)
-                </label>
-                <input
-                  id="llm_temperature"
-                  type="number"
-                  min="0"
-                  max="2"
-                  step="0.1"
-                  value={formData.llm_temperature || 0.7}
-                  onChange={(e) => setFormData({ ...formData, llm_temperature: parseFloat(e.target.value) || 0.7 })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                />
-              </div>
-              <div>
-                <label htmlFor="llm_max_tokens" className="block text-sm font-medium text-gray-700 mb-1">
-                  Max Tokens (Optional)
-                </label>
-                <input
-                  id="llm_max_tokens"
-                  type="number"
-                  min="1"
-                  value={formData.llm_max_tokens || ''}
-                  onChange={(e) => setFormData({ ...formData, llm_max_tokens: e.target.value ? parseInt(e.target.value) : null })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                  placeholder="Leave empty for default"
-                />
-              </div>
             </div>
-          </div>
           )}
 
           {/* TTS Configuration - Only show for STT_LLM_TTS type */}
           {formData.bundle_type === VoiceBundleType.STT_LLM_TTS && (
-          <div className="space-y-4 p-4 bg-green-50 rounded-lg border border-green-200">
-            <div className="flex items-center gap-2 mb-2">
-              <Volume2 className="h-5 w-5 text-green-600" />
-              <h4 className="text-sm font-semibold text-gray-900 uppercase tracking-wide">Text-to-Speech (TTS)</h4>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label htmlFor="tts_provider" className="block text-sm font-medium text-gray-700 mb-1">
-                  Provider *
-                </label>
-                <div className="relative" ref={ttsDropdownRef}>
-                  <button
-                    type="button"
-                    onClick={() => setShowTtsDropdown(!showTtsDropdown)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white text-left flex items-center justify-between"
-                  >
-                    <div className="flex items-center gap-2">
-                      {formData.tts_provider && PROVIDER_LOGOS[formData.tts_provider] ? (
-                        <img
-                          src={PROVIDER_LOGOS[formData.tts_provider]!}
-                          alt={PROVIDER_LABELS[formData.tts_provider]}
-                          className="w-5 h-5 object-contain"
-                        />
-                      ) : (
-                        <Brain className="h-5 w-5 text-primary-600" />
-                      )}
-                      <span>{formData.tts_provider ? PROVIDER_LABELS[formData.tts_provider] : 'Select provider'}</span>
-                    </div>
-                    <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${showTtsDropdown ? 'transform rotate-180' : ''}`} />
-                  </button>
-                  {showTtsDropdown && (
-                    <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-auto">
-                      {configuredProviders.map((provider: ModelProvider) => (
-                        <button
-                          key={provider}
-                          type="button"
-                          onClick={() => {
-                            updateModelOptions('tts', provider)
-                            setShowTtsDropdown(false)
-                          }}
-                          className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center gap-2 transition-colors"
-                        >
-                          {PROVIDER_LOGOS[provider] ? (
-                            <img
-                              src={PROVIDER_LOGOS[provider]!}
-                              alt={PROVIDER_LABELS[provider]}
-                              className="w-5 h-5 object-contain"
-                            />
-                          ) : (
-                            <Brain className="h-5 w-5 text-primary-600" />
-                          )}
-                          <span>{PROVIDER_LABELS[provider]}</span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
+            <div className="space-y-4 p-4 bg-green-50 rounded-lg border border-green-200">
+              <div className="flex items-center gap-2 mb-2">
+                <Volume2 className="h-5 w-5 text-green-600" />
+                <h4 className="text-sm font-semibold text-gray-900 uppercase tracking-wide">Text-to-Speech (TTS)</h4>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label htmlFor="tts_provider" className="block text-sm font-medium text-gray-700 mb-1">
+                    Provider *
+                  </label>
+                  <div className="relative" ref={ttsDropdownRef}>
+                    <button
+                      type="button"
+                      onClick={() => setShowTtsDropdown(!showTtsDropdown)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white text-left flex items-center justify-between"
+                    >
+                      <div className="flex items-center gap-2">
+                        {formData.tts_provider && PROVIDER_LOGOS[formData.tts_provider] ? (
+                          <img
+                            src={PROVIDER_LOGOS[formData.tts_provider]!}
+                            alt={PROVIDER_LABELS[formData.tts_provider]}
+                            className="w-5 h-5 object-contain"
+                          />
+                        ) : (
+                          <Brain className="h-5 w-5 text-primary-600" />
+                        )}
+                        <span>{formData.tts_provider ? PROVIDER_LABELS[formData.tts_provider] : 'Select provider'}</span>
+                      </div>
+                      <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${showTtsDropdown ? 'transform rotate-180' : ''}`} />
+                    </button>
+                    {showTtsDropdown && (
+                      <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-auto">
+                        {configuredProviders.map((provider: ModelProvider) => (
+                          <button
+                            key={provider}
+                            type="button"
+                            onClick={() => {
+                              updateModelOptions('tts', provider)
+                              setShowTtsDropdown(false)
+                            }}
+                            className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center gap-2 transition-colors"
+                          >
+                            {PROVIDER_LOGOS[provider] ? (
+                              <img
+                                src={PROVIDER_LOGOS[provider]!}
+                                alt={PROVIDER_LABELS[provider]}
+                                className="w-5 h-5 object-contain"
+                              />
+                            ) : (
+                              <Brain className="h-5 w-5 text-primary-600" />
+                            )}
+                            <span>{PROVIDER_LABELS[provider]}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
-              <div>
-                <label htmlFor="tts_model" className="block text-sm font-medium text-gray-700 mb-1">
-                  Model *
-                </label>
-                <select
-                  id="tts_model"
-                  required={formData.bundle_type === VoiceBundleType.STT_LLM_TTS}
-                  value={formData.tts_model || ''}
-                  onChange={(e) => setFormData({ ...formData, tts_model: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                  disabled={!formData.tts_provider}
-                >
-                  {formData.tts_provider ? (
-                    getModelOptions(formData.tts_provider).tts.map((model: string) => (
-                      <option key={model} value={model}>
-                        {model}
-                      </option>
-                    ))
-                  ) : (
-                    <option value="">Select provider first</option>
-                  )}
-                </select>
-              </div>
-              <div>
-                <label htmlFor="tts_voice" className="block text-sm font-medium text-gray-700 mb-1">
-                  Voice (Optional)
-                </label>
-                <input
-                  id="tts_voice"
-                  type="text"
-                  value={formData.tts_voice || ''}
-                  onChange={(e) => setFormData({ ...formData, tts_voice: e.target.value || null })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                  placeholder="e.g., alloy, echo, fable"
-                />
+                <div>
+                  <label htmlFor="tts_model" className="block text-sm font-medium text-gray-700 mb-1">
+                    Model *
+                  </label>
+                  <select
+                    id="tts_model"
+                    required={formData.bundle_type === VoiceBundleType.STT_LLM_TTS}
+                    value={formData.tts_model || ''}
+                    onChange={(e) => setFormData({ ...formData, tts_model: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    disabled={!formData.tts_provider}
+                  >
+                    {formData.tts_provider ? (
+                      getModelOptions(formData.tts_provider).tts.map((model: string) => (
+                        <option key={model} value={model}>
+                          {model}
+                        </option>
+                      ))
+                    ) : (
+                      <option value="">Select provider first</option>
+                    )}
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="tts_voice" className="block text-sm font-medium text-gray-700 mb-1">
+                    Voice (Optional)
+                  </label>
+                  <input
+                    id="tts_voice"
+                    type="text"
+                    value={formData.tts_voice || ''}
+                    onChange={(e) => setFormData({ ...formData, tts_voice: e.target.value || null })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    placeholder="e.g., alloy, echo, fable"
+                  />
+                </div>
+                {formData.tts_provider === ModelProvider.MURF && (
+                  <div>
+                    <label htmlFor="multi_native_locale" className="block text-sm font-medium text-gray-700 mb-1">
+                      Multi Native Locale (Murf Optional)
+                    </label>
+                    <input
+                      id="multi_native_locale"
+                      type="text"
+                      value={formData.tts_config?.multi_native_locale || ''}
+                      onChange={(e) => setFormData({
+                        ...formData,
+                        tts_config: {
+                          ...(formData.tts_config || {}),
+                          multi_native_locale: e.target.value || undefined
+                        }
+                      })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                      placeholder="e.g., en-US, en-UK, es-ES"
+                    />
+                    <p className="mt-1 text-xs text-gray-500">
+                      Required for Murf Gen 2 models.
+                    </p>
+                  </div>
+                )}
               </div>
             </div>
-          </div>
           )}
 
           {/* S2S Configuration - Only show for S2S type */}
           {formData.bundle_type === VoiceBundleType.S2S && (
-          <div className="space-y-4 p-4 bg-orange-50 rounded-lg border border-orange-200">
-            <div className="flex items-center gap-2 mb-2">
-              <Mic className="h-5 w-5 text-orange-600" />
-              <h4 className="text-sm font-semibold text-gray-900 uppercase tracking-wide">Speech-to-Speech (S2S)</h4>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label htmlFor="s2s_provider" className="block text-sm font-medium text-gray-700 mb-1">
-                  Provider *
-                </label>
-                <div className="relative" ref={s2sDropdownRef}>
-                  <button
-                    type="button"
-                    onClick={() => setShowS2sDropdown(!showS2sDropdown)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white text-left flex items-center justify-between"
-                  >
-                    <div className="flex items-center gap-2">
-                      {formData.s2s_provider && PROVIDER_LOGOS[formData.s2s_provider] ? (
-                        <img
-                          src={PROVIDER_LOGOS[formData.s2s_provider]!}
-                          alt={PROVIDER_LABELS[formData.s2s_provider]}
-                          className="w-5 h-5 object-contain"
-                        />
-                      ) : (
-                        <Brain className="h-5 w-5 text-primary-600" />
-                      )}
-                      <span>{formData.s2s_provider ? PROVIDER_LABELS[formData.s2s_provider] : 'Select provider'}</span>
-                    </div>
-                    <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${showS2sDropdown ? 'transform rotate-180' : ''}`} />
-                  </button>
-                  {showS2sDropdown && (
-                    <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-auto">
-                      {configuredProviders.map((provider: ModelProvider) => (
-                        <button
-                          key={provider}
-                          type="button"
-                          onClick={() => {
-                            updateModelOptions('s2s', provider)
-                            setShowS2sDropdown(false)
-                          }}
-                          className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center gap-2 transition-colors"
-                        >
-                          {PROVIDER_LOGOS[provider] ? (
-                            <img
-                              src={PROVIDER_LOGOS[provider]!}
-                              alt={PROVIDER_LABELS[provider]}
-                              className="w-5 h-5 object-contain"
-                            />
-                          ) : (
-                            <Brain className="h-5 w-5 text-primary-600" />
-                          )}
-                          <span>{PROVIDER_LABELS[provider]}</span>
-                        </button>
-                      ))}
-                    </div>
+            <div className="space-y-4 p-4 bg-orange-50 rounded-lg border border-orange-200">
+              <div className="flex items-center gap-2 mb-2">
+                <Mic className="h-5 w-5 text-orange-600" />
+                <h4 className="text-sm font-semibold text-gray-900 uppercase tracking-wide">Speech-to-Speech (S2S)</h4>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label htmlFor="s2s_provider" className="block text-sm font-medium text-gray-700 mb-1">
+                    Provider *
+                  </label>
+                  <div className="relative" ref={s2sDropdownRef}>
+                    <button
+                      type="button"
+                      onClick={() => setShowS2sDropdown(!showS2sDropdown)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white text-left flex items-center justify-between"
+                    >
+                      <div className="flex items-center gap-2">
+                        {formData.s2s_provider && PROVIDER_LOGOS[formData.s2s_provider] ? (
+                          <img
+                            src={PROVIDER_LOGOS[formData.s2s_provider]!}
+                            alt={PROVIDER_LABELS[formData.s2s_provider]}
+                            className="w-5 h-5 object-contain"
+                          />
+                        ) : (
+                          <Brain className="h-5 w-5 text-primary-600" />
+                        )}
+                        <span>{formData.s2s_provider ? PROVIDER_LABELS[formData.s2s_provider] : 'Select provider'}</span>
+                      </div>
+                      <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${showS2sDropdown ? 'transform rotate-180' : ''}`} />
+                    </button>
+                    {showS2sDropdown && (
+                      <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-auto">
+                        {configuredProviders.map((provider: ModelProvider) => (
+                          <button
+                            key={provider}
+                            type="button"
+                            onClick={() => {
+                              updateModelOptions('s2s', provider)
+                              setShowS2sDropdown(false)
+                            }}
+                            className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center gap-2 transition-colors"
+                          >
+                            {PROVIDER_LOGOS[provider] ? (
+                              <img
+                                src={PROVIDER_LOGOS[provider]!}
+                                alt={PROVIDER_LABELS[provider]}
+                                className="w-5 h-5 object-contain"
+                              />
+                            ) : (
+                              <Brain className="h-5 w-5 text-primary-600" />
+                            )}
+                            <span>{PROVIDER_LABELS[provider]}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div>
+                  <label htmlFor="s2s_model" className="block text-sm font-medium text-gray-700 mb-1">
+                    Model *
+                  </label>
+                  {formData.s2s_provider ? (
+                    getModelOptions(formData.s2s_provider).s2s.length > 0 ? (
+                      <select
+                        id="s2s_model"
+                        required={formData.bundle_type === VoiceBundleType.S2S}
+                        value={formData.s2s_model || ''}
+                        onChange={(e) => setFormData({ ...formData, s2s_model: e.target.value })}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                      >
+                        {getModelOptions(formData.s2s_provider).s2s.map((model: string) => (
+                          <option key={model} value={model}>
+                            {model}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <div className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-500 text-sm">
+                        No S2S models available for {PROVIDER_LABELS[formData.s2s_provider]}
+                      </div>
+                    )
+                  ) : (
+                    <select
+                      id="s2s_model"
+                      disabled
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-500"
+                    >
+                      <option value="">Select provider first</option>
+                    </select>
                   )}
                 </div>
               </div>
-              <div>
-                <label htmlFor="s2s_model" className="block text-sm font-medium text-gray-700 mb-1">
-                  Model *
-                </label>
-                {formData.s2s_provider ? (
-                  getModelOptions(formData.s2s_provider).s2s.length > 0 ? (
-                    <select
-                      id="s2s_model"
-                      required={formData.bundle_type === VoiceBundleType.S2S}
-                      value={formData.s2s_model || ''}
-                      onChange={(e) => setFormData({ ...formData, s2s_model: e.target.value })}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                    >
-                      {getModelOptions(formData.s2s_provider).s2s.map((model: string) => (
-                        <option key={model} value={model}>
-                          {model}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <div className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-500 text-sm">
-                      No S2S models available for {PROVIDER_LABELS[formData.s2s_provider]}
-                    </div>
-                  )
-                ) : (
-                  <select
-                    id="s2s_model"
-                    disabled
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-500"
-                  >
-                    <option value="">Select provider first</option>
-                  </select>
-                )}
-              </div>
             </div>
-          </div>
           )}
 
           {/* Form Actions */}

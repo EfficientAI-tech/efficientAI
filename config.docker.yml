@@ -39,11 +39,11 @@ storage:
 # S3 Configuration (for data sources integration)
 # Copy your S3 settings from config.yml here
 s3:
-  enabled: true 
-  bucket_name: "your-bucket-name"
+  enabled: true
+  bucket_name: "voiceai-evals-test"
   region: "us-east-1"
-  access_key_id: "YOUR_ACCESS_KEY_ID"
-  secret_access_key: "YOUR_SECRET_ACCESS_KEY"
+  access_key_id: ""
+  secret_access_key: ""
   endpoint_url: null
   prefix: "audio/"
 

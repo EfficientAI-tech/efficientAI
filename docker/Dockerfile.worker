@@ -1,8 +1,11 @@
 FROM python:3.11-slim
 
-# Install system dependencies (git needed for torch.hub clone)
+# Install system dependencies (git needed for torch.hub clone, build tools for praat-parselmouth)
 RUN apt-get update && apt-get install -y \
     git \
+    build-essential \
+    cmake \
+    ninja-build \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv
@@ -26,21 +29,10 @@ RUN uv pip install --system -e ".[qualitative-voice]"
 # ============================================================
 
 # 1. UTMOS MOS predictor (torch.hub -> /root/.cache/torch/hub/)
-RUN python -c "\
-import torch; \
-model = torch.hub.load('tarepan/SpeechMOS:v1.2.0', 'utmos22_strong', trust_repo=True); \
-print('UTMOS MOS predictor cached successfully'); \
-"
+RUN python -c "import torch; model = torch.hub.load('tarepan/SpeechMOS:v1.2.0', 'utmos22_strong', trust_repo=True); print('UTMOS MOS predictor cached successfully')"
 
 # 2. Emotion classifier + Valence/Arousal model (HuggingFace -> /root/.cache/huggingface/hub/)
-RUN python -c "\
-from transformers import pipeline, AutoProcessor, AutoModelForAudioClassification; \
-pipe = pipeline('audio-classification', model='ehcalabres/wav2vec2-lg-xlsr-en-speech-emotion-recognition'); \
-print('Emotion classifier cached successfully'); \
-proc = AutoProcessor.from_pretrained('audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim'); \
-mdl = AutoModelForAudioClassification.from_pretrained('audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim'); \
-print('Valence/arousal model cached successfully'); \
-"
+RUN python -c "from transformers import pipeline, AutoProcessor, AutoModelForAudioClassification; pipe = pipeline('audio-classification', model='ehcalabres/wav2vec2-lg-xlsr-en-speech-emotion-recognition'); print('Emotion classifier cached successfully'); proc = AutoProcessor.from_pretrained('audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim'); mdl = AutoModelForAudioClassification.from_pretrained('audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim'); print('Valence/arousal model cached successfully')"
 
 # Create uploads directory
 RUN mkdir -p /app/uploads

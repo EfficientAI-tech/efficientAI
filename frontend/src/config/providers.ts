@@ -52,6 +52,11 @@ export const MODEL_PROVIDER_CONFIG: Record<ModelProvider, ProviderMetadata> = {
     logo: '/elevenlabs.jpg',
     description: 'ElevenLabs TTS',
   },
+  [ModelProvider.MURF]: {
+    label: 'Murf',
+    logo: null,
+    description: 'Murf TTS',
+  },
   [ModelProvider.CUSTOM]: {
     label: 'Custom',
     logo: null,
@@ -98,23 +103,29 @@ export const INTEGRATION_PLATFORM_CONFIG: Record<IntegrationPlatform, Integratio
     description: 'Deepgram STT for speech recognition',
     modelProvider: ModelProvider.DEEPGRAM,
   },
+  [IntegrationPlatform.MURF]: {
+    label: 'Murf',
+    logo: null,
+    description: 'Murf TTS for voice synthesis',
+    modelProvider: ModelProvider.MURF,
+  },
 }
 
 // Helper functions
-export const getProviderLabel = (provider: ModelProvider): string => 
+export const getProviderLabel = (provider: ModelProvider): string =>
   MODEL_PROVIDER_CONFIG[provider]?.label ?? provider
 
-export const getProviderLogo = (provider: ModelProvider): string | null => 
+export const getProviderLogo = (provider: ModelProvider): string | null =>
   MODEL_PROVIDER_CONFIG[provider]?.logo ?? null
 
-export const getProviderDescription = (provider: ModelProvider): string => 
+export const getProviderDescription = (provider: ModelProvider): string =>
   MODEL_PROVIDER_CONFIG[provider]?.description ?? ''
 
-export const getIntegrationPlatformLabel = (platform: IntegrationPlatform): string => 
+export const getIntegrationPlatformLabel = (platform: IntegrationPlatform): string =>
   INTEGRATION_PLATFORM_CONFIG[platform]?.label ?? platform
 
-export const getIntegrationPlatformLogo = (platform: IntegrationPlatform): string | null => 
+export const getIntegrationPlatformLogo = (platform: IntegrationPlatform): string | null =>
   INTEGRATION_PLATFORM_CONFIG[platform]?.logo ?? null
 
-export const mapIntegrationToModelProvider = (platform: IntegrationPlatform): ModelProvider | null => 
+export const mapIntegrationToModelProvider = (platform: IntegrationPlatform): ModelProvider | null =>
   INTEGRATION_PLATFORM_CONFIG[platform]?.modelProvider ?? null

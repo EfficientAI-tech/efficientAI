@@ -96,6 +96,7 @@ class IntegrationPlatform(str, enum.Enum):
     CARTESIA = "cartesia"
     ELEVENLABS = "elevenlabs"
     DEEPGRAM = "deepgram"
+    MURF = "murf"
 
 class ModelProvider(str, enum.Enum):
     """Model provider enumeration for extensibility."""
@@ -107,6 +108,7 @@ class ModelProvider(str, enum.Enum):
     DEEPGRAM = "deepgram"
     CARTESIA = "cartesia"
     ELEVENLABS = "elevenlabs"
+    MURF = "murf"
     CUSTOM = "custom"
 
 class VoiceBundleType(str, enum.Enum):

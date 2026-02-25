@@ -15,6 +15,7 @@ const PROVIDER_LABELS: Record<ModelProvider, string> = {
   [ModelProvider.DEEPGRAM]: 'Deepgram',
   [ModelProvider.CARTESIA]: 'Cartesia',
   [ModelProvider.ELEVENLABS]: 'ElevenLabs',
+  [ModelProvider.MURF]: 'Murf',
   [ModelProvider.CUSTOM]: 'Custom',
 }
 
@@ -27,6 +28,7 @@ const PROVIDER_LOGOS: Record<ModelProvider, string | null> = {
   [ModelProvider.DEEPGRAM]: '/deepgram.png',
   [ModelProvider.CARTESIA]: '/cartesia.jpg',
   [ModelProvider.ELEVENLABS]: '/elevenlabs.jpg',
+  [ModelProvider.MURF]: null,
   [ModelProvider.CUSTOM]: null,
 }
 
@@ -39,6 +41,7 @@ const PROVIDER_DESCRIPTIONS: Record<ModelProvider, string> = {
   [ModelProvider.DEEPGRAM]: 'Deepgram STT',
   [ModelProvider.CARTESIA]: 'Cartesia TTS',
   [ModelProvider.ELEVENLABS]: 'ElevenLabs TTS',
+  [ModelProvider.MURF]: 'Murf TTS',
   [ModelProvider.CUSTOM]: 'Custom AI provider',
 }
 
@@ -52,7 +55,7 @@ export default function Integrations() {
   const [integrationType, setIntegrationType] = useState<IntegrationType>(null)
   const [selectedIntegration, setSelectedIntegration] = useState<Integration | null>(null)
   const [selectedAIProvider, setSelectedAIProvider] = useState<AIProvider | null>(null)
-  const [selectedPlatform, setSelectedPlatform] = useState<'retell' | 'vapi' | 'cartesia' | 'elevenlabs' | 'deepgram' | null>(null)
+  const [selectedPlatform, setSelectedPlatform] = useState<'retell' | 'vapi' | 'cartesia' | 'elevenlabs' | 'deepgram' | 'murf' | null>(null)
   const [selectedProvider, setSelectedProvider] = useState<ModelProvider | null>(null)
   const [showProviderDropdown, setShowProviderDropdown] = useState(false)
   const [showPlatformDropdown, setShowPlatformDropdown] = useState(false)
@@ -216,7 +219,7 @@ export default function Integrations() {
   const handleEdit = (integration: Integration) => {
     setIntegrationType('voice_platform')
     setSelectedIntegration(integration)
-    setSelectedPlatform(integration.platform as 'retell' | 'vapi' | 'cartesia' | 'elevenlabs' | 'deepgram')
+    setSelectedPlatform(integration.platform as 'retell' | 'vapi' | 'cartesia' | 'elevenlabs' | 'deepgram' | 'murf')
     setName(integration.name || '')
     setApiKey('') // Don't pre-fill API key for security
     setPublicKey(integration.public_key || '')
@@ -354,6 +357,12 @@ export default function Integrations() {
       name: 'Deepgram',
       description: 'Connect your Deepgram voice AI agents',
       image: '/deepgram.png',
+    },
+    {
+      id: IntegrationPlatform.MURF,
+      name: 'Murf',
+      description: 'Connect your Murf voice AI agents',
+      image: null,
     },
   ]
 
@@ -660,7 +669,7 @@ export default function Integrations() {
                               key={platform.id}
                               type="button"
                               onClick={() => {
-                                setSelectedPlatform(platform.id as 'retell' | 'vapi' | 'cartesia' | 'elevenlabs' | 'deepgram')
+                                setSelectedPlatform(platform.id as 'retell' | 'vapi' | 'cartesia' | 'elevenlabs' | 'deepgram' | 'murf')
                                 setShowPlatformDropdown(false)
                               }}
                               className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center gap-2 transition-colors"

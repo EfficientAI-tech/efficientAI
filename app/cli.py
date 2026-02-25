@@ -228,7 +228,7 @@ def start(config: str, host: Optional[str], port: Optional[int], build_frontend:
             if not (frontend_dir / "node_modules").exists():
                 click.echo("📦 Installing frontend dependencies...")
                 subprocess.run(
-                    ["npm", "install"],
+                    ["npm", "install", "--legacy-peer-deps"],
                     cwd=frontend_dir,
                     check=True,
                     capture_output=True,
@@ -493,7 +493,7 @@ def start_all(config: str, host: Optional[str], port: Optional[int], build_front
             try:
                 if not (frontend_dir / "node_modules").exists():
                     click.echo("   Installing frontend dependencies...")
-                    subprocess.run(["npm", "install"], cwd=frontend_dir, check=True, capture_output=True)
+                    subprocess.run(["npm", "install", "--legacy-peer-deps"], cwd=frontend_dir, check=True, capture_output=True)
                 subprocess.run(["npm", "run", "build"], cwd=frontend_dir, check=True, capture_output=True)
                 click.echo("✅ Frontend built successfully")
             except subprocess.CalledProcessError as e:
