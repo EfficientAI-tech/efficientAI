@@ -36,8 +36,12 @@ from efficientai.runner.utils import create_transport
 from efficientai.serializers.protobuf import ProtobufFrameSerializer
 from efficientai.services.cartesia.tts import CartesiaTTSService
 from efficientai.services.deepgram.stt import DeepgramSTTService
+from efficientai.services.elevenlabs.stt import ElevenLabsRealtimeSTTService
 from efficientai.services.elevenlabs.tts import ElevenLabsHttpTTSService
+from efficientai.services.google.llm import GoogleLLMService
 from efficientai.services.openai.llm import OpenAILLMService
+from efficientai.services.openai.stt import OpenAISTTService
+from efficientai.services.openai.tts import OpenAITTSService
 from efficientai.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from efficientai.transports.base_transport import BaseTransport, TransportParams
 from efficientai.turns.bot.turn_analyzer_bot_turn_start_strategy import TurnAnalyzerBotTurnStartStrategy
@@ -70,17 +74,25 @@ STT_PROVIDERS = {
             **({"model": model} if model else {}),
         ),
     },
-    # To add a new STT provider, e.g. "assemblyai":
-    # "assemblyai": {
-    #     "env_key": "ASSEMBLYAI_API_KEY",
-    #     "default_model": None,
-    #     "factory": lambda api_key, model: AssemblyAISTTService(
-    #         api_key=api_key,
-    #     ),
-    # },
+    "openai": {
+        "env_key": "OPENAI_API_KEY",
+        "default_model": "gpt-4o-transcribe",
+        "factory": lambda api_key, model: OpenAISTTService(
+            api_key=api_key,
+            **({"model": model} if model else {}),
+        ),
+    },
+    "elevenlabs": {
+        "env_key": "ELEVENLABS_API_KEY",
+        "default_model": "scribe_v2_realtime",
+        "factory": lambda api_key, model: ElevenLabsRealtimeSTTService(
+            api_key=api_key,
+            **({"model": model} if model else {}),
+        ),
+    },
 }
 
-DEFAULT_STT_PROVIDER = "deepgram"
+DEFAULT_STT_PROVIDER = None
 
 # ---- TTS Providers --------------------------------------------------------
 TTS_PROVIDERS = {
@@ -104,6 +116,16 @@ TTS_PROVIDERS = {
             aiohttp_session=__import__("aiohttp").ClientSession(),
         ),
     },
+    "openai": {
+        "env_key": "OPENAI_API_KEY",
+        "default_voice": "alloy",
+        "default_model": "gpt-4o-mini-tts",
+        "factory": lambda api_key, voice_id, model: OpenAITTSService(
+            api_key=api_key,
+            voice=voice_id,
+            model=model,
+        ),
+    },
     # To add a new TTS provider, e.g. "azure":
     # "azure": {
     #     "env_key": "AZURE_SPEECH_API_KEY",
@@ -116,14 +138,44 @@ TTS_PROVIDERS = {
     # },
 }
 
-DEFAULT_TTS_PROVIDER = "cartesia"
+DEFAULT_TTS_PROVIDER = None
+
+# ---- LLM Providers --------------------------------------------------------
+LLM_PROVIDERS = {
+    "openai": {
+        "env_key": "OPENAI_API_KEY",
+        "default_model": "gpt-4.1",
+        "factory": lambda api_key, model: OpenAILLMService(
+            api_key=api_key,
+            model=model,
+        ),
+    },
+    "google": {
+        "env_key": "GOOGLE_API_KEY",
+        "default_model": "gemini-2.5-flash",
+        "factory": lambda api_key, model: GoogleLLMService(
+            api_key=api_key,
+            model=model,
+        ),
+    },
+}
+
+DEFAULT_LLM_PROVIDER = None
 
 
-def _resolve_provider(voice_bundle, attr: str, default: str) -> str:
-    """Return the normalised provider name from a voice bundle attribute, falling back to *default*."""
+def _resolve_provider(voice_bundle, attr: str, default: str | None = None) -> str:
+    """Return the normalised provider name from a voice bundle attribute.
+
+    Raises ValueError when the voice bundle has no provider set and no default is given.
+    """
     raw = getattr(voice_bundle, attr, None)
     if raw is None:
-        return default
+        if default is not None:
+            return default
+        raise ValueError(
+            f"Voice bundle is missing required field '{attr}'. "
+            f"Please configure the provider in the voice bundle settings."
+        )
     value = raw.value if hasattr(raw, "value") else str(raw)
     return value.lower()
 
@@ -262,10 +314,19 @@ async def run_voice_bundle_fastapi(
             f"Unsupported TTS provider '{tts_provider_value}'. Supported providers: {supported}"
         )
 
+    # Resolve LLM provider config from the registry
+    llm_provider_value = _resolve_provider(voice_bundle, "llm_provider", DEFAULT_LLM_PROVIDER)
+    llm_cfg = LLM_PROVIDERS.get(llm_provider_value)
+    if llm_cfg is None:
+        supported = ", ".join(sorted(LLM_PROVIDERS.keys()))
+        raise ValueError(
+            f"Unsupported LLM provider '{llm_provider_value}'. Supported providers: {supported}"
+        )
+
     # Resolve API keys: prefer provided values, otherwise fall back to environment
     stt_api_key = stt_api_key or os.getenv(stt_cfg["env_key"])
     tts_api_key = tts_api_key or os.getenv(tts_cfg["env_key"])
-    llm_api_key = llm_api_key or os.getenv("OPENAI_API_KEY")
+    llm_api_key = llm_api_key or os.getenv(llm_cfg["env_key"])
 
     missing = []
     if not stt_api_key:
@@ -273,7 +334,7 @@ async def run_voice_bundle_fastapi(
     if not tts_api_key:
         missing.append(tts_cfg["env_key"])
     if not llm_api_key:
-        missing.append("OPENAI_API_KEY")
+        missing.append(llm_cfg["env_key"])
     if missing:
         raise ValueError(f"Missing required API keys for voice bundle: {', '.join(missing)}")
 
@@ -298,8 +359,8 @@ async def run_voice_bundle_fastapi(
         tts_model = getattr(voice_bundle, "tts_model", None) or tts_cfg["default_model"]
         tts = tts_cfg["factory"](api_key=tts_api_key, voice_id=tts_voice_id, model=tts_model)
 
-        llm_model = getattr(voice_bundle, "llm_model", None) or "gpt-4.1"
-        llm = OpenAILLMService(api_key=llm_api_key, model=llm_model)
+        llm_model = getattr(voice_bundle, "llm_model", None) or llm_cfg["default_model"]
+        llm = llm_cfg["factory"](api_key=llm_api_key, model=llm_model)
 
         # Build context with provided system instruction or a default
         messages = [

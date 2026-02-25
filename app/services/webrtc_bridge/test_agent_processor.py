@@ -16,11 +16,30 @@ from loguru import logger
 # TTS service imports
 try:
     from efficientai.services.cartesia.tts import CartesiaTTSService
+    from efficientai.services.elevenlabs.tts import ElevenLabsHttpTTSService
     from efficientai.services.openai.llm import OpenAILLMService
     EFFICIENTAI_AVAILABLE = True
 except ImportError:
     EFFICIENTAI_AVAILABLE = False
     logger.warning("EfficientAI services not available, using fallback implementations")
+
+TTS_ENV_KEYS = {
+    "cartesia": "CARTESIA_API_KEY",
+    "elevenlabs": "ELEVENLABS_API_KEY",
+    "openai": "OPENAI_API_KEY",
+}
+
+TTS_DEFAULT_VOICES = {
+    "cartesia": "a0e99841-438c-4a64-b679-ae501e7d6091",
+    "elevenlabs": "JBFqnCBsd6RMkjVDRZzb",
+    "openai": "alloy",
+}
+
+TTS_DEFAULT_MODELS = {
+    "cartesia": "sonic-english",
+    "elevenlabs": "eleven_multilingual_v2",
+    "openai": "gpt-4o-mini-tts",
+}
 
 
 @dataclass
@@ -43,7 +62,8 @@ class TestAgentConfig:
     # TTS config
     tts_provider: str = "cartesia"
     tts_api_key: Optional[str] = None
-    tts_voice_id: str = "a0e99841-438c-4a64-b679-ae501e7d6091"  # Default Cartesia voice
+    tts_voice_id: Optional[str] = None
+    tts_model: Optional[str] = None
     
     # Audio config
     sample_rate: int = 24000
@@ -140,20 +160,19 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
                 import openai
                 self._openai_client = openai.AsyncOpenAI(api_key=llm_api_key)
             
-            # Initialize TTS
-            tts_api_key = self.config.tts_api_key or os.getenv("CARTESIA_API_KEY")
+            # Initialize TTS — resolve provider, voice, and model with defaults
+            provider = self.config.tts_provider.lower()
+            env_key = TTS_ENV_KEYS.get(provider, TTS_ENV_KEYS["cartesia"])
+            tts_api_key = self.config.tts_api_key or os.getenv(env_key)
             if not tts_api_key:
-                raise ValueError("Cartesia API key not configured")
-            
-            if EFFICIENTAI_AVAILABLE:
-                self._tts_service = CartesiaTTSService(
-                    api_key=tts_api_key,
-                    voice_id=self.config.tts_voice_id,
-                    sample_rate=self.config.sample_rate
-                )
-            else:
-                # Fallback to direct Cartesia
-                self._cartesia_api_key = tts_api_key
+                raise ValueError(f"{provider} API key not configured (checked config + env {env_key})")
+
+            if not self.config.tts_voice_id:
+                self.config.tts_voice_id = TTS_DEFAULT_VOICES.get(provider, TTS_DEFAULT_VOICES["cartesia"])
+            if not self.config.tts_model:
+                self.config.tts_model = TTS_DEFAULT_MODELS.get(provider, TTS_DEFAULT_MODELS["cartesia"])
+
+            self.config.tts_api_key = tts_api_key
             
             logger.info("[TestAgent] Services initialized successfully")
             
@@ -333,46 +352,119 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
             return None
     
     async def _text_to_speech(self, text: str) -> Optional[bytes]:
-        """Convert text to speech audio."""
+        """Convert text to speech audio using the configured TTS provider."""
+        provider = self.config.tts_provider.lower()
         try:
-            # Use Cartesia API directly for simplicity
-            import httpx
-            
-            api_key = self.config.tts_api_key or os.getenv("CARTESIA_API_KEY")
-            
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    "https://api.cartesia.ai/tts/bytes",
-                    headers={
-                        "X-API-Key": api_key,
-                        "Cartesia-Version": "2024-06-10",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "model_id": "sonic-english",
-                        "transcript": text,
-                        "voice": {
-                            "mode": "id",
-                            "id": self.config.tts_voice_id
-                        },
-                        "output_format": {
-                            "container": "raw",
-                            "encoding": "pcm_s16le",
-                            "sample_rate": self.config.sample_rate
-                        }
-                    },
-                    timeout=30.0
-                )
-                
-                if response.status_code == 200:
-                    return response.content
-                else:
-                    logger.error(f"[TestAgent] TTS error: {response.status_code} - {response.text}")
-                    return None
-                    
+            if provider == "elevenlabs":
+                return await self._tts_elevenlabs(text)
+            elif provider == "openai":
+                return await self._tts_openai(text)
+            else:
+                return await self._tts_cartesia(text)
         except Exception as e:
-            logger.error(f"[TestAgent] TTS error: {e}")
+            logger.error(f"[TestAgent] TTS ({provider}) error: {e}")
             return None
+
+    async def _tts_cartesia(self, text: str) -> Optional[bytes]:
+        """Synthesize speech via Cartesia."""
+        import httpx
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://api.cartesia.ai/tts/bytes",
+                headers={
+                    "X-API-Key": self.config.tts_api_key,
+                    "Cartesia-Version": "2024-06-10",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model_id": self.config.tts_model or "sonic-english",
+                    "transcript": text,
+                    "voice": {"mode": "id", "id": self.config.tts_voice_id},
+                    "output_format": {
+                        "container": "raw",
+                        "encoding": "pcm_s16le",
+                        "sample_rate": self.config.sample_rate,
+                    },
+                },
+                timeout=30.0,
+            )
+
+            if response.status_code == 200:
+                return response.content
+            logger.error(f"[TestAgent] Cartesia TTS error: {response.status_code} - {response.text}")
+            return None
+
+    async def _tts_elevenlabs(self, text: str) -> Optional[bytes]:
+        """Synthesize speech via ElevenLabs and return raw PCM s16le bytes."""
+        import httpx
+
+        voice_id = self.config.tts_voice_id
+        model_id = self.config.tts_model or "eleven_multilingual_v2"
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+                headers={
+                    "xi-api-key": self.config.tts_api_key,
+                    "Content-Type": "application/json",
+                    "Accept": "audio/mpeg",
+                },
+                json={
+                    "text": text,
+                    "model_id": model_id,
+                    "voice_settings": {
+                        "stability": 0.5,
+                        "similarity_boost": 0.75,
+                    },
+                },
+                timeout=30.0,
+            )
+
+            if response.status_code != 200:
+                logger.error(f"[TestAgent] ElevenLabs TTS error: {response.status_code} - {response.text}")
+                return None
+
+            # ElevenLabs returns MP3 — convert to raw PCM s16le for the WebRTC bridge
+            try:
+                from pydub import AudioSegment
+
+                audio_seg = AudioSegment.from_mp3(io.BytesIO(response.content))
+                audio_seg = audio_seg.set_frame_rate(self.config.sample_rate).set_channels(1).set_sample_width(2)
+                return audio_seg.raw_data
+            except ImportError:
+                logger.error("[TestAgent] pydub not installed — cannot convert ElevenLabs MP3 to PCM")
+                return None
+
+    async def _tts_openai(self, text: str) -> Optional[bytes]:
+        """Synthesize speech via OpenAI TTS and return raw PCM s16le bytes."""
+        import httpx
+
+        model = self.config.tts_model or "gpt-4o-mini-tts"
+        voice = self.config.tts_voice_id or "alloy"
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://api.openai.com/v1/audio/speech",
+                headers={
+                    "Authorization": f"Bearer {self.config.tts_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "input": text,
+                    "voice": voice,
+                    "response_format": "pcm",
+                },
+                timeout=30.0,
+            )
+
+            if response.status_code != 200:
+                logger.error(f"[TestAgent] OpenAI TTS error: {response.status_code} - {response.text}")
+                return None
+
+            # OpenAI returns raw PCM s16le at 24kHz — usable directly
+            return response.content
 
     async def stream_audio_chunks(
         self, 

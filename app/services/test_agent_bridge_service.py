@@ -516,7 +516,9 @@ class TestAgentBridgeService:
                 env_map = {
                     ModelProvider.OPENAI: "OPENAI_API_KEY",
                     ModelProvider.CARTESIA: "CARTESIA_API_KEY",
+                    ModelProvider.ELEVENLABS: "ELEVENLABS_API_KEY",
                     ModelProvider.DEEPGRAM: "DEEPGRAM_API_KEY",
+                    ModelProvider.GOOGLE: "GOOGLE_API_KEY",
                 }
                 env_var = env_map.get(provider)
                 if env_var:
@@ -528,20 +530,53 @@ class TestAgentBridgeService:
                 
                 return None
             
-            # Get API keys for LLM (OpenAI) and TTS (Cartesia)
-            logger.info(f"[Bridge WebRTC] Resolving API keys for test agent (org: {organization_id})")
+            # Resolve the TTS provider from the voice bundle
+            voice_bundle = db.query(VoiceBundle).filter(
+                VoiceBundle.id == voice_bundle_id,
+                VoiceBundle.organization_id == organization_id,
+            ).first()
+            
+            tts_voice_id = None
+            tts_model = None
+            tts_provider_str = None
+            if voice_bundle:
+                raw = getattr(voice_bundle, "tts_provider", None)
+                if raw:
+                    tts_provider_str = (raw.value if hasattr(raw, "value") else str(raw)).lower()
+                tts_voice_id = getattr(voice_bundle, "tts_voice", None)
+                tts_model = getattr(voice_bundle, "tts_model", None)
+
+            if not tts_provider_str:
+                raise ValueError(
+                    f"Voice bundle {voice_bundle_id} is missing tts_provider. "
+                    f"Please configure the TTS provider in the voice bundle settings."
+                )
+            
+            tts_provider_enum_map = {
+                "cartesia": ModelProvider.CARTESIA,
+                "elevenlabs": ModelProvider.ELEVENLABS,
+                "openai": ModelProvider.OPENAI,
+            }
+            tts_model_provider = tts_provider_enum_map.get(tts_provider_str)
+            if not tts_model_provider:
+                raise ValueError(
+                    f"Unsupported TTS provider '{tts_provider_str}' in voice bundle. "
+                    f"Supported: {', '.join(tts_provider_enum_map.keys())}"
+                )
+
+            logger.info(f"[Bridge WebRTC] Resolving API keys for test agent (org: {organization_id}, tts_provider={tts_provider_str})")
             llm_api_key = resolve_api_key_for_provider(ModelProvider.OPENAI)
-            tts_api_key = resolve_api_key_for_provider(ModelProvider.CARTESIA)
+            tts_api_key = resolve_api_key_for_provider(tts_model_provider)
             
-            # Log which keys were found
-            logger.info(f"[Bridge WebRTC] API keys found: OpenAI={'yes' if llm_api_key else 'no'}, Cartesia={'yes' if tts_api_key else 'no'}")
+            logger.info(f"[Bridge WebRTC] API keys found: OpenAI={'yes' if llm_api_key else 'no'}, {tts_provider_str}={'yes' if tts_api_key else 'no'}")
             
-            # Log which keys are missing for debugging
             missing_keys = []
             if not llm_api_key:
                 missing_keys.append("OpenAI (LLM) - check AIProvider table or OPENAI_API_KEY env var")
             if not tts_api_key:
-                missing_keys.append("Cartesia (TTS) - check Integration table or CARTESIA_API_KEY env var")
+                env_hints = {"cartesia": "CARTESIA_API_KEY", "elevenlabs": "ELEVENLABS_API_KEY", "openai": "OPENAI_API_KEY"}
+                env_hint = env_hints.get(tts_provider_str, f"{tts_provider_str.upper()}_API_KEY")
+                missing_keys.append(f"{tts_provider_str} (TTS) - check AIProvider/Integration table or {env_hint} env var")
             
             if missing_keys:
                 logger.warning(
@@ -592,6 +627,9 @@ class TestAgentBridgeService:
                     first_message=first_message,
                     llm_api_key=llm_api_key,
                     tts_api_key=tts_api_key,
+                    tts_provider=tts_provider_str,
+                    tts_voice_id=tts_voice_id,
+                    tts_model=tts_model,
                     sample_rate=sample_rate,
                     max_turns=20
                 )
