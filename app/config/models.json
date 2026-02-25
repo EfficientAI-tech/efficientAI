@@ -11,49 +11,46 @@
     "provider": "openai",
     "model_type": "stt"
   },
-  "gpt-4": {
-    "provider": "openai",
-    "model_type": "llm"
-  },
-  "gpt-4-turbo": {
-    "provider": "openai",
-    "model_type": "llm"
-  },
-  "gpt-3.5-turbo": {
-    "provider": "openai",
-    "model_type": "llm"
-  },
-  "gpt-5": {
-    "provider": "openai",
-    "model_type": "llm"
-  },
-  "gpt-5-main": {
-    "provider": "openai",
-    "model_type": "llm"
-  },
-  "gpt-5-main-mini": {
-    "provider": "openai",
-    "model_type": "llm"
-  },
-  "gpt-5-thinking": {
-    "provider": "openai",
-    "model_type": "llm"
-  },
-  "gpt-5-thinking-mini": {
-    "provider": "openai",
-    "model_type": "llm"
-  },
-  "gpt-5-thinking-nano": {
-    "provider": "openai",
-    "model_type": "llm"
-  },
-  "gpt-4o": {
-    "provider": "openai",
-    "model_type": "llm"
-  },
   "gpt-4.1": {
     "provider": "openai",
     "model_type": "llm"
+  },
+  "gpt-4.1-mini": {
+    "provider": "openai",
+    "model_type": "llm"
+  },
+  "gpt-4.1-nano": {
+    "provider": "openai",
+    "model_type": "llm"
+  },
+  "o3": {
+    "provider": "openai",
+    "model_type": "llm"
+  },
+  "o3-mini": {
+    "provider": "openai",
+    "model_type": "llm"
+  },
+  "o4-mini": {
+    "provider": "openai",
+    "model_type": "llm"
+  },
+  "gpt-5-mini": {
+    "provider": "openai",
+    "model_type": "llm"
+  },
+  "gpt-5.2": {
+    "provider": "openai",
+    "model_type": "llm"
+  },
+  "gpt-5.2-pro": {
+    "provider": "openai",
+    "model_type": "llm"
+  },
+  "gpt-5.3-codex": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Most capable agentic coding model"
   },
   "tts-1": {
     "provider": "openai",
@@ -79,15 +76,51 @@
     "provider": "anthropic",
     "model_type": "llm"
   },
+  "claude-3.5-sonnet": {
+    "provider": "anthropic",
+    "model_type": "llm"
+  },
+  "claude-3.5-haiku": {
+    "provider": "anthropic",
+    "model_type": "llm"
+  },
+  "claude-sonnet-4": {
+    "provider": "anthropic",
+    "model_type": "llm"
+  },
+  "claude-opus-4": {
+    "provider": "anthropic",
+    "model_type": "llm"
+  },
+  "claude-sonnet-4.5": {
+    "provider": "anthropic",
+    "model_type": "llm"
+  },
+  "claude-opus-4.5": {
+    "provider": "anthropic",
+    "model_type": "llm"
+  },
+  "claude-haiku-4.5": {
+    "provider": "anthropic",
+    "model_type": "llm"
+  },
+  "claude-sonnet-4.6": {
+    "provider": "anthropic",
+    "model_type": "llm"
+  },
+  "claude-opus-4.6": {
+    "provider": "anthropic",
+    "model_type": "llm"
+  },
   "google-speech-v2": {
     "provider": "google",
     "model_type": "stt"
   },
-  "gemini-pro": {
+  "gemini-2.0-flash": {
     "provider": "google",
     "model_type": "llm"
   },
-  "gemini-ultra": {
+  "gemini-2.0-flash-lite": {
     "provider": "google",
     "model_type": "llm"
   },
@@ -99,17 +132,20 @@
     "provider": "google",
     "model_type": "llm"
   },
-  "google-tts-v1": {
+  "gemini-3-pro-preview": {
     "provider": "google",
-    "model_type": "tts"
+    "model_type": "llm",
+    "description": "Gemini 3 Pro — advanced reasoning and multimodal understanding"
   },
-  "gemini-2.5-flash-preview-tts": {
+  "gemini-3-flash-preview": {
     "provider": "google",
-    "model_type": "tts"
+    "model_type": "llm",
+    "description": "Gemini 3 Flash — frontier-class performance at lower cost"
   },
-  "gemini-2.5-flash-native-audio-preview-12-2025": {
+  "gemini-3.1-pro-preview": {
     "provider": "google",
-    "model_type": "s2s"
+    "model_type": "llm",
+    "description": "Gemini 3.1 Pro — latest reasoning model with 1M context"
   },
   "azure-speech-v1": {
     "provider": "azure",
@@ -135,6 +171,16 @@
     "provider": "aws",
     "model_type": "tts"
   },
+  "deepgram-flux": {
+    "provider": "deepgram",
+    "model_type": "stt",
+    "description": "Conversational STT with integrated turn detection for voice agents"
+  },
+  "deepgram-nova-3": {
+    "provider": "deepgram",
+    "model_type": "stt",
+    "description": "Highest-performing general-purpose ASR model"
+  },
   "deepgram-nova-3-general": {
     "provider": "deepgram",
     "model_type": "stt"
@@ -143,9 +189,15 @@
     "provider": "deepgram",
     "model_type": "stt"
   },
+  "deepgram-nova-2": {
+    "provider": "deepgram",
+    "model_type": "stt",
+    "description": "Available for languages not yet supported by Nova-3"
+  },
   "cartesia-sonic-3": {
     "provider": "cartesia",
-    "model_type": "tts"
+    "model_type": "tts",
+    "description": "Flagship streaming TTS with laughter, volume/speed/emotion controls, 42 languages"
   },
   "cartesia-sonic-3-mini": {
     "provider": "cartesia",
@@ -154,6 +206,11 @@
   "cartesia-sonic-3-nano": {
     "provider": "cartesia",
     "model_type": "tts"
+  },
+  "cartesia-sonic-2": {
+    "provider": "cartesia",
+    "model_type": "tts",
+    "description": "Ultra-realistic speech with 90ms latency and voice cloning"
   },
   "eleven_v3": {
     "provider": "elevenlabs",
@@ -228,7 +285,7 @@
   "scribe_v2": {
     "provider": "elevenlabs",
     "model_type": "stt",
-    "description": "State-of-the-art speech recognition model",
+    "description": "Most accurate transcription model with keyterm prompting and entity detection",
     "languages": "90+ languages"
   },
   "scribe_v1": {

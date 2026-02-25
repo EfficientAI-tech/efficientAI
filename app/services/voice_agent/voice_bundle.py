@@ -38,6 +38,7 @@ from efficientai.services.cartesia.tts import CartesiaTTSService
 from efficientai.services.deepgram.stt import DeepgramSTTService
 from efficientai.services.elevenlabs.stt import ElevenLabsRealtimeSTTService
 from efficientai.services.elevenlabs.tts import ElevenLabsHttpTTSService
+from efficientai.services.google.llm import GoogleLLMService
 from efficientai.services.openai.llm import OpenAILLMService
 from efficientai.services.openai.stt import OpenAISTTService
 from efficientai.services.openai.tts import OpenAITTSService
@@ -138,6 +139,28 @@ TTS_PROVIDERS = {
 }
 
 DEFAULT_TTS_PROVIDER = None
+
+# ---- LLM Providers --------------------------------------------------------
+LLM_PROVIDERS = {
+    "openai": {
+        "env_key": "OPENAI_API_KEY",
+        "default_model": "gpt-4.1",
+        "factory": lambda api_key, model: OpenAILLMService(
+            api_key=api_key,
+            model=model,
+        ),
+    },
+    "google": {
+        "env_key": "GOOGLE_API_KEY",
+        "default_model": "gemini-2.5-flash",
+        "factory": lambda api_key, model: GoogleLLMService(
+            api_key=api_key,
+            model=model,
+        ),
+    },
+}
+
+DEFAULT_LLM_PROVIDER = None
 
 
 def _resolve_provider(voice_bundle, attr: str, default: str | None = None) -> str:
@@ -291,10 +314,19 @@ async def run_voice_bundle_fastapi(
             f"Unsupported TTS provider '{tts_provider_value}'. Supported providers: {supported}"
         )
 
+    # Resolve LLM provider config from the registry
+    llm_provider_value = _resolve_provider(voice_bundle, "llm_provider", DEFAULT_LLM_PROVIDER)
+    llm_cfg = LLM_PROVIDERS.get(llm_provider_value)
+    if llm_cfg is None:
+        supported = ", ".join(sorted(LLM_PROVIDERS.keys()))
+        raise ValueError(
+            f"Unsupported LLM provider '{llm_provider_value}'. Supported providers: {supported}"
+        )
+
     # Resolve API keys: prefer provided values, otherwise fall back to environment
     stt_api_key = stt_api_key or os.getenv(stt_cfg["env_key"])
     tts_api_key = tts_api_key or os.getenv(tts_cfg["env_key"])
-    llm_api_key = llm_api_key or os.getenv("OPENAI_API_KEY")
+    llm_api_key = llm_api_key or os.getenv(llm_cfg["env_key"])
 
     missing = []
     if not stt_api_key:
@@ -302,7 +334,7 @@ async def run_voice_bundle_fastapi(
     if not tts_api_key:
         missing.append(tts_cfg["env_key"])
     if not llm_api_key:
-        missing.append("OPENAI_API_KEY")
+        missing.append(llm_cfg["env_key"])
     if missing:
         raise ValueError(f"Missing required API keys for voice bundle: {', '.join(missing)}")
 
@@ -327,8 +359,8 @@ async def run_voice_bundle_fastapi(
         tts_model = getattr(voice_bundle, "tts_model", None) or tts_cfg["default_model"]
         tts = tts_cfg["factory"](api_key=tts_api_key, voice_id=tts_voice_id, model=tts_model)
 
-        llm_model = getattr(voice_bundle, "llm_model", None) or "gpt-4.1"
-        llm = OpenAILLMService(api_key=llm_api_key, model=llm_model)
+        llm_model = getattr(voice_bundle, "llm_model", None) or llm_cfg["default_model"]
+        llm = llm_cfg["factory"](api_key=llm_api_key, model=llm_model)
 
         # Build context with provided system instruction or a default
         messages = [

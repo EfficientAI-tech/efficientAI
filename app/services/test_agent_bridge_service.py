@@ -518,6 +518,7 @@ class TestAgentBridgeService:
                     ModelProvider.CARTESIA: "CARTESIA_API_KEY",
                     ModelProvider.ELEVENLABS: "ELEVENLABS_API_KEY",
                     ModelProvider.DEEPGRAM: "DEEPGRAM_API_KEY",
+                    ModelProvider.GOOGLE: "GOOGLE_API_KEY",
                 }
                 env_var = env_map.get(provider)
                 if env_var:
