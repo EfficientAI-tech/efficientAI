@@ -1,6 +1,7 @@
 import { Outlet, Link, useLocation } from 'react-router-dom'
 import { useAuthStore } from '../store/authStore'
 import { useAgentStore, type Agent } from '../store/agentStore'
+import { useLicenseStore } from '../store/licenseStore'
 import { useQuery } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
 import { Profile } from '../types/api'
@@ -29,6 +30,7 @@ import {
   Clock,
   Volume2,
   Gamepad2,
+  Lock,
 } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import Logo from './Logo'
@@ -37,6 +39,7 @@ interface NavItem {
   name: string
   href: string
   icon: React.ComponentType<{ className?: string }>
+  enterpriseFeature?: string
 }
 
 interface NavSection {
@@ -61,7 +64,7 @@ const navigationSections: NavSection[] = [
     icon: Gamepad2,
     items: [
       { name: 'Agent Playground', href: '/playground', icon: Play },
-      { name: 'Voice Playground', href: '/voice-playground', icon: Volume2 },
+      { name: 'Voice Playground', href: '/voice-playground', icon: Volume2, enterpriseFeature: 'voice_playground' },
     ],
   },
   {
@@ -113,6 +116,7 @@ export default function Layout() {
   const location = useLocation()
   const { logout } = useAuthStore()
   const { selectedAgent, setSelectedAgent, loadPreferences, isInitialized } = useAgentStore()
+  const { fetchLicense } = useLicenseStore()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [showAgentDropdown, setShowAgentDropdown] = useState(false)
 
@@ -122,10 +126,11 @@ export default function Layout() {
     queryFn: () => apiClient.listAgents(),
   })
 
-  // Load user preferences from backend on mount
+  // Load user preferences and license info on mount
   useEffect(() => {
     loadPreferences()
-  }, [loadPreferences])
+    fetchLicense()
+  }, [loadPreferences, fetchLicense])
 
   // Auto-select first agent if none is selected (after both preferences and agents are loaded)
   useEffect(() => {
@@ -348,6 +353,7 @@ function SidebarContent({
   onLogout: () => void
   location: ReturnType<typeof useLocation>
 }) {
+  const { isFeatureEnabled } = useLicenseStore()
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
     new Set(['Simulations', 'Evaluations', 'Observability', 'Alerting', 'Configurations'])
   )
@@ -427,13 +433,16 @@ function SidebarContent({
                     <div className="ml-6 mt-1 space-y-1">
                       {section.items.map((item) => {
                         const isItemActive = location.pathname === item.href
+                        const isGated = item.enterpriseFeature && !isFeatureEnabled(item.enterpriseFeature)
                         return (
                           <Link
                             key={item.name}
                             to={item.href}
                             className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md relative overflow-hidden ${isItemActive
                               ? 'bg-gradient-to-r from-gray-900 via-gray-700 to-gray-400 text-white'
-                              : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                              : isGated
+                                ? 'text-gray-400 hover:bg-gray-50'
+                                : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
                               }`}
                           >
                             <item.icon
@@ -441,6 +450,12 @@ function SidebarContent({
                                 }`}
                             />
                             {item.name}
+                            {isGated && (
+                              <span className="ml-auto flex items-center gap-1 text-xs text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded">
+                                <Lock className="h-3 w-3" />
+                                Enterprise
+                              </span>
+                            )}
                           </Link>
                         )
                       })}

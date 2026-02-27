@@ -13,7 +13,7 @@ from uuid import UUID
 from pydantic import BaseModel
 from loguru import logger
 
-from app.dependencies import get_db, get_organization_id, get_api_key
+from app.dependencies import get_db, get_organization_id, get_api_key, require_enterprise_feature
 from app.models.database import (
     AIProvider,
     Integration,
@@ -28,7 +28,11 @@ from app.services.model_config_service import model_config_service
 from app.services.s3_service import s3_service
 from app.services.llm_service import llm_service
 
-router = APIRouter(prefix="/voice-playground", tags=["Voice Playground"])
+router = APIRouter(
+    prefix="/voice-playground",
+    tags=["Voice Playground"],
+    dependencies=[Depends(require_enterprise_feature("voice_playground"))],
+)
 
 
 def _generate_unique_simulation_id(db: Session, max_attempts: int = 100) -> str:

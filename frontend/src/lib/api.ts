@@ -1210,6 +1210,17 @@ class ApiClient {
     const response = await this.client.get('/api/v1/voice-playground/analytics')
     return response.data
   }
+
+  // Enterprise License
+  async getLicenseInfo(): Promise<{
+    is_enterprise: boolean
+    enabled_features: string[]
+    all_enterprise_features: string[]
+    organization: string | null
+  }> {
+    const response = await this.client.get('/api/v1/settings/license-info')
+    return response.data
+  }
 }
 
 // Factory function to create ApiClient instance

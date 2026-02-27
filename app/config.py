@@ -77,6 +77,9 @@ class Settings(BaseSettings):
     HUGGINGFACE_TOKEN: Optional[str] = None  # For pyannote.audio speaker diarization
     DIARIZATION_NUM_SPEAKERS: Optional[int] = 2  # Force pyannote to detect this many speakers (None = auto-detect)
 
+    # Enterprise License (JWT signed with RS256)
+    EFFICIENTAI_LICENSE: Optional[str] = None
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -307,7 +310,12 @@ def load_config_from_file(config_path: str) -> None:
             settings.API_KEY_HEADER = api_config["key_header"]
         if "rate_limit_per_minute" in api_config:
             settings.RATE_LIMIT_PER_MINUTE = api_config["rate_limit_per_minute"]
-    
+
+    if "license" in config_data:
+        license_config = config_data["license"]
+        if "key" in license_config:
+            settings.EFFICIENTAI_LICENSE = license_config["key"]
+
     # Update Celery URLs if they weren't explicitly set
     if not settings.CELERY_BROKER_URL:
         settings.CELERY_BROKER_URL = settings.REDIS_URL
