@@ -294,8 +294,6 @@ export default function VoicePlayground() {
             setAnalyticsSortKey(key)
             setAnalyticsSortAsc(key === 'provider' || key === 'model' || key === 'voice_name')
         }
-        setBlindPairs(pairs)
-        setBlindChoices({})
     }
 
     // --- Configuration state ---
