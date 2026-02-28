@@ -731,9 +731,9 @@ class TTSComparison(Base):
     model_a = Column(String(100), nullable=False)
     voices_a = Column(JSON, nullable=False)
 
-    provider_b = Column(String(100), nullable=False)
-    model_b = Column(String(100), nullable=False)
-    voices_b = Column(JSON, nullable=False)
+    provider_b = Column(String(100), nullable=True)
+    model_b = Column(String(100), nullable=True)
+    voices_b = Column(JSON, nullable=True)
 
     sample_texts = Column(JSON, nullable=False)
     num_runs = Column(Integer, nullable=False, default=1)
@@ -771,6 +771,7 @@ class TTSSample(Base):
     audio_s3_key = Column(String(512), nullable=True)
     duration_seconds = Column(Float, nullable=True)
     latency_ms = Column(Float, nullable=True)
+    ttfb_ms = Column(Float, nullable=True)
 
     evaluation_metrics = Column(JSON, nullable=True)
     status = Column(String(50), nullable=False, default=TTSSampleStatus.PENDING.value)
@@ -780,3 +781,23 @@ class TTSSample(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     comparison = relationship("TTSComparison", back_populates="samples")
+
+
+class CustomTTSVoice(Base):
+    """Organization-scoped custom TTS voice metadata."""
+    __tablename__ = "custom_tts_voices"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "provider", "voice_id", name="uq_custom_tts_voice_org_provider_voice_id"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    provider = Column(String(100), nullable=False, index=True)
+    voice_id = Column(String(255), nullable=False)
+    name = Column(String(255), nullable=False)
+    gender = Column(String(50), nullable=True)
+    accent = Column(String(100), nullable=True)
+    description = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

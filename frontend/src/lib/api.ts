@@ -1134,14 +1134,59 @@ class ApiClient {
     return response.data
   }
 
+  async listCustomTTSVoices(provider?: string): Promise<Array<{
+    id: string
+    provider: string
+    voice_id: string
+    name: string
+    gender: string
+    accent: string
+    description?: string | null
+    is_custom: boolean
+    created_at?: string | null
+    updated_at?: string | null
+  }>> {
+    const response = await this.client.get('/api/v1/voice-playground/custom-voices', {
+      params: provider ? { provider } : undefined,
+    })
+    return response.data
+  }
+
+  async createCustomTTSVoice(data: {
+    provider: string
+    voice_id: string
+    name: string
+    gender?: string
+    accent?: string
+    description?: string
+  }): Promise<any> {
+    const response = await this.client.post('/api/v1/voice-playground/custom-voices', data)
+    return response.data
+  }
+
+  async updateCustomTTSVoice(customVoiceId: string, data: {
+    name?: string
+    gender?: string
+    accent?: string
+    description?: string
+  }): Promise<any> {
+    const response = await this.client.put(`/api/v1/voice-playground/custom-voices/${customVoiceId}`, data)
+    return response.data
+  }
+
+  async deleteCustomTTSVoice(customVoiceId: string): Promise<any> {
+    const response = await this.client.delete(`/api/v1/voice-playground/custom-voices/${customVoiceId}`)
+    return response.data
+  }
+
   async createTTSComparison(data: {
     name?: string
     provider_a: string
     model_a: string
     voices_a: Array<{ id: string; name: string; sample_rate_hz?: number }>
-    provider_b: string
-    model_b: string
-    voices_b: Array<{ id: string; name: string; sample_rate_hz?: number }>
+    provider_b?: string
+    model_b?: string
+    voices_b?: Array<{ id: string; name: string; sample_rate_hz?: number }>
     sample_texts: string[]
     num_runs?: number
   }): Promise<any> {
@@ -1205,6 +1250,7 @@ class ApiClient {
     avg_valence: number | null
     avg_arousal: number | null
     avg_prosody: number | null
+    avg_ttfb_ms: number | null
     avg_latency_ms: number | null
   }>> {
     const response = await this.client.get('/api/v1/voice-playground/analytics')

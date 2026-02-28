@@ -1,9 +1,19 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
 import { MODEL_PROVIDER_CONFIG } from '../config/providers'
 import { ModelProvider, VoiceBundle } from '../types/api'
 import Button from '../components/Button'
+import {
+    BarChart,
+    Bar,
+    Cell,
+    LabelList,
+    XAxis,
+    YAxis,
+    CartesianGrid,
+    Tooltip,
+} from 'recharts'
 import {
     Play,
     Pause,
@@ -31,6 +41,8 @@ import {
     Check,
     BarChart3,
     ArrowUpDown,
+    Plus,
+    Save,
 } from 'lucide-react'
 
 // ============ TYPES ============
@@ -40,6 +52,9 @@ interface TTSVoice {
     name: string
     gender: string
     accent: string
+    is_custom?: boolean
+    custom_voice_id?: string
+    description?: string
 }
 
 interface TTSProvider {
@@ -63,6 +78,7 @@ interface TTSSample {
     audio_s3_key: string | null
     duration_seconds: number | null
     latency_ms: number | null
+    ttfb_ms: number | null
     evaluation_metrics: Record<string, number | string | null> | null
     status: string
     error_message: string | null
@@ -76,9 +92,9 @@ interface TTSComparison {
     provider_a: string
     model_a: string
     voices_a: Array<{ id: string; name: string; sample_rate_hz?: number }>
-    provider_b: string
-    model_b: string
-    voices_b: Array<{ id: string; name: string; sample_rate_hz?: number }>
+    provider_b?: string | null
+    model_b?: string | null
+    voices_b?: Array<{ id: string; name: string; sample_rate_hz?: number }>
     sample_texts: string[]
     num_runs: number
     blind_test_results: Array<{ sample_index: number; preferred: string }> | null
@@ -96,8 +112,8 @@ interface TTSComparisonSummary {
     status: string
     provider_a: string
     model_a: string
-    provider_b: string
-    model_b: string
+    provider_b?: string | null
+    model_b?: string | null
     sample_count: number
     num_runs: number
     created_at: string
@@ -114,9 +130,40 @@ interface TTSAnalyticsRow {
     avg_arousal: number | null
     avg_prosody: number | null
     avg_latency_ms: number | null
+    avg_ttfb_ms: number | null
 }
 
-type AnalyticsSortKey = 'provider' | 'model' | 'voice_name' | 'sample_count' | 'avg_mos' | 'avg_valence' | 'avg_arousal' | 'avg_prosody' | 'avg_latency_ms'
+interface CustomTTSVoice {
+    id: string
+    provider: string
+    voice_id: string
+    name: string
+    gender: string
+    accent: string
+    description?: string | null
+    is_custom: boolean
+    created_at?: string | null
+    updated_at?: string | null
+}
+
+type AnalyticsSortKey = 'provider' | 'model' | 'voice_name' | 'sample_count' | 'avg_mos' | 'avg_valence' | 'avg_arousal' | 'avg_prosody' | 'avg_latency_ms' | 'avg_ttfb_ms'
+type BenchmarkMetricKey = 'avg_mos' | 'avg_valence' | 'avg_arousal' | 'avg_prosody' | 'avg_latency_ms' | 'avg_ttfb_ms'
+
+const BENCHMARK_METRIC_OPTIONS: Array<{
+    key: BenchmarkMetricKey
+    title: string
+    subtitle: string
+    higherIsBetter: boolean
+    maxValue?: number
+    unit?: string
+}> = [
+    { key: 'avg_mos', title: 'INTELLIGENCE', subtitle: 'Average MOS Score; Higher is better', higherIsBetter: true, maxValue: 5 },
+    { key: 'avg_valence', title: 'VALENCE', subtitle: 'Average Emotional Valence; Higher is better', higherIsBetter: true, maxValue: 1 },
+    { key: 'avg_arousal', title: 'AROUSAL', subtitle: 'Average Emotional Arousal; Higher is better', higherIsBetter: true, maxValue: 1 },
+    { key: 'avg_prosody', title: 'PROSODY', subtitle: 'Average Prosody Score; Higher is better', higherIsBetter: true, maxValue: 5 },
+    { key: 'avg_ttfb_ms', title: 'TTFB', subtitle: 'Time-To-First-Byte (ms); Lower is better', higherIsBetter: false, unit: 'ms' },
+    { key: 'avg_latency_ms', title: 'TOTAL LATENCY', subtitle: 'Total Synthesis Latency (ms); Lower is better', higherIsBetter: false, unit: 'ms' },
+]
 
 // ============ CONSTANTS ============
 
@@ -220,6 +267,7 @@ function MetricCard({ label, valueA, valueB, unit, higherIsBetter = true }: {
 }) {
     const aVal = valueA ?? null
     const bVal = valueB ?? null
+    const isSingleProvider = bVal === null
     const aWins = aVal !== null && bVal !== null && (higherIsBetter ? aVal > bVal : aVal < bVal)
     const bWins = aVal !== null && bVal !== null && (higherIsBetter ? bVal > aVal : bVal < aVal)
 
@@ -230,10 +278,14 @@ function MetricCard({ label, valueA, valueB, unit, higherIsBetter = true }: {
                 <span className={`text-lg font-bold ${aWins ? 'text-blue-600' : 'text-gray-700'}`}>
                     {aVal !== null ? `${aVal}${unit || ''}` : '—'}
                 </span>
-                <span className="text-xs text-gray-400">vs</span>
-                <span className={`text-lg font-bold ${bWins ? 'text-purple-600' : 'text-gray-700'}`}>
-                    {bVal !== null ? `${bVal}${unit || ''}` : '—'}
-                </span>
+                {!isSingleProvider && (
+                    <>
+                        <span className="text-xs text-gray-400">vs</span>
+                        <span className={`text-lg font-bold ${bWins ? 'text-purple-600' : 'text-gray-700'}`}>
+                            {bVal !== null ? `${bVal}${unit || ''}` : '—'}
+                        </span>
+                    </>
+                )}
             </div>
         </div>
     )
@@ -243,19 +295,27 @@ function MetricCard({ label, valueA, valueB, unit, higherIsBetter = true }: {
 
 export default function VoicePlayground() {
     const { playingId, play, stop } = useAudioPlayer()
-    const [activeTab, setActiveTab] = useState<'playground' | 'past-simulations'>('playground')
+    const [activeTab, setActiveTab] = useState<'playground' | 'voices' | 'past-simulations'>('playground')
     const [viewingPastId, setViewingPastId] = useState<string | null>(null)
     const [pastSubView, setPastSubView] = useState<'simulations' | 'analytics'>('simulations')
     const [analyticsSortKey, setAnalyticsSortKey] = useState<AnalyticsSortKey>('avg_mos')
     const [analyticsSortAsc, setAnalyticsSortAsc] = useState(false)
+    const [selectedBenchmarkMetric, setSelectedBenchmarkMetric] = useState<BenchmarkMetricKey>('avg_mos')
+    const [benchmarkTopN, setBenchmarkTopN] = useState(10)
 
     // --- Delete confirmation modal ---
     const [deleteConfirm, setDeleteConfirm] = useState<{ message: string; onConfirm: () => void } | null>(null)
 
     // --- Provider data ---
-    const { data: providers = [], isLoading: providersLoading } = useQuery<TTSProvider[]>({
+    const { data: providers = [], isLoading: providersLoading, refetch: refetchProviders } = useQuery<TTSProvider[]>({
         queryKey: ['tts-providers'],
         queryFn: () => apiClient.listTTSProviders(),
+    })
+
+    const { data: customVoices = [], refetch: refetchCustomVoices } = useQuery<CustomTTSVoice[]>({
+        queryKey: ['tts-custom-voices'],
+        queryFn: () => apiClient.listCustomTTSVoices(),
+        enabled: activeTab === 'voices' || activeTab === 'playground',
     })
 
     // --- Voice bundles (for AI sample generation) ---
@@ -289,6 +349,55 @@ export default function VoicePlayground() {
         return analyticsSortAsc ? (aVal as number) - (bVal as number) : (bVal as number) - (aVal as number)
     })
 
+    const analyticsOverview = useMemo(() => {
+        if (analyticsData.length === 0) {
+            return {
+                totalVoices: 0,
+                totalSamples: 0,
+                avgMos: null as number | null,
+                avgTtfb: null as number | null,
+                avgLatency: null as number | null,
+            }
+        }
+        const totalSamples = analyticsData.reduce((sum, row) => sum + (row.sample_count || 0), 0)
+        const weightedMos = analyticsData.reduce((sum, row) => sum + ((row.avg_mos || 0) * (row.sample_count || 0)), 0)
+        const weightedTtfb = analyticsData.reduce((sum, row) => sum + ((row.avg_ttfb_ms || 0) * (row.sample_count || 0)), 0)
+        const weightedLatency = analyticsData.reduce((sum, row) => sum + ((row.avg_latency_ms || 0) * (row.sample_count || 0)), 0)
+        const mosWeight = analyticsData.reduce((sum, row) => sum + (row.avg_mos != null ? (row.sample_count || 0) : 0), 0)
+        const ttfbWeight = analyticsData.reduce((sum, row) => sum + (row.avg_ttfb_ms != null ? (row.sample_count || 0) : 0), 0)
+        const latencyWeight = analyticsData.reduce((sum, row) => sum + (row.avg_latency_ms != null ? (row.sample_count || 0) : 0), 0)
+        return {
+            totalVoices: analyticsData.length,
+            totalSamples,
+            avgMos: mosWeight > 0 ? Number((weightedMos / mosWeight).toFixed(2)) : null,
+            avgTtfb: ttfbWeight > 0 ? Number((weightedTtfb / ttfbWeight).toFixed(0)) : null,
+            avgLatency: latencyWeight > 0 ? Number((weightedLatency / latencyWeight).toFixed(0)) : null,
+        }
+    }, [analyticsData])
+
+    const benchmarkRows = useMemo(() => {
+        return analyticsData.map((row) => ({
+            id: `${row.provider}-${row.model}-${row.voice_id}`,
+            provider: row.provider,
+            model: row.model,
+            voice_name: row.voice_name,
+            sample_count: row.sample_count,
+            avg_mos: row.avg_mos,
+            avg_valence: row.avg_valence,
+            avg_arousal: row.avg_arousal,
+            avg_prosody: row.avg_prosody,
+            avg_ttfb_ms: row.avg_ttfb_ms,
+            avg_latency_ms: row.avg_latency_ms,
+            label: `${row.voice_name} • ${getProviderInfo(row.provider).label} • ${row.model}`,
+            short_label: row.voice_name.length > 16 ? `${row.voice_name.slice(0, 16)}...` : row.voice_name,
+        }))
+    }, [analyticsData])
+
+    const selectedBenchmarkConfig = useMemo(
+        () => BENCHMARK_METRIC_OPTIONS.find(opt => opt.key === selectedBenchmarkMetric) || BENCHMARK_METRIC_OPTIONS[0],
+        [selectedBenchmarkMetric]
+    )
+
     function toggleAnalyticsSort(key: AnalyticsSortKey) {
         if (analyticsSortKey === key) {
             setAnalyticsSortAsc(!analyticsSortAsc)
@@ -304,12 +413,13 @@ export default function VoicePlayground() {
     const [selectedVoicesA, setSelectedVoicesA] = useState<TTSVoice[]>([])
     const [sampleRateA, setSampleRateA] = useState<number | null>(null)
 
+    const [enableComparison, setEnableComparison] = useState(false)
     const [providerB, setProviderB] = useState('')
     const [modelB, setModelB] = useState('')
     const [selectedVoicesB, setSelectedVoicesB] = useState<TTSVoice[]>([])
     const [sampleRateB, setSampleRateB] = useState<number | null>(null)
 
-    const [sampleTexts, setSampleTexts] = useState<string[]>(DEFAULT_SAMPLE_TEXTS.slice(0, 3))
+    const [sampleTexts, setSampleTexts] = useState<string[]>(DEFAULT_SAMPLE_TEXTS.slice(0, 1))
     const [customText, setCustomText] = useState('')
     const [selectedTranscript, setSelectedTranscript] = useState(0)
     const [numRuns, setNumRuns] = useState(1)
@@ -321,6 +431,14 @@ export default function VoicePlayground() {
     const [showAiGenerate, setShowAiGenerate] = useState(false)
     const [selectedBundleId, setSelectedBundleId] = useState('')
     const [aiSampleCount, setAiSampleCount] = useState(5)
+
+    const [customVoiceProvider, setCustomVoiceProvider] = useState('')
+    const [customVoiceId, setCustomVoiceId] = useState('')
+    const [customVoiceName, setCustomVoiceName] = useState('')
+    const [customVoiceGender, setCustomVoiceGender] = useState('')
+    const [customVoiceAccent, setCustomVoiceAccent] = useState('')
+    const [customVoiceDescription, setCustomVoiceDescription] = useState('')
+    const [editingCustomVoiceId, setEditingCustomVoiceId] = useState<string | null>(null)
 
     const bundlesWithLLM = voiceBundles.filter(
         (b) => b.llm_provider && b.llm_model
@@ -364,8 +482,12 @@ export default function VoicePlayground() {
         if (!comparison) return
         if (step === 'progress') {
             if (comparison.status === 'completed') {
-                buildBlindPairs(comparison)
-                setStep('blind-test')
+                const pairs = buildBlindPairs(comparison)
+                if (pairs.length > 0) {
+                    setStep('blind-test')
+                } else {
+                    setStep('results')
+                }
             } else if (comparison.status === 'failed') {
                 // stay on progress to show error
             }
@@ -377,22 +499,34 @@ export default function VoicePlayground() {
     // --- Mutations ---
     const createMutation = useMutation({
         mutationFn: async () => {
-            const comp = await apiClient.createTTSComparison({
+            const payload: {
+                provider_a: string
+                model_a: string
+                voices_a: Array<{ id: string; name: string; sample_rate_hz?: number }>
+                provider_b?: string
+                model_b?: string
+                voices_b?: Array<{ id: string; name: string; sample_rate_hz?: number }>
+                sample_texts: string[]
+                num_runs: number
+            } = {
                 provider_a: providerA,
                 model_a: modelA,
                 voices_a: selectedVoicesA.map(v => ({
                     id: v.id, name: v.name,
                     ...(sampleRateA ? { sample_rate_hz: sampleRateA } : {}),
                 })),
-                provider_b: providerB,
-                model_b: modelB,
-                voices_b: selectedVoicesB.map(v => ({
-                    id: v.id, name: v.name,
-                    ...(sampleRateB ? { sample_rate_hz: sampleRateB } : {}),
-                })),
                 sample_texts: sampleTexts,
                 num_runs: numRuns,
-            })
+            }
+            if (enableComparison) {
+                payload.provider_b = providerB
+                payload.model_b = modelB
+                payload.voices_b = selectedVoicesB.map(v => ({
+                    id: v.id, name: v.name,
+                    ...(sampleRateB ? { sample_rate_hz: sampleRateB } : {}),
+                }))
+            }
+            const comp = await apiClient.createTTSComparison(payload)
             await apiClient.generateTTSComparison(comp.id)
             return comp
         },
@@ -442,6 +576,7 @@ export default function VoicePlayground() {
         }
         setBlindPairs(pairs)
         setBlindChoices({})
+        return pairs
     }
 
     const deleteMutation = useMutation({
@@ -449,6 +584,50 @@ export default function VoicePlayground() {
         onSuccess: (_data, id) => {
             setSelectedSimIds(prev => { const next = new Set(prev); next.delete(id); return next })
             refetchPast()
+        },
+    })
+
+    const createCustomVoiceMutation = useMutation({
+        mutationFn: () => apiClient.createCustomTTSVoice({
+            provider: customVoiceProvider,
+            voice_id: customVoiceId,
+            name: customVoiceName,
+            gender: customVoiceGender || undefined,
+            accent: customVoiceAccent || undefined,
+            description: customVoiceDescription || undefined,
+        }),
+        onSuccess: async () => {
+            setCustomVoiceId('')
+            setCustomVoiceName('')
+            setCustomVoiceGender('')
+            setCustomVoiceAccent('')
+            setCustomVoiceDescription('')
+            await Promise.all([refetchCustomVoices(), refetchProviders()])
+        },
+    })
+
+    const updateCustomVoiceMutation = useMutation({
+        mutationFn: (voiceId: string) => apiClient.updateCustomTTSVoice(voiceId, {
+            name: customVoiceName,
+            gender: customVoiceGender,
+            accent: customVoiceAccent,
+            description: customVoiceDescription,
+        }),
+        onSuccess: async () => {
+            setEditingCustomVoiceId(null)
+            setCustomVoiceId('')
+            setCustomVoiceName('')
+            setCustomVoiceGender('')
+            setCustomVoiceAccent('')
+            setCustomVoiceDescription('')
+            await Promise.all([refetchCustomVoices(), refetchProviders()])
+        },
+    })
+
+    const deleteCustomVoiceMutation = useMutation({
+        mutationFn: (voiceId: string) => apiClient.deleteCustomTTSVoice(voiceId),
+        onSuccess: async () => {
+            await Promise.all([refetchCustomVoices(), refetchProviders()])
         },
     })
 
@@ -487,9 +666,30 @@ export default function VoicePlayground() {
         },
     })
 
-    const canRun = providerA && providerB &&
-        modelA && modelB && selectedVoicesA.length > 0 && selectedVoicesB.length > 0 &&
-        sampleTexts.length > 0
+    const canRun = providerA && modelA && selectedVoicesA.length > 0 && sampleTexts.length > 0 &&
+        (!enableComparison || (providerB && modelB && selectedVoicesB.length > 0))
+    const canSaveCustomVoice = customVoiceProvider && customVoiceId.trim() && customVoiceName.trim()
+    const providerOptionsForVoices = providers.map(p => p.provider)
+
+    function startEditingCustomVoice(voice: CustomTTSVoice) {
+        setEditingCustomVoiceId(voice.id)
+        setCustomVoiceProvider(voice.provider)
+        setCustomVoiceId(voice.voice_id)
+        setCustomVoiceName(voice.name)
+        setCustomVoiceGender(voice.gender === 'Unknown' ? '' : voice.gender)
+        setCustomVoiceAccent(voice.accent === 'Unknown' ? '' : voice.accent)
+        setCustomVoiceDescription(voice.description || '')
+    }
+
+    function resetCustomVoiceForm() {
+        setEditingCustomVoiceId(null)
+        setCustomVoiceProvider('')
+        setCustomVoiceId('')
+        setCustomVoiceName('')
+        setCustomVoiceGender('')
+        setCustomVoiceAccent('')
+        setCustomVoiceDescription('')
+    }
 
     function resetPlayground() {
         stop()
@@ -497,9 +697,10 @@ export default function VoicePlayground() {
         setProviderB('')
         setModelA('')
         setModelB('')
+        setEnableComparison(false)
         setSelectedVoicesA([])
         setSelectedVoicesB([])
-        setSampleTexts(DEFAULT_SAMPLE_TEXTS.slice(0, 3))
+        setSampleTexts(DEFAULT_SAMPLE_TEXTS.slice(0, 1))
         setNumRuns(1)
         setActiveComparisonId(null)
         setStep('configure')
@@ -548,6 +749,22 @@ export default function VoicePlayground() {
                     >
                         <Mic className="w-4 h-4" />
                         Playground
+                    </button>
+                    <button
+                        onClick={() => { setActiveTab('voices'); setViewingPastId(null) }}
+                        className={`flex items-center gap-2 py-3 px-1 border-b-2 font-medium text-sm transition-colors ${
+                            activeTab === 'voices'
+                                ? 'border-primary-600 text-primary-600'
+                                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                        }`}
+                    >
+                        <Headphones className="w-4 h-4" />
+                        Voices
+                        {customVoices.length > 0 && (
+                            <span className="ml-1 px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600">
+                                {customVoices.length}
+                            </span>
+                        )}
                     </button>
                     <button
                         onClick={() => { setActiveTab('past-simulations'); setViewingPastId(null) }}
@@ -819,7 +1036,9 @@ export default function VoicePlayground() {
                                     <Hash className="w-5 h-5 text-gray-500" />
                                     <div>
                                         <p className="font-medium text-gray-900 text-sm">Number of Runs</p>
-                                        <p className="text-xs text-gray-500">Repeat each voice+text combination multiple times to get averaged metrics</p>
+                                        <p className="text-xs text-gray-500">
+                                            Repeat each voice+text combination. Total evaluations = samples x selected voices x runs.
+                                        </p>
                                     </div>
                                 </div>
                                 <div className="flex items-center gap-2">
@@ -858,7 +1077,31 @@ export default function VoicePlayground() {
                                     </div>
                                 ) : (
                                     <>
-                                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6 relative">
+                                        <div className="mb-4 flex items-center justify-between gap-3">
+                                            <p className="text-xs text-gray-500">
+                                                Start with Provider A. Add Provider B only when you want A/B blind testing.
+                                            </p>
+                                            {enableComparison ? (
+                                                <Button
+                                                    variant="ghost"
+                                                    onClick={() => {
+                                                        setEnableComparison(false)
+                                                        setProviderB('')
+                                                        setModelB('')
+                                                        setSelectedVoicesB([])
+                                                        setSampleRateB(null)
+                                                    }}
+                                                >
+                                                    Remove Provider B
+                                                </Button>
+                                            ) : (
+                                                <Button variant="secondary" leftIcon={<Plus className="w-4 h-4" />} onClick={() => setEnableComparison(true)}>
+                                                    Add Provider B
+                                                </Button>
+                                            )}
+                                        </div>
+
+                                        <div className={`grid grid-cols-1 ${enableComparison ? 'lg:grid-cols-2' : ''} gap-6 mb-6 relative`}>
                                             {/* Provider A */}
                                             <ProviderPanel
                                                 label="A"
@@ -874,25 +1117,29 @@ export default function VoicePlayground() {
                                                 onSampleRateChange={setSampleRateA}
                                             />
 
-                                            {/* VS Badge */}
-                                            <div className="hidden lg:flex absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-10">
-                                                <span className="px-4 py-2 bg-gray-900 text-white rounded-full text-sm font-bold shadow-xl">VS</span>
-                                            </div>
+                                            {enableComparison && (
+                                                <>
+                                                    {/* VS Badge */}
+                                                    <div className="hidden lg:flex absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-10">
+                                                        <span className="px-4 py-2 bg-gray-900 text-white rounded-full text-sm font-bold shadow-xl">VS</span>
+                                                    </div>
 
-                                            {/* Provider B */}
-                                            <ProviderPanel
-                                                label="B"
-                                                color="purple"
-                                                providers={providers}
-                                                selectedProvider={providerB}
-                                                selectedModel={modelB}
-                                                selectedVoices={selectedVoicesB}
-                                                sampleRate={sampleRateB}
-                                                onProviderChange={p => { setProviderB(p); setModelB(''); setSelectedVoicesB([]); setSampleRateB(null) }}
-                                                onModelChange={setModelB}
-                                                onVoicesChange={setSelectedVoicesB}
-                                                onSampleRateChange={setSampleRateB}
-                                            />
+                                                    {/* Provider B */}
+                                                    <ProviderPanel
+                                                        label="B"
+                                                        color="purple"
+                                                        providers={providers}
+                                                        selectedProvider={providerB}
+                                                        selectedModel={modelB}
+                                                        selectedVoices={selectedVoicesB}
+                                                        sampleRate={sampleRateB}
+                                                        onProviderChange={p => { setProviderB(p); setModelB(''); setSelectedVoicesB([]); setSampleRateB(null) }}
+                                                        onModelChange={setModelB}
+                                                        onVoicesChange={setSelectedVoicesB}
+                                                        onSampleRateChange={setSampleRateB}
+                                                    />
+                                                </>
+                                            )}
                                         </div>
 
                                         <div className="flex justify-center">
@@ -904,7 +1151,7 @@ export default function VoicePlayground() {
                                                 leftIcon={createMutation.isPending ? <Loader2 className="w-5 h-5 animate-spin" /> : <Play className="w-5 h-5" />}
                                                 className="px-12"
                                             >
-                                                {createMutation.isPending ? 'Starting...' : 'Run Comparison'}
+                                                {createMutation.isPending ? 'Starting...' : (enableComparison ? 'Run Comparison' : 'Run Benchmark')}
                                             </Button>
                                         </div>
                                         {createMutation.isError && (
@@ -934,9 +1181,13 @@ export default function VoicePlayground() {
                             <div className="flex items-center gap-2 mt-1">
                                 <ProviderLogo provider={comparison.provider_a} size="sm" />
                                 <span className="text-sm text-gray-500">{getProviderInfo(comparison.provider_a).label}</span>
-                                <span className="text-xs text-gray-400">vs</span>
-                                <ProviderLogo provider={comparison.provider_b} size="sm" />
-                                <span className="text-sm text-gray-500">{getProviderInfo(comparison.provider_b).label}</span>
+                                {hasSecondProvider(comparison) && (
+                                    <>
+                                        <span className="text-xs text-gray-400">vs</span>
+                                        <ProviderLogo provider={comparison.provider_b || ''} size="sm" />
+                                        <span className="text-sm text-gray-500">{getProviderInfo(comparison.provider_b || '').label}</span>
+                                    </>
+                                )}
                                 {comparison.num_runs > 1 && (
                                     <span className="ml-2 text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">{comparison.num_runs} runs</span>
                                 )}
@@ -973,7 +1224,8 @@ export default function VoicePlayground() {
                                 {s.status === 'failed' && <XCircle className="w-3.5 h-3.5 text-red-500 flex-shrink-0" />}
                                 <span className="truncate text-gray-700">{s.voice_name || s.voice_id}</span>
                                 <HzBadge hz={hz} />
-                                {s.latency_ms && <span className="text-gray-400 ml-auto">{Math.round(s.latency_ms)}ms</span>}
+                                {s.ttfb_ms != null && <span className="text-gray-400 ml-auto" title="Time-to-first-byte">{Math.round(s.ttfb_ms)}ms</span>}
+                                {s.ttfb_ms == null && s.latency_ms != null && <span className="text-gray-400 ml-auto">{Math.round(s.latency_ms)}ms</span>}
                             </div>
                             )
                         })}
@@ -1102,7 +1354,7 @@ export default function VoicePlayground() {
                         </div>
 
                         {/* Winner Banner */}
-                        {comparison.evaluation_summary && (() => {
+                        {hasSecondProvider(comparison) && comparison.evaluation_summary && (() => {
                             const sumA = comparison.evaluation_summary.provider_a || {}
                             const sumB = comparison.evaluation_summary.provider_b || {}
                             const mosA = sumA['MOS Score'] ?? 0
@@ -1112,7 +1364,7 @@ export default function VoicePlayground() {
                             const winner = (mosA + btScore * 0.1) >= (mosB) ? 'A' : 'B'
                             const winnerName = winner === 'A'
                                 ? getProviderInfo(comparison.provider_a).label
-                                : getProviderInfo(comparison.provider_b).label
+                                : getProviderInfo(comparison.provider_b || '').label
 
                             return (
                                 <div className="p-5 bg-gradient-to-r from-green-500 via-emerald-500 to-teal-500 rounded-xl text-white mb-6">
@@ -1130,13 +1382,26 @@ export default function VoicePlayground() {
                         {comparison.evaluation_summary && (() => {
                             const sumA = comparison.evaluation_summary.provider_a || {}
                             const sumB = comparison.evaluation_summary.provider_b || {}
+                            if (hasSecondProvider(comparison)) {
+                                return (
+                                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
+                                        <MetricCard label="MOS Score" valueA={sumA['MOS Score']} valueB={sumB['MOS Score']} higherIsBetter />
+                                        <MetricCard label="Valence" valueA={sumA['Valence']} valueB={sumB['Valence']} higherIsBetter />
+                                        <MetricCard label="Arousal" valueA={sumA['Arousal']} valueB={sumB['Arousal']} higherIsBetter />
+                                        <MetricCard label="Prosody" valueA={sumA['Prosody Score']} valueB={sumB['Prosody Score']} higherIsBetter />
+                                        <MetricCard label="TTFB" valueA={sumA['avg_ttfb_ms']} valueB={sumB['avg_ttfb_ms']} unit="ms" higherIsBetter={false} />
+                                        <MetricCard label="Total Latency" valueA={sumA['avg_latency_ms']} valueB={sumB['avg_latency_ms']} unit="ms" higherIsBetter={false} />
+                                    </div>
+                                )
+                            }
                             return (
-                                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 mb-6">
-                                    <MetricCard label="MOS Score" valueA={sumA['MOS Score']} valueB={sumB['MOS Score']} higherIsBetter />
-                                    <MetricCard label="Valence" valueA={sumA['Valence']} valueB={sumB['Valence']} higherIsBetter />
-                                    <MetricCard label="Arousal" valueA={sumA['Arousal']} valueB={sumB['Arousal']} higherIsBetter />
-                                    <MetricCard label="Prosody" valueA={sumA['Prosody Score']} valueB={sumB['Prosody Score']} higherIsBetter />
-                                    <MetricCard label="Avg Latency" valueA={sumA['avg_latency_ms']} valueB={sumB['avg_latency_ms']} unit="ms" higherIsBetter={false} />
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-3 mb-6">
+                                    <MetricCard label="MOS Score" valueA={sumA['MOS Score']} valueB={null} higherIsBetter />
+                                    <MetricCard label="Valence" valueA={sumA['Valence']} valueB={null} higherIsBetter />
+                                    <MetricCard label="Arousal" valueA={sumA['Arousal']} valueB={null} higherIsBetter />
+                                    <MetricCard label="Prosody" valueA={sumA['Prosody Score']} valueB={null} higherIsBetter />
+                                    <MetricCard label="TTFB" valueA={sumA['avg_ttfb_ms']} valueB={null} unit="ms" higherIsBetter={false} />
+                                    <MetricCard label="Total Latency" valueA={sumA['avg_latency_ms']} valueB={null} unit="ms" higherIsBetter={false} />
                                 </div>
                             )
                         })()}
@@ -1159,8 +1424,8 @@ export default function VoicePlayground() {
                                         </div>
                                         <span className="text-gray-300 text-xl">vs</span>
                                         <div className="text-center flex flex-col items-center gap-1">
-                                            <ProviderLogo provider={comparison.provider_b} size="sm" />
-                                            <p className="text-xs text-gray-500">{getProviderInfo(comparison.provider_b).label}</p>
+                                            <ProviderLogo provider={comparison.provider_b || ''} size="sm" />
+                                            <p className="text-xs text-gray-500">{getProviderInfo(comparison.provider_b || '').label}</p>
                                             <p className="text-2xl font-bold text-purple-600">{bt.b_pct}%</p>
                                             <p className="text-xs text-gray-400">{bt.b_wins} wins</p>
                                         </div>
@@ -1178,13 +1443,15 @@ export default function VoicePlayground() {
                                     {getProviderInfo(comparison.provider_a).label} ({comparison.model_a})
                                 </span>
                             </div>
-                            <div className="flex items-center gap-2">
-                                <span className="w-6 h-6 rounded-full bg-purple-600 text-white flex items-center justify-center text-xs font-bold">B</span>
-                                <ProviderLogo provider={comparison.provider_b} size="sm" />
-                                <span className="text-sm font-medium text-gray-700">
-                                    {getProviderInfo(comparison.provider_b).label} ({comparison.model_b})
-                                </span>
-                            </div>
+                            {hasSecondProvider(comparison) && (
+                                <div className="flex items-center gap-2">
+                                    <span className="w-6 h-6 rounded-full bg-purple-600 text-white flex items-center justify-center text-xs font-bold">B</span>
+                                    <ProviderLogo provider={comparison.provider_b || ''} size="sm" />
+                                    <span className="text-sm font-medium text-gray-700">
+                                        {getProviderInfo(comparison.provider_b || '').label} ({comparison.model_b})
+                                    </span>
+                                </div>
+                            )}
                         </div>
                     </div>
 
@@ -1203,7 +1470,7 @@ export default function VoicePlayground() {
                                     text={text}
                                     samples={comparison.samples.filter(s => s.sample_index === idx)}
                                     providerA={comparison.provider_a}
-                                    providerB={comparison.provider_b}
+                                    providerB={comparison.provider_b || undefined}
                                     playingId={playingId}
                                     onPlay={play}
                                     numRuns={comparison.num_runs || 1}
@@ -1224,6 +1491,150 @@ export default function VoicePlayground() {
                 </div>
             )}
                 </>
+            )}
+
+            {/* =========== TAB: VOICES =========== */}
+            {activeTab === 'voices' && (
+                <div className="space-y-6">
+                    <div className="bg-white rounded-xl shadow-lg p-6 border border-gray-100">
+                        <h2 className="text-lg font-semibold text-gray-900 mb-1">Custom Voices</h2>
+                        <p className="text-sm text-gray-500 mb-5">
+                            Add provider-specific voice IDs so they can be selected during TTS comparison benchmarks.
+                        </p>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Provider</label>
+                                <select
+                                    value={customVoiceProvider}
+                                    onChange={e => setCustomVoiceProvider(e.target.value)}
+                                    disabled={!!editingCustomVoiceId}
+                                    className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 bg-white disabled:bg-gray-100"
+                                >
+                                    <option value="">Select provider...</option>
+                                    {providerOptionsForVoices.map(provider => (
+                                        <option key={provider} value={provider}>{getProviderInfo(provider).label}</option>
+                                    ))}
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Voice ID</label>
+                                <input
+                                    value={customVoiceId}
+                                    onChange={e => setCustomVoiceId(e.target.value)}
+                                    disabled={!!editingCustomVoiceId}
+                                    placeholder="e.g. 21m00Tcm4TlvDq8ikWAM"
+                                    className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 disabled:bg-gray-100"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Display Name</label>
+                                <input
+                                    value={customVoiceName}
+                                    onChange={e => setCustomVoiceName(e.target.value)}
+                                    placeholder="e.g. My Sales Voice"
+                                    className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Gender (optional)</label>
+                                <input
+                                    value={customVoiceGender}
+                                    onChange={e => setCustomVoiceGender(e.target.value)}
+                                    placeholder="e.g. Female"
+                                    className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Accent (optional)</label>
+                                <input
+                                    value={customVoiceAccent}
+                                    onChange={e => setCustomVoiceAccent(e.target.value)}
+                                    placeholder="e.g. American"
+                                    className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Description (optional)</label>
+                                <input
+                                    value={customVoiceDescription}
+                                    onChange={e => setCustomVoiceDescription(e.target.value)}
+                                    placeholder="e.g. Cloned from support lead"
+                                    className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                                />
+                            </div>
+                        </div>
+
+                        <div className="mt-4 flex items-center gap-2">
+                            <Button
+                                variant="primary"
+                                leftIcon={editingCustomVoiceId ? <Save className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
+                                disabled={!canSaveCustomVoice || createCustomVoiceMutation.isPending || updateCustomVoiceMutation.isPending}
+                                onClick={() => {
+                                    if (editingCustomVoiceId) {
+                                        updateCustomVoiceMutation.mutate(editingCustomVoiceId)
+                                    } else {
+                                        createCustomVoiceMutation.mutate()
+                                    }
+                                }}
+                            >
+                                {editingCustomVoiceId ? 'Save Voice' : 'Add Voice'}
+                            </Button>
+                            {editingCustomVoiceId && (
+                                <Button variant="ghost" onClick={resetCustomVoiceForm}>Cancel Edit</Button>
+                            )}
+                        </div>
+
+                        {(createCustomVoiceMutation.isError || updateCustomVoiceMutation.isError) && (
+                            <p className="mt-3 text-sm text-red-600">
+                                {((createCustomVoiceMutation.error || updateCustomVoiceMutation.error) as any)?.response?.data?.detail || 'Failed to save custom voice'}
+                            </p>
+                        )}
+                    </div>
+
+                    <div className="bg-white rounded-xl shadow-lg p-6 border border-gray-100">
+                        <h3 className="font-semibold text-gray-900 mb-4">Saved Custom Voices</h3>
+                        {customVoices.length === 0 ? (
+                            <p className="text-sm text-gray-500">No custom voices yet. Add one above to use it in Playground comparisons.</p>
+                        ) : (
+                            <div className="space-y-2">
+                                {customVoices.map(cv => (
+                                    <div key={cv.id} className="border border-gray-200 rounded-lg p-3 flex items-center justify-between gap-3">
+                                        <div className="min-w-0">
+                                            <div className="flex items-center gap-2 flex-wrap">
+                                                <span className="font-medium text-gray-900">{cv.name}</span>
+                                                <span className="text-xs px-2 py-0.5 rounded-full bg-primary-100 text-primary-700">Custom</span>
+                                                <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 inline-flex items-center gap-1.5">
+                                                    <ProviderLogo provider={cv.provider} size="sm" />
+                                                    {getProviderInfo(cv.provider).label}
+                                                </span>
+                                            </div>
+                                            <p className="text-xs text-gray-500 mt-1 font-mono break-all">Voice ID: {cv.voice_id}</p>
+                                            <p className="text-xs text-gray-500 mt-1">{cv.gender} • {cv.accent}</p>
+                                            {cv.description && <p className="text-xs text-gray-500 mt-1">{cv.description}</p>}
+                                        </div>
+                                        <div className="flex items-center gap-2 flex-shrink-0">
+                                            <Button variant="ghost" onClick={() => startEditingCustomVoice(cv)}>Edit</Button>
+                                            <Button
+                                                variant="ghost"
+                                                className="text-red-600 hover:text-red-700"
+                                                disabled={deleteCustomVoiceMutation.isPending}
+                                                onClick={() => {
+                                                    setDeleteConfirm({
+                                                        message: `Delete custom voice "${cv.name}" (${cv.voice_id})?`,
+                                                        onConfirm: () => deleteCustomVoiceMutation.mutate(cv.id),
+                                                    })
+                                                }}
+                                            >
+                                                Delete
+                                            </Button>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                </div>
             )}
 
             {/* =========== TAB: PAST SIMULATIONS =========== */}
@@ -1269,7 +1680,7 @@ export default function VoicePlayground() {
                                         </div>
 
                                         {/* Winner Banner */}
-                                        {viewedComparison.evaluation_summary && (() => {
+                                        {hasSecondProvider(viewedComparison) && viewedComparison.evaluation_summary && (() => {
                                             const sumA = viewedComparison.evaluation_summary.provider_a || {}
                                             const sumB = viewedComparison.evaluation_summary.provider_b || {}
                                             const mosA = sumA['MOS Score'] ?? 0
@@ -1279,7 +1690,7 @@ export default function VoicePlayground() {
                                             const winner = (mosA + btScore * 0.1) >= (mosB) ? 'A' : 'B'
                                             const winnerName = winner === 'A'
                                                 ? getProviderInfo(viewedComparison.provider_a).label
-                                                : getProviderInfo(viewedComparison.provider_b).label
+                                                : getProviderInfo(viewedComparison.provider_b || '').label
 
                                             return (
                                                 <div className="p-5 bg-gradient-to-r from-green-500 via-emerald-500 to-teal-500 rounded-xl text-white mb-6">
@@ -1297,13 +1708,26 @@ export default function VoicePlayground() {
                                         {viewedComparison.evaluation_summary && (() => {
                                             const sumA = viewedComparison.evaluation_summary.provider_a || {}
                                             const sumB = viewedComparison.evaluation_summary.provider_b || {}
+                                            if (hasSecondProvider(viewedComparison)) {
+                                                return (
+                                                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
+                                                        <MetricCard label="MOS Score" valueA={sumA['MOS Score']} valueB={sumB['MOS Score']} higherIsBetter />
+                                                        <MetricCard label="Valence" valueA={sumA['Valence']} valueB={sumB['Valence']} higherIsBetter />
+                                                        <MetricCard label="Arousal" valueA={sumA['Arousal']} valueB={sumB['Arousal']} higherIsBetter />
+                                                        <MetricCard label="Prosody" valueA={sumA['Prosody Score']} valueB={sumB['Prosody Score']} higherIsBetter />
+                                                        <MetricCard label="TTFB" valueA={sumA['avg_ttfb_ms']} valueB={sumB['avg_ttfb_ms']} unit="ms" higherIsBetter={false} />
+                                                        <MetricCard label="Total Latency" valueA={sumA['avg_latency_ms']} valueB={sumB['avg_latency_ms']} unit="ms" higherIsBetter={false} />
+                                                    </div>
+                                                )
+                                            }
                                             return (
-                                                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 mb-6">
-                                                    <MetricCard label="MOS Score" valueA={sumA['MOS Score']} valueB={sumB['MOS Score']} higherIsBetter />
-                                                    <MetricCard label="Valence" valueA={sumA['Valence']} valueB={sumB['Valence']} higherIsBetter />
-                                                    <MetricCard label="Arousal" valueA={sumA['Arousal']} valueB={sumB['Arousal']} higherIsBetter />
-                                                    <MetricCard label="Prosody" valueA={sumA['Prosody Score']} valueB={sumB['Prosody Score']} higherIsBetter />
-                                                    <MetricCard label="Avg Latency" valueA={sumA['avg_latency_ms']} valueB={sumB['avg_latency_ms']} unit="ms" higherIsBetter={false} />
+                                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-3 mb-6">
+                                                    <MetricCard label="MOS Score" valueA={sumA['MOS Score']} valueB={null} higherIsBetter />
+                                                    <MetricCard label="Valence" valueA={sumA['Valence']} valueB={null} higherIsBetter />
+                                                    <MetricCard label="Arousal" valueA={sumA['Arousal']} valueB={null} higherIsBetter />
+                                                    <MetricCard label="Prosody" valueA={sumA['Prosody Score']} valueB={null} higherIsBetter />
+                                                    <MetricCard label="TTFB" valueA={sumA['avg_ttfb_ms']} valueB={null} unit="ms" higherIsBetter={false} />
+                                                    <MetricCard label="Total Latency" valueA={sumA['avg_latency_ms']} valueB={null} unit="ms" higherIsBetter={false} />
                                                 </div>
                                             )
                                         })()}
@@ -1326,8 +1750,8 @@ export default function VoicePlayground() {
                                                         </div>
                                                         <span className="text-gray-300 text-xl">vs</span>
                                                         <div className="text-center flex flex-col items-center gap-1">
-                                                            <ProviderLogo provider={viewedComparison.provider_b} size="sm" />
-                                                            <p className="text-xs text-gray-500">{getProviderInfo(viewedComparison.provider_b).label}</p>
+                                                            <ProviderLogo provider={viewedComparison.provider_b || ''} size="sm" />
+                                                            <p className="text-xs text-gray-500">{getProviderInfo(viewedComparison.provider_b || '').label}</p>
                                                             <p className="text-2xl font-bold text-purple-600">{bt.b_pct}%</p>
                                                             <p className="text-xs text-gray-400">{bt.b_wins} wins</p>
                                                         </div>
@@ -1345,13 +1769,15 @@ export default function VoicePlayground() {
                                                     {getProviderInfo(viewedComparison.provider_a).label} ({viewedComparison.model_a})
                                                 </span>
                                             </div>
-                                            <div className="flex items-center gap-2">
-                                                <span className="w-6 h-6 rounded-full bg-purple-600 text-white flex items-center justify-center text-xs font-bold">B</span>
-                                                <ProviderLogo provider={viewedComparison.provider_b} size="sm" />
-                                                <span className="text-sm font-medium text-gray-700">
-                                                    {getProviderInfo(viewedComparison.provider_b).label} ({viewedComparison.model_b})
-                                                </span>
-                                            </div>
+                                            {hasSecondProvider(viewedComparison) && (
+                                                <div className="flex items-center gap-2">
+                                                    <span className="w-6 h-6 rounded-full bg-purple-600 text-white flex items-center justify-center text-xs font-bold">B</span>
+                                                    <ProviderLogo provider={viewedComparison.provider_b || ''} size="sm" />
+                                                    <span className="text-sm font-medium text-gray-700">
+                                                        {getProviderInfo(viewedComparison.provider_b || '').label} ({viewedComparison.model_b})
+                                                    </span>
+                                                </div>
+                                            )}
                                         </div>
                                     </div>
 
@@ -1370,7 +1796,7 @@ export default function VoicePlayground() {
                                                     text={text}
                                                     samples={viewedComparison.samples.filter(s => s.sample_index === idx)}
                                                     providerA={viewedComparison.provider_a}
-                                                    providerB={viewedComparison.provider_b}
+                                                    providerB={viewedComparison.provider_b || undefined}
                                                     playingId={playingId}
                                                     onPlay={play}
                                                     numRuns={viewedComparison.num_runs || 1}
@@ -1512,8 +1938,14 @@ export default function VoicePlayground() {
                                                             />
                                                             <div className="flex items-center gap-2 flex-shrink-0">
                                                                 <ProviderLogo provider={pc.provider_a} size="sm" />
-                                                                <span className="text-xs text-gray-400">vs</span>
-                                                                <ProviderLogo provider={pc.provider_b} size="sm" />
+                                                                {hasSecondProvider(pc) ? (
+                                                                    <>
+                                                                        <span className="text-xs text-gray-400">vs</span>
+                                                                        <ProviderLogo provider={pc.provider_b || ''} size="sm" />
+                                                                    </>
+                                                                ) : (
+                                                                    <span className="text-[10px] text-gray-500 px-2 py-0.5 bg-gray-200 rounded-full">Single</span>
+                                                                )}
                                                             </div>
                                                             <div className="flex-1 min-w-0">
                                                                 <div className="flex items-center gap-2">
@@ -1525,7 +1957,9 @@ export default function VoicePlayground() {
                                                                     <p className="text-sm font-medium text-gray-800 truncate">{pc.name}</p>
                                                                 </div>
                                                                 <p className="text-xs text-gray-500">
-                                                                    {getProviderInfo(pc.provider_a).label} vs {getProviderInfo(pc.provider_b).label}
+                                                                    {hasSecondProvider(pc)
+                                                                        ? `${getProviderInfo(pc.provider_a).label} vs ${getProviderInfo(pc.provider_b || '').label}`
+                                                                        : `${getProviderInfo(pc.provider_a).label} benchmark`}
                                                                     {' '}&middot; {pc.sample_count} sample{pc.sample_count !== 1 ? 's' : ''}
                                                                     {pc.num_runs > 1 && <> &middot; {pc.num_runs} runs</>}
                                                                     {' '}&middot; {new Date(pc.created_at).toLocaleDateString()}
@@ -1575,67 +2009,146 @@ export default function VoicePlayground() {
                                             <p className="text-sm text-gray-500 mt-1">Run comparisons from the Playground tab to build up analytics.</p>
                                         </div>
                                     ) : (
-                                        <div className="overflow-x-auto">
-                                            <table className="w-full text-sm">
-                                                <thead>
-                                                    <tr className="border-b border-gray-200">
-                                                        {([
-                                                            ['provider', 'Provider'],
-                                                            ['model', 'Model'],
-                                                            ['voice_name', 'Voice'],
-                                                            ['sample_count', 'Samples'],
-                                                            ['avg_mos', 'Avg MOS'],
-                                                            ['avg_valence', 'Avg Valence'],
-                                                            ['avg_arousal', 'Avg Arousal'],
-                                                            ['avg_prosody', 'Avg Prosody'],
-                                                            ['avg_latency_ms', 'Avg Latency'],
-                                                        ] as [AnalyticsSortKey, string][]).map(([key, label]) => (
-                                                            <th
-                                                                key={key}
-                                                                onClick={() => toggleAnalyticsSort(key)}
-                                                                className="px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider cursor-pointer hover:text-gray-700 select-none"
+                                        <div className="space-y-6">
+                                            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                                                <div className="bg-gray-50 rounded-lg p-3 border border-gray-100">
+                                                    <p className="text-[11px] text-gray-500 uppercase tracking-wide">Voices Tracked</p>
+                                                    <p className="text-xl font-semibold text-gray-900">{analyticsOverview.totalVoices}</p>
+                                                </div>
+                                                <div className="bg-gray-50 rounded-lg p-3 border border-gray-100">
+                                                    <p className="text-[11px] text-gray-500 uppercase tracking-wide">Samples Evaluated</p>
+                                                    <p className="text-xl font-semibold text-gray-900">{analyticsOverview.totalSamples}</p>
+                                                </div>
+                                                <div className="bg-gray-50 rounded-lg p-3 border border-gray-100">
+                                                    <p className="text-[11px] text-gray-500 uppercase tracking-wide">Overall Avg MOS</p>
+                                                    <p className="text-xl font-semibold text-gray-900">{analyticsOverview.avgMos ?? '—'}</p>
+                                                </div>
+                                                <div className="bg-gray-50 rounded-lg p-3 border border-gray-100">
+                                                    <p className="text-[11px] text-gray-500 uppercase tracking-wide">Overall Avg Latency</p>
+                                                    <p className="text-xl font-semibold text-gray-900">{analyticsOverview.avgLatency != null ? `${analyticsOverview.avgLatency}ms` : '—'}</p>
+                                                </div>
+                                            </div>
+
+                                            <div className="bg-white rounded-xl border border-gray-100 p-4">
+                                                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
+                                                    <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-1 w-fit flex-wrap">
+                                                        {BENCHMARK_METRIC_OPTIONS.map((metric) => (
+                                                            <button
+                                                                key={metric.key}
+                                                                onClick={() => setSelectedBenchmarkMetric(metric.key)}
+                                                                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                                                                    selectedBenchmarkMetric === metric.key
+                                                                        ? 'bg-white text-gray-900 shadow-sm'
+                                                                        : 'text-gray-500 hover:text-gray-700'
+                                                                }`}
                                                             >
-                                                                <span className="inline-flex items-center gap-1">
-                                                                    {label}
-                                                                    <ArrowUpDown className={`w-3 h-3 ${analyticsSortKey === key ? 'text-primary-600' : 'text-gray-300'}`} />
-                                                                </span>
-                                                            </th>
+                                                                {metric.title}
+                                                            </button>
                                                         ))}
-                                                    </tr>
-                                                </thead>
-                                                <tbody className="divide-y divide-gray-100">
-                                                    {sortedAnalytics.map((row, idx) => (
-                                                        <tr key={`${row.provider}-${row.model}-${row.voice_id}`} className={idx % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'}>
-                                                            <td className="px-3 py-3 whitespace-nowrap">
-                                                                <div className="flex items-center gap-2">
-                                                                    <ProviderLogo provider={row.provider} size="sm" />
-                                                                    <span className="font-medium text-gray-800">{getProviderInfo(row.provider).label}</span>
-                                                                </div>
-                                                            </td>
-                                                            <td className="px-3 py-3 whitespace-nowrap text-gray-600 font-mono text-xs">{row.model}</td>
-                                                            <td className="px-3 py-3 whitespace-nowrap text-gray-700">{row.voice_name}</td>
-                                                            <td className="px-3 py-3 whitespace-nowrap text-center">
-                                                                <span className="px-2 py-0.5 bg-gray-100 text-gray-700 rounded-full text-xs font-medium">{row.sample_count}</span>
-                                                            </td>
-                                                            <td className="px-3 py-3 whitespace-nowrap text-center">
-                                                                <AnalyticsMetricCell value={row.avg_mos} max={5} higherIsBetter />
-                                                            </td>
-                                                            <td className="px-3 py-3 whitespace-nowrap text-center">
-                                                                <AnalyticsMetricCell value={row.avg_valence} max={1} higherIsBetter />
-                                                            </td>
-                                                            <td className="px-3 py-3 whitespace-nowrap text-center">
-                                                                <AnalyticsMetricCell value={row.avg_arousal} max={1} higherIsBetter />
-                                                            </td>
-                                                            <td className="px-3 py-3 whitespace-nowrap text-center">
-                                                                <AnalyticsMetricCell value={row.avg_prosody} max={5} higherIsBetter />
-                                                            </td>
-                                                            <td className="px-3 py-3 whitespace-nowrap text-center">
-                                                                <AnalyticsMetricCell value={row.avg_latency_ms} unit="ms" higherIsBetter={false} />
-                                                            </td>
-                                                        </tr>
-                                                    ))}
-                                                </tbody>
-                                            </table>
+                                                    </div>
+                                                    <div className="flex items-center gap-2">
+                                                        <label className="text-xs text-gray-500">Top results:</label>
+                                                        <select
+                                                            value={benchmarkTopN}
+                                                            onChange={e => setBenchmarkTopN(Number(e.target.value))}
+                                                            className="px-2 py-1.5 text-xs border border-gray-300 rounded-md bg-white"
+                                                        >
+                                                            {[5, 10, 15, 20].map(n => <option key={n} value={n}>{n}</option>)}
+                                                        </select>
+                                                    </div>
+                                                </div>
+                                                <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+                                                    <div className="xl:col-span-2">
+                                                        <BenchmarkMetricPanel
+                                                            title={selectedBenchmarkConfig.title}
+                                                            subtitle={selectedBenchmarkConfig.subtitle}
+                                                            rows={benchmarkRows}
+                                                            metricKey={selectedBenchmarkConfig.key}
+                                                            higherIsBetter={selectedBenchmarkConfig.higherIsBetter}
+                                                            maxValue={selectedBenchmarkConfig.maxValue}
+                                                            unit={selectedBenchmarkConfig.unit}
+                                                            topN={benchmarkTopN}
+                                                        />
+                                                    </div>
+                                                    <BenchmarkTopList
+                                                        rows={benchmarkRows}
+                                                        metricKey={selectedBenchmarkConfig.key}
+                                                        higherIsBetter={selectedBenchmarkConfig.higherIsBetter}
+                                                        unit={selectedBenchmarkConfig.unit}
+                                                        topN={benchmarkTopN}
+                                                    />
+                                                </div>
+                                            </div>
+
+                                            <div className="bg-white rounded-xl border border-gray-100 p-4">
+                                                <h3 className="text-sm font-semibold text-gray-900 mb-3">Detailed Metrics Table</h3>
+                                                <div className="overflow-x-auto">
+                                                    <table className="w-full text-sm">
+                                                        <thead>
+                                                            <tr className="border-b border-gray-200">
+                                                                {([
+                                                                    ['provider', 'Provider'],
+                                                                    ['model', 'Model'],
+                                                                    ['voice_name', 'Voice'],
+                                                                    ['sample_count', 'Samples'],
+                                                                    ['avg_mos', 'Avg MOS'],
+                                                                    ['avg_valence', 'Avg Valence'],
+                                                                    ['avg_arousal', 'Avg Arousal'],
+                                                                    ['avg_prosody', 'Avg Prosody'],
+                                                                    ['avg_ttfb_ms', 'Avg TTFB'],
+                                                                    ['avg_latency_ms', 'Total Latency'],
+                                                                ] as [AnalyticsSortKey, string][]).map(([key, label]) => (
+                                                                    <th
+                                                                        key={key}
+                                                                        onClick={() => toggleAnalyticsSort(key)}
+                                                                        className="px-3 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider cursor-pointer hover:text-gray-700 select-none"
+                                                                    >
+                                                                        <span className="inline-flex items-center gap-1">
+                                                                            {label}
+                                                                            <ArrowUpDown className={`w-3 h-3 ${analyticsSortKey === key ? 'text-primary-600' : 'text-gray-300'}`} />
+                                                                        </span>
+                                                                    </th>
+                                                                ))}
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody className="divide-y divide-gray-100">
+                                                            {sortedAnalytics.map((row, idx) => (
+                                                                <tr key={`${row.provider}-${row.model}-${row.voice_id}`} className={idx % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'}>
+                                                                    <td className="px-3 py-3 whitespace-nowrap">
+                                                                        <div className="flex items-center gap-2">
+                                                                            <ProviderLogo provider={row.provider} size="sm" />
+                                                                            <span className="font-medium text-gray-800">{getProviderInfo(row.provider).label}</span>
+                                                                        </div>
+                                                                    </td>
+                                                                    <td className="px-3 py-3 whitespace-nowrap text-gray-600 font-mono text-xs">{row.model}</td>
+                                                                    <td className="px-3 py-3 whitespace-nowrap text-gray-700">{row.voice_name}</td>
+                                                                    <td className="px-3 py-3 whitespace-nowrap text-center">
+                                                                        <span className="px-2 py-0.5 bg-gray-100 text-gray-700 rounded-full text-xs font-medium">{row.sample_count}</span>
+                                                                    </td>
+                                                                    <td className="px-3 py-3 whitespace-nowrap text-center">
+                                                                        <AnalyticsMetricCell value={row.avg_mos} max={5} higherIsBetter />
+                                                                    </td>
+                                                                    <td className="px-3 py-3 whitespace-nowrap text-center">
+                                                                        <AnalyticsMetricCell value={row.avg_valence} max={1} higherIsBetter />
+                                                                    </td>
+                                                                    <td className="px-3 py-3 whitespace-nowrap text-center">
+                                                                        <AnalyticsMetricCell value={row.avg_arousal} max={1} higherIsBetter />
+                                                                    </td>
+                                                                    <td className="px-3 py-3 whitespace-nowrap text-center">
+                                                                        <AnalyticsMetricCell value={row.avg_prosody} max={5} higherIsBetter />
+                                                                    </td>
+                                                                    <td className="px-3 py-3 whitespace-nowrap text-center">
+                                                                        <AnalyticsMetricCell value={row.avg_ttfb_ms} unit="ms" higherIsBetter={false} />
+                                                                    </td>
+                                                                    <td className="px-3 py-3 whitespace-nowrap text-center">
+                                                                        <AnalyticsMetricCell value={row.avg_latency_ms} unit="ms" higherIsBetter={false} />
+                                                                    </td>
+                                                                </tr>
+                                                            ))}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            </div>
                                         </div>
                                     )}
                                 </div>
@@ -1683,6 +2196,18 @@ export default function VoicePlayground() {
 
 
 // ============ HELPERS ============
+
+function hasSecondProvider(comp: {
+    provider_b?: string | null
+    model_b?: string | null
+    voices_b?: Array<{ id: string; name: string; sample_rate_hz?: number }> | null
+}): boolean {
+    const hasProviderMeta = Boolean(comp.provider_b && comp.model_b)
+    if (!hasProviderMeta) return false
+    if (!Object.prototype.hasOwnProperty.call(comp, 'voices_b')) return true
+    if (comp.voices_b == null) return true
+    return comp.voices_b.length > 0
+}
 
 function formatHz(hz: number): string {
     return hz >= 1000 ? `${(hz / 1000).toFixed(hz % 1000 === 0 ? 0 : 1)} kHz` : `${hz} Hz`
@@ -1800,13 +2325,16 @@ function ProviderPanel({
                         >
                             <option value="">Add a voice...</option>
                             {voices.filter(v => !selectedVoices.find(sv => sv.id === v.id)).map(v => (
-                                <option key={v.id} value={v.id}>{v.name} ({v.gender}, {v.accent})</option>
+                                <option key={v.id} value={v.id}>
+                                    {v.name} {v.is_custom ? '[Custom]' : ''} ({v.gender}, {v.accent})
+                                </option>
                             ))}
                         </select>
                         <div className="flex flex-wrap gap-2 mt-2">
                             {selectedVoices.map(v => (
                                 <div key={v.id} className={`flex items-center gap-1 ${chipBg} text-xs px-2 py-1 rounded-full border`}>
                                     <span>{v.name}</span>
+                                    {v.is_custom && <span className="px-1 py-0.5 rounded bg-white/70 text-[10px] font-semibold">Custom</span>}
                                     <button onClick={() => onVoicesChange(selectedVoices.filter(sv => sv.id !== v.id))} className="rounded-full p-0.5 hover:opacity-70">
                                         <X className="w-3 h-3" />
                                     </button>
@@ -1872,7 +2400,7 @@ function SampleGroup({
     text: string
     samples: TTSSample[]
     providerA: string
-    providerB: string
+    providerB?: string
     playingId: string | null
     onPlay: (id: string, url: string) => void
     numRuns: number
@@ -1882,7 +2410,7 @@ function SampleGroup({
     const [expanded, setExpanded] = useState(false)
     const hasSideField = samples.some(s => s.side)
     const aSamples = samples.filter(s => hasSideField ? s.side === 'A' : s.provider === providerA)
-    const bSamples = samples.filter(s => hasSideField ? s.side === 'B' : s.provider === providerB)
+    const bSamples = providerB ? samples.filter(s => hasSideField ? s.side === 'B' : s.provider === providerB) : []
 
     return (
         <div className="bg-gray-50 rounded-lg border border-gray-200 overflow-hidden">
@@ -1900,7 +2428,7 @@ function SampleGroup({
             {expanded && (
                 <div className="border-t border-gray-200 p-4 space-y-3">
                     <p className="text-sm text-gray-700 italic mb-3">&ldquo;{text}&rdquo;</p>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div className={`grid grid-cols-1 ${providerB ? 'md:grid-cols-2' : ''} gap-3`}>
                         {/* Provider A column */}
                         <div>
                             <p className="text-xs font-semibold text-blue-700 mb-2 flex items-center gap-1.5">
@@ -1912,17 +2440,18 @@ function SampleGroup({
                                 <AudioCard key={s.id} sample={s} colorClass="blue" playingId={playingId} onPlay={onPlay} showRun={numRuns > 1} sampleRateHz={hzMapA?.[s.voice_id]} />
                             ))}
                         </div>
-                        {/* Provider B column */}
-                        <div>
-                            <p className="text-xs font-semibold text-purple-700 mb-2 flex items-center gap-1.5">
-                                <span className="w-5 h-5 rounded-full bg-purple-600 text-white flex items-center justify-center text-[10px] font-bold">B</span>
-                                <ProviderLogo provider={providerB} size="sm" />
-                                {getProviderInfo(providerB).label}
-                            </p>
-                            {bSamples.map(s => (
-                                <AudioCard key={s.id} sample={s} colorClass="purple" playingId={playingId} onPlay={onPlay} showRun={numRuns > 1} sampleRateHz={hzMapB?.[s.voice_id]} />
-                            ))}
-                        </div>
+                        {providerB && (
+                            <div>
+                                <p className="text-xs font-semibold text-purple-700 mb-2 flex items-center gap-1.5">
+                                    <span className="w-5 h-5 rounded-full bg-purple-600 text-white flex items-center justify-center text-[10px] font-bold">B</span>
+                                    <ProviderLogo provider={providerB} size="sm" />
+                                    {getProviderInfo(providerB).label}
+                                </p>
+                                {bSamples.map(s => (
+                                    <AudioCard key={s.id} sample={s} colorClass="purple" playingId={playingId} onPlay={onPlay} showRun={numRuns > 1} sampleRateHz={hzMapB?.[s.voice_id]} />
+                                ))}
+                            </div>
+                        )}
                     </div>
                 </div>
             )}
@@ -1963,7 +2492,8 @@ function AudioCard({ sample, colorClass, playingId, onPlay, showRun = false, sam
                         )}
                     </div>
                     <div className="flex items-center gap-3 text-xs text-gray-500 mt-0.5">
-                        {sample.latency_ms != null && <span>Latency: {Math.round(sample.latency_ms)}ms</span>}
+                        {sample.ttfb_ms != null && <span title="Time-to-first-byte">TTFB: {Math.round(sample.ttfb_ms)}ms</span>}
+                        {sample.latency_ms != null && <span title="Total synthesis latency">Total: {Math.round(sample.latency_ms)}ms</span>}
                         {sample.duration_seconds != null && <span>Duration: {sample.duration_seconds.toFixed(1)}s</span>}
                     </div>
                 </div>
@@ -1991,6 +2521,182 @@ function AudioCard({ sample, colorClass, playingId, onPlay, showRun = false, sam
 
 
 // ============ ANALYTICS METRIC CELL ============
+
+function providerBenchmarkColor(provider: string): string {
+    const key = provider.toLowerCase()
+    const palette: Record<string, string> = {
+        openai: '#10b981',
+        elevenlabs: '#8b5cf6',
+        cartesia: '#3b82f6',
+        deepgram: '#f59e0b',
+        google: '#ef4444',
+    }
+    return palette[key] || '#6b7280'
+}
+
+function BenchmarkMetricPanel({
+    title,
+    subtitle,
+    rows,
+    metricKey,
+    higherIsBetter,
+    maxValue,
+    unit,
+    topN = 10,
+}: {
+    title: string
+    subtitle: string
+    rows: Array<{
+        id: string
+        provider: string
+        model: string
+        voice_name: string
+        label: string
+        short_label: string
+        sample_count: number
+        avg_mos: number | null
+        avg_valence: number | null
+        avg_arousal: number | null
+        avg_prosody: number | null
+        avg_ttfb_ms: number | null
+        avg_latency_ms: number | null
+    }>
+    metricKey: BenchmarkMetricKey
+    higherIsBetter: boolean
+    maxValue?: number
+    unit?: string
+    topN?: number
+}) {
+    const sortedRows = [...rows]
+        .filter(r => r[metricKey] != null)
+        .sort((a, b) => {
+            const aVal = (a[metricKey] as number)
+            const bVal = (b[metricKey] as number)
+            return higherIsBetter ? bVal - aVal : aVal - bVal
+        })
+        .slice(0, topN)
+
+    const chartData = sortedRows.map((r) => {
+        const rawValue = r[metricKey] as number
+        return {
+            id: r.id,
+            provider: r.provider,
+            label: r.label,
+            shortLabel: r.short_label,
+            model: r.model,
+            voice: r.voice_name,
+            sampleCount: r.sample_count,
+            value: unit === 'ms' ? Number(rawValue.toFixed(0)) : Number(rawValue.toFixed(2)),
+            valueLabel: unit === 'ms' ? `${Math.round(rawValue)}ms` : rawValue.toFixed(2),
+        }
+    })
+
+    const chartWidth = Math.max(720, chartData.length * 72)
+
+    return (
+        <div className="bg-white rounded-xl border border-gray-100 p-4">
+            <h3 className="text-sm font-semibold text-gray-900 tracking-wide">{title}</h3>
+            <p className="text-xs text-gray-500 mb-3">{subtitle}</p>
+            <div className="overflow-x-auto">
+                <BarChart
+                    width={chartWidth}
+                    height={300}
+                    data={chartData}
+                    margin={{ top: 16, right: 8, left: 8, bottom: 70 }}
+                >
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                    <XAxis
+                        dataKey="shortLabel"
+                        interval={0}
+                        angle={-40}
+                        textAnchor="end"
+                        height={70}
+                        tick={{ fontSize: 10 }}
+                    />
+                    <YAxis domain={maxValue != null ? [0, maxValue] : [0, 'auto']} tick={{ fontSize: 10 }} />
+                    <Tooltip
+                        formatter={(value: any) => [unit === 'ms' ? `${value}ms` : value, title]}
+                        labelFormatter={(_label, payload: any) => payload?.[0]?.payload?.label || _label}
+                    />
+                    <Bar dataKey="value" radius={[4, 4, 0, 0]}>
+                        <LabelList dataKey="valueLabel" position="top" fontSize={10} />
+                        {chartData.map((entry) => (
+                            <Cell key={entry.id} fill={providerBenchmarkColor(entry.provider)} />
+                        ))}
+                    </Bar>
+                </BarChart>
+            </div>
+        </div>
+    )
+}
+
+function formatBenchmarkValue(value: number, unit?: string): string {
+    if (unit === 'ms') return `${Math.round(value)}ms`
+    return value.toFixed(2)
+}
+
+function BenchmarkTopList({
+    rows,
+    metricKey,
+    higherIsBetter,
+    unit,
+    topN,
+}: {
+    rows: Array<{
+        id: string
+        provider: string
+        model: string
+        voice_name: string
+        label: string
+        short_label: string
+        sample_count: number
+        avg_mos: number | null
+        avg_valence: number | null
+        avg_arousal: number | null
+        avg_prosody: number | null
+        avg_ttfb_ms: number | null
+        avg_latency_ms: number | null
+    }>
+    metricKey: BenchmarkMetricKey
+    higherIsBetter: boolean
+    unit?: string
+    topN: number
+}) {
+    const topRows = [...rows]
+        .filter(r => r[metricKey] != null)
+        .sort((a, b) => {
+            const aVal = a[metricKey] as number
+            const bVal = b[metricKey] as number
+            return higherIsBetter ? bVal - aVal : aVal - bVal
+        })
+        .slice(0, topN)
+
+    return (
+        <div className="bg-gray-50 rounded-xl border border-gray-100 p-4">
+            <h3 className="text-sm font-semibold text-gray-900 mb-3">Ranking</h3>
+            <div className="space-y-2 max-h-[360px] overflow-y-auto pr-1">
+                {topRows.map((row, idx) => {
+                    const value = row[metricKey] as number
+                    return (
+                        <div key={row.id} className="bg-white rounded-lg border border-gray-100 p-2.5 flex items-center gap-2">
+                            <span className="w-6 h-6 rounded-full bg-gray-900 text-white text-[10px] font-bold flex items-center justify-center">
+                                {idx + 1}
+                            </span>
+                            <ProviderLogo provider={row.provider} size="sm" />
+                            <div className="min-w-0 flex-1">
+                                <p className="text-xs font-medium text-gray-800 truncate">{row.voice_name}</p>
+                                <p className="text-[10px] text-gray-500 truncate">{getProviderInfo(row.provider).label} • {row.model}</p>
+                            </div>
+                            <span className="text-xs font-semibold text-gray-800 bg-gray-100 px-2 py-1 rounded-md">
+                                {formatBenchmarkValue(value, unit)}
+                            </span>
+                        </div>
+                    )
+                })}
+            </div>
+        </div>
+    )
+}
 
 function AnalyticsMetricCell({ value, max, unit, higherIsBetter = true }: {
     value: number | null; max?: number; unit?: string; higherIsBetter?: boolean

@@ -16,6 +16,7 @@ from loguru import logger
 from app.dependencies import get_db, get_organization_id, get_api_key, require_enterprise_feature
 from app.models.database import (
     AIProvider,
+    CustomTTSVoice,
     Integration,
     TTSComparison,
     TTSSample,
@@ -127,9 +128,9 @@ class TTSComparisonCreate(BaseModel):
     provider_a: str
     model_a: str
     voices_a: List[Dict[str, Any]]  # [{"id": "...", "name": "...", "sample_rate_hz": 44100}]
-    provider_b: str
-    model_b: str
-    voices_b: List[Dict[str, Any]]
+    provider_b: Optional[str] = None
+    model_b: Optional[str] = None
+    voices_b: Optional[List[Dict[str, Any]]] = None
     sample_texts: List[str]
     num_runs: int = 1
 
@@ -148,6 +149,22 @@ class GenerateSamplesRequest(BaseModel):
     temperature: Optional[float] = 0.8
 
 
+class CustomVoiceCreate(BaseModel):
+    provider: str
+    voice_id: str
+    name: str
+    gender: Optional[str] = None
+    accent: Optional[str] = None
+    description: Optional[str] = None
+
+
+class CustomVoiceUpdate(BaseModel):
+    name: Optional[str] = None
+    gender: Optional[str] = None
+    accent: Optional[str] = None
+    description: Optional[str] = None
+
+
 SAMPLE_GENERATION_SYSTEM_PROMPT = """You are an expert at creating realistic text-to-speech sample scripts. \
 Generate short, natural-sounding sentences that would be spoken aloud by a voice AI agent. \
 Each sample should be 1-3 sentences, varied in tone and content, and suitable for evaluating TTS voice quality. \
@@ -158,6 +175,21 @@ Return ONLY a JSON array of strings, with no additional text or markdown formatt
 # ======================================================================
 # Endpoints
 # ======================================================================
+
+
+def _serialize_custom_voice(voice: CustomTTSVoice) -> Dict[str, Any]:
+    return {
+        "id": str(voice.id),
+        "provider": voice.provider,
+        "voice_id": voice.voice_id,
+        "name": voice.name,
+        "gender": voice.gender or "Unknown",
+        "accent": voice.accent or "Unknown",
+        "description": voice.description,
+        "is_custom": True,
+        "created_at": voice.created_at.isoformat() if voice.created_at else None,
+        "updated_at": voice.updated_at.isoformat() if voice.updated_at else None,
+    }
 
 
 @router.post("/generate-samples", operation_id="generateTTSSamples")
@@ -246,6 +278,111 @@ async def generate_sample_texts(
     }
 
 
+@router.get("/custom-voices", operation_id="listCustomTTSVoices")
+async def list_custom_tts_voices(
+    provider: Optional[str] = None,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    query = db.query(CustomTTSVoice).filter(CustomTTSVoice.organization_id == organization_id)
+    if provider:
+        query = query.filter(CustomTTSVoice.provider == provider.lower())
+    voices = query.order_by(CustomTTSVoice.provider.asc(), CustomTTSVoice.name.asc()).all()
+    return [_serialize_custom_voice(v) for v in voices]
+
+
+@router.post("/custom-voices", operation_id="createCustomTTSVoice")
+async def create_custom_tts_voice(
+    data: CustomVoiceCreate,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    provider = data.provider.strip().lower()
+    voice_id = data.voice_id.strip()
+    name = data.name.strip()
+
+    if provider not in PROVIDERS_WITH_TTS:
+        raise HTTPException(400, f"Unsupported TTS provider: {provider}")
+    if not voice_id:
+        raise HTTPException(400, "voice_id is required")
+    if not name:
+        raise HTTPException(400, "name is required")
+
+    existing = db.query(CustomTTSVoice).filter(
+        CustomTTSVoice.organization_id == organization_id,
+        CustomTTSVoice.provider == provider,
+        CustomTTSVoice.voice_id == voice_id,
+    ).first()
+    if existing:
+        raise HTTPException(409, f"Custom voice already exists for provider '{provider}' and voice_id '{voice_id}'")
+
+    voice = CustomTTSVoice(
+        organization_id=organization_id,
+        provider=provider,
+        voice_id=voice_id,
+        name=name,
+        gender=data.gender.strip() if data.gender else None,
+        accent=data.accent.strip() if data.accent else None,
+        description=data.description.strip() if data.description else None,
+    )
+    db.add(voice)
+    db.commit()
+    db.refresh(voice)
+    return _serialize_custom_voice(voice)
+
+
+@router.put("/custom-voices/{custom_voice_id}", operation_id="updateCustomTTSVoice")
+async def update_custom_tts_voice(
+    custom_voice_id: UUID,
+    data: CustomVoiceUpdate,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    voice = db.query(CustomTTSVoice).filter(
+        CustomTTSVoice.id == custom_voice_id,
+        CustomTTSVoice.organization_id == organization_id,
+    ).first()
+    if not voice:
+        raise HTTPException(404, "Custom voice not found")
+
+    if data.name is not None:
+        cleaned_name = data.name.strip()
+        if not cleaned_name:
+            raise HTTPException(400, "name cannot be empty")
+        voice.name = cleaned_name
+    if data.gender is not None:
+        voice.gender = data.gender.strip() or None
+    if data.accent is not None:
+        voice.accent = data.accent.strip() or None
+    if data.description is not None:
+        voice.description = data.description.strip() or None
+
+    db.commit()
+    db.refresh(voice)
+    return _serialize_custom_voice(voice)
+
+
+@router.delete("/custom-voices/{custom_voice_id}", operation_id="deleteCustomTTSVoice")
+async def delete_custom_tts_voice(
+    custom_voice_id: UUID,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    voice = db.query(CustomTTSVoice).filter(
+        CustomTTSVoice.id == custom_voice_id,
+        CustomTTSVoice.organization_id == organization_id,
+    ).first()
+    if not voice:
+        raise HTTPException(404, "Custom voice not found")
+    db.delete(voice)
+    db.commit()
+    return {"message": "Custom voice deleted"}
+
+
 @router.get("/tts-providers", operation_id="listTTSProviders")
 async def list_tts_providers(
     organization_id: UUID = Depends(get_organization_id),
@@ -275,6 +412,13 @@ async def list_tts_providers(
         if pval in PROVIDERS_WITH_TTS:
             active_provider_keys.add(pval)
 
+    custom_voices = db.query(CustomTTSVoice).filter(
+        CustomTTSVoice.organization_id == organization_id
+    ).all()
+    custom_voices_by_provider: Dict[str, List[CustomTTSVoice]] = {}
+    for cv in custom_voices:
+        custom_voices_by_provider.setdefault(cv.provider, []).append(cv)
+
     result = []
     for provider_key in sorted(active_provider_keys):
         # Get TTS models from models.json
@@ -287,7 +431,28 @@ async def list_tts_providers(
         if not tts_models:
             continue
 
-        voices = TTS_VOICES.get(provider_key, [])
+        static_voices = TTS_VOICES.get(provider_key, [])
+        merged_voice_map: Dict[str, Dict[str, Any]] = {
+            v["id"]: {
+                "id": v["id"],
+                "name": v["name"],
+                "gender": v.get("gender", "Unknown"),
+                "accent": v.get("accent", "Unknown"),
+                "is_custom": False,
+            }
+            for v in static_voices
+        }
+        for cv in custom_voices_by_provider.get(provider_key, []):
+            merged_voice_map[cv.voice_id] = {
+                "id": cv.voice_id,
+                "name": cv.name,
+                "gender": cv.gender or "Unknown",
+                "accent": cv.accent or "Unknown",
+                "description": cv.description,
+                "is_custom": True,
+                "custom_voice_id": str(cv.id),
+            }
+        voices = sorted(list(merged_voice_map.values()), key=lambda v: (0 if v.get("is_custom") else 1, v["name"].lower()))
         sample_rates = PROVIDER_SAMPLE_RATES.get(provider_key, [])
 
         result.append({
@@ -310,8 +475,19 @@ async def create_comparison(
     """Create a new TTS comparison session and its sample records."""
     if not data.sample_texts:
         raise HTTPException(400, "At least one sample text is required")
-    if not data.voices_a or not data.voices_b:
-        raise HTTPException(400, "At least one voice per provider is required")
+    if not data.voices_a:
+        raise HTTPException(400, "At least one voice for provider A is required")
+
+    has_provider_b = bool((data.provider_b or "").strip())
+    has_model_b = bool((data.model_b or "").strip())
+    has_voices_b = bool(data.voices_b)
+    if has_provider_b or has_model_b or has_voices_b:
+        if not (has_provider_b and has_model_b and has_voices_b):
+            raise HTTPException(400, "provider_b, model_b, and voices_b are all required when comparing A vs B")
+
+    provider_b = data.provider_b.strip() if data.provider_b else None
+    model_b = data.model_b.strip() if data.model_b else None
+    voices_b = data.voices_b or []
 
     num_runs = max(1, min(data.num_runs, 10))
 
@@ -320,14 +496,16 @@ async def create_comparison(
     comparison = TTSComparison(
         organization_id=organization_id,
         simulation_id=simulation_id,
-        name=data.name or f"{data.provider_a} vs {data.provider_b}",
+        name=data.name or (
+            f"{data.provider_a} vs {provider_b}" if provider_b else f"{data.provider_a} benchmark"
+        ),
         status=TTSComparisonStatus.PENDING.value,
         provider_a=data.provider_a,
         model_a=data.model_a,
         voices_a=[v if isinstance(v, dict) else {"id": v} for v in data.voices_a],
-        provider_b=data.provider_b,
-        model_b=data.model_b,
-        voices_b=[v if isinstance(v, dict) else {"id": v} for v in data.voices_b],
+        provider_b=provider_b,
+        model_b=model_b,
+        voices_b=[v if isinstance(v, dict) else {"id": v} for v in voices_b] if voices_b else [],
         sample_texts=data.sample_texts,
         num_runs=num_runs,
     )
@@ -353,22 +531,23 @@ async def create_comparison(
                     status=TTSSampleStatus.PENDING.value,
                 ))
 
-            for voice in data.voices_b:
-                vid = voice["id"] if isinstance(voice, dict) else voice
-                vname = voice.get("name", vid) if isinstance(voice, dict) else vid
-                db.add(TTSSample(
-                    comparison_id=comparison.id,
-                    organization_id=organization_id,
-                    provider=data.provider_b,
-                    model=data.model_b,
-                    voice_id=vid,
-                    voice_name=vname,
-                    side="B",
-                    sample_index=idx,
-                    run_index=run,
-                    text=text,
-                    status=TTSSampleStatus.PENDING.value,
-                ))
+            if provider_b and model_b:
+                for voice in voices_b:
+                    vid = voice["id"] if isinstance(voice, dict) else voice
+                    vname = voice.get("name", vid) if isinstance(voice, dict) else vid
+                    db.add(TTSSample(
+                        comparison_id=comparison.id,
+                        organization_id=organization_id,
+                        provider=provider_b,
+                        model=model_b,
+                        voice_id=vid,
+                        voice_name=vname,
+                        side="B",
+                        sample_index=idx,
+                        run_index=run,
+                        text=text,
+                        status=TTSSampleStatus.PENDING.value,
+                    ))
 
     db.commit()
     db.refresh(comparison)
@@ -496,6 +675,7 @@ async def get_sample(
         "audio_s3_key": sample.audio_s3_key,
         "duration_seconds": sample.duration_seconds,
         "latency_ms": sample.latency_ms,
+        "ttfb_ms": sample.ttfb_ms,
         "evaluation_metrics": sample.evaluation_metrics,
         "status": sample.status,
         "error_message": sample.error_message,
@@ -568,6 +748,9 @@ async def get_tts_analytics(
         latencies = [s.latency_ms for s in group_samples if s.latency_ms is not None]
         row["avg_latency_ms"] = round(sum(latencies) / len(latencies), 1) if latencies else None
 
+        ttfbs = [s.ttfb_ms for s in group_samples if s.ttfb_ms is not None]
+        row["avg_ttfb_ms"] = round(sum(ttfbs) / len(ttfbs), 1) if ttfbs else None
+
         result.append(row)
 
     result.sort(key=lambda r: r.get("avg_mos") or 0, reverse=True)
@@ -637,6 +820,7 @@ def _serialize_comparison(c: TTSComparison, db: Session) -> Dict[str, Any]:
             "audio_s3_key": s.audio_s3_key,
             "duration_seconds": s.duration_seconds,
             "latency_ms": s.latency_ms,
+            "ttfb_ms": s.ttfb_ms,
             "evaluation_metrics": s.evaluation_metrics,
             "status": s.status,
             "error_message": s.error_message,
@@ -687,6 +871,10 @@ def _recompute_summary(comparison: TTSComparison, db: Session):
         latencies = [s.latency_ms for s in side_samples if s.latency_ms is not None]
         if latencies:
             summary[side]["avg_latency_ms"] = round(sum(latencies) / len(latencies), 1)
+
+        ttfbs = [s.ttfb_ms for s in side_samples if s.ttfb_ms is not None]
+        if ttfbs:
+            summary[side]["avg_ttfb_ms"] = round(sum(ttfbs) / len(ttfbs), 1)
 
     # Blind test tallying
     if comparison.blind_test_results:

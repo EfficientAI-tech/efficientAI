@@ -122,7 +122,7 @@ class TTSService:
     def _synthesize_with_openai(
         self, text: str, model: str, api_key: str,
         voice: Optional[str] = "alloy", config: Optional[Dict[str, Any]] = None
-    ) -> bytes:
+    ) -> Tuple[bytes, float]:
         try:
             from openai import OpenAI
 
@@ -131,24 +131,28 @@ class TTSService:
             if config:
                 request_params.update(config)
 
-            response = client.audio.speech.create(**request_params)
-            audio_bytes = b""
-            for chunk in response.iter_bytes():
-                audio_bytes += chunk
-            return audio_bytes
+            start = time.time()
+            with client.audio.speech.with_streaming_response.create(**request_params) as response:
+                ttfb_ms: Optional[float] = None
+                chunks: list[bytes] = []
+                for chunk in response.iter_bytes():
+                    if ttfb_ms is None:
+                        ttfb_ms = (time.time() - start) * 1000
+                    chunks.append(chunk)
+            return b"".join(chunks), ttfb_ms if ttfb_ms is not None else (time.time() - start) * 1000
         except ImportError:
             raise RuntimeError("OpenAI library not installed. Install with: pip install openai")
         except Exception as e:
             raise RuntimeError(f"OpenAI TTS synthesis failed: {e}")
 
     # ------------------------------------------------------------------
-    # Google
+    # Google (unary RPC – no streaming; TTFB ≈ total API time)
     # ------------------------------------------------------------------
 
     def _synthesize_with_google(
         self, text: str, model: str, api_key: str,
         voice: Optional[str] = None, config: Optional[Dict[str, Any]] = None
-    ) -> bytes:
+    ) -> Tuple[bytes, float]:
         try:
             from google.cloud import texttospeech
 
@@ -160,10 +164,12 @@ class TTSService:
             audio_config = texttospeech.AudioConfig(
                 audio_encoding=texttospeech.AudioEncoding.MP3
             )
+            start = time.time()
             response = client.synthesize_speech(
                 input=synthesis_input, voice=voice_config, audio_config=audio_config,
             )
-            return response.audio_content
+            ttfb_ms = (time.time() - start) * 1000
+            return response.audio_content, ttfb_ms
         except ImportError:
             raise RuntimeError("Google Cloud TTS library not installed.")
         except Exception as e:
@@ -176,9 +182,9 @@ class TTSService:
     def _synthesize_with_elevenlabs(
         self, text: str, model: str, api_key: str,
         voice: Optional[str] = None, config: Optional[Dict[str, Any]] = None
-    ) -> bytes:
+    ) -> Tuple[bytes, float]:
         voice_id = voice or "21m00Tcm4TlvDq8ikWAM"  # default: Rachel
-        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream"
 
         query_params: Dict[str, str] = {}
         effective_config = dict(config) if config else {}
@@ -207,17 +213,25 @@ class TTSService:
         if effective_config:
             body.update(effective_config)
 
-        resp = requests.post(url, json=body, headers=headers, params=query_params, timeout=60)
+        start = time.time()
+        resp = requests.post(url, json=body, headers=headers, params=query_params, stream=True, timeout=60)
         if resp.status_code != 200:
-            raise RuntimeError(
-                f"ElevenLabs TTS failed ({resp.status_code}): {resp.text[:500]}"
-            )
+            error_text = b"".join(resp.iter_content(chunk_size=None)).decode(errors="replace")[:500]
+            raise RuntimeError(f"ElevenLabs TTS failed ({resp.status_code}): {error_text}")
 
-        audio_bytes = resp.content
+        ttfb_ms: Optional[float] = None
+        chunks: list[bytes] = []
+        for chunk in resp.iter_content(chunk_size=8192):
+            if chunk:
+                if ttfb_ms is None:
+                    ttfb_ms = (time.time() - start) * 1000
+                chunks.append(chunk)
+
+        audio_bytes = b"".join(chunks)
         if is_pcm and sample_rate_hz:
             audio_bytes = _pcm_to_wav(audio_bytes, int(sample_rate_hz))
 
-        return audio_bytes
+        return audio_bytes, ttfb_ms if ttfb_ms is not None else (time.time() - start) * 1000
 
     # ------------------------------------------------------------------
     # Cartesia
@@ -226,7 +240,7 @@ class TTSService:
     def _synthesize_with_cartesia(
         self, text: str, model: str, api_key: str,
         voice: Optional[str] = None, config: Optional[Dict[str, Any]] = None
-    ) -> bytes:
+    ) -> Tuple[bytes, float]:
         voice_id = voice or "a0e99841-438c-4a64-b679-ae501e7d6091"  # default: Barbershop Man
         url = "https://api.cartesia.ai/tts/bytes"
         headers = {
@@ -251,12 +265,21 @@ class TTSService:
         if effective_config:
             body.update(effective_config)
 
-        resp = requests.post(url, json=body, headers=headers, timeout=60)
+        start = time.time()
+        resp = requests.post(url, json=body, headers=headers, stream=True, timeout=60)
         if resp.status_code != 200:
-            raise RuntimeError(
-                f"Cartesia TTS failed ({resp.status_code}): {resp.text[:500]}"
-            )
-        return resp.content
+            error_text = b"".join(resp.iter_content(chunk_size=None)).decode(errors="replace")[:500]
+            raise RuntimeError(f"Cartesia TTS failed ({resp.status_code}): {error_text}")
+
+        ttfb_ms: Optional[float] = None
+        chunks: list[bytes] = []
+        for chunk in resp.iter_content(chunk_size=8192):
+            if chunk:
+                if ttfb_ms is None:
+                    ttfb_ms = (time.time() - start) * 1000
+                chunks.append(chunk)
+
+        return b"".join(chunks), ttfb_ms if ttfb_ms is not None else (time.time() - start) * 1000
 
     # ------------------------------------------------------------------
     # Deepgram
@@ -265,7 +288,7 @@ class TTSService:
     def _synthesize_with_deepgram(
         self, text: str, model: str, api_key: str,
         voice: Optional[str] = None, config: Optional[Dict[str, Any]] = None
-    ) -> bytes:
+    ) -> Tuple[bytes, float]:
         voice_model = voice or "aura-asteria-en"
         url = f"https://api.deepgram.com/v1/speak?model={voice_model}"
 
@@ -280,16 +303,38 @@ class TTSService:
         }
         body = {"text": text}
 
-        resp = requests.post(url, json=body, headers=headers, timeout=60)
+        start = time.time()
+        resp = requests.post(url, json=body, headers=headers, stream=True, timeout=60)
         if resp.status_code != 200:
-            raise RuntimeError(
-                f"Deepgram TTS failed ({resp.status_code}): {resp.text[:500]}"
-            )
-        return resp.content
+            error_text = b"".join(resp.iter_content(chunk_size=None)).decode(errors="replace")[:500]
+            raise RuntimeError(f"Deepgram TTS failed ({resp.status_code}): {error_text}")
+
+        ttfb_ms: Optional[float] = None
+        chunks: list[bytes] = []
+        for chunk in resp.iter_content(chunk_size=8192):
+            if chunk:
+                if ttfb_ms is None:
+                    ttfb_ms = (time.time() - start) * 1000
+                chunks.append(chunk)
+
+        return b"".join(chunks), ttfb_ms if ttfb_ms is not None else (time.time() - start) * 1000
 
     # ------------------------------------------------------------------
     # Main synthesis entry point
     # ------------------------------------------------------------------
+
+    def _dispatch(self, tts_provider: ModelProvider):
+        dispatch = {
+            ModelProvider.OPENAI: self._synthesize_with_openai,
+            ModelProvider.GOOGLE: self._synthesize_with_google,
+            ModelProvider.ELEVENLABS: self._synthesize_with_elevenlabs,
+            ModelProvider.CARTESIA: self._synthesize_with_cartesia,
+            ModelProvider.DEEPGRAM: self._synthesize_with_deepgram,
+        }
+        handler = dispatch.get(tts_provider)
+        if not handler:
+            raise NotImplementedError(f"TTS provider {tts_provider} not supported")
+        return handler
 
     def synthesize(
         self,
@@ -303,20 +348,9 @@ class TTSService:
     ) -> bytes:
         """Synthesize speech from text. Returns audio bytes (MP3)."""
         api_key = self._get_api_key_for_provider(tts_provider, db, organization_id)
-
-        dispatch = {
-            ModelProvider.OPENAI: self._synthesize_with_openai,
-            ModelProvider.GOOGLE: self._synthesize_with_google,
-            ModelProvider.ELEVENLABS: self._synthesize_with_elevenlabs,
-            ModelProvider.CARTESIA: self._synthesize_with_cartesia,
-            ModelProvider.DEEPGRAM: self._synthesize_with_deepgram,
-        }
-
-        handler = dispatch.get(tts_provider)
-        if not handler:
-            raise NotImplementedError(f"TTS provider {tts_provider} not supported")
-
-        return handler(text, tts_model, api_key, voice, config)
+        handler = self._dispatch(tts_provider)
+        audio_bytes, _ttfb = handler(text, tts_model, api_key, voice, config)
+        return audio_bytes
 
     def synthesize_timed(
         self,
@@ -327,12 +361,14 @@ class TTSService:
         db: Session,
         voice: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[bytes, float]:
-        """Synthesize and return (audio_bytes, latency_ms)."""
+    ) -> Tuple[bytes, float, float]:
+        """Synthesize and return (audio_bytes, total_latency_ms, ttfb_ms)."""
+        api_key = self._get_api_key_for_provider(tts_provider, db, organization_id)
+        handler = self._dispatch(tts_provider)
         start = time.time()
-        audio = self.synthesize(text, tts_provider, tts_model, organization_id, db, voice, config)
-        latency_ms = (time.time() - start) * 1000
-        return audio, latency_ms
+        audio_bytes, ttfb_ms = handler(text, tts_model, api_key, voice, config)
+        total_latency_ms = (time.time() - start) * 1000
+        return audio_bytes, total_latency_ms, ttfb_ms
 
     def synthesize_and_upload(
         self,

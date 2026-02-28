@@ -735,7 +735,7 @@ def generate_tts_comparison_task(self, comparison_id: str):
                     f"provider={sample.provider} voice={sample.voice_id} "
                     f"sample_rate_hz={sample_rate_hz} config={tts_config}"
                 )
-                audio_bytes, latency_ms = tts_service.synthesize_timed(
+                audio_bytes, latency_ms, ttfb_ms = tts_service.synthesize_timed(
                     text=sample.text,
                     tts_provider=provider_enum,
                     tts_model=sample.model,
@@ -762,13 +762,14 @@ def generate_tts_comparison_task(self, comparison_id: str):
 
                 sample.audio_s3_key = s3_key
                 sample.latency_ms = round(latency_ms, 1)
+                sample.ttfb_ms = round(ttfb_ms, 1)
                 sample.duration_seconds = round(duration_est, 2) if duration_est else None
                 sample.status = TTSSampleStatus.COMPLETED.value
                 db.commit()
 
                 logger.info(
                     f"[TTS Generate] Sample {sample.id} done – "
-                    f"{sample.provider}/{sample.voice_name} latency={latency_ms:.0f}ms"
+                    f"{sample.provider}/{sample.voice_name} ttfb={ttfb_ms:.0f}ms total={latency_ms:.0f}ms"
                 )
 
             except Exception as e:
