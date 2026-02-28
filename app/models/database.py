@@ -763,6 +763,7 @@ class TTSSample(Base):
     model = Column(String(100), nullable=False)
     voice_id = Column(String(255), nullable=False)
     voice_name = Column(String(255), nullable=True)
+    side = Column(String(1), nullable=True)  # "A" or "B"
     sample_index = Column(Integer, nullable=False)
     run_index = Column(Integer, nullable=False, default=0)
 

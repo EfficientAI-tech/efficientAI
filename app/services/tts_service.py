@@ -2,6 +2,7 @@
 TTS service for converting text to speech using various TTS providers.
 """
 
+import struct
 import time
 import tempfile
 import os
@@ -14,6 +15,54 @@ from loguru import logger
 from app.models.database import ModelProvider, AIProvider, Integration
 from app.services.s3_service import s3_service
 from sqlalchemy.orm import Session
+
+
+ELEVENLABS_HZ_TO_OUTPUT_FORMAT = {
+    8000: "pcm_8000",
+    16000: "pcm_16000",
+    22050: "mp3_22050_32",
+    24000: "pcm_24000",
+    44100: "mp3_44100_128",
+}
+
+PROVIDER_SUPPORTED_SAMPLE_RATES: Dict[str, list] = {
+    "elevenlabs": [8000, 16000, 22050, 24000, 44100],
+    "cartesia": [8000, 16000, 22050, 24000, 44100],
+    "deepgram": [8000, 16000, 24000, 48000],
+}
+
+
+def _pcm_to_wav(pcm_bytes: bytes, sample_rate: int, sample_width: int = 2, channels: int = 1) -> bytes:
+    """Wrap headerless PCM bytes in a valid WAV container."""
+    data_size = len(pcm_bytes)
+    byte_rate = sample_rate * channels * sample_width
+    block_align = channels * sample_width
+    header = struct.pack(
+        '<4sI4s4sIHHIIHH4sI',
+        b'RIFF',
+        36 + data_size,
+        b'WAVE',
+        b'fmt ',
+        16,
+        1,                      # PCM format tag
+        channels,
+        sample_rate,
+        byte_rate,
+        block_align,
+        sample_width * 8,
+        b'data',
+        data_size,
+    )
+    return header + pcm_bytes
+
+
+def get_audio_file_extension(provider: str, sample_rate_hz: Optional[int] = None) -> str:
+    """Determine audio file extension based on provider and requested sample rate."""
+    if provider == "elevenlabs" and sample_rate_hz:
+        fmt = ELEVENLABS_HZ_TO_OUTPUT_FORMAT.get(sample_rate_hz, "")
+        if fmt.startswith(("pcm_", "ulaw_")):
+            return "wav"
+    return "mp3"
 
 
 class TTSService:
@@ -130,25 +179,45 @@ class TTSService:
     ) -> bytes:
         voice_id = voice or "21m00Tcm4TlvDq8ikWAM"  # default: Rachel
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+
+        query_params: Dict[str, str] = {}
+        effective_config = dict(config) if config else {}
+
+        sample_rate_hz = effective_config.pop("sample_rate_hz", None)
+        output_fmt = None
+        if sample_rate_hz:
+            hz_int = int(sample_rate_hz)
+            output_fmt = ELEVENLABS_HZ_TO_OUTPUT_FORMAT.get(hz_int)
+            if output_fmt:
+                query_params["output_format"] = output_fmt
+            logger.info(f"[ElevenLabs TTS] sample_rate_hz={hz_int} -> output_format={output_fmt}")
+
+        is_pcm = output_fmt and output_fmt.startswith(("pcm_", "ulaw_"))
+
         headers = {
             "xi-api-key": api_key,
             "Content-Type": "application/json",
-            "Accept": "audio/mpeg",
+            "Accept": "application/octet-stream" if is_pcm else "audio/mpeg",
         }
         body: Dict[str, Any] = {
             "text": text,
             "model_id": model,
             "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
         }
-        if config:
-            body.update(config)
+        if effective_config:
+            body.update(effective_config)
 
-        resp = requests.post(url, json=body, headers=headers, timeout=60)
+        resp = requests.post(url, json=body, headers=headers, params=query_params, timeout=60)
         if resp.status_code != 200:
             raise RuntimeError(
                 f"ElevenLabs TTS failed ({resp.status_code}): {resp.text[:500]}"
             )
-        return resp.content
+
+        audio_bytes = resp.content
+        if is_pcm and sample_rate_hz:
+            audio_bytes = _pcm_to_wav(audio_bytes, int(sample_rate_hz))
+
+        return audio_bytes
 
     # ------------------------------------------------------------------
     # Cartesia
@@ -165,6 +234,10 @@ class TTSService:
             "Cartesia-Version": "2024-06-10",
             "Content-Type": "application/json",
         }
+
+        effective_config = dict(config) if config else {}
+        sample_rate_hz = effective_config.pop("sample_rate_hz", None)
+
         body: Dict[str, Any] = {
             "model_id": model,
             "transcript": text,
@@ -172,11 +245,11 @@ class TTSService:
             "output_format": {
                 "container": "mp3",
                 "bit_rate": 128000,
-                "sample_rate": 44100,
+                "sample_rate": int(sample_rate_hz) if sample_rate_hz else 44100,
             },
         }
-        if config:
-            body.update(config)
+        if effective_config:
+            body.update(effective_config)
 
         resp = requests.post(url, json=body, headers=headers, timeout=60)
         if resp.status_code != 200:
@@ -195,6 +268,12 @@ class TTSService:
     ) -> bytes:
         voice_model = voice or "aura-asteria-en"
         url = f"https://api.deepgram.com/v1/speak?model={voice_model}"
+
+        effective_config = dict(config) if config else {}
+        sample_rate_hz = effective_config.pop("sample_rate_hz", None)
+        if sample_rate_hz:
+            url += f"&sample_rate={int(sample_rate_hz)}"
+
         headers = {
             "Authorization": f"Token {api_key}",
             "Content-Type": "application/json",

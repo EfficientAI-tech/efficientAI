@@ -46,6 +46,7 @@ interface TTSProvider {
     provider: string
     models: string[]
     voices: TTSVoice[]
+    supported_sample_rates?: number[]
 }
 
 interface TTSSample {
@@ -54,6 +55,7 @@ interface TTSSample {
     model: string
     voice_id: string
     voice_name: string
+    side?: string | null
     sample_index: number
     run_index: number
     text: string
@@ -73,10 +75,10 @@ interface TTSComparison {
     status: string
     provider_a: string
     model_a: string
-    voices_a: Array<{ id: string; name: string }>
+    voices_a: Array<{ id: string; name: string; sample_rate_hz?: number }>
     provider_b: string
     model_b: string
-    voices_b: Array<{ id: string; name: string }>
+    voices_b: Array<{ id: string; name: string; sample_rate_hz?: number }>
     sample_texts: string[]
     num_runs: number
     blind_test_results: Array<{ sample_index: number; preferred: string }> | null
@@ -300,10 +302,12 @@ export default function VoicePlayground() {
     const [providerA, setProviderA] = useState('')
     const [modelA, setModelA] = useState('')
     const [selectedVoicesA, setSelectedVoicesA] = useState<TTSVoice[]>([])
+    const [sampleRateA, setSampleRateA] = useState<number | null>(null)
 
     const [providerB, setProviderB] = useState('')
     const [modelB, setModelB] = useState('')
     const [selectedVoicesB, setSelectedVoicesB] = useState<TTSVoice[]>([])
+    const [sampleRateB, setSampleRateB] = useState<number | null>(null)
 
     const [sampleTexts, setSampleTexts] = useState<string[]>(DEFAULT_SAMPLE_TEXTS.slice(0, 3))
     const [customText, setCustomText] = useState('')
@@ -376,10 +380,16 @@ export default function VoicePlayground() {
             const comp = await apiClient.createTTSComparison({
                 provider_a: providerA,
                 model_a: modelA,
-                voices_a: selectedVoicesA.map(v => ({ id: v.id, name: v.name })),
+                voices_a: selectedVoicesA.map(v => ({
+                    id: v.id, name: v.name,
+                    ...(sampleRateA ? { sample_rate_hz: sampleRateA } : {}),
+                })),
                 provider_b: providerB,
                 model_b: modelB,
-                voices_b: selectedVoicesB.map(v => ({ id: v.id, name: v.name })),
+                voices_b: selectedVoicesB.map(v => ({
+                    id: v.id, name: v.name,
+                    ...(sampleRateB ? { sample_rate_hz: sampleRateB } : {}),
+                })),
                 sample_texts: sampleTexts,
                 num_runs: numRuns,
             })
@@ -417,8 +427,9 @@ export default function VoicePlayground() {
         const textCount = comp.sample_texts?.length || 0
         for (let i = 0; i < textCount; i++) {
             const samplesForIdx = comp.samples.filter(s => s.sample_index === i && s.status === 'completed' && s.audio_url)
-            const aSamples = samplesForIdx.filter(s => s.provider === comp.provider_a)
-            const bSamples = samplesForIdx.filter(s => s.provider === comp.provider_b)
+            const hasSide = samplesForIdx.some(s => s.side)
+            const aSamples = samplesForIdx.filter(s => hasSide ? s.side === 'A' : s.provider === comp.provider_a)
+            const bSamples = samplesForIdx.filter(s => hasSide ? s.side === 'B' : s.provider === comp.provider_b)
             if (aSamples.length > 0 && bSamples.length > 0) {
                 const flipped = Math.random() > 0.5
                 pairs.push({
@@ -856,9 +867,11 @@ export default function VoicePlayground() {
                                                 selectedProvider={providerA}
                                                 selectedModel={modelA}
                                                 selectedVoices={selectedVoicesA}
-                                                onProviderChange={p => { setProviderA(p); setModelA(''); setSelectedVoicesA([]) }}
+                                                sampleRate={sampleRateA}
+                                                onProviderChange={p => { setProviderA(p); setModelA(''); setSelectedVoicesA([]); setSampleRateA(null) }}
                                                 onModelChange={setModelA}
                                                 onVoicesChange={setSelectedVoicesA}
+                                                onSampleRateChange={setSampleRateA}
                                             />
 
                                             {/* VS Badge */}
@@ -874,9 +887,11 @@ export default function VoicePlayground() {
                                                 selectedProvider={providerB}
                                                 selectedModel={modelB}
                                                 selectedVoices={selectedVoicesB}
-                                                onProviderChange={p => { setProviderB(p); setModelB(''); setSelectedVoicesB([]) }}
+                                                sampleRate={sampleRateB}
+                                                onProviderChange={p => { setProviderB(p); setModelB(''); setSelectedVoicesB([]); setSampleRateB(null) }}
                                                 onModelChange={setModelB}
                                                 onVoicesChange={setSelectedVoicesB}
+                                                onSampleRateChange={setSampleRateB}
                                             />
                                         </div>
 
@@ -945,18 +960,25 @@ export default function VoicePlayground() {
                     </div>
 
                     {/* Per-sample status */}
+                    {(() => { const hzMaps = buildVoiceHzMaps(comparison); return (
                     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
-                        {comparison.samples.map(s => (
+                        {comparison.samples.map(s => {
+                            const isA = s.side ? s.side === 'A' : (s.provider === comparison.provider_a && s.model === comparison.model_a)
+                            const hz = isA ? hzMaps.a[s.voice_id] : hzMaps.b[s.voice_id]
+                            return (
                             <div key={s.id} className="flex items-center gap-2 p-2 bg-gray-50 rounded-lg text-xs">
                                 {s.status === 'completed' && <CheckCircle2 className="w-3.5 h-3.5 text-green-500 flex-shrink-0" />}
                                 {s.status === 'generating' && <Loader2 className="w-3.5 h-3.5 text-yellow-500 animate-spin flex-shrink-0" />}
                                 {s.status === 'pending' && <Clock className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />}
                                 {s.status === 'failed' && <XCircle className="w-3.5 h-3.5 text-red-500 flex-shrink-0" />}
                                 <span className="truncate text-gray-700">{s.voice_name || s.voice_id}</span>
+                                <HzBadge hz={hz} />
                                 {s.latency_ms && <span className="text-gray-400 ml-auto">{Math.round(s.latency_ms)}ms</span>}
                             </div>
-                        ))}
+                            )
+                        })}
                     </div>
+                    ); })()}
 
                     {comparison.status === 'failed' && (
                         <div className="p-4 bg-red-50 rounded-lg border border-red-200">
@@ -1172,6 +1194,7 @@ export default function VoicePlayground() {
                             <FileText className="w-5 h-5 text-gray-600" />
                             Audio Samples
                         </h3>
+                        {(() => { const hzMaps = buildVoiceHzMaps(comparison); return (
                         <div className="space-y-3 max-h-[700px] overflow-y-auto">
                             {comparison.sample_texts?.map((text, idx) => (
                                 <SampleGroup
@@ -1184,9 +1207,12 @@ export default function VoicePlayground() {
                                     playingId={playingId}
                                     onPlay={play}
                                     numRuns={comparison.num_runs || 1}
+                                    hzMapA={hzMaps.a}
+                                    hzMapB={hzMaps.b}
                                 />
                             ))}
                         </div>
+                        ); })()}
                     </div>
 
                     {/* Actions */}
@@ -1335,6 +1361,7 @@ export default function VoicePlayground() {
                                             <FileText className="w-5 h-5 text-gray-600" />
                                             Audio Samples
                                         </h3>
+                                        {(() => { const hzMaps = buildVoiceHzMaps(viewedComparison); return (
                                         <div className="space-y-3 max-h-[700px] overflow-y-auto">
                                             {viewedComparison.sample_texts?.map((text, idx) => (
                                                 <SampleGroup
@@ -1347,9 +1374,12 @@ export default function VoicePlayground() {
                                                     playingId={playingId}
                                                     onPlay={play}
                                                     numRuns={viewedComparison.num_runs || 1}
+                                                    hzMapA={hzMaps.a}
+                                                    hzMapB={hzMaps.b}
                                                 />
                                             ))}
                                         </div>
+                                        ); })()}
                                     </div>
 
                                     {/* Back action */}
@@ -1652,11 +1682,34 @@ export default function VoicePlayground() {
 }
 
 
+// ============ HELPERS ============
+
+function formatHz(hz: number): string {
+    return hz >= 1000 ? `${(hz / 1000).toFixed(hz % 1000 === 0 ? 0 : 1)} kHz` : `${hz} Hz`
+}
+
+function buildVoiceHzMaps(comp: TTSComparison): { a: Record<string, number>; b: Record<string, number> } {
+    const a: Record<string, number> = {}
+    const b: Record<string, number> = {}
+    for (const v of (comp.voices_a || [])) {
+        if (v.sample_rate_hz) a[v.id] = v.sample_rate_hz
+    }
+    for (const v of (comp.voices_b || [])) {
+        if (v.sample_rate_hz) b[v.id] = v.sample_rate_hz
+    }
+    return { a, b }
+}
+
+function HzBadge({ hz }: { hz?: number | null }) {
+    if (!hz) return null
+    return <span className="text-[10px] px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded-full font-medium">{formatHz(hz)}</span>
+}
+
 // ============ PROVIDER PANEL SUB-COMPONENT ============
 
 function ProviderPanel({
     label, color, providers, selectedProvider, selectedModel, selectedVoices,
-    onProviderChange, onModelChange, onVoicesChange,
+    sampleRate, onProviderChange, onModelChange, onVoicesChange, onSampleRateChange,
 }: {
     label: string
     color: 'blue' | 'purple'
@@ -1664,13 +1717,17 @@ function ProviderPanel({
     selectedProvider: string
     selectedModel: string
     selectedVoices: TTSVoice[]
+    sampleRate: number | null
     onProviderChange: (p: string) => void
     onModelChange: (m: string) => void
     onVoicesChange: (v: TTSVoice[]) => void
+    onSampleRateChange: (hz: number | null) => void
 }) {
+    const [showAdvanced, setShowAdvanced] = useState(false)
     const providerData = providers.find(p => p.provider === selectedProvider)
     const models = providerData?.models || []
     const voices = providerData?.voices || []
+    const supportedRates = providerData?.supported_sample_rates || []
 
     const bgGrad = color === 'blue' ? 'bg-gradient-to-br from-blue-50 to-sky-50' : 'bg-gradient-to-br from-purple-50 to-fuchsia-50'
     const borderColor = color === 'blue' ? 'border-blue-200' : 'border-purple-200'
@@ -1678,6 +1735,8 @@ function ProviderPanel({
     const textColor = color === 'blue' ? 'text-blue-900' : 'text-purple-900'
     const chipBg = color === 'blue' ? 'bg-blue-100 text-blue-800 border-blue-200' : 'bg-purple-100 text-purple-800 border-purple-200'
     const ringColor = color === 'blue' ? 'focus:ring-blue-500' : 'focus:ring-purple-500'
+    const advancedBorder = color === 'blue' ? 'border-blue-100' : 'border-purple-100'
+    const advancedBg = color === 'blue' ? 'bg-blue-50/50' : 'bg-purple-50/50'
 
     return (
         <div className={`p-5 ${bgGrad} rounded-xl border-2 ${borderColor}`}>
@@ -1756,6 +1815,48 @@ function ProviderPanel({
                         </div>
                     </div>
                 )}
+
+                {/* Advanced options (sample rate) */}
+                {selectedProvider && supportedRates.length > 0 && (
+                    <div className={`border ${advancedBorder} rounded-lg overflow-hidden`}>
+                        <button
+                            type="button"
+                            onClick={() => setShowAdvanced(!showAdvanced)}
+                            className={`w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-gray-500 hover:text-gray-700 ${advancedBg} transition-colors`}
+                        >
+                            <span className="flex items-center gap-1.5">
+                                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <circle cx="12" cy="12" r="3" /><path d="M12 1v6m0 6v6m8.66-15l-5.2 3m-6.92 4l-5.2 3M22.66 18l-5.2-3m-6.92-4l-5.2-3" />
+                                </svg>
+                                Advanced Options
+                                {sampleRate && <span className="ml-1 text-[10px] px-1.5 py-0.5 bg-gray-200 text-gray-600 rounded-full">{formatHz(sampleRate)}</span>}
+                            </span>
+                            {showAdvanced ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                        </button>
+                        {showAdvanced && (
+                            <div className={`px-3 py-3 ${advancedBg} border-t ${advancedBorder}`}>
+                                <div>
+                                    <label className="block text-xs font-medium text-gray-600 mb-1">
+                                        Output Sample Rate
+                                    </label>
+                                    <select
+                                        value={sampleRate ?? ''}
+                                        onChange={e => onSampleRateChange(e.target.value ? Number(e.target.value) : null)}
+                                        className={`w-full px-3 py-2 text-sm border border-gray-300 rounded-lg ${ringColor} focus:ring-2 bg-white`}
+                                    >
+                                        <option value="">Default (provider default)</option>
+                                        {supportedRates.map(hz => (
+                                            <option key={hz} value={hz}>{formatHz(hz)}</option>
+                                        ))}
+                                    </select>
+                                    <p className="mt-1 text-[10px] text-gray-400">
+                                        Frequency at which the TTS audio is generated. Higher rates yield better fidelity.
+                                    </p>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                )}
             </div>
         </div>
     )
@@ -1765,7 +1866,7 @@ function ProviderPanel({
 // ============ SAMPLE GROUP SUB-COMPONENT ============
 
 function SampleGroup({
-    sampleIndex, text, samples, providerA, providerB, playingId, onPlay, numRuns,
+    sampleIndex, text, samples, providerA, providerB, playingId, onPlay, numRuns, hzMapA, hzMapB,
 }: {
     sampleIndex: number
     text: string
@@ -1775,10 +1876,13 @@ function SampleGroup({
     playingId: string | null
     onPlay: (id: string, url: string) => void
     numRuns: number
+    hzMapA?: Record<string, number>
+    hzMapB?: Record<string, number>
 }) {
     const [expanded, setExpanded] = useState(false)
-    const aSamples = samples.filter(s => s.provider === providerA)
-    const bSamples = samples.filter(s => s.provider === providerB)
+    const hasSideField = samples.some(s => s.side)
+    const aSamples = samples.filter(s => hasSideField ? s.side === 'A' : s.provider === providerA)
+    const bSamples = samples.filter(s => hasSideField ? s.side === 'B' : s.provider === providerB)
 
     return (
         <div className="bg-gray-50 rounded-lg border border-gray-200 overflow-hidden">
@@ -1805,7 +1909,7 @@ function SampleGroup({
                                 {getProviderInfo(providerA).label}
                             </p>
                             {aSamples.map(s => (
-                                <AudioCard key={s.id} sample={s} colorClass="blue" playingId={playingId} onPlay={onPlay} showRun={numRuns > 1} />
+                                <AudioCard key={s.id} sample={s} colorClass="blue" playingId={playingId} onPlay={onPlay} showRun={numRuns > 1} sampleRateHz={hzMapA?.[s.voice_id]} />
                             ))}
                         </div>
                         {/* Provider B column */}
@@ -1816,7 +1920,7 @@ function SampleGroup({
                                 {getProviderInfo(providerB).label}
                             </p>
                             {bSamples.map(s => (
-                                <AudioCard key={s.id} sample={s} colorClass="purple" playingId={playingId} onPlay={onPlay} showRun={numRuns > 1} />
+                                <AudioCard key={s.id} sample={s} colorClass="purple" playingId={playingId} onPlay={onPlay} showRun={numRuns > 1} sampleRateHz={hzMapB?.[s.voice_id]} />
                             ))}
                         </div>
                     </div>
@@ -1827,8 +1931,8 @@ function SampleGroup({
 }
 
 
-function AudioCard({ sample, colorClass, playingId, onPlay, showRun = false }: {
-    sample: TTSSample; colorClass: 'blue' | 'purple'; playingId: string | null; onPlay: (id: string, url: string) => void; showRun?: boolean
+function AudioCard({ sample, colorClass, playingId, onPlay, showRun = false, sampleRateHz }: {
+    sample: TTSSample; colorClass: 'blue' | 'purple'; playingId: string | null; onPlay: (id: string, url: string) => void; showRun?: boolean; sampleRateHz?: number
 }) {
     const isPlaying = playingId === sample.id
     const borderC = colorClass === 'blue' ? 'border-blue-100' : 'border-purple-100'
@@ -1853,6 +1957,7 @@ function AudioCard({ sample, colorClass, playingId, onPlay, showRun = false }: {
                 <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                         <p className={`text-sm font-medium ${textC}`}>{sample.voice_name || sample.voice_id}</p>
+                        <HzBadge hz={sampleRateHz} />
                         {showRun && (
                             <span className="text-[10px] bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded">Run {(sample.run_index ?? 0) + 1}</span>
                         )}

@@ -111,6 +111,12 @@ TTS_VOICES: Dict[str, List[Dict[str, str]]] = {
 
 PROVIDERS_WITH_TTS = {"openai", "elevenlabs", "cartesia", "deepgram", "google"}
 
+PROVIDER_SAMPLE_RATES: Dict[str, List[int]] = {
+    "elevenlabs": [8000, 16000, 22050, 24000, 44100],
+    "cartesia": [8000, 16000, 22050, 24000, 44100],
+    "deepgram": [8000, 16000, 24000, 48000],
+}
+
 # ======================================================================
 # Schemas
 # ======================================================================
@@ -120,10 +126,10 @@ class TTSComparisonCreate(BaseModel):
     name: Optional[str] = None
     provider_a: str
     model_a: str
-    voices_a: List[Dict[str, str]]  # [{"id": "...", "name": "..."}]
+    voices_a: List[Dict[str, Any]]  # [{"id": "...", "name": "...", "sample_rate_hz": 44100}]
     provider_b: str
     model_b: str
-    voices_b: List[Dict[str, str]]
+    voices_b: List[Dict[str, Any]]
     sample_texts: List[str]
     num_runs: int = 1
 
@@ -282,11 +288,13 @@ async def list_tts_providers(
             continue
 
         voices = TTS_VOICES.get(provider_key, [])
+        sample_rates = PROVIDER_SAMPLE_RATES.get(provider_key, [])
 
         result.append({
             "provider": provider_key,
             "models": tts_models,
             "voices": voices,
+            "supported_sample_rates": sample_rates,
         })
 
     return result
@@ -338,6 +346,7 @@ async def create_comparison(
                     model=data.model_a,
                     voice_id=vid,
                     voice_name=vname,
+                    side="A",
                     sample_index=idx,
                     run_index=run,
                     text=text,
@@ -354,6 +363,7 @@ async def create_comparison(
                     model=data.model_b,
                     voice_id=vid,
                     voice_name=vname,
+                    side="B",
                     sample_index=idx,
                     run_index=run,
                     text=text,
@@ -478,6 +488,7 @@ async def get_sample(
         "model": sample.model,
         "voice_id": sample.voice_id,
         "voice_name": sample.voice_name,
+        "side": sample.side,
         "sample_index": sample.sample_index,
         "run_index": sample.run_index if sample.run_index is not None else 0,
         "text": sample.text,
@@ -618,6 +629,7 @@ def _serialize_comparison(c: TTSComparison, db: Session) -> Dict[str, Any]:
             "model": s.model,
             "voice_id": s.voice_id,
             "voice_name": s.voice_name,
+            "side": s.side,
             "sample_index": s.sample_index,
             "run_index": s.run_index if s.run_index is not None else 0,
             "text": s.text,
@@ -663,8 +675,8 @@ def _recompute_summary(comparison: TTSComparison, db: Session):
     summary: Dict[str, Any] = {"provider_a": {}, "provider_b": {}}
     metrics_keys = ["MOS Score", "Valence", "Arousal", "Prosody Score"]
 
-    for side, provider_val in [("provider_a", comparison.provider_a), ("provider_b", comparison.provider_b)]:
-        side_samples = [s for s in samples if s.provider == provider_val]
+    for side, side_label, provider_val in [("provider_a", "A", comparison.provider_a), ("provider_b", "B", comparison.provider_b)]:
+        side_samples = [s for s in samples if s.side == side_label] if any(s.side for s in samples) else [s for s in samples if s.provider == provider_val]
         if not side_samples:
             continue
         for mk in metrics_keys:

@@ -1138,10 +1138,10 @@ class ApiClient {
     name?: string
     provider_a: string
     model_a: string
-    voices_a: Array<{ id: string; name: string }>
+    voices_a: Array<{ id: string; name: string; sample_rate_hz?: number }>
     provider_b: string
     model_b: string
-    voices_b: Array<{ id: string; name: string }>
+    voices_b: Array<{ id: string; name: string; sample_rate_hz?: number }>
     sample_texts: string[]
     num_runs?: number
   }): Promise<any> {
@@ -1211,12 +1211,12 @@ class ApiClient {
     return response.data
   }
 
-  // Enterprise License
+  // License / Enterprise
   async getLicenseInfo(): Promise<{
     is_enterprise: boolean
     enabled_features: string[]
     all_enterprise_features: string[]
-    organization: string | null
+    organization?: string
   }> {
     const response = await this.client.get('/api/v1/settings/license-info')
     return response.data
