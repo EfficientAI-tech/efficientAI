@@ -676,7 +676,7 @@ def generate_tts_comparison_task(self, comparison_id: str):
         TTSComparison, TTSSample,
         TTSComparisonStatus, TTSSampleStatus, ModelProvider,
     )
-    from app.services.tts_service import tts_service
+    from app.services.tts_service import tts_service, get_audio_file_extension
 
     db = SessionLocal()
     try:
@@ -695,41 +695,81 @@ def generate_tts_comparison_task(self, comparison_id: str):
             .all()
         )
 
+        voice_configs_a = {v["id"]: v for v in (comp.voices_a or []) if isinstance(v, dict)}
+        voice_configs_b = {v["id"]: v for v in (comp.voices_b or []) if isinstance(v, dict)}
+
+        def _resolve_voice_meta(sample_obj):
+            """Match sample to correct side's voice config (A or B)."""
+            if sample_obj.side == "A":
+                return voice_configs_a.get(sample_obj.voice_id) or {}
+            if sample_obj.side == "B":
+                return voice_configs_b.get(sample_obj.voice_id) or {}
+            # Fallback for legacy samples without a side column
+            is_side_a = (
+                sample_obj.provider == comp.provider_a and sample_obj.model == comp.model_a
+            )
+            is_side_b = (
+                sample_obj.provider == comp.provider_b and sample_obj.model == comp.model_b
+            )
+            if is_side_a and not is_side_b:
+                return voice_configs_a.get(sample_obj.voice_id) or {}
+            if is_side_b and not is_side_a:
+                return voice_configs_b.get(sample_obj.voice_id) or {}
+            return voice_configs_a.get(sample_obj.voice_id) or voice_configs_b.get(sample_obj.voice_id) or {}
+
         failed_count = 0
         for sample in samples:
             try:
                 sample.status = TTSSampleStatus.GENERATING.value
                 db.commit()
 
+                voice_meta = _resolve_voice_meta(sample)
+                tts_config = {}
+                sample_rate_hz = voice_meta.get("sample_rate_hz")
+                if sample_rate_hz:
+                    tts_config["sample_rate_hz"] = int(sample_rate_hz)
+
                 provider_enum = ModelProvider(sample.provider)
-                audio_bytes, latency_ms = tts_service.synthesize_timed(
+                logger.info(
+                    f"[TTS Generate] Sample {sample.id} – "
+                    f"provider={sample.provider} voice={sample.voice_id} "
+                    f"sample_rate_hz={sample_rate_hz} config={tts_config}"
+                )
+                audio_bytes, latency_ms, ttfb_ms = tts_service.synthesize_timed(
                     text=sample.text,
                     tts_provider=provider_enum,
                     tts_model=sample.model,
                     organization_id=comp.organization_id,
                     db=db,
                     voice=sample.voice_id,
+                    config=tts_config or None,
                 )
 
                 from app.services.s3_service import s3_service
 
+                audio_ext = get_audio_file_extension(sample.provider, int(sample_rate_hz) if sample_rate_hz else None)
                 s3_key = s3_service.upload_file_by_key(
                     file_content=audio_bytes,
-                    key=f"{s3_service.prefix}organizations/{comp.organization_id}/voicePlayground/{comp.id}/{sample.id}.mp3",
+                    key=f"{s3_service.prefix}organizations/{comp.organization_id}/voicePlayground/{comp.id}/{sample.id}.{audio_ext}",
                 )
 
-                # Estimate duration from file size (MP3 ~128kbps)
-                duration_est = len(audio_bytes) / (128000 / 8) if audio_bytes else None
+                if audio_ext == "wav" and len(audio_bytes) > 44:
+                    import struct as _struct
+                    sr = _struct.unpack_from('<I', audio_bytes, 24)[0]
+                    duration_est = (len(audio_bytes) - 44) / (2 * sr) if sr > 0 else None
+                else:
+                    duration_est = len(audio_bytes) / (128000 / 8) if audio_bytes else None
 
                 sample.audio_s3_key = s3_key
                 sample.latency_ms = round(latency_ms, 1)
+                sample.ttfb_ms = round(ttfb_ms, 1)
                 sample.duration_seconds = round(duration_est, 2) if duration_est else None
                 sample.status = TTSSampleStatus.COMPLETED.value
                 db.commit()
 
                 logger.info(
                     f"[TTS Generate] Sample {sample.id} done – "
-                    f"{sample.provider}/{sample.voice_name} latency={latency_ms:.0f}ms"
+                    f"{sample.provider}/{sample.voice_name} ttfb={ttfb_ms:.0f}ms total={latency_ms:.0f}ms"
                 )
 
             except Exception as e:

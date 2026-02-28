@@ -30,7 +30,6 @@ ENV/
 .venv
 config.yml
 config.docker.yml
-
 # uv
 .python-version
 uv.lock
@@ -91,3 +90,6 @@ frontend/node_modules/
 frontend/dist/
 .npm
 *.tsbuildinfo
+
+# Enterprise license private keys
+enterprise/keys/*.pem

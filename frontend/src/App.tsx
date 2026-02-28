@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useAuthStore } from './store/authStore'
+import { useLicenseStore } from './store/licenseStore'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import EvaluationDetail from './pages/EvaluationDetail'
@@ -30,6 +31,8 @@ import Alerts from './pages/Alerts'
 import AlertDetail from './pages/AlertDetail'
 import AlertHistory from './pages/AlertHistory'
 import CronJobs from './pages/CronJobs'
+import VoicePlayground from './pages/VoicePlayground'
+import EnterpriseUpgrade from './pages/EnterpriseUpgrade'
 
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -39,6 +42,24 @@ function PrivateRoute({ children }: { children: React.ReactNode }) {
     return <Navigate to="/login" replace />
   }
   
+  return <>{children}</>
+}
+
+function EnterpriseGate({ feature, children }: { feature: string; children: React.ReactNode }) {
+  const { isFeatureEnabled, isLoaded } = useLicenseStore()
+
+  if (!isLoaded) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900" />
+      </div>
+    )
+  }
+
+  if (!isFeatureEnabled(feature)) {
+    return <EnterpriseUpgrade feature={feature} />
+  }
+
   return <>{children}</>
 }
 
@@ -82,6 +103,7 @@ function App() {
           <Route path="alerts" element={<Alerts />} />
           <Route path="alerts/:id" element={<AlertDetail />} />
           <Route path="alerts/history" element={<AlertHistory />} />
+          <Route path="voice-playground" element={<EnterpriseGate feature="voice_playground"><VoicePlayground /></EnterpriseGate>} />
           <Route path="cron-jobs" element={<CronJobs />} />
         </Route>
       </Routes>
