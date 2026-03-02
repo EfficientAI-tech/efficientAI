@@ -39,6 +39,7 @@ from efficientai.services.deepgram.stt import DeepgramSTTService
 from efficientai.services.elevenlabs.stt import ElevenLabsRealtimeSTTService
 from efficientai.services.elevenlabs.tts import ElevenLabsHttpTTSService
 from efficientai.services.google.llm import GoogleLLMService
+from efficientai.services.murf.tts import MurfTTSService
 from efficientai.services.openai.llm import OpenAILLMService
 from efficientai.services.openai.stt import OpenAISTTService
 from efficientai.services.openai.tts import OpenAITTSService
@@ -136,6 +137,16 @@ TTS_PROVIDERS = {
     #         voice_id=voice_id,
     #     ),
     # },
+    "murf": {
+        "env_key": "MURF_API_KEY",
+        "default_voice": "en-US-natalie",
+        "default_model": "GEN2",
+        "factory": lambda api_key, voice_id, model: MurfTTSService(
+            api_key=api_key,
+            voice_id=voice_id,
+            model=model if model else "GEN2",
+        ),
+    },
 }
 
 DEFAULT_TTS_PROVIDER = None

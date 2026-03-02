@@ -17,6 +17,7 @@ const PROVIDER_LABELS: Record<ModelProvider, string> = {
   [ModelProvider.DEEPGRAM]: 'Deepgram',
   [ModelProvider.CARTESIA]: 'Cartesia',
   [ModelProvider.ELEVENLABS]: 'ElevenLabs',
+  [ModelProvider.MURF]: 'Murf',
   [ModelProvider.CUSTOM]: 'Custom',
 }
 
@@ -29,6 +30,7 @@ const PROVIDER_LOGOS: Record<ModelProvider, string | null> = {
   [ModelProvider.DEEPGRAM]: '/deepgram.png',
   [ModelProvider.CARTESIA]: '/cartesia.jpg',
   [ModelProvider.ELEVENLABS]: '/elevenlabs.jpg',
+  [ModelProvider.MURF]: '/murf.png',
   [ModelProvider.CUSTOM]: null,
 }
 
@@ -142,6 +144,7 @@ export default function EvaluatorDetail() {
       case 'deepgram': return ModelProvider.DEEPGRAM
       case 'cartesia': return ModelProvider.CARTESIA
       case 'elevenlabs': return ModelProvider.ELEVENLABS
+      case 'murf': return ModelProvider.MURF
       default: return null
     }
   }

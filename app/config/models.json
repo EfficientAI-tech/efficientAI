@@ -304,5 +304,17 @@
     "model_type": "music",
     "description": "Studio-grade music generation from text prompts",
     "languages": "en, es, de, ja, and more"
+  },
+  "murf-falcon": {
+    "provider": "murf",
+    "model_type": "tts",
+    "description": "Murf FALCON – ultra-low latency streaming TTS",
+    "languages": "en, es, de, fr, hi, ja, ko, pt, it, zh, and 10+ more"
+  },
+  "murf-gen2": {
+    "provider": "murf",
+    "model_type": "tts",
+    "description": "Murf GEN2 – high-quality, natural-sounding TTS",
+    "languages": "en, es, de, fr, hi, ja, ko, pt, it, zh, and 10+ more"
   }
 }

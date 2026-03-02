@@ -173,6 +173,7 @@ export enum IntegrationPlatform {
   CARTESIA = 'cartesia',
   ELEVENLABS = 'elevenlabs',
   DEEPGRAM = 'deepgram',
+  MURF = 'murf',
 }
 
 export interface Integration {
@@ -204,6 +205,7 @@ export enum ModelProvider {
   DEEPGRAM = 'deepgram',
   CARTESIA = 'cartesia',
   ELEVENLABS = 'elevenlabs',
+  MURF = 'murf',
   CUSTOM = 'custom',
 }
 

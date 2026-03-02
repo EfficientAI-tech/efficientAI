@@ -125,6 +125,7 @@ async def websocket_endpoint(
                 ModelProvider.DEEPGRAM: IntegrationPlatform.DEEPGRAM,
                 ModelProvider.CARTESIA: IntegrationPlatform.CARTESIA,
                 ModelProvider.ELEVENLABS: IntegrationPlatform.ELEVENLABS,
+                ModelProvider.MURF: IntegrationPlatform.MURF,
             }
             plat = platform_map.get(provider)
             if plat:
@@ -780,6 +781,7 @@ async def bot_connect(
                 'deepgram': IntegrationPlatform.DEEPGRAM,
                 'cartesia': IntegrationPlatform.CARTESIA,
                 'elevenlabs': IntegrationPlatform.ELEVENLABS,
+                'murf': IntegrationPlatform.MURF,
             }
             plat = platform_map.get(provider_value.lower())
             if plat:
