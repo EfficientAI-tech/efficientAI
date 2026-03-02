@@ -13,13 +13,15 @@ Test quality, measure performance, & ship with confidence.
 
 <img src="./assets/Readme%20logo.gif" alt="EfficientAI Demo" width="800">
 
- [📅 Book a Demo](https://calendly.com/aadhar-efficientai/30min) • [💻 GitHub](https://github.com/EfficientAI-tech/efficientAI)
+ [📅 Book a Demo](https://cal.com/aadhar-singh-bhadauria/30min) • [💻 GitHub](https://github.com/EfficientAI-tech/efficientAI)
+
+⭐ If this saves you time, please consider starring the repo — it helps us a lot.
 
 [![GitHub Stars](https://img.shields.io/github/stars/EfficientAI-tech/efficientAI?style=flat-square&logo=github)](https://github.com/EfficientAI-tech/efficientAI)
 [![License](https://img.shields.io/github/license/EfficientAI-tech/efficientAI?style=flat-square)](https://github.com/EfficientAI-tech/efficientAI)
 [![LinkedIn](https://img.shields.io/static/v1?label=Connect%20on&message=LinkedIn&color=0077B5&logo=LinkedIn&style=flat-square)](https://www.linkedin.com/company/efficientaicloud)
 [![X (Twitter)](https://img.shields.io/static/v1?label=Follow%20on&message=X%20(Twitter)&color=000000&logo=X&style=flat-square)](https://x.com/AiEfficient)
-[![Book a Demo](https://img.shields.io/static/v1?label=Schedule&message=Demo&color=006BFF&logo=Calendly&style=flat-square)](https://calendly.com/aadhar-efficientai/30min)
+[![Book a Demo](https://img.shields.io/static/v1?label=Schedule&message=Demo&color=006BFF&logo=Calendly&style=flat-square)](https://cal.com/aadhar-singh-bhadauria/30min)
 
 </div>
 
@@ -587,7 +589,7 @@ psycopg2.errors.UndefinedColumn: column "organization_id" of relation "api_keys"
 ## 📞 Support
 
 - 📧 **Email**: [tejas@efficientai.cloud](mailto:tejas@efficientai.cloud)
-- 📅 **Book a Demo**: [Schedule a call](https://calendly.com/aadhar-efficientai/30min)
+- 📅 **Book a Demo**: [Schedule a call](https://cal.com/aadhar-singh-bhadauria/30min)
 - 💬 **LinkedIn**: [Connect with us](https://www.linkedin.com/company/efficientaicloud)
 - 🐦 **X (Twitter)**: [Follow us](https://x.com/AiEfficient)
 - 💻 **GitHub**: [View on GitHub](https://github.com/EfficientAI-tech/efficientAI)
