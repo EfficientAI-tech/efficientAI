@@ -62,6 +62,11 @@ export const MODEL_PROVIDER_CONFIG: Record<ModelProvider, ProviderMetadata> = {
     logo: null,
     description: 'Custom AI provider',
   },
+  [ModelProvider.SARVAM]: {
+    label: 'Sarvam',
+    logo: '/sarvam.png',
+    description: 'Sarvam STT & TTS',
+  },
 }
 
 export interface IntegrationPlatformMetadata {
@@ -108,6 +113,12 @@ export const INTEGRATION_PLATFORM_CONFIG: Record<IntegrationPlatform, Integratio
     logo: '/murf.png',
     description: 'Murf TTS for voice synthesis',
     modelProvider: ModelProvider.MURF,
+  },
+  [IntegrationPlatform.SARVAM]: {
+    label: 'Sarvam',
+    logo: '/sarvam.png',
+    description: 'Sarvam STT & TTS for voice AI',
+    modelProvider: ModelProvider.SARVAM,
   },
 }
 

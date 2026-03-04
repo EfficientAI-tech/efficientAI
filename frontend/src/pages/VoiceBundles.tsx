@@ -17,6 +17,7 @@ const PROVIDER_LABELS: Record<ModelProvider, string> = {
   [ModelProvider.ELEVENLABS]: 'ElevenLabs',
   [ModelProvider.MURF]: 'Murf',
   [ModelProvider.CUSTOM]: 'Custom',
+  [ModelProvider.SARVAM]: 'Sarvam',
 }
 
 const PROVIDER_LOGOS: Record<ModelProvider, string | null> = {
@@ -30,6 +31,7 @@ const PROVIDER_LOGOS: Record<ModelProvider, string | null> = {
   [ModelProvider.ELEVENLABS]: '/elevenlabs.jpg',
   [ModelProvider.MURF]: '/murf.png',
   [ModelProvider.CUSTOM]: null,
+  [ModelProvider.SARVAM]: '/sarvam.png',
 }
 
 export default function VoiceBundles() {
@@ -77,21 +79,22 @@ export default function VoiceBundles() {
     queryKey: ['model-configs'],
     queryFn: async () => {
       const providers = Object.values(ModelProvider)
-      const configs: Record<string, { stt: string[]; llm: string[]; tts: string[]; s2s: string[] }> = {}
+      const configs: Record<string, { stt: string[]; llm: string[]; tts: string[]; s2s: string[]; tts_voices: Record<string, { id: string; name: string; gender?: string }[]> }> = {}
 
       for (const provider of providers) {
         try {
           const options = await apiClient.getModelOptions(provider)
-          // Ensure s2s is always present (for backward compatibility)
+          // Ensure s2s and tts_voices are always present (for backward compatibility)
           configs[provider] = {
             stt: options.stt || [],
             llm: options.llm || [],
             tts: options.tts || [],
-            s2s: options.s2s || []
+            s2s: options.s2s || [],
+            tts_voices: options.tts_voices || {},
           }
         } catch (error) {
           // If provider not found in config, use empty arrays
-          configs[provider] = { stt: [], llm: [], tts: [], s2s: [] }
+          configs[provider] = { stt: [], llm: [], tts: [], s2s: [], tts_voices: {} }
         }
       }
       return configs
@@ -112,6 +115,8 @@ export default function VoiceBundles() {
         return ModelProvider.ELEVENLABS
       case 'murf':
         return ModelProvider.MURF
+      case 'sarvam':
+        return ModelProvider.SARVAM
       default:
         return null
     }
@@ -131,8 +136,8 @@ export default function VoiceBundles() {
   )
 
   // Helper function to get model options for a provider
-  const getModelOptions = (provider: ModelProvider): { stt: string[]; llm: string[]; tts: string[]; s2s: string[] } => {
-    return modelConfigs[provider] || { stt: [], llm: [], tts: [], s2s: [] }
+  const getModelOptions = (provider: ModelProvider): { stt: string[]; llm: string[]; tts: string[]; s2s: string[]; tts_voices: Record<string, { id: string; name: string; gender?: string }[]> } => {
+    return modelConfigs[provider] || { stt: [], llm: [], tts: [], s2s: [], tts_voices: {} }
   }
 
   // Default to first configured provider if current selection is not configured
@@ -285,7 +290,10 @@ export default function VoiceBundles() {
       } else if (type === 'llm') {
         setFormData({ ...formData, llm_provider: provider, llm_model: models[0] })
       } else if (type === 'tts') {
-        setFormData({ ...formData, tts_provider: provider, tts_model: models[0] })
+        // Auto-select first voice if the new model has voice data
+        const firstModel = models[0]
+        const voices = options.tts_voices?.[firstModel] || []
+        setFormData({ ...formData, tts_provider: provider, tts_model: firstModel, tts_voice: voices.length > 0 ? voices[0].id : '' })
       } else if (type === 's2s') {
         setFormData({ ...formData, s2s_provider: provider, s2s_model: models[0] })
       }
@@ -538,6 +546,7 @@ export default function VoiceBundles() {
           updateModelOptions={updateModelOptions}
           configuredProviders={configuredProviders}
           getModelOptions={getModelOptions}
+          modelConfigs={modelConfigs}
         />
       )}
 
@@ -557,6 +566,7 @@ export default function VoiceBundles() {
           updateModelOptions={updateModelOptions}
           configuredProviders={configuredProviders}
           getModelOptions={getModelOptions}
+          modelConfigs={modelConfigs}
         />
       )}
 
@@ -683,7 +693,8 @@ function VoiceBundleModal({
   isLoading: boolean
   updateModelOptions: (type: 'stt' | 'llm' | 'tts' | 's2s', provider: ModelProvider) => void
   configuredProviders: ModelProvider[]
-  getModelOptions: (provider: ModelProvider) => { stt: string[]; llm: string[]; tts: string[]; s2s: string[] }
+  getModelOptions: (provider: ModelProvider) => { stt: string[]; llm: string[]; tts: string[]; s2s: string[]; tts_voices: Record<string, { id: string; name: string; gender?: string }[]> }
+  modelConfigs: Record<string, any>
 }) {
   const [showSttDropdown, setShowSttDropdown] = useState(false)
   const [showLlmDropdown, setShowLlmDropdown] = useState(false)
@@ -869,7 +880,7 @@ function VoiceBundleModal({
                           <img
                             src={PROVIDER_LOGOS[formData.stt_provider]!}
                             alt={PROVIDER_LABELS[formData.stt_provider]}
-                            className="w-5 h-5 object-contain"
+                            className="w-6 h-6 object-contain rounded"
                           />
                         ) : (
                           <Brain className="h-5 w-5 text-primary-600" />
@@ -894,7 +905,7 @@ function VoiceBundleModal({
                               <img
                                 src={PROVIDER_LOGOS[provider]!}
                                 alt={PROVIDER_LABELS[provider]}
-                                className="w-5 h-5 object-contain"
+                                className="w-6 h-6 object-contain rounded"
                               />
                             ) : (
                               <Brain className="h-5 w-5 text-primary-600" />
@@ -956,7 +967,7 @@ function VoiceBundleModal({
                           <img
                             src={PROVIDER_LOGOS[formData.llm_provider]!}
                             alt={PROVIDER_LABELS[formData.llm_provider]}
-                            className="w-5 h-5 object-contain"
+                            className="w-6 h-6 object-contain rounded"
                           />
                         ) : (
                           <Brain className="h-5 w-5 text-primary-600" />
@@ -981,7 +992,7 @@ function VoiceBundleModal({
                               <img
                                 src={PROVIDER_LOGOS[provider]!}
                                 alt={PROVIDER_LABELS[provider]}
-                                className="w-5 h-5 object-contain"
+                                className="w-6 h-6 object-contain rounded"
                               />
                             ) : (
                               <Brain className="h-5 w-5 text-primary-600" />
@@ -1072,7 +1083,7 @@ function VoiceBundleModal({
                           <img
                             src={PROVIDER_LOGOS[formData.tts_provider]!}
                             alt={PROVIDER_LABELS[formData.tts_provider]}
-                            className="w-5 h-5 object-contain"
+                            className="w-6 h-6 object-contain rounded"
                           />
                         ) : (
                           <Brain className="h-5 w-5 text-primary-600" />
@@ -1097,7 +1108,7 @@ function VoiceBundleModal({
                               <img
                                 src={PROVIDER_LOGOS[provider]!}
                                 alt={PROVIDER_LABELS[provider]}
-                                className="w-5 h-5 object-contain"
+                                className="w-6 h-6 object-contain rounded"
                               />
                             ) : (
                               <Brain className="h-5 w-5 text-primary-600" />
@@ -1117,7 +1128,18 @@ function VoiceBundleModal({
                     id="tts_model"
                     required={formData.bundle_type === VoiceBundleType.STT_LLM_TTS}
                     value={formData.tts_model || ''}
-                    onChange={(e) => setFormData({ ...formData, tts_model: e.target.value })}
+                    onChange={(e) => {
+                      const newModel = e.target.value
+                      // Auto-select voice when model has voice data
+                      const voices = formData.tts_provider
+                        ? (getModelOptions(formData.tts_provider).tts_voices?.[newModel] || [])
+                        : []
+                      setFormData({
+                        ...formData,
+                        tts_model: newModel,
+                        tts_voice: voices.length > 0 ? voices[0].id : (formData.tts_voice || ''),
+                      })
+                    }}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                     disabled={!formData.tts_provider}
                   >
@@ -1134,16 +1156,45 @@ function VoiceBundleModal({
                 </div>
                 <div>
                   <label htmlFor="tts_voice" className="block text-sm font-medium text-gray-700 mb-1">
-                    Voice (Optional)
+                    Voice {(() => {
+                      const voices = formData.tts_provider && formData.tts_model
+                        ? (getModelOptions(formData.tts_provider).tts_voices?.[formData.tts_model] || [])
+                        : []
+                      return voices.length > 0 ? '*' : '(Optional)'
+                    })()}
                   </label>
-                  <input
-                    id="tts_voice"
-                    type="text"
-                    value={formData.tts_voice || ''}
-                    onChange={(e) => setFormData({ ...formData, tts_voice: e.target.value || null })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                    placeholder="e.g., alloy, echo, fable"
-                  />
+                  {(() => {
+                    const voices = formData.tts_provider && formData.tts_model
+                      ? (getModelOptions(formData.tts_provider).tts_voices?.[formData.tts_model] || [])
+                      : []
+                    if (voices.length > 0) {
+                      return (
+                        <select
+                          id="tts_voice"
+                          required
+                          value={formData.tts_voice || ''}
+                          onChange={(e) => setFormData({ ...formData, tts_voice: e.target.value })}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                        >
+                          {voices.map((v) => (
+                            <option key={v.id} value={v.id}>
+                              {v.name}{v.gender ? ` (${v.gender})` : ''}
+                            </option>
+                          ))}
+                        </select>
+                      )
+                    }
+                    return (
+                      <input
+                        id="tts_voice"
+                        type="text"
+                        value={formData.tts_voice || ''}
+                        onChange={(e) => setFormData({ ...formData, tts_voice: e.target.value || null })}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                        placeholder="e.g., alloy, echo, fable"
+                      />
+                    )
+                  })()}
                 </div>
               </div>
             </div>
@@ -1172,7 +1223,7 @@ function VoiceBundleModal({
                           <img
                             src={PROVIDER_LOGOS[formData.s2s_provider]!}
                             alt={PROVIDER_LABELS[formData.s2s_provider]}
-                            className="w-5 h-5 object-contain"
+                            className="w-6 h-6 object-contain rounded"
                           />
                         ) : (
                           <Brain className="h-5 w-5 text-primary-600" />
@@ -1197,7 +1248,7 @@ function VoiceBundleModal({
                               <img
                                 src={PROVIDER_LOGOS[provider]!}
                                 alt={PROVIDER_LABELS[provider]}
-                                className="w-5 h-5 object-contain"
+                                className="w-6 h-6 object-contain rounded"
                               />
                             ) : (
                               <Brain className="h-5 w-5 text-primary-600" />

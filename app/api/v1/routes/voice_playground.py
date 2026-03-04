@@ -103,9 +103,21 @@ TTS_VOICES: Dict[str, List[Dict[str, str]]] = {
         {"id": "en-US-Neural2-I", "name": "Neural2 I", "gender": "Male", "accent": "American"},
         {"id": "en-US-Neural2-J", "name": "Neural2 J", "gender": "Male", "accent": "American"},
     ],
+    "sarvam": [
+        {"id": "aditya", "name": "Aditya", "gender": "Male", "accent": "Indian"},
+        {"id": "ritu", "name": "Ritu", "gender": "Female", "accent": "Indian"},
+        {"id": "ashutosh", "name": "Ashutosh", "gender": "Male", "accent": "Indian"},
+        {"id": "priya", "name": "Priya", "gender": "Female", "accent": "Indian"},
+        {"id": "neha", "name": "Neha", "gender": "Female", "accent": "Indian"},
+        {"id": "rahul", "name": "Rahul", "gender": "Male", "accent": "Indian"},
+        {"id": "pooja", "name": "Pooja", "gender": "Female", "accent": "Indian"},
+        {"id": "rohan", "name": "Rohan", "gender": "Male", "accent": "Indian"},
+        {"id": "simran", "name": "Simran", "gender": "Female", "accent": "Indian"},
+        {"id": "kavya", "name": "Kavya", "gender": "Female", "accent": "Indian"},
+    ],
 }
 
-PROVIDERS_WITH_TTS = {"openai", "elevenlabs", "cartesia", "deepgram", "google"}
+PROVIDERS_WITH_TTS = {"openai", "elevenlabs", "cartesia", "deepgram", "google", "sarvam"}
 
 # ======================================================================
 # Schemas

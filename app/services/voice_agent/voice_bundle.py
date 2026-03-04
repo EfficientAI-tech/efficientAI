@@ -43,6 +43,8 @@ from efficientai.services.murf.tts import MurfTTSService
 from efficientai.services.openai.llm import OpenAILLMService
 from efficientai.services.openai.stt import OpenAISTTService
 from efficientai.services.openai.tts import OpenAITTSService
+from efficientai.services.sarvam.stt import SarvamSTTService
+from efficientai.services.sarvam.tts import SarvamTTSService
 from efficientai.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from efficientai.transports.base_transport import BaseTransport, TransportParams
 from efficientai.turns.bot.turn_analyzer_bot_turn_start_strategy import TurnAnalyzerBotTurnStartStrategy
@@ -89,6 +91,14 @@ STT_PROVIDERS = {
         "factory": lambda api_key, model: ElevenLabsRealtimeSTTService(
             api_key=api_key,
             **({"model": model} if model else {}),
+        ),
+    },
+    "sarvam": {
+        "env_key": "SARVAM_API_KEY",
+        "default_model": "saarika:v2.5",
+        "factory": lambda api_key, model: SarvamSTTService(
+            api_key=api_key,
+            model=model if model else "saarika:v2.5",
         ),
     },
 }
@@ -145,6 +155,16 @@ TTS_PROVIDERS = {
             api_key=api_key,
             voice_id=voice_id,
             model=model if model else "GEN2",
+        ),
+    },
+    "sarvam": {
+        "env_key": "SARVAM_API_KEY",
+        "default_voice": "ritu",
+        "default_model": "bulbul:v3",
+        "factory": lambda api_key, voice_id, model: SarvamTTSService(
+            api_key=api_key,
+            voice_id=voice_id,
+            model=model if model else "bulbul:v3",
         ),
     },
 }
@@ -374,14 +394,26 @@ async def run_voice_bundle_fastapi(
         llm = llm_cfg["factory"](api_key=llm_api_key, model=llm_model)
 
         # Build context with provided system instruction or a default
+        base_instruction = (
+            system_instruction.strip()
+            if system_instruction
+            else "You are a helpful voice assistant. Keep responses concise and speakable."
+        )
+
+        # Sarvam TTS rejects text containing emojis / non-language characters,
+        # so we inject a guardrail into the system instructions.
+        if tts_provider_value == "sarvam":
+            base_instruction += (
+                "\n\nIMPORTANT: Your output will be spoken aloud by a text-to-speech engine "
+                "that only supports plain text in Indian languages and English. "
+                "You MUST NOT use any emojis, emoticons, bullet points, asterisks, "
+                "or special Unicode characters. Use only plain spoken words."
+            )
+
         messages = [
             {
                 "role": "system",
-                "content": (
-                    system_instruction.strip()
-                    if system_instruction
-                    else "You are a helpful voice assistant. Keep responses concise and speakable."
-                ),
+                "content": base_instruction,
             },
             {
                 "role": "user",

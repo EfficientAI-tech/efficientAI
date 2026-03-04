@@ -316,5 +316,471 @@
     "model_type": "tts",
     "description": "Murf GEN2 – high-quality, natural-sounding TTS",
     "languages": "en, es, de, fr, hi, ja, ko, pt, it, zh, and 10+ more"
+  },
+  "saarika:v2.5": {
+    "provider": "sarvam",
+    "model_type": "stt",
+    "description": "State-of-the-art highly accurate Indian language STT"
+  },
+  "saaras:v1": {
+    "provider": "sarvam",
+    "model_type": "stt",
+    "description": "Highly accurate Indian language STT with Translate"
+  },
+  "bulbul:v3": {
+    "provider": "sarvam",
+    "model_type": "tts",
+    "description": "High quality Indian language TTS",
+    "voices": [
+      {
+        "id": "aditya",
+        "name": "Aditya",
+        "gender": "Male"
+      },
+      {
+        "id": "ritu",
+        "name": "Ritu",
+        "gender": "Female"
+      },
+      {
+        "id": "ashutosh",
+        "name": "Ashutosh",
+        "gender": "Male"
+      },
+      {
+        "id": "priya",
+        "name": "Priya",
+        "gender": "Female"
+      },
+      {
+        "id": "neha",
+        "name": "Neha",
+        "gender": "Female"
+      },
+      {
+        "id": "rahul",
+        "name": "Rahul",
+        "gender": "Male"
+      },
+      {
+        "id": "pooja",
+        "name": "Pooja",
+        "gender": "Female"
+      },
+      {
+        "id": "rohan",
+        "name": "Rohan",
+        "gender": "Male"
+      },
+      {
+        "id": "simran",
+        "name": "Simran",
+        "gender": "Female"
+      },
+      {
+        "id": "kavya",
+        "name": "Kavya",
+        "gender": "Female"
+      },
+      {
+        "id": "amit",
+        "name": "Amit",
+        "gender": "Male"
+      },
+      {
+        "id": "dev",
+        "name": "Dev",
+        "gender": "Male"
+      },
+      {
+        "id": "ishita",
+        "name": "Ishita",
+        "gender": "Female"
+      },
+      {
+        "id": "shreya",
+        "name": "Shreya",
+        "gender": "Female"
+      },
+      {
+        "id": "ratan",
+        "name": "Ratan",
+        "gender": "Male"
+      },
+      {
+        "id": "varun",
+        "name": "Varun",
+        "gender": "Male"
+      },
+      {
+        "id": "manan",
+        "name": "Manan",
+        "gender": "Male"
+      },
+      {
+        "id": "sumit",
+        "name": "Sumit",
+        "gender": "Male"
+      },
+      {
+        "id": "roopa",
+        "name": "Roopa",
+        "gender": "Female"
+      },
+      {
+        "id": "kabir",
+        "name": "Kabir",
+        "gender": "Male"
+      },
+      {
+        "id": "aayan",
+        "name": "Aayan",
+        "gender": "Male"
+      },
+      {
+        "id": "shubh",
+        "name": "Shubh",
+        "gender": "Male"
+      },
+      {
+        "id": "advait",
+        "name": "Advait",
+        "gender": "Male"
+      },
+      {
+        "id": "amelia",
+        "name": "Amelia",
+        "gender": "Female"
+      },
+      {
+        "id": "sophia",
+        "name": "Sophia",
+        "gender": "Female"
+      },
+      {
+        "id": "anand",
+        "name": "Anand",
+        "gender": "Male"
+      },
+      {
+        "id": "tanya",
+        "name": "Tanya",
+        "gender": "Female"
+      },
+      {
+        "id": "tarun",
+        "name": "Tarun",
+        "gender": "Male"
+      },
+      {
+        "id": "sunny",
+        "name": "Sunny",
+        "gender": "Male"
+      },
+      {
+        "id": "mani",
+        "name": "Mani",
+        "gender": "Male"
+      },
+      {
+        "id": "gokul",
+        "name": "Gokul",
+        "gender": "Male"
+      },
+      {
+        "id": "vijay",
+        "name": "Vijay",
+        "gender": "Male"
+      },
+      {
+        "id": "shruti",
+        "name": "Shruti",
+        "gender": "Female"
+      },
+      {
+        "id": "suhani",
+        "name": "Suhani",
+        "gender": "Female"
+      },
+      {
+        "id": "mohit",
+        "name": "Mohit",
+        "gender": "Male"
+      },
+      {
+        "id": "kavitha",
+        "name": "Kavitha",
+        "gender": "Female"
+      },
+      {
+        "id": "rehan",
+        "name": "Rehan",
+        "gender": "Male"
+      },
+      {
+        "id": "soham",
+        "name": "Soham",
+        "gender": "Male"
+      },
+      {
+        "id": "rupali",
+        "name": "Rupali",
+        "gender": "Female"
+      }
+    ]
+  },
+  "bulbul:v3-beta": {
+    "provider": "sarvam",
+    "model_type": "tts",
+    "description": "Beta Indian language TTS",
+    "voices": [
+      {
+        "id": "aditya",
+        "name": "Aditya",
+        "gender": "Male"
+      },
+      {
+        "id": "ritu",
+        "name": "Ritu",
+        "gender": "Female"
+      },
+      {
+        "id": "ashutosh",
+        "name": "Ashutosh",
+        "gender": "Male"
+      },
+      {
+        "id": "priya",
+        "name": "Priya",
+        "gender": "Female"
+      },
+      {
+        "id": "neha",
+        "name": "Neha",
+        "gender": "Female"
+      },
+      {
+        "id": "rahul",
+        "name": "Rahul",
+        "gender": "Male"
+      },
+      {
+        "id": "pooja",
+        "name": "Pooja",
+        "gender": "Female"
+      },
+      {
+        "id": "rohan",
+        "name": "Rohan",
+        "gender": "Male"
+      },
+      {
+        "id": "simran",
+        "name": "Simran",
+        "gender": "Female"
+      },
+      {
+        "id": "kavya",
+        "name": "Kavya",
+        "gender": "Female"
+      },
+      {
+        "id": "amit",
+        "name": "Amit",
+        "gender": "Male"
+      },
+      {
+        "id": "dev",
+        "name": "Dev",
+        "gender": "Male"
+      },
+      {
+        "id": "ishita",
+        "name": "Ishita",
+        "gender": "Female"
+      },
+      {
+        "id": "shreya",
+        "name": "Shreya",
+        "gender": "Female"
+      },
+      {
+        "id": "ratan",
+        "name": "Ratan",
+        "gender": "Male"
+      },
+      {
+        "id": "varun",
+        "name": "Varun",
+        "gender": "Male"
+      },
+      {
+        "id": "manan",
+        "name": "Manan",
+        "gender": "Male"
+      },
+      {
+        "id": "sumit",
+        "name": "Sumit",
+        "gender": "Male"
+      },
+      {
+        "id": "roopa",
+        "name": "Roopa",
+        "gender": "Female"
+      },
+      {
+        "id": "kabir",
+        "name": "Kabir",
+        "gender": "Male"
+      },
+      {
+        "id": "aayan",
+        "name": "Aayan",
+        "gender": "Male"
+      },
+      {
+        "id": "shubh",
+        "name": "Shubh",
+        "gender": "Male"
+      },
+      {
+        "id": "advait",
+        "name": "Advait",
+        "gender": "Male"
+      },
+      {
+        "id": "amelia",
+        "name": "Amelia",
+        "gender": "Female"
+      },
+      {
+        "id": "sophia",
+        "name": "Sophia",
+        "gender": "Female"
+      },
+      {
+        "id": "anand",
+        "name": "Anand",
+        "gender": "Male"
+      },
+      {
+        "id": "tanya",
+        "name": "Tanya",
+        "gender": "Female"
+      },
+      {
+        "id": "tarun",
+        "name": "Tarun",
+        "gender": "Male"
+      },
+      {
+        "id": "sunny",
+        "name": "Sunny",
+        "gender": "Male"
+      },
+      {
+        "id": "mani",
+        "name": "Mani",
+        "gender": "Male"
+      },
+      {
+        "id": "gokul",
+        "name": "Gokul",
+        "gender": "Male"
+      },
+      {
+        "id": "vijay",
+        "name": "Vijay",
+        "gender": "Male"
+      },
+      {
+        "id": "shruti",
+        "name": "Shruti",
+        "gender": "Female"
+      },
+      {
+        "id": "suhani",
+        "name": "Suhani",
+        "gender": "Female"
+      },
+      {
+        "id": "mohit",
+        "name": "Mohit",
+        "gender": "Male"
+      },
+      {
+        "id": "kavitha",
+        "name": "Kavitha",
+        "gender": "Female"
+      },
+      {
+        "id": "rehan",
+        "name": "Rehan",
+        "gender": "Male"
+      },
+      {
+        "id": "soham",
+        "name": "Soham",
+        "gender": "Male"
+      },
+      {
+        "id": "rupali",
+        "name": "Rupali",
+        "gender": "Female"
+      }
+    ]
+  },
+  "bulbul:v2": {
+    "provider": "sarvam",
+    "model_type": "tts",
+    "description": "Stable Indian language TTS",
+    "voices": [
+      {
+        "id": "meera",
+        "name": "Meera",
+        "gender": "Female"
+      },
+      {
+        "id": "arvind",
+        "name": "Arvind",
+        "gender": "Male"
+      },
+      {
+        "id": "anushka",
+        "name": "Anushka",
+        "gender": "Female"
+      },
+      {
+        "id": "manisha",
+        "name": "Manisha",
+        "gender": "Female"
+      },
+      {
+        "id": "vidya",
+        "name": "Vidya",
+        "gender": "Female"
+      },
+      {
+        "id": "arya",
+        "name": "Arya",
+        "gender": "Female"
+      },
+      {
+        "id": "abhilash",
+        "name": "Abhilash",
+        "gender": "Male"
+      },
+      {
+        "id": "karun",
+        "name": "Karun",
+        "gender": "Male"
+      },
+      {
+        "id": "hitesh",
+        "name": "Hitesh",
+        "gender": "Male"
+      }
+    ]
   }
 }

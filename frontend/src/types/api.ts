@@ -174,6 +174,7 @@ export enum IntegrationPlatform {
   ELEVENLABS = 'elevenlabs',
   DEEPGRAM = 'deepgram',
   MURF = 'murf',
+  SARVAM = 'sarvam',
 }
 
 export interface Integration {
@@ -207,6 +208,7 @@ export enum ModelProvider {
   ELEVENLABS = 'elevenlabs',
   MURF = 'murf',
   CUSTOM = 'custom',
+  SARVAM = 'sarvam',
 }
 
 // AI Provider Types

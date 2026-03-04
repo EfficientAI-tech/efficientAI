@@ -19,6 +19,7 @@ const PROVIDER_LABELS: Record<ModelProvider, string> = {
   [ModelProvider.ELEVENLABS]: 'ElevenLabs',
   [ModelProvider.MURF]: 'Murf',
   [ModelProvider.CUSTOM]: 'Custom',
+  [ModelProvider.SARVAM]: 'Sarvam',
 }
 
 const PROVIDER_LOGOS: Record<ModelProvider, string | null> = {
@@ -32,6 +33,7 @@ const PROVIDER_LOGOS: Record<ModelProvider, string | null> = {
   [ModelProvider.ELEVENLABS]: '/elevenlabs.jpg',
   [ModelProvider.MURF]: '/murf.png',
   [ModelProvider.CUSTOM]: null,
+  [ModelProvider.SARVAM]: '/sarvam.png',
 }
 
 const DEFAULT_PERSONA_NAMES = [
@@ -140,6 +142,7 @@ export default function EvaluateTestAgents() {
       case 'cartesia': return ModelProvider.CARTESIA
       case 'elevenlabs': return ModelProvider.ELEVENLABS
       case 'murf': return ModelProvider.MURF
+      case 'sarvam': return ModelProvider.SARVAM
       default: return null
     }
   }
@@ -708,7 +711,7 @@ export default function EvaluateTestAgents() {
                                 >
                                   <div className="flex items-center gap-2">
                                     {selectedLlmProvider && PROVIDER_LOGOS[selectedLlmProvider] ? (
-                                      <img src={PROVIDER_LOGOS[selectedLlmProvider]!} alt="" className="w-4 h-4 object-contain" />
+                                      <img src={PROVIDER_LOGOS[selectedLlmProvider]!} alt="" className="w-5 h-5 object-contain rounded" />
                                     ) : (
                                       <Brain className="h-4 w-4 text-gray-400" />
                                     )}
@@ -733,7 +736,7 @@ export default function EvaluateTestAgents() {
                                         className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center gap-2 text-sm"
                                       >
                                         {PROVIDER_LOGOS[provider] ? (
-                                          <img src={PROVIDER_LOGOS[provider]!} alt="" className="w-4 h-4 object-contain" />
+                                          <img src={PROVIDER_LOGOS[provider]!} alt="" className="w-5 h-5 object-contain rounded" />
                                         ) : (
                                           <Brain className="h-4 w-4 text-purple-600" />
                                         )}
