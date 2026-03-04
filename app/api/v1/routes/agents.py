@@ -74,14 +74,12 @@ async def create_agent(
         if not integration:
             raise HTTPException(status_code=404, detail="Integration not found or inactive")
         
-        # Validate that the integration platform is Retell or Vapi
-        if integration.platform not in [IntegrationPlatform.RETELL, IntegrationPlatform.VAPI]:
+        if integration.platform not in [IntegrationPlatform.RETELL, IntegrationPlatform.VAPI, IntegrationPlatform.ELEVENLABS]:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Integration platform {integration.platform.value} is not supported for Voice AI agents. Only Retell and Vapi are supported."
+                detail=f"Integration platform {integration.platform.value} is not supported for Voice AI agents. Only Retell, Vapi, and ElevenLabs are supported."
             )
         
-        # Validate voice_ai_agent_id is provided
         if not agent.voice_ai_agent_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -219,14 +217,12 @@ async def update_agent(
         if not integration:
             raise HTTPException(status_code=404, detail="Integration not found or inactive")
         
-        # Validate that the integration platform is Retell or Vapi
-        if integration.platform not in [IntegrationPlatform.RETELL, IntegrationPlatform.VAPI]:
+        if integration.platform not in [IntegrationPlatform.RETELL, IntegrationPlatform.VAPI, IntegrationPlatform.ELEVENLABS]:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Integration platform {integration.platform.value} is not supported for Voice AI agents. Only Retell and Vapi are supported."
+                detail=f"Integration platform {integration.platform.value} is not supported for Voice AI agents. Only Retell, Vapi, and ElevenLabs are supported."
             )
         
-        # Validate voice_ai_agent_id is provided
         if not agent_update.voice_ai_agent_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

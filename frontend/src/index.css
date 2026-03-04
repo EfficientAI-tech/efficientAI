@@ -47,3 +47,9 @@
     display: none;
   }
 }
+
+@keyframes indeterminate {
+  0% { transform: translateX(-100%); width: 60%; }
+  50% { transform: translateX(40%); width: 60%; }
+  100% { transform: translateX(100%); width: 60%; }
+}

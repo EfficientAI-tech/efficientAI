@@ -201,13 +201,102 @@ def process_evaluator_result_task(self, result_id: str):
             
             # Step 5: Evaluate against enabled metrics using LLM
             metric_scores = {}
+
+            # Audio-dependent metrics require actual audio signal analysis
+            # (Parselmouth, ML models). They cannot be evaluated by the LLM
+            # from a transcript. When audio IS available they are run through
+            # the audio analysis pipeline; otherwise they are skipped.
+            AUDIO_ONLY_METRIC_NAMES = {
+                "pitch variance", "jitter", "shimmer", "hnr",
+                "mos score", "emotion category", "emotion confidence",
+                "valence", "arousal", "speaker consistency", "prosody score",
+            }
+
+            has_audio = bool(result.audio_s3_key)
+            llm_metrics = []
+            audio_metrics = []
+            for m in enabled_metrics:
+                if m.name.lower() in AUDIO_ONLY_METRIC_NAMES:
+                    if has_audio:
+                        audio_metrics.append(m)
+                    else:
+                        m_type = m.metric_type.value if hasattr(m.metric_type, 'value') else m.metric_type
+                        metric_scores[str(m.id)] = {
+                            "value": None,
+                            "type": m_type.lower() if isinstance(m_type, str) else m_type,
+                            "metric_name": m.name,
+                            "skipped": "audio_required",
+                        }
+                else:
+                    llm_metrics.append(m)
+
+            # --- Run audio analysis for audio-dependent metrics ----------------
+            if audio_metrics and has_audio:
+                try:
+                    import tempfile as _tempfile
+                    import os as _os
+                    from app.services.s3_service import s3_service
+                    from app.services.voice_quality_service import calculate_audio_metrics
+                    from app.services.qualitative_voice_service import qualitative_voice_service
+
+                    logger.info(f"[EvaluatorResult {result.result_id}] Running audio analysis on {len(audio_metrics)} metrics")
+                    audio_bytes = s3_service.download_file_by_key(result.audio_s3_key)
+                    if audio_bytes:
+                        tmp_fd, tmp_path = _tempfile.mkstemp(suffix=".mp3")
+                        _os.close(tmp_fd)
+                        try:
+                            with open(tmp_path, "wb") as _f:
+                                _f.write(audio_bytes)
+
+                            audio_metric_names = [m.name for m in audio_metrics]
+                            parselmouth_names = [n for n in audio_metric_names if n.lower() in {"pitch variance", "jitter", "shimmer", "hnr"}]
+                            qualitative_names = [n for n in audio_metric_names if n not in parselmouth_names]
+
+                            raw_results: dict = {}
+                            if parselmouth_names:
+                                raw_results.update(calculate_audio_metrics(tmp_path, parselmouth_names, is_url=False))
+                            if qualitative_names:
+                                raw_results.update(qualitative_voice_service.calculate_metrics(tmp_path, qualitative_names, is_url=False))
+
+                            for m in audio_metrics:
+                                m_type = m.metric_type.value if hasattr(m.metric_type, 'value') else m.metric_type
+                                metric_scores[str(m.id)] = {
+                                    "value": raw_results.get(m.name),
+                                    "type": m_type.lower() if isinstance(m_type, str) else m_type,
+                                    "metric_name": m.name,
+                                }
+
+                            logger.info(f"[EvaluatorResult {result.result_id}] Audio analysis complete: {list(raw_results.keys())}")
+                        finally:
+                            if _os.path.exists(tmp_path):
+                                _os.unlink(tmp_path)
+                    else:
+                        logger.warning(f"[EvaluatorResult {result.result_id}] Could not download audio from S3")
+                        for m in audio_metrics:
+                            m_type = m.metric_type.value if hasattr(m.metric_type, 'value') else m.metric_type
+                            metric_scores[str(m.id)] = {
+                                "value": None,
+                                "type": m_type.lower() if isinstance(m_type, str) else m_type,
+                                "metric_name": m.name,
+                                "error": "audio_download_failed",
+                            }
+                except Exception as audio_err:
+                    logger.error(f"[EvaluatorResult {result.result_id}] Audio analysis failed: {audio_err}", exc_info=True)
+                    for m in audio_metrics:
+                        m_type = m.metric_type.value if hasattr(m.metric_type, 'value') else m.metric_type
+                        metric_scores[str(m.id)] = {
+                            "value": None,
+                            "type": m_type.lower() if isinstance(m_type, str) else m_type,
+                            "metric_name": m.name,
+                            "error": str(audio_err),
+                        }
             
-            if enabled_metrics and transcription:
+            if llm_metrics and transcription:
                 result.status = EvaluatorResultStatus.EVALUATING.value
                 db.commit()
                 # Build metric key mapping for later use
                 metric_key_map = {}  # metric_key -> metric object
-                for metric in enabled_metrics:
+                for metric in llm_metrics:
                     metric_key = metric.name.lower().replace(" ", "_")
                     metric_key_map[metric_key] = metric
                     metric_key_map[metric.name.lower()] = metric
@@ -252,7 +341,7 @@ The following is the system prompt / instructions that the agent was configured 
 """
                 
                 # Add metric descriptions to prompt with exact keys
-                for metric in enabled_metrics:
+                for metric in llm_metrics:
                     metric_key = metric.name.lower().replace(" ", "_")
                     metric_desc = metric.description or f"Evaluate {metric.name}"
                     m_type = metric.metric_type.value if hasattr(metric.metric_type, 'value') else metric.metric_type
@@ -271,7 +360,7 @@ You MUST respond with ONLY a JSON object using the EXACT metric keys listed abov
 Example format:
 {{
 """
-                for metric in enabled_metrics:
+                for metric in llm_metrics:
                     metric_key = metric.name.lower().replace(" ", "_")
                     m_type = metric.metric_type.value if hasattr(metric.metric_type, 'value') else metric.metric_type
                     if m_type == "rating":
@@ -311,7 +400,7 @@ CRITICAL RULES:
                         logger.warning(f"[EvaluatorResult {result.result_id}] Provider {llm_provider.value} not configured, evaluation may fail")
                     
                     # Build the list of exact metric keys for system message
-                    exact_keys = [metric.name.lower().replace(" ", "_") for metric in enabled_metrics]
+                    exact_keys = [metric.name.lower().replace(" ", "_") for metric in llm_metrics]
                     
                     messages = [
                         {"role": "system", "content": f"""You are an expert conversation evaluator. You MUST follow these rules STRICTLY:
@@ -428,7 +517,7 @@ Example of WRONG format (DO NOT do this):
                     
                     response_keys = list(evaluation_data.keys())
                     
-                    for metric in enabled_metrics:
+                    for metric in llm_metrics:
                         metric_key = metric.name.lower().replace(" ", "_")
                         m_type = metric.metric_type.value if hasattr(metric.metric_type, 'value') else metric.metric_type
                         
@@ -482,7 +571,7 @@ Example of WRONG format (DO NOT do this):
                     error_msg = str(e).replace("{", "{{").replace("}", "}}")
                     logger.error(f"[EvaluatorResult {result.result_id}] ✗ LLM evaluation failed: {error_msg}", exc_info=True)
                     # If LLM evaluation fails, mark metrics as None but don't fail the whole task
-                    for metric in enabled_metrics:
+                    for metric in llm_metrics:
                         m_type = metric.metric_type.value if hasattr(metric.metric_type, 'value') else metric.metric_type
                         metric_scores[str(metric.id)] = {
                             "value": None,
@@ -491,8 +580,8 @@ Example of WRONG format (DO NOT do this):
                             "error": str(e)
                         }
             else:
-                if not enabled_metrics:
-                    logger.warning(f"[EvaluatorResult {result.result_id}] No enabled metrics found, skipping evaluation")
+                if not llm_metrics:
+                    logger.warning(f"[EvaluatorResult {result.result_id}] No LLM-evaluable metrics found (audio-only metrics were skipped), skipping evaluation")
                 if not transcription:
                     logger.warning(f"[EvaluatorResult {result.result_id}] No transcription available, skipping evaluation")
             
@@ -808,11 +897,105 @@ def generate_tts_comparison_task(self, comparison_id: str):
         db.close()
 
 
+def _compute_wer_cer(ground_truth: str, predicted: str):
+    """Compute WER and CER between ground truth and predicted text.
+
+    Returns (wer_score, cer_score) or (None, None) on failure.
+    """
+    import string
+    try:
+        from jiwer import wer, cer
+    except ImportError:
+        logger.warning("[TTS Eval] jiwer not installed – skipping WER/CER")
+        return None, None
+
+    punct_table = str.maketrans("", "", string.punctuation)
+    ref = ground_truth.lower().translate(punct_table).strip()
+    hyp = predicted.lower().translate(punct_table).strip()
+
+    if not ref:
+        return None, None
+
+    try:
+        wer_score = round(wer(ref, hyp), 4)
+        cer_score = round(cer(ref, hyp), 4)
+        return wer_score, cer_score
+    except Exception as e:
+        logger.warning(f"[TTS Eval] WER/CER calculation error: {e}")
+        return None, None
+
+
+# Singleton for the NeMo ASR model (loaded once per worker process)
+_nemo_asr_model = None
+
+
+def _get_nemo_asr_model():
+    """Lazy-load NVIDIA NeMo Conformer CTC model for hallucination detection.
+
+    Requires: pip install efficientai[nemo-asr]
+    Returns the model instance, or None if NeMo is not installed.
+    """
+    global _nemo_asr_model
+
+    if _nemo_asr_model is not None:
+        return _nemo_asr_model
+
+    try:
+        import nemo.collections.asr as nemo_asr
+        logger.info("[TTS Eval] Loading NeMo ASR model (stt_en_conformer_ctc_large)...")
+        _nemo_asr_model = nemo_asr.models.ASRModel.from_pretrained("stt_en_conformer_ctc_large")
+        logger.info("[TTS Eval] NeMo ASR model loaded successfully")
+        return _nemo_asr_model
+    except ImportError as e:
+        logger.warning(
+            f"[TTS Eval] NeMo import failed: {e} – "
+            "WER/CER hallucination metrics will be skipped. "
+            "To enable, run:\n"
+            "  pip install 'nemo_toolkit[asr]'\n"
+            "  python -c \"import nemo.collections.asr as nemo_asr; "
+            "nemo_asr.models.ASRModel.from_pretrained('stt_en_conformer_ctc_large')\""
+        )
+    except Exception as e:
+        logger.error(
+            f"[TTS Eval] NeMo ASR model failed to load: {e} – "
+            "The model may not be cached yet. To download it manually, run:\n"
+            "  python -c \"import nemo.collections.asr as nemo_asr; "
+            "nemo_asr.models.ASRModel.from_pretrained('stt_en_conformer_ctc_large')\"",
+            exc_info=True,
+        )
+
+    return None
+
+
+def _transcribe_audio_for_eval(audio_path: str) -> str | None:
+    """Transcribe an audio file using NVIDIA NeMo Conformer CTC.
+
+    Runs entirely on the worker – no API key needed.
+    """
+    model = _get_nemo_asr_model()
+    if model is None:
+        return None
+
+    try:
+        transcriptions = model.transcribe([audio_path])
+        if transcriptions and len(transcriptions) > 0:
+            text = transcriptions[0]
+            # NeMo may return Hypothesis objects in some versions
+            if hasattr(text, "text"):
+                text = text.text
+            return str(text).strip() or None
+        return None
+    except Exception as e:
+        logger.warning(f"[TTS Eval] ASR transcription failed: {e}")
+        return None
+
+
 @celery_app.task(name="evaluate_tts_comparison", bind=True, max_retries=1)
 def evaluate_tts_comparison_task(self, comparison_id: str):
     """
     Download each completed sample from S3 and run qualitative voice
-    metrics (MOS, Valence, Arousal, Prosody).
+    metrics (MOS, Valence, Arousal, Prosody) plus ASR-based WER/CER
+    for hallucination detection.
     """
     import tempfile
     import os
@@ -845,6 +1028,9 @@ def evaluate_tts_comparison_task(self, comparison_id: str):
         # Lazy-load qualitative service inside the worker
         from app.services.qualitative_voice_service import qualitative_voice_service
 
+        # Pre-warm the NeMo ASR model once for the batch (lazy singleton)
+        nemo_model = _get_nemo_asr_model()
+
         evaluated = 0
         for sample in samples:
             tmp_path = None
@@ -860,6 +1046,20 @@ def evaluate_tts_comparison_task(self, comparison_id: str):
                     f.write(audio_bytes)
 
                 metrics = qualitative_voice_service.calculate_all_metrics(tmp_path)
+
+                # ASR-based hallucination detection (WER / CER)
+                if nemo_model is not None and sample.text:
+                    asr_transcript = _transcribe_audio_for_eval(tmp_path)
+                    if asr_transcript:
+                        wer_score, cer_score = _compute_wer_cer(sample.text, asr_transcript)
+                        metrics["WER"] = wer_score
+                        metrics["CER"] = cer_score
+                        metrics["ASR Transcript"] = asr_transcript
+                    else:
+                        metrics["WER"] = None
+                        metrics["CER"] = None
+                        metrics["ASR Transcript"] = None
+
                 sample.evaluation_metrics = metrics
                 db.commit()
                 evaluated += 1

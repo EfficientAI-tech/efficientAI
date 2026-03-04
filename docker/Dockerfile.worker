@@ -20,8 +20,8 @@ COPY src/ ./src/
 COPY app/ ./app/
 COPY scripts/ ./scripts/
 
-# Install dependencies (include qualitative-voice extras for evaluation metrics)
-RUN uv pip install --system -e ".[qualitative-voice]"
+# Install dependencies (qualitative-voice for evaluation metrics, nemo-asr for TTS hallucination detection)
+RUN uv pip install --system -e ".[qualitative-voice,nemo-asr]"
 
 # ============================================================
 # Pre-download qualitative metric models into the image so
@@ -43,6 +43,14 @@ print('Emotion classifier cached successfully'); \
 proc = AutoProcessor.from_pretrained('audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim'); \
 mdl = AutoModelForAudioClassification.from_pretrained('audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim'); \
 print('Valence/arousal model cached successfully'); \
+"
+
+# 3. NeMo Conformer CTC ASR model for TTS hallucination detection (WER/CER)
+#    Downloads from NVIDIA NGC -> /root/.cache/torch/NeMo/
+RUN python -c "\
+import nemo.collections.asr as nemo_asr; \
+model = nemo_asr.models.ASRModel.from_pretrained('stt_en_conformer_ctc_large'); \
+print('NeMo ASR model cached successfully'); \
 "
 
 # Create uploads directory

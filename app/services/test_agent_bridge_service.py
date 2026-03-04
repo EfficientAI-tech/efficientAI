@@ -120,7 +120,7 @@ class TestAgentBridgeService:
             f"agent {agent.name}, integration {platform_value}"
         )
         
-        # Step 1: Create web call to Voice AI agent (Retell/Vapi)
+        # Step 1: Create web call to Voice AI agent (Retell/Vapi/ElevenLabs)
         logger.info(f"[Bridge] Step 1: Creating web call to {platform_value} agent {agent.voice_ai_agent_id}")
         try:
             logger.info(f"[Bridge] Calling provider.create_web_call()...")
@@ -140,18 +140,29 @@ class TestAgentBridgeService:
             call_id = web_call_response.get("call_id")
             # For Retell: access_token (LiveKit token)
             # For Vapi: web_call_url (Daily.co URL) - we pass it in the access_token field
-            access_token = web_call_response.get("access_token") or web_call_response.get("web_call_url")
+            # For ElevenLabs: signed_url (WebSocket URL) - call_id is None until connection
+            access_token = (
+                web_call_response.get("access_token")
+                or web_call_response.get("web_call_url")
+                or web_call_response.get("signed_url")
+            )
             sample_rate = web_call_response.get("sample_rate", 24000)
+            
+            # ElevenLabs uses 16kHz
+            if platform_value.lower() == "elevenlabs":
+                sample_rate = 16000
             
             logger.info(f"[Bridge] Extracted: call_id={call_id}, access_token={'set' if access_token else 'NOT SET'}, sample_rate={sample_rate}")
             
-            if not call_id:
+            # ElevenLabs returns call_id=None; the conversation_id is obtained
+            # after WebSocket connection. Skip the call_id check for ElevenLabs.
+            if not call_id and platform_value.lower() != "elevenlabs":
                 logger.error(f"[Bridge] ❌ No call_id in response. Full response: {web_call_response}")
                 raise ValueError("No call_id received from web call creation")
             
             if not access_token:
-                logger.error(f"[Bridge] ❌ No access_token/web_call_url in response. Full response: {web_call_response}")
-                raise ValueError("No access_token/web_call_url received from web call creation")
+                logger.error(f"[Bridge] ❌ No access_token/web_call_url/signed_url in response. Full response: {web_call_response}")
+                raise ValueError("No access_token/web_call_url/signed_url received from web call creation")
             
             logger.info(f"[Bridge] ✅ Created web call: call_id={call_id}, token/url={'***' if access_token else 'None'}")
             
@@ -163,8 +174,8 @@ class TestAgentBridgeService:
             
             result.status = EvaluatorResultStatus.CALL_INITIATING.value
             result.call_event = "call_initiating"
-            result.provider_call_id = call_id
-            # Clear any previous error message
+            if call_id:
+                result.provider_call_id = call_id
             result.error_message = None
             db.commit()
             logger.info(f"[Bridge] ✅ Status updated to CALL_INITIATING for result {result.result_id}: call_id={call_id}")
@@ -295,7 +306,7 @@ class TestAgentBridgeService:
         persona_id: UUID,
         scenario_id: UUID,
         organization_id: UUID,
-        call_id: str,
+        call_id: Optional[str],
         access_token: str,
         sample_rate: int,
         provider_platform: str,
@@ -304,11 +315,11 @@ class TestAgentBridgeService:
         db
     ):
         """
-        Connect test agent via WebSocket and bridge to Retell/Vapi call using WebRTC.
+        Connect test agent and bridge to Retell/Vapi (WebRTC) or ElevenLabs (WebSocket).
         
         This implementation:
-        1. Creates a WebRTC connection to Retell using call_id and access_token
-        2. Connects test agent via WebSocket (voice bundle)
+        1. Creates a connection to the voice provider (LiveKit/Daily/WebSocket)
+        2. Initializes the in-process test agent (LLM + TTS)
         3. Bridges audio streams bidirectionally
         4. Records the conversation
         
@@ -319,15 +330,16 @@ class TestAgentBridgeService:
             scenario_id: Scenario ID
             organization_id: Organization ID
             call_id: Retell/Vapi call ID
-            access_token: Retell/Vapi access token
+            access_token: Retell/Vapi access token or ElevenLabs signed URL
             sample_rate: Audio sample rate
-            provider_platform: Platform name (retell, vapi)
+            provider_platform: Platform name (retell, vapi, elevenlabs)
             evaluator_result_id: EvaluatorResult ID
             voice_bundle_id: Voice bundle ID for test agent
             db: Database session
         """
         from app.services.webrtc_bridge.retell_webrtc_bridge import RetellWebRTCBridge
         from app.services.webrtc_bridge.vapi_webrtc_bridge import VapiWebRTCBridge
+        from app.services.webrtc_bridge.elevenlabs_ws_bridge import ElevenLabsWSBridge
         from app.config import settings
         import websockets
         import json
@@ -421,7 +433,47 @@ class TestAgentBridgeService:
                     raise Exception("Failed to connect to Vapi WebRTC call")
                 
                 logger.info("[Bridge WebRTC] ✅ Connected to Vapi WebRTC call via Daily.co")
-                
+
+            elif provider_platform == "elevenlabs":
+                # For ElevenLabs, access_token is the signed WebSocket URL
+                signed_url = access_token
+
+                webrtc_bridge = ElevenLabsWSBridge(
+                    signed_url=signed_url,
+                    sample_rate=sample_rate,
+                )
+                webrtc_bridge.on_call_ended = on_call_ended
+
+                connected = await webrtc_bridge.connect_to_elevenlabs()
+                if not connected:
+                    await update_status(
+                        EvaluatorResultStatus.FAILED.value,
+                        "call_connection_failed",
+                        "Failed to connect to ElevenLabs WebSocket"
+                    )
+                    raise Exception("Failed to connect to ElevenLabs WebSocket")
+
+                logger.info("[Bridge WebRTC] ✅ Connected to ElevenLabs WebSocket")
+
+                # ElevenLabs conversation_id is available only after connect.
+                # Update the evaluator result so that _poll_call_results can use it.
+                if webrtc_bridge.conversation_id:
+                    from app.database import SessionLocal
+                    id_db = SessionLocal()
+                    try:
+                        r = id_db.query(EvaluatorResult).filter(
+                            EvaluatorResult.id == evaluator_result_id
+                        ).first()
+                        if r:
+                            r.provider_call_id = webrtc_bridge.conversation_id
+                            id_db.commit()
+                            logger.info(
+                                f"[Bridge WebRTC] Stored ElevenLabs conversation_id="
+                                f"{webrtc_bridge.conversation_id}"
+                            )
+                    finally:
+                        id_db.close()
+
             else:
                 raise ValueError(f"WebRTC bridging not yet implemented for platform: {provider_platform}")
             
@@ -650,6 +702,7 @@ class TestAgentBridgeService:
             if test_agent:
                 # Set up callbacks to connect test agent with voice provider
                 # Vapi uses 40ms chunks (640 samples at 16kHz), Retell uses 20ms chunks
+                # ElevenLabs uses 250ms recommended but 20ms works fine for streaming
                 chunk_ms = 40 if provider_platform == "vapi" else 20
                 
                 async def send_audio_chunks(audio: bytes):
@@ -659,6 +712,10 @@ class TestAgentBridgeService:
                         webrtc_bridge.receive_audio_from_test_agent,
                         chunk_duration_ms=chunk_ms
                     )
+                    # ElevenLabs needs trailing silence so its VAD detects
+                    # end-of-speech (a real browser mic always streams audio).
+                    if provider_platform == "elevenlabs" and hasattr(webrtc_bridge, "send_silence"):
+                        await webrtc_bridge.send_silence(duration_ms=600)
                 
                 async def on_transcript_received(transcript: str):
                     """When voice agent finishes speaking, process with test agent."""
@@ -701,13 +758,24 @@ class TestAgentBridgeService:
                 webrtc_bridge.on_agent_stop_talking = on_agent_stop_talking
                 test_agent.on_call_should_end = on_call_should_end
                 
-                # Generate and send the first message to start the conversation
-                logger.info("[Bridge WebRTC] Sending test agent's first message...")
-                first_audio = await test_agent.generate_first_message()
-                if first_audio:
-                    logger.info(f"[Bridge WebRTC] Streaming first message ({len(first_audio)} bytes)...")
-                    await send_audio_chunks(first_audio)
-                    logger.info(f"[Bridge WebRTC] ✅ First message sent to {provider_platform}")
+                # ElevenLabs agents have a built-in greeting — they start talking
+                # as soon as the WebSocket connects.  Sending a first_message would
+                # collide with the greeting, cause an interruption, and confuse the
+                # agent.  So for ElevenLabs we skip the first message and let the
+                # on_transcript_received callback handle the response to the greeting.
+                if provider_platform == "elevenlabs":
+                    logger.info(
+                        "[Bridge WebRTC] ElevenLabs: skipping first message — "
+                        "waiting for agent greeting"
+                    )
+                else:
+                    # Retell / Vapi: test agent initiates the conversation
+                    logger.info("[Bridge WebRTC] Sending test agent's first message...")
+                    first_audio = await test_agent.generate_first_message()
+                    if first_audio:
+                        logger.info(f"[Bridge WebRTC] Streaming first message ({len(first_audio)} bytes)...")
+                        await send_audio_chunks(first_audio)
+                        logger.info(f"[Bridge WebRTC] ✅ First message sent to {provider_platform}")
                 
                 logger.info("[Bridge WebRTC] ✅ Test agent connected, conversation starting...")
             else:
@@ -865,13 +933,32 @@ class TestAgentBridgeService:
                 return
             
             # Store provider info immediately
-            result.provider_call_id = call_id
+            if call_id:
+                result.provider_call_id = call_id
             result.provider_platform = provider_platform
             poll_db.commit()
             logger.info(f"[Bridge Poll] Starting to poll {provider_platform} call {call_id} for results")
             
             # Wait a bit before starting to poll (call might be starting)
             await asyncio.sleep(10)
+            
+            # For ElevenLabs the call_id (conversation_id) is set by the bridge
+            # after the WebSocket connects. Wait for it to appear in the DB.
+            if not call_id and provider_platform == "elevenlabs":
+                for _wait in range(30):  # up to 30 seconds
+                    poll_db.refresh(result)
+                    if result.provider_call_id:
+                        call_id = result.provider_call_id
+                        logger.info(f"[Bridge Poll] Got ElevenLabs conversation_id from DB: {call_id}")
+                        break
+                    await asyncio.sleep(1)
+                
+                if not call_id:
+                    logger.error("[Bridge Poll] ElevenLabs conversation_id never appeared")
+                    result.status = EvaluatorResultStatus.FAILED.value
+                    result.error_message = "ElevenLabs conversation_id was never set"
+                    poll_db.commit()
+                    return
             
             call_completed = False
             call_metrics = None
@@ -883,7 +970,7 @@ class TestAgentBridgeService:
                         await asyncio.sleep(poll_interval)
                     
                     # Retrieve call metrics from provider
-                    if provider_platform in ["retell", "vapi"] and hasattr(provider, "retrieve_call_metrics"):
+                    if provider_platform in ["retell", "vapi", "elevenlabs"] and hasattr(provider, "retrieve_call_metrics"):
                         call_metrics = provider.retrieve_call_metrics(call_id)
                     else:
                         logger.warning(f"[Bridge Poll] Platform {provider_platform} polling not yet implemented")
@@ -900,8 +987,13 @@ class TestAgentBridgeService:
                         f"transcript_len={len(transcript) if transcript else 0}"
                     )
                     
+                    # ElevenLabs may stay "processing" briefly before "ended"
+                    if call_status == "processing" and provider_platform == "elevenlabs":
+                        logger.info(f"[Bridge Poll] ElevenLabs call still processing, waiting...")
+                        continue
+
                     # If call is complete, process results
-                    if end_timestamp or call_status in ["ended", "completed", "failed"]:
+                    if end_timestamp or call_status in ["ended", "completed", "failed", "done"]:
                         call_completed = True
                         logger.info(f"[Bridge Poll] ✅ Call completed: status={call_status}")
                         
@@ -945,6 +1037,72 @@ class TestAgentBridgeService:
                         if speaker_segments:
                             result.speaker_segments = speaker_segments
                             logger.info(f"[Bridge Poll] ✅ Extracted {len(speaker_segments)} speaker segments")
+                        
+                        # Download call audio from provider and upload to S3
+                        # (same logic as agent playground – needed for qualitative audio metrics)
+                        audio_s3_key = None
+                        try:
+                            import requests as _http
+                            import uuid as _uuid
+
+                            recording_urls = call_metrics.get("recording_urls", {})
+                            audio_bytes = None
+                            plat = provider_platform.lower()
+
+                            if plat == "elevenlabs":
+                                audio_url = recording_urls.get("conversation_audio")
+                                if audio_url:
+                                    resp = _http.get(
+                                        audio_url,
+                                        headers={"xi-api-key": provider.api_key},
+                                        timeout=120,
+                                    )
+                                    if resp.status_code == 200:
+                                        audio_bytes = resp.content
+                            elif plat == "retell":
+                                audio_url = call_metrics.get("recording_url")
+                                if audio_url:
+                                    resp = _http.get(audio_url, timeout=120)
+                                    if resp.status_code == 200:
+                                        audio_bytes = resp.content
+                            elif plat == "vapi":
+                                audio_url = (
+                                    recording_urls.get("combined_url")
+                                    or recording_urls.get("stereo_url")
+                                    or call_metrics.get("recordingUrl")
+                                )
+                                if audio_url:
+                                    resp = _http.get(audio_url, timeout=120)
+                                    if resp.status_code == 200:
+                                        audio_bytes = resp.content
+
+                            if audio_bytes:
+                                content_type = getattr(resp, "headers", {}).get(
+                                    "content-type", "audio/mpeg"
+                                )
+                                ext = "wav" if "wav" in content_type else "mp3"
+                                org_id = str(organization_id)
+                                audio_s3_key = (
+                                    f"audio/organizations/{org_id}/evaluations/"
+                                    f"{result.provider_call_id}/{_uuid.uuid4()}.{ext}"
+                                )
+                                s3_service.upload_file_by_key(
+                                    audio_bytes, audio_s3_key, content_type=content_type
+                                )
+                                result.audio_s3_key = audio_s3_key
+                                logger.info(
+                                    f"[Bridge Poll] ✅ Uploaded call audio to S3: "
+                                    f"{audio_s3_key} ({len(audio_bytes)} bytes)"
+                                )
+                            else:
+                                logger.warning(
+                                    f"[Bridge Poll] Could not download audio for call "
+                                    f"{result.provider_call_id}"
+                                )
+                        except Exception as audio_err:
+                            logger.warning(
+                                f"[Bridge Poll] Audio download/upload failed: {audio_err}"
+                            )
                         
                         # Commit all the data
                         poll_db.commit()
@@ -1130,7 +1288,38 @@ class TestAgentBridgeService:
                     f"{seg['speaker']}: {seg['text']}" 
                     for seg in speaker_segments
                 )
-        
+
+        elif provider_platform == "elevenlabs":
+            # ElevenLabs format (from retrieve_call_metrics):
+            # - transcript: "Agent: ...\nUser: ..." plain text
+            # - transcript_object: [{speaker, text, start, end}, ...]
+            transcript_text = call_data.get("transcript", "")
+            transcript_obj = call_data.get("transcript_object", [])
+
+            if transcript_obj:
+                for entry in transcript_obj:
+                    speaker_label = entry.get("speaker", "Speaker 1")
+                    text = entry.get("text", "")
+                    if not text or not text.strip():
+                        continue
+                    # Map "Agent"/"User" to Speaker 1/2
+                    if speaker_label in ("Agent", "ai", "agent"):
+                        speaker = "Speaker 2"  # ElevenLabs agent
+                    else:
+                        speaker = "Speaker 1"  # Test agent / caller
+                    speaker_segments.append({
+                        "speaker": speaker,
+                        "text": text.strip(),
+                        "start": entry.get("start", 0),
+                        "end": entry.get("end", 0),
+                    })
+
+            if not transcript_text and speaker_segments:
+                transcript_text = "\n".join(
+                    f"{seg['speaker']}: {seg['text']}"
+                    for seg in speaker_segments
+                )
+
         return transcript_text, speaker_segments
     
     def record_conversation(

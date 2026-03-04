@@ -48,14 +48,16 @@ export default function EnterpriseUpgrade({ feature }: { feature: string }) {
 
         <div className="flex flex-col sm:flex-row gap-3 justify-center">
           <a
-            href="mailto:sales@efficientai.com?subject=Enterprise%20License%20Inquiry"
+            href="https://cal.com/aadhar-singh-bhadauria/30min"
+            target="_blank"
+            rel="noopener noreferrer"
             className="inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800 transition-colors"
           >
             <Mail className="h-4 w-4" />
             Contact Sales
           </a>
           <a
-            href="https://www.efficientai.com/enterprise"
+            href="https://efficientai.cloud"
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"

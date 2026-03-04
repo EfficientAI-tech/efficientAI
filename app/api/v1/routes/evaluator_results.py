@@ -430,11 +430,17 @@ def re_evaluate_result(
     db: Session = Depends(get_db),
 ):
     """
-    Re-evaluate an existing evaluator result. Keeps the existing transcription
-    but re-runs the LLM metric evaluation using the current evaluator config
-    (system prompt, LLM model, etc.). Useful after updating the evaluator's
-    prompt or switching models.
+    Re-evaluate an existing evaluator result.
+
+    If the result already has audio in S3, reuses it.  Otherwise attempts to
+    download the recording from the voice provider (ElevenLabs / Retell / Vapi),
+    uploads it to S3, and stores the key so that audio-dependent quality
+    metrics (pitch, jitter, MOS, emotion, etc.) can run alongside the
+    LLM-based transcript metrics.
     """
+    import logging
+    logger = logging.getLogger(__name__)
+
     try:
         result_uuid = UUID(id)
         result = db.query(EvaluatorResult).filter(
@@ -460,10 +466,78 @@ def re_evaluate_result(
             detail="Cannot re-evaluate: this result is not linked to an evaluator."
         )
 
-    # Verify the evaluator still exists
     evaluator = db.query(Evaluator).filter(Evaluator.id == result.evaluator_id).first()
     if not evaluator:
         raise HTTPException(status_code=404, detail="Linked evaluator no longer exists")
+
+    # ------------------------------------------------------------------
+    # If no audio in S3 yet, try to download from the voice provider
+    # ------------------------------------------------------------------
+    if not result.audio_s3_key and result.call_data and result.provider_platform:
+        try:
+            import requests as _http
+            import uuid as _uuid
+            from app.models.database import Agent, Integration
+            from app.core.encryption import decrypt_api_key
+            from app.services.s3_service import s3_service
+
+            call_data = result.call_data or {}
+            platform = (result.provider_platform or "").lower()
+            recording_urls = call_data.get("recording_urls", {})
+            audio_bytes = None
+            decrypted_key = None
+
+            # Resolve the integration API key (needed for ElevenLabs auth header)
+            agent = db.query(Agent).filter(Agent.id == result.agent_id).first() if result.agent_id else None
+            if agent and agent.voice_ai_integration_id:
+                integration = db.query(Integration).filter(
+                    Integration.id == agent.voice_ai_integration_id,
+                    Integration.organization_id == organization_id,
+                ).first()
+                if integration:
+                    decrypted_key = decrypt_api_key(integration.api_key)
+
+            if platform == "elevenlabs":
+                audio_url = recording_urls.get("conversation_audio")
+                if audio_url and decrypted_key:
+                    resp = _http.get(audio_url, headers={"xi-api-key": decrypted_key}, timeout=120)
+                    if resp.status_code == 200:
+                        audio_bytes = resp.content
+            elif platform == "retell":
+                audio_url = call_data.get("recording_url")
+                if audio_url:
+                    resp = _http.get(audio_url, timeout=120)
+                    if resp.status_code == 200:
+                        audio_bytes = resp.content
+            elif platform == "vapi":
+                audio_url = (
+                    recording_urls.get("combined_url")
+                    or recording_urls.get("stereo_url")
+                    or call_data.get("recordingUrl")
+                )
+                if audio_url:
+                    resp = _http.get(audio_url, timeout=120)
+                    if resp.status_code == 200:
+                        audio_bytes = resp.content
+
+            if audio_bytes:
+                content_type = getattr(resp, "headers", {}).get("content-type", "audio/mpeg")
+                ext = "wav" if "wav" in content_type else "mp3"
+                org_id = str(organization_id)
+                audio_s3_key = (
+                    f"audio/organizations/{org_id}/evaluations/"
+                    f"{result.provider_call_id}/{_uuid.uuid4()}.{ext}"
+                )
+                s3_service.upload_file_by_key(audio_bytes, audio_s3_key, content_type=content_type)
+                result.audio_s3_key = audio_s3_key
+                logger.info(
+                    f"[Re-evaluate] Downloaded & uploaded audio to S3: "
+                    f"{audio_s3_key} ({len(audio_bytes)} bytes)"
+                )
+            else:
+                logger.warning(f"[Re-evaluate] Could not download audio for result {result.result_id}")
+        except Exception as audio_err:
+            logger.warning(f"[Re-evaluate] Audio download/upload failed: {audio_err}")
 
     # Reset evaluation state but keep transcription and audio
     result.metric_scores = None
@@ -477,8 +551,6 @@ def re_evaluate_result(
         result.celery_task_id = task.id
         db.commit()
     except Exception as e:
-        import logging
-        logger = logging.getLogger(__name__)
         logger.error(f"Failed to trigger re-evaluate task for result {result.result_id}: {e}")
         result.status = EvaluatorResultStatus.FAILED.value
         result.error_message = f"Failed to queue re-evaluation: {str(e)}"

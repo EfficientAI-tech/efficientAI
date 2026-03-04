@@ -451,10 +451,7 @@ function SidebarContent({
                             />
                             {item.name}
                             {isGated && (
-                              <span className="ml-auto flex items-center gap-1 text-xs text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded">
-                                <Lock className="h-3 w-3" />
-                                Enterprise
-                              </span>
+                              <Lock className="ml-auto h-3.5 w-3.5 text-amber-600 flex-shrink-0" />
                             )}
                           </Link>
                         )

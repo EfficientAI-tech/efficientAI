@@ -131,6 +131,8 @@ interface TTSAnalyticsRow {
     avg_prosody: number | null
     avg_latency_ms: number | null
     avg_ttfb_ms: number | null
+    avg_wer: number | null
+    avg_cer: number | null
 }
 
 interface CustomTTSVoice {
@@ -146,8 +148,8 @@ interface CustomTTSVoice {
     updated_at?: string | null
 }
 
-type AnalyticsSortKey = 'provider' | 'model' | 'voice_name' | 'sample_count' | 'avg_mos' | 'avg_valence' | 'avg_arousal' | 'avg_prosody' | 'avg_latency_ms' | 'avg_ttfb_ms'
-type BenchmarkMetricKey = 'avg_mos' | 'avg_valence' | 'avg_arousal' | 'avg_prosody' | 'avg_latency_ms' | 'avg_ttfb_ms'
+type AnalyticsSortKey = 'provider' | 'model' | 'voice_name' | 'sample_count' | 'avg_mos' | 'avg_valence' | 'avg_arousal' | 'avg_prosody' | 'avg_latency_ms' | 'avg_ttfb_ms' | 'avg_wer' | 'avg_cer'
+type BenchmarkMetricKey = 'avg_mos' | 'avg_valence' | 'avg_arousal' | 'avg_prosody' | 'avg_latency_ms' | 'avg_ttfb_ms' | 'avg_wer' | 'avg_cer'
 
 const BENCHMARK_METRIC_OPTIONS: Array<{
     key: BenchmarkMetricKey
@@ -163,6 +165,8 @@ const BENCHMARK_METRIC_OPTIONS: Array<{
     { key: 'avg_prosody', title: 'PROSODY', subtitle: 'Average Prosody Score; Higher is better', higherIsBetter: true, maxValue: 5 },
     { key: 'avg_ttfb_ms', title: 'TTFB', subtitle: 'Time-To-First-Byte (ms); Lower is better', higherIsBetter: false, unit: 'ms' },
     { key: 'avg_latency_ms', title: 'TOTAL LATENCY', subtitle: 'Total Synthesis Latency (ms); Lower is better', higherIsBetter: false, unit: 'ms' },
+    { key: 'avg_wer', title: 'WER', subtitle: 'Word Error Rate (ASR vs Ground Truth); Lower is better', higherIsBetter: false, maxValue: 1 },
+    { key: 'avg_cer', title: 'CER', subtitle: 'Character Error Rate (ASR vs Ground Truth); Lower is better', higherIsBetter: false, maxValue: 1 },
 ]
 
 // ============ CONSTANTS ============
@@ -388,6 +392,8 @@ export default function VoicePlayground() {
             avg_prosody: row.avg_prosody,
             avg_ttfb_ms: row.avg_ttfb_ms,
             avg_latency_ms: row.avg_latency_ms,
+            avg_wer: row.avg_wer,
+            avg_cer: row.avg_cer,
             label: `${row.voice_name} • ${getProviderInfo(row.provider).label} • ${row.model}`,
             short_label: row.voice_name.length > 16 ? `${row.voice_name.slice(0, 16)}...` : row.voice_name,
         }))
@@ -431,6 +437,7 @@ export default function VoicePlayground() {
     const [showAiGenerate, setShowAiGenerate] = useState(false)
     const [selectedBundleId, setSelectedBundleId] = useState('')
     const [aiSampleCount, setAiSampleCount] = useState(5)
+    const [aiSampleLength, setAiSampleLength] = useState<'short' | 'medium' | 'long' | 'paragraph'>('short')
 
     const [customVoiceProvider, setCustomVoiceProvider] = useState('')
     const [customVoiceId, setCustomVoiceId] = useState('')
@@ -445,7 +452,7 @@ export default function VoicePlayground() {
     )
 
     const generateSamplesMutation = useMutation({
-        mutationFn: (params: { voice_bundle_id?: string; scenario?: string; count?: number }) =>
+        mutationFn: (params: { voice_bundle_id?: string; scenario?: string; count?: number; length?: string }) =>
             apiClient.generateSampleTexts(params),
         onSuccess: (data) => {
             setSampleTexts(prev => [...prev, ...data.samples])
@@ -911,10 +918,24 @@ export default function VoicePlayground() {
                                                             voice_bundle_id: selectedBundleId,
                                                             scenario: aiScenario || undefined,
                                                             count: aiSampleCount,
+                                                            length: aiSampleLength,
                                                         })
                                                     }
                                                 }}
                                             />
+                                            <div className="flex items-center gap-1">
+                                                <label className="text-xs text-primary-800 whitespace-nowrap">Length:</label>
+                                                <select
+                                                    value={aiSampleLength}
+                                                    onChange={e => setAiSampleLength(e.target.value as any)}
+                                                    className="px-2 py-2 text-sm border border-primary-300 rounded-lg focus:ring-2 focus:ring-primary-500 bg-white"
+                                                >
+                                                    <option value="short">Short (1 sentence)</option>
+                                                    <option value="medium">Medium (2-3 sentences)</option>
+                                                    <option value="long">Long (4-6 sentences)</option>
+                                                    <option value="paragraph">Paragraph (7-10 sentences)</option>
+                                                </select>
+                                            </div>
                                             <div className="flex items-center gap-1">
                                                 <label className="text-xs text-primary-800 whitespace-nowrap">Count:</label>
                                                 <select
@@ -935,6 +956,7 @@ export default function VoicePlayground() {
                                                     voice_bundle_id: selectedBundleId || undefined,
                                                     scenario: aiScenario || undefined,
                                                     count: aiSampleCount,
+                                                    length: aiSampleLength,
                                                 })}
                                                 disabled={generateSamplesMutation.isPending || !selectedBundleId}
                                                 className="px-4 py-2 text-sm bg-primary-100 text-primary-700 border border-primary-400 rounded-lg hover:bg-primary-200 disabled:opacity-60 flex items-center gap-1.5"
@@ -1384,24 +1406,28 @@ export default function VoicePlayground() {
                             const sumB = comparison.evaluation_summary.provider_b || {}
                             if (hasSecondProvider(comparison)) {
                                 return (
-                                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
+                                    <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3 mb-6">
                                         <MetricCard label="MOS Score" valueA={sumA['MOS Score']} valueB={sumB['MOS Score']} higherIsBetter />
                                         <MetricCard label="Valence" valueA={sumA['Valence']} valueB={sumB['Valence']} higherIsBetter />
                                         <MetricCard label="Arousal" valueA={sumA['Arousal']} valueB={sumB['Arousal']} higherIsBetter />
                                         <MetricCard label="Prosody" valueA={sumA['Prosody Score']} valueB={sumB['Prosody Score']} higherIsBetter />
                                         <MetricCard label="TTFB" valueA={sumA['avg_ttfb_ms']} valueB={sumB['avg_ttfb_ms']} unit="ms" higherIsBetter={false} />
                                         <MetricCard label="Total Latency" valueA={sumA['avg_latency_ms']} valueB={sumB['avg_latency_ms']} unit="ms" higherIsBetter={false} />
+                                        <MetricCard label="WER" valueA={sumA['WER']} valueB={sumB['WER']} higherIsBetter={false} />
+                                        <MetricCard label="CER" valueA={sumA['CER']} valueB={sumB['CER']} higherIsBetter={false} />
                                     </div>
                                 )
                             }
                             return (
-                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-3 mb-6">
+                                <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3 mb-6">
                                     <MetricCard label="MOS Score" valueA={sumA['MOS Score']} valueB={null} higherIsBetter />
                                     <MetricCard label="Valence" valueA={sumA['Valence']} valueB={null} higherIsBetter />
                                     <MetricCard label="Arousal" valueA={sumA['Arousal']} valueB={null} higherIsBetter />
                                     <MetricCard label="Prosody" valueA={sumA['Prosody Score']} valueB={null} higherIsBetter />
                                     <MetricCard label="TTFB" valueA={sumA['avg_ttfb_ms']} valueB={null} unit="ms" higherIsBetter={false} />
                                     <MetricCard label="Total Latency" valueA={sumA['avg_latency_ms']} valueB={null} unit="ms" higherIsBetter={false} />
+                                    <MetricCard label="WER" valueA={sumA['WER']} valueB={null} higherIsBetter={false} />
+                                    <MetricCard label="CER" valueA={sumA['CER']} valueB={null} higherIsBetter={false} />
                                 </div>
                             )
                         })()}
@@ -1710,24 +1736,28 @@ export default function VoicePlayground() {
                                             const sumB = viewedComparison.evaluation_summary.provider_b || {}
                                             if (hasSecondProvider(viewedComparison)) {
                                                 return (
-                                                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
+                                                    <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3 mb-6">
                                                         <MetricCard label="MOS Score" valueA={sumA['MOS Score']} valueB={sumB['MOS Score']} higherIsBetter />
                                                         <MetricCard label="Valence" valueA={sumA['Valence']} valueB={sumB['Valence']} higherIsBetter />
                                                         <MetricCard label="Arousal" valueA={sumA['Arousal']} valueB={sumB['Arousal']} higherIsBetter />
                                                         <MetricCard label="Prosody" valueA={sumA['Prosody Score']} valueB={sumB['Prosody Score']} higherIsBetter />
                                                         <MetricCard label="TTFB" valueA={sumA['avg_ttfb_ms']} valueB={sumB['avg_ttfb_ms']} unit="ms" higherIsBetter={false} />
                                                         <MetricCard label="Total Latency" valueA={sumA['avg_latency_ms']} valueB={sumB['avg_latency_ms']} unit="ms" higherIsBetter={false} />
+                                                        <MetricCard label="WER" valueA={sumA['WER']} valueB={sumB['WER']} higherIsBetter={false} />
+                                                        <MetricCard label="CER" valueA={sumA['CER']} valueB={sumB['CER']} higherIsBetter={false} />
                                                     </div>
                                                 )
                                             }
                                             return (
-                                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-3 mb-6">
+                                                <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3 mb-6">
                                                     <MetricCard label="MOS Score" valueA={sumA['MOS Score']} valueB={null} higherIsBetter />
                                                     <MetricCard label="Valence" valueA={sumA['Valence']} valueB={null} higherIsBetter />
                                                     <MetricCard label="Arousal" valueA={sumA['Arousal']} valueB={null} higherIsBetter />
                                                     <MetricCard label="Prosody" valueA={sumA['Prosody Score']} valueB={null} higherIsBetter />
                                                     <MetricCard label="TTFB" valueA={sumA['avg_ttfb_ms']} valueB={null} unit="ms" higherIsBetter={false} />
                                                     <MetricCard label="Total Latency" valueA={sumA['avg_latency_ms']} valueB={null} unit="ms" higherIsBetter={false} />
+                                                    <MetricCard label="WER" valueA={sumA['WER']} valueB={null} higherIsBetter={false} />
+                                                    <MetricCard label="CER" valueA={sumA['CER']} valueB={null} higherIsBetter={false} />
                                                 </div>
                                             )
                                         })()}
@@ -2097,6 +2127,8 @@ export default function VoicePlayground() {
                                                                     ['avg_prosody', 'Avg Prosody'],
                                                                     ['avg_ttfb_ms', 'Avg TTFB'],
                                                                     ['avg_latency_ms', 'Total Latency'],
+                                                                    ['avg_wer', 'Avg WER'],
+                                                                    ['avg_cer', 'Avg CER'],
                                                                 ] as [AnalyticsSortKey, string][]).map(([key, label]) => (
                                                                     <th
                                                                         key={key}
@@ -2142,6 +2174,12 @@ export default function VoicePlayground() {
                                                                     </td>
                                                                     <td className="px-3 py-3 whitespace-nowrap text-center">
                                                                         <AnalyticsMetricCell value={row.avg_latency_ms} unit="ms" higherIsBetter={false} />
+                                                                    </td>
+                                                                    <td className="px-3 py-3 whitespace-nowrap text-center">
+                                                                        <AnalyticsMetricCell value={row.avg_wer} max={1} higherIsBetter={false} />
+                                                                    </td>
+                                                                    <td className="px-3 py-3 whitespace-nowrap text-center">
+                                                                        <AnalyticsMetricCell value={row.avg_cer} max={1} higherIsBetter={false} />
                                                                     </td>
                                                                 </tr>
                                                             ))}
@@ -2513,6 +2551,20 @@ function AudioCard({ sample, colorClass, playingId, onPlay, showRun = false, sam
                     {sample.evaluation_metrics['Arousal'] != null && (
                         <span className="text-[10px] bg-white px-1.5 py-0.5 rounded border text-gray-600">Arousal: {sample.evaluation_metrics['Arousal']}</span>
                     )}
+                    {sample.evaluation_metrics['WER'] != null && (
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${
+                            (sample.evaluation_metrics['WER'] as number) < 0.1 ? 'bg-green-50 border-green-200 text-green-700'
+                            : (sample.evaluation_metrics['WER'] as number) < 0.3 ? 'bg-yellow-50 border-yellow-200 text-yellow-700'
+                            : 'bg-red-50 border-red-200 text-red-700'
+                        }`}>WER: {((sample.evaluation_metrics['WER'] as number) * 100).toFixed(1)}%</span>
+                    )}
+                    {sample.evaluation_metrics['CER'] != null && (
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${
+                            (sample.evaluation_metrics['CER'] as number) < 0.05 ? 'bg-green-50 border-green-200 text-green-700'
+                            : (sample.evaluation_metrics['CER'] as number) < 0.15 ? 'bg-yellow-50 border-yellow-200 text-yellow-700'
+                            : 'bg-red-50 border-red-200 text-red-700'
+                        }`}>CER: {((sample.evaluation_metrics['CER'] as number) * 100).toFixed(1)}%</span>
+                    )}
                 </div>
             )}
         </div>
@@ -2560,6 +2612,8 @@ function BenchmarkMetricPanel({
         avg_prosody: number | null
         avg_ttfb_ms: number | null
         avg_latency_ms: number | null
+        avg_wer: number | null
+        avg_cer: number | null
     }>
     metricKey: BenchmarkMetricKey
     higherIsBetter: boolean
@@ -2656,6 +2710,8 @@ function BenchmarkTopList({
         avg_prosody: number | null
         avg_ttfb_ms: number | null
         avg_latency_ms: number | null
+        avg_wer: number | null
+        avg_cer: number | null
     }>
     metricKey: BenchmarkMetricKey
     higherIsBetter: boolean

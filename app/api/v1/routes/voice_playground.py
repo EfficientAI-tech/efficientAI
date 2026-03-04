@@ -146,6 +146,7 @@ class GenerateSamplesRequest(BaseModel):
     model: Optional[str] = None
     scenario: Optional[str] = None
     count: int = 5
+    length: Optional[str] = "short"  # "short" | "medium" | "long" | "paragraph"
     temperature: Optional[float] = 0.8
 
 
@@ -166,10 +167,24 @@ class CustomVoiceUpdate(BaseModel):
 
 
 SAMPLE_GENERATION_SYSTEM_PROMPT = """You are an expert at creating realistic text-to-speech sample scripts. \
-Generate short, natural-sounding sentences that would be spoken aloud by a voice AI agent. \
-Each sample should be 1-3 sentences, varied in tone and content, and suitable for evaluating TTS voice quality. \
+Generate natural-sounding text that would be spoken aloud by a voice AI agent, \
+varied in tone and content, and suitable for evaluating TTS voice quality. \
 Include a mix of: greetings, questions, informational statements, numbers/dates, and emotional expressions. \
 Return ONLY a JSON array of strings, with no additional text or markdown formatting."""
+
+SAMPLE_LENGTH_INSTRUCTIONS = {
+    "short": "Each sample should be exactly 1 sentence (10-25 words).",
+    "medium": "Each sample should be 2-3 sentences (30-60 words).",
+    "long": "Each sample should be 4-6 sentences (80-150 words), forming a coherent mini-monologue.",
+    "paragraph": "Each sample should be a full paragraph of 7-10 sentences (150-250 words), like a complete agent response with context, explanation, and follow-up.",
+}
+
+SAMPLE_LENGTH_MAX_TOKENS = {
+    "short": 1500,
+    "medium": 2500,
+    "long": 4000,
+    "paragraph": 6000,
+}
 
 
 # ======================================================================
@@ -229,10 +244,15 @@ async def generate_sample_texts(
         raise HTTPException(400, f"Unsupported LLM provider: {llm_provider_str}")
 
     count = max(1, min(data.count, 20))
+    length = data.length if data.length in SAMPLE_LENGTH_INSTRUCTIONS else "short"
     scenario_text = data.scenario or "general customer service and voice assistant interactions"
+    length_instruction = SAMPLE_LENGTH_INSTRUCTIONS[length]
+    max_tokens = SAMPLE_LENGTH_MAX_TOKENS[length]
+
     user_prompt = (
         f"Generate exactly {count} TTS sample texts for the following scenario:\n"
         f"Scenario: {scenario_text}\n\n"
+        f"Length requirement: {length_instruction}\n\n"
         f"Return a JSON array of {count} strings."
     )
 
@@ -249,7 +269,7 @@ async def generate_sample_texts(
             organization_id=organization_id,
             db=db,
             temperature=temperature,
-            max_tokens=1500,
+            max_tokens=max_tokens,
         )
     except Exception as e:
         logger.error(f"[VoicePlayground] LLM generation failed: {e}")
@@ -725,6 +745,8 @@ async def get_tts_analytics(
         "Valence": "avg_valence",
         "Arousal": "avg_arousal",
         "Prosody Score": "avg_prosody",
+        "WER": "avg_wer",
+        "CER": "avg_cer",
     }
 
     result = []
@@ -857,7 +879,7 @@ def _recompute_summary(comparison: TTSComparison, db: Session):
     )
 
     summary: Dict[str, Any] = {"provider_a": {}, "provider_b": {}}
-    metrics_keys = ["MOS Score", "Valence", "Arousal", "Prosody Score"]
+    metrics_keys = ["MOS Score", "Valence", "Arousal", "Prosody Score", "WER", "CER"]
 
     for side, side_label, provider_val in [("provider_a", "A", comparison.provider_a), ("provider_b", "B", comparison.provider_b)]:
         side_samples = [s for s in samples if s.side == side_label] if any(s.side for s in samples) else [s for s in samples if s.provider == provider_val]

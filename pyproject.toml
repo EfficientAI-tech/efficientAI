@@ -40,6 +40,7 @@ dependencies = [
     "croniter>=2.0.0",
     "pytz>=2024.1",
     "praat-parselmouth>=0.4.3",
+    "jiwer>=3.0.0",
 ]
 
 [project.optional-dependencies]
@@ -71,6 +72,10 @@ qualitative-voice = [
     "librosa>=0.10.0",
     "scipy>=1.11.0",
     "pyannote.audio>=3.1.0",
+]
+# NVIDIA NeMo ASR for TTS hallucination detection (WER/CER via Conformer CTC)
+nemo-asr = [
+    "nemo_toolkit[asr]>=1.20.0",
 ]
 # Optional: Speaker Consistency metric (has version conflicts with torchaudio)
 # speechbrain = ["speechbrain>=1.0.0"]

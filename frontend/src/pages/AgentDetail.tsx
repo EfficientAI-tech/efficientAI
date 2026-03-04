@@ -404,6 +404,8 @@ export default function AgentDetail() {
                               return <><img src="/retellai.png" alt="Retell" className="h-6 w-6 object-contain" /><span className="text-base font-medium text-gray-900">Retell AI</span></>;
                             } else if (integration?.platform === 'vapi') {
                               return <><img src="/vapiai.jpg" alt="Vapi" className="h-6 w-6 rounded-full object-contain" /><span className="text-base font-medium text-gray-900">Vapi AI</span></>;
+                            } else if (integration?.platform === 'elevenlabs') {
+                              return <><img src="/elevenlabs.jpg" alt="ElevenLabs" className="h-6 w-6 rounded-full object-contain" /><span className="text-base font-medium text-gray-900">ElevenLabs</span></>;
                             }
                             return <span className="text-sm text-gray-900">{integration?.name || 'Unknown Provider'}</span>;
                           })()}
@@ -593,7 +595,7 @@ export default function AgentDetail() {
               {/* Section 2: Voice AI Agent */}
               <div className="border border-gray-200 rounded-lg p-4 bg-gray-50 flex flex-col h-full">
                 <h3 className="text-lg font-semibold text-gray-900 mb-3">2. Voice AI Agent</h3>
-                <p className="text-sm text-gray-600 mb-4 flex-grow">Configure agents using external Voice AI integrations (Retell, Vapi)</p>
+                <p className="text-sm text-gray-600 mb-4 flex-grow">Configure agents using external Voice AI integrations (Retell, Vapi, ElevenLabs)</p>
                 <div className="space-y-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -616,11 +618,11 @@ export default function AgentDetail() {
                         {integrations
                           .filter((integration: any) =>
                             integration.is_active &&
-                            (integration.platform === 'retell' || integration.platform === 'vapi')
+                            (integration.platform === 'retell' || integration.platform === 'vapi' || integration.platform === 'elevenlabs')
                           )
                           .map((integration: any) => (
                             <option key={integration.id} value={integration.id}>
-                              {integration.name || integration.platform} ({integration.platform === 'retell' ? 'Retell' : 'Vapi'})
+                              {integration.name || integration.platform} ({integration.platform === 'retell' ? 'Retell' : integration.platform === 'vapi' ? 'Vapi' : 'ElevenLabs'})
                             </option>
                           ))}
                       </select>
@@ -632,6 +634,8 @@ export default function AgentDetail() {
                               return <img src="/retellai.png" alt="Retell AI" className="h-8 w-8 object-contain" />;
                             } else if (selectedIntegration?.platform === 'vapi') {
                               return <img src="/vapiai.jpg" alt="Vapi AI" className="h-8 w-8 rounded-full object-contain" />;
+                            } else if (selectedIntegration?.platform === 'elevenlabs') {
+                              return <img src="/elevenlabs.jpg" alt="ElevenLabs" className="h-8 w-8 rounded-full object-contain" />;
                             }
                             return null;
                           })()}
@@ -655,10 +659,10 @@ export default function AgentDetail() {
                       }}
                       className={`w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent ${!isEditMode ? 'bg-gray-50 text-gray-700 cursor-not-allowed' : 'bg-white'
                         }`}
-                      placeholder="Enter agent ID from Retell/Vapi"
+                      placeholder="Enter agent ID from Retell/Vapi/ElevenLabs"
                     />
                     <p className="mt-1 text-xs text-gray-500">
-                      Enter the agent ID you received from your Retell or Vapi provider
+                      Enter the agent ID you received from your Retell, Vapi, or ElevenLabs provider
                     </p>
                   </div>
                 </div>

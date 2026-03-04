@@ -754,6 +754,7 @@ class ApiClient {
     retell_llm_dynamic_variables?: Record<string, any>
     sample_rate?: number
     call_short_id?: string
+    signed_url?: string
   }> {
     const response = await this.client.post('/api/v1/playground/web-call', data)
     return response.data
@@ -786,6 +787,25 @@ class ApiClient {
   async deleteCallRecording(callShortId: string): Promise<{ message: string }> {
     const response = await this.client.delete(`/api/v1/playground/call-recordings/${callShortId}`)
     return response.data
+  }
+
+  async reEvaluateCallRecording(callShortId: string): Promise<{
+    message: string
+    evaluator_result_id: string
+    result_id: string
+    audio_s3_key: string
+    task_id: string
+  }> {
+    const response = await this.client.post(`/api/v1/playground/call-recordings/${callShortId}/re-evaluate`)
+    return response.data
+  }
+
+  async getCallRecordingAudioUrl(callShortId: string): Promise<string> {
+    const response = await this.client.get(
+      `/api/v1/playground/call-recordings/${callShortId}/audio`,
+      { responseType: 'blob' }
+    )
+    return URL.createObjectURL(response.data)
   }
 
   // Observability endpoints
@@ -1234,6 +1254,7 @@ class ApiClient {
     model?: string
     scenario?: string
     count?: number
+    length?: string
     temperature?: number
   }): Promise<{ samples: string[]; provider: string; model: string }> {
     const response = await this.client.post('/api/v1/voice-playground/generate-samples', params)
@@ -1252,6 +1273,8 @@ class ApiClient {
     avg_prosody: number | null
     avg_ttfb_ms: number | null
     avg_latency_ms: number | null
+    avg_wer: number | null
+    avg_cer: number | null
   }>> {
     const response = await this.client.get('/api/v1/voice-playground/analytics')
     return response.data

@@ -3,6 +3,7 @@ Playground API Routes
 API endpoints for testing voice agents in the playground
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Body, BackgroundTasks
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from typing import Dict, Any, Optional, List
 from uuid import UUID
@@ -100,6 +101,40 @@ def extract_transcript_from_call_data(call_data: Dict[str, Any], provider_platfo
                 f"{seg['speaker']}: {seg['text']}" for seg in speaker_segments
             ])
             
+    elif provider_platform_lower == "elevenlabs":
+        raw_transcript = call_data.get("transcript")
+        transcript_obj = call_data.get("transcript_object", [])
+
+        # retrieve_call_metrics already processes the transcript into a
+        # formatted string + speaker_segments list, so handle both the
+        # pre-processed shape and the raw ElevenLabs API shape.
+        if isinstance(raw_transcript, str) and raw_transcript:
+            transcript_text = raw_transcript
+            if isinstance(transcript_obj, list):
+                for seg in transcript_obj:
+                    speaker_segments.append({
+                        "speaker": seg.get("speaker", "Unknown"),
+                        "text": seg.get("text", ""),
+                        "start": seg.get("start", 0),
+                        "end": seg.get("end", 0),
+                    })
+        elif isinstance(raw_transcript, list):
+            for entry in raw_transcript:
+                role = entry.get("role", "unknown")
+                content = entry.get("message", "") or entry.get("text", "")
+                if not content:
+                    continue
+                speaker = "Agent" if role in ("agent", "assistant", "ai") else "User"
+                speaker_segments.append({
+                    "speaker": speaker,
+                    "text": content,
+                    "start": entry.get("time_in_call_secs", 0) or entry.get("start", 0),
+                    "end": entry.get("time_in_call_secs", 0) or entry.get("end", 0),
+                })
+            transcript_text = "\n".join(
+                f"{seg['speaker']}: {seg['text']}" for seg in speaker_segments
+            )
+
     elif provider_platform_lower == "retell":
         # Retell: transcript can be a string or list of objects
         transcript_raw = call_data.get("transcript", "")
@@ -231,7 +266,7 @@ def poll_call_metrics(
                 end_timestamp = call_metrics.get("end_timestamp")
                 
                 # If call is complete, stop polling
-                if end_timestamp or call_status in ["ended", "completed", "failed", "end-of-call-report"]:
+                if end_timestamp or call_status in ["ended", "completed", "failed", "end-of-call-report", "done"]:
                     call_complete = True
                     break
                     
@@ -274,6 +309,52 @@ def poll_call_metrics(
                         except Exception:
                             pass
                 
+                # Download call audio from provider and upload to S3
+                audio_s3_key = None
+                try:
+                    import requests as _http
+                    import uuid as _uuid
+                    from app.services.s3_service import s3_service
+
+                    recording_urls = call_metrics.get("recording_urls", {})
+                    audio_bytes = None
+                    plat = provider_platform.lower()
+
+                    if plat == "elevenlabs":
+                        audio_url = recording_urls.get("conversation_audio")
+                        if audio_url:
+                            resp = _http.get(audio_url, headers={"xi-api-key": integration_api_key}, timeout=120)
+                            if resp.status_code == 200:
+                                audio_bytes = resp.content
+                    elif plat == "retell":
+                        audio_url = call_metrics.get("recording_url")
+                        if audio_url:
+                            resp = _http.get(audio_url, timeout=120)
+                            if resp.status_code == 200:
+                                audio_bytes = resp.content
+                    elif plat == "vapi":
+                        audio_url = (
+                            recording_urls.get("combined_url")
+                            or recording_urls.get("stereo_url")
+                            or call_metrics.get("recordingUrl")
+                        )
+                        if audio_url:
+                            resp = _http.get(audio_url, timeout=120)
+                            if resp.status_code == 200:
+                                audio_bytes = resp.content
+
+                    if audio_bytes:
+                        content_type = getattr(resp, "headers", {}).get("content-type", "audio/mpeg")
+                        ext = "wav" if "wav" in content_type else "mp3"
+                        org_id = str(call_recording.organization_id)
+                        audio_s3_key = f"audio/organizations/{org_id}/agentPlayground/{provider_call_id}/{_uuid.uuid4()}.{ext}"
+                        s3_service.upload_file_by_key(audio_bytes, audio_s3_key, content_type=content_type)
+                        logger.info(f"[Poll Call Metrics] Uploaded call audio to S3: {audio_s3_key} ({len(audio_bytes)} bytes)")
+                    else:
+                        logger.warning(f"[Poll Call Metrics] Could not download audio for call {provider_call_id}")
+                except Exception as audio_err:
+                    logger.warning(f"[Poll Call Metrics] Audio download/upload failed: {audio_err}")
+
                 # Generate unique result ID
                 result_id = generate_unique_result_id(db)
                 
@@ -281,14 +362,14 @@ def poll_call_metrics(
                 evaluator_result = EvaluatorResult(
                     result_id=result_id,
                     organization_id=call_recording.organization_id,
-                    evaluator_id=None,  # No evaluator for playground calls
+                    evaluator_id=None,
                     agent_id=call_recording.agent_id,
-                    persona_id=None,  # No persona for Voice AI agent playground calls
-                    scenario_id=None,  # No scenario for Voice AI agent playground calls
+                    persona_id=None,
+                    scenario_id=None,
                     name=result_name,
                     duration_seconds=duration_seconds,
                     status=EvaluatorResultStatus.QUEUED.value,
-                    audio_s3_key=None,  # Audio is in provider's storage, URL in call_data
+                    audio_s3_key=audio_s3_key,
                     transcription=transcript_text,
                     speaker_segments=speaker_segments if speaker_segments else None,
                     provider_call_id=provider_call_id,
@@ -459,7 +540,6 @@ async def create_web_call(
         try:
             provider_class = get_voice_provider(integration.platform)
             
-            # For Vapi, pass the public_key as well (needed for web call creation)
             platform_value = integration.platform.value if hasattr(integration.platform, 'value') else integration.platform
             if platform_value.lower() == "vapi":
                 provider = provider_class(api_key=decrypted_api_key, public_key=integration.public_key)
@@ -535,10 +615,15 @@ async def create_web_call(
             response = web_call_response.copy()
             response["call_short_id"] = call_short_id
             
-            # For Vapi, include the public key in the response (needed for frontend SDK)
             platform_value = integration.platform.value if hasattr(integration.platform, 'value') else integration.platform
+            
+            # For Vapi, include the public key in the response (needed for frontend SDK)
             if platform_value.lower() == "vapi" and integration.public_key:
                 response["public_key"] = integration.public_key
+            
+            # For ElevenLabs, pass through the signed_url (frontend SDK connects directly)
+            if platform_value.lower() == "elevenlabs":
+                response["signed_url"] = web_call_response.get("signed_url")
             
             return response
         except Exception as e:
@@ -760,4 +845,257 @@ async def delete_call_recording(
     db.commit()
     
     return {"message": "Call recording deleted successfully"}
+
+
+@router.post("/call-recordings/{call_short_id}/re-evaluate", response_model=Dict[str, Any])
+async def re_evaluate_call_recording(
+    call_short_id: str,
+    background_tasks: BackgroundTasks,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """
+    Re-evaluate a call recording with full audio analysis.
+
+    Reuses the S3 audio if it was already downloaded during the first
+    evaluation. If no audio exists in S3, downloads from the provider,
+    uploads, then triggers the worker for both conversation quality (LLM)
+    and audio quality (acoustic / AI voice) metrics.
+    """
+    import requests as http_requests
+    import uuid as _uuid
+    from app.services.s3_service import s3_service
+
+    call_recording = db.query(CallRecording).filter(
+        CallRecording.call_short_id == call_short_id,
+        CallRecording.organization_id == organization_id,
+        CallRecording.source == CallRecordingSource.PLAYGROUND,
+    ).first()
+
+    if not call_recording:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Call recording not found")
+
+    if not call_recording.provider_call_id or not call_recording.provider_platform:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Call recording has no provider data")
+
+    call_data = call_recording.call_data or {}
+    platform = (call_recording.provider_platform or "").lower()
+
+    # --- Check if S3 audio already exists from a previous evaluation -------
+    existing_result = None
+    if call_recording.evaluator_result_id:
+        existing_result = db.query(EvaluatorResult).filter(
+            EvaluatorResult.id == call_recording.evaluator_result_id,
+        ).first()
+
+    audio_s3_key = existing_result.audio_s3_key if existing_result and existing_result.audio_s3_key else None
+
+    # --- If no S3 audio, download from provider and upload -----------------
+    if not audio_s3_key:
+        agent = db.query(Agent).filter(Agent.id == call_recording.agent_id).first()
+        if not agent or not agent.voice_ai_integration_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Agent or integration not found")
+
+        integration = db.query(Integration).filter(
+            Integration.id == agent.voice_ai_integration_id,
+            Integration.organization_id == organization_id,
+        ).first()
+        if not integration:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Integration not found")
+
+        decrypted_key = decrypt_api_key(integration.api_key)
+
+        recording_urls = call_data.get("recording_urls", {})
+        audio_bytes = None
+
+        if platform == "elevenlabs":
+            audio_url = recording_urls.get("conversation_audio")
+            if audio_url:
+                resp = http_requests.get(audio_url, headers={"xi-api-key": decrypted_key}, timeout=120)
+                if resp.status_code == 200:
+                    audio_bytes = resp.content
+        elif platform == "retell":
+            audio_url = call_data.get("recording_url")
+            if audio_url:
+                resp = http_requests.get(audio_url, timeout=120)
+                if resp.status_code == 200:
+                    audio_bytes = resp.content
+        elif platform == "vapi":
+            audio_url = (
+                recording_urls.get("combined_url")
+                or recording_urls.get("stereo_url")
+                or call_data.get("recordingUrl")
+            )
+            if audio_url:
+                resp = http_requests.get(audio_url, timeout=120)
+                if resp.status_code == 200:
+                    audio_bytes = resp.content
+
+        if not audio_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Could not download audio from provider. The recording may not be available yet.",
+            )
+
+        content_type = getattr(resp, "headers", {}).get("content-type", "audio/mpeg")
+        ext = "wav" if "wav" in content_type else "mp3"
+        org_id = str(organization_id)
+        audio_s3_key = f"audio/organizations/{org_id}/agentPlayground/{call_recording.provider_call_id}/{_uuid.uuid4()}.{ext}"
+        try:
+            s3_service.upload_file_by_key(audio_bytes, audio_s3_key, content_type=content_type)
+            logger.info(f"[Re-evaluate] Uploaded audio to S3: {audio_s3_key} ({len(audio_bytes)} bytes)")
+        except Exception as e:
+            logger.error(f"[Re-evaluate] S3 upload failed: {e}")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to store audio: {str(e)}")
+    else:
+        logger.info(f"[Re-evaluate] Reusing existing S3 audio: {audio_s3_key}")
+
+    # --- Extract transcript from existing call data ------------------------
+    transcript_text, speaker_segments = extract_transcript_from_call_data(call_data, platform)
+
+    # --- Create or reset EvaluatorResult -----------------------------------
+    if existing_result:
+        existing_result.status = EvaluatorResultStatus.QUEUED.value
+        existing_result.audio_s3_key = audio_s3_key
+        existing_result.transcription = transcript_text or existing_result.transcription
+        existing_result.speaker_segments = speaker_segments if speaker_segments else existing_result.speaker_segments
+        existing_result.metric_scores = None
+        existing_result.error_message = None
+        existing_result.celery_task_id = None
+        db.commit()
+        db.refresh(existing_result)
+        evaluator_result = existing_result
+        logger.info(f"[Re-evaluate] Reset existing EvaluatorResult {evaluator_result.result_id}")
+    else:
+        agent = db.query(Agent).filter(Agent.id == call_recording.agent_id).first()
+        result_id = generate_unique_result_id(db)
+        duration_seconds = call_data.get("duration_seconds", 0)
+        result_name = f"Voice AI Call - {agent.name}" if agent else "Voice AI Call"
+
+        evaluator_result = EvaluatorResult(
+            result_id=result_id,
+            organization_id=call_recording.organization_id,
+            evaluator_id=None,
+            agent_id=call_recording.agent_id,
+            persona_id=None,
+            scenario_id=None,
+            name=result_name,
+            duration_seconds=duration_seconds,
+            status=EvaluatorResultStatus.QUEUED.value,
+            audio_s3_key=audio_s3_key,
+            transcription=transcript_text,
+            speaker_segments=speaker_segments if speaker_segments else None,
+            provider_call_id=call_recording.provider_call_id,
+            provider_platform=platform,
+            call_data=call_data,
+        )
+        db.add(evaluator_result)
+        db.commit()
+        db.refresh(evaluator_result)
+
+        call_recording.evaluator_result_id = evaluator_result.id
+        db.commit()
+        logger.info(f"[Re-evaluate] Created new EvaluatorResult {evaluator_result.result_id}")
+
+    # --- Trigger the worker ------------------------------------------------
+    try:
+        from app.workers.celery_app import process_evaluator_result_task
+        task = process_evaluator_result_task.delay(str(evaluator_result.id))
+        evaluator_result.celery_task_id = task.id
+        db.commit()
+        logger.info(f"[Re-evaluate] Triggered evaluation task {task.id} for result {evaluator_result.result_id}")
+    except Exception as e:
+        logger.error(f"[Re-evaluate] Failed to trigger Celery task: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to trigger evaluation worker")
+
+    return {
+        "message": "Re-evaluation started",
+        "evaluator_result_id": str(evaluator_result.id),
+        "result_id": evaluator_result.result_id,
+        "audio_s3_key": audio_s3_key,
+        "task_id": task.id,
+    }
+
+
+@router.get("/call-recordings/{call_short_id}/audio")
+async def stream_call_audio(
+    call_short_id: str,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """
+    Proxy endpoint to stream call recording audio.
+    Required for providers like ElevenLabs whose audio URLs need auth headers.
+    """
+    import requests as http_requests
+
+    call_recording = db.query(CallRecording).filter(
+        CallRecording.call_short_id == call_short_id,
+        CallRecording.organization_id == organization_id,
+        CallRecording.source == CallRecordingSource.PLAYGROUND,
+    ).first()
+
+    if not call_recording:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Call recording not found")
+
+    call_data = call_recording.call_data or {}
+    recording_urls = call_data.get("recording_urls", {})
+    platform = (call_recording.provider_platform or "").lower()
+
+    # For Retell / Vapi the URL is public – redirect directly
+    if platform in ("retell", "vapi"):
+        url = (
+            recording_urls.get("combined_url")
+            or recording_urls.get("stereo_url")
+            or call_data.get("recording_url")
+        )
+        if not url:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No recording URL available")
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url)
+
+    # ElevenLabs requires API key header – proxy the stream
+    if platform == "elevenlabs":
+        audio_url = recording_urls.get("conversation_audio")
+        if not audio_url:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No recording URL available")
+
+        agent = db.query(Agent).filter(Agent.id == call_recording.agent_id).first()
+        if not agent or not agent.voice_ai_integration_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Agent or integration not found")
+
+        integration = db.query(Integration).filter(
+            Integration.id == agent.voice_ai_integration_id,
+            Integration.organization_id == organization_id,
+        ).first()
+        if not integration:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Integration not found")
+
+        decrypted_key = decrypt_api_key(integration.api_key)
+
+        upstream = http_requests.get(
+            audio_url,
+            headers={"xi-api-key": decrypted_key},
+            stream=True,
+            timeout=60,
+        )
+        if upstream.status_code != 200:
+            raise HTTPException(
+                status_code=upstream.status_code,
+                detail=f"ElevenLabs audio fetch failed ({upstream.status_code})",
+            )
+
+        content_type = upstream.headers.get("content-type", "audio/mpeg")
+
+        return StreamingResponse(
+            upstream.iter_content(chunk_size=8192),
+            media_type=content_type,
+            headers={
+                "Content-Disposition": f'inline; filename="call_{call_short_id}.mp3"',
+            },
+        )
+
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Audio not supported for platform: {platform}")
 
