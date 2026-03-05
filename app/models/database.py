@@ -783,6 +783,45 @@ class TTSSample(Base):
     comparison = relationship("TTSComparison", back_populates="samples")
 
 
+class PromptPartial(Base):
+    """Prompt Partial - Reusable prompt templates with version history."""
+    __tablename__ = "prompt_partials"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    description = Column(String, nullable=True)
+    content = Column(Text, nullable=False)
+    tags = Column(JSON, nullable=True)
+    current_version = Column(Integer, nullable=False, default=1)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_by = Column(String, nullable=True)
+
+    versions = relationship("PromptPartialVersion", back_populates="prompt_partial", cascade="all, delete-orphan", order_by="PromptPartialVersion.version.desc()")
+
+
+class PromptPartialVersion(Base):
+    """Version history for a prompt partial."""
+    __tablename__ = "prompt_partial_versions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    prompt_partial_id = Column(UUID(as_uuid=True), ForeignKey("prompt_partials.id", ondelete="CASCADE"), nullable=False, index=True)
+    version = Column(Integer, nullable=False)
+    content = Column(Text, nullable=False)
+    change_summary = Column(String, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_by = Column(String, nullable=True)
+
+    prompt_partial = relationship("PromptPartial", back_populates="versions")
+
+    __table_args__ = (
+        UniqueConstraint('prompt_partial_id', 'version', name='uq_prompt_partial_version'),
+    )
+
+
 class CustomTTSVoice(Base):
     """Organization-scoped custom TTS voice metadata."""
     __tablename__ = "custom_tts_voices"

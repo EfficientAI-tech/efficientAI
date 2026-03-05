@@ -16,7 +16,6 @@ import Integrations from './pages/Integrations'
 import DataSources from './pages/DataSources'
 import VoiceBundles from './pages/VoiceBundles'
 import EvaluateTestAgents from './pages/EvaluateTestAgents'
-import EvaluatorDetail from './pages/EvaluatorDetail'
 import MetricsManagement from './pages/MetricsManagement'
 import Results from './pages/Results'
 import EvaluatorResultDetail from './pages/EvaluatorResultDetail'
@@ -33,6 +32,7 @@ import AlertHistory from './pages/AlertHistory'
 import CronJobs from './pages/CronJobs'
 import VoicePlayground from './pages/VoicePlayground'
 import EnterpriseUpgrade from './pages/EnterpriseUpgrade'
+import PromptPartials from './pages/PromptPartials'
 
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -90,7 +90,6 @@ function App() {
           <Route path="data-sources" element={<DataSources />} />
           <Route path="voicebundles" element={<VoiceBundles />} />
           <Route path="evaluate-test-agents" element={<EvaluateTestAgents />} />
-          <Route path="evaluate-test-agents/:id" element={<EvaluatorDetail />} />
           <Route path="metrics-management" element={<MetricsManagement />} />
           <Route path="results" element={<Results />} />
           <Route path="results/:id" element={<EvaluatorResultDetail />} />
@@ -105,6 +104,7 @@ function App() {
           <Route path="alerts/history" element={<AlertHistory />} />
           <Route path="voice-playground" element={<EnterpriseGate feature="voice_playground"><VoicePlayground /></EnterpriseGate>} />
           <Route path="cron-jobs" element={<CronJobs />} />
+          <Route path="prompt-partials" element={<PromptPartials />} />
         </Route>
       </Routes>
     </BrowserRouter>

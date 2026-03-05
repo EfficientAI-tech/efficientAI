@@ -31,6 +31,7 @@ export default {
   },
   darkMode: "class",
   plugins: [
+    require('@tailwindcss/typography'),
     heroui({
       addCommonColors: true,
       themes: {

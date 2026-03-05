@@ -31,6 +31,7 @@
     "zustand": "^4.4.7"
   },
   "devDependencies": {
+    "@tailwindcss/typography": "^0.5.10",
     "@types/node": "^22.15.30",
     "@types/protobufjs": "^6.0.0",
     "@types/react": "^18.2.43",

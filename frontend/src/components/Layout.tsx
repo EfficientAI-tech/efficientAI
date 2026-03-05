@@ -31,6 +31,7 @@ import {
   Volume2,
   Gamepad2,
   Lock,
+  ScrollText,
 } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import Logo from './Logo'
@@ -49,6 +50,13 @@ interface NavSection {
 }
 
 const navigationSections: NavSection[] = [
+  {
+    title: 'Prompt Partials',
+    icon: ScrollText,
+    items: [
+      { name: 'Prompt Partials', href: '/prompt-partials', icon: ScrollText },
+    ],
+  },
   {
     title: 'Simulations',
     icon: Play,
@@ -355,7 +363,7 @@ function SidebarContent({
 }) {
   const { isFeatureEnabled } = useLicenseStore()
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
-    new Set(['Simulations', 'Evaluations', 'Observability', 'Alerting', 'Configurations'])
+    new Set(['Prompt Partials', 'Simulations', 'Evaluations', 'Observability', 'Alerting', 'Configurations'])
   )
 
   const toggleSection = (title: string) => {

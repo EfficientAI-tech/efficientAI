@@ -1280,6 +1280,85 @@ class ApiClient {
     return response.data
   }
 
+  // Prompt Partials
+  async listPromptPartials(skip = 0, limit = 100, search?: string): Promise<any[]> {
+    const response = await this.client.get('/api/v1/prompt-partials', {
+      params: { skip, limit, ...(search ? { search } : {}) },
+    })
+    return response.data
+  }
+
+  async getPromptPartial(partialId: string): Promise<any> {
+    const response = await this.client.get(`/api/v1/prompt-partials/${partialId}`)
+    return response.data
+  }
+
+  async createPromptPartial(data: {
+    name: string
+    description?: string
+    content: string
+    tags?: string[]
+  }): Promise<any> {
+    const response = await this.client.post('/api/v1/prompt-partials', data)
+    return response.data
+  }
+
+  async updatePromptPartial(partialId: string, data: {
+    name?: string
+    description?: string
+    content?: string
+    tags?: string[]
+    change_summary?: string
+  }): Promise<any> {
+    const response = await this.client.put(`/api/v1/prompt-partials/${partialId}`, data)
+    return response.data
+  }
+
+  async deletePromptPartial(partialId: string): Promise<void> {
+    await this.client.delete(`/api/v1/prompt-partials/${partialId}`)
+  }
+
+  async listPromptPartialVersions(partialId: string): Promise<any[]> {
+    const response = await this.client.get(`/api/v1/prompt-partials/${partialId}/versions`)
+    return response.data
+  }
+
+  async getPromptPartialVersion(partialId: string, versionNumber: number): Promise<any> {
+    const response = await this.client.get(`/api/v1/prompt-partials/${partialId}/versions/${versionNumber}`)
+    return response.data
+  }
+
+  async revertPromptPartial(partialId: string, versionNumber: number): Promise<any> {
+    const response = await this.client.post(`/api/v1/prompt-partials/${partialId}/revert/${versionNumber}`)
+    return response.data
+  }
+
+  async clonePromptPartial(partialId: string): Promise<any> {
+    const response = await this.client.post(`/api/v1/prompt-partials/${partialId}/clone`)
+    return response.data
+  }
+
+  async generatePromptWithAI(data: {
+    description: string
+    tone?: string
+    format_style?: string
+    provider?: string
+    model?: string
+  }): Promise<{ content: string; provider: string; model: string }> {
+    const response = await this.client.post('/api/v1/prompt-partials/generate', data)
+    return response.data
+  }
+
+  async improvePromptWithAI(data: {
+    content: string
+    instructions?: string
+    provider?: string
+    model?: string
+  }): Promise<{ content: string; provider: string; model: string }> {
+    const response = await this.client.post('/api/v1/prompt-partials/improve', data)
+    return response.data
+  }
+
   // License / Enterprise
   async getLicenseInfo(): Promise<{
     is_enterprise: boolean
