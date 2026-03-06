@@ -7,34 +7,7 @@ import { ModelProvider, AIProvider, Integration, IntegrationPlatform } from '../
 import Button from '../components/Button'
 import { Plus, Trash2, Play, X, CheckSquare, Square, AlertCircle, Sparkles, Eye, Brain, ChevronDown } from 'lucide-react'
 import { useToast } from '../hooks/useToast'
-
-const PROVIDER_LABELS: Record<ModelProvider, string> = {
-  [ModelProvider.OPENAI]: 'OpenAI',
-  [ModelProvider.ANTHROPIC]: 'Anthropic',
-  [ModelProvider.GOOGLE]: 'Google',
-  [ModelProvider.AZURE]: 'Azure',
-  [ModelProvider.AWS]: 'AWS',
-  [ModelProvider.DEEPGRAM]: 'Deepgram',
-  [ModelProvider.CARTESIA]: 'Cartesia',
-  [ModelProvider.ELEVENLABS]: 'ElevenLabs',
-  [ModelProvider.MURF]: 'Murf',
-  [ModelProvider.CUSTOM]: 'Custom',
-  [ModelProvider.SARVAM]: 'Sarvam',
-}
-
-const PROVIDER_LOGOS: Record<ModelProvider, string | null> = {
-  [ModelProvider.OPENAI]: '/openai-logo.png',
-  [ModelProvider.ANTHROPIC]: '/anthropic.png',
-  [ModelProvider.GOOGLE]: '/geminiai.png',
-  [ModelProvider.AZURE]: '/azureai.png',
-  [ModelProvider.AWS]: '/AWS_logo.png',
-  [ModelProvider.DEEPGRAM]: '/deepgram.png',
-  [ModelProvider.CARTESIA]: '/cartesia.jpg',
-  [ModelProvider.ELEVENLABS]: '/elevenlabs.jpg',
-  [ModelProvider.MURF]: '/murf.png',
-  [ModelProvider.CUSTOM]: null,
-  [ModelProvider.SARVAM]: '/sarvam.png',
-}
+import { getProviderLabel, getProviderLogo } from '../config/providers'
 
 const DEFAULT_PERSONA_NAMES = [
   "Grumpy Old Man",
@@ -710,13 +683,13 @@ export default function EvaluateTestAgents() {
                                   className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-left flex items-center justify-between text-sm"
                                 >
                                   <div className="flex items-center gap-2">
-                                    {selectedLlmProvider && PROVIDER_LOGOS[selectedLlmProvider] ? (
-                                      <img src={PROVIDER_LOGOS[selectedLlmProvider]!} alt="" className="w-5 h-5 object-contain rounded" />
+                                    {selectedLlmProvider && getProviderLogo(selectedLlmProvider) ? (
+                                      <img src={getProviderLogo(selectedLlmProvider)!} alt="" className="w-5 h-5 object-contain rounded" />
                                     ) : (
                                       <Brain className="h-4 w-4 text-gray-400" />
                                     )}
                                     <span className={selectedLlmProvider ? 'text-gray-900' : 'text-gray-400'}>
-                                      {selectedLlmProvider ? PROVIDER_LABELS[selectedLlmProvider] : 'Select provider'}
+                                      {selectedLlmProvider ? getProviderLabel(selectedLlmProvider) : 'Select provider'}
                                     </span>
                                   </div>
                                   <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${showLlmDropdown ? 'rotate-180' : ''}`} />
@@ -735,12 +708,12 @@ export default function EvaluateTestAgents() {
                                         }}
                                         className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center gap-2 text-sm"
                                       >
-                                        {PROVIDER_LOGOS[provider] ? (
-                                          <img src={PROVIDER_LOGOS[provider]!} alt="" className="w-5 h-5 object-contain rounded" />
+                                        {getProviderLogo(provider) ? (
+                                          <img src={getProviderLogo(provider)!} alt="" className="w-5 h-5 object-contain rounded" />
                                         ) : (
                                           <Brain className="h-4 w-4 text-purple-600" />
                                         )}
-                                        <span>{PROVIDER_LABELS[provider]}</span>
+                                        <span>{getProviderLabel(provider)}</span>
                                       </button>
                                     ))}
                                   </div>

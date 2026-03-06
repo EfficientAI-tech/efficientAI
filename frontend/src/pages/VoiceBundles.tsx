@@ -5,34 +5,7 @@ import { VoiceBundle, VoiceBundleCreate, ModelProvider, AIProvider, VoiceBundleT
 import { Mic, Plus, Edit, Trash2, X, Loader, Volume2, Brain, MessageSquare, AlertCircle, ChevronDown } from 'lucide-react'
 import Button from '../components/Button'
 import { useToast } from '../hooks/useToast'
-
-const PROVIDER_LABELS: Record<ModelProvider, string> = {
-  [ModelProvider.OPENAI]: 'OpenAI',
-  [ModelProvider.ANTHROPIC]: 'Anthropic',
-  [ModelProvider.GOOGLE]: 'Google',
-  [ModelProvider.AZURE]: 'Azure',
-  [ModelProvider.AWS]: 'AWS',
-  [ModelProvider.DEEPGRAM]: 'Deepgram',
-  [ModelProvider.CARTESIA]: 'Cartesia',
-  [ModelProvider.ELEVENLABS]: 'ElevenLabs',
-  [ModelProvider.MURF]: 'Murf',
-  [ModelProvider.CUSTOM]: 'Custom',
-  [ModelProvider.SARVAM]: 'Sarvam',
-}
-
-const PROVIDER_LOGOS: Record<ModelProvider, string | null> = {
-  [ModelProvider.OPENAI]: '/openai-logo.png',
-  [ModelProvider.ANTHROPIC]: '/anthropic.png',
-  [ModelProvider.GOOGLE]: '/geminiai.png',
-  [ModelProvider.AZURE]: '/azureai.png',
-  [ModelProvider.AWS]: '/AWS_logo.png',
-  [ModelProvider.DEEPGRAM]: '/deepgram.png',
-  [ModelProvider.CARTESIA]: '/cartesia.jpg',
-  [ModelProvider.ELEVENLABS]: '/elevenlabs.jpg',
-  [ModelProvider.MURF]: '/murf.png',
-  [ModelProvider.CUSTOM]: null,
-  [ModelProvider.SARVAM]: '/sarvam.png',
-}
+import { getProviderLabel, getProviderLogo } from '../config/providers'
 
 export default function VoiceBundles() {
   const queryClient = useQueryClient()
@@ -394,14 +367,14 @@ export default function VoiceBundles() {
                     <div className="text-sm text-gray-700">
                       {bundle.s2s_provider && bundle.s2s_model ? (
                         <div className="flex items-center gap-2">
-                          {PROVIDER_LOGOS[bundle.s2s_provider as ModelProvider] ? (
+                          {getProviderLogo(bundle.s2s_provider as ModelProvider) ? (
                             <img
-                              src={PROVIDER_LOGOS[bundle.s2s_provider as ModelProvider]!}
-                              alt={PROVIDER_LABELS[bundle.s2s_provider as ModelProvider]}
+                              src={getProviderLogo(bundle.s2s_provider as ModelProvider)!}
+                              alt={getProviderLabel(bundle.s2s_provider as ModelProvider)}
                               className="w-4 h-4 object-contain"
                             />
                           ) : null}
-                          <span className="font-medium">{PROVIDER_LABELS[bundle.s2s_provider as ModelProvider]}</span>
+                          <span className="font-medium">{getProviderLabel(bundle.s2s_provider as ModelProvider)}</span>
                           <span className="text-gray-500"> • </span>
                           <span>{bundle.s2s_model}</span>
                         </div>
@@ -421,14 +394,14 @@ export default function VoiceBundles() {
                       <div className="text-sm text-gray-700">
                         {bundle.stt_provider && bundle.stt_model ? (
                           <div className="flex items-center gap-2">
-                            {PROVIDER_LOGOS[bundle.stt_provider as ModelProvider] ? (
+                            {getProviderLogo(bundle.stt_provider as ModelProvider) ? (
                               <img
-                                src={PROVIDER_LOGOS[bundle.stt_provider as ModelProvider]!}
-                                alt={PROVIDER_LABELS[bundle.stt_provider as ModelProvider]}
+                                src={getProviderLogo(bundle.stt_provider as ModelProvider)!}
+                                alt={getProviderLabel(bundle.stt_provider as ModelProvider)}
                                 className="w-4 h-4 object-contain"
                               />
                             ) : null}
-                            <span className="font-medium">{PROVIDER_LABELS[bundle.stt_provider as ModelProvider]}</span>
+                            <span className="font-medium">{getProviderLabel(bundle.stt_provider as ModelProvider)}</span>
                             <span className="text-gray-500"> • </span>
                             <span>{bundle.stt_model}</span>
                           </div>
@@ -447,14 +420,14 @@ export default function VoiceBundles() {
                       <div className="text-sm text-gray-700">
                         {bundle.llm_provider && bundle.llm_model ? (
                           <div className="flex items-center gap-2 flex-wrap">
-                            {PROVIDER_LOGOS[bundle.llm_provider as ModelProvider] ? (
+                            {getProviderLogo(bundle.llm_provider as ModelProvider) ? (
                               <img
-                                src={PROVIDER_LOGOS[bundle.llm_provider as ModelProvider]!}
-                                alt={PROVIDER_LABELS[bundle.llm_provider as ModelProvider]}
+                                src={getProviderLogo(bundle.llm_provider as ModelProvider)!}
+                                alt={getProviderLabel(bundle.llm_provider as ModelProvider)}
                                 className="w-4 h-4 object-contain"
                               />
                             ) : null}
-                            <span className="font-medium">{PROVIDER_LABELS[bundle.llm_provider as ModelProvider]}</span>
+                            <span className="font-medium">{getProviderLabel(bundle.llm_provider as ModelProvider)}</span>
                             <span className="text-gray-500"> • </span>
                             <span>{bundle.llm_model}</span>
                             {bundle.llm_temperature && (
@@ -479,14 +452,14 @@ export default function VoiceBundles() {
                       <div className="text-sm text-gray-700">
                         {bundle.tts_provider && bundle.tts_model ? (
                           <div className="flex items-center gap-2 flex-wrap">
-                            {PROVIDER_LOGOS[bundle.tts_provider as ModelProvider] ? (
+                            {getProviderLogo(bundle.tts_provider as ModelProvider) ? (
                               <img
-                                src={PROVIDER_LOGOS[bundle.tts_provider as ModelProvider]!}
-                                alt={PROVIDER_LABELS[bundle.tts_provider as ModelProvider]}
+                                src={getProviderLogo(bundle.tts_provider as ModelProvider)!}
+                                alt={getProviderLabel(bundle.tts_provider as ModelProvider)}
                                 className="w-4 h-4 object-contain"
                               />
                             ) : null}
-                            <span className="font-medium">{PROVIDER_LABELS[bundle.tts_provider as ModelProvider]}</span>
+                            <span className="font-medium">{getProviderLabel(bundle.tts_provider as ModelProvider)}</span>
                             <span className="text-gray-500"> • </span>
                             <span>{bundle.tts_model}</span>
                             {bundle.tts_voice && (
@@ -876,16 +849,16 @@ function VoiceBundleModal({
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white text-left flex items-center justify-between"
                     >
                       <div className="flex items-center gap-2">
-                        {formData.stt_provider && PROVIDER_LOGOS[formData.stt_provider] ? (
+                        {formData.stt_provider && getProviderLogo(formData.stt_provider) ? (
                           <img
-                            src={PROVIDER_LOGOS[formData.stt_provider]!}
-                            alt={PROVIDER_LABELS[formData.stt_provider]}
+                            src={getProviderLogo(formData.stt_provider)!}
+                            alt={getProviderLabel(formData.stt_provider)}
                             className="w-6 h-6 object-contain rounded"
                           />
                         ) : (
                           <Brain className="h-5 w-5 text-primary-600" />
                         )}
-                        <span>{formData.stt_provider ? PROVIDER_LABELS[formData.stt_provider] : 'Select provider'}</span>
+                        <span>{formData.stt_provider ? getProviderLabel(formData.stt_provider) : 'Select provider'}</span>
                       </div>
                       <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${showSttDropdown ? 'transform rotate-180' : ''}`} />
                     </button>
@@ -901,16 +874,16 @@ function VoiceBundleModal({
                             }}
                             className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center gap-2 transition-colors"
                           >
-                            {PROVIDER_LOGOS[provider] ? (
+                            {getProviderLogo(provider) ? (
                               <img
-                                src={PROVIDER_LOGOS[provider]!}
-                                alt={PROVIDER_LABELS[provider]}
+                                src={getProviderLogo(provider)!}
+                                alt={getProviderLabel(provider)}
                                 className="w-6 h-6 object-contain rounded"
                               />
                             ) : (
                               <Brain className="h-5 w-5 text-primary-600" />
                             )}
-                            <span>{PROVIDER_LABELS[provider]}</span>
+                            <span>{getProviderLabel(provider)}</span>
                           </button>
                         ))}
                       </div>
@@ -963,16 +936,16 @@ function VoiceBundleModal({
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white text-left flex items-center justify-between"
                     >
                       <div className="flex items-center gap-2">
-                        {formData.llm_provider && PROVIDER_LOGOS[formData.llm_provider] ? (
+                        {formData.llm_provider && getProviderLogo(formData.llm_provider) ? (
                           <img
-                            src={PROVIDER_LOGOS[formData.llm_provider]!}
-                            alt={PROVIDER_LABELS[formData.llm_provider]}
+                            src={getProviderLogo(formData.llm_provider)!}
+                            alt={getProviderLabel(formData.llm_provider)}
                             className="w-6 h-6 object-contain rounded"
                           />
                         ) : (
                           <Brain className="h-5 w-5 text-primary-600" />
                         )}
-                        <span>{formData.llm_provider ? PROVIDER_LABELS[formData.llm_provider] : 'Select provider'}</span>
+                        <span>{formData.llm_provider ? getProviderLabel(formData.llm_provider) : 'Select provider'}</span>
                       </div>
                       <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${showLlmDropdown ? 'transform rotate-180' : ''}`} />
                     </button>
@@ -988,16 +961,16 @@ function VoiceBundleModal({
                             }}
                             className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center gap-2 transition-colors"
                           >
-                            {PROVIDER_LOGOS[provider] ? (
+                            {getProviderLogo(provider) ? (
                               <img
-                                src={PROVIDER_LOGOS[provider]!}
-                                alt={PROVIDER_LABELS[provider]}
+                                src={getProviderLogo(provider)!}
+                                alt={getProviderLabel(provider)}
                                 className="w-6 h-6 object-contain rounded"
                               />
                             ) : (
                               <Brain className="h-5 w-5 text-primary-600" />
                             )}
-                            <span>{PROVIDER_LABELS[provider]}</span>
+                            <span>{getProviderLabel(provider)}</span>
                           </button>
                         ))}
                       </div>
@@ -1079,16 +1052,16 @@ function VoiceBundleModal({
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white text-left flex items-center justify-between"
                     >
                       <div className="flex items-center gap-2">
-                        {formData.tts_provider && PROVIDER_LOGOS[formData.tts_provider] ? (
+                        {formData.tts_provider && getProviderLogo(formData.tts_provider) ? (
                           <img
-                            src={PROVIDER_LOGOS[formData.tts_provider]!}
-                            alt={PROVIDER_LABELS[formData.tts_provider]}
+                            src={getProviderLogo(formData.tts_provider)!}
+                            alt={getProviderLabel(formData.tts_provider)}
                             className="w-6 h-6 object-contain rounded"
                           />
                         ) : (
                           <Brain className="h-5 w-5 text-primary-600" />
                         )}
-                        <span>{formData.tts_provider ? PROVIDER_LABELS[formData.tts_provider] : 'Select provider'}</span>
+                        <span>{formData.tts_provider ? getProviderLabel(formData.tts_provider) : 'Select provider'}</span>
                       </div>
                       <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${showTtsDropdown ? 'transform rotate-180' : ''}`} />
                     </button>
@@ -1104,16 +1077,16 @@ function VoiceBundleModal({
                             }}
                             className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center gap-2 transition-colors"
                           >
-                            {PROVIDER_LOGOS[provider] ? (
+                            {getProviderLogo(provider) ? (
                               <img
-                                src={PROVIDER_LOGOS[provider]!}
-                                alt={PROVIDER_LABELS[provider]}
+                                src={getProviderLogo(provider)!}
+                                alt={getProviderLabel(provider)}
                                 className="w-6 h-6 object-contain rounded"
                               />
                             ) : (
                               <Brain className="h-5 w-5 text-primary-600" />
                             )}
-                            <span>{PROVIDER_LABELS[provider]}</span>
+                            <span>{getProviderLabel(provider)}</span>
                           </button>
                         ))}
                       </div>
@@ -1219,16 +1192,16 @@ function VoiceBundleModal({
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white text-left flex items-center justify-between"
                     >
                       <div className="flex items-center gap-2">
-                        {formData.s2s_provider && PROVIDER_LOGOS[formData.s2s_provider] ? (
+                        {formData.s2s_provider && getProviderLogo(formData.s2s_provider) ? (
                           <img
-                            src={PROVIDER_LOGOS[formData.s2s_provider]!}
-                            alt={PROVIDER_LABELS[formData.s2s_provider]}
+                            src={getProviderLogo(formData.s2s_provider)!}
+                            alt={getProviderLabel(formData.s2s_provider)}
                             className="w-6 h-6 object-contain rounded"
                           />
                         ) : (
                           <Brain className="h-5 w-5 text-primary-600" />
                         )}
-                        <span>{formData.s2s_provider ? PROVIDER_LABELS[formData.s2s_provider] : 'Select provider'}</span>
+                        <span>{formData.s2s_provider ? getProviderLabel(formData.s2s_provider) : 'Select provider'}</span>
                       </div>
                       <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${showS2sDropdown ? 'transform rotate-180' : ''}`} />
                     </button>
@@ -1244,16 +1217,16 @@ function VoiceBundleModal({
                             }}
                             className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center gap-2 transition-colors"
                           >
-                            {PROVIDER_LOGOS[provider] ? (
+                            {getProviderLogo(provider) ? (
                               <img
-                                src={PROVIDER_LOGOS[provider]!}
-                                alt={PROVIDER_LABELS[provider]}
+                                src={getProviderLogo(provider)!}
+                                alt={getProviderLabel(provider)}
                                 className="w-6 h-6 object-contain rounded"
                               />
                             ) : (
                               <Brain className="h-5 w-5 text-primary-600" />
                             )}
-                            <span>{PROVIDER_LABELS[provider]}</span>
+                            <span>{getProviderLabel(provider)}</span>
                           </button>
                         ))}
                       </div>
@@ -1281,7 +1254,7 @@ function VoiceBundleModal({
                       </select>
                     ) : (
                       <div className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-500 text-sm">
-                        No S2S models available for {PROVIDER_LABELS[formData.s2s_provider]}
+                        No S2S models available for {getProviderLabel(formData.s2s_provider)}
                       </div>
                     )
                   ) : (

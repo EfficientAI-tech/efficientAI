@@ -6,34 +6,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import Button from '../components/Button'
 import { useToast } from '../hooks/useToast'
 import { AIProvider, ModelProvider } from '../types/api'
-
-const PROVIDER_LABELS: Record<ModelProvider, string> = {
-  [ModelProvider.OPENAI]: 'OpenAI',
-  [ModelProvider.ANTHROPIC]: 'Anthropic',
-  [ModelProvider.GOOGLE]: 'Google',
-  [ModelProvider.AZURE]: 'Azure',
-  [ModelProvider.AWS]: 'AWS',
-  [ModelProvider.DEEPGRAM]: 'Deepgram',
-  [ModelProvider.CARTESIA]: 'Cartesia',
-  [ModelProvider.ELEVENLABS]: 'ElevenLabs',
-  [ModelProvider.MURF]: 'Murf',
-  [ModelProvider.CUSTOM]: 'Custom',
-  [ModelProvider.SARVAM]: 'Sarvam',
-}
-
-const PROVIDER_LOGOS: Record<ModelProvider, string | null> = {
-  [ModelProvider.OPENAI]: '/openai-logo.png',
-  [ModelProvider.ANTHROPIC]: '/anthropic.png',
-  [ModelProvider.GOOGLE]: '/geminiai.png',
-  [ModelProvider.AZURE]: '/azureai.png',
-  [ModelProvider.AWS]: '/AWS_logo.png',
-  [ModelProvider.DEEPGRAM]: '/deepgram.png',
-  [ModelProvider.CARTESIA]: '/cartesia.jpg',
-  [ModelProvider.ELEVENLABS]: '/elevenlabs.jpg',
-  [ModelProvider.MURF]: '/murf.png',
-  [ModelProvider.CUSTOM]: null,
-  [ModelProvider.SARVAM]: '/sarvam.png',
-}
+import { getProviderLabel, getProviderLogo } from '../config/providers'
 
 interface Scenario {
   id: string
@@ -786,10 +759,10 @@ export default function Scenarios() {
                           className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white text-left flex items-center justify-between"
                         >
                           <div className="flex items-center gap-2">
-                            {selectedAIProvider && PROVIDER_LOGOS[selectedAIProvider] ? (
+                            {selectedAIProvider && getProviderLogo(selectedAIProvider) ? (
                               <img
-                                src={PROVIDER_LOGOS[selectedAIProvider]!}
-                                alt={PROVIDER_LABELS[selectedAIProvider]}
+                                src={getProviderLogo(selectedAIProvider)!}
+                                alt={getProviderLabel(selectedAIProvider)}
                                 className="w-5 h-5 object-contain"
                               />
                             ) : selectedAIProvider ? (
@@ -797,7 +770,7 @@ export default function Scenarios() {
                             ) : null}
                             <span>
                               {selectedAIProvider
-                                ? PROVIDER_LABELS[selectedAIProvider]
+                                ? getProviderLabel(selectedAIProvider)
                                 : 'Select an AI Provider'}
                             </span>
                           </div>
@@ -820,16 +793,16 @@ export default function Scenarios() {
                                   onClick={() => handleProviderSelect(provider)}
                                   className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center gap-2 transition-colors"
                                 >
-                                  {PROVIDER_LOGOS[provider] ? (
+                                  {getProviderLogo(provider) ? (
                                     <img
-                                      src={PROVIDER_LOGOS[provider]!}
-                                      alt={PROVIDER_LABELS[provider]}
+                                      src={getProviderLogo(provider)!}
+                                      alt={getProviderLabel(provider)}
                                       className="w-5 h-5 object-contain"
                                     />
                                   ) : (
                                     <Brain className="h-5 w-5 text-primary-600" />
                                   )}
-                                  <span>{PROVIDER_LABELS[provider]}</span>
+                                  <span>{getProviderLabel(provider)}</span>
                                 </button>
                               )
                             })}

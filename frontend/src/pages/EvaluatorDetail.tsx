@@ -7,34 +7,7 @@ import { ModelProvider, AIProvider, Integration, IntegrationPlatform } from '../
 import Button from '../components/Button'
 import { ArrowLeft, Edit, Save, X, Phone, Globe, Sparkles, Trash2, AlertCircle, Brain, ChevronDown } from 'lucide-react'
 import { useToast } from '../hooks/useToast'
-
-const PROVIDER_LABELS: Record<ModelProvider, string> = {
-  [ModelProvider.OPENAI]: 'OpenAI',
-  [ModelProvider.ANTHROPIC]: 'Anthropic',
-  [ModelProvider.GOOGLE]: 'Google',
-  [ModelProvider.AZURE]: 'Azure',
-  [ModelProvider.AWS]: 'AWS',
-  [ModelProvider.DEEPGRAM]: 'Deepgram',
-  [ModelProvider.CARTESIA]: 'Cartesia',
-  [ModelProvider.ELEVENLABS]: 'ElevenLabs',
-  [ModelProvider.MURF]: 'Murf',
-  [ModelProvider.CUSTOM]: 'Custom',
-  [ModelProvider.SARVAM]: 'Sarvam',
-}
-
-const PROVIDER_LOGOS: Record<ModelProvider, string | null> = {
-  [ModelProvider.OPENAI]: '/openai-logo.png',
-  [ModelProvider.ANTHROPIC]: '/anthropic.png',
-  [ModelProvider.GOOGLE]: '/geminiai.png',
-  [ModelProvider.AZURE]: '/azureai.png',
-  [ModelProvider.AWS]: '/AWS_logo.png',
-  [ModelProvider.DEEPGRAM]: '/deepgram.png',
-  [ModelProvider.CARTESIA]: '/cartesia.jpg',
-  [ModelProvider.ELEVENLABS]: '/elevenlabs.jpg',
-  [ModelProvider.MURF]: '/murf.png',
-  [ModelProvider.CUSTOM]: null,
-  [ModelProvider.SARVAM]: '/sarvam.png',
-}
+import { getProviderLabel, getProviderLogo } from '../config/providers'
 
 interface Evaluator {
   id: string
@@ -606,13 +579,13 @@ export default function EvaluatorDetail() {
                               className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-left flex items-center justify-between text-sm"
                             >
                               <div className="flex items-center gap-2">
-                                {editData.llm_provider && PROVIDER_LOGOS[editData.llm_provider as ModelProvider] ? (
-                                  <img src={PROVIDER_LOGOS[editData.llm_provider as ModelProvider]!} alt="" className="w-5 h-5 object-contain rounded" />
+                                {editData.llm_provider && getProviderLogo(editData.llm_provider as ModelProvider) ? (
+                                  <img src={getProviderLogo(editData.llm_provider as ModelProvider)!} alt="" className="w-5 h-5 object-contain rounded" />
                                 ) : (
                                   <Brain className="h-4 w-4 text-gray-400" />
                                 )}
                                 <span className={editData.llm_provider ? 'text-gray-900' : 'text-gray-400'}>
-                                  {editData.llm_provider ? PROVIDER_LABELS[editData.llm_provider as ModelProvider] || editData.llm_provider : 'Select provider'}
+                                  {editData.llm_provider ? getProviderLabel(editData.llm_provider as ModelProvider) || editData.llm_provider : 'Select provider'}
                                 </span>
                               </div>
                               <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${showLlmDropdown ? 'rotate-180' : ''}`} />
@@ -630,12 +603,12 @@ export default function EvaluatorDetail() {
                                     }}
                                     className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center gap-2 text-sm"
                                   >
-                                    {PROVIDER_LOGOS[provider] ? (
-                                      <img src={PROVIDER_LOGOS[provider]!} alt="" className="w-5 h-5 object-contain rounded" />
+                                    {getProviderLogo(provider) ? (
+                                      <img src={getProviderLogo(provider)!} alt="" className="w-5 h-5 object-contain rounded" />
                                     ) : (
                                       <Brain className="h-4 w-4 text-purple-600" />
                                     )}
-                                    <span>{PROVIDER_LABELS[provider]}</span>
+                                    <span>{getProviderLabel(provider)}</span>
                                   </button>
                                 ))}
                               </div>
@@ -667,11 +640,11 @@ export default function EvaluatorDetail() {
                     {evaluator.llm_provider && evaluator.llm_model ? (
                       <>
                         <div className="flex items-center gap-2">
-                          {PROVIDER_LOGOS[evaluator.llm_provider as ModelProvider] && (
-                            <img src={PROVIDER_LOGOS[evaluator.llm_provider as ModelProvider]!} alt="" className="w-5 h-5 object-contain" />
+                          {getProviderLogo(evaluator.llm_provider as ModelProvider) && (
+                            <img src={getProviderLogo(evaluator.llm_provider as ModelProvider)!} alt="" className="w-5 h-5 object-contain" />
                           )}
                           <span className="text-sm font-medium text-gray-900">
-                            {PROVIDER_LABELS[evaluator.llm_provider as ModelProvider] || evaluator.llm_provider}
+                            {getProviderLabel(evaluator.llm_provider as ModelProvider) || evaluator.llm_provider}
                           </span>
                         </div>
                         <p className="text-sm text-purple-700 font-mono">{evaluator.llm_model}</p>
