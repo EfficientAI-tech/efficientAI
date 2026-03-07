@@ -8,9 +8,7 @@ import { useToast } from '../hooks/useToast'
 import {
   getProviderLabel,
   getProviderLogo,
-  getProviderDescription,
-  getIntegrationPlatformLabel,
-  getIntegrationPlatformLogo
+  getProviderDescription
 } from '../config/providers'
 
 type IntegrationType = 'voice_platform' | 'ai_provider' | null
