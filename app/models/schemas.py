@@ -1592,3 +1592,63 @@ class CronJobResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ============================================
+# PROMPT PARTIAL SCHEMAS
+# ============================================
+
+class PromptPartialCreate(BaseModel):
+    """Schema for creating a prompt partial."""
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
+    content: str = Field(..., min_length=1)
+    tags: Optional[List[str]] = None
+
+
+class PromptPartialUpdate(BaseModel):
+    """Schema for updating a prompt partial."""
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    description: Optional[str] = None
+    content: Optional[str] = Field(None, min_length=1)
+    tags: Optional[List[str]] = None
+    change_summary: Optional[str] = None
+
+
+class PromptPartialVersionResponse(BaseModel):
+    """Schema for prompt partial version response."""
+    id: UUID
+    prompt_partial_id: UUID
+    version: int
+    content: str
+    change_summary: Optional[str]
+    created_at: datetime
+    created_by: Optional[str]
+
+    class Config:
+        from_attributes = True
+
+
+class PromptPartialResponse(BaseModel):
+    """Schema for prompt partial response."""
+    id: UUID
+    organization_id: UUID
+    name: str
+    description: Optional[str]
+    content: str
+    tags: Optional[List[str]]
+    current_version: int
+    created_at: datetime
+    updated_at: datetime
+    created_by: Optional[str]
+
+    class Config:
+        from_attributes = True
+
+
+class PromptPartialDetailResponse(PromptPartialResponse):
+    """Schema for prompt partial detail with versions."""
+    versions: List[PromptPartialVersionResponse] = []
+
+    class Config:
+        from_attributes = True

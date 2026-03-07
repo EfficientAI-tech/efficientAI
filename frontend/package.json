@@ -14,6 +14,7 @@
     "@pipecat-ai/client-js": "^1.2.0",
     "@pipecat-ai/websocket-transport": "^1.2.0",
     "@tanstack/react-query": "^5.17.0",
+    "@elevenlabs/client": "^0.2.0",
     "@vapi-ai/web": "^2.5.2",
     "axios": "^1.6.2",
     "clsx": "^2.1.0",
@@ -30,6 +31,7 @@
     "zustand": "^4.4.7"
   },
   "devDependencies": {
+    "@tailwindcss/typography": "^0.5.10",
     "@types/node": "^22.15.30",
     "@types/protobufjs": "^6.0.0",
     "@types/react": "^18.2.43",

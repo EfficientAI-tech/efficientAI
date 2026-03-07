@@ -10,10 +10,11 @@ from datetime import datetime, timezone
 import secrets
 from pydantic import BaseModel
 
-from app.dependencies import get_db, get_api_key
+from app.dependencies import get_db, get_api_key, get_organization_id
 from app.models.database import APIKey, User, Organization
 from app.models.schemas import MessageResponse
 from app.api.v1.routes.profile import get_current_user
+from app.core.license import get_license_info, is_feature_enabled, ENTERPRISE_FEATURES
 
 
 class APIKeyCreateRequest(BaseModel):
@@ -23,6 +24,24 @@ router = APIRouter(prefix="/settings", tags=["Settings"])
 
 # Maximum number of API keys per user
 MAX_API_KEYS_PER_USER = 5
+
+
+@router.get("/license-info")
+def license_info(organization_id: UUID = Depends(get_organization_id)):
+    """
+    Return the current enterprise license status and enabled features.
+    When the license is scoped to an org_id, only returns features
+    that match the requesting organization.
+    """
+    data = get_license_info()
+    all_licensed = data.get("features", [])
+    enabled_for_org = [f for f in all_licensed if is_feature_enabled(f, organization_id)]
+    return {
+        "is_enterprise": bool(enabled_for_org),
+        "enabled_features": enabled_for_org,
+        "all_enterprise_features": ENTERPRISE_FEATURES,
+        "organization": data.get("org"),
+    }
 
 
 def mask_api_key(key: str) -> str:

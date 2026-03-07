@@ -1,6 +1,7 @@
 import { Outlet, Link, useLocation } from 'react-router-dom'
 import { useAuthStore } from '../store/authStore'
 import { useAgentStore, type Agent } from '../store/agentStore'
+import { useLicenseStore } from '../store/licenseStore'
 import { useQuery } from '@tanstack/react-query'
 import { apiClient } from '../lib/api'
 import { Profile } from '../types/api'
@@ -27,6 +28,10 @@ import {
   History,
   Key,
   Clock,
+  Volume2,
+  Gamepad2,
+  Lock,
+  ScrollText,
   Github,
 } from 'lucide-react'
 import { useState, useEffect } from 'react'
@@ -36,6 +41,7 @@ interface NavItem {
   name: string
   href: string
   icon: React.ComponentType<{ className?: string }>
+  enterpriseFeature?: string
 }
 
 interface NavSection {
@@ -45,6 +51,13 @@ interface NavSection {
 }
 
 const navigationSections: NavSection[] = [
+  {
+    title: 'Prompt Partials',
+    icon: ScrollText,
+    items: [
+      { name: 'Prompt Partials', href: '/prompt-partials', icon: ScrollText },
+    ],
+  },
   {
     title: 'Simulations',
     icon: Play,
@@ -56,10 +69,17 @@ const navigationSections: NavSection[] = [
     ],
   },
   {
+    title: 'Playground',
+    icon: Gamepad2,
+    items: [
+      { name: 'Agent Playground', href: '/playground', icon: Play },
+      { name: 'Voice Playground', href: '/voice-playground', icon: Volume2, enterpriseFeature: 'voice_playground' },
+    ],
+  },
+  {
     title: 'Evaluations',
     icon: FileCheck,
     items: [
-      { name: 'Playground', href: '/playground', icon: Play },
       { name: 'Evaluators', href: '/evaluate-test-agents', icon: Mic },
       { name: 'Evaluation Results', href: '/results', icon: BarChart3 },
     ],
@@ -105,6 +125,7 @@ export default function Layout() {
   const location = useLocation()
   const { logout } = useAuthStore()
   const { selectedAgent, setSelectedAgent, loadPreferences, isInitialized } = useAgentStore()
+  const { fetchLicense } = useLicenseStore()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [showAgentDropdown, setShowAgentDropdown] = useState(false)
 
@@ -114,10 +135,11 @@ export default function Layout() {
     queryFn: () => apiClient.listAgents(),
   })
 
-  // Load user preferences from backend on mount
+  // Load user preferences and license info on mount
   useEffect(() => {
     loadPreferences()
-  }, [loadPreferences])
+    fetchLicense()
+  }, [loadPreferences, fetchLicense])
 
   // Auto-select first agent if none is selected (after both preferences and agents are loaded)
   useEffect(() => {
@@ -349,8 +371,9 @@ function SidebarContent({
   onLogout: () => void
   location: ReturnType<typeof useLocation>
 }) {
+  const { isFeatureEnabled } = useLicenseStore()
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
-    new Set(['Simulations', 'Evaluations', 'Observability', 'Alerting', 'Configurations'])
+    new Set(['Prompt Partials', 'Simulations', 'Evaluations', 'Observability', 'Alerting', 'Configurations'])
   )
 
   const toggleSection = (title: string) => {
@@ -428,13 +451,16 @@ function SidebarContent({
                     <div className="ml-6 mt-1 space-y-1">
                       {section.items.map((item) => {
                         const isItemActive = location.pathname === item.href
+                        const isGated = item.enterpriseFeature && !isFeatureEnabled(item.enterpriseFeature)
                         return (
                           <Link
                             key={item.name}
                             to={item.href}
                             className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md relative overflow-hidden ${isItemActive
                               ? 'bg-gradient-to-r from-gray-900 via-gray-700 to-gray-400 text-white'
-                              : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                              : isGated
+                                ? 'text-gray-400 hover:bg-gray-50'
+                                : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
                               }`}
                           >
                             <item.icon
@@ -442,6 +468,9 @@ function SidebarContent({
                                 }`}
                             />
                             {item.name}
+                            {isGated && (
+                              <Lock className="ml-auto h-3.5 w-3.5 text-amber-600 flex-shrink-0" />
+                            )}
                           </Link>
                         )
                       })}

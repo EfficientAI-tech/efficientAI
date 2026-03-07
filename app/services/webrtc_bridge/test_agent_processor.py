@@ -463,7 +463,27 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
                 logger.error(f"[TestAgent] OpenAI TTS error: {response.status_code} - {response.text}")
                 return None
 
-            # OpenAI returns raw PCM s16le at 24kHz — usable directly
+            # OpenAI always returns raw PCM s16le at 24kHz.
+            # Resample to the target sample_rate when it differs (e.g. 16kHz for ElevenLabs).
+            OPENAI_PCM_RATE = 24000
+            if self.config.sample_rate != OPENAI_PCM_RATE:
+                try:
+                    from pydub import AudioSegment
+                    seg = AudioSegment(
+                        data=response.content,
+                        sample_width=2,
+                        frame_rate=OPENAI_PCM_RATE,
+                        channels=1,
+                    )
+                    seg = seg.set_frame_rate(self.config.sample_rate)
+                    logger.debug(
+                        f"[TestAgent] Resampled OpenAI TTS: {OPENAI_PCM_RATE}→{self.config.sample_rate}Hz "
+                        f"({len(response.content)}→{len(seg.raw_data)} bytes)"
+                    )
+                    return seg.raw_data
+                except ImportError:
+                    logger.warning("[TestAgent] pydub not installed — sending 24kHz audio without resampling")
+
             return response.content
 
     async def stream_audio_chunks(

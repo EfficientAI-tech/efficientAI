@@ -1,12 +1,14 @@
+import React, { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useParams, useNavigate } from 'react-router-dom'
 import { apiClient } from '../lib/api'
 import { ArrowLeft, Clock, CheckCircle, XCircle, Loader, BarChart3, Phone, Brain, HelpCircle, Sparkles, AudioWaveform, MessageSquare, Download, RotateCcw, PhoneIncoming, PhoneOutgoing, Tag, ExternalLink } from 'lucide-react'
-import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import Button from '../components/Button'
 import RetellCallDetails from '../components/call-recordings/RetellCallDetails'
 import VapiCallDetails from '../components/call-recordings/VapiCallDetails'
+import ElevenLabsCallDetails from '../components/call-recordings/ElevenLabsCallDetails'
+import { useToast } from '../hooks/useToast'
 
 // Comprehensive metric information with descriptions and ideal values
 const METRIC_INFO: Record<string, { 
@@ -212,28 +214,111 @@ interface EvaluatorResultDetail {
   }
 }
 
+function EvaluationStepper({ status }: { status: string }) {
+  const [dots, setDots] = useState('')
+
+  useEffect(() => {
+    const id = setInterval(() => setDots(prev => prev.length >= 3 ? '' : prev + '.'), 500)
+    return () => clearInterval(id)
+  }, [])
+
+  const steps = [
+    { key: 'queued', label: 'Queued', sublabel: 'Preparing worker' },
+    { key: 'transcribing', label: 'Analyzing Audio', sublabel: 'Acoustic & voice quality' },
+    { key: 'evaluating', label: 'Evaluating', sublabel: 'LLM conversation metrics' },
+  ]
+
+  const activeIdx = Math.max(0, steps.findIndex(s => s.key === status))
+
+  const statusMessages: Record<string, string> = {
+    queued: 'Downloading audio & preparing evaluation',
+    transcribing: 'Running acoustic analysis & voice quality metrics',
+    evaluating: 'Evaluating conversation quality with LLM',
+  }
+
+  return (
+    <div className="py-8 px-4">
+      <div className="flex items-start justify-center max-w-md mx-auto">
+        {steps.map((step, idx) => {
+          const isActive = idx === activeIdx
+          const isDone = idx < activeIdx
+
+          return (
+            <React.Fragment key={step.key}>
+              <div className="flex flex-col items-center" style={{ minWidth: 90 }}>
+                <div
+                  className={[
+                    'w-11 h-11 rounded-full flex items-center justify-center transition-all duration-500 relative',
+                    isDone ? 'bg-emerald-500 text-white shadow-md' : '',
+                    isActive ? 'bg-blue-600 text-white shadow-lg shadow-blue-200' : '',
+                    !isDone && !isActive ? 'bg-gray-100 text-gray-400 border-2 border-gray-200' : '',
+                  ].join(' ')}
+                >
+                  {isActive && (
+                    <span className="absolute inset-0 rounded-full animate-ping bg-blue-400 opacity-30" />
+                  )}
+                  {isDone ? (
+                    <CheckCircle className="w-5 h-5" />
+                  ) : isActive ? (
+                    <Loader className="w-5 h-5 animate-spin" />
+                  ) : (
+                    <span className="text-sm font-semibold">{idx + 1}</span>
+                  )}
+                </div>
+                <p className={`mt-2.5 text-xs font-semibold text-center leading-tight ${isActive ? 'text-blue-700' : isDone ? 'text-emerald-600' : 'text-gray-400'}`}>
+                  {step.label}
+                </p>
+                <p className={`text-[10px] text-center leading-tight mt-0.5 ${isActive ? 'text-blue-500' : isDone ? 'text-emerald-500' : 'text-gray-300'}`}>
+                  {step.sublabel}
+                </p>
+              </div>
+              {idx < steps.length - 1 && (
+                <div className="flex-1 flex items-center pt-1" style={{ minWidth: 40 }}>
+                  <div className="w-full relative h-1 rounded-full bg-gray-200 overflow-hidden" style={{ marginTop: 18 }}>
+                    <div
+                      className={`absolute inset-y-0 left-0 rounded-full transition-all duration-700 ${isDone ? 'w-full bg-emerald-400' : isActive ? 'bg-blue-400 animate-[indeterminate_1.5s_ease-in-out_infinite]' : 'w-0'}`}
+                      style={isActive ? { width: '60%' } : undefined}
+                    />
+                  </div>
+                </div>
+              )}
+            </React.Fragment>
+          )
+        })}
+      </div>
+
+      <div className="mt-6 text-center">
+        <span className="inline-flex items-center gap-2 px-4 py-2 bg-blue-50 border border-blue-100 rounded-full text-sm text-blue-700">
+          <Loader className="w-3.5 h-3.5 animate-spin" />
+          {statusMessages[status] || 'Processing'}{dots}
+        </span>
+      </div>
+    </div>
+  )
+}
+
 export default function EvaluatorResultDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const location = window.location.pathname
   const isFromPlayground = location.includes('/playground/test-agent-results')
+  const { showToast, ToastContainer } = useToast()
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   const [audioDuration, setAudioDuration] = useState(0)
   const [activeSegmentIndex, setActiveSegmentIndex] = useState<number | null>(null)
   const [activeTab, setActiveTab] = useState<'overview' | 'transcript'>('overview')
+  const [reEvalInProgress, setReEvalInProgress] = useState(false)
   const audioRef = useRef<HTMLAudioElement>(null)
 
-  const { data: result, isLoading, error } = useQuery({
+  const { data: result, isLoading, error, refetch: refetchResult } = useQuery({
     queryKey: ['evaluator-result', id],
     queryFn: () => apiClient.getEvaluatorResult(id!),
     enabled: !!id,
     refetchInterval: (query) => {
       const data = query.state.data as any
-      if (data && ['queued', 'call_initiating', 'call_connecting', 'call_in_progress', 'call_ended', 'transcribing', 'evaluating', 'fetching_details'].includes(data.status)) {
-        return 3000
-      }
-      return false
+      const inProgress = reEvalInProgress || (data && ['queued', 'call_initiating', 'call_connecting', 'call_in_progress', 'call_ended', 'transcribing', 'evaluating', 'fetching_details'].includes(data?.status))
+      return inProgress ? 2000 : false
     },
   })
 
@@ -248,11 +333,26 @@ export default function EvaluatorResultDetailPage() {
 
   const reEvaluateMutation = useMutation({
     mutationFn: (resultId: string) => apiClient.reEvaluateResult(resultId),
+    onMutate: () => {
+      setReEvalInProgress(true)
+    },
     onSuccess: () => {
+      showToast('Re-evaluation started — audio will be analyzed for voice quality metrics', 'success')
       queryClient.invalidateQueries({ queryKey: ['evaluator-result', id] })
       queryClient.invalidateQueries({ queryKey: ['evaluator-results'] })
+      refetchResult()
+    },
+    onError: (error: any) => {
+      setReEvalInProgress(false)
+      showToast(`Re-evaluation failed: ${error.response?.data?.detail || error.message}`, 'error')
     },
   })
+
+  useEffect(() => {
+    if (reEvalInProgress && result?.status && ['completed', 'failed'].includes(result.status)) {
+      setReEvalInProgress(false)
+    }
+  }, [result?.status, reEvalInProgress])
 
   useEffect(() => {
     const providerRecordingUrl = result?.call_data?.recording_url
@@ -514,7 +614,7 @@ export default function EvaluatorResultDetailPage() {
               </p>
             </div>
             <div className="flex items-center gap-3">
-              {(resultData.status === 'completed' || resultData.status === 'failed') && resultData.evaluator_id && (
+              {!reEvalInProgress && (resultData.status === 'completed' || resultData.status === 'failed') && resultData.evaluator_id && (
                 <Button
                   variant="outline"
                   size="sm"
@@ -636,29 +736,26 @@ export default function EvaluatorResultDetailPage() {
         </h2>
         
         <div>
-          {/* Loading state */}
-          {(resultData.status === 'evaluating' || resultData.status === 'transcribing' || resultData.status === 'queued') && (
-            <div className="flex items-center justify-center py-12">
-              <div className="text-center">
-                <Loader className="w-6 h-6 text-indigo-500 animate-spin mx-auto mb-3" />
-                <span className="text-sm text-gray-500">
-                  {resultData.status === 'transcribing' ? 'Transcribing audio...' : 
-                   resultData.status === 'queued' ? 'Evaluation queued...' : 'Evaluating conversation...'}
-                </span>
-              </div>
-            </div>
-          )}
-          
+          {/* Stepper progress (re-evaluate or initial evaluation) */}
+          {!reEvalInProgress && resultData.status === 'completed' && resultData.metric_scores && Object.keys(resultData.metric_scores).length > 0 ? null
+           : reEvalInProgress || ['evaluating', 'transcribing', 'queued'].includes(resultData.status) ? (
+            <EvaluationStepper status={
+              reEvalInProgress && !['queued', 'transcribing', 'evaluating'].includes(resultData.status)
+                ? 'queued'
+                : resultData.status
+            } />
+          ) : null}
+
           {/* Error state */}
-          {resultData.status === 'failed' && !resultData.metric_scores && (
-            <div className="text-center py-12">
-              <XCircle className="w-8 h-8 text-gray-300 mx-auto mb-2" />
-              <p className="text-sm text-gray-500">Evaluation failed. No metrics available.</p>
+          {!reEvalInProgress && resultData.status === 'failed' && !resultData.metric_scores && (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-center">
+              <XCircle className="w-6 h-6 text-red-500 mx-auto mb-2" />
+              <p className="text-red-700">Evaluation failed. Please try re-evaluating.</p>
             </div>
           )}
           
-          {/* Show metrics when completed */}
-          {resultData.metric_scores && Object.keys(resultData.metric_scores).length > 0 &&
+          {/* Show metrics when completed (hide during re-evaluation) */}
+          {!reEvalInProgress && resultData.metric_scores && Object.keys(resultData.metric_scores).length > 0 &&
             (() => {
               const hasValidValue = (metric: { value: any }) => {
                 const val = metric.value
@@ -802,6 +899,22 @@ export default function EvaluatorResultDetailPage() {
             )}
           </h2>
           <VapiCallDetails callData={resultData.call_data} hideTranscript />
+        </div>
+      )}
+
+      {resultData.call_data && resultData.provider_platform === 'elevenlabs' && (
+        <div className="mb-6 bg-white rounded-lg shadow p-6">
+          <h2 className="text-lg font-semibold text-gray-900 flex items-center mb-4">
+            <Phone className="w-5 h-5 mr-2" />
+            Provider Call Details
+            <span className="ml-2 px-2 py-0.5 text-xs bg-emerald-100 text-emerald-800 rounded-full">elevenlabs</span>
+            {(resultData.provider_call_id || resultData.call_data.call_id) && (
+              <span className="ml-2 text-xs text-gray-500 font-mono">
+                {resultData.provider_call_id || resultData.call_data.call_id}
+              </span>
+            )}
+          </h2>
+          <ElevenLabsCallDetails callData={resultData.call_data} hideTranscript />
         </div>
       )}
 
@@ -1109,6 +1222,7 @@ export default function EvaluatorResultDetailPage() {
           </div>
         </div>
       ) : null}
+      <ToastContainer />
     </div>
   )
 }

@@ -29,6 +29,8 @@ from app.api.v1.routes import (
     observability,
     alerts,
     cron_jobs,
+    voice_playground,
+    prompt_partials,
 )
 
 api_router = APIRouter()
@@ -61,4 +63,6 @@ api_router.include_router(settings.router)
 api_router.include_router(observability.router)
 api_router.include_router(alerts.router)
 api_router.include_router(cron_jobs.router)
+api_router.include_router(voice_playground.router)
+api_router.include_router(prompt_partials.router)
 

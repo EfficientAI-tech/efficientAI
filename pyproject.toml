@@ -41,6 +41,7 @@ dependencies = [
     "pytz>=2024.1",
     "praat-parselmouth>=0.4.3",
     "jiwer>=3.0.0",
+    "litellm>=1.60.0",
 ]
 
 [project.optional-dependencies]

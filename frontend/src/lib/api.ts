@@ -254,6 +254,17 @@ class ApiClient {
     return response.data
   }
 
+  async generateAgentDescription(data: {
+    description: string
+    tone?: string
+    format_style?: string
+    provider?: string
+    model?: string
+  }): Promise<{ content: string; provider: string; model: string }> {
+    const response = await this.client.post('/api/v1/agents/generate-description', data)
+    return response.data
+  }
+
   // Personas endpoints
   async listPersonas(skip = 0, limit = 100): Promise<any[]> {
     const response = await this.client.get('/api/v1/personas', {
@@ -755,6 +766,7 @@ class ApiClient {
     retell_llm_dynamic_variables?: Record<string, any>
     sample_rate?: number
     call_short_id?: string
+    signed_url?: string
   }> {
     const response = await this.client.post('/api/v1/playground/web-call', data)
     return response.data
@@ -787,6 +799,25 @@ class ApiClient {
   async deleteCallRecording(callShortId: string): Promise<{ message: string }> {
     const response = await this.client.delete(`/api/v1/playground/call-recordings/${callShortId}`)
     return response.data
+  }
+
+  async reEvaluateCallRecording(callShortId: string): Promise<{
+    message: string
+    evaluator_result_id: string
+    result_id: string
+    audio_s3_key: string
+    task_id: string
+  }> {
+    const response = await this.client.post(`/api/v1/playground/call-recordings/${callShortId}/re-evaluate`)
+    return response.data
+  }
+
+  async getCallRecordingAudioUrl(callShortId: string): Promise<string> {
+    const response = await this.client.get(
+      `/api/v1/playground/call-recordings/${callShortId}/audio`,
+      { responseType: 'blob' }
+    )
+    return URL.createObjectURL(response.data)
   }
 
   // Observability endpoints
@@ -1135,14 +1166,59 @@ class ApiClient {
     return response.data
   }
 
+  async listCustomTTSVoices(provider?: string): Promise<Array<{
+    id: string
+    provider: string
+    voice_id: string
+    name: string
+    gender: string
+    accent: string
+    description?: string | null
+    is_custom: boolean
+    created_at?: string | null
+    updated_at?: string | null
+  }>> {
+    const response = await this.client.get('/api/v1/voice-playground/custom-voices', {
+      params: provider ? { provider } : undefined,
+    })
+    return response.data
+  }
+
+  async createCustomTTSVoice(data: {
+    provider: string
+    voice_id: string
+    name: string
+    gender?: string
+    accent?: string
+    description?: string
+  }): Promise<any> {
+    const response = await this.client.post('/api/v1/voice-playground/custom-voices', data)
+    return response.data
+  }
+
+  async updateCustomTTSVoice(customVoiceId: string, data: {
+    name?: string
+    gender?: string
+    accent?: string
+    description?: string
+  }): Promise<any> {
+    const response = await this.client.put(`/api/v1/voice-playground/custom-voices/${customVoiceId}`, data)
+    return response.data
+  }
+
+  async deleteCustomTTSVoice(customVoiceId: string): Promise<any> {
+    const response = await this.client.delete(`/api/v1/voice-playground/custom-voices/${customVoiceId}`)
+    return response.data
+  }
+
   async createTTSComparison(data: {
     name?: string
     provider_a: string
     model_a: string
-    voices_a: Array<{ id: string; name: string }>
-    provider_b: string
-    model_b: string
-    voices_b: Array<{ id: string; name: string }>
+    voices_a: Array<{ id: string; name: string; sample_rate_hz?: number }>
+    provider_b?: string
+    model_b?: string
+    voices_b?: Array<{ id: string; name: string; sample_rate_hz?: number }>
     sample_texts: string[]
     num_runs?: number
   }): Promise<any> {
@@ -1190,6 +1266,7 @@ class ApiClient {
     model?: string
     scenario?: string
     count?: number
+    length?: string
     temperature?: number
   }): Promise<{ samples: string[]; provider: string; model: string }> {
     const response = await this.client.post('/api/v1/voice-playground/generate-samples', params)
@@ -1206,9 +1283,102 @@ class ApiClient {
     avg_valence: number | null
     avg_arousal: number | null
     avg_prosody: number | null
+    avg_ttfb_ms: number | null
     avg_latency_ms: number | null
+    avg_wer: number | null
+    avg_cer: number | null
   }>> {
     const response = await this.client.get('/api/v1/voice-playground/analytics')
+    return response.data
+  }
+
+  // Prompt Partials
+  async listPromptPartials(skip = 0, limit = 100, search?: string): Promise<any[]> {
+    const response = await this.client.get('/api/v1/prompt-partials', {
+      params: { skip, limit, ...(search ? { search } : {}) },
+    })
+    return response.data
+  }
+
+  async getPromptPartial(partialId: string): Promise<any> {
+    const response = await this.client.get(`/api/v1/prompt-partials/${partialId}`)
+    return response.data
+  }
+
+  async createPromptPartial(data: {
+    name: string
+    description?: string
+    content: string
+    tags?: string[]
+  }): Promise<any> {
+    const response = await this.client.post('/api/v1/prompt-partials', data)
+    return response.data
+  }
+
+  async updatePromptPartial(partialId: string, data: {
+    name?: string
+    description?: string
+    content?: string
+    tags?: string[]
+    change_summary?: string
+  }): Promise<any> {
+    const response = await this.client.put(`/api/v1/prompt-partials/${partialId}`, data)
+    return response.data
+  }
+
+  async deletePromptPartial(partialId: string): Promise<void> {
+    await this.client.delete(`/api/v1/prompt-partials/${partialId}`)
+  }
+
+  async listPromptPartialVersions(partialId: string): Promise<any[]> {
+    const response = await this.client.get(`/api/v1/prompt-partials/${partialId}/versions`)
+    return response.data
+  }
+
+  async getPromptPartialVersion(partialId: string, versionNumber: number): Promise<any> {
+    const response = await this.client.get(`/api/v1/prompt-partials/${partialId}/versions/${versionNumber}`)
+    return response.data
+  }
+
+  async revertPromptPartial(partialId: string, versionNumber: number): Promise<any> {
+    const response = await this.client.post(`/api/v1/prompt-partials/${partialId}/revert/${versionNumber}`)
+    return response.data
+  }
+
+  async clonePromptPartial(partialId: string): Promise<any> {
+    const response = await this.client.post(`/api/v1/prompt-partials/${partialId}/clone`)
+    return response.data
+  }
+
+  async generatePromptWithAI(data: {
+    description: string
+    tone?: string
+    format_style?: string
+    provider?: string
+    model?: string
+  }): Promise<{ content: string; provider: string; model: string }> {
+    const response = await this.client.post('/api/v1/prompt-partials/generate', data)
+    return response.data
+  }
+
+  async improvePromptWithAI(data: {
+    content: string
+    instructions?: string
+    provider?: string
+    model?: string
+  }): Promise<{ content: string; provider: string; model: string }> {
+    const response = await this.client.post('/api/v1/prompt-partials/improve', data)
+    return response.data
+  }
+
+  // License / Enterprise
+  async getLicenseInfo(): Promise<{
+    is_enterprise: boolean
+    enabled_features: string[]
+    all_enterprise_features: string[]
+    organization?: string
+  }> {
+    const response = await this.client.get('/api/v1/settings/license-info')
     return response.data
   }
 }

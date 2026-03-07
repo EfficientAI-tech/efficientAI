@@ -47,3 +47,83 @@
     display: none;
   }
 }
+
+@keyframes indeterminate {
+  0% { transform: translateX(-100%); width: 60%; }
+  50% { transform: translateX(40%); width: 60%; }
+  100% { transform: translateX(100%); width: 60%; }
+}
+
+/* Markdown prose styles — fallback & enhancements for rendered markdown content */
+@layer components {
+  .prose h1 {
+    @apply text-2xl font-bold text-gray-900 mt-6 mb-4 pb-2 border-b border-gray-200;
+  }
+  .prose h2 {
+    @apply text-xl font-semibold text-gray-900 mt-6 mb-3 pb-1 border-b border-gray-100;
+  }
+  .prose h3 {
+    @apply text-lg font-semibold text-gray-900 mt-5 mb-2;
+  }
+  .prose h4 {
+    @apply text-base font-semibold text-gray-800 mt-4 mb-2;
+  }
+  .prose h1:first-child,
+  .prose h2:first-child,
+  .prose h3:first-child,
+  .prose h4:first-child {
+    @apply mt-0;
+  }
+  .prose p {
+    @apply text-sm text-gray-700 leading-relaxed mb-3;
+  }
+  .prose ul {
+    @apply list-disc pl-6 mb-4 space-y-1.5;
+  }
+  .prose ol {
+    @apply list-decimal pl-6 mb-4 space-y-1.5;
+  }
+  .prose li {
+    @apply text-sm text-gray-700 leading-relaxed;
+  }
+  .prose li > ul,
+  .prose li > ol {
+    @apply mt-1.5 mb-0;
+  }
+  .prose strong {
+    @apply font-semibold text-gray-900;
+  }
+  .prose em {
+    @apply italic;
+  }
+  .prose blockquote {
+    @apply border-l-4 border-gray-300 pl-4 py-1 my-4 text-gray-600 italic;
+  }
+  .prose code:not(pre code) {
+    @apply text-sm bg-gray-100 text-gray-800 px-1.5 py-0.5 rounded font-mono;
+  }
+  .prose pre {
+    @apply bg-gray-900 text-gray-100 rounded-lg p-4 overflow-x-auto my-4 text-sm leading-relaxed;
+  }
+  .prose pre code {
+    @apply bg-transparent text-inherit p-0 rounded-none;
+  }
+  .prose hr {
+    @apply my-6 border-gray-200;
+  }
+  .prose a {
+    @apply text-blue-600 underline hover:text-blue-800;
+  }
+  .prose table {
+    @apply w-full border-collapse my-4 text-sm;
+  }
+  .prose th {
+    @apply border border-gray-300 px-3 py-2 bg-gray-50 text-left font-semibold text-gray-900;
+  }
+  .prose td {
+    @apply border border-gray-300 px-3 py-2 text-gray-700;
+  }
+  .prose img {
+    @apply rounded-lg my-4 max-w-full;
+  }
+}

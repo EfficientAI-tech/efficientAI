@@ -5,11 +5,13 @@ Complete CRUD operations for test agents
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 from uuid import UUID
 import random
+from pydantic import BaseModel
+from loguru import logger
 
-from app.dependencies import get_db, get_organization_id
+from app.dependencies import get_db, get_organization_id, get_api_key
 from app.models.database import (
     Agent, ConversationEvaluation, TestAgentConversation, VoiceBundle,
     AIProvider, Integration, IntegrationPlatform, CallMediumEnum,
@@ -21,6 +23,114 @@ from app.models.schemas import (
 )
 
 router = APIRouter(prefix="/agents", tags=["agents"])
+
+
+# ======================================================================
+# AI Generation for agent descriptions
+# ======================================================================
+
+class GenerateAgentDescriptionRequest(BaseModel):
+    description: str
+    tone: Optional[str] = "professional"
+    format_style: Optional[str] = "structured"
+    provider: Optional[str] = None
+    model: Optional[str] = None
+
+
+GENERATE_AGENT_DESCRIPTION_SYSTEM = (
+    "You are an expert at writing clear, well-structured descriptions for voice AI test agents. "
+    "The user will describe what they need the agent to do, and you will generate a comprehensive, "
+    "well-formatted agent description in markdown.\n\n"
+    "Guidelines:\n"
+    "- Use clear markdown structure: headings, bullet points, numbered lists\n"
+    "- Include sections for: Purpose, Behavior, Expected Interactions, Personality Traits, and Constraints\n"
+    "- Be specific about the agent's role, tone of voice, and how it should handle conversations\n"
+    "- Include example scenarios or edge cases where helpful\n"
+    "- Return ONLY the description in markdown, no preamble or explanation about what you did"
+)
+
+
+def _get_llm_provider_and_model(
+    organization_id: UUID,
+    db: Session,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+):
+    """Resolve the LLM provider and model to use, falling back to org defaults."""
+    from app.models.database import AIProvider
+    from app.models.enums import ModelProvider
+
+    if provider and model:
+        try:
+            provider_enum = ModelProvider(provider.lower())
+        except ValueError:
+            raise HTTPException(400, f"Unsupported LLM provider: {provider}")
+        return provider_enum, model
+
+    for prov in [ModelProvider.OPENAI, ModelProvider.ANTHROPIC, ModelProvider.GOOGLE]:
+        ai_prov = db.query(AIProvider).filter(
+            AIProvider.organization_id == organization_id,
+            AIProvider.is_active == True,
+            AIProvider.provider == prov.value,
+        ).first()
+        if ai_prov:
+            default_models = {
+                ModelProvider.OPENAI: "gpt-5-mini",
+                ModelProvider.ANTHROPIC: "claude-sonnet-4-20250514",
+                ModelProvider.GOOGLE: "gemini-2.0-flash",
+            }
+            return prov, model or default_models.get(prov, "gpt-5-mini")
+
+    raise HTTPException(
+        400,
+        "No active AI provider configured. Add an OpenAI, Anthropic, or Google provider in AI Providers settings.",
+    )
+
+
+@router.post("/generate-description")
+async def generate_agent_description(
+    data: GenerateAgentDescriptionRequest,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """Generate an agent description using AI from a brief description."""
+    from app.services.llm_service import llm_service
+
+    if not data.description.strip():
+        raise HTTPException(400, "Description is required")
+
+    provider_enum, model_str = _get_llm_provider_and_model(
+        organization_id, db, data.provider, data.model
+    )
+
+    user_prompt = (
+        f"Create a detailed agent description for the following:\n\n"
+        f"Description: {data.description}\n"
+        f"Tone: {data.tone or 'professional'}\n"
+        f"Format: {data.format_style or 'structured'}\n\n"
+        f"Generate a comprehensive, well-formatted agent description in markdown."
+    )
+
+    messages = [
+        {"role": "system", "content": GENERATE_AGENT_DESCRIPTION_SYSTEM},
+        {"role": "user", "content": user_prompt},
+    ]
+
+    try:
+        result = llm_service.generate_response(
+            messages=messages,
+            llm_provider=provider_enum,
+            llm_model=model_str,
+            organization_id=organization_id,
+            db=db,
+            temperature=0.7,
+            max_tokens=4000,
+        )
+        return {"content": result["text"], "provider": provider_enum.value, "model": model_str}
+    except Exception as e:
+        logger.error(f"[Agents] AI description generation failed: {repr(e)}")
+        raise HTTPException(500, f"AI generation failed: {str(e)}")
 
 
 def generate_unique_agent_id(db: Session) -> str:
@@ -74,14 +184,12 @@ async def create_agent(
         if not integration:
             raise HTTPException(status_code=404, detail="Integration not found or inactive")
         
-        # Validate that the integration platform is Retell or Vapi
-        if integration.platform not in [IntegrationPlatform.RETELL, IntegrationPlatform.VAPI]:
+        if integration.platform not in [IntegrationPlatform.RETELL, IntegrationPlatform.VAPI, IntegrationPlatform.ELEVENLABS]:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Integration platform {integration.platform.value} is not supported for Voice AI agents. Only Retell and Vapi are supported."
+                detail=f"Integration platform {integration.platform.value} is not supported for Voice AI agents. Only Retell, Vapi, and ElevenLabs are supported."
             )
         
-        # Validate voice_ai_agent_id is provided
         if not agent.voice_ai_agent_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -219,14 +327,12 @@ async def update_agent(
         if not integration:
             raise HTTPException(status_code=404, detail="Integration not found or inactive")
         
-        # Validate that the integration platform is Retell or Vapi
-        if integration.platform not in [IntegrationPlatform.RETELL, IntegrationPlatform.VAPI]:
+        if integration.platform not in [IntegrationPlatform.RETELL, IntegrationPlatform.VAPI, IntegrationPlatform.ELEVENLABS]:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Integration platform {integration.platform.value} is not supported for Voice AI agents. Only Retell and Vapi are supported."
+                detail=f"Integration platform {integration.platform.value} is not supported for Voice AI agents. Only Retell, Vapi, and ElevenLabs are supported."
             )
         
-        # Validate voice_ai_agent_id is provided
         if not agent_update.voice_ai_agent_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

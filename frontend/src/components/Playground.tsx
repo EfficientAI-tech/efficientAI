@@ -8,6 +8,7 @@ import Button from './Button'
 import { useToast } from '../hooks/useToast'
 import { RetellWebClient } from 'retell-client-js-sdk'
 import Vapi from '@vapi-ai/web'
+import { Conversation } from '@elevenlabs/client'
 import VoiceAgent from './VoiceAgent'
 
 // Type for RetellWebClient - using the actual SDK methods
@@ -37,6 +38,7 @@ export default function Playground() {
 
   const retellClientRef = useRef<RetellWebClientWithMethods | null>(null)
   const vapiClientRef = useRef<any>(null)
+  const elevenLabsConversationRef = useRef<any>(null)
   const currentCallShortIdRef = useRef<string | null>(null)
 
   const userInitiatedDisconnectRef = useRef(false)
@@ -92,9 +94,10 @@ export default function Playground() {
 
   const isRetellAgent = agentIntegration?.platform === 'retell'
   const isVapiAgent = agentIntegration?.platform === 'vapi'
+  const isElevenLabsAgent = agentIntegration?.platform === 'elevenlabs'
   const hasWebCallEnabled = fullAgent?.call_medium === 'web_call'
 
-  const canMakeCall = (isRetellAgent || isVapiAgent) && hasWebCallEnabled && fullAgent?.voice_ai_agent_id
+  const canMakeCall = (isRetellAgent || isVapiAgent || isElevenLabsAgent) && hasWebCallEnabled && fullAgent?.voice_ai_agent_id
 
   // Check if agent has Test Agent capabilities (voice bundle with STT/TTS/LLM)
   const hasTestAgent = fullAgent?.voice_bundle_id != null
@@ -109,15 +112,14 @@ export default function Playground() {
         console.log('RetellWebClient initialized')
         retellClientRef.current = client
       } else if (isVapiAgent && !vapiClientRef.current && agentIntegration?.public_key) {
-        // Initialize Vapi with Public Key
         const client = new Vapi(agentIntegration.public_key)
         console.log('Vapi client initialized')
         vapiClientRef.current = client
       }
+      // ElevenLabs: no persistent client — sessions are created on connect
     }
 
     return () => {
-      // Cleanup on unmount
       if (retellClientRef.current && isConnected) {
         try {
           retellClientRef.current.stopCall()
@@ -132,8 +134,16 @@ export default function Playground() {
           console.error('Error stopping Vapi call on cleanup:', e)
         }
       }
+      if (elevenLabsConversationRef.current && isConnected) {
+        try {
+          elevenLabsConversationRef.current.endSession()
+        } catch (e) {
+          console.error('Error ending ElevenLabs session on cleanup:', e)
+        }
+        elevenLabsConversationRef.current = null
+      }
     }
-  }, [showModal, canMakeCall, isConnected, isRetellAgent, isVapiAgent, agentIntegration])
+  }, [showModal, canMakeCall, isConnected, isRetellAgent, isVapiAgent, isElevenLabsAgent, agentIntegration])
 
   const handleConnect = async () => {
     if (!canMakeCall || !fullAgent?.id) {
@@ -345,6 +355,115 @@ export default function Playground() {
         setIsConnected(false)
         showToast(`Failed to connect: ${error.message}`, 'error')
       }
+    } else if (isElevenLabsAgent) {
+      try {
+        // Request microphone permission first
+        try {
+          const testStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+          testStream.getTracks().forEach(track => track.stop())
+        } catch (micError: any) {
+          console.error('Microphone permission denied:', micError)
+          setIsConnecting(false)
+          showToast('Microphone permission is required for voice calls', 'error')
+          return
+        }
+
+        // Create backend record and get signed URL
+        console.log('Creating ElevenLabs web call...')
+        const webCallResponse = await apiClient.createWebCall({
+          agent_id: fullAgent.id,
+          metadata: {},
+        })
+
+        if (webCallResponse.call_short_id) {
+          currentCallShortIdRef.current = webCallResponse.call_short_id
+        }
+
+        const signedUrl = webCallResponse.signed_url
+        if (!signedUrl) {
+          throw new Error('No signed_url received from backend')
+        }
+
+        console.log('Starting ElevenLabs conversation session with signed URL...')
+
+        let elevenLabsConversationIdStored = false
+
+        const conversationInstance = await Conversation.startSession({
+          signedUrl,
+          onConnect: () => {
+            console.log('ElevenLabs conversation connected')
+            setIsConnected(true)
+            setIsConnecting(false)
+            showToast('Connected to agent', 'success')
+          },
+          onDisconnect: () => {
+            console.log('ElevenLabs conversation disconnected')
+            setIsConnected(false)
+            setIsConnecting(false)
+            elevenLabsConversationRef.current = null
+            if (!userInitiatedDisconnectRef.current) {
+              showToast('Call ended')
+            }
+            userInitiatedDisconnectRef.current = false
+
+            // Only refresh if we successfully stored the conversation ID,
+            // otherwise the backend has no provider_call_id to fetch metrics for
+            if (currentCallShortIdRef.current && elevenLabsConversationIdStored) {
+              const callShortId = currentCallShortIdRef.current
+              // ElevenLabs transitions through "processing" before "done",
+              // so wait a few seconds before requesting metrics
+              setTimeout(() => {
+                apiClient.refreshCallRecording(callShortId)
+                  .then(() => refetchCallRecordings())
+                  .catch(err => console.error('Failed to refresh metrics', err))
+              }, 5000)
+            }
+          },
+          onMessage: (message: any) => {
+            console.log('ElevenLabs message:', message)
+            if (message?.source && message?.message) {
+              const role = message.source === 'user' ? 'user' as const : 'agent' as const
+              setTranscripts(prev => [...prev, { role, content: message.message }])
+            }
+          },
+          onError: (error: any) => {
+            console.error('ElevenLabs onError:', error)
+            setIsConnecting(false)
+            setIsConnected(false)
+            const msg = typeof error === 'string' ? error : error?.message || JSON.stringify(error)
+            showToast(`ElevenLabs error: ${msg}`, 'error')
+          },
+          onStatusChange: (status: any) => {
+            console.log('ElevenLabs status change:', status)
+          },
+        })
+
+        elevenLabsConversationRef.current = conversationInstance
+
+        // Get conversation ID AFTER startSession resolves (the instance is now available)
+        try {
+          const conversationId = conversationInstance?.getId()
+          console.log('ElevenLabs conversation ID:', conversationId)
+          if (currentCallShortIdRef.current && conversationId) {
+            await apiClient.updateCallRecording(currentCallShortIdRef.current, conversationId)
+            elevenLabsConversationIdStored = true
+            console.log('Updated call recording with ElevenLabs conversation ID:', conversationId)
+          } else {
+            console.warn('Missing callShortId or conversationId for ElevenLabs update', {
+              callShortId: currentCallShortIdRef.current,
+              conversationId,
+            })
+          }
+        } catch (e) {
+          console.error('Failed to update call recording with ElevenLabs conversation ID:', e)
+        }
+      } catch (error: any) {
+        console.error('Failed to connect ElevenLabs:', error)
+        setIsConnecting(false)
+        setIsConnected(false)
+        const msg = typeof error === 'string' ? error : error?.message || JSON.stringify(error)
+        showToast(`Failed to connect: ${msg}`, 'error')
+      }
     }
   }
 
@@ -363,6 +482,13 @@ export default function Playground() {
       } catch (error: any) {
         console.error('Failed to disconnect Vapi:', error)
       }
+    } else if (isElevenLabsAgent && elevenLabsConversationRef.current) {
+      try {
+        await elevenLabsConversationRef.current.endSession()
+        elevenLabsConversationRef.current = null
+      } catch (error: any) {
+        console.error('Failed to disconnect ElevenLabs:', error)
+      }
     }
 
     setIsConnected(false)
@@ -370,7 +496,7 @@ export default function Playground() {
   }
 
   const handleCloseModal = () => {
-    if (isConnected && retellClientRef.current) {
+    if (isConnected) {
       handleDisconnect()
     }
     setShowModal(false)
@@ -454,7 +580,7 @@ export default function Playground() {
       <div className="bg-white shadow rounded-lg">
         <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
           <div>
-            <h2 className="text-lg font-semibold text-gray-900">Playground</h2>
+            <h2 className="text-lg font-semibold text-gray-900">Agent Playground</h2>
             <p className="mt-1 text-sm text-gray-600">
               Test your voice AI agent with real-time web calls
             </p>
@@ -475,7 +601,7 @@ export default function Playground() {
           {!selectedAgent ? (
             <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
               <p className="text-sm text-yellow-800">
-                Please select an agent from the top bar to use the playground.
+                Please select an agent from the top bar to use the Agent Playground.
               </p>
             </div>
           ) : !hasTestAgent && !hasVoiceAIAgent ? (
@@ -720,6 +846,13 @@ export default function Playground() {
                                     src="/vapiai.jpg"
                                     alt="Vapi"
                                     className="h-5 w-5 object-contain"
+                                  />
+                                )}
+                                {recording.provider_platform === 'elevenlabs' && (
+                                  <img
+                                    src="/elevenlabs.jpg"
+                                    alt="ElevenLabs"
+                                    className="h-5 w-5 rounded-full object-contain"
                                   />
                                 )}
                                 <span className="text-sm text-gray-500 capitalize">
