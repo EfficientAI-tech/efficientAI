@@ -1,219 +1,74 @@
 """
 LLM service for generating text responses using various LLM providers.
+
+Uses LiteLLM as a unified gateway so every provider (OpenAI, Anthropic,
+Google, DeepSeek, Groq, Azure, AWS Bedrock, …) is accessed through a
+single interface.  LiteLLM handles message-format translation, parameter
+mapping, and endpoint selection (e.g. OpenAI Responses API vs Chat
+Completions) automatically.
 """
 
 import time
 from typing import Optional, Dict, Any, List
 from uuid import UUID
 
-from app.models.database import ModelProvider, AIProvider
+import litellm
+from loguru import logger
 from sqlalchemy.orm import Session
+
+from app.models.database import ModelProvider, AIProvider
+
+# LiteLLM will silently drop params the target provider doesn't support
+# rather than raising an error.
+litellm.drop_params = True
+
+# Map our internal ModelProvider enum to the prefix LiteLLM expects.
+_LITELLM_PROVIDER_PREFIX: Dict[str, str] = {
+    "openai": "openai",
+    "anthropic": "anthropic",
+    "google": "gemini",
+    "azure": "azure",
+    "aws": "bedrock",
+    "deepseek": "deepseek",
+    "groq": "groq",
+}
 
 
 class LLMService:
     """Service for generating text responses using various LLM providers."""
 
-    def __init__(self):
-        """Initialize LLM service."""
-        pass
-
-    def _get_ai_provider(self, provider: ModelProvider, db: Session, organization_id: UUID) -> Optional[AIProvider]:
+    def _get_ai_provider(
+        self,
+        provider: ModelProvider,
+        db: Session,
+        organization_id: UUID,
+    ) -> Optional[AIProvider]:
         """Get AI provider configuration from database."""
         from sqlalchemy import func
-        
-        # Handle both string and enum comparisons (database might have uppercase or lowercase)
-        provider_value = provider.value if hasattr(provider, 'value') else provider
-        
-        # Try exact match first
+
+        provider_value = provider.value if hasattr(provider, "value") else provider
+
         ai_provider = db.query(AIProvider).filter(
             AIProvider.provider == provider_value,
             AIProvider.organization_id == organization_id,
-            AIProvider.is_active == True
+            AIProvider.is_active == True,
         ).first()
-        
-        # If not found, try case-insensitive match
+
         if not ai_provider:
             ai_provider = db.query(AIProvider).filter(
                 func.lower(AIProvider.provider) == provider_value.lower(),
                 AIProvider.organization_id == organization_id,
-                AIProvider.is_active == True
+                AIProvider.is_active == True,
             ).first()
-        
+
         return ai_provider
 
-    def _generate_with_openai(
-        self,
-        messages: List[Dict[str, str]],
-        model: str,
-        api_key: str,
-        temperature: Optional[float] = 0.7,
-        max_tokens: Optional[int] = None,
-        config: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        """Generate response using OpenAI API."""
-        try:
-            from openai import OpenAI
-            
-            client = OpenAI(api_key=api_key)
-            
-            # Prepare request parameters
-            request_params = {
-                "model": model,
-                "messages": messages,
-                "temperature": temperature,
-            }
-            
-            if max_tokens:
-                request_params["max_tokens"] = max_tokens
-            
-            # Add any additional config
-            if config:
-                request_params.update(config)
-            
-            response = client.chat.completions.create(**request_params)
-            
-            return {
-                "text": response.choices[0].message.content,
-                "model": model,
-                "usage": {
-                    "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
-                    "completion_tokens": response.usage.completion_tokens if response.usage else 0,
-                    "total_tokens": response.usage.total_tokens if response.usage else 0,
-                },
-                "raw_response": response
-            }
-        except ImportError:
-            raise RuntimeError("OpenAI library not installed. Install with: pip install openai")
-        except Exception as e:
-            import traceback
-            error_details = traceback.format_exc()
-            raise RuntimeError(f"OpenAI LLM generation failed: {str(e)}\nDetails: {error_details}")
-
-    def _generate_with_anthropic(
-        self,
-        messages: List[Dict[str, str]],
-        model: str,
-        api_key: str,
-        temperature: Optional[float] = 0.7,
-        max_tokens: Optional[int] = None,
-        config: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        """Generate response using Anthropic Claude API."""
-        try:
-            import anthropic
-            
-            client = anthropic.Anthropic(api_key=api_key)
-            
-            # Convert messages format (Anthropic uses different format)
-            system_message = None
-            conversation_messages = []
-            
-            for msg in messages:
-                if msg["role"] == "system":
-                    system_message = msg["content"]
-                else:
-                    conversation_messages.append({
-                        "role": msg["role"],
-                        "content": msg["content"]
-                    })
-            
-            # Prepare request parameters
-            request_params = {
-                "model": model,
-                "messages": conversation_messages,
-                "temperature": temperature,
-            }
-            
-            if system_message:
-                request_params["system"] = system_message
-            
-            if max_tokens:
-                request_params["max_tokens"] = max_tokens
-            
-            # Add any additional config
-            if config:
-                request_params.update(config)
-            
-            response = client.messages.create(**request_params)
-            
-            return {
-                "text": response.content[0].text if response.content else "",
-                "model": model,
-                "usage": {
-                    "prompt_tokens": response.usage.input_tokens if response.usage else 0,
-                    "completion_tokens": response.usage.output_tokens if response.usage else 0,
-                    "total_tokens": (response.usage.input_tokens + response.usage.output_tokens) if response.usage else 0,
-                },
-                "raw_response": response
-            }
-        except ImportError:
-            raise RuntimeError("Anthropic library not installed. Install with: pip install anthropic")
-        except Exception as e:
-            import traceback
-            error_details = traceback.format_exc()
-            raise RuntimeError(f"Anthropic LLM generation failed: {str(e)}\nDetails: {error_details}")
-
-    def _generate_with_google(
-        self,
-        messages: List[Dict[str, str]],
-        model: str,
-        api_key: str,
-        temperature: Optional[float] = 0.7,
-        max_tokens: Optional[int] = None,
-        config: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        """Generate response using Google Gemini API."""
-        try:
-            import google.generativeai as genai
-            
-            genai.configure(api_key=api_key)
-            
-            # Convert messages to Gemini format
-            # Gemini uses a different message format
-            system_instruction = None
-            conversation_history = []
-            
-            for msg in messages:
-                if msg["role"] == "system":
-                    system_instruction = msg["content"]
-                else:
-                    conversation_history.append({
-                        "role": msg["role"],
-                        "parts": [msg["content"]]
-                    })
-            
-            # Create model instance
-            model_instance = genai.GenerativeModel(
-                model_name=model,
-                system_instruction=system_instruction
-            )
-            
-            # Generate response
-            response = model_instance.generate_content(
-                conversation_history[-1]["parts"][0] if conversation_history else "",
-                generation_config={
-                    "temperature": temperature,
-                    "max_output_tokens": max_tokens,
-                    **(config or {})
-                }
-            )
-            
-            return {
-                "text": response.text,
-                "model": model,
-                "usage": {
-                    "prompt_tokens": response.usage_metadata.prompt_token_count if hasattr(response, 'usage_metadata') else 0,
-                    "completion_tokens": response.usage_metadata.candidates_token_count if hasattr(response, 'usage_metadata') else 0,
-                    "total_tokens": response.usage_metadata.total_token_count if hasattr(response, 'usage_metadata') else 0,
-                },
-                "raw_response": response
-            }
-        except ImportError:
-            raise RuntimeError("Google Generative AI library not installed. Install with: pip install google-generativeai")
-        except Exception as e:
-            import traceback
-            error_details = traceback.format_exc()
-            raise RuntimeError(f"Google LLM generation failed: {str(e)}\nDetails: {error_details}")
+    @staticmethod
+    def _litellm_model_name(provider: ModelProvider, model: str) -> str:
+        """Build the ``provider/model`` string that LiteLLM expects."""
+        provider_value = provider.value if hasattr(provider, "value") else str(provider)
+        prefix = _LITELLM_PROVIDER_PREFIX.get(provider_value.lower(), provider_value.lower())
+        return f"{prefix}/{model}"
 
     def generate_response(
         self,
@@ -224,54 +79,74 @@ class LLMService:
         db: Session,
         temperature: Optional[float] = 0.7,
         max_tokens: Optional[int] = None,
-        config: Optional[Dict[str, Any]] = None
+        config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """
-        Generate a text response using the specified LLM.
-        
-        Args:
-            messages: List of message dicts with 'role' and 'content' keys
-            llm_provider: LLM provider to use
-            llm_model: LLM model name
-            organization_id: Organization ID
-            db: Database session
-            temperature: Temperature for generation (0.0-2.0)
-            max_tokens: Maximum tokens to generate
-            config: Additional provider-specific configuration
-            
-        Returns:
-            Dictionary with generated text and metadata
+        """Generate a text response using the specified LLM via LiteLLM.
+
+        The public interface (parameters and return shape) is identical to
+        the previous hand-rolled implementation, so all existing callers
+        continue to work without changes.
         """
         start_time = time.time()
-        
-        # Get provider API key
+
+        # --- resolve API key from database --------------------------------
         ai_provider = self._get_ai_provider(llm_provider, db, organization_id)
         if not ai_provider:
-            raise RuntimeError(f"AI provider {llm_provider} not configured for this organization.")
-        
-        # Decrypt API key
+            raise RuntimeError(
+                f"AI provider {llm_provider} not configured for this organization."
+            )
+
         from app.core.encryption import decrypt_api_key
+
         try:
             api_key = decrypt_api_key(ai_provider.api_key)
         except Exception as e:
-            raise RuntimeError(f"Failed to decrypt API key for provider {llm_provider}: {str(e)}")
-        
-        # Generate based on provider
-        if llm_provider == ModelProvider.OPENAI:
-            result = self._generate_with_openai(messages, llm_model, api_key, temperature, max_tokens, config)
-        elif llm_provider == ModelProvider.ANTHROPIC:
-            result = self._generate_with_anthropic(messages, llm_model, api_key, temperature, max_tokens, config)
-        elif llm_provider == ModelProvider.GOOGLE:
-            result = self._generate_with_google(messages, llm_model, api_key, temperature, max_tokens, config)
-        else:
-            raise NotImplementedError(f"LLM provider {llm_provider} not yet implemented")
-        
-        processing_time = time.time() - start_time
-        result["processing_time"] = processing_time
-        
+            raise RuntimeError(
+                f"Failed to decrypt API key for provider {llm_provider}: {e}"
+            )
+
+        # --- call LiteLLM --------------------------------------------------
+        model_str = self._litellm_model_name(llm_provider, llm_model)
+
+        call_kwargs: Dict[str, Any] = {
+            "model": model_str,
+            "messages": messages,
+            "api_key": api_key,
+            "temperature": temperature,
+        }
+        if max_tokens:
+            call_kwargs["max_tokens"] = max_tokens
+        if config:
+            call_kwargs.update(config)
+
+        try:
+            response = litellm.completion(**call_kwargs)
+        except Exception as e:
+            import traceback
+
+            tb = traceback.format_exc()
+            logger.error(f"[LLMService] LiteLLM call failed ({model_str}): {e}")
+            raise RuntimeError(
+                f"LLM generation failed for {model_str}: {e}\nDetails: {tb}"
+            )
+
+        # --- normalise response into our standard shape --------------------
+        text = response.choices[0].message.content if response.choices else ""
+        usage = getattr(response, "usage", None)
+
+        result: Dict[str, Any] = {
+            "text": text or "",
+            "model": llm_model,
+            "usage": {
+                "prompt_tokens": getattr(usage, "prompt_tokens", 0) if usage else 0,
+                "completion_tokens": getattr(usage, "completion_tokens", 0) if usage else 0,
+                "total_tokens": getattr(usage, "total_tokens", 0) if usage else 0,
+            },
+            "raw_response": response,
+            "processing_time": time.time() - start_time,
+        }
         return result
 
 
 # Singleton instance
 llm_service = LLMService()
-

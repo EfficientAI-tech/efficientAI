@@ -35,7 +35,15 @@
     "provider": "openai",
     "model_type": "llm"
   },
+  "gpt-5": {
+    "provider": "openai",
+    "model_type": "llm"
+  },
   "gpt-5-mini": {
+    "provider": "openai",
+    "model_type": "llm"
+  },
+  "gpt-5-nano": {
     "provider": "openai",
     "model_type": "llm"
   },
@@ -51,6 +59,14 @@
     "provider": "openai",
     "model_type": "llm",
     "description": "Most capable agentic coding model"
+  },
+  "gpt-5.4": {
+    "provider": "openai",
+    "model_type": "llm"
+  },
+  "gpt-5.4-pro": {
+    "provider": "openai",
+    "model_type": "llm"
   },
   "tts-1": {
     "provider": "openai",

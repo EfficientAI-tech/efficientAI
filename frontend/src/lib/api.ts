@@ -254,6 +254,17 @@ class ApiClient {
     return response.data
   }
 
+  async generateAgentDescription(data: {
+    description: string
+    tone?: string
+    format_style?: string
+    provider?: string
+    model?: string
+  }): Promise<{ content: string; provider: string; model: string }> {
+    const response = await this.client.post('/api/v1/agents/generate-description', data)
+    return response.data
+  }
+
   // Personas endpoints
   async listPersonas(skip = 0, limit = 100): Promise<any[]> {
     const response = await this.client.get('/api/v1/personas', {

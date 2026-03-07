@@ -1,13 +1,29 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Phone, Trash2, X, AlertCircle } from 'lucide-react'
+import { Plus, Phone, Trash2, X, AlertCircle, Eye, Code, Sparkles, Loader2, Bot } from 'lucide-react'
 import { apiClient } from '../lib/api'
 import { format } from 'date-fns'
+import ReactMarkdown from 'react-markdown'
 import Button from '../components/Button'
 import { useAgentStore } from '../store/agentStore'
 import { useToast } from '../hooks/useToast'
 import { TestAgentConversation } from '../types/api'
+
+interface AIProvider {
+  id: string
+  provider: string
+  name: string | null
+  is_active: boolean
+}
+
+const PROVIDER_LABELS: Record<string, string> = {
+  openai: 'OpenAI',
+  anthropic: 'Anthropic',
+  google: 'Google',
+  deepseek: 'DeepSeek',
+  groq: 'Groq',
+}
 
 interface Agent {
   id: string
@@ -37,6 +53,13 @@ export default function Agents() {
   const [showConversationsList, setShowConversationsList] = useState(false)
   const [deleteDependencies, setDeleteDependencies] = useState<Record<string, number> | null>(null)
   const [selectedAgents, setSelectedAgents] = useState<Set<string>>(new Set())
+  const [descriptionEditorMode, setDescriptionEditorMode] = useState<'write' | 'preview'>('write')
+  const [showAIGeneratePanel, setShowAIGeneratePanel] = useState(false)
+  const [aiDescription, setAiDescription] = useState('')
+  const [aiTone, setAiTone] = useState('professional')
+  const [aiFormat, setAiFormat] = useState('structured')
+  const [aiProvider, setAiProvider] = useState('')
+  const [aiModel, setAiModel] = useState('')
   const [formData, setFormData] = useState({
     name: '',
     phone_number: '',
@@ -64,6 +87,40 @@ export default function Agents() {
     queryFn: () => apiClient.listIntegrations(),
   })
 
+  const { data: aiProviders = [] } = useQuery<AIProvider[]>({
+    queryKey: ['ai-providers'],
+    queryFn: () => apiClient.listAIProviders(),
+  })
+
+  const { data: modelOptions } = useQuery({
+    queryKey: ['model-options', aiProvider],
+    queryFn: () => apiClient.getModelOptions(aiProvider),
+    enabled: !!aiProvider,
+  })
+
+  const llmModels = modelOptions?.llm || []
+
+  useEffect(() => {
+    if (aiProvider && llmModels.length > 0 && !llmModels.includes(aiModel)) {
+      setAiModel(llmModels[0])
+    }
+  }, [aiProvider, llmModels, aiModel])
+
+  const generateDescriptionMutation = useMutation({
+    mutationFn: (data: { description: string; tone?: string; format_style?: string; provider?: string; model?: string }) =>
+      apiClient.generateAgentDescription(data),
+    onSuccess: (data) => {
+      setFormData(prev => ({ ...prev, description: data.content }))
+      setShowAIGeneratePanel(false)
+      setAiDescription('')
+      setDescriptionEditorMode('preview')
+      showToast('Description generated successfully!', 'success')
+    },
+    onError: (err: any) => {
+      showToast(err?.response?.data?.detail || 'Failed to generate description with AI', 'error')
+    },
+  })
+
   const resetForm = () => {
     setFormData({
       name: '',
@@ -76,6 +133,13 @@ export default function Agents() {
       voice_ai_integration_id: '',
       voice_ai_agent_id: ''
     })
+    setDescriptionEditorMode('write')
+    setShowAIGeneratePanel(false)
+    setAiDescription('')
+    setAiTone('professional')
+    setAiFormat('structured')
+    setAiProvider('')
+    setAiModel('')
   }
 
   const handleSelectAgent = (agentId: string, checked: boolean) => {
@@ -552,17 +616,190 @@ export default function Agents() {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Description *
-                </label>
-                <textarea
-                  required
-                  value={formData.description}
-                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                  rows={3}
-                  placeholder="Describe the agent's purpose, behavior, and expected interactions (at least 10 words)"
-                />
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-sm font-medium text-gray-700">
+                    Description *
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowAIGeneratePanel(!showAIGeneratePanel)}
+                      disabled={generateDescriptionMutation.isPending}
+                      className={`inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-lg border transition-colors ${
+                        showAIGeneratePanel
+                          ? 'bg-amber-100 text-amber-800 border-amber-300'
+                          : 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'
+                      }`}
+                    >
+                      {generateDescriptionMutation.isPending ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <Sparkles className="h-3 w-3" />
+                      )}
+                      {generateDescriptionMutation.isPending ? 'Generating...' : 'AI Generate'}
+                    </button>
+                    <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
+                      <button
+                        type="button"
+                        onClick={() => setDescriptionEditorMode('write')}
+                        className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors ${
+                          descriptionEditorMode === 'write'
+                            ? 'bg-white text-gray-900 shadow-sm'
+                            : 'text-gray-500 hover:text-gray-700'
+                        }`}
+                      >
+                        <Code className="h-3 w-3" />
+                        Write
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDescriptionEditorMode('preview')}
+                        className={`inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-md transition-colors ${
+                          descriptionEditorMode === 'preview'
+                            ? 'bg-white text-gray-900 shadow-sm'
+                            : 'text-gray-500 hover:text-gray-700'
+                        }`}
+                      >
+                        <Eye className="h-3 w-3" />
+                        Preview
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {showAIGeneratePanel && (
+                  <div className="mb-2 p-3 bg-amber-50 rounded-lg border border-amber-200">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Sparkles className="h-4 w-4 text-amber-600" />
+                      <span className="text-sm font-medium text-amber-900">Generate Description with AI</span>
+                    </div>
+                    <p className="text-xs text-amber-700 mb-3">
+                      Describe what this agent should do and AI will generate a rich markdown description.
+                    </p>
+                    <textarea
+                      value={aiDescription}
+                      onChange={(e) => setAiDescription(e.target.value)}
+                      placeholder="e.g., A customer support agent that handles refund requests, tracks orders, and escalates complex issues..."
+                      rows={3}
+                      className="w-full px-3 py-2 text-sm border border-amber-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white mb-2"
+                    />
+                    <div className="grid grid-cols-2 gap-3 mb-2">
+                      <div>
+                        <label className="block text-xs font-medium text-gray-600 mb-1">Tone</label>
+                        <select
+                          value={aiTone}
+                          onChange={(e) => setAiTone(e.target.value)}
+                          className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white"
+                        >
+                          <option value="professional">Professional</option>
+                          <option value="casual">Casual / Friendly</option>
+                          <option value="technical">Technical</option>
+                          <option value="concise">Concise / Direct</option>
+                          <option value="detailed">Detailed / Thorough</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-gray-600 mb-1">Format Style</label>
+                        <select
+                          value={aiFormat}
+                          onChange={(e) => setAiFormat(e.target.value)}
+                          className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white"
+                        >
+                          <option value="structured">Structured (sections & bullet points)</option>
+                          <option value="narrative">Narrative (flowing text)</option>
+                          <option value="template">Template (with placeholders)</option>
+                          <option value="step-by-step">Step-by-step Instructions</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div className="flex gap-3 mb-2">
+                      <div className="flex-1">
+                        <label className="block text-xs font-medium text-gray-600 mb-1">
+                          <Bot className="w-3 h-3 inline mr-1" />
+                          LLM Provider
+                        </label>
+                        <select
+                          value={aiProvider}
+                          onChange={(e) => { setAiProvider(e.target.value); setAiModel('') }}
+                          className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white"
+                        >
+                          <option value="">Auto-detect (use first available)</option>
+                          {aiProviders.filter((p) => p.is_active).map((p) => (
+                            <option key={p.id} value={p.provider}>
+                              {PROVIDER_LABELS[p.provider] || p.provider}
+                              {p.name ? ` — ${p.name}` : ''}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="flex-1">
+                        <label className="block text-xs font-medium text-gray-600 mb-1">Model</label>
+                        <select
+                          value={aiModel}
+                          onChange={(e) => setAiModel(e.target.value)}
+                          disabled={!aiProvider}
+                          className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 bg-white disabled:bg-gray-50 disabled:text-gray-400"
+                        >
+                          {!aiProvider ? (
+                            <option value="">Select a provider first</option>
+                          ) : llmModels.length === 0 ? (
+                            <option value="">Loading models...</option>
+                          ) : (
+                            llmModels.map((m: string) => (
+                              <option key={m} value={m}>{m}</option>
+                            ))
+                          )}
+                        </select>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 justify-end">
+                      <button
+                        type="button"
+                        onClick={() => setShowAIGeneratePanel(false)}
+                        className="px-3 py-1.5 text-xs font-medium text-gray-600 hover:text-gray-800"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => generateDescriptionMutation.mutate({
+                          description: aiDescription,
+                          tone: aiTone,
+                          format_style: aiFormat,
+                          ...(aiProvider ? { provider: aiProvider } : {}),
+                          ...(aiModel ? { model: aiModel } : {}),
+                        })}
+                        disabled={generateDescriptionMutation.isPending || !aiDescription.trim()}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-amber-600 text-white rounded-lg hover:bg-amber-700 disabled:opacity-50"
+                      >
+                        {generateDescriptionMutation.isPending ? (
+                          <><Loader2 className="h-3 w-3 animate-spin" /> Generating...</>
+                        ) : (
+                          <><Sparkles className="h-3 w-3" /> Generate</>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {descriptionEditorMode === 'write' ? (
+                  <textarea
+                    required
+                    value={formData.description}
+                    onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent font-mono text-sm"
+                    rows={6}
+                    placeholder="Describe the agent's purpose, behavior, and expected interactions... Markdown is supported (at least 10 words)"
+                  />
+                ) : (
+                  <div className="min-h-[150px] max-h-[300px] overflow-y-auto border border-gray-300 rounded-lg p-4 prose prose-sm max-w-none prose-headings:text-gray-900 prose-p:text-gray-700 prose-code:text-gray-800 prose-code:bg-gray-100 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-pre:bg-gray-900 prose-pre:text-gray-100">
+                    {formData.description ? (
+                      <ReactMarkdown>{formData.description}</ReactMarkdown>
+                    ) : (
+                      <p className="text-gray-400 italic">Nothing to preview yet...</p>
+                    )}
+                  </div>
+                )}
                 <p className={`mt-1 text-xs ${formData.description.trim().split(/\s+/).filter(Boolean).length >= 10 ? 'text-green-600' : 'text-gray-500'}`}>
                   {formData.description.trim().split(/\s+/).filter(Boolean).length}/10 words minimum
                 </p>

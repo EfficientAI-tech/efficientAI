@@ -92,11 +92,11 @@ def _get_llm_provider_and_model(
         ).first()
         if ai_prov:
             default_models = {
-                ModelProvider.OPENAI: "gpt-4o-mini",
+                ModelProvider.OPENAI: "gpt-5-mini",
                 ModelProvider.ANTHROPIC: "claude-sonnet-4-20250514",
                 ModelProvider.GOOGLE: "gemini-2.0-flash",
             }
-            return prov, model or default_models.get(prov, "gpt-4o-mini")
+            return prov, model or default_models.get(prov, "gpt-5-mini")
 
     raise HTTPException(
         400,
