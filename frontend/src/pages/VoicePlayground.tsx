@@ -43,6 +43,7 @@ import {
     ArrowUpDown,
     Plus,
     Save,
+    Download,
 } from 'lucide-react'
 
 // ============ TYPES ============
@@ -144,6 +145,19 @@ interface CustomTTSVoice {
     accent: string
     description?: string | null
     is_custom: boolean
+    created_at?: string | null
+    updated_at?: string | null
+}
+
+interface TTSReportJob {
+    id: string
+    comparison_id: string
+    status: 'pending' | 'processing' | 'completed' | 'failed' | string
+    format: string
+    filename?: string | null
+    error_message?: string | null
+    task_id?: string | null
+    download_url?: string | null
     created_at?: string | null
     updated_at?: string | null
 }
@@ -484,6 +498,25 @@ export default function VoicePlayground() {
         enabled: !!viewingPastId,
     })
 
+    // --- Report generation state ---
+    const [reportJobByComparisonId, setReportJobByComparisonId] = useState<Record<string, string>>({})
+    const activeReportJobId = comparison ? reportJobByComparisonId[comparison.id] : undefined
+    const viewedReportJobId = viewedComparison ? reportJobByComparisonId[viewedComparison.id] : undefined
+
+    const { data: activeReportJob } = useQuery<TTSReportJob>({
+        queryKey: ['tts-report-job', activeReportJobId],
+        queryFn: () => apiClient.getTTSComparisonReportJob(activeReportJobId!),
+        enabled: !!activeReportJobId,
+        refetchInterval: 4000,
+    })
+
+    const { data: viewedReportJob } = useQuery<TTSReportJob>({
+        queryKey: ['tts-report-job', viewedReportJobId],
+        queryFn: () => apiClient.getTTSComparisonReportJob(viewedReportJobId!),
+        enabled: !!viewedReportJobId,
+        refetchInterval: 4000,
+    })
+
     // Transition from progress to blind-test or results when generation/evaluation completes
     useEffect(() => {
         if (!comparison) return
@@ -561,6 +594,38 @@ export default function VoicePlayground() {
             setStep('results')
         },
     })
+
+    const downloadReportMutation = useMutation({
+        mutationFn: ({ comparisonId }: { comparisonId: string }) =>
+            apiClient.downloadTTSComparisonReport(comparisonId),
+        onSuccess: (blob, vars) => {
+            const filename = `voice-playground-report-${vars.comparisonId.slice(0, 8)}.pdf`
+            const url = window.URL.createObjectURL(blob)
+            const link = document.createElement('a')
+            link.href = url
+            link.setAttribute('download', filename)
+            document.body.appendChild(link)
+            link.click()
+            link.remove()
+            window.URL.revokeObjectURL(url)
+        },
+    })
+
+    const createReportJobMutation = useMutation({
+        mutationFn: ({ comparisonId }: { comparisonId: string }) =>
+            apiClient.createTTSComparisonReportJob(comparisonId),
+        onSuccess: (job) => {
+            setReportJobByComparisonId((prev) => ({
+                ...prev,
+                [job.comparison_id]: job.id,
+            }))
+        },
+    })
+
+    function openAsyncReport(reportJob?: TTSReportJob) {
+        if (!reportJob?.download_url) return
+        window.open(reportJob.download_url, '_blank', 'noopener,noreferrer')
+    }
 
     // --- Build blind test pairs ---
     function buildBlindPairs(comp: TTSComparison) {
@@ -1372,7 +1437,49 @@ export default function VoicePlayground() {
                                     {comparison.num_runs > 1 && <> &middot; {comparison.num_runs} runs</>}
                                 </p>
                             </div>
-                            <StatusBadge status={comparison.status} />
+                            <div className="flex flex-col items-end gap-2">
+                                <StatusBadge status={comparison.status} />
+                                <div className="flex items-center gap-2">
+                                    <Button
+                                        variant="secondary"
+                                        size="sm"
+                                        leftIcon={downloadReportMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                                        onClick={() => downloadReportMutation.mutate({ comparisonId: comparison.id })}
+                                        disabled={comparison.status !== 'completed' || downloadReportMutation.isPending}
+                                    >
+                                        Download PDF
+                                    </Button>
+                                    <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        leftIcon={createReportJobMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileText className="w-4 h-4" />}
+                                        onClick={() => createReportJobMutation.mutate({ comparisonId: comparison.id })}
+                                        disabled={createReportJobMutation.isPending}
+                                    >
+                                        Generate Async
+                                    </Button>
+                                    {activeReportJob?.status === 'completed' && activeReportJob.download_url && (
+                                        <Button
+                                            variant="outline"
+                                            size="sm"
+                                            leftIcon={<Download className="w-4 h-4" />}
+                                            onClick={() => openAsyncReport(activeReportJob)}
+                                        >
+                                            Open Async PDF
+                                        </Button>
+                                    )}
+                                </div>
+                                {activeReportJob && activeReportJob.status !== 'completed' && activeReportJob.status !== 'failed' && (
+                                    <p className="text-xs text-gray-500">
+                                        Async report: {activeReportJob.status}
+                                    </p>
+                                )}
+                                {activeReportJob?.status === 'failed' && (
+                                    <p className="text-xs text-red-600">
+                                        Async report failed: {activeReportJob.error_message || 'unknown error'}
+                                    </p>
+                                )}
+                            </div>
                         </div>
 
                         {/* Winner Banner */}
@@ -1702,7 +1809,49 @@ export default function VoicePlayground() {
                                                     {viewedComparison.num_runs > 1 && <> &middot; {viewedComparison.num_runs} runs</>}
                                                 </p>
                                             </div>
-                                            <StatusBadge status={viewedComparison.status} />
+                                            <div className="flex flex-col items-end gap-2">
+                                                <StatusBadge status={viewedComparison.status} />
+                                                <div className="flex items-center gap-2">
+                                                    <Button
+                                                        variant="secondary"
+                                                        size="sm"
+                                                        leftIcon={downloadReportMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                                                        onClick={() => downloadReportMutation.mutate({ comparisonId: viewedComparison.id })}
+                                                        disabled={viewedComparison.status !== 'completed' || downloadReportMutation.isPending}
+                                                    >
+                                                        Download PDF
+                                                    </Button>
+                                                    <Button
+                                                        variant="ghost"
+                                                        size="sm"
+                                                        leftIcon={createReportJobMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileText className="w-4 h-4" />}
+                                                        onClick={() => createReportJobMutation.mutate({ comparisonId: viewedComparison.id })}
+                                                        disabled={createReportJobMutation.isPending}
+                                                    >
+                                                        Generate Async
+                                                    </Button>
+                                                    {viewedReportJob?.status === 'completed' && viewedReportJob.download_url && (
+                                                        <Button
+                                                            variant="outline"
+                                                            size="sm"
+                                                            leftIcon={<Download className="w-4 h-4" />}
+                                                            onClick={() => openAsyncReport(viewedReportJob)}
+                                                        >
+                                                            Open Async PDF
+                                                        </Button>
+                                                    )}
+                                                </div>
+                                                {viewedReportJob && viewedReportJob.status !== 'completed' && viewedReportJob.status !== 'failed' && (
+                                                    <p className="text-xs text-gray-500">
+                                                        Async report: {viewedReportJob.status}
+                                                    </p>
+                                                )}
+                                                {viewedReportJob?.status === 'failed' && (
+                                                    <p className="text-xs text-red-600">
+                                                        Async report failed: {viewedReportJob.error_message || 'unknown error'}
+                                                    </p>
+                                                )}
+                                            </div>
                                         </div>
 
                                         {/* Winner Banner */}

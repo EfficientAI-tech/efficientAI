@@ -898,31 +898,108 @@ def generate_tts_comparison_task(self, comparison_id: str):
 
 
 def _compute_wer_cer(ground_truth: str, predicted: str):
-    """Compute WER and CER between ground truth and predicted text.
+    """Compute raw and normalized WER/CER between reference and ASR text.
 
-    Returns (wer_score, cer_score) or (None, None) on failure.
+    Normalized scores reduce false penalties on numeric/currency phrasing
+    differences (for example "$1,234.56" vs "one thousand two hundred...").
     """
+    import re
     import string
     try:
         from jiwer import wer, cer
     except ImportError:
         logger.warning("[TTS Eval] jiwer not installed – skipping WER/CER")
-        return None, None
+        return {
+            "raw_wer": None,
+            "raw_cer": None,
+            "normalized_wer": None,
+            "normalized_cer": None,
+        }
 
-    punct_table = str.maketrans("", "", string.punctuation)
-    ref = ground_truth.lower().translate(punct_table).strip()
-    hyp = predicted.lower().translate(punct_table).strip()
+    number_words = {
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+        "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+        "seventeen", "eighteen", "nineteen", "twenty", "thirty", "forty", "fifty",
+        "sixty", "seventy", "eighty", "ninety", "hundred", "thousand", "million",
+        "billion", "trillion", "point", "and",
+    }
+    currency_words = {
+        "dollar", "dollars", "usd", "cent", "cents", "rupee", "rupees", "inr",
+        "euro", "euros", "eur", "pound", "pounds", "gbp",
+    }
+
+    def _is_numeric_token(token: str) -> bool:
+        return bool(re.fullmatch(r"\d+(?:\.\d+)?", token))
+
+    def _normalize_base(text: str) -> str:
+        punct_table = str.maketrans("", "", string.punctuation)
+        return text.lower().translate(punct_table).strip()
+
+    def _normalize_entities(text: str) -> str:
+        tokens = _normalize_base(text).split()
+        normalized_tokens = []
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
+            is_entity_token = (
+                _is_numeric_token(token)
+                or token in number_words
+                or token in currency_words
+            )
+            if not is_entity_token:
+                normalized_tokens.append(token)
+                i += 1
+                continue
+
+            j = i
+            has_currency = token in currency_words
+            while j < len(tokens):
+                t = tokens[j]
+                if _is_numeric_token(t) or t in number_words or t in currency_words:
+                    if t in currency_words:
+                        has_currency = True
+                    j += 1
+                    continue
+                break
+
+            normalized_tokens.append("<amount>" if has_currency else "<num>")
+            i = j
+
+        return " ".join(normalized_tokens)
+    ref = _normalize_base(ground_truth)
+    hyp = _normalize_base(predicted)
 
     if not ref:
-        return None, None
+        return {
+            "raw_wer": None,
+            "raw_cer": None,
+            "normalized_wer": None,
+            "normalized_cer": None,
+        }
 
     try:
-        wer_score = round(wer(ref, hyp), 4)
-        cer_score = round(cer(ref, hyp), 4)
-        return wer_score, cer_score
+        raw_wer = round(wer(ref, hyp), 4)
+        raw_cer = round(cer(ref, hyp), 4)
+
+        norm_ref = _normalize_entities(ground_truth)
+        norm_hyp = _normalize_entities(predicted)
+        normalized_wer = round(wer(norm_ref, norm_hyp), 4) if norm_ref else None
+        normalized_cer = round(cer(norm_ref, norm_hyp), 4) if norm_ref else None
+
+        return {
+            "raw_wer": raw_wer,
+            "raw_cer": raw_cer,
+            "normalized_wer": normalized_wer,
+            "normalized_cer": normalized_cer,
+        }
     except Exception as e:
         logger.warning(f"[TTS Eval] WER/CER calculation error: {e}")
-        return None, None
+        return {
+            "raw_wer": None,
+            "raw_cer": None,
+            "normalized_wer": None,
+            "normalized_cer": None,
+        }
 
 
 # Singleton for the NeMo ASR model (loaded once per worker process)
@@ -1051,13 +1128,29 @@ def evaluate_tts_comparison_task(self, comparison_id: str):
                 if nemo_model is not None and sample.text:
                     asr_transcript = _transcribe_audio_for_eval(tmp_path)
                     if asr_transcript:
-                        wer_score, cer_score = _compute_wer_cer(sample.text, asr_transcript)
-                        metrics["WER"] = wer_score
-                        metrics["CER"] = cer_score
+                        score_bundle = _compute_wer_cer(sample.text, asr_transcript)
+                        metrics["WER Raw"] = score_bundle.get("raw_wer")
+                        metrics["CER Raw"] = score_bundle.get("raw_cer")
+                        metrics["WER Normalized"] = score_bundle.get("normalized_wer")
+                        metrics["CER Normalized"] = score_bundle.get("normalized_cer")
+                        metrics["WER"] = (
+                            score_bundle.get("normalized_wer")
+                            if score_bundle.get("normalized_wer") is not None
+                            else score_bundle.get("raw_wer")
+                        )
+                        metrics["CER"] = (
+                            score_bundle.get("normalized_cer")
+                            if score_bundle.get("normalized_cer") is not None
+                            else score_bundle.get("raw_cer")
+                        )
                         metrics["ASR Transcript"] = asr_transcript
                     else:
                         metrics["WER"] = None
                         metrics["CER"] = None
+                        metrics["WER Raw"] = None
+                        metrics["CER Raw"] = None
+                        metrics["WER Normalized"] = None
+                        metrics["CER Normalized"] = None
                         metrics["ASR Transcript"] = None
 
                 sample.evaluation_metrics = metrics
@@ -1092,6 +1185,88 @@ def evaluate_tts_comparison_task(self, comparison_id: str):
             if comp:
                 comp.status = TTSComparisonStatus.FAILED.value
                 comp.error_message = f"Evaluation failed: {str(exc)[:400]}"
+                db.commit()
+        except Exception:
+            pass
+        raise self.retry(exc=exc, countdown=30)
+    finally:
+        db.close()
+
+
+@celery_app.task(name="generate_tts_report_pdf", bind=True, max_retries=1)
+def generate_tts_report_pdf_task(self, report_job_id: str):
+    """Generate a Voice Playground PDF report and store it in S3."""
+    from app.models.database import (
+        TTSComparison,
+        TTSSample,
+        TTSReportJob,
+        TTSReportJobStatus,
+    )
+    from app.services.s3_service import s3_service
+    from app.services.voice_playground_report_service import voice_playground_report_service
+
+    db = SessionLocal()
+    try:
+        report_job = db.query(TTSReportJob).filter(TTSReportJob.id == UUID(report_job_id)).first()
+        if not report_job:
+            logger.error(f"[TTS Report] Job {report_job_id} not found")
+            return {"error": "report_job_not_found"}
+
+        comparison = (
+            db.query(TTSComparison)
+            .filter(
+                TTSComparison.id == report_job.comparison_id,
+                TTSComparison.organization_id == report_job.organization_id,
+            )
+            .first()
+        )
+        if not comparison:
+            report_job.status = TTSReportJobStatus.FAILED.value
+            report_job.error_message = "Comparison not found"
+            db.commit()
+            return {"error": "comparison_not_found"}
+
+        report_job.status = TTSReportJobStatus.PROCESSING.value
+        report_job.celery_task_id = self.request.id
+        db.commit()
+
+        samples = (
+            db.query(TTSSample)
+            .filter(TTSSample.comparison_id == comparison.id)
+            .order_by(TTSSample.run_index, TTSSample.sample_index)
+            .all()
+        )
+
+        payload = voice_playground_report_service.build_payload(comparison, samples)
+        pdf_bytes = voice_playground_report_service.render_pdf(payload)
+
+        report_filename = (
+            f"voice-playground-report-{comparison.simulation_id or str(comparison.id)[:8]}.pdf"
+        )
+        s3_key = (
+            f"{s3_service.prefix}organizations/{report_job.organization_id}/voicePlayground/"
+            f"{comparison.id}/reports/{report_job.id}.pdf"
+        )
+        s3_service.upload_file_by_key(
+            file_content=pdf_bytes,
+            key=s3_key,
+            content_type="application/pdf",
+        )
+
+        report_job.status = TTSReportJobStatus.COMPLETED.value
+        report_job.filename = report_filename
+        report_job.s3_key = s3_key
+        report_job.error_message = None
+        db.commit()
+
+        return {"status": "completed", "s3_key": s3_key}
+    except Exception as exc:
+        logger.error(f"[TTS Report] Task failed: {exc}", exc_info=True)
+        try:
+            report_job = db.query(TTSReportJob).filter(TTSReportJob.id == UUID(report_job_id)).first()
+            if report_job:
+                report_job.status = TTSReportJobStatus.FAILED.value
+                report_job.error_message = str(exc)[:500]
                 db.commit()
         except Exception:
             pass
