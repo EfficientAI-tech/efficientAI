@@ -336,6 +336,63 @@ class TTSService:
             raise NotImplementedError(f"TTS provider {tts_provider} not supported")
         return handler
 
+    def _synthesize_with_murf(
+        self,
+        text: str,
+        model: str,
+        api_key: str,
+        voice: Optional[str] = None,
+        config: Optional[Dict[str, Any]] = None
+    ) -> bytes:
+        """Synthesize speech using Murf TTS API."""
+        try:
+            import requests
+            import base64
+
+            # Map internal model names to Murf model identifiers
+            model_map = {
+                "murf-falcon": "FALCON",
+                "murf-gen2": "GEN2",
+            }
+            murf_model = model_map.get(model, "GEN2")
+
+            url = "https://api.murf.ai/v1/speech/generate"
+            headers = {
+                "api-key": api_key,
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "text": text,
+                "voiceId": voice or "en-US-natalie",
+                "model": murf_model,
+                "format": "MP3",
+                "channelType": "MONO",
+                "sampleRate": 24000,
+            }
+            if config:
+                # Allow overrides like style, speed, pitch, multiNativeLocale, etc.
+                payload.update(config)
+
+            response = requests.post(url, json=payload, headers=headers, timeout=60)
+            response.raise_for_status()
+            data = response.json()
+
+            # Prefer encodedAudio (base64), fall back to audioFile (URL)
+            if data.get("encodedAudio"):
+                return base64.b64decode(data["encodedAudio"])
+            elif data.get("audioFile"):
+                audio_response = requests.get(data["audioFile"], timeout=60)
+                audio_response.raise_for_status()
+                return audio_response.content
+            else:
+                raise RuntimeError("Murf API returned no audio data")
+        except ImportError:
+            raise RuntimeError("requests library not installed. Install with: pip install requests")
+        except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            raise RuntimeError(f"Murf TTS synthesis failed: {str(e)}\nDetails: {error_details}")
+
     def synthesize(
         self,
         text: str,
@@ -346,10 +403,47 @@ class TTSService:
         voice: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None,
     ) -> bytes:
-        """Synthesize speech from text. Returns audio bytes (MP3)."""
-        api_key = self._get_api_key_for_provider(tts_provider, db, organization_id)
-        handler = self._dispatch(tts_provider)
-        audio_bytes, _ttfb = handler(text, tts_model, api_key, voice, config)
+        """
+        Synthesize speech from text.
+        
+        Args:
+            text: Text to convert to speech
+            tts_provider: TTS provider to use
+            tts_model: TTS model name
+            organization_id: Organization ID
+            db: Database session
+            voice: Voice selection (if applicable)
+            config: Additional provider-specific configuration
+            
+        Returns:
+            Audio bytes (MP3 format)
+        """
+        start_time = time.time()
+        
+        # Get provider API key
+        ai_provider = self._get_ai_provider(tts_provider, db, organization_id)
+        if not ai_provider:
+            raise RuntimeError(f"AI provider {tts_provider} not configured for this organization.")
+        
+        # Decrypt API key
+        from app.core.encryption import decrypt_api_key
+        try:
+            api_key = decrypt_api_key(ai_provider.api_key)
+        except Exception as e:
+            raise RuntimeError(f"Failed to decrypt API key for provider {tts_provider}: {str(e)}")
+        
+        # Synthesize based on provider
+        if tts_provider == ModelProvider.OPENAI:
+            audio_bytes = self._synthesize_with_openai(text, tts_model, api_key, voice, config)
+        elif tts_provider == ModelProvider.GOOGLE:
+            audio_bytes = self._synthesize_with_google(text, tts_model, api_key, voice, config)
+        elif tts_provider == ModelProvider.MURF:
+            audio_bytes = self._synthesize_with_murf(text, tts_model, api_key, voice, config)
+        else:
+            raise NotImplementedError(f"TTS provider {tts_provider} not yet implemented")
+        
+        processing_time = time.time() - start_time
+        
         return audio_bytes
 
     def synthesize_timed(

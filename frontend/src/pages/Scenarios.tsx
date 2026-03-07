@@ -6,30 +6,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import Button from '../components/Button'
 import { useToast } from '../hooks/useToast'
 import { AIProvider, ModelProvider } from '../types/api'
-
-const PROVIDER_LABELS: Record<ModelProvider, string> = {
-  [ModelProvider.OPENAI]: 'OpenAI',
-  [ModelProvider.ANTHROPIC]: 'Anthropic',
-  [ModelProvider.GOOGLE]: 'Google',
-  [ModelProvider.AZURE]: 'Azure',
-  [ModelProvider.AWS]: 'AWS',
-  [ModelProvider.DEEPGRAM]: 'Deepgram',
-  [ModelProvider.CARTESIA]: 'Cartesia',
-  [ModelProvider.ELEVENLABS]: 'ElevenLabs',
-  [ModelProvider.CUSTOM]: 'Custom',
-}
-
-const PROVIDER_LOGOS: Record<ModelProvider, string | null> = {
-  [ModelProvider.OPENAI]: '/openai-logo.png',
-  [ModelProvider.ANTHROPIC]: '/anthropic.png',
-  [ModelProvider.GOOGLE]: '/geminiai.png',
-  [ModelProvider.AZURE]: '/azureai.png',
-  [ModelProvider.AWS]: '/AWS_logo.png',
-  [ModelProvider.DEEPGRAM]: '/deepgram.png',
-  [ModelProvider.CARTESIA]: '/cartesia.jpg',
-  [ModelProvider.ELEVENLABS]: '/elevenlabs.jpg',
-  [ModelProvider.CUSTOM]: null,
-}
+import { getProviderLabel, getProviderLogo } from '../config/providers'
 
 interface Scenario {
   id: string
@@ -68,7 +45,7 @@ export default function Scenarios() {
     description: '',
     required_info: {} as Record<string, string>,
   })
-  
+
   // For Generate from Prompt
   const [selectedAIProvider, setSelectedAIProvider] = useState<ModelProvider | null>(null)
   const [selectedModel, setSelectedModel] = useState<string>('')
@@ -78,7 +55,7 @@ export default function Scenarios() {
   const [showProviderDropdown, setShowProviderDropdown] = useState(false)
   const providerDropdownRef = useRef<HTMLDivElement>(null)
   const chatEndRef = useRef<HTMLDivElement>(null)
-  
+
   // For Generate from Call
   const [callData, setCallData] = useState('')
 
@@ -141,7 +118,7 @@ export default function Scenarios() {
     // Only scenarios that are in the originalDefaults list should be in defaults
     // Everything else (including user-created scenarios with default names) goes to userCreated
     const originalDefaultIds = new Set(originalDefaults.map(s => s.id))
-    
+
     for (const scenario of scenarios) {
       if (originalDefaultIds.has(scenario.id)) {
         defaults.push(scenario)
@@ -207,33 +184,33 @@ export default function Scenarios() {
     // Get the last assistant response
     const lastResponse = chatHistory.filter(msg => msg.role === 'assistant').pop()
     const firstPrompt = chatHistory.find(msg => msg.role === 'user')?.content || ''
-    
+
     if (!lastResponse) {
       showToast('Please generate a response first', 'error')
       return
     }
-    
+
     // Extract scenario name from first prompt or use a default
-    const scenarioName = firstPrompt.length > 0 
+    const scenarioName = firstPrompt.length > 0
       ? firstPrompt.substring(0, 50).replace(/\n/g, ' ').trim()
       : 'Generated Scenario'
-    
+
     // Use the full conversation or just the last response as description
     // Option 1: Use just the last assistant response
     const description = lastResponse.content
-    
+
     // Option 2: Use full conversation (uncomment if preferred)
     // const fullConversation = chatHistory.map(msg => 
     //   `${msg.role === 'user' ? 'User' : 'Assistant'}: ${msg.content}`
     // ).join('\n\n')
     // const description = fullConversation
-    
+
     const scenarioData = {
       name: scenarioName.length > 0 ? scenarioName : 'Generated Scenario',
       description: description,
       required_info: {},
     }
-    
+
     // Pre-fill the form and switch to custom mode for review
     setFormData({
       name: scenarioData.name,
@@ -338,13 +315,13 @@ export default function Scenarios() {
       showToast('Please select a model', 'error')
       return
     }
-    
+
     // Add user message to chat history
     const userMessage = { role: 'user' as const, content: currentPrompt.trim() }
     const updatedHistory = [...chatHistory, userMessage]
     setChatHistory(updatedHistory)
     setCurrentPrompt('')
-    
+
     // Generate the response
     setIsGenerating(true)
     try {
@@ -353,14 +330,14 @@ export default function Scenarios() {
         role: msg.role,
         content: msg.content
       }))
-      
+
       const response = await apiClient.chatCompletion({
         messages,
         provider: selectedAIProvider,
         model: selectedModel,
         temperature: 0.7,
       })
-      
+
       // Add assistant response to chat history
       const assistantMessage = { role: 'assistant' as const, content: response.text }
       setChatHistory([...updatedHistory, assistantMessage])
@@ -383,7 +360,7 @@ export default function Scenarios() {
     const nameToUse = isDefaultName && !scenario.name.includes('(Copy)') && !scenario.name.includes('(Clone)')
       ? `${scenario.name} (Copy)`
       : scenario.name
-    
+
     setFormData({
       name: nameToUse,
       description: scenario.description || '',
@@ -436,7 +413,7 @@ export default function Scenarios() {
       return
     }
     if (!selectedScenario) return
-    
+
     updateMutation.mutate({
       id: selectedScenario.id,
       data: {
@@ -768,7 +745,7 @@ export default function Scenarios() {
                       <X className="h-5 w-5" />
                     </button>
                   </div>
-                  
+
                   {/* AI Provider and Model Selection */}
                   <div className="grid grid-cols-2 gap-4">
                     <div>
@@ -782,10 +759,10 @@ export default function Scenarios() {
                           className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white text-left flex items-center justify-between"
                         >
                           <div className="flex items-center gap-2">
-                            {selectedAIProvider && PROVIDER_LOGOS[selectedAIProvider] ? (
+                            {selectedAIProvider && getProviderLogo(selectedAIProvider) ? (
                               <img
-                                src={PROVIDER_LOGOS[selectedAIProvider]!}
-                                alt={PROVIDER_LABELS[selectedAIProvider]}
+                                src={getProviderLogo(selectedAIProvider)!}
+                                alt={getProviderLabel(selectedAIProvider)}
                                 className="w-5 h-5 object-contain"
                               />
                             ) : selectedAIProvider ? (
@@ -793,14 +770,13 @@ export default function Scenarios() {
                             ) : null}
                             <span>
                               {selectedAIProvider
-                                ? PROVIDER_LABELS[selectedAIProvider]
+                                ? getProviderLabel(selectedAIProvider)
                                 : 'Select an AI Provider'}
                             </span>
                           </div>
                           <ChevronDown
-                            className={`h-4 w-4 text-gray-400 transition-transform ${
-                              showProviderDropdown ? 'transform rotate-180' : ''
-                            }`}
+                            className={`h-4 w-4 text-gray-400 transition-transform ${showProviderDropdown ? 'transform rotate-180' : ''
+                              }`}
                           />
                         </button>
                         {showProviderDropdown && (
@@ -817,16 +793,16 @@ export default function Scenarios() {
                                   onClick={() => handleProviderSelect(provider)}
                                   className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center gap-2 transition-colors"
                                 >
-                                  {PROVIDER_LOGOS[provider] ? (
+                                  {getProviderLogo(provider) ? (
                                     <img
-                                      src={PROVIDER_LOGOS[provider]!}
-                                      alt={PROVIDER_LABELS[provider]}
+                                      src={getProviderLogo(provider)!}
+                                      alt={getProviderLabel(provider)}
                                       className="w-5 h-5 object-contain"
                                     />
                                   ) : (
                                     <Brain className="h-5 w-5 text-primary-600" />
                                   )}
-                                  <span>{PROVIDER_LABELS[provider]}</span>
+                                  <span>{getProviderLabel(provider)}</span>
                                 </button>
                               )
                             })}
@@ -875,11 +851,10 @@ export default function Scenarios() {
                           className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
                         >
                           <div
-                            className={`max-w-[80%] rounded-lg px-4 py-3 ${
-                              message.role === 'user'
-                                ? 'bg-primary-600 text-white'
-                                : 'bg-white text-gray-900 border border-gray-200'
-                            }`}
+                            className={`max-w-[80%] rounded-lg px-4 py-3 ${message.role === 'user'
+                              ? 'bg-primary-600 text-white'
+                              : 'bg-white text-gray-900 border border-gray-200'
+                              }`}
                           >
                             <div className="text-sm font-medium mb-2 opacity-70">
                               {message.role === 'user' ? 'You' : 'Assistant'}
@@ -963,7 +938,7 @@ export default function Scenarios() {
                       Send
                     </Button>
                   </div>
-                  
+
                   {/* Action Buttons */}
                   {chatHistory.length > 0 && (
                     <div className="flex gap-3 mt-4 pt-4 border-t border-gray-200">

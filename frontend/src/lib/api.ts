@@ -608,13 +608,14 @@ class ApiClient {
     return response.data
   }
 
-  async getModelOptions(provider: string): Promise<{ stt: string[]; llm: string[]; tts: string[]; s2s: string[] }> {
+  async getModelOptions(provider: string): Promise<{ stt: string[]; llm: string[]; tts: string[]; s2s: string[]; tts_voices: Record<string, { id: string; name: string; gender?: string }[]> }> {
     const response = await this.client.get(`/api/v1/model-config/providers/${provider}/options`)
     const data = response.data
-    // Ensure s2s is always present (for backward compatibility)
+    // Ensure s2s and tts_voices are always present (for backward compatibility)
     return {
       ...data,
-      s2s: data.s2s || []
+      s2s: data.s2s || [],
+      tts_voices: data.tts_voices || {},
     }
   }
 

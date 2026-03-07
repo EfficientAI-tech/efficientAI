@@ -5,42 +5,13 @@ import { Plus, Trash2, X, AlertCircle, Plug, Edit, Brain, ChevronDown, Key } fro
 import { IntegrationCreate, IntegrationPlatform, Integration, AIProvider, AIProviderCreate, ModelProvider } from '../types/api'
 import Button from '../components/Button'
 import { useToast } from '../hooks/useToast'
-
-const PROVIDER_LABELS: Record<ModelProvider, string> = {
-  [ModelProvider.OPENAI]: 'OpenAI',
-  [ModelProvider.ANTHROPIC]: 'Anthropic',
-  [ModelProvider.GOOGLE]: 'Google',
-  [ModelProvider.AZURE]: 'Azure',
-  [ModelProvider.AWS]: 'AWS',
-  [ModelProvider.DEEPGRAM]: 'Deepgram',
-  [ModelProvider.CARTESIA]: 'Cartesia',
-  [ModelProvider.ELEVENLABS]: 'ElevenLabs',
-  [ModelProvider.CUSTOM]: 'Custom',
-}
-
-const PROVIDER_LOGOS: Record<ModelProvider, string | null> = {
-  [ModelProvider.OPENAI]: '/openai-logo.png',
-  [ModelProvider.ANTHROPIC]: '/anthropic.png',
-  [ModelProvider.GOOGLE]: '/geminiai.png',
-  [ModelProvider.AZURE]: '/azureai.png',
-  [ModelProvider.AWS]: '/AWS_logo.png',
-  [ModelProvider.DEEPGRAM]: '/deepgram.png',
-  [ModelProvider.CARTESIA]: '/cartesia.jpg',
-  [ModelProvider.ELEVENLABS]: '/elevenlabs.jpg',
-  [ModelProvider.CUSTOM]: null,
-}
-
-const PROVIDER_DESCRIPTIONS: Record<ModelProvider, string> = {
-  [ModelProvider.OPENAI]: 'GPT models, Whisper, TTS',
-  [ModelProvider.ANTHROPIC]: 'Claude models',
-  [ModelProvider.GOOGLE]: 'Gemini, Google Speech, Google TTS',
-  [ModelProvider.AZURE]: 'Azure OpenAI, Azure Speech Services',
-  [ModelProvider.AWS]: 'AWS Bedrock, Transcribe, Polly',
-  [ModelProvider.DEEPGRAM]: 'Deepgram STT',
-  [ModelProvider.CARTESIA]: 'Cartesia TTS',
-  [ModelProvider.ELEVENLABS]: 'ElevenLabs TTS',
-  [ModelProvider.CUSTOM]: 'Custom AI provider',
-}
+import {
+  getProviderLabel,
+  getProviderLogo,
+  getProviderDescription,
+  getIntegrationPlatformLabel,
+  getIntegrationPlatformLogo
+} from '../config/providers'
 
 type IntegrationType = 'voice_platform' | 'ai_provider' | null
 
@@ -52,7 +23,7 @@ export default function Integrations() {
   const [integrationType, setIntegrationType] = useState<IntegrationType>(null)
   const [selectedIntegration, setSelectedIntegration] = useState<Integration | null>(null)
   const [selectedAIProvider, setSelectedAIProvider] = useState<AIProvider | null>(null)
-  const [selectedPlatform, setSelectedPlatform] = useState<'retell' | 'vapi' | 'cartesia' | 'elevenlabs' | 'deepgram' | null>(null)
+  const [selectedPlatform, setSelectedPlatform] = useState<'retell' | 'vapi' | 'cartesia' | 'elevenlabs' | 'deepgram' | 'murf' | 'sarvam' | null>(null)
   const [selectedProvider, setSelectedProvider] = useState<ModelProvider | null>(null)
   const [showProviderDropdown, setShowProviderDropdown] = useState(false)
   const [showPlatformDropdown, setShowPlatformDropdown] = useState(false)
@@ -216,7 +187,7 @@ export default function Integrations() {
   const handleEdit = (integration: Integration) => {
     setIntegrationType('voice_platform')
     setSelectedIntegration(integration)
-    setSelectedPlatform(integration.platform as 'retell' | 'vapi' | 'cartesia' | 'elevenlabs' | 'deepgram')
+    setSelectedPlatform(integration.platform as 'retell' | 'vapi' | 'cartesia' | 'elevenlabs' | 'deepgram' | 'murf' | 'sarvam')
     setName(integration.name || '')
     setApiKey('') // Don't pre-fill API key for security
     setPublicKey(integration.public_key || '')
@@ -355,6 +326,18 @@ export default function Integrations() {
       description: 'Connect your Deepgram voice AI agents',
       image: '/deepgram.png',
     },
+    {
+      id: IntegrationPlatform.MURF,
+      name: 'Murf',
+      description: 'Connect your Murf TTS voice AI',
+      image: '/murf.png',
+    },
+    {
+      id: IntegrationPlatform.SARVAM,
+      name: 'Sarvam',
+      description: 'Connect your Sarvam STT & TTS voice AI',
+      image: '/sarvam.png',
+    },
   ]
 
   // Get configured platforms
@@ -482,11 +465,11 @@ export default function Integrations() {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-4 flex-1">
                     <div className="flex-shrink-0">
-                      {PROVIDER_LOGOS[provider.provider] ? (
+                      {getProviderLogo(provider.provider) ? (
                         <div className="w-12 h-12 bg-white rounded-lg flex items-center justify-center border border-gray-200 p-2">
                           <img
-                            src={PROVIDER_LOGOS[provider.provider]!}
-                            alt={PROVIDER_LABELS[provider.provider]}
+                            src={getProviderLogo(provider.provider)!}
+                            alt={getProviderLabel(provider.provider)}
                             className="w-full h-full object-contain"
                           />
                         </div>
@@ -499,7 +482,7 @@ export default function Integrations() {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <h3 className="text-lg font-semibold text-gray-900">
-                          {PROVIDER_LABELS[provider.provider]}
+                          {getProviderLabel(provider.provider)}
                         </h3>
                         {provider.name && (
                           <span className="text-sm text-gray-500">({provider.name})</span>
@@ -511,7 +494,7 @@ export default function Integrations() {
                         )}
                       </div>
                       <p className="text-sm text-gray-600 mt-1">
-                        {PROVIDER_DESCRIPTIONS[provider.provider]}
+                        {getProviderDescription(provider.provider)}
                       </p>
                     </div>
                   </div>
@@ -660,7 +643,7 @@ export default function Integrations() {
                               key={platform.id}
                               type="button"
                               onClick={() => {
-                                setSelectedPlatform(platform.id as 'retell' | 'vapi' | 'cartesia' | 'elevenlabs' | 'deepgram')
+                                setSelectedPlatform(platform.id as 'retell' | 'vapi' | 'cartesia' | 'elevenlabs' | 'deepgram' | 'murf' | 'sarvam')
                                 setShowPlatformDropdown(false)
                               }}
                               className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center gap-2 transition-colors"
@@ -702,7 +685,7 @@ export default function Integrations() {
                       value={name}
                       onChange={(e) => setName(e.target.value)}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                      placeholder="My Retell Integration"
+                      placeholder="Integration name"
                     />
                   </div>
                   <div>
@@ -760,16 +743,16 @@ export default function Integrations() {
                         <div className="flex items-center gap-2">
                           {selectedProvider ? (
                             <>
-                              {PROVIDER_LOGOS[selectedProvider] ? (
+                              {getProviderLogo(selectedProvider) ? (
                                 <img
-                                  src={PROVIDER_LOGOS[selectedProvider]!}
-                                  alt={PROVIDER_LABELS[selectedProvider]}
+                                  src={getProviderLogo(selectedProvider)!}
+                                  alt={getProviderLabel(selectedProvider)}
                                   className="w-5 h-5 object-contain"
                                 />
                               ) : (
                                 <Brain className="h-5 w-5 text-primary-600" />
                               )}
-                              <span>{PROVIDER_LABELS[selectedProvider]}</span>
+                              <span>{getProviderLabel(selectedProvider)}</span>
                             </>
                           ) : (
                             <span className="text-gray-500">Select a provider</span>
@@ -789,23 +772,23 @@ export default function Integrations() {
                               }}
                               className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center gap-2 transition-colors"
                             >
-                              {PROVIDER_LOGOS[provider] ? (
+                              {getProviderLogo(provider) ? (
                                 <img
-                                  src={PROVIDER_LOGOS[provider]!}
-                                  alt={PROVIDER_LABELS[provider]}
+                                  src={getProviderLogo(provider)!}
+                                  alt={getProviderLabel(provider)}
                                   className="w-5 h-5 object-contain"
                                 />
                               ) : (
                                 <Brain className="h-5 w-5 text-primary-600" />
                               )}
-                              <span>{PROVIDER_LABELS[provider]}</span>
+                              <span>{getProviderLabel(provider)}</span>
                             </button>
                           ))}
                         </div>
                       )}
                     </div>
                     {selectedProvider && (
-                      <p className="mt-1 text-xs text-gray-500">{PROVIDER_DESCRIPTIONS[selectedProvider]}</p>
+                      <p className="mt-1 text-xs text-gray-500">{getProviderDescription(selectedProvider)}</p>
                     )}
                     {isEditMode && selectedAIProvider && (
                       <p className="mt-1 text-xs text-gray-500">
@@ -1032,7 +1015,7 @@ export default function Integrations() {
                 </div>
                 <div className="flex-1">
                   <p className="text-sm text-gray-700 mb-2">
-                    Are you sure you want to delete the <span className="font-semibold text-gray-900">{PROVIDER_LABELS[aiProviderToDelete.provider]}</span> configuration?
+                    Are you sure you want to delete the <span className="font-semibold text-gray-900">{getProviderLabel(aiProviderToDelete.provider)}</span> configuration?
                   </p>
                   {aiProviderToDelete.name && (
                     <p className="text-sm text-gray-600 mb-2">

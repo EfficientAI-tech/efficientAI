@@ -71,22 +71,27 @@ async def get_models_by_provider(
 async def get_model_options(
     provider: str,
     api_key: str = Depends(get_api_key)
-) -> Dict[str, List[str]]:
+) -> Dict[str, Any]:
     """
     Get model options organized by type (stt, llm, tts) for a provider.
+    Also returns tts_voices: model-specific voice lists (if any).
     
     Args:
-        provider: Provider name (openai, anthropic, google, azure, aws)
+        provider: Provider name (openai, anthropic, google, azure, aws, sarvam, …)
         
     Returns:
-        Dict with keys 'stt', 'llm', 'tts' and values as lists of model names
+        Dict with keys 'stt', 'llm', 'tts', 's2s' (lists of model names)
+        and 'tts_voices' (dict of model_name -> list of voice dicts)
     """
     try:
         provider_enum = ModelProvider(provider)
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid provider: {provider}")
     
-    return model_config_service.get_model_options_by_provider(provider_enum)
+    options = model_config_service.get_model_options_by_provider(provider_enum)
+    # Attach model-specific TTS voice lists (e.g. Sarvam bulbul:v3 vs v2)
+    options["tts_voices"] = model_config_service.get_tts_voices_by_provider(provider_enum)
+    return options
 
 
 @router.get("/providers/{provider}/types/{model_type}/models", operation_id="getModelsByType")

@@ -32,6 +32,7 @@ import {
   Gamepad2,
   Lock,
   ScrollText,
+  Github,
 } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import Logo from './Logo'
@@ -151,7 +152,7 @@ export default function Layout() {
   useEffect(() => {
     // Only run cleanup after agents query has completed AND preferences are initialized
     if (!agentsLoaded || !isInitialized) return
-    
+
     if (selectedAgent && !agents.find((a: Agent) => a.id === selectedAgent.id)) {
       if (agents.length > 0) {
         setSelectedAgent(agents[0])
@@ -294,9 +295,19 @@ export default function Layout() {
                 </>
               )}
             </div>
-            
-            {/* Profile Link */}
-            <ProfileAvatar />
+
+            <div className="flex items-center gap-4">
+              <a
+                href="https://github.com/EfficientAI-tech/efficientAI"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="hidden sm:flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 hover:border-gray-300 transition-all shadow-sm"
+              >
+                <Github className="h-4 w-4" />
+                <span>Star us on GitHub</span>
+              </a>
+              <ProfileAvatar />
+            </div>
           </div>
         </div>
 
@@ -339,11 +350,10 @@ function ProfileAvatar() {
     <div className="flex items-center">
       <Link
         to="/profile"
-        className={`flex items-center justify-center w-10 h-10 rounded-lg transition-colors ${
-          location.pathname === '/profile'
-            ? 'bg-gray-100'
-            : 'hover:bg-gray-50'
-        }`}
+        className={`flex items-center justify-center w-10 h-10 rounded-lg transition-colors ${location.pathname === '/profile'
+          ? 'bg-gray-100'
+          : 'hover:bg-gray-50'
+          }`}
         title="Profile"
       >
         <div className="w-8 h-8 rounded-full bg-transparent border-2 border-gray-400 flex items-center justify-center text-gray-700 text-sm font-semibold">

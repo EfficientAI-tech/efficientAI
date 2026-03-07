@@ -110,6 +110,38 @@ class ModelConfigService:
             config.get("model_type") == model_type
         )
 
+    def get_voices_for_model(self, model_name: str) -> List[Dict[str, Any]]:
+        """Get the list of compatible voices for a specific TTS model.
+
+        Returns:
+            List of voice dicts with keys like 'id', 'name', 'gender', or empty list.
+        """
+        config = self.get_model_config(model_name)
+        if config is None:
+            return []
+        return config.get("voices", [])
+
+    def get_tts_voices_by_provider(self, provider: ModelProvider) -> Dict[str, List[Dict[str, Any]]]:
+        """Get voice options keyed by TTS model name for a given provider.
+
+        Returns:
+            Dict mapping model_name -> list of voice dicts.
+        """
+        if self._config is None:
+            self._load_config()
+        provider_str = provider.value
+        result: Dict[str, List[Dict[str, Any]]] = {}
+        for model_name, config in self._config.items():
+            if model_name == "sample_spec":
+                continue
+            if (
+                config.get("provider") == provider_str
+                and config.get("model_type") == "tts"
+                and config.get("voices")
+            ):
+                result[model_name] = config["voices"]
+        return result
+
 
 # Singleton instance
 model_config_service = ModelConfigService()
