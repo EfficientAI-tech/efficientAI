@@ -5,7 +5,7 @@ TTS A/B comparison: generate audio, blind test, and quality evaluation.
 
 import random
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import Dict, Any, List, Optional
@@ -22,12 +22,15 @@ from app.models.database import (
     TTSSample,
     TTSComparisonStatus,
     TTSSampleStatus,
+    TTSReportJob,
+    TTSReportJobStatus,
     ModelProvider,
     VoiceBundle,
 )
 from app.services.model_config_service import model_config_service
 from app.services.s3_service import s3_service
 from app.services.llm_service import llm_service
+from app.services.voice_playground_report_service import voice_playground_report_service
 
 router = APIRouter(
     prefix="/voice-playground",
@@ -789,6 +792,126 @@ async def get_tts_analytics(
 
     result.sort(key=lambda r: r.get("avg_mos") or 0, reverse=True)
     return result
+
+
+@router.get("/comparisons/{comparison_id}/report.pdf", operation_id="downloadTTSComparisonReport")
+async def download_tts_comparison_report(
+    comparison_id: UUID,
+    include_unfinished_samples: bool = False,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """Generate and return a PDF benchmark report for a comparison."""
+    comparison = _get_comparison_or_404(comparison_id, organization_id, db)
+
+    sample_query = db.query(TTSSample).filter(TTSSample.comparison_id == comparison.id)
+    if not include_unfinished_samples:
+        sample_query = sample_query.filter(TTSSample.status == TTSSampleStatus.COMPLETED.value)
+
+    samples = (
+        sample_query
+        .order_by(TTSSample.run_index, TTSSample.sample_index, TTSSample.provider, TTSSample.voice_id)
+        .all()
+    )
+    if not samples:
+        raise HTTPException(400, "No samples found to generate report")
+
+    try:
+        payload = voice_playground_report_service.build_payload(comparison, samples)
+        pdf_bytes = voice_playground_report_service.render_pdf(payload)
+    except Exception as e:
+        raise HTTPException(500, f"Failed to generate PDF report: {str(e)}")
+
+    filename = f"voice-playground-report-{comparison.simulation_id or str(comparison.id)[:8]}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/comparisons/{comparison_id}/reports", operation_id="createTTSComparisonReportJob")
+async def create_tts_comparison_report_job(
+    comparison_id: UUID,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """Queue asynchronous PDF report generation for a comparison."""
+    comparison = _get_comparison_or_404(comparison_id, organization_id, db)
+
+    report_job = TTSReportJob(
+        organization_id=organization_id,
+        comparison_id=comparison.id,
+        status=TTSReportJobStatus.PENDING.value,
+        format="pdf",
+        created_by=api_key,
+    )
+    db.add(report_job)
+    db.commit()
+    db.refresh(report_job)
+
+    try:
+        from app.workers.celery_app import generate_tts_report_pdf_task
+
+        task = generate_tts_report_pdf_task.delay(str(report_job.id))
+        report_job.celery_task_id = task.id
+        db.commit()
+    except Exception as e:
+        report_job.status = TTSReportJobStatus.FAILED.value
+        report_job.error_message = f"Failed to queue report task: {str(e)}"
+        db.commit()
+        raise HTTPException(500, "Failed to queue report generation")
+
+    return {
+        "id": str(report_job.id),
+        "comparison_id": str(comparison.id),
+        "status": report_job.status,
+        "format": report_job.format,
+        "task_id": report_job.celery_task_id,
+        "created_at": report_job.created_at.isoformat() if report_job.created_at else None,
+    }
+
+
+@router.get("/reports/{report_job_id}", operation_id="getTTSComparisonReportJob")
+async def get_tts_comparison_report_job(
+    report_job_id: UUID,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """Get asynchronous report generation status and download URL."""
+    report_job = (
+        db.query(TTSReportJob)
+        .filter(
+            TTSReportJob.id == report_job_id,
+            TTSReportJob.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not report_job:
+        raise HTTPException(404, "Report job not found")
+
+    download_url = None
+    if report_job.status == TTSReportJobStatus.COMPLETED.value and report_job.s3_key:
+        try:
+            download_url = s3_service.generate_presigned_url_by_key(report_job.s3_key, expiration=3600)
+        except Exception:
+            download_url = None
+
+    return {
+        "id": str(report_job.id),
+        "comparison_id": str(report_job.comparison_id),
+        "status": report_job.status,
+        "format": report_job.format,
+        "filename": report_job.filename,
+        "error_message": report_job.error_message,
+        "task_id": report_job.celery_task_id,
+        "download_url": download_url,
+        "created_at": report_job.created_at.isoformat() if report_job.created_at else None,
+        "updated_at": report_job.updated_at.isoformat() if report_job.updated_at else None,
+    }
 
 
 # ======================================================================

@@ -9,8 +9,6 @@ import {
   getProviderLabel,
   getProviderLogo,
   getProviderDescription,
-  getIntegrationPlatformLabel,
-  getIntegrationPlatformLogo
 } from '../config/providers'
 
 type IntegrationType = 'voice_platform' | 'ai_provider' | null

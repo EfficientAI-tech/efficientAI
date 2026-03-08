@@ -1292,6 +1292,48 @@ class ApiClient {
     return response.data
   }
 
+  async downloadTTSComparisonReport(
+    comparisonId: string,
+    includeUnfinishedSamples = false
+  ): Promise<Blob> {
+    const response = await this.client.get(
+      `/api/v1/voice-playground/comparisons/${comparisonId}/report.pdf`,
+      {
+        params: { include_unfinished_samples: includeUnfinishedSamples },
+        responseType: 'blob',
+      }
+    )
+    return response.data
+  }
+
+  async createTTSComparisonReportJob(comparisonId: string): Promise<{
+    id: string
+    comparison_id: string
+    status: string
+    format: string
+    task_id?: string
+    created_at?: string | null
+  }> {
+    const response = await this.client.post(`/api/v1/voice-playground/comparisons/${comparisonId}/reports`)
+    return response.data
+  }
+
+  async getTTSComparisonReportJob(reportJobId: string): Promise<{
+    id: string
+    comparison_id: string
+    status: string
+    format: string
+    filename?: string | null
+    error_message?: string | null
+    task_id?: string | null
+    download_url?: string | null
+    created_at?: string | null
+    updated_at?: string | null
+  }> {
+    const response = await this.client.get(`/api/v1/voice-playground/reports/${reportJobId}`)
+    return response.data
+  }
+
   // Prompt Partials
   async listPromptPartials(skip = 0, limit = 100, search?: string): Promise<any[]> {
     const response = await this.client.get('/api/v1/prompt-partials', {

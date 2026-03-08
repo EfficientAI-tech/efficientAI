@@ -716,6 +716,13 @@ class TTSSampleStatus(str, enum.Enum):
     FAILED = "failed"
 
 
+class TTSReportJobStatus(str, enum.Enum):
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class TTSComparison(Base):
     """TTS Comparison session for A/B testing voice providers."""
     __tablename__ = "tts_comparisons"
@@ -781,6 +788,28 @@ class TTSSample(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     comparison = relationship("TTSComparison", back_populates="samples")
+
+
+class TTSReportJob(Base):
+    """Asynchronous PDF report generation jobs for Voice Playground."""
+    __tablename__ = "tts_report_jobs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    comparison_id = Column(UUID(as_uuid=True), ForeignKey("tts_comparisons.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    status = Column(String(50), nullable=False, default=TTSReportJobStatus.PENDING.value)
+    format = Column(String(20), nullable=False, default="pdf")
+    filename = Column(String(255), nullable=True)
+    s3_key = Column(String(512), nullable=True)
+    error_message = Column(String, nullable=True)
+    celery_task_id = Column(String, nullable=True, index=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_by = Column(String, nullable=True)
+
+    comparison = relationship("TTSComparison")
 
 
 class PromptPartial(Base):
