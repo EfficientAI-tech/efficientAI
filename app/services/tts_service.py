@@ -2,18 +2,19 @@
 TTS service for converting text to speech using various TTS providers.
 """
 
-import struct
 import time
-import tempfile
-import os
-import requests
 from typing import Optional, Dict, Any, Tuple
 from uuid import UUID
-from pathlib import Path
-from loguru import logger
 
 from app.models.database import ModelProvider, AIProvider, Integration
 from app.services.s3_service import s3_service
+from efficientai.services.cartesia.http_tts import synthesize_cartesia_bytes
+from efficientai.services.deepgram.http_tts import synthesize_deepgram_bytes
+from efficientai.services.elevenlabs.http_tts import synthesize_elevenlabs_bytes
+from efficientai.services.google.http_tts import synthesize_google_bytes
+from efficientai.services.murf.tts import synthesize_murf_stream_bytes
+from efficientai.services.openai.http_tts import synthesize_openai_bytes
+from efficientai.services.sarvam.http_tts import synthesize_sarvam_bytes
 from sqlalchemy.orm import Session
 
 
@@ -31,33 +32,11 @@ PROVIDER_SUPPORTED_SAMPLE_RATES: Dict[str, list] = {
     "deepgram": [8000, 16000, 24000, 48000],
 }
 
-
-def _pcm_to_wav(pcm_bytes: bytes, sample_rate: int, sample_width: int = 2, channels: int = 1) -> bytes:
-    """Wrap headerless PCM bytes in a valid WAV container."""
-    data_size = len(pcm_bytes)
-    byte_rate = sample_rate * channels * sample_width
-    block_align = channels * sample_width
-    header = struct.pack(
-        '<4sI4s4sIHHIIHH4sI',
-        b'RIFF',
-        36 + data_size,
-        b'WAVE',
-        b'fmt ',
-        16,
-        1,                      # PCM format tag
-        channels,
-        sample_rate,
-        byte_rate,
-        block_align,
-        sample_width * 8,
-        b'data',
-        data_size,
-    )
-    return header + pcm_bytes
-
-
 def get_audio_file_extension(provider: str, sample_rate_hz: Optional[int] = None) -> str:
     """Determine audio file extension based on provider and requested sample rate."""
+    if provider == "sarvam":
+        # Sarvam HTTP TTS returns base64 WAV audio.
+        return "wav"
     if provider == "elevenlabs" and sample_rate_hz:
         fmt = ELEVENLABS_HZ_TO_OUTPUT_FORMAT.get(sample_rate_hz, "")
         if fmt.startswith(("pcm_", "ulaw_")):
@@ -69,7 +48,7 @@ class TTSService:
     """Service for converting text to speech using various TTS providers."""
 
     def __init__(self):
-        pass
+        self._provider_handlers: Dict[str, Any] = {}
 
     def _get_ai_provider(self, provider: ModelProvider, db: Session, organization_id: UUID) -> Optional[AIProvider]:
         """Get AI provider configuration from database."""
@@ -123,27 +102,7 @@ class TTSService:
         self, text: str, model: str, api_key: str,
         voice: Optional[str] = "alloy", config: Optional[Dict[str, Any]] = None
     ) -> Tuple[bytes, float]:
-        try:
-            from openai import OpenAI
-
-            client = OpenAI(api_key=api_key)
-            request_params = {"model": model, "input": text, "voice": voice or "alloy"}
-            if config:
-                request_params.update(config)
-
-            start = time.time()
-            with client.audio.speech.with_streaming_response.create(**request_params) as response:
-                ttfb_ms: Optional[float] = None
-                chunks: list[bytes] = []
-                for chunk in response.iter_bytes():
-                    if ttfb_ms is None:
-                        ttfb_ms = (time.time() - start) * 1000
-                    chunks.append(chunk)
-            return b"".join(chunks), ttfb_ms if ttfb_ms is not None else (time.time() - start) * 1000
-        except ImportError:
-            raise RuntimeError("OpenAI library not installed. Install with: pip install openai")
-        except Exception as e:
-            raise RuntimeError(f"OpenAI TTS synthesis failed: {e}")
+        return synthesize_openai_bytes(text=text, model=model, api_key=api_key, voice=voice, config=config)
 
     # ------------------------------------------------------------------
     # Google (unary RPC – no streaming; TTFB ≈ total API time)
@@ -153,27 +112,7 @@ class TTSService:
         self, text: str, model: str, api_key: str,
         voice: Optional[str] = None, config: Optional[Dict[str, Any]] = None
     ) -> Tuple[bytes, float]:
-        try:
-            from google.cloud import texttospeech
-
-            client = texttospeech.TextToSpeechClient()
-            synthesis_input = texttospeech.SynthesisInput(text=text)
-            voice_config = texttospeech.VoiceSelectionParams(
-                language_code="en-US", name=voice if voice else None,
-            )
-            audio_config = texttospeech.AudioConfig(
-                audio_encoding=texttospeech.AudioEncoding.MP3
-            )
-            start = time.time()
-            response = client.synthesize_speech(
-                input=synthesis_input, voice=voice_config, audio_config=audio_config,
-            )
-            ttfb_ms = (time.time() - start) * 1000
-            return response.audio_content, ttfb_ms
-        except ImportError:
-            raise RuntimeError("Google Cloud TTS library not installed.")
-        except Exception as e:
-            raise RuntimeError(f"Google TTS synthesis failed: {e}")
+        return synthesize_google_bytes(text=text, model=model, api_key=api_key, voice=voice, config=config)
 
     # ------------------------------------------------------------------
     # ElevenLabs
@@ -183,55 +122,7 @@ class TTSService:
         self, text: str, model: str, api_key: str,
         voice: Optional[str] = None, config: Optional[Dict[str, Any]] = None
     ) -> Tuple[bytes, float]:
-        voice_id = voice or "21m00Tcm4TlvDq8ikWAM"  # default: Rachel
-        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream"
-
-        query_params: Dict[str, str] = {}
-        effective_config = dict(config) if config else {}
-
-        sample_rate_hz = effective_config.pop("sample_rate_hz", None)
-        output_fmt = None
-        if sample_rate_hz:
-            hz_int = int(sample_rate_hz)
-            output_fmt = ELEVENLABS_HZ_TO_OUTPUT_FORMAT.get(hz_int)
-            if output_fmt:
-                query_params["output_format"] = output_fmt
-            logger.info(f"[ElevenLabs TTS] sample_rate_hz={hz_int} -> output_format={output_fmt}")
-
-        is_pcm = output_fmt and output_fmt.startswith(("pcm_", "ulaw_"))
-
-        headers = {
-            "xi-api-key": api_key,
-            "Content-Type": "application/json",
-            "Accept": "application/octet-stream" if is_pcm else "audio/mpeg",
-        }
-        body: Dict[str, Any] = {
-            "text": text,
-            "model_id": model,
-            "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
-        }
-        if effective_config:
-            body.update(effective_config)
-
-        start = time.time()
-        resp = requests.post(url, json=body, headers=headers, params=query_params, stream=True, timeout=60)
-        if resp.status_code != 200:
-            error_text = b"".join(resp.iter_content(chunk_size=None)).decode(errors="replace")[:500]
-            raise RuntimeError(f"ElevenLabs TTS failed ({resp.status_code}): {error_text}")
-
-        ttfb_ms: Optional[float] = None
-        chunks: list[bytes] = []
-        for chunk in resp.iter_content(chunk_size=8192):
-            if chunk:
-                if ttfb_ms is None:
-                    ttfb_ms = (time.time() - start) * 1000
-                chunks.append(chunk)
-
-        audio_bytes = b"".join(chunks)
-        if is_pcm and sample_rate_hz:
-            audio_bytes = _pcm_to_wav(audio_bytes, int(sample_rate_hz))
-
-        return audio_bytes, ttfb_ms if ttfb_ms is not None else (time.time() - start) * 1000
+        return synthesize_elevenlabs_bytes(text=text, model=model, api_key=api_key, voice=voice, config=config)
 
     # ------------------------------------------------------------------
     # Cartesia
@@ -241,45 +132,7 @@ class TTSService:
         self, text: str, model: str, api_key: str,
         voice: Optional[str] = None, config: Optional[Dict[str, Any]] = None
     ) -> Tuple[bytes, float]:
-        voice_id = voice or "a0e99841-438c-4a64-b679-ae501e7d6091"  # default: Barbershop Man
-        url = "https://api.cartesia.ai/tts/bytes"
-        headers = {
-            "X-API-Key": api_key,
-            "Cartesia-Version": "2024-06-10",
-            "Content-Type": "application/json",
-        }
-
-        effective_config = dict(config) if config else {}
-        sample_rate_hz = effective_config.pop("sample_rate_hz", None)
-
-        body: Dict[str, Any] = {
-            "model_id": model,
-            "transcript": text,
-            "voice": {"mode": "id", "id": voice_id},
-            "output_format": {
-                "container": "mp3",
-                "bit_rate": 128000,
-                "sample_rate": int(sample_rate_hz) if sample_rate_hz else 44100,
-            },
-        }
-        if effective_config:
-            body.update(effective_config)
-
-        start = time.time()
-        resp = requests.post(url, json=body, headers=headers, stream=True, timeout=60)
-        if resp.status_code != 200:
-            error_text = b"".join(resp.iter_content(chunk_size=None)).decode(errors="replace")[:500]
-            raise RuntimeError(f"Cartesia TTS failed ({resp.status_code}): {error_text}")
-
-        ttfb_ms: Optional[float] = None
-        chunks: list[bytes] = []
-        for chunk in resp.iter_content(chunk_size=8192):
-            if chunk:
-                if ttfb_ms is None:
-                    ttfb_ms = (time.time() - start) * 1000
-                chunks.append(chunk)
-
-        return b"".join(chunks), ttfb_ms if ttfb_ms is not None else (time.time() - start) * 1000
+        return synthesize_cartesia_bytes(text=text, model=model, api_key=api_key, voice=voice, config=config)
 
     # ------------------------------------------------------------------
     # Deepgram
@@ -289,49 +142,41 @@ class TTSService:
         self, text: str, model: str, api_key: str,
         voice: Optional[str] = None, config: Optional[Dict[str, Any]] = None
     ) -> Tuple[bytes, float]:
-        voice_model = voice or "aura-asteria-en"
-        url = f"https://api.deepgram.com/v1/speak?model={voice_model}"
+        return synthesize_deepgram_bytes(text=text, model=model, api_key=api_key, voice=voice, config=config)
 
-        effective_config = dict(config) if config else {}
-        sample_rate_hz = effective_config.pop("sample_rate_hz", None)
-        if sample_rate_hz:
-            url += f"&sample_rate={int(sample_rate_hz)}"
+    # ------------------------------------------------------------------
+    # Sarvam
+    # ------------------------------------------------------------------
 
-        headers = {
-            "Authorization": f"Token {api_key}",
-            "Content-Type": "application/json",
-        }
-        body = {"text": text}
-
-        start = time.time()
-        resp = requests.post(url, json=body, headers=headers, stream=True, timeout=60)
-        if resp.status_code != 200:
-            error_text = b"".join(resp.iter_content(chunk_size=None)).decode(errors="replace")[:500]
-            raise RuntimeError(f"Deepgram TTS failed ({resp.status_code}): {error_text}")
-
-        ttfb_ms: Optional[float] = None
-        chunks: list[bytes] = []
-        for chunk in resp.iter_content(chunk_size=8192):
-            if chunk:
-                if ttfb_ms is None:
-                    ttfb_ms = (time.time() - start) * 1000
-                chunks.append(chunk)
-
-        return b"".join(chunks), ttfb_ms if ttfb_ms is not None else (time.time() - start) * 1000
+    def _synthesize_with_sarvam(
+        self, text: str, model: str, api_key: str,
+        voice: Optional[str] = None, config: Optional[Dict[str, Any]] = None
+    ) -> Tuple[bytes, float]:
+        return synthesize_sarvam_bytes(text=text, model=model, api_key=api_key, voice=voice, config=config)
 
     # ------------------------------------------------------------------
     # Main synthesis entry point
     # ------------------------------------------------------------------
 
-    def _dispatch(self, tts_provider: ModelProvider):
-        dispatch = {
-            ModelProvider.OPENAI: self._synthesize_with_openai,
-            ModelProvider.GOOGLE: self._synthesize_with_google,
-            ModelProvider.ELEVENLABS: self._synthesize_with_elevenlabs,
-            ModelProvider.CARTESIA: self._synthesize_with_cartesia,
-            ModelProvider.DEEPGRAM: self._synthesize_with_deepgram,
-        }
-        handler = dispatch.get(tts_provider)
+    def register_tts_provider(self, provider: str, handler: Any) -> None:
+        """Register/override a TTS provider handler dynamically."""
+        self._provider_handlers[provider.strip().lower()] = handler
+
+    def _get_tts_handler(self, tts_provider: ModelProvider):
+        provider_key = (tts_provider.value if hasattr(tts_provider, "value") else str(tts_provider)).lower()
+
+        # Prefer explicitly registered handlers.
+        handler = self._provider_handlers.get(provider_key)
+        if handler:
+            return handler
+
+        # Fallback convention: _synthesize_with_<provider>.
+        handler = getattr(self, f"_synthesize_with_{provider_key}", None)
+        if callable(handler):
+            # Cache resolved handler to avoid repeated getattr lookups.
+            self._provider_handlers[provider_key] = handler
+            return handler
+
         if not handler:
             raise NotImplementedError(f"TTS provider {tts_provider} not supported")
         return handler
@@ -343,49 +188,16 @@ class TTSService:
         api_key: str,
         voice: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None
-    ) -> bytes:
-        """Synthesize speech using Murf TTS API."""
+    ) -> Tuple[bytes, float]:
+        """Delegate Murf synthesis to shared efficientai Murf service helper."""
         try:
-            import requests
-            import base64
-
-            # Map internal model names to Murf model identifiers
-            model_map = {
-                "murf-falcon": "FALCON",
-                "murf-gen2": "GEN2",
-            }
-            murf_model = model_map.get(model, "GEN2")
-
-            url = "https://api.murf.ai/v1/speech/generate"
-            headers = {
-                "api-key": api_key,
-                "Content-Type": "application/json",
-            }
-            payload = {
-                "text": text,
-                "voiceId": voice or "en-US-natalie",
-                "model": murf_model,
-                "format": "MP3",
-                "channelType": "MONO",
-                "sampleRate": 24000,
-            }
-            if config:
-                # Allow overrides like style, speed, pitch, multiNativeLocale, etc.
-                payload.update(config)
-
-            response = requests.post(url, json=payload, headers=headers, timeout=60)
-            response.raise_for_status()
-            data = response.json()
-
-            # Prefer encodedAudio (base64), fall back to audioFile (URL)
-            if data.get("encodedAudio"):
-                return base64.b64decode(data["encodedAudio"])
-            elif data.get("audioFile"):
-                audio_response = requests.get(data["audioFile"], timeout=60)
-                audio_response.raise_for_status()
-                return audio_response.content
-            else:
-                raise RuntimeError("Murf API returned no audio data")
+            return synthesize_murf_stream_bytes(
+                text=text,
+                model=model,
+                api_key=api_key,
+                voice=voice,
+                config=config,
+            )
         except ImportError:
             raise RuntimeError("requests library not installed. Install with: pip install requests")
         except Exception as e:
@@ -418,32 +230,9 @@ class TTSService:
         Returns:
             Audio bytes (MP3 format)
         """
-        start_time = time.time()
-        
-        # Get provider API key
-        ai_provider = self._get_ai_provider(tts_provider, db, organization_id)
-        if not ai_provider:
-            raise RuntimeError(f"AI provider {tts_provider} not configured for this organization.")
-        
-        # Decrypt API key
-        from app.core.encryption import decrypt_api_key
-        try:
-            api_key = decrypt_api_key(ai_provider.api_key)
-        except Exception as e:
-            raise RuntimeError(f"Failed to decrypt API key for provider {tts_provider}: {str(e)}")
-        
-        # Synthesize based on provider
-        if tts_provider == ModelProvider.OPENAI:
-            audio_bytes = self._synthesize_with_openai(text, tts_model, api_key, voice, config)
-        elif tts_provider == ModelProvider.GOOGLE:
-            audio_bytes = self._synthesize_with_google(text, tts_model, api_key, voice, config)
-        elif tts_provider == ModelProvider.MURF:
-            audio_bytes = self._synthesize_with_murf(text, tts_model, api_key, voice, config)
-        else:
-            raise NotImplementedError(f"TTS provider {tts_provider} not yet implemented")
-        
-        processing_time = time.time() - start_time
-        
+        api_key = self._get_api_key_for_provider(tts_provider, db, organization_id)
+        handler = self._get_tts_handler(tts_provider)
+        audio_bytes, _ttfb_ms = handler(text, tts_model, api_key, voice, config)
         return audio_bytes
 
     def synthesize_timed(
@@ -458,7 +247,7 @@ class TTSService:
     ) -> Tuple[bytes, float, float]:
         """Synthesize and return (audio_bytes, total_latency_ms, ttfb_ms)."""
         api_key = self._get_api_key_for_provider(tts_provider, db, organization_id)
-        handler = self._dispatch(tts_provider)
+        handler = self._get_tts_handler(tts_provider)
         start = time.time()
         audio_bytes, ttfb_ms = handler(text, tts_model, api_key, voice, config)
         total_latency_ms = (time.time() - start) * 1000

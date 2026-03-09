@@ -325,13 +325,15 @@
     "provider": "murf",
     "model_type": "tts",
     "description": "Murf FALCON – ultra-low latency streaming TTS",
-    "languages": "en, es, de, fr, hi, ja, ko, pt, it, zh, and 10+ more"
+    "languages": "en, es, de, fr, hi, ja, ko, pt, it, zh, and 10+ more",
+    "voices_source_file": "murf_falcon_voices.json"
   },
   "murf-gen2": {
     "provider": "murf",
     "model_type": "tts",
     "description": "Murf GEN2 – high-quality, natural-sounding TTS",
-    "languages": "en, es, de, fr, hi, ja, ko, pt, it, zh, and 10+ more"
+    "languages": "en, es, de, fr, hi, ja, ko, pt, it, zh, and 10+ more",
+    "voices_source_file": "murf_gen2_voices.json"
   },
   "saarika:v2.5": {
     "provider": "sarvam",

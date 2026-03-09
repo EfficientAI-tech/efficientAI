@@ -125,12 +125,24 @@ TTS_VOICES: Dict[str, List[Dict[str, str]]] = {
     ],
 }
 
-PROVIDERS_WITH_TTS = {"openai", "elevenlabs", "cartesia", "deepgram", "google", "sarvam"}
+def _get_tts_models_by_provider() -> Dict[str, List[str]]:
+    """Build provider -> TTS models map from models.json config."""
+    providers_with_tts: Dict[str, List[str]] = {}
+    for provider_enum in ModelProvider:
+        try:
+            tts_models = model_config_service.get_models_by_type(provider_enum, "tts")
+        except Exception:
+            tts_models = []
+        if tts_models:
+            providers_with_tts[provider_enum.value] = tts_models
+    return providers_with_tts
 
 PROVIDER_SAMPLE_RATES: Dict[str, List[int]] = {
     "elevenlabs": [8000, 16000, 22050, 24000, 44100],
     "cartesia": [8000, 16000, 22050, 24000, 44100],
     "deepgram": [8000, 16000, 24000, 48000],
+    # Murf stream API valid sample rates.
+    "murf": [8000, 16000, 24000, 44100, 48000],
 }
 
 # ======================================================================
@@ -338,7 +350,8 @@ async def create_custom_tts_voice(
     voice_id = data.voice_id.strip()
     name = data.name.strip()
 
-    if provider not in PROVIDERS_WITH_TTS:
+    tts_models_by_provider = _get_tts_models_by_provider()
+    if provider not in tts_models_by_provider:
         raise HTTPException(400, f"Unsupported TTS provider: {provider}")
     if not voice_id:
         raise HTTPException(400, "voice_id is required")
@@ -425,6 +438,8 @@ async def list_tts_providers(
     db: Session = Depends(get_db),
 ):
     """List TTS providers that have an active API key configured."""
+    tts_models_by_provider = _get_tts_models_by_provider()
+
     # Gather active AI providers
     ai_providers = db.query(AIProvider).filter(
         AIProvider.organization_id == organization_id,
@@ -434,7 +449,7 @@ async def list_tts_providers(
     active_provider_keys = set()
     for ap in ai_providers:
         pval = ap.provider.lower() if ap.provider else ""
-        if pval in PROVIDERS_WITH_TTS:
+        if pval in tts_models_by_provider:
             active_provider_keys.add(pval)
 
     # Also check Integration table for cartesia / elevenlabs / deepgram
@@ -444,7 +459,7 @@ async def list_tts_providers(
     ).all()
     for integ in integrations:
         pval = integ.platform.lower() if integ.platform else ""
-        if pval in PROVIDERS_WITH_TTS:
+        if pval in tts_models_by_provider:
             active_provider_keys.add(pval)
 
     custom_voices = db.query(CustomTTSVoice).filter(
@@ -456,17 +471,30 @@ async def list_tts_providers(
 
     result = []
     for provider_key in sorted(active_provider_keys):
-        # Get TTS models from models.json
-        try:
-            provider_enum = ModelProvider(provider_key)
-            tts_models = model_config_service.get_models_by_type(provider_enum, "tts")
-        except (ValueError, Exception):
-            tts_models = []
+        tts_models = tts_models_by_provider.get(provider_key, [])
 
         if not tts_models:
             continue
 
         static_voices = TTS_VOICES.get(provider_key, [])
+        model_voices_map: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        model_config_voices: List[Dict[str, Any]] = []
+        for model_name in tts_models:
+            voices_for_model = model_config_service.get_voices_for_model(model_name)
+            model_voices_map[model_name] = {}
+            for mv in voices_for_model:
+                vid = mv.get("id")
+                if not vid:
+                    continue
+                normalized_voice = {
+                    "id": vid,
+                    "name": mv.get("name", vid),
+                    "gender": mv.get("gender", "Unknown"),
+                    "accent": mv.get("accent", "Unknown"),
+                    "is_custom": False,
+                }
+                model_voices_map[model_name][vid] = normalized_voice
+                model_config_voices.append(normalized_voice)
         merged_voice_map: Dict[str, Dict[str, Any]] = {
             v["id"]: {
                 "id": v["id"],
@@ -477,8 +505,19 @@ async def list_tts_providers(
             }
             for v in static_voices
         }
+        for mv in model_config_voices:
+            vid = mv.get("id")
+            if not vid:
+                continue
+            merged_voice_map[vid] = {
+                "id": vid,
+                "name": mv.get("name", vid),
+                "gender": mv.get("gender", "Unknown"),
+                "accent": mv.get("accent", "Unknown"),
+                "is_custom": False,
+            }
         for cv in custom_voices_by_provider.get(provider_key, []):
-            merged_voice_map[cv.voice_id] = {
+            custom_voice = {
                 "id": cv.voice_id,
                 "name": cv.name,
                 "gender": cv.gender or "Unknown",
@@ -487,13 +526,23 @@ async def list_tts_providers(
                 "is_custom": True,
                 "custom_voice_id": str(cv.id),
             }
+            merged_voice_map[cv.voice_id] = custom_voice
+            # Custom voices should be available across all models for a provider.
+            for model_name in tts_models:
+                model_voices_map.setdefault(model_name, {})[cv.voice_id] = custom_voice
+
         voices = sorted(list(merged_voice_map.values()), key=lambda v: (0 if v.get("is_custom") else 1, v["name"].lower()))
+        model_voices = {
+            model_name: sorted(list(voice_map.values()), key=lambda v: (0 if v.get("is_custom") else 1, v["name"].lower()))
+            for model_name, voice_map in model_voices_map.items()
+        }
         sample_rates = PROVIDER_SAMPLE_RATES.get(provider_key, [])
 
         result.append({
             "provider": provider_key,
             "models": tts_models,
             "voices": voices,
+            "model_voices": model_voices,
             "supported_sample_rates": sample_rates,
         })
 

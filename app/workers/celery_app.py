@@ -1117,7 +1117,12 @@ def evaluate_tts_comparison_task(self, comparison_id: str):
                 if not audio_bytes:
                     continue
 
-                tmp_fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
+                ext = ".mp3"
+                if sample.audio_s3_key:
+                    key_ext = os.path.splitext(sample.audio_s3_key)[1].lower()
+                    if key_ext in {".wav", ".mp3", ".flac", ".ogg", ".m4a"}:
+                        ext = key_ext
+                tmp_fd, tmp_path = tempfile.mkstemp(suffix=ext)
                 os.close(tmp_fd)
                 with open(tmp_path, "wb") as f:
                     f.write(audio_bytes)
