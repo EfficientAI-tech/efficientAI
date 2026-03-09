@@ -1,0 +1,12 @@
+[
+  { "id": "ai3-Jony", "name": "Jony", "gender": "Male", "accent": "American" },
+  { "id": "ai2-Katie", "name": "Katie", "gender": "Female", "accent": "American" },
+  { "id": "ai1-Joanna", "name": "Joanna", "gender": "Female", "accent": "American" },
+  { "id": "pro1-Catherine", "name": "Catherine", "gender": "Female", "accent": "British" },
+  { "id": "proplus-Richard", "name": "Richard", "gender": "Male", "accent": "British" },
+  { "id": "proplus-Emma", "name": "Emma", "gender": "Female", "accent": "British" },
+  { "id": "ai3-Ana", "name": "Ana", "gender": "Female", "accent": "Spanish" },
+  { "id": "ai3-Lea", "name": "Lea", "gender": "Female", "accent": "German" },
+  { "id": "ai3-Keiko", "name": "Keiko", "gender": "Female", "accent": "Japanese" },
+  { "id": "ai3-Liang", "name": "Liang", "gender": "Male", "accent": "Chinese" }
+]

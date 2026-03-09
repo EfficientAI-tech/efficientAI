@@ -67,6 +67,11 @@ export const MODEL_PROVIDER_CONFIG: Record<ModelProvider, ProviderMetadata> = {
     logo: '/sarvam.png',
     description: 'Sarvam STT & TTS',
   },
+  [ModelProvider.VOICEMAKER]: {
+    label: 'VoiceMaker',
+    logo: '/voiceMaker.png',
+    description: 'VoiceMaker TTS',
+  },
 }
 
 export interface IntegrationPlatformMetadata {
@@ -119,6 +124,12 @@ export const INTEGRATION_PLATFORM_CONFIG: Record<IntegrationPlatform, Integratio
     logo: '/sarvam.png',
     description: 'Sarvam STT & TTS for voice AI',
     modelProvider: ModelProvider.SARVAM,
+  },
+  [IntegrationPlatform.VOICEMAKER]: {
+    label: 'VoiceMaker',
+    logo: '/voiceMaker.png',
+    description: 'VoiceMaker TTS for voice synthesis',
+    modelProvider: ModelProvider.VOICEMAKER,
   },
 }
 

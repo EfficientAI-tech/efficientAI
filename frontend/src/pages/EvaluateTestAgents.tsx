@@ -116,6 +116,7 @@ export default function EvaluateTestAgents() {
       case 'elevenlabs': return ModelProvider.ELEVENLABS
       case 'murf': return ModelProvider.MURF
       case 'sarvam': return ModelProvider.SARVAM
+      case 'voicemaker': return ModelProvider.VOICEMAKER
       default: return null
     }
   }

@@ -123,6 +123,13 @@ TTS_VOICES: Dict[str, List[Dict[str, str]]] = {
         {"id": "simran", "name": "Simran", "gender": "Female", "accent": "Indian"},
         {"id": "kavya", "name": "Kavya", "gender": "Female", "accent": "Indian"},
     ],
+    "voicemaker": [
+        {"id": "ai3-Jony", "name": "Jony", "gender": "Male", "accent": "American"},
+        {"id": "ai2-Katie", "name": "Katie", "gender": "Female", "accent": "American"},
+        {"id": "ai1-Joanna", "name": "Joanna", "gender": "Female", "accent": "American"},
+        {"id": "pro1-Catherine", "name": "Catherine", "gender": "Female", "accent": "British"},
+        {"id": "proplus-Richard", "name": "Richard", "gender": "Male", "accent": "British"},
+    ],
 }
 
 def _get_tts_models_by_provider() -> Dict[str, List[str]]:
@@ -143,6 +150,7 @@ PROVIDER_SAMPLE_RATES: Dict[str, List[int]] = {
     "deepgram": [8000, 16000, 24000, 48000],
     # Murf stream API valid sample rates.
     "murf": [8000, 16000, 24000, 44100, 48000],
+    "voicemaker": [8000, 16000, 22050, 24000, 44100, 48000],
 }
 
 # ======================================================================

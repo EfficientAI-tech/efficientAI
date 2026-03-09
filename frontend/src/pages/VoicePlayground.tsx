@@ -2732,6 +2732,7 @@ function providerBenchmarkColor(provider: string): string {
         elevenlabs: '#8b5cf6',
         cartesia: '#3b82f6',
         deepgram: '#f59e0b',
+        voicemaker: '#ec4899',
         google: '#ef4444',
     }
     return palette[key] || '#6b7280'

@@ -335,6 +335,20 @@
     "languages": "en, es, de, fr, hi, ja, ko, pt, it, zh, and 10+ more",
     "voices_source_file": "murf_gen2_voices.json"
   },
+  "voicemaker-ai3": {
+    "provider": "voicemaker",
+    "model_type": "tts",
+    "description": "VoiceMaker AI3 neural TTS voices",
+    "languages": "en-US, en-GB, en-AU, es-ES, fr-FR, de-DE, ja-JP, zh-CN",
+    "voices_source_file": "voicemaker_voices.json"
+  },
+  "voicemaker-proplus": {
+    "provider": "voicemaker",
+    "model_type": "tts",
+    "description": "VoiceMaker ProPlus expressive multilingual voices",
+    "languages": "multi-lang + regional accents",
+    "voices_source_file": "voicemaker_voices.json"
+  },
   "saarika:v2.5": {
     "provider": "sarvam",
     "model_type": "stt",
