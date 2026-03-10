@@ -1,5 +1,9 @@
 FROM python:3.11-slim
 
+# Build arguments for configurable installs
+ARG INSTALL_EXTRAS="qualitative-voice,reports"
+ARG PRELOAD_MODELS="true"
+
 # Install system dependencies (git needed for torch.hub clone, build-essential +
 # cmake needed for packages like praat-parselmouth on arm64/Apple Silicon)
 RUN apt-get update && apt-get install -y \
@@ -14,48 +18,55 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 # Set working directory
 WORKDIR /app
 
-# Copy dependency files and application code (needed for editable install)
+# ============================================================
+# LAYER 1: Dependencies (cached unless pyproject.toml changes)
+# ============================================================
 COPY pyproject.toml README.md ./
+
+# Create minimal src structure for editable install
+RUN mkdir -p src/efficientai && touch src/efficientai/__init__.py
+
+# Install dependencies based on INSTALL_EXTRAS arg
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=cache,target=/root/.cache/pip \
+    if [ -n "$INSTALL_EXTRAS" ]; then \
+        uv pip install --system -e ".[$INSTALL_EXTRAS]"; \
+    else \
+        uv pip install --system -e .; \
+    fi
+
+# ============================================================
+# LAYER 2: Pre-download ML models (cached, conditional)
+# ============================================================
+
+# Download qualitative-voice models if that extra is installed
+RUN if [ "$PRELOAD_MODELS" = "true" ] && echo "$INSTALL_EXTRAS" | grep -q "qualitative-voice"; then \
+    echo "Downloading UTMOS MOS predictor..." && \
+    python -c "import torch; torch.hub.load('tarepan/SpeechMOS:v1.2.0', 'utmos22_strong', trust_repo=True); print('UTMOS cached')" && \
+    echo "Downloading emotion classifier..." && \
+    python -c "from transformers import pipeline; pipeline('audio-classification', model='ehcalabres/wav2vec2-lg-xlsr-en-speech-emotion-recognition'); print('Emotion classifier cached')" && \
+    echo "Downloading valence/arousal model..." && \
+    python -c "from transformers import AutoProcessor, AutoModelForAudioClassification; AutoProcessor.from_pretrained('audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim'); AutoModelForAudioClassification.from_pretrained('audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim'); print('Valence/arousal cached')"; \
+    fi
+
+# Download NeMo ASR model if that extra is installed
+RUN if [ "$PRELOAD_MODELS" = "true" ] && echo "$INSTALL_EXTRAS" | grep -q "nemo-asr"; then \
+    echo "Downloading NeMo ASR model..." && \
+    python -c "import nemo.collections.asr as nemo_asr; nemo_asr.models.ASRModel.from_pretrained('stt_en_conformer_ctc_large'); print('NeMo ASR cached')"; \
+    fi
+
+# ============================================================
+# LAYER 3: Application code (rebuilds on code changes only)
+# ============================================================
 COPY src/ ./src/
 COPY app/ ./app/
 COPY scripts/ ./scripts/
 
-# Install dependencies (qualitative-voice for evaluation metrics, nemo-asr for TTS hallucination detection)
-RUN uv pip install --system -e ".[qualitative-voice,nemo-asr]"
-
-# ============================================================
-# Pre-download qualitative metric models into the image so
-# they are available immediately and not fetched at runtime.
-# ============================================================
-
-# 1. UTMOS MOS predictor (torch.hub -> /root/.cache/torch/hub/)
-RUN python -c "\
-import torch; \
-model = torch.hub.load('tarepan/SpeechMOS:v1.2.0', 'utmos22_strong', trust_repo=True); \
-print('UTMOS MOS predictor cached successfully'); \
-"
-
-# 2. Emotion classifier + Valence/Arousal model (HuggingFace -> /root/.cache/huggingface/hub/)
-RUN python -c "\
-from transformers import pipeline, AutoProcessor, AutoModelForAudioClassification; \
-pipe = pipeline('audio-classification', model='ehcalabres/wav2vec2-lg-xlsr-en-speech-emotion-recognition'); \
-print('Emotion classifier cached successfully'); \
-proc = AutoProcessor.from_pretrained('audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim'); \
-mdl = AutoModelForAudioClassification.from_pretrained('audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim'); \
-print('Valence/arousal model cached successfully'); \
-"
-
-# 3. NeMo Conformer CTC ASR model for TTS hallucination detection (WER/CER)
-#    Downloads from NVIDIA NGC -> /root/.cache/torch/NeMo/
-RUN python -c "\
-import nemo.collections.asr as nemo_asr; \
-model = nemo_asr.models.ASRModel.from_pretrained('stt_en_conformer_ctc_large'); \
-print('NeMo ASR model cached successfully'); \
-"
+# Re-run editable install to link the actual code
+RUN uv pip install --system -e .
 
 # Create uploads directory
 RUN mkdir -p /app/uploads
 
 # Run Celery worker
 CMD ["celery", "-A", "app.workers.celery_app", "worker", "--loglevel=info"]
-
