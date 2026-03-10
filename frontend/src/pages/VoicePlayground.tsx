@@ -62,6 +62,7 @@ interface TTSProvider {
     provider: string
     models: string[]
     voices: TTSVoice[]
+    model_voices?: Record<string, TTSVoice[]>
     supported_sample_rates?: number[]
 }
 
@@ -2438,7 +2439,8 @@ function ProviderPanel({
     const [showAdvanced, setShowAdvanced] = useState(false)
     const providerData = providers.find(p => p.provider === selectedProvider)
     const models = providerData?.models || []
-    const voices = providerData?.voices || []
+    const modelVoices = (selectedModel && providerData?.model_voices?.[selectedModel]) || []
+    const voices = modelVoices.length > 0 ? modelVoices : (providerData?.voices || [])
     const supportedRates = providerData?.supported_sample_rates || []
 
     const bgGrad = color === 'blue' ? 'bg-gradient-to-br from-blue-50 to-sky-50' : 'bg-gradient-to-br from-purple-50 to-fuchsia-50'
@@ -2730,6 +2732,7 @@ function providerBenchmarkColor(provider: string): string {
         elevenlabs: '#8b5cf6',
         cartesia: '#3b82f6',
         deepgram: '#f59e0b',
+        voicemaker: '#ec4899',
         google: '#ef4444',
     }
     return palette[key] || '#6b7280'

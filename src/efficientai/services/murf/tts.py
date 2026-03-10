@@ -4,11 +4,12 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-import base64
 import json
-from typing import AsyncGenerator, Optional
+import time
+from typing import Any, AsyncGenerator, Dict, Optional, Tuple
 
 import aiohttp
+import requests
 from loguru import logger
 from pydantic import BaseModel
 
@@ -21,6 +22,102 @@ from efficientai.frames.frames import (
 )
 from efficientai.services.tts_service import TTSService
 from efficientai.utils.tracing.service_decorators import traced_tts
+
+
+def synthesize_murf_stream_bytes(
+    text: str,
+    model: str,
+    api_key: str,
+    voice: Optional[str] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Tuple[bytes, float]:
+    """Synthesize speech bytes via Murf streaming REST API.
+
+    Returns:
+        Tuple of (audio_bytes, ttfb_ms).
+    """
+    model_map = {
+        "murf-falcon": "FALCON",
+        "murf-gen2": "GEN2",
+    }
+    murf_model = model_map.get((model or "").lower(), model or "GEN2")
+
+    model_upper = str(murf_model).upper()
+    # Murf currently supports FALCON on global endpoint, while GEN2 may require api.murf.ai.
+    base_url = "https://api.murf.ai" if model_upper == "GEN2" else "https://global.api.murf.ai"
+    url = f"{base_url}/v1/speech/stream"
+    headers = {
+        "api-key": api_key,
+        "Content-Type": "application/json",
+    }
+
+    effective_config = dict(config) if config else {}
+    # Murf API uses `rate`; older callers may send `speed`.
+    if "speed" in effective_config and "rate" not in effective_config:
+        effective_config["rate"] = effective_config.pop("speed")
+
+    sample_rate_hz = effective_config.pop("sample_rate_hz", None)
+    voice_id = voice or "en-US-natalie"
+    locale = effective_config.get("locale")
+    if not locale and voice_id and "-" in voice_id:
+        # Infer locale from voice IDs like "en-US-aarav" -> "en-US".
+        parts = voice_id.split("-")
+        if len(parts) >= 2:
+            locale = f"{parts[0]}-{parts[1]}"
+
+    default_sample_rate = 24000 if model_upper == "FALCON" else 44100
+    payload: Dict[str, Any] = {
+        "text": text,
+        "voiceId": voice_id,
+        "model": murf_model,
+        "format": "MP3",
+        "channelType": "MONO",
+        "sampleRate": int(sample_rate_hz) if sample_rate_hz else default_sample_rate,
+    }
+    if locale:
+        payload["locale"] = locale
+    if effective_config:
+        payload.update(effective_config)
+
+    start = time.time()
+    response = requests.post(url, json=payload, headers=headers, stream=True, timeout=60)
+    if response.status_code != 200:
+        error_text = response.text[:500] if response.text else ""
+
+        # Fallback: Murf can reject a model on one base URL and instruct another.
+        if (
+            response.status_code == 400
+            and "not available in global.api.murf.ai" in error_text
+            and "api.murf.ai" in error_text
+            and "global.api.murf.ai" in url
+        ):
+            fallback_url = "https://api.murf.ai/v1/speech/stream"
+            response = requests.post(
+                fallback_url, json=payload, headers=headers, stream=True, timeout=60
+            )
+            if response.status_code != 200:
+                fallback_error = response.text[:500] if response.text else ""
+                raise RuntimeError(
+                    f"Murf stream failed ({response.status_code}) at {fallback_url}: {fallback_error}"
+                )
+        else:
+            raise RuntimeError(
+                f"Murf stream failed ({response.status_code}) at {url}: {error_text}"
+            )
+
+    ttfb_ms: Optional[float] = None
+    chunks: list[bytes] = []
+    for chunk in response.iter_content(chunk_size=8192):
+        if chunk:
+            if ttfb_ms is None:
+                ttfb_ms = (time.time() - start) * 1000
+            chunks.append(chunk)
+
+    audio_bytes = b"".join(chunks)
+    if not audio_bytes:
+        raise RuntimeError("Murf streaming API returned empty audio")
+
+    return audio_bytes, ttfb_ms if ttfb_ms is not None else (time.time() - start) * 1000
 
 
 class MurfTTSService(TTSService):

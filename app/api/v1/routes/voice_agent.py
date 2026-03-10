@@ -127,6 +127,7 @@ async def websocket_endpoint(
                 ModelProvider.ELEVENLABS: IntegrationPlatform.ELEVENLABS,
                 ModelProvider.MURF: IntegrationPlatform.MURF,
                 ModelProvider.SARVAM: IntegrationPlatform.SARVAM,
+                ModelProvider.VOICEMAKER: IntegrationPlatform.VOICEMAKER,
             }
             plat = platform_map.get(provider)
             if plat:
@@ -784,6 +785,7 @@ async def bot_connect(
                 'elevenlabs': IntegrationPlatform.ELEVENLABS,
                 'murf': IntegrationPlatform.MURF,
                 'sarvam': IntegrationPlatform.SARVAM,
+                'voicemaker': IntegrationPlatform.VOICEMAKER,
             }
             plat = platform_map.get(provider_value.lower())
             if plat:

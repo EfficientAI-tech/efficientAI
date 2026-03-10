@@ -817,6 +817,9 @@ def generate_tts_comparison_task(self, comparison_id: str):
                 sample_rate_hz = voice_meta.get("sample_rate_hz")
                 if sample_rate_hz:
                     tts_config["sample_rate_hz"] = int(sample_rate_hz)
+                language_code = voice_meta.get("language_code")
+                if language_code:
+                    tts_config["language_code"] = language_code
 
                 provider_enum = ModelProvider(sample.provider)
                 logger.info(
@@ -1117,7 +1120,12 @@ def evaluate_tts_comparison_task(self, comparison_id: str):
                 if not audio_bytes:
                     continue
 
-                tmp_fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
+                ext = ".mp3"
+                if sample.audio_s3_key:
+                    key_ext = os.path.splitext(sample.audio_s3_key)[1].lower()
+                    if key_ext in {".wav", ".mp3", ".flac", ".ogg", ".m4a"}:
+                        ext = key_ext
+                tmp_fd, tmp_path = tempfile.mkstemp(suffix=ext)
                 os.close(tmp_fd)
                 with open(tmp_path, "wb") as f:
                     f.write(audio_bytes)

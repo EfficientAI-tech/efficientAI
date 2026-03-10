@@ -21,7 +21,7 @@ export default function Integrations() {
   const [integrationType, setIntegrationType] = useState<IntegrationType>(null)
   const [selectedIntegration, setSelectedIntegration] = useState<Integration | null>(null)
   const [selectedAIProvider, setSelectedAIProvider] = useState<AIProvider | null>(null)
-  const [selectedPlatform, setSelectedPlatform] = useState<'retell' | 'vapi' | 'cartesia' | 'elevenlabs' | 'deepgram' | 'murf' | 'sarvam' | null>(null)
+  const [selectedPlatform, setSelectedPlatform] = useState<'retell' | 'vapi' | 'cartesia' | 'elevenlabs' | 'deepgram' | 'murf' | 'sarvam' | 'voicemaker' | null>(null)
   const [selectedProvider, setSelectedProvider] = useState<ModelProvider | null>(null)
   const [showProviderDropdown, setShowProviderDropdown] = useState(false)
   const [showPlatformDropdown, setShowPlatformDropdown] = useState(false)
@@ -185,7 +185,7 @@ export default function Integrations() {
   const handleEdit = (integration: Integration) => {
     setIntegrationType('voice_platform')
     setSelectedIntegration(integration)
-    setSelectedPlatform(integration.platform as 'retell' | 'vapi' | 'cartesia' | 'elevenlabs' | 'deepgram' | 'murf' | 'sarvam')
+    setSelectedPlatform(integration.platform as 'retell' | 'vapi' | 'cartesia' | 'elevenlabs' | 'deepgram' | 'murf' | 'sarvam' | 'voicemaker')
     setName(integration.name || '')
     setApiKey('') // Don't pre-fill API key for security
     setPublicKey(integration.public_key || '')
@@ -335,6 +335,12 @@ export default function Integrations() {
       name: 'Sarvam',
       description: 'Connect your Sarvam STT & TTS voice AI',
       image: '/sarvam.png',
+    },
+    {
+      id: IntegrationPlatform.VOICEMAKER,
+      name: 'VoiceMaker',
+      description: 'Connect your VoiceMaker TTS voice AI',
+      image: '/voiceMaker.png',
     },
   ]
 
@@ -641,7 +647,7 @@ export default function Integrations() {
                               key={platform.id}
                               type="button"
                               onClick={() => {
-                                setSelectedPlatform(platform.id as 'retell' | 'vapi' | 'cartesia' | 'elevenlabs' | 'deepgram' | 'murf' | 'sarvam')
+                                setSelectedPlatform(platform.id as 'retell' | 'vapi' | 'cartesia' | 'elevenlabs' | 'deepgram' | 'murf' | 'sarvam' | 'voicemaker')
                                 setShowPlatformDropdown(false)
                               }}
                               className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center gap-2 transition-colors"

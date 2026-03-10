@@ -175,6 +175,7 @@ export enum IntegrationPlatform {
   DEEPGRAM = 'deepgram',
   MURF = 'murf',
   SARVAM = 'sarvam',
+  VOICEMAKER = 'voicemaker',
 }
 
 export interface Integration {
@@ -209,6 +210,7 @@ export enum ModelProvider {
   MURF = 'murf',
   CUSTOM = 'custom',
   SARVAM = 'sarvam',
+  VOICEMAKER = 'voicemaker',
 }
 
 // AI Provider Types

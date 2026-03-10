@@ -90,6 +90,8 @@ export default function VoiceBundles() {
         return ModelProvider.MURF
       case 'sarvam':
         return ModelProvider.SARVAM
+      case 'voicemaker':
+        return ModelProvider.VOICEMAKER
       default:
         return null
     }

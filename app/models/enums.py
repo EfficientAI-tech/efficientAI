@@ -98,6 +98,7 @@ class IntegrationPlatform(str, enum.Enum):
     DEEPGRAM = "deepgram"
     MURF = "murf"
     SARVAM = "sarvam"
+    VOICEMAKER = "voicemaker"
 
 class ModelProvider(str, enum.Enum):
     """Model provider enumeration for extensibility."""
@@ -112,6 +113,7 @@ class ModelProvider(str, enum.Enum):
     MURF = "murf"
     CUSTOM = "custom"
     SARVAM = "sarvam"
+    VOICEMAKER = "voicemaker"
 
 class VoiceBundleType(str, enum.Enum):
     """VoiceBundle type enumeration."""
