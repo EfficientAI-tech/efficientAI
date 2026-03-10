@@ -124,11 +124,16 @@ TTS_VOICES: Dict[str, List[Dict[str, str]]] = {
         {"id": "kavya", "name": "Kavya", "gender": "Female", "accent": "Indian"},
     ],
     "voicemaker": [
-        {"id": "ai3-Jony", "name": "Jony", "gender": "Male", "accent": "American"},
-        {"id": "ai2-Katie", "name": "Katie", "gender": "Female", "accent": "American"},
-        {"id": "ai1-Joanna", "name": "Joanna", "gender": "Female", "accent": "American"},
-        {"id": "pro1-Catherine", "name": "Catherine", "gender": "Female", "accent": "British"},
-        {"id": "proplus-Richard", "name": "Richard", "gender": "Male", "accent": "British"},
+        {"id": "ai3-Jony", "name": "Jony", "gender": "Male", "accent": "American", "language_code": "en-US"},
+        {"id": "ai2-Katie", "name": "Katie", "gender": "Female", "accent": "American", "language_code": "en-US"},
+        {"id": "ai1-Joanna", "name": "Joanna", "gender": "Female", "accent": "American", "language_code": "en-US"},
+        {"id": "pro1-Catherine", "name": "Catherine", "gender": "Female", "accent": "British", "language_code": "en-GB"},
+        {"id": "proplus-Richard", "name": "Richard", "gender": "Male", "accent": "British", "language_code": "en-GB"},
+        {"id": "proplus-Emma", "name": "Emma", "gender": "Female", "accent": "British", "language_code": "en-GB"},
+        {"id": "ai3-Ana", "name": "Ana", "gender": "Female", "accent": "Spanish", "language_code": "es-ES"},
+        {"id": "ai3-Lea", "name": "Lea", "gender": "Female", "accent": "German", "language_code": "de-DE"},
+        {"id": "ai3-Keiko", "name": "Keiko", "gender": "Female", "accent": "Japanese", "language_code": "ja-JP"},
+        {"id": "ai3-Liang", "name": "Liang", "gender": "Male", "accent": "Chinese", "language_code": "zh-CN"},
     ],
 }
 

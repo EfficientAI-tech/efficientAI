@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import re
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -90,6 +91,68 @@ class VoicePlaygroundReportService:
             return f"{value * 100:.1f}%"
         return f"{value:.2f}"
 
+    @staticmethod
+    def _humanize_identifier(value: str | None) -> str:
+        if not value:
+            return "N/A"
+        raw = str(value).strip()
+        if not raw:
+            return "N/A"
+
+        exact_map = {
+            "elevenlabs": "ElevenLabs",
+            "openai": "OpenAI",
+            "voicemaker": "VoiceMaker",
+            "deepgram": "Deepgram",
+            "cartesia": "Cartesia",
+            "sarvam": "Sarvam",
+            "murf": "Murf",
+            "google": "Google",
+        }
+        mapped = exact_map.get(raw.lower())
+        if mapped:
+            return mapped
+
+        token_map = {
+            "tts": "TTS",
+            "asr": "ASR",
+            "mos": "MOS",
+            "wer": "WER",
+            "cer": "CER",
+            "v1": "V1",
+            "v2": "V2",
+            "v3": "V3",
+            "hd": "HD",
+            "turbo": "Turbo",
+            "gpt": "GPT",
+        }
+        tokens = [t for t in re.split(r"[_\-\s]+", raw) if t]
+        if not tokens:
+            return raw
+
+        out: list[str] = []
+        for token in tokens:
+            low = token.lower()
+            if low in token_map:
+                out.append(token_map[low])
+            elif len(token) <= 4 and token.isupper():
+                out.append(token)
+            elif token and token[0].isdigit():
+                out.append(token.upper())
+            else:
+                out.append(token.capitalize())
+        return " ".join(out)
+
+    @staticmethod
+    def _endpoint_type(avg_ttfb_ms: float | None, avg_latency_ms: float | None) -> str:
+        """Infer endpoint mode from timing profile when explicit metadata is unavailable."""
+        if avg_ttfb_ms is None or avg_latency_ms is None or avg_latency_ms <= 0:
+            return "Unknown endpoint"
+        ratio = avg_ttfb_ms / avg_latency_ms
+        if ratio <= 0.65:
+            return "Streaming (inferred)"
+        return "Non-streaming (inferred)"
+
     def build_payload(self, comparison: Any, samples: list[Any]) -> dict[str, Any]:
         """Build template context from comparison and sample rows."""
         grouped: dict[tuple[str, str, str, str], list[Any]] = defaultdict(list)
@@ -154,20 +217,35 @@ class VoicePlaygroundReportService:
                     hallucination_examples.append(
                         {
                             "provider": provider,
+                            "provider_display": self._humanize_identifier(provider),
                             "model": model,
+                            "model_display": self._humanize_identifier(model),
                             "voice_name": voice_name,
+                            "voice_display": self._humanize_identifier(voice_name),
                             "prompt": sample.text,
                             "prediction": asr_text,
                             "wer": wer_score,
                         }
                     )
 
+            provider_display = self._humanize_identifier(provider)
+            model_display = self._humanize_identifier(model)
+            voice_display = self._humanize_identifier(voice_name)
+            avg_latency_ms = self._safe_mean(latency_values)
+            avg_ttfb_ms = self._safe_mean(ttfb_values)
             row = {
                 "provider": provider,
+                "provider_display": provider_display,
                 "model": model,
+                "model_display": model_display,
                 "voice_id": voice_id,
                 "voice_name": voice_name,
-                "variant_label": f"{provider} / {voice_name} ({model})",
+                "voice_display": voice_display,
+                "variant_label": (
+                    f"Provider: {provider_display} | "
+                    f"Model: {model_display} | "
+                    f"Voice: {voice_display}"
+                ),
                 "sample_count": len(provider_samples),
                 "avg_mos": self._safe_mean(mos_values),
                 "avg_valence": self._safe_mean(valence_values),
@@ -175,8 +253,9 @@ class VoicePlaygroundReportService:
                 "avg_prosody": self._safe_mean(prosody_values),
                 "avg_wer": self._safe_mean(wer_values),
                 "avg_cer": self._safe_mean(cer_values),
-                "avg_latency_ms": self._safe_mean(latency_values),
-                "avg_ttfb_ms": self._safe_mean(ttfb_values),
+                "avg_latency_ms": avg_latency_ms,
+                "avg_ttfb_ms": avg_ttfb_ms,
+                "endpoint_type": self._endpoint_type(avg_ttfb_ms, avg_latency_ms),
                 "cost_per_1m": self._safe_mean(cost_values),
             }
             provider_rows.append(row)
@@ -248,8 +327,11 @@ class VoicePlaygroundReportService:
                 {
                     "text": text,
                     "provider": provider,
+                    "provider_display": self._humanize_identifier(provider),
                     "model": model,
+                    "model_display": self._humanize_identifier(model),
                     "voice_name": voice_name,
+                    "voice_display": self._humanize_identifier(voice_name),
                     "runs": len(snapshots),
                     "representative": representative,
                     "best": best,
@@ -307,6 +389,45 @@ class VoicePlaygroundReportService:
             key=lambda r: ((r.get("avg_mos") is None), -(r.get("avg_mos") or 0))
         )
 
+        metric_directions = {
+            "avg_mos": True,
+            "avg_valence": True,
+            "avg_arousal": True,
+            "avg_prosody": True,
+            "avg_wer": False,
+            "avg_cer": False,
+            "avg_latency_ms": False,
+            "avg_ttfb_ms": False,
+        }
+        metric_bounds: dict[str, tuple[float, float] | None] = {}
+        for key in metric_directions:
+            values = [float(r[key]) for r in provider_rows if r.get(key) is not None]
+            metric_bounds[key] = (min(values), max(values)) if values else None
+
+        for row in provider_rows:
+            classes: dict[str, str] = {}
+            for key, higher_better in metric_directions.items():
+                value = row.get(key)
+                bounds = metric_bounds.get(key)
+                if value is None or bounds is None:
+                    classes[key] = "metric-neutral"
+                    continue
+                low, high = bounds
+                spread = high - low
+                if spread <= 0:
+                    classes[key] = "metric-neutral"
+                    continue
+                norm = (float(value) - low) / spread
+                if not higher_better:
+                    norm = 1 - norm
+                if norm >= 0.67:
+                    classes[key] = "metric-good"
+                elif norm <= 0.33:
+                    classes[key] = "metric-bad"
+                else:
+                    classes[key] = "metric-neutral"
+            row["metric_classes"] = classes
+
         def _winner(rows: list[dict[str, Any]], key: str, mode: str) -> dict[str, Any] | None:
             valid = [r for r in rows if r.get(key) is not None]
             if not valid:
@@ -318,7 +439,6 @@ class VoicePlaygroundReportService:
         top_naturalness = _winner(provider_rows, "avg_mos", "max")
         lowest_latency = _winner(provider_rows, "avg_latency_ms", "min")
         lowest_hallucination = _winner(provider_rows, "avg_wer", "min")
-        best_cost = _winner(provider_rows, "cost_per_1m", "min")
         best_context = _winner(provider_rows, "avg_prosody", "max")
 
         recommendations = []
@@ -336,14 +456,6 @@ class VoicePlaygroundReportService:
                     "use_case": "Real-time Voice Agent",
                     "provider": lowest_latency["variant_label"],
                     "reason": f"Lowest latency ({self._to_ms(lowest_latency['avg_latency_ms'])} avg).",
-                }
-            )
-        if best_cost:
-            recommendations.append(
-                {
-                    "use_case": "Low-cost Applications",
-                    "provider": best_cost["variant_label"],
-                    "reason": f"Lowest estimated cost (${best_cost['cost_per_1m']:.2f} per 1M chars).",
                 }
             )
         if lowest_hallucination:
@@ -370,6 +482,7 @@ class VoicePlaygroundReportService:
             {
                 "key": "avg_mos",
                 "title": "MOS Score Ranking",
+                "full_form": "Mean Opinion Score (MOS)",
                 "subtitle": "Higher is better",
                 "higher_is_better": True,
                 "min_value": 1.0,
@@ -380,6 +493,7 @@ class VoicePlaygroundReportService:
             {
                 "key": "avg_prosody",
                 "title": "Prosody Score Ranking",
+                "full_form": "Prosody Score",
                 "subtitle": "Higher is better",
                 "higher_is_better": True,
                 "min_value": 0.0,
@@ -390,6 +504,7 @@ class VoicePlaygroundReportService:
             {
                 "key": "avg_valence",
                 "title": "Valence Ranking",
+                "full_form": "Valence",
                 "subtitle": "Higher is better",
                 "higher_is_better": True,
                 "min_value": -1.0,
@@ -400,6 +515,7 @@ class VoicePlaygroundReportService:
             {
                 "key": "avg_arousal",
                 "title": "Arousal Ranking",
+                "full_form": "Arousal",
                 "subtitle": "Higher is better",
                 "higher_is_better": True,
                 "min_value": 0.0,
@@ -410,6 +526,7 @@ class VoicePlaygroundReportService:
             {
                 "key": "avg_wer",
                 "title": "WER Ranking",
+                "full_form": "Word Error Rate (WER)",
                 "subtitle": "Lower is better",
                 "higher_is_better": False,
                 "min_value": 0.0,
@@ -420,6 +537,7 @@ class VoicePlaygroundReportService:
             {
                 "key": "avg_cer",
                 "title": "CER Ranking",
+                "full_form": "Character Error Rate (CER)",
                 "subtitle": "Lower is better",
                 "higher_is_better": False,
                 "min_value": 0.0,
@@ -430,6 +548,7 @@ class VoicePlaygroundReportService:
             {
                 "key": "avg_ttfb_ms",
                 "title": "TTFB Ranking",
+                "full_form": "Time to First Byte (TTFB)",
                 "subtitle": "Lower is better",
                 "higher_is_better": False,
                 "min_value": None,
@@ -440,6 +559,7 @@ class VoicePlaygroundReportService:
             {
                 "key": "avg_latency_ms",
                 "title": "Total Latency Ranking",
+                "full_form": "Total Synthesis Latency",
                 "subtitle": "Lower is better",
                 "higher_is_better": False,
                 "min_value": None,
@@ -507,6 +627,7 @@ class VoicePlaygroundReportService:
             metric_sections.append(
                 {
                     "title": metric["title"],
+                    "full_form": metric["full_form"],
                     "subtitle": metric["subtitle"],
                     "range_label": (
                         f"{metric.get('range_label')} | Bar length represents raw metric magnitude"
@@ -519,9 +640,67 @@ class VoicePlaygroundReportService:
             "top_naturalness": top_naturalness,
             "lowest_latency": lowest_latency,
             "lowest_hallucination": lowest_hallucination,
-            "best_cost_efficiency": best_cost,
             "best_context": best_context,
         }
+
+        endpoint_modes = sorted({r["endpoint_type"] for r in provider_rows if r.get("endpoint_type")})
+
+        metrics_glossary = [
+            {
+                "major_metric": "Naturalness",
+                "sub_metric": "MOS",
+                "full_form": "Mean Opinion Score",
+                "description": "Perceived speech quality on a 1-5 scale.",
+            },
+            {
+                "major_metric": "Speech Accuracy",
+                "sub_metric": "WER",
+                "full_form": "Word Error Rate",
+                "description": "Word-level transcription mismatch between prompt and ASR output.",
+            },
+            {
+                "major_metric": "Speech Accuracy",
+                "sub_metric": "CER",
+                "full_form": "Character Error Rate",
+                "description": "Character-level mismatch between prompt and ASR output.",
+            },
+            {
+                "major_metric": "Latency",
+                "sub_metric": "TTFB",
+                "full_form": "Time to First Byte",
+                "description": "Time from API request start to first audio byte received.",
+            },
+            {
+                "major_metric": "Latency",
+                "sub_metric": "Total Latency",
+                "full_form": "Total Synthesis Latency",
+                "description": "Total time from API request start to full audio payload received.",
+            },
+            {
+                "major_metric": "Emotion",
+                "sub_metric": "Valence",
+                "full_form": "Valence",
+                "description": "Emotional polarity estimate (negative to positive).",
+            },
+            {
+                "major_metric": "Emotion",
+                "sub_metric": "Arousal",
+                "full_form": "Arousal",
+                "description": "Emotional intensity estimate (calm to energetic).",
+            },
+            {
+                "major_metric": "Expressiveness",
+                "sub_metric": "Prosody",
+                "full_form": "Prosody Score",
+                "description": "Rhythm, stress, and intonation stability proxy.",
+            },
+        ]
+        qualitative_metrics = [
+            m for m in metrics_glossary if m["major_metric"] in {"Naturalness", "Emotion", "Expressiveness"}
+        ]
+        quantitative_metrics = [
+            m for m in metrics_glossary if m["major_metric"] in {"Speech Accuracy", "Latency"}
+        ]
 
         disclaimer_sections = [
             {
@@ -577,6 +756,7 @@ class VoicePlaygroundReportService:
                     "Prosody Score: Expressiveness proxy from acoustic variation and emotional intensity.",
                     "WER / CER: ASR transcript distance versus source prompt text (entity-normalized variant used for primary ranking).",
                     "Latency / TTFB: End-to-end synthesis latency and first-byte response time.",
+                    "Total latency formula: request_start -> first_byte (TTFB) + first_byte -> final_audio_byte.",
                     "Per-transcript run variability: representative run chosen near mean quality, plus best and worst outlier runs.",
                 ],
             },
@@ -598,6 +778,34 @@ class VoicePlaygroundReportService:
             },
         ]
 
+        provider_overview_map: dict[str, dict[str, Any]] = {}
+        for row in provider_rows:
+            provider_key = row["provider_display"]
+            bucket = provider_overview_map.setdefault(
+                provider_key,
+                {
+                    "provider": row["provider_display"],
+                    "models": set(),
+                    "voices": set(),
+                    "sample_count": 0,
+                },
+            )
+            bucket["models"].add(row["model_display"])
+            bucket["voices"].add(row["voice_display"])
+            bucket["sample_count"] += int(row.get("sample_count") or 0)
+
+        provider_overview = []
+        for provider_name in sorted(provider_overview_map.keys()):
+            bucket = provider_overview_map[provider_name]
+            provider_overview.append(
+                {
+                    "provider": bucket["provider"],
+                    "models": ", ".join(sorted(bucket["models"])),
+                    "voices": ", ".join(sorted(bucket["voices"])),
+                    "sample_count": bucket["sample_count"],
+                }
+            )
+
         return {
             "title": "Voice AI Benchmark Report",
             "subtitle": "TTS Provider Comparison",
@@ -607,22 +815,24 @@ class VoicePlaygroundReportService:
             "comparison_id": str(comparison.id),
             "simulation_id": comparison.simulation_id,
             "comparison_name": comparison.name,
-            "providers_tested": sorted({s.provider for s in samples}),
-            "voices_tested": sorted({(s.voice_name or s.voice_id) for s in samples}),
+            "providers_tested": sorted({r["provider_display"] for r in provider_rows}),
+            "voices_tested": sorted({r["voice_display"] for r in provider_rows}),
+            "tested_variants": sorted({r["variant_label"] for r in provider_rows}),
+            "provider_overview": provider_overview,
             "num_runs": comparison.num_runs or 1,
+            "total_runs_observed": len({s.run_index for s in samples}),
             "sample_count": len(samples),
+            "endpoint_modes": endpoint_modes,
             "summary": summary,
             "provider_rows": provider_rows,
             "provider_aggregate_rows": provider_aggregate_rows,
             "metric_sections": metric_sections,
             "hallucination_examples": hallucination_examples,
+            "metrics_glossary": metrics_glossary,
+            "qualitative_metrics": qualitative_metrics,
+            "quantitative_metrics": quantitative_metrics,
             "run_variability_rows": run_variability_rows,
             "has_run_variability": len(run_variability_rows) > 0,
-            "has_multilingual_data": False,
-            "multilingual_rows": [],
-            "has_instruction_data": False,
-            "instruction_rows": [],
-            "cost_rows": [r for r in provider_rows if r.get("cost_per_1m") is not None],
             "recommendations": recommendations,
             "disclaimer_sections": disclaimer_sections,
             "methodology_sections": methodology_sections,

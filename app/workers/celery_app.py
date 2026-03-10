@@ -817,6 +817,9 @@ def generate_tts_comparison_task(self, comparison_id: str):
                 sample_rate_hz = voice_meta.get("sample_rate_hz")
                 if sample_rate_hz:
                     tts_config["sample_rate_hz"] = int(sample_rate_hz)
+                language_code = voice_meta.get("language_code")
+                if language_code:
+                    tts_config["language_code"] = language_code
 
                 provider_enum = ModelProvider(sample.provider)
                 logger.info(

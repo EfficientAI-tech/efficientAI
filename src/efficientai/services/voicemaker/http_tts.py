@@ -1,9 +1,36 @@
 """Lightweight VoiceMaker TTS helper for app-level synthesis."""
 
+import json
 import time
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import requests
+
+_VOICE_LANG_CACHE: Dict[str, str] | None = None
+
+
+def _infer_language_code(voice_id: str) -> str:
+    """Resolve the LanguageCode for a VoiceMaker voice ID.
+
+    Checks the bundled voicemaker_voices.json first, then falls back to en-US.
+    """
+    global _VOICE_LANG_CACHE
+    if _VOICE_LANG_CACHE is None:
+        _VOICE_LANG_CACHE = {}
+        config_path = Path(__file__).resolve().parents[4] / "app" / "config" / "voicemaker_voices.json"
+        if config_path.exists():
+            try:
+                voices = json.loads(config_path.read_text())
+                for v in voices:
+                    vid = v.get("id", "")
+                    lang = v.get("language_code", "")
+                    if vid and lang:
+                        _VOICE_LANG_CACHE[vid] = lang
+            except Exception:
+                pass
+
+    return _VOICE_LANG_CACHE.get(voice_id, "en-US")
 
 
 def synthesize_voicemaker_bytes(
@@ -17,10 +44,15 @@ def synthesize_voicemaker_bytes(
     effective_config = dict(config) if config else {}
     sample_rate_hz = effective_config.pop("sample_rate_hz", None)
 
+    voice_id = voice or effective_config.pop("VoiceId", "ai3-Jony")
+    language_code = effective_config.pop("LanguageCode", None) or effective_config.pop("language_code", None)
+    if not language_code:
+        language_code = _infer_language_code(voice_id)
+
     payload: Dict[str, Any] = {
-        "VoiceId": voice or effective_config.pop("VoiceId", "ai3-Jony"),
+        "VoiceId": voice_id,
         "Text": text,
-        "LanguageCode": effective_config.pop("LanguageCode", "en-US"),
+        "LanguageCode": language_code,
         "OutputFormat": effective_config.pop("OutputFormat", "mp3"),
         "SampleRate": str(int(sample_rate_hz)) if sample_rate_hz else str(effective_config.pop("SampleRate", "48000")),
         "ResponseType": effective_config.pop("ResponseType", "file"),
