@@ -40,13 +40,14 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # ============================================================
 
 # Download qualitative-voice models if that extra is installed
+# Note: UTMOS uses torch.hub which can hit GitHub rate limits in CI
+# We skip UTMOS preload in Docker (it will download on first use) but preload HuggingFace models
 RUN if [ "$PRELOAD_MODELS" = "true" ] && echo "$INSTALL_EXTRAS" | grep -q "qualitative-voice"; then \
-    echo "Downloading UTMOS MOS predictor..." && \
-    python -c "import torch; torch.hub.load('tarepan/SpeechMOS:v1.2.0', 'utmos22_strong', trust_repo=True); print('UTMOS cached')" && \
-    echo "Downloading emotion classifier..." && \
+    echo "Downloading emotion classifier from HuggingFace..." && \
     python -c "from transformers import pipeline; pipeline('audio-classification', model='ehcalabres/wav2vec2-lg-xlsr-en-speech-emotion-recognition'); print('Emotion classifier cached')" && \
-    echo "Downloading valence/arousal model..." && \
-    python -c "from transformers import AutoProcessor, AutoModelForAudioClassification; AutoProcessor.from_pretrained('audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim'); AutoModelForAudioClassification.from_pretrained('audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim'); print('Valence/arousal cached')"; \
+    echo "Downloading valence/arousal model from HuggingFace..." && \
+    python -c "from transformers import AutoProcessor, AutoModelForAudioClassification; AutoProcessor.from_pretrained('audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim'); AutoModelForAudioClassification.from_pretrained('audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim'); print('Valence/arousal cached')" && \
+    echo "Note: UTMOS model will be downloaded on first use (torch.hub has GitHub rate limits in CI)"; \
     fi
 
 # Download NeMo ASR model if that extra is installed
