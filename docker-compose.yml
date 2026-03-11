@@ -28,12 +28,14 @@ services:
       retries: 5
 
   api:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.api
+    # Pre-built image from GitHub Container Registry
+    image: ghcr.io/efficientai-tech/efficientai-api:latest
+    # For local development, uncomment below to build instead of pull:
+    # build:
+    #   context: .
+    #   dockerfile: docker/Dockerfile.api
     container_name: efficientai_api
     environment:
-      # These can be overridden by config.yml, but provide defaults for Docker networking
       DATABASE_URL: postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-efficientai}
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
@@ -44,11 +46,9 @@ services:
       FRONTEND_DIR: /app/frontend/dist
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
     volumes:
-      - ./app:/app/app
       - ./uploads:/app/uploads
       - ./.encryption_key:/app/.encryption_key:ro
       - ./config.docker.yml:/app/config.yml:ro
-      # Note: Frontend is built into the image, not mounted as volume
     ports:
       - "8000:8000"
     depends_on:
@@ -59,24 +59,25 @@ services:
     command: eai start --config /app/config.yml --host 0.0.0.0 --port 8000 --no-build-frontend
 
   worker:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.worker
+    # Pre-built image from GitHub Container Registry
+    image: ghcr.io/efficientai-tech/efficientai-worker:latest
+    # For local development, uncomment below to build instead of pull:
+    # build:
+    #   context: .
+    #   dockerfile: docker/Dockerfile.worker
+    #   args:
+    #     INSTALL_EXTRAS: "qualitative-voice,reports"
+    #     PRELOAD_MODELS: "true"
     container_name: efficientai_worker
     # Use host network mode for WebRTC connectivity (Retell/Vapi calls)
     network_mode: host
     environment:
-      # When using host network, config.yml with localhost URLs works directly
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
     volumes:
-      - ./app:/app/app
       - ./uploads:/app/uploads
       - ./.encryption_key:/app/.encryption_key:ro
-      # Worker uses host network, so regular config.yml with localhost URLs works
       - ./config.yml:/app/config.yml:ro
-    # Note: depends_on doesn't work with network_mode: host, ensure db/redis are running
     command: eai worker --config /app/config.yml --loglevel info
 
 volumes:
   postgres_data:
-

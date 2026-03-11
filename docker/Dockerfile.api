@@ -16,31 +16,48 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 # Set working directory
 WORKDIR /app
 
-# Copy dependency files and application code (needed for editable install)
+# ============================================================
+# LAYER 1: Python dependencies (cached unless pyproject.toml changes)
+# ============================================================
 COPY pyproject.toml README.md ./
-COPY src/ ./src/
-COPY app/ ./app/
-COPY scripts/ ./scripts/
+
+# Create minimal src structure for editable install
+RUN mkdir -p src/efficientai && touch src/efficientai/__init__.py
 
 # Install Python dependencies
-RUN uv pip install --system -e .
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=cache,target=/root/.cache/pip \
+    uv pip install --system -e .
 
-# Build frontend
-# Copy package files first for better layer caching
+# ============================================================
+# LAYER 2: Frontend dependencies (cached unless package.json changes)
+# ============================================================
 COPY frontend/package.json frontend/package-lock.json* ./frontend/
 WORKDIR /app/frontend
+
 # Install all dependencies (including dev dependencies needed for build)
 # Use --legacy-peer-deps to resolve peer dependency conflicts with HeroUI and Tailwind
-RUN npm ci --legacy-peer-deps || npm install --legacy-peer-deps
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --legacy-peer-deps || npm install --legacy-peer-deps
 
-# Copy frontend source files
+# ============================================================
+# LAYER 3: Frontend build (rebuilds on frontend code changes)
+# ============================================================
 COPY frontend/ ./
 
 # Build frontend for production
 RUN npm run build
 
-# Return to app directory
+# ============================================================
+# LAYER 4: Backend code (rebuilds on backend code changes)
+# ============================================================
 WORKDIR /app
+COPY src/ ./src/
+COPY app/ ./app/
+COPY scripts/ ./scripts/
+
+# Re-run editable install to link the actual code
+RUN uv pip install --system -e .
 
 # Create uploads directory
 RUN mkdir -p /app/uploads
@@ -50,4 +67,3 @@ EXPOSE 8000
 
 # Run the application
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
-
