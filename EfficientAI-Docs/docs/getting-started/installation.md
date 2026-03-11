@@ -8,9 +8,9 @@ sidebar_position: 1
 
 There are two ways to run the application:
 
-## Method 1: Using Docker Compose
+## Method 1: Using Docker Compose (Recommended)
 
-Start all services:
+Start all services with a single command:
 
 ```bash
 docker compose up -d
@@ -18,19 +18,22 @@ docker compose up -d
 
 This will automatically:
 
-- Build Docker images if they don't exist
-- Build the frontend during the Docker build process
+- **Pull pre-built images** from GitHub Container Registry (no build required!)
 - Start all services (database, Redis, API, worker)
 - Run database migrations automatically on startup
 
-**Note**: If you make changes to the frontend or backend code, you may need to rebuild:
+The first run will download ~4GB of images, which typically takes 1-2 minutes depending on your internet speed.
+
+### Using a Specific Version
+
+You can pin to a specific release version for stability:
 
 ```bash
-# Rebuild and restart (forces rebuild even if image exists)
-docker compose up -d --build
+# Use a specific version
+EFFICIENTAI_VERSION=1.0.0 docker compose up -d
 
-# Or rebuild without cache for a clean build
-docker compose build --no-cache api
+# Or add to your .env file for persistence
+echo "EFFICIENTAI_VERSION=1.0.0" >> .env
 docker compose up -d
 ```
 
@@ -57,10 +60,17 @@ docker compose exec api python scripts/create_api_key.py "My API Key"
 - Frontend: http://localhost:8000/
 - API Docs: http://localhost:8000/docs
 
-**Note**: The frontend is automatically built into the Docker image during the first `docker compose up -d` command. If you make frontend changes later, rebuild with:
+### Building Locally (for development)
+
+If you want to build images locally instead of pulling pre-built ones (e.g., for development):
 
 ```bash
+# Edit docker-compose.yml to uncomment the 'build' sections, then:
 docker compose up -d --build
+
+# Or rebuild without cache for a clean build
+docker compose build --no-cache api worker
+docker compose up -d
 ```
 
 ## Method 2: Using Command Line (CLI)
@@ -210,9 +220,34 @@ This will:
 
 **For Docker Compose**:
 - Docker and Docker Compose installed
+- ~4GB disk space for pre-built images
 
 **For CLI**:
 - Python 3.11+
 - Node.js 18+ and npm
 - PostgreSQL running (locally or remote)
 - Redis running (locally or remote)
+
+## Docker Images
+
+EfficientAI provides pre-built Docker images hosted on GitHub Container Registry:
+
+| Image | Description | Size |
+|-------|-------------|------|
+| `ghcr.io/efficientai-tech/efficientai-api` | API server + frontend | ~1.5GB |
+| `ghcr.io/efficientai-tech/efficientai-worker` | Celery worker with ML models | ~4GB |
+
+### Available Tags
+
+- `latest` - Most recent build from main branch
+- `x.y.z` - Specific version (e.g., `1.0.0`)
+- `x.y` - Latest patch of a minor version (e.g., `1.0`)
+
+### Manual Pull (Optional)
+
+Images are pulled automatically by `docker compose up`, but you can pre-pull them:
+
+```bash
+docker pull ghcr.io/efficientai-tech/efficientai-api:latest
+docker pull ghcr.io/efficientai-tech/efficientai-worker:latest
+```
