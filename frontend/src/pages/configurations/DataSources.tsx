@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../lib/api'
-import { useState, useRef, useMemo } from 'react'
+import { useState, useRef, useMemo, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import {
   Database,
   Upload,
@@ -42,6 +43,11 @@ export default function DataSources() {
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   const [loadingAudio, setLoadingAudio] = useState<string | null>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
+
+  const renderModal = (content: ReactNode) => {
+    if (typeof document === 'undefined') return null
+    return createPortal(content, document.body)
+  }
 
   const { data: s3Status, refetch: refetchStatus } = useQuery({
     queryKey: ['s3-status'],
@@ -536,8 +542,8 @@ export default function DataSources() {
       <audio ref={audioRef} className="hidden" />
 
       {/* Upload Modal */}
-      {showUploadModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      {showUploadModal && renderModal(
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]">
           <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
             <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
               <h3 className="text-lg font-semibold">Upload Audio File</h3>
@@ -640,8 +646,8 @@ export default function DataSources() {
       )}
 
       {/* Delete Confirmation Modal */}
-      {showDeleteModal && fileToDelete && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      {showDeleteModal && fileToDelete && renderModal(
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]">
           <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
             <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
               <h3 className="text-lg font-semibold text-red-600">Confirm Deletion</h3>

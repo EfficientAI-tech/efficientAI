@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { createPortal } from 'react-dom'
 import { apiClient } from '../../lib/api'
 import { VoiceBundle, VoiceBundleCreate, ModelProvider, AIProvider, VoiceBundleType, Integration, IntegrationPlatform } from '../../types/api'
 import { Mic, Plus, Edit, Trash2, X, Loader, Volume2, Brain, MessageSquare, AlertCircle, ChevronDown } from 'lucide-react'
@@ -31,6 +32,11 @@ export default function VoiceBundles() {
     s2s_provider: null,
     s2s_model: null,
   })
+
+  const renderModal = (content: ReactNode) => {
+    if (typeof document === 'undefined') return null
+    return createPortal(content, document.body)
+  }
 
   const { data: voicebundles = [], isLoading } = useQuery({
     queryKey: ['voicebundles'],
@@ -507,7 +513,7 @@ export default function VoiceBundles() {
       )}
 
       {/* Create Modal */}
-      {showCreateModal && (
+      {showCreateModal && renderModal(
         <VoiceBundleModal
           title="Create VoiceBundle"
           formData={formData}
@@ -526,7 +532,7 @@ export default function VoiceBundles() {
       )}
 
       {/* Edit Modal */}
-      {showEditModal && selectedBundle && (
+      {showEditModal && selectedBundle && renderModal(
         <VoiceBundleModal
           title="Edit VoiceBundle"
           formData={formData}
@@ -546,8 +552,8 @@ export default function VoiceBundles() {
       )}
 
       {/* Delete Confirmation Modal */}
-      {showDeleteModal && selectedBundle && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={() => {
+      {showDeleteModal && selectedBundle && renderModal(
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]" onClick={() => {
           setShowDeleteModal(false)
           setSelectedBundle(null)
           setDeleteDependencies(null)
@@ -726,7 +732,7 @@ function VoiceBundleModal({
     }
   }, [showSttDropdown, showLlmDropdown, showTtsDropdown, showS2sDropdown])
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 overflow-y-auto">
+    <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999] overflow-y-auto">
       <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full mx-4 my-8">
         <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center sticky top-0 bg-white z-10">
           <h3 className="text-lg font-semibold">{title}</h3>
