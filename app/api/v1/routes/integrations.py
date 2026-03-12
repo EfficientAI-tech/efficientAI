@@ -11,10 +11,9 @@ from uuid import UUID
 from app.dependencies import get_db, get_organization_id, get_api_key
 from app.models.database import Integration, IntegrationPlatform, Agent
 from app.models.schemas import (
-    IntegrationCreate, IntegrationUpdate, IntegrationResponse, MessageResponse
+    IntegrationCreate, IntegrationUpdate, IntegrationResponse
 )
 from app.core.encryption import encrypt_api_key, decrypt_api_key
-from app.services.voice_providers import get_voice_provider
 
 router = APIRouter(prefix="/integrations", tags=["Integrations"])
 
@@ -212,62 +211,6 @@ async def delete_integration(
         )
 
     return JSONResponse(status_code=204, content=None)
-
-
-@router.post("/{integration_id}/test", response_model=MessageResponse)
-async def test_integration(
-    integration_id: UUID,
-    organization_id: UUID = Depends(get_organization_id),
-    api_key: str = Depends(get_api_key),
-    db: Session = Depends(get_db)
-):
-    """
-    Test an integration by validating the API key.
-    Requires at least READER role.
-    """
-    integration = db.query(Integration).filter(
-        Integration.id == integration_id,
-        Integration.organization_id == organization_id
-    ).first()
-    
-    if not integration:
-        raise HTTPException(status_code=404, detail="Integration not found")
-    
-    # Decrypt API key
-    try:
-        decrypted_api_key = decrypt_api_key(integration.api_key)
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to decrypt API key: {str(e)}"
-        )
-
-    # Get the appropriate voice provider
-    try:
-        provider_class = get_voice_provider(integration.platform)
-        provider = provider_class(api_key=decrypted_api_key)
-        
-        # Test connection
-        provider.test_connection()
-        
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Connection test failed: {str(e)}"
-        )
-    
-    # Mark as tested
-    from datetime import datetime
-    integration.last_tested_at = datetime.utcnow()
-    db.commit()
-    
-    return {"message": f"Integration with {integration.platform} is valid"}
-
 
 @router.get("/{integration_id}/api-key")
 async def get_integration_api_key(

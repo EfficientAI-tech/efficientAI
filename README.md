@@ -45,7 +45,7 @@ Test quality, measure performance, & ship with confidence.
 
 There are two ways to run the application:
 
-### Method 1: Using Docker Compose
+### Method 1: Using Docker Compose (Recommended)
 
 1. **Start all services**
    ```bash
@@ -53,18 +53,17 @@ There are two ways to run the application:
    ```
    
    This will automatically:
-   - Build Docker images if they don't exist
-   - Build the frontend during the Docker build process
+   - Pull pre-built images from GitHub Container Registry (no build required!)
    - Start all services (database, Redis, API, worker)
    - Run database migrations automatically on startup
    
-   **Note:** If you make changes to the frontend or backend code, you may need to rebuild:
+   **Using a specific version:**
    ```bash
-   # Rebuild and restart (forces rebuild even if image exists)
-   docker compose up -d --build
+   # Pin to a specific release version
+   EFFICIENTAI_VERSION=1.0.0 docker compose up -d
    
-   # Or rebuild without cache for a clean build
-   docker compose build --no-cache api worker
+   # Or add to your .env file
+   echo "EFFICIENTAI_VERSION=1.0.0" >> .env
    docker compose up -d
    ```
 
@@ -80,6 +79,19 @@ There are two ways to run the application:
 4. **Access the application**
    - Frontend: http://localhost:8000/
    - API Docs: http://localhost:8000/docs
+
+#### Building Locally (for development)
+
+If you want to build images locally instead of pulling pre-built ones:
+
+```bash
+# Edit docker-compose.yml to uncomment the 'build' sections, then:
+docker compose up -d --build
+
+# Or rebuild without cache for a clean build
+docker compose build --no-cache api worker
+docker compose up -d
+```
 
 ### Method 2: Using Command Line (CLI)
 
@@ -161,6 +173,7 @@ There are two ways to run the application:
 
 **For Docker Compose:**
 - Docker and Docker Compose installed
+- ~4GB disk space for pre-built images
 
 **For CLI:**
 - Python 3.11+

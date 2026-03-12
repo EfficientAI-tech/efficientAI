@@ -85,8 +85,6 @@ Please evaluate this conversation and provide:
 2. A brief reason for your answer
 3. Additional metrics about the conversation quality:
    - Professionalism (0-1 scale)
-   - Clarity (0-1 scale)
-   - Empathy (0-1 scale, if applicable)
    - Problem Resolution (0-1 scale, if applicable)
    - Overall Quality (0-1 scale)
 4. An overall score (0.0 to 1.0) representing how well the agent performed
@@ -97,8 +95,6 @@ Respond in JSON format with the following structure:
     "objective_achieved_reason": "brief explanation",
     "additional_metrics": {{
         "professionalism": 0.0-1.0,
-        "clarity": 0.0-1.0,
-        "empathy": 0.0-1.0,
         "problem_resolution": 0.0-1.0,
         "overall_quality": 0.0-1.0
     }},
@@ -151,6 +147,9 @@ Only respond with valid JSON, no additional text."""
         objective_achieved = bool(evaluation_data.get("objective_achieved", False))
         objective_achieved_reason = evaluation_data.get("objective_achieved_reason", "")
         additional_metrics = evaluation_data.get("additional_metrics", {})
+        # Explicitly remove deprecated dimensions so they are not evaluated/stored.
+        additional_metrics.pop("clarity", None)
+        additional_metrics.pop("empathy", None)
         overall_score = float(evaluation_data.get("overall_score", 0.0))
         
         # Calculate audio metrics if enabled and audio is available

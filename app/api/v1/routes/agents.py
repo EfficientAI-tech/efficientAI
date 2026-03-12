@@ -3,7 +3,7 @@ Agents API Routes
 Complete CRUD operations for test agents
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from uuid import UUID
@@ -145,6 +145,48 @@ def generate_unique_agent_id(db: Session) -> str:
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         detail="Failed to generate unique agent ID"
     )
+
+
+def get_agent_dependencies(db: Session, organization_id: UUID, agent_uuid: UUID) -> dict:
+    """Return dependency counts that block non-force delete."""
+    evaluators_count = db.query(Evaluator).filter(
+        Evaluator.agent_id == agent_uuid,
+        Evaluator.organization_id == organization_id,
+    ).count()
+
+    evaluator_results_count = db.query(EvaluatorResult).filter(
+        EvaluatorResult.agent_id == agent_uuid,
+        EvaluatorResult.organization_id == organization_id,
+    ).count()
+
+    call_recordings_count = db.query(CallRecording).filter(
+        CallRecording.agent_id == agent_uuid,
+        CallRecording.organization_id == organization_id,
+    ).count()
+
+    conversation_evaluations_count = db.query(ConversationEvaluation).filter(
+        ConversationEvaluation.agent_id == agent_uuid,
+        ConversationEvaluation.organization_id == organization_id,
+    ).count()
+
+    test_conversations_count = db.query(TestAgentConversation).filter(
+        TestAgentConversation.agent_id == agent_uuid,
+        TestAgentConversation.organization_id == organization_id,
+    ).count()
+
+    dependencies = {}
+    if evaluators_count > 0:
+        dependencies["evaluators"] = evaluators_count
+    if evaluator_results_count > 0:
+        dependencies["evaluator_results"] = evaluator_results_count
+    if call_recordings_count > 0:
+        dependencies["call_recordings"] = call_recordings_count
+    if conversation_evaluations_count > 0:
+        dependencies["conversation_evaluations"] = conversation_evaluations_count
+    if test_conversations_count > 0:
+        dependencies["test_conversations"] = test_conversations_count
+
+    return dependencies
 
 
 @router.post("", response_model=AgentResponse, status_code=status.HTTP_201_CREATED)
@@ -380,56 +422,20 @@ async def delete_agent(
         raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
     
     agent_uuid = db_agent.id
-
-    evaluators_count = db.query(Evaluator).filter(
-        Evaluator.agent_id == agent_uuid,
-        Evaluator.organization_id == organization_id,
-    ).count()
-
-    evaluator_results_count = db.query(EvaluatorResult).filter(
-        EvaluatorResult.agent_id == agent_uuid,
-        EvaluatorResult.organization_id == organization_id,
-    ).count()
-
-    call_recordings_count = db.query(CallRecording).filter(
-        CallRecording.agent_id == agent_uuid,
-        CallRecording.organization_id == organization_id,
-    ).count()
-
-    conversation_evaluations_count = db.query(ConversationEvaluation).filter(
-        ConversationEvaluation.agent_id == agent_uuid,
-        ConversationEvaluation.organization_id == organization_id,
-    ).count()
-
-    test_conversations_count = db.query(TestAgentConversation).filter(
-        TestAgentConversation.agent_id == agent_uuid,
-        TestAgentConversation.organization_id == organization_id,
-    ).count()
-
-    dependencies = {}
-    if evaluators_count > 0:
-        dependencies["evaluators"] = evaluators_count
-    if evaluator_results_count > 0:
-        dependencies["evaluator_results"] = evaluator_results_count
-    if call_recordings_count > 0:
-        dependencies["call_recordings"] = call_recordings_count
-    if conversation_evaluations_count > 0:
-        dependencies["conversation_evaluations"] = conversation_evaluations_count
-    if test_conversations_count > 0:
-        dependencies["test_conversations"] = test_conversations_count
+    dependencies = get_agent_dependencies(db, organization_id, agent_uuid)
 
     if dependencies and not force:
         parts = []
-        if evaluators_count > 0:
-            parts.append(f"{evaluators_count} evaluator(s)")
-        if evaluator_results_count > 0:
-            parts.append(f"{evaluator_results_count} evaluator result(s)")
-        if call_recordings_count > 0:
-            parts.append(f"{call_recordings_count} call recording(s)")
-        if conversation_evaluations_count > 0:
-            parts.append(f"{conversation_evaluations_count} conversation evaluation(s)")
-        if test_conversations_count > 0:
-            parts.append(f"{test_conversations_count} test conversation(s)")
+        if dependencies.get("evaluators"):
+            parts.append(f"{dependencies['evaluators']} evaluator(s)")
+        if dependencies.get("evaluator_results"):
+            parts.append(f"{dependencies['evaluator_results']} evaluator result(s)")
+        if dependencies.get("call_recordings"):
+            parts.append(f"{dependencies['call_recordings']} call recording(s)")
+        if dependencies.get("conversation_evaluations"):
+            parts.append(f"{dependencies['conversation_evaluations']} conversation evaluation(s)")
+        if dependencies.get("test_conversations"):
+            parts.append(f"{dependencies['test_conversations']} test conversation(s)")
 
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -479,5 +485,40 @@ async def delete_agent(
             },
         )
 
-    return JSONResponse(status_code=204, content=None)
+    return Response(status_code=204)
+
+
+@router.get("/{agent_id}/delete-impact")
+async def get_agent_delete_impact(
+    agent_id: str,
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db)
+):
+    """Preview dependent records that would be affected by force delete."""
+    try:
+        agent_uuid = UUID(agent_id)
+        db_agent = db.query(Agent).filter(
+            and_(
+                Agent.id == agent_uuid,
+                Agent.organization_id == organization_id
+            )
+        ).first()
+    except ValueError:
+        db_agent = db.query(Agent).filter(
+            and_(
+                Agent.agent_id == agent_id,
+                Agent.organization_id == organization_id
+            )
+        ).first()
+
+    if not db_agent:
+        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
+
+    dependencies = get_agent_dependencies(db, organization_id, db_agent.id)
+    return {
+        "agent_id": str(db_agent.id),
+        "agent_name": db_agent.name,
+        "dependencies": dependencies,
+        "can_delete_without_force": len(dependencies) == 0,
+    }
 

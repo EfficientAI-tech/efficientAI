@@ -254,6 +254,16 @@ class ApiClient {
     return response.data
   }
 
+  async getAgentDeleteImpact(agentId: string): Promise<{
+    agent_id: string
+    agent_name: string
+    dependencies: Record<string, number>
+    can_delete_without_force: boolean
+  }> {
+    const response = await this.client.get(`/api/v1/agents/${agentId}/delete-impact`)
+    return response.data
+  }
+
   async generateAgentDescription(data: {
     description: string
     tone?: string
@@ -326,6 +336,7 @@ class ApiClient {
 
   async createScenario(data: {
     name: string
+    agent_id?: string | null
     description?: string | null
     required_info: Record<string, string>
   }): Promise<any> {
@@ -333,7 +344,12 @@ class ApiClient {
     return response.data
   }
 
-  async updateScenario(scenarioId: string, data: any): Promise<any> {
+  async updateScenario(scenarioId: string, data: {
+    name?: string
+    agent_id?: string | null
+    description?: string | null
+    required_info?: Record<string, string>
+  }): Promise<any> {
     const response = await this.client.put(`/api/v1/scenarios/${scenarioId}`, data)
     return response.data
   }
@@ -513,11 +529,6 @@ class ApiClient {
     const response = await this.client.delete(`/api/v1/integrations/${integrationId}`, {
       params: force ? { force: true } : undefined,
     })
-    return response.data
-  }
-
-  async testIntegration(integrationId: string): Promise<MessageResponse> {
-    const response = await this.client.post(`/api/v1/integrations/${integrationId}/test`)
     return response.data
   }
 
@@ -866,6 +877,7 @@ class ApiClient {
   }
 
   async createEvaluatorsBulk(data: {
+    name?: string
     agent_id: string
     scenario_id: string
     persona_ids: string[]
@@ -1197,6 +1209,7 @@ class ApiClient {
   }
 
   async updateCustomTTSVoice(customVoiceId: string, data: {
+    voice_id?: string
     name?: string
     gender?: string
     accent?: string

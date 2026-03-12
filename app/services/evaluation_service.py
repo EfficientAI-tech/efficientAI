@@ -1,6 +1,5 @@
 """Core evaluation service for processing audio evaluations."""
 
-import whisper
 import time
 from datetime import datetime
 from typing import Optional, Dict, Any
@@ -11,6 +10,23 @@ from app.models.database import Evaluation, EvaluationResult, EvaluationStatus, 
 from app.services.metrics_service import metrics_service
 from app.services.audio_service import AudioService
 from app.core.exceptions import EvaluationNotFoundError, AudioFileNotFoundError
+
+# Lazy import for whisper (optional dependency)
+whisper = None
+
+def _get_whisper():
+    """Lazy load whisper module."""
+    global whisper
+    if whisper is None:
+        try:
+            import whisper as _whisper
+            whisper = _whisper
+        except ImportError:
+            raise ImportError(
+                "openai-whisper is not installed. Install it with: "
+                "pip install 'efficientai[local-whisper]' or use the OpenAI Whisper API instead."
+            )
+    return whisper
 
 audio_service = AudioService()
 
@@ -36,7 +52,8 @@ class EvaluationService:
 
         if model_name not in self.model_cache:
             try:
-                model = whisper.load_model(model_name)
+                whisper_module = _get_whisper()
+                model = whisper_module.load_model(model_name)
                 self.model_cache[model_name] = model
             except Exception as e:
                 raise RuntimeError(f"Failed to load model {model_name}: {str(e)}")

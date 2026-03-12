@@ -1,3 +1,11 @@
+# EfficientAI Docker Compose
+# 
+# Usage:
+#   docker compose up                           # Uses latest images
+#   EFFICIENTAI_VERSION=1.0.0 docker compose up # Uses specific version
+#
+# For local development, uncomment the 'build' sections below.
+
 services:
   db:
     image: postgres:15
@@ -29,7 +37,8 @@ services:
 
   api:
     # Pre-built image from GitHub Container Registry
-    image: ghcr.io/efficientai-tech/efficientai-api:latest
+    # Use EFFICIENTAI_VERSION env var to pin to a specific version (e.g., 1.0.0)
+    image: ghcr.io/efficientai-tech/efficientai-api:${EFFICIENTAI_VERSION:-latest}
     # For local development, uncomment below to build instead of pull:
     # build:
     #   context: .
@@ -60,7 +69,8 @@ services:
 
   worker:
     # Pre-built image from GitHub Container Registry
-    image: ghcr.io/efficientai-tech/efficientai-worker:latest
+    # Use EFFICIENTAI_VERSION env var to pin to a specific version (e.g., 1.0.0)
+    image: ghcr.io/efficientai-tech/efficientai-worker:${EFFICIENTAI_VERSION:-latest}
     # For local development, uncomment below to build instead of pull:
     # build:
     #   context: .

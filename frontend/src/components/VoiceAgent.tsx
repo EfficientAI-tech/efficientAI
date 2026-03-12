@@ -8,6 +8,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { PipecatClient, PipecatClientOptions, RTVIEvent } from '@pipecat-ai/client-js'
 import { WebSocketTransport } from '@pipecat-ai/websocket-transport'
+import ReactMarkdown from 'react-markdown'
 import { Mic, MicOff, Loader, MessageSquare } from 'lucide-react'
 import Button from './Button'
 import { useAgentStore } from '../store/agentStore'
@@ -300,9 +301,13 @@ export default function VoiceAgent({ personaId, scenarioId, agentId }: VoiceAgen
         <div className="flex items-center justify-between mb-4">
           <div>
             <h2 className="text-lg font-semibold text-gray-900">{agentName}</h2>
-            <p className="text-sm text-gray-600 mt-1">
-              {agentDescription}
-            </p>
+            {selectedAgent?.description ? (
+              <div className="prose prose-sm max-w-none prose-headings:text-gray-900 prose-p:text-gray-700 prose-code:text-gray-800 prose-code:bg-gray-100 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-pre:bg-gray-900 prose-pre:text-gray-100 prose-ul:text-gray-700 prose-ol:text-gray-700 mt-2 max-h-48 overflow-y-auto pr-1">
+                <ReactMarkdown>{agentDescription}</ReactMarkdown>
+              </div>
+            ) : (
+              <p className="text-sm text-gray-600 mt-1">{agentDescription}</p>
+            )}
           </div>
         </div>
 

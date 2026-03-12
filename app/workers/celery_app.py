@@ -10,6 +10,9 @@ from app.services.evaluation_service import evaluation_service
 from uuid import UUID
 from loguru import logger
 
+# Metrics that should never be evaluated.
+REMOVED_EVALUATION_METRIC_NAMES = {"clarity and empathy"}
+
 # Load config.yml if it exists (before using settings)
 # This ensures the Celery worker has the same configuration as the main app
 config_path = Path("config.yml")
@@ -198,6 +201,10 @@ def process_evaluator_result_task(self, result_id: str):
                 Metric.organization_id == result.organization_id,
                 Metric.enabled == True
             ).all()
+            enabled_metrics = [
+                m for m in enabled_metrics
+                if (m.name or "").strip().lower() not in REMOVED_EVALUATION_METRIC_NAMES
+            ]
             
             # Step 5: Evaluate against enabled metrics using LLM
             metric_scores = {}

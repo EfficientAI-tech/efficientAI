@@ -62,7 +62,8 @@ def list_metrics(
 ):
     """List all metrics for the organization."""
     metrics = db.query(Metric).filter(
-        Metric.organization_id == organization_id
+        Metric.organization_id == organization_id,
+        ~Metric.name.in_(REMOVED_DEFAULT_METRICS),
     ).order_by(Metric.is_default.desc(), Metric.created_at.desc()).all()
     return metrics
 
@@ -154,7 +155,9 @@ def update_metric(
 
 
 # Deprecated default metrics that can be deleted
-DEPRECATED_DEFAULT_METRICS = {"Response Time", "Customer Satisfaction"}
+DEPRECATED_DEFAULT_METRICS = {"Response Time", "Customer Satisfaction", "Clarity and Empathy"}
+# Removed default metrics should no longer be listed/seeded/evaluated.
+REMOVED_DEFAULT_METRICS = {"Clarity and Empathy"}
 
 
 @router.delete("/{metric_id}", status_code=204)
@@ -205,13 +208,6 @@ def seed_default_metrics(
             "enabled": True,
         },
         {
-            "name": "Clarity and Empathy",
-            "description": "Evaluates the clarity of communication and empathetic responses",
-            "metric_type": MetricType.RATING,
-            "trigger": MetricTrigger.ALWAYS,
-            "enabled": True,
-        },
-        {
             "name": "Professionalism",
             "description": "Assesses the professional tone and behavior throughout the conversation",
             "metric_type": MetricType.RATING,
@@ -240,21 +236,21 @@ def seed_default_metrics(
             "description": "Cycle-to-cycle pitch period variation as percentage - indicates vocal stability. Lower values (< 1%) indicate stable voice.",
             "metric_type": MetricType.NUMBER,
             "trigger": MetricTrigger.ALWAYS,
-            "enabled": True,
+            "enabled": False,
         },
         {
             "name": "Shimmer",
             "description": "Cycle-to-cycle amplitude variation as percentage - indicates voice quality. Lower values (< 3%) indicate consistent voice.",
             "metric_type": MetricType.NUMBER,
             "trigger": MetricTrigger.ALWAYS,
-            "enabled": True,
+            "enabled": False,
         },
         {
             "name": "HNR",
             "description": "Harmonics-to-Noise Ratio in dB - indicates voice clarity. Higher values (> 20 dB) indicate cleaner voice with less breathiness.",
             "metric_type": MetricType.NUMBER,
             "trigger": MetricTrigger.ALWAYS,
-            "enabled": True,
+            "enabled": False,
         },
         # =========================================================================
         # AI Voice Metrics (ML models - human-likeness, emotion, consistency)
@@ -332,6 +328,21 @@ def seed_default_metrics(
             )
             db.add(metric)
             created_metrics.append(metric)
+        else:
+            # Keep default acoustic metric toggles aligned with product defaults.
+            if existing.enabled != metric_data["enabled"]:
+                existing.enabled = metric_data["enabled"]
+
+    # Ensure removed defaults are disabled for existing orgs.
+    removed_metrics = db.query(Metric).filter(
+        and_(
+            Metric.organization_id == organization_id,
+            Metric.name.in_(REMOVED_DEFAULT_METRICS),
+            Metric.enabled == True,
+        )
+    ).all()
+    for metric in removed_metrics:
+        metric.enabled = False
 
     db.commit()
     for metric in created_metrics:
