@@ -1,7 +1,7 @@
 """Common dependencies for FastAPI routes."""
 
 from fastapi import Header, HTTPException, Depends
-from typing import Optional, Tuple
+from typing import Optional
 from sqlalchemy.orm import Session
 from uuid import UUID
 from app.database import get_db
@@ -89,19 +89,10 @@ def require_enterprise_feature(feature: str):
             dependencies=[Depends(require_enterprise_feature("voice_playground"))]
         )
     """
-    def _check(
-        x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
-        x_efficientai_api_key: Optional[str] = Header(None, alias="X-EFFICIENTAI-API-KEY"),
-        db: Session = Depends(get_db),
-    ):
-        organization_id = None
-        api_key = x_api_key or x_efficientai_api_key
-        if api_key:
-            try:
-                organization_id = get_api_key_organization_id(api_key, db)
-            except Exception:
-                pass
 
+    def _check(
+        organization_id: UUID = Depends(get_organization_id),
+    ):
         if not is_feature_enabled(feature, organization_id):
             raise HTTPException(
                 status_code=403,
@@ -115,5 +106,6 @@ def require_enterprise_feature(feature: str):
                     ),
                 },
             )
+
     return _check
 

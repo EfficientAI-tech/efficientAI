@@ -27,9 +27,16 @@ from loguru import logger
 
 _license_cache: Dict[str, Any] | None = None
 
-ENTERPRISE_FEATURES = [
-    "voice_playground",
-]
+FEATURE_CATALOG: Dict[str, Dict[str, str]] = {
+    "voice_playground": {
+        "title": "Voice Playground",
+        "description": "A/B test TTS providers with blind tests and quality analytics.",
+        "category": "playground",
+    },
+}
+
+# Backward-compatible export used by existing API response shape.
+ENTERPRISE_FEATURES = list(FEATURE_CATALOG.keys())
 
 # RSA public key used to verify enterprise license JWTs.
 # The corresponding private key is kept offline by the EfficientAI team.
@@ -97,7 +104,17 @@ def get_license_info() -> Dict[str, Any]:
 
 def get_enabled_features() -> List[str]:
     """Return the list of enterprise features enabled by the current license."""
-    return get_license_info().get("features", [])
+    licensed_features = get_license_info().get("features", [])
+    if not isinstance(licensed_features, list):
+        return []
+    # Keep only known feature IDs to avoid accidental entitlement typos.
+    return [f for f in licensed_features if f in FEATURE_CATALOG]
+
+
+def get_feature_catalog() -> Dict[str, Dict[str, str]]:
+    """Return metadata for all enterprise features."""
+    # Return shallow copies to avoid callers mutating global state.
+    return {feature: meta.copy() for feature, meta in FEATURE_CATALOG.items()}
 
 
 def get_licensed_org_id() -> Optional[str]:
@@ -113,15 +130,16 @@ def is_feature_enabled(feature: str, organization_id: Optional[UUID] = None) -> 
     If org_id is absent from the license, the feature is enabled deployment-wide.
     """
     info = get_license_info()
-    if feature not in info.get("features", []):
+    if feature not in get_enabled_features():
         return False
 
     licensed_org = info.get("org_id")
     if licensed_org is None:
         return True
 
+    # For org-scoped licenses, we require a concrete requesting organization.
     if organization_id is None:
-        return True
+        return False
 
     return str(organization_id) == str(licensed_org)
 

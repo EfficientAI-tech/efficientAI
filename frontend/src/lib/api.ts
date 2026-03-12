@@ -23,6 +23,22 @@ import type {
   S3Status,
 } from '../types/api'
 
+export interface EnterpriseFeatureMeta {
+  title: string
+  description?: string
+  category?: string
+}
+
+export type EnterpriseFeatureCatalog = Record<string, EnterpriseFeatureMeta>
+
+export interface LicenseInfoResponse {
+  is_enterprise: boolean
+  enabled_features: string[]
+  all_enterprise_features: string[]
+  feature_catalog?: EnterpriseFeatureCatalog
+  organization?: string
+}
+
 // When running in production (served from same origin), use relative path
 // Otherwise use environment variable or default
 const API_BASE_URL = import.meta.env.VITE_API_URL ||
@@ -1427,12 +1443,7 @@ class ApiClient {
   }
 
   // License / Enterprise
-  async getLicenseInfo(): Promise<{
-    is_enterprise: boolean
-    enabled_features: string[]
-    all_enterprise_features: string[]
-    organization?: string
-  }> {
+  async getLicenseInfo(): Promise<LicenseInfoResponse> {
     const response = await this.client.get('/api/v1/settings/license-info')
     return response.data
   }
