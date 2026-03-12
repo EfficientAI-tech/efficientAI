@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { X, Sparkles, Loader2, Bot, Eye, Code } from 'lucide-react'
+import { X, Sparkles, Loader2, Bot, Eye, Code, FileText } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import Button from '../../../components/Button'
 import { apiClient } from '../../../lib/api'
@@ -26,6 +26,12 @@ interface CreateAgentModalProps {
   showToast: (message: string, type: 'success' | 'error') => void
 }
 
+interface PromptPartial {
+  id: string
+  name: string
+  description?: string | null
+}
+
 export default function CreateAgentModal({
   isOpen,
   onClose,
@@ -39,6 +45,9 @@ export default function CreateAgentModal({
   const [aiFormat, setAiFormat] = useState('structured')
   const [aiProvider, setAiProvider] = useState('')
   const [aiModel, setAiModel] = useState('')
+  const [showUseSavedModal, setShowUseSavedModal] = useState(false)
+  const [savedPromptSearch, setSavedPromptSearch] = useState('')
+  const [selectedSavedPromptId, setSelectedSavedPromptId] = useState('')
   
   const [formData, setFormData] = useState<FormData>({
     name: '',
@@ -72,6 +81,11 @@ export default function CreateAgentModal({
     queryFn: () => apiClient.getModelOptions(aiProvider),
     enabled: !!aiProvider,
   })
+  const { data: savedPromptPartials = [], isLoading: isLoadingSavedPromptPartials } = useQuery<PromptPartial[]>({
+    queryKey: ['create-agent-prompt-partials', savedPromptSearch],
+    queryFn: () => apiClient.listPromptPartials(0, 100, savedPromptSearch.trim() || undefined),
+    enabled: showUseSavedModal,
+  })
 
   const llmModels = modelOptions?.llm || []
 
@@ -93,6 +107,26 @@ export default function CreateAgentModal({
     },
     onError: (err: any) => {
       showToast(err?.response?.data?.detail || 'Failed to generate description with AI', 'error')
+    },
+  })
+
+  const useSavedPromptMutation = useMutation({
+    mutationFn: (promptPartialId: string) => apiClient.getPromptPartial(promptPartialId),
+    onSuccess: (data) => {
+      const content = (data?.content || '').trim()
+      if (!content) {
+        showToast('Selected prompt partial has no content', 'error')
+        return
+      }
+      setFormData((prev) => ({ ...prev, description: content }))
+      setDescriptionEditorMode('preview')
+      setShowUseSavedModal(false)
+      setSavedPromptSearch('')
+      setSelectedSavedPromptId('')
+      showToast('Saved prompt applied to System Prompt', 'success')
+    },
+    onError: (err: any) => {
+      showToast(err?.response?.data?.detail || 'Failed to load saved prompt', 'error')
     },
   })
 
@@ -152,6 +186,9 @@ export default function CreateAgentModal({
     setAiFormat('structured')
     setAiProvider('')
     setAiModel('')
+    setShowUseSavedModal(false)
+    setSavedPromptSearch('')
+    setSelectedSavedPromptId('')
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -311,6 +348,14 @@ export default function CreateAgentModal({
                     <Sparkles className="h-3 w-3" />
                   )}
                   {generateDescriptionMutation.isPending ? 'Generating...' : 'AI Generate'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowUseSavedModal(true)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-lg border border-primary-300 bg-primary-50 text-primary-700 hover:bg-primary-100"
+                >
+                  <FileText className="h-3 w-3" />
+                  Use Saved
                 </button>
                 <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
                   <button
@@ -566,6 +611,103 @@ export default function CreateAgentModal({
           </div>
         </form>
       </div>
+
+      {showUseSavedModal && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]" onClick={() => {
+          setShowUseSavedModal(false)
+          setSavedPromptSearch('')
+          setSelectedSavedPromptId('')
+        }}>
+          <div className="bg-white rounded-lg shadow-xl max-w-3xl w-full mx-4 max-h-[85vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+              <h3 className="text-lg font-semibold text-gray-900">Use Saved Prompt Partials</h3>
+              <button
+                onClick={() => {
+                  setShowUseSavedModal(false)
+                  setSavedPromptSearch('')
+                  setSelectedSavedPromptId('')
+                }}
+                className="text-gray-400 hover:text-gray-600"
+                aria-label="Close use saved prompts modal"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="p-6 space-y-4 overflow-y-auto flex-1">
+              <input
+                type="text"
+                value={savedPromptSearch}
+                onChange={(e) => setSavedPromptSearch(e.target.value)}
+                placeholder="Search saved prompts..."
+                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+              />
+
+              {isLoadingSavedPromptPartials ? (
+                <div className="flex items-center justify-center py-8 text-sm text-gray-500">
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Loading saved prompts...
+                </div>
+              ) : savedPromptPartials.length === 0 ? (
+                <div className="rounded-lg border border-gray-200 p-8 text-center text-sm text-gray-500">
+                  No saved prompt partials found.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {savedPromptPartials.map((partial) => {
+                    const isSelected = selectedSavedPromptId === partial.id
+                    return (
+                      <label
+                        key={partial.id}
+                        className={`block cursor-pointer rounded-lg border p-3 transition-colors ${
+                          isSelected ? 'border-primary-300 bg-primary-50' : 'border-gray-200 hover:bg-gray-50'
+                        }`}
+                      >
+                        <div className="flex items-start gap-3">
+                          <input
+                            type="radio"
+                            name="saved-prompt-partial"
+                            checked={isSelected}
+                            onChange={() => setSelectedSavedPromptId(partial.id)}
+                            className="mt-1 h-4 w-4 border-gray-300 text-primary-600 focus:ring-primary-500"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-semibold text-gray-900">{partial.name}</p>
+                            {partial.description && (
+                              <p className="mt-0.5 text-xs text-gray-500">{partial.description}</p>
+                            )}
+                          </div>
+                        </div>
+                      </label>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+            <div className="px-6 py-4 border-t border-gray-200 flex justify-end gap-3">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setShowUseSavedModal(false)
+                  setSavedPromptSearch('')
+                  setSelectedSavedPromptId('')
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                variant="primary"
+                onClick={() => useSavedPromptMutation.mutate(selectedSavedPromptId)}
+                isLoading={useSavedPromptMutation.isPending}
+                disabled={!selectedSavedPromptId}
+              >
+                Use Selected Prompt
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

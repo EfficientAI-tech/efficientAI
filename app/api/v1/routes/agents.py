@@ -3,7 +3,7 @@ Agents API Routes
 Complete CRUD operations for test agents
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from uuid import UUID
@@ -485,7 +485,7 @@ async def delete_agent(
             },
         )
 
-    return JSONResponse(status_code=204, content=None)
+    return Response(status_code=204)
 
 
 @router.get("/{agent_id}/delete-impact")
