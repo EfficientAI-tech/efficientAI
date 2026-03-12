@@ -3,13 +3,13 @@ Scenarios API Routes
 Complete CRUD operations for test scenarios
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
 from typing import List
 from uuid import UUID
 
 from app.dependencies import get_db, get_organization_id
-from app.models.database import Scenario, Evaluator, EvaluatorResult, TestAgentConversation
+from app.models.database import Scenario, Agent, Evaluator, EvaluatorResult, TestAgentConversation
 from app.models.schemas import (
     ScenarioCreate, ScenarioUpdate, ScenarioResponse
 )
@@ -24,8 +24,17 @@ async def create_scenario(
     db: Session = Depends(get_db)
 ):
     """Create a new scenario"""
+    if scenario.agent_id is not None:
+        linked_agent = db.query(Agent).filter(
+            Agent.id == scenario.agent_id,
+            Agent.organization_id == organization_id,
+        ).first()
+        if not linked_agent:
+            raise HTTPException(status_code=404, detail=f"Agent {scenario.agent_id} not found")
+
     db_scenario = Scenario(
         organization_id=organization_id,
+        agent_id=scenario.agent_id,
         name=scenario.name,
         description=scenario.description,
         required_info=scenario.required_info
@@ -81,6 +90,14 @@ async def update_scenario(
     if not db_scenario:
         raise HTTPException(status_code=404, detail=f"Scenario {scenario_id} not found")
     
+    if scenario_update.agent_id is not None:
+        linked_agent = db.query(Agent).filter(
+            Agent.id == scenario_update.agent_id,
+            Agent.organization_id == organization_id,
+        ).first()
+        if not linked_agent:
+            raise HTTPException(status_code=404, detail=f"Agent {scenario_update.agent_id} not found")
+
     update_data = scenario_update.dict(exclude_unset=True)
     for field, value in update_data.items():
         setattr(db_scenario, field, value)
@@ -174,5 +191,5 @@ async def delete_scenario(
             },
         )
 
-    return JSONResponse(status_code=204, content=None)
+    return Response(status_code=204)
 

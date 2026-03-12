@@ -446,6 +446,7 @@ class PersonaCloneRequest(BaseModel):
 class ScenarioCreate(BaseModel):
     """Schema for creating a new scenario"""
     name: str = Field(..., min_length=1, max_length=255)
+    agent_id: Optional[UUID] = None
     description: Optional[str] = None
     required_info: Dict[str, str] = Field(default_factory=dict)
 
@@ -453,6 +454,7 @@ class ScenarioCreate(BaseModel):
 class ScenarioUpdate(BaseModel):
     """Schema for updating a scenario"""
     name: Optional[str] = None
+    agent_id: Optional[UUID] = None
     description: Optional[str] = None
     required_info: Optional[Dict[str, str]] = None
 
@@ -461,6 +463,7 @@ class ScenarioResponse(BaseModel):
     """Schema for scenario response"""
     id: UUID
     name: str
+    agent_id: Optional[UUID]
     description: Optional[str]
     required_info: Dict[str, str]
     created_at: datetime
@@ -1075,6 +1078,7 @@ class EvaluatorResponse(BaseModel):
 
 class EvaluatorBulkCreate(BaseModel):
     """Schema for creating multiple evaluators at once."""
+    name: Optional[str] = None
     agent_id: UUID
     scenario_id: UUID
     persona_ids: List[UUID]

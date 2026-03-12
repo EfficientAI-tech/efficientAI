@@ -1,7 +1,7 @@
 """Evaluator routes."""
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from uuid import UUID
@@ -198,6 +198,7 @@ def create_evaluators_bulk(
         evaluator = Evaluator(
             evaluator_id=evaluator_id,
             organization_id=organization_id,
+            name=bulk_data.name,
             agent_id=bulk_data.agent_id,
             persona_id=persona_id,
             scenario_id=bulk_data.scenario_id,
@@ -334,11 +335,11 @@ def update_evaluator(
 @router.delete("/{evaluator_id}")
 def delete_evaluator(
     evaluator_id: str,
-    force: bool = Query(False, description="Force delete with all dependent records"),
+    force: bool = Query(False, description="Deprecated: evaluator deletion keeps dependent results"),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ):
-    """Delete an evaluator. Returns 409 if dependent records exist unless force=true."""
+    """Delete an evaluator while preserving dependent evaluator results."""
     try:
         evaluator_uuid = UUID(evaluator_id)
         evaluator = db.query(Evaluator).filter(
@@ -365,21 +366,10 @@ def delete_evaluator(
     dependencies = {}
     if evaluator_results_count > 0:
         dependencies["evaluator_results"] = evaluator_results_count
-
-    if dependencies and not force:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "message": f"Cannot delete evaluator. It has {evaluator_results_count} evaluator result(s).",
-                "dependencies": dependencies,
-                "hint": "Use force=true to delete this evaluator and all its dependent records.",
-            },
-        )
-
-    if dependencies:
+        # Preserve historical results by detaching them from this evaluator.
         db.query(EvaluatorResult).filter(
             EvaluatorResult.evaluator_id == evaluator.id
-        ).delete(synchronize_session=False)
+        ).update({EvaluatorResult.evaluator_id: None}, synchronize_session=False)
 
     db.delete(evaluator)
     db.commit()
@@ -388,12 +378,12 @@ def delete_evaluator(
         return JSONResponse(
             status_code=200,
             content={
-                "message": "Evaluator and all dependent records deleted successfully.",
-                "deleted": dependencies,
+                "message": "Evaluator deleted successfully. Dependent evaluator results were preserved and detached.",
+                "detached": dependencies,
             },
         )
 
-    return JSONResponse(status_code=204, content=None)
+    return Response(status_code=204)
 
 
 @router.post("/run", response_model=RunEvaluatorsResponse, status_code=200)

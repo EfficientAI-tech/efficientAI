@@ -240,21 +240,21 @@ def seed_default_metrics(
             "description": "Cycle-to-cycle pitch period variation as percentage - indicates vocal stability. Lower values (< 1%) indicate stable voice.",
             "metric_type": MetricType.NUMBER,
             "trigger": MetricTrigger.ALWAYS,
-            "enabled": True,
+            "enabled": False,
         },
         {
             "name": "Shimmer",
             "description": "Cycle-to-cycle amplitude variation as percentage - indicates voice quality. Lower values (< 3%) indicate consistent voice.",
             "metric_type": MetricType.NUMBER,
             "trigger": MetricTrigger.ALWAYS,
-            "enabled": True,
+            "enabled": False,
         },
         {
             "name": "HNR",
             "description": "Harmonics-to-Noise Ratio in dB - indicates voice clarity. Higher values (> 20 dB) indicate cleaner voice with less breathiness.",
             "metric_type": MetricType.NUMBER,
             "trigger": MetricTrigger.ALWAYS,
-            "enabled": True,
+            "enabled": False,
         },
         # =========================================================================
         # AI Voice Metrics (ML models - human-likeness, emotion, consistency)
@@ -332,6 +332,10 @@ def seed_default_metrics(
             )
             db.add(metric)
             created_metrics.append(metric)
+        else:
+            # Keep default acoustic metric toggles aligned with product defaults.
+            if existing.enabled != metric_data["enabled"]:
+                existing.enabled = metric_data["enabled"]
 
     db.commit()
     for metric in created_metrics:
