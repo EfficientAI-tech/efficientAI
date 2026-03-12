@@ -38,7 +38,10 @@ export default function ProviderPanel({
   const providerData = providers.find((p) => p.provider === selectedProvider)
   const models = providerData?.models || []
   const modelVoices = (selectedModel && providerData?.model_voices?.[selectedModel]) || []
-  const voices = modelVoices.length > 0 ? modelVoices : providerData?.voices || []
+  const modelHasBuiltInVoices = modelVoices.some((v) => !v.is_custom)
+  const voices = modelVoices.length > 0 && modelHasBuiltInVoices
+    ? modelVoices
+    : providerData?.voices || modelVoices
   const supportedRates = providerData?.supported_sample_rates || []
 
   const bgGrad =

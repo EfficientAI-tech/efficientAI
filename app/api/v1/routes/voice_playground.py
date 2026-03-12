@@ -200,6 +200,7 @@ class CustomVoiceCreate(BaseModel):
 
 
 class CustomVoiceUpdate(BaseModel):
+    voice_id: Optional[str] = None
     name: Optional[str] = None
     gender: Optional[str] = None
     accent: Optional[str] = None
@@ -408,6 +409,20 @@ async def update_custom_tts_voice(
     ).first()
     if not voice:
         raise HTTPException(404, "Custom voice not found")
+
+    if data.voice_id is not None:
+        cleaned_voice_id = data.voice_id.strip()
+        if not cleaned_voice_id:
+            raise HTTPException(400, "voice_id cannot be empty")
+        duplicate = db.query(CustomTTSVoice).filter(
+            CustomTTSVoice.organization_id == organization_id,
+            CustomTTSVoice.provider == voice.provider,
+            CustomTTSVoice.voice_id == cleaned_voice_id,
+            CustomTTSVoice.id != voice.id,
+        ).first()
+        if duplicate:
+            raise HTTPException(409, f"Custom voice already exists for provider '{voice.provider}' and voice_id '{cleaned_voice_id}'")
+        voice.voice_id = cleaned_voice_id
 
     if data.name is not None:
         cleaned_name = data.name.strip()

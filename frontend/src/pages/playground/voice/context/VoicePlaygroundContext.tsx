@@ -524,6 +524,7 @@ export function VoicePlaygroundProvider({ children }: { children: ReactNode }) {
 
   const updateCustomVoiceMutation = useMutation({
     mutationFn: () => apiClient.updateCustomTTSVoice(editingCustomVoiceId!, {
+      voice_id: customVoiceId,
       name: customVoiceName,
       gender: customVoiceGender,
       accent: customVoiceAccent,

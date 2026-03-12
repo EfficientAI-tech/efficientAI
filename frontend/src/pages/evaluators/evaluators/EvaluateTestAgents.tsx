@@ -517,12 +517,6 @@ export default function EvaluateTestAgents() {
                               </span>
                             )}
                           </div>
-                          {!isCustom && evaluator.llm_model && (
-                            <div className="text-xs text-purple-600 mt-0.5 flex items-center gap-1">
-                              <Brain className="w-3 h-3" />
-                              {evaluator.llm_model}
-                            </div>
-                          )}
                         </td>
 
                         {/* Evaluator Name */}

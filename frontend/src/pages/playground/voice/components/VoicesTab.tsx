@@ -1,9 +1,11 @@
-import { Plus, Save } from 'lucide-react'
+import { Plus, Save, X } from 'lucide-react'
+import { useState } from 'react'
 import Button from '../../../../components/Button'
 import ProviderLogo, { getProviderInfo } from '../../../../components/shared/ProviderLogo'
 import { useVoicePlayground } from '../context'
 
 export default function VoicesTab() {
+  const [showVoiceModal, setShowVoiceModal] = useState(false)
   const {
     providerOptionsForVoices,
     customVoices,
@@ -41,114 +43,37 @@ export default function VoicesTab() {
     }
   }
 
+  const openAddVoiceModal = () => {
+    resetCustomVoiceForm()
+    setShowVoiceModal(true)
+  }
+
+  const closeVoiceModal = () => {
+    resetCustomVoiceForm()
+    setShowVoiceModal(false)
+  }
+
   return (
     <div className="space-y-6">
       <div className="bg-white rounded-xl shadow-lg p-6 border border-gray-100">
-        <h2 className="text-lg font-semibold text-gray-900 mb-1">Custom Voices</h2>
-        <p className="text-sm text-gray-500 mb-5">
-          Add provider-specific voice IDs so they can be selected during TTS comparison benchmarks.
-        </p>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="flex items-start justify-between gap-3 mb-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Provider</label>
-            <select
-              value={customVoiceProvider}
-              onChange={(e) => setCustomVoiceProvider(e.target.value)}
-              disabled={!!editingCustomVoiceId}
-              className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 bg-white disabled:bg-gray-100"
-            >
-              <option value="">Select provider...</option>
-              {providerOptionsForVoices.map((provider) => (
-                <option key={provider} value={provider}>
-                  {getProviderInfo(provider).label}
-                </option>
-              ))}
-            </select>
+            <h3 className="font-semibold text-gray-900">Saved Custom Voices</h3>
+            <p className="text-sm text-gray-500 mt-1">
+              Manage provider-specific voices used during TTS comparison benchmarks.
+            </p>
           </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Voice ID</label>
-            <input
-              value={customVoiceId}
-              onChange={(e) => setCustomVoiceId(e.target.value)}
-              disabled={!!editingCustomVoiceId}
-              placeholder="e.g. 21m00Tcm4TlvDq8ikWAM"
-              className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 disabled:bg-gray-100"
-            />
-            {editingCustomVoiceId && (
-              <p className="mt-1 text-xs text-gray-400">Voice ID cannot be changed. Delete and re-create to use a different ID.</p>
-            )}
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Display Name</label>
-            <input
-              value={customVoiceName}
-              onChange={(e) => setCustomVoiceName(e.target.value)}
-              placeholder="e.g. My Sales Voice"
-              className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Gender (optional)
-            </label>
-            <input
-              value={customVoiceGender}
-              onChange={(e) => setCustomVoiceGender(e.target.value)}
-              placeholder="e.g. Female"
-              className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Accent (optional)
-            </label>
-            <input
-              value={customVoiceAccent}
-              onChange={(e) => setCustomVoiceAccent(e.target.value)}
-              placeholder="e.g. American"
-              className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Description (optional)
-            </label>
-            <input
-              value={customVoiceDescription}
-              onChange={(e) => setCustomVoiceDescription(e.target.value)}
-              placeholder="e.g. Cloned from support lead"
-              className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
-            />
-          </div>
-        </div>
-
-        <div className="mt-4 flex items-center gap-2">
           <Button
             variant="primary"
-            leftIcon={
-              editingCustomVoiceId ? <Save className="w-4 h-4" /> : <Plus className="w-4 h-4" />
-            }
-            disabled={!canSaveCustomVoice || isCreatingCustomVoice || isUpdatingCustomVoice}
-            onClick={handleSave}
+            leftIcon={<Plus className="w-4 h-4" />}
+            onClick={openAddVoiceModal}
           >
-            {editingCustomVoiceId ? 'Save Voice' : 'Add Voice'}
+            Add Custom Voice
           </Button>
-          {editingCustomVoiceId && (
-            <Button variant="ghost" onClick={resetCustomVoiceForm}>
-              Cancel Edit
-            </Button>
-          )}
         </div>
-
-        {customVoiceError && <p className="mt-3 text-sm text-red-600">{customVoiceError}</p>}
-      </div>
-
-      <div className="bg-white rounded-xl shadow-lg p-6 border border-gray-100">
-        <h3 className="font-semibold text-gray-900 mb-4">Saved Custom Voices</h3>
         {customVoices.length === 0 ? (
           <p className="text-sm text-gray-500">
-            No custom voices yet. Add one above to use it in Playground comparisons.
+            No custom voices yet. Click <span className="font-medium">Add Custom Voice</span> to create one.
           </p>
         ) : (
           <div className="space-y-2">
@@ -177,7 +102,13 @@ export default function VoicesTab() {
                   {cv.description && <p className="text-xs text-gray-500 mt-1">{cv.description}</p>}
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
-                  <Button variant="ghost" onClick={() => startEditingCustomVoice(cv)}>
+                  <Button
+                    variant="ghost"
+                    onClick={() => {
+                      startEditingCustomVoice(cv)
+                      setShowVoiceModal(true)
+                    }}
+                  >
                     Edit
                   </Button>
                   <Button
@@ -199,6 +130,118 @@ export default function VoicesTab() {
           </div>
         )}
       </div>
+
+      {/* Add/Edit Custom Voice Modal */}
+      {showVoiceModal && (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+          <div className="flex min-h-screen items-center justify-center p-4">
+            <div
+              className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"
+              onClick={closeVoiceModal}
+            />
+            <div className="relative bg-white rounded-lg shadow-xl max-w-2xl w-full p-6 max-h-[90vh] overflow-y-auto">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-2xl font-bold text-gray-900">
+                  {editingCustomVoiceId ? 'Edit Custom Voice' : 'Add Custom Voice'}
+                </h2>
+                <button
+                  onClick={closeVoiceModal}
+                  className="text-gray-400 hover:text-gray-500"
+                >
+                  <X className="h-6 w-6" />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Provider</label>
+                  <select
+                    value={customVoiceProvider}
+                    onChange={(e) => setCustomVoiceProvider(e.target.value)}
+                    disabled={!!editingCustomVoiceId}
+                    className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 bg-white disabled:bg-gray-100"
+                  >
+                    <option value="">Select provider...</option>
+                    {providerOptionsForVoices.map((provider) => (
+                      <option key={provider} value={provider}>
+                        {getProviderInfo(provider).label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Voice ID</label>
+                  <input
+                    value={customVoiceId}
+                    onChange={(e) => setCustomVoiceId(e.target.value)}
+                    placeholder="e.g. 21m00Tcm4TlvDq8ikWAM"
+                    className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Display Name</label>
+                  <input
+                    value={customVoiceName}
+                    onChange={(e) => setCustomVoiceName(e.target.value)}
+                    placeholder="e.g. My Sales Voice"
+                    className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Gender (optional)
+                  </label>
+                  <input
+                    value={customVoiceGender}
+                    onChange={(e) => setCustomVoiceGender(e.target.value)}
+                    placeholder="e.g. Female"
+                    className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Accent (optional)
+                  </label>
+                  <input
+                    value={customVoiceAccent}
+                    onChange={(e) => setCustomVoiceAccent(e.target.value)}
+                    placeholder="e.g. American"
+                    className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Description (optional)
+                  </label>
+                  <input
+                    value={customVoiceDescription}
+                    onChange={(e) => setCustomVoiceDescription(e.target.value)}
+                    placeholder="e.g. Cloned from support lead"
+                    className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                  />
+                </div>
+              </div>
+
+              {customVoiceError && <p className="mt-3 text-sm text-red-600">{customVoiceError}</p>}
+
+              <div className="mt-6 flex justify-end gap-2">
+                <Button variant="ghost" onClick={closeVoiceModal}>
+                  Cancel
+                </Button>
+                <Button
+                  variant="primary"
+                  leftIcon={editingCustomVoiceId ? <Save className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
+                  disabled={!canSaveCustomVoice || isCreatingCustomVoice || isUpdatingCustomVoice}
+                  isLoading={isCreatingCustomVoice || isUpdatingCustomVoice}
+                  onClick={handleSave}
+                >
+                  {editingCustomVoiceId ? 'Save Voice' : 'Add Voice'}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

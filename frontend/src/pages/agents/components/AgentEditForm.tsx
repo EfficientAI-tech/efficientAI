@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { Sparkles, Loader2, Bot, Eye, Code, Trash2 } from 'lucide-react'
+import { Sparkles, Loader2, Bot, Eye, Code, Trash2, Save } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import Button from '../../../components/Button'
 import { apiClient } from '../../../lib/api'
@@ -29,6 +29,7 @@ interface AgentEditFormProps {
   showToast: (message: string, type: 'success' | 'error') => void
   createdAt?: string
   updatedAt?: string
+  onSaveSystemPrompt: () => void
 }
 
 export default function AgentEditForm({
@@ -39,6 +40,7 @@ export default function AgentEditForm({
   voiceBundles,
   integrations,
   showToast,
+  onSaveSystemPrompt,
 }: AgentEditFormProps) {
   const [descriptionEditorMode, setDescriptionEditorMode] = useState<'write' | 'preview'>('write')
   const [showAIGeneratePanel, setShowAIGeneratePanel] = useState(false)
@@ -337,6 +339,15 @@ export default function AgentEditForm({
                       <Sparkles className="h-3 w-3" />
                     )}
                     {generateDescriptionMutation.isPending ? 'Generating...' : 'AI Generate'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onSaveSystemPrompt}
+                    disabled={!formData.description?.trim()}
+                    className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
+                  >
+                    <Save className="h-3 w-3" />
+                    Save Prompt
                   </button>
                   <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
                     <button

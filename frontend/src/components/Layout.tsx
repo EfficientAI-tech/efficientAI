@@ -373,10 +373,13 @@ function SidebarContent({
 }) {
   const { isFeatureEnabled } = useLicenseStore()
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
-    new Set(['Prompt Partials', 'Simulations', 'Evaluations', 'Observability', 'Alerting', 'Configurations'])
+    new Set(['Prompt Partials', 'Simulations', 'Playground', 'Evaluations', 'Observability', 'Alerting', 'Configurations'])
   )
 
   const toggleSection = (title: string) => {
+    if (title === 'Playground') {
+      return
+    }
     const newExpanded = new Set(expandedSections)
     if (newExpanded.has(title)) {
       newExpanded.delete(title)
@@ -421,7 +424,7 @@ function SidebarContent({
           {/* Navigation Sections */}
           <div className="mt-4 space-y-1">
             {navigationSections.map((section) => {
-              const isExpanded = expandedSections.has(section.title)
+              const isExpanded = section.title === 'Playground' || expandedSections.has(section.title)
               const isActive = isSectionActive(section)
               const SectionIcon = section.icon
 

@@ -63,7 +63,7 @@ export default function PlaygroundTab() {
         <SampleTextsPanel />
 
         {/* Number of Runs */}
-        <div className="bg-white rounded-xl shadow-sm p-4 border border-gray-100 flex items-center justify-between">
+        <div className="bg-white rounded-xl shadow-sm p-3 border border-gray-100 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Hash className="w-5 h-5 text-gray-500" />
             <div>
@@ -74,19 +74,33 @@ export default function PlaygroundTab() {
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
             <button
               onClick={() => setNumRuns(Math.max(1, numRuns - 1))}
               disabled={numRuns <= 1}
-              className="w-8 h-8 rounded-lg border border-gray-300 flex items-center justify-center text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+              className="w-7 h-7 rounded-md border border-gray-300 flex items-center justify-center text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
             >
               −
             </button>
-            <span className="w-10 text-center font-semibold text-gray-900">{numRuns}</span>
+            <input
+              type="number"
+              min={1}
+              max={10}
+              value={numRuns}
+              onChange={(e) => {
+                const raw = e.target.value
+                if (raw === '') return
+                const parsed = Number(raw)
+                if (Number.isNaN(parsed)) return
+                const clamped = Math.min(10, Math.max(1, parsed))
+                setNumRuns(clamped)
+              }}
+              className="w-14 h-8 text-center font-semibold text-gray-900 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+            />
             <button
               onClick={() => setNumRuns(Math.min(10, numRuns + 1))}
               disabled={numRuns >= 10}
-              className="w-8 h-8 rounded-lg border border-gray-300 flex items-center justify-center text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+              className="w-7 h-7 rounded-md border border-gray-300 flex items-center justify-center text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
             >
               +
             </button>

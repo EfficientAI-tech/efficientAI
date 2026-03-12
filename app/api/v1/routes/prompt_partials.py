@@ -3,7 +3,7 @@ Prompt Partials API Routes
 CRUD operations with version history for reusable prompt templates.
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from typing import List, Optional
@@ -344,7 +344,7 @@ async def delete_prompt_partial(
 
     db.delete(partial)
     db.commit()
-    return JSONResponse(status_code=204, content=None)
+    return Response(status_code=204)
 
 
 @router.get("/{partial_id}/versions", response_model=List[PromptPartialVersionResponse])

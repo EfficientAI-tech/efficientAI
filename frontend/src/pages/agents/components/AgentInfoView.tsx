@@ -170,7 +170,7 @@ export default function AgentInfoView({
                     </div>
                     <div>
                       <dt className="text-sm font-medium text-gray-500">Agent ID</dt>
-                      <dd className="mt-1 text-sm text-gray-900 font-mono bg-gray-100 px-3 py-2 rounded border border-gray-200 inline-block select-all">
+                      <dd className="mt-1 text-sm font-mono font-semibold text-primary-600 inline-block select-all break-all">
                         {agent.voice_ai_agent_id}
                       </dd>
                     </div>

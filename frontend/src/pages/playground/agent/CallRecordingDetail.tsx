@@ -474,7 +474,7 @@ export default function CallRecordingDetail() {
               <div>
                 <h1 className="text-2xl font-bold text-gray-900">Call Recording Details</h1>
                 <p className="text-sm text-gray-500 mt-1">
-                  Call ID: <span className="font-mono">{callRecording.call_short_id}</span>
+                  Call ID: <span className="font-mono font-semibold text-primary-600">{callRecording.call_short_id}</span>
                 </p>
               </div>
               <div className="flex gap-2">
@@ -548,7 +548,7 @@ export default function CallRecordingDetail() {
               </div>
               <div>
                 <p className="text-xs text-gray-500 font-medium mb-1">Provider Call ID</p>
-                <p className="text-sm font-mono text-gray-900 text-xs">
+                <p className="text-sm font-mono font-semibold text-primary-600 text-xs">
                   {callRecording.provider_call_id || 'N/A'}
                 </p>
               </div>
@@ -571,7 +571,7 @@ export default function CallRecordingDetail() {
               <BarChart3 className="w-5 h-5 mr-2" />
               Evaluation Metrics
               {callRecording.evaluation?.result_id && (
-                <span className="ml-2 text-sm font-mono text-gray-500">
+                <span className="ml-2 text-sm font-mono font-semibold text-primary-600">
                   #{callRecording.evaluation.result_id}
                 </span>
               )}

@@ -34,7 +34,7 @@ export default function AgentDetailHeader({
           </h1>
           {agentId && (
             <p className="text-sm text-gray-500 mt-1">
-              Agent ID: <span className="font-mono font-semibold text-blue-600">{agentId}</span>
+              Agent ID: <span className="font-mono font-semibold text-primary-600">{agentId}</span>
             </p>
           )}
         </div>

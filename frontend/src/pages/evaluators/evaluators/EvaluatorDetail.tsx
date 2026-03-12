@@ -236,10 +236,10 @@ export default function EvaluatorDetail() {
   if (!evaluator) {
     return (
       <div className="space-y-6">
-        <button onClick={() => navigate('/evaluate-test-agents')} className="flex items-center gap-2 text-gray-600 hover:text-gray-900 transition-colors">
-          <ArrowLeft className="w-4 h-4" />
-          <span className="text-sm font-medium">Back to Evaluators</span>
-        </button>
+        <Button onClick={() => navigate('/evaluate-test-agents')} variant="outline">
+          <ArrowLeft className="w-4 h-4 mr-2" />
+          Back to Evaluators
+        </Button>
         <div className="text-center py-12 text-gray-500">Evaluator not found.</div>
       </div>
     )
@@ -252,13 +252,13 @@ export default function EvaluatorDetail() {
         {/* Header */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <button
+            <Button
               onClick={() => navigate('/evaluate-test-agents')}
-              className="flex items-center gap-2 text-gray-600 hover:text-gray-900 transition-colors"
+              variant="outline"
             >
-              <ArrowLeft className="w-4 h-4" />
-              <span className="text-sm font-medium">Back</span>
-            </button>
+              <ArrowLeft className="w-4 h-4 mr-2" />
+              Back to Evaluators
+            </Button>
             <div>
               <div className="flex items-center gap-3">
                 <h1 className="text-2xl font-bold text-gray-900 font-mono">
@@ -270,9 +270,6 @@ export default function EvaluatorDetail() {
                   </span>
                 )}
               </div>
-              {evaluator.name && (
-                <p className="text-sm text-gray-600 mt-0.5">{evaluator.name}</p>
-              )}
             </div>
           </div>
 
@@ -316,9 +313,9 @@ export default function EvaluatorDetail() {
         </div>
 
         {/* Main Content */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className={`grid grid-cols-1 gap-6 ${isCustom ? 'lg:grid-cols-3' : ''}`}>
           {/* Left column: main details */}
-          <div className="lg:col-span-2 space-y-6">
+          <div className={`${isCustom ? 'lg:col-span-2' : ''} space-y-6`}>
             {isEditing && editData ? (
               <div className="bg-white shadow rounded-lg p-6">
                 <label className="block text-sm font-semibold text-gray-700 mb-2">Evaluator Name</label>
@@ -465,6 +462,213 @@ export default function EvaluatorDetail() {
                           </div>
                         </div>
                       )}
+
+                      {/* Tags */}
+                      <div className="bg-white shadow rounded-lg overflow-hidden">
+                        <div className="px-6 py-4 border-b border-gray-200">
+                          <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">Tags</h2>
+                        </div>
+                        <div className="p-6">
+                          {isEditing && editData ? (
+                            <div className="space-y-3">
+                              <div className="flex flex-wrap gap-2 min-h-[36px]">
+                                {editData.tags && editData.tags.length > 0 ? (
+                                  editData.tags.map((tag, idx) => (
+                                    <span key={idx} className="inline-flex items-center px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded">
+                                      {tag}
+                                      <button
+                                        onClick={() => {
+                                          const newTags = editData.tags?.filter(t => t !== tag) || []
+                                          setEditData({ ...editData, tags: newTags })
+                                        }}
+                                        className="ml-1 text-blue-600 hover:text-blue-800"
+                                      >
+                                        <X className="w-3 h-3" />
+                                      </button>
+                                    </span>
+                                  ))
+                                ) : (
+                                  <span className="text-sm text-gray-400">No tags</span>
+                                )}
+                              </div>
+                              <div className="flex space-x-2">
+                                <input
+                                  type="text"
+                                  value={editTagInput}
+                                  onChange={(e) => setEditTagInput(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault()
+                                      if (editTagInput.trim() && !editData.tags?.includes(editTagInput.trim())) {
+                                        setEditData({ ...editData, tags: [...(editData.tags || []), editTagInput.trim()] })
+                                        setEditTagInput('')
+                                      }
+                                    }
+                                  }}
+                                  placeholder="Add tag..."
+                                  className="flex-1 px-2 py-1.5 text-xs border border-gray-300 rounded-md focus:outline-none focus:ring-primary-500 focus:border-primary-500"
+                                />
+                                <Button
+                                  size="sm"
+                                  onClick={() => {
+                                    if (editTagInput.trim() && !editData.tags?.includes(editTagInput.trim())) {
+                                      setEditData({ ...editData, tags: [...(editData.tags || []), editTagInput.trim()] })
+                                      setEditTagInput('')
+                                    }
+                                  }}
+                                >
+                                  Add
+                                </Button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="flex flex-wrap gap-2">
+                              {evaluator.tags && evaluator.tags.length > 0 ? (
+                                evaluator.tags.map((tag, idx) => (
+                                  <span key={idx} className="px-3 py-1 text-sm bg-blue-100 text-blue-800 rounded-full">
+                                    {tag}
+                                  </span>
+                                ))
+                              ) : (
+                                <span className="text-sm text-gray-400">No tags</span>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Evaluation Model */}
+                      <div className="bg-white shadow rounded-lg overflow-hidden">
+                        <div className="px-6 py-4 border-b border-purple-100 bg-purple-50">
+                          <div className="flex items-center gap-2">
+                            <Brain className="h-4 w-4 text-purple-600" />
+                            <h2 className="text-sm font-semibold text-purple-900 uppercase tracking-wide">Evaluation Model</h2>
+                          </div>
+                        </div>
+                        <div className="p-6">
+                          {isEditing && editData ? (
+                            <div className="space-y-3">
+                              {llmProviders.length === 0 ? (
+                                <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+                                  No AI providers with LLM models configured. Default (gpt-4o) will be used.
+                                </div>
+                              ) : (
+                                <>
+                                  <div>
+                                    <label className="block text-xs font-medium text-gray-700 mb-1">Provider</label>
+                                    <div className="relative" ref={llmDropdownRef}>
+                                      <button
+                                        type="button"
+                                        onClick={() => setShowLlmDropdown(!showLlmDropdown)}
+                                        className="w-full px-3 py-2 border border-gray-300 rounded-md bg-white text-left flex items-center justify-between text-sm"
+                                      >
+                                        <div className="flex items-center gap-2">
+                                          {editData.llm_provider && getProviderLogo(editData.llm_provider as ModelProvider) ? (
+                                            <img src={getProviderLogo(editData.llm_provider as ModelProvider)!} alt="" className="w-5 h-5 object-contain rounded" />
+                                          ) : (
+                                            <Brain className="h-4 w-4 text-gray-400" />
+                                          )}
+                                          <span className={editData.llm_provider ? 'text-gray-900' : 'text-gray-400'}>
+                                            {editData.llm_provider ? getProviderLabel(editData.llm_provider as ModelProvider) || editData.llm_provider : 'Select provider'}
+                                          </span>
+                                        </div>
+                                        <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${showLlmDropdown ? 'rotate-180' : ''}`} />
+                                      </button>
+                                      {showLlmDropdown && (
+                                        <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-48 overflow-auto">
+                                          {llmProviders.map((provider) => (
+                                            <button
+                                              key={provider}
+                                              type="button"
+                                              onClick={() => {
+                                                const models = getModelOptions(provider).llm
+                                                setEditData({ ...editData, llm_provider: provider, llm_model: models.length > 0 ? models[0] : '' })
+                                                setShowLlmDropdown(false)
+                                              }}
+                                              className="w-full px-3 py-2 text-left hover:bg-gray-50 flex items-center gap-2 text-sm"
+                                            >
+                                              {getProviderLogo(provider) ? (
+                                                <img src={getProviderLogo(provider)!} alt="" className="w-5 h-5 object-contain rounded" />
+                                              ) : (
+                                                <Brain className="h-4 w-4 text-purple-600" />
+                                              )}
+                                              <span>{getProviderLabel(provider)}</span>
+                                            </button>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <label className="block text-xs font-medium text-gray-700 mb-1">Model</label>
+                                    <select
+                                      value={editData.llm_model || ''}
+                                      onChange={(e) => setEditData({ ...editData, llm_model: e.target.value })}
+                                      disabled={!editData.llm_provider}
+                                      className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-50 disabled:text-gray-400"
+                                    >
+                                      {editData.llm_provider ? (
+                                        getModelOptions(editData.llm_provider as ModelProvider).llm.map((model) => (
+                                          <option key={model} value={model}>{model}</option>
+                                        ))
+                                      ) : (
+                                        <option value="">Select provider first</option>
+                                      )}
+                                    </select>
+                                  </div>
+                                </>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="space-y-2">
+                              {evaluator.llm_provider && evaluator.llm_model ? (
+                                <>
+                                  <div className="flex items-center gap-2">
+                                    {getProviderLogo(evaluator.llm_provider as ModelProvider) && (
+                                      <img src={getProviderLogo(evaluator.llm_provider as ModelProvider)!} alt="" className="w-5 h-5 object-contain" />
+                                    )}
+                                    <span className="text-sm font-medium text-gray-900">
+                                      {getProviderLabel(evaluator.llm_provider as ModelProvider) || evaluator.llm_provider}
+                                    </span>
+                                  </div>
+                                  <p className="text-sm text-purple-700 font-mono">{evaluator.llm_model}</p>
+                                </>
+                              ) : (
+                                <p className="text-sm text-gray-400">Default (gpt-4o)</p>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Metadata */}
+                      <div className="bg-white shadow rounded-lg overflow-hidden">
+                        <div className="px-6 py-4 border-b border-gray-200">
+                          <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">Details</h2>
+                        </div>
+                        <div className="p-6 space-y-3">
+                          <div>
+                            <p className="text-xs text-gray-500 uppercase tracking-wide">Evaluator ID</p>
+                            <p className="text-sm font-mono font-medium text-gray-900">{evaluator.evaluator_id}</p>
+                          </div>
+                          <div>
+                            <p className="text-xs text-gray-500 uppercase tracking-wide">Name</p>
+                            <p className="text-sm font-medium text-gray-900">{evaluator.name || '—'}</p>
+                          </div>
+                          <div>
+                            <p className="text-xs text-gray-500 uppercase tracking-wide">Type</p>
+                            <p className="text-sm font-medium text-gray-900">{isCustom ? 'Custom Prompt' : 'Standard (Agent + Persona + Scenario)'}</p>
+                          </div>
+                          <div>
+                            <p className="text-xs text-gray-500 uppercase tracking-wide">Created</p>
+                            <p className="text-sm text-gray-700">{new Date(evaluator.created_at).toLocaleString()}</p>
+                          </div>
+                          <div>
+                            <p className="text-xs text-gray-500 uppercase tracking-wide">Last Updated</p>
+                            <p className="text-sm text-gray-700">{new Date(evaluator.updated_at).toLocaleString()}</p>
+                          </div>
+                        </div>
+                      </div>
                     </div>
 
                     <div className="space-y-6">
@@ -496,7 +700,7 @@ export default function EvaluatorDetail() {
           </div>
 
           {/* Right column: sidebar */}
-          <div className="space-y-6">
+          {isCustom && <div className="space-y-6">
             {/* Tags */}
             <div className="bg-white shadow rounded-lg overflow-hidden">
               <div className="px-6 py-4 border-b border-gray-200">
@@ -686,6 +890,10 @@ export default function EvaluatorDetail() {
                   <p className="text-sm font-mono font-medium text-gray-900">{evaluator.evaluator_id}</p>
                 </div>
                 <div>
+                  <p className="text-xs text-gray-500 uppercase tracking-wide">Name</p>
+                  <p className="text-sm font-medium text-gray-900">{evaluator.name || '—'}</p>
+                </div>
+                <div>
                   <p className="text-xs text-gray-500 uppercase tracking-wide">Type</p>
                   <p className="text-sm font-medium text-gray-900">{isCustom ? 'Custom Prompt' : 'Standard (Agent + Persona + Scenario)'}</p>
                 </div>
@@ -699,7 +907,7 @@ export default function EvaluatorDetail() {
                 </div>
               </div>
             </div>
-          </div>
+          </div>}
         </div>
       </div>
 

@@ -73,7 +73,7 @@ export default function TestAgentResultDetail() {
               <div>
                 <h1 className="text-2xl font-bold text-gray-900">Test Agent Call Details</h1>
                 <p className="text-sm text-gray-500 mt-1">
-                  Call ID: <span className="font-mono">{result.result_id}</span>
+                  Call ID: <span className="font-mono font-semibold text-primary-600">{result.result_id}</span>
                 </p>
               </div>
               <div className="flex items-center gap-2">

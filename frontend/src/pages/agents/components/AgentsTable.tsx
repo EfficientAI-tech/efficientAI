@@ -84,7 +84,7 @@ export default function AgentsTable({
                     <div className="flex items-center gap-2">
                       {getIntegrationLogo(agent)}
                       <span
-                        className="font-mono font-semibold text-sm text-blue-600 hover:text-blue-800 hover:underline cursor-pointer"
+                        className="font-mono font-semibold text-sm text-primary-600 hover:text-primary-800 hover:underline cursor-pointer"
                         onClick={() => navigate(`/agents/${agent.agent_id || agent.id}`)}
                       >
                         {agent.agent_id}

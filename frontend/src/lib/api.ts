@@ -1209,6 +1209,7 @@ class ApiClient {
   }
 
   async updateCustomTTSVoice(customVoiceId: string, data: {
+    voice_id?: string
     name?: string
     gender?: string
     accent?: string

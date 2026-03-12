@@ -34,6 +34,7 @@ export default function AgentPlayground() {
   const [selectedTestType, setSelectedTestType] = useState<'test_agent' | 'voice_ai_agent' | null>(null)
   const [isConnecting, setIsConnecting] = useState(false)
   const [isConnected, setIsConnected] = useState(false)
+  const [isRefreshingStatus, setIsRefreshingStatus] = useState(false)
   const [transcripts, setTranscripts] = useState<Array<{ role: 'user' | 'agent', content: string }>>([])
 
   const retellClientRef = useRef<RetellWebClientWithMethods | null>(null)
@@ -84,7 +85,7 @@ export default function AgentPlayground() {
     },
   })
 
-  const [activeTab, setActiveTab] = useState<'test_agents' | 'voice_ai_agents'>('test_agents')
+  const [activeTab, setActiveTab] = useState<'test_agents' | 'voice_ai_agents'>('voice_ai_agents')
 
 
   // Find the integration for the agent
@@ -573,6 +574,18 @@ export default function AgentPlayground() {
     }
   }
 
+  const handleRefreshStatus = async () => {
+    setIsRefreshingStatus(true)
+    try {
+      await Promise.all([refetchTestResults(), refetchCallRecordings()])
+      showToast('Latest evaluation status refreshed', 'success')
+    } catch {
+      showToast('Failed to refresh status', 'error')
+    } finally {
+      setIsRefreshingStatus(false)
+    }
+  }
+
 
   return (
     <>
@@ -586,6 +599,15 @@ export default function AgentPlayground() {
             </p>
           </div>
           <div className="flex gap-2">
+            <Button
+              variant="outline"
+              onClick={handleRefreshStatus}
+              leftIcon={<RefreshCw className="h-4 w-4" />}
+              isLoading={isRefreshingStatus}
+              disabled={!selectedAgent}
+            >
+              Refresh
+            </Button>
             <Button
               variant="primary"
               onClick={() => setShowTestModal(true)}
@@ -632,20 +654,6 @@ export default function AgentPlayground() {
             <div className="border-b border-gray-200">
               <nav className="-mb-px flex space-x-8" aria-label="Tabs">
                 <button
-                  onClick={() => setActiveTab('test_agents')}
-                  className={`
-                    flex items-center gap-2 py-4 px-1 border-b-2 font-medium text-sm
-                    ${
-                      activeTab === 'test_agents'
-                        ? 'border-blue-500 text-blue-600'
-                        : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                    }
-                  `}
-                >
-                  <Bot className="h-4 w-4" />
-                  Test Agents
-                </button>
-                <button
                   onClick={() => setActiveTab('voice_ai_agents')}
                   className={`
                     flex items-center gap-2 py-4 px-1 border-b-2 font-medium text-sm
@@ -658,6 +666,20 @@ export default function AgentPlayground() {
                 >
                   <PhoneCall className="h-4 w-4" />
                   Voice AI Agents
+                </button>
+                <button
+                  onClick={() => setActiveTab('test_agents')}
+                  className={`
+                    flex items-center gap-2 py-4 px-1 border-b-2 font-medium text-sm
+                    ${
+                      activeTab === 'test_agents'
+                        ? 'border-blue-500 text-blue-600'
+                        : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                    }
+                  `}
+                >
+                  <Bot className="h-4 w-4" />
+                  Test Agents
                 </button>
               </nav>
             </div>
@@ -696,7 +718,7 @@ export default function AgentPlayground() {
                             <td className="px-4 py-3 whitespace-nowrap">
                               <button
                                 onClick={() => handleViewTestResult(result.id)}
-                                className="font-mono text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline"
+                                className="font-mono text-sm font-semibold text-primary-600 hover:text-primary-800 hover:underline"
                               >
                                 {result.result_id || result.id.substring(0, 8)}
                               </button>
@@ -794,7 +816,7 @@ export default function AgentPlayground() {
                             <td className="px-4 py-3 whitespace-nowrap">
                               <button
                                 onClick={() => handleViewCallRecording(recording.call_short_id)}
-                                className="font-mono text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline"
+                                className="font-mono text-sm font-semibold text-primary-600 hover:text-primary-800 hover:underline"
                               >
                                 {recording.call_short_id}
                               </button>
@@ -1022,7 +1044,7 @@ export default function AgentPlayground() {
                       Provider: {agentIntegration?.platform || 'Unknown'}
                     </p>
                     <p className="text-xs text-gray-500">
-                      Agent ID: {fullAgent?.voice_ai_agent_id}
+                      Agent ID: <span className="font-mono font-semibold text-primary-600">{fullAgent?.voice_ai_agent_id}</span>
                     </p>
                   </div>
 

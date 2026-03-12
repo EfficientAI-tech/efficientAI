@@ -1,11 +1,14 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, type ReactNode } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { createPortal } from 'react-dom'
 import { apiClient } from '../../lib/api'
 import Button from '../../components/Button'
 import { useToast } from '../../hooks/useToast'
 import { TestAgentConversation, VoiceBundle, Integration } from '../../types/api'
-import { AgentDetailHeader, AgentInfoView, AgentEditForm, DeleteAgentModal } from './components'
+import { AgentDetailHeader, AgentInfoView, DeleteAgentModal } from './components'
+import AgentEditForm from './components/AgentEditForm'
+import { Save, X } from 'lucide-react'
 
 interface FormData {
   name: string
@@ -28,6 +31,11 @@ export default function AgentDetail() {
   const [isEditMode, setIsEditMode] = useState(false)
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [blockingConversations, setBlockingConversations] = useState<TestAgentConversation[]>([])
+  const [showSavePromptModal, setShowSavePromptModal] = useState(false)
+  const [savePromptName, setSavePromptName] = useState('')
+  const [savePromptDescription, setSavePromptDescription] = useState('')
+  const [savePromptTags, setSavePromptTags] = useState('agents, system-prompt')
+  const [savePromptContent, setSavePromptContent] = useState('')
   const [formData, setFormData] = useState<FormData>({
     name: '',
     phone_number: '',
@@ -55,6 +63,11 @@ export default function AgentDetail() {
     queryKey: ['integrations'],
     queryFn: () => apiClient.listIntegrations(),
   })
+
+  const renderModal = (content: ReactNode) => {
+    if (typeof document === 'undefined') return null
+    return createPortal(content, document.body)
+  }
 
   useEffect(() => {
     if (agent) {
@@ -108,6 +121,22 @@ export default function AgentDetail() {
     },
     onError: (error: any) => {
       showToast(`Failed to update agent: ${error.response?.data?.detail || error.message}`, 'error')
+    },
+  })
+
+  const savePromptPartialMutation = useMutation({
+    mutationFn: (data: { name: string; description?: string; content: string; tags?: string[] }) =>
+      apiClient.createPromptPartial(data),
+    onSuccess: () => {
+      showToast('System prompt saved to Prompt Partials', 'success')
+      setShowSavePromptModal(false)
+      setSavePromptName('')
+      setSavePromptDescription('')
+      setSavePromptTags('agents, system-prompt')
+      setSavePromptContent('')
+    },
+    onError: (error: any) => {
+      showToast(error?.response?.data?.detail || 'Failed to save prompt partial', 'error')
     },
   })
 
@@ -177,6 +206,43 @@ export default function AgentDetail() {
     setIsEditMode(false)
   }
 
+  const openSavePromptModal = (content: string, suggestedName?: string) => {
+    const trimmedContent = (content || '').trim()
+    if (!trimmedContent) {
+      showToast('No system prompt available to save', 'error')
+      return
+    }
+
+    setSavePromptContent(trimmedContent)
+    setSavePromptName(suggestedName || `${agent?.name || 'Agent'} System Prompt`)
+    setSavePromptDescription(`Saved from agent ${agent?.name || ''}`.trim())
+    setSavePromptTags('agents, system-prompt')
+    setShowSavePromptModal(true)
+  }
+
+  const handleSavePromptPartial = () => {
+    if (!savePromptName.trim()) {
+      showToast('Prompt name is required', 'error')
+      return
+    }
+    if (!savePromptContent.trim()) {
+      showToast('Prompt content is required', 'error')
+      return
+    }
+
+    const tags = savePromptTags
+      .split(',')
+      .map((tag) => tag.trim())
+      .filter(Boolean)
+
+    savePromptPartialMutation.mutate({
+      name: savePromptName.trim(),
+      description: savePromptDescription.trim() || undefined,
+      content: savePromptContent.trim(),
+      tags: tags.length > 0 ? tags : undefined,
+    })
+  }
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -225,6 +291,12 @@ export default function AgentDetail() {
             showToast={showToast}
             createdAt={agent.created_at}
             updatedAt={agent.updated_at}
+            onSaveSystemPrompt={() =>
+              openSavePromptModal(
+                formData.description || '',
+                `${formData.name || agent.name} System Prompt`
+              )
+            }
           />
         )}
       </div>
@@ -240,6 +312,89 @@ export default function AgentDetail() {
         onSuccess={handleDeleteSuccess}
         showToast={showToast}
       />
+
+      {showSavePromptModal && renderModal(
+        <div className="fixed inset-0 z-[9999] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-2xl rounded-xl bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4">
+              <h3 className="text-lg font-semibold text-gray-900">Save System Prompt</h3>
+              <button
+                onClick={() => setShowSavePromptModal(false)}
+                className="text-gray-400 hover:text-gray-600"
+                aria-label="Close save prompt modal"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="space-y-4 px-5 py-4">
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">Name</label>
+                <input
+                  type="text"
+                  value={savePromptName}
+                  onChange={(e) => setSavePromptName(e.target.value)}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  placeholder="Prompt partial name"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">
+                  Description <span className="text-gray-400">(optional)</span>
+                </label>
+                <input
+                  type="text"
+                  value={savePromptDescription}
+                  onChange={(e) => setSavePromptDescription(e.target.value)}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  placeholder="Brief description"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">
+                  Tags <span className="text-gray-400">(comma-separated, optional)</span>
+                </label>
+                <input
+                  type="text"
+                  value={savePromptTags}
+                  onChange={(e) => setSavePromptTags(e.target.value)}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary-500"
+                  placeholder="agents, system-prompt"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">Content</label>
+                <textarea
+                  value={savePromptContent}
+                  onChange={(e) => setSavePromptContent(e.target.value)}
+                  rows={8}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-primary-500"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 border-t border-gray-200 px-5 py-4">
+              <Button
+                variant="outline"
+                onClick={() => setShowSavePromptModal(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                onClick={handleSavePromptPartial}
+                isLoading={savePromptPartialMutation.isPending}
+                leftIcon={<Save className="h-4 w-4" />}
+              >
+                Save Prompt
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <ToastContainer />
     </div>
