@@ -38,8 +38,6 @@ interface ConversationEvaluation {
   objective_achieved_reason?: string
   additional_metrics?: {
     professionalism?: number
-    clarity?: number
-    empathy?: number
     problem_resolution?: number
     overall_quality?: number
   }
@@ -209,12 +207,6 @@ function ConversationEvaluationSection() {
                           Professionalism
                         </th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                          Clarity
-                        </th>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                          Empathy
-                        </th>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                           Problem Resolution
                         </th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -251,24 +243,6 @@ function ConversationEvaluationSection() {
                               {metrics.professionalism !== undefined ? (
                                 <div className="text-sm text-gray-900">
                                   {(metrics.professionalism * 100).toFixed(0)}%
-                                </div>
-                              ) : (
-                                <span className="text-sm text-gray-400">-</span>
-                              )}
-                            </td>
-                            <td className="px-6 py-4 whitespace-nowrap">
-                              {metrics.clarity !== undefined ? (
-                                <div className="text-sm text-gray-900">
-                                  {(metrics.clarity * 100).toFixed(0)}%
-                                </div>
-                              ) : (
-                                <span className="text-sm text-gray-400">-</span>
-                              )}
-                            </td>
-                            <td className="px-6 py-4 whitespace-nowrap">
-                              {metrics.empathy !== undefined ? (
-                                <div className="text-sm text-gray-900">
-                                  {(metrics.empathy * 100).toFixed(0)}%
                                 </div>
                               ) : (
                                 <span className="text-sm text-gray-400">-</span>

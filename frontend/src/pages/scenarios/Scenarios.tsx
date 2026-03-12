@@ -654,7 +654,7 @@ export default function Scenarios() {
       {/* Main Create Scenario Modal */}
       {showMainModal && renderModal(
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]">
-          <div className="bg-white rounded-lg shadow-xl w-full mx-4 max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
+          <div className="bg-white rounded-lg shadow-xl w-full mx-4 max-w-5xl max-h-[90vh] overflow-hidden flex flex-col">
             <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
               <h3 className="text-lg font-semibold">Create Scenario</h3>
               <button
@@ -688,9 +688,11 @@ export default function Scenarios() {
                         </div>
                       </div>
                       <div className="flex-1 min-w-0">
-                        <div className="mb-2 flex items-center gap-2">
+                        <div className="mb-2 flex items-start justify-between gap-2">
                           <h3 className="text-base font-semibold text-gray-900">Generate from Agent Prompt</h3>
-                          <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-medium text-blue-700">Recommended</span>
+                          <span className="shrink-0 whitespace-nowrap rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-medium text-blue-700">
+                            Recommended
+                          </span>
                         </div>
                         <p className="text-sm text-gray-600 leading-relaxed">
                           Select an existing agent and generate multiple scenario drafts from its system prompt.

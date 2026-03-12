@@ -62,7 +62,8 @@ def list_metrics(
 ):
     """List all metrics for the organization."""
     metrics = db.query(Metric).filter(
-        Metric.organization_id == organization_id
+        Metric.organization_id == organization_id,
+        ~Metric.name.in_(REMOVED_DEFAULT_METRICS),
     ).order_by(Metric.is_default.desc(), Metric.created_at.desc()).all()
     return metrics
 
@@ -154,7 +155,9 @@ def update_metric(
 
 
 # Deprecated default metrics that can be deleted
-DEPRECATED_DEFAULT_METRICS = {"Response Time", "Customer Satisfaction"}
+DEPRECATED_DEFAULT_METRICS = {"Response Time", "Customer Satisfaction", "Clarity and Empathy"}
+# Removed default metrics should no longer be listed/seeded/evaluated.
+REMOVED_DEFAULT_METRICS = {"Clarity and Empathy"}
 
 
 @router.delete("/{metric_id}", status_code=204)
@@ -200,13 +203,6 @@ def seed_default_metrics(
         {
             "name": "Follow Instructions",
             "description": "Measures how well the agent follows instructions and guidelines",
-            "metric_type": MetricType.RATING,
-            "trigger": MetricTrigger.ALWAYS,
-            "enabled": True,
-        },
-        {
-            "name": "Clarity and Empathy",
-            "description": "Evaluates the clarity of communication and empathetic responses",
             "metric_type": MetricType.RATING,
             "trigger": MetricTrigger.ALWAYS,
             "enabled": True,
@@ -336,6 +332,17 @@ def seed_default_metrics(
             # Keep default acoustic metric toggles aligned with product defaults.
             if existing.enabled != metric_data["enabled"]:
                 existing.enabled = metric_data["enabled"]
+
+    # Ensure removed defaults are disabled for existing orgs.
+    removed_metrics = db.query(Metric).filter(
+        and_(
+            Metric.organization_id == organization_id,
+            Metric.name.in_(REMOVED_DEFAULT_METRICS),
+            Metric.enabled == True,
+        )
+    ).all()
+    for metric in removed_metrics:
+        metric.enabled = False
 
     db.commit()
     for metric in created_metrics:
