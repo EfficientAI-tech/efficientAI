@@ -2,7 +2,7 @@
 
 import operator as op_module
 from datetime import datetime, timedelta
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional
 from uuid import UUID
 
 from loguru import logger
@@ -24,7 +24,7 @@ from app.models.enums import (
     AlertNotifyFrequency,
     EvaluatorResultStatus,
 )
-from app.services.alert_notification_service import alert_notification_service
+from app.services.alerts.alert_notification_service import alert_notification_service
 
 
 # Operator mapping
@@ -63,12 +63,6 @@ class AlertEvaluationService:
     def evaluate_all_alerts(self, db: Session) -> Dict[str, Any]:
         """
         Evaluate all active alerts across all organizations.
-
-        Args:
-            db: Database session
-
-        Returns:
-            Summary of evaluation results
         """
         logger.info("[AlertEvaluation] Starting evaluation of all active alerts")
 
@@ -132,13 +126,6 @@ class AlertEvaluationService:
     ) -> Dict[str, Any]:
         """
         Evaluate a single alert's condition.
-
-        Args:
-            alert: Alert ORM object
-            db: Database session
-
-        Returns:
-            Evaluation result dict
         """
         alert_name = alert.name
         logger.debug(f"[AlertEvaluation] Evaluating alert '{alert_name}'")
@@ -217,14 +204,6 @@ class AlertEvaluationService:
     ) -> Dict[str, Any]:
         """
         Evaluate a specific alert by ID (manual trigger).
-
-        Args:
-            alert_id: Alert UUID
-            organization_id: Organization UUID
-            db: Database session
-
-        Returns:
-            Evaluation result dict
         """
         alert = (
             db.query(Alert)
@@ -251,13 +230,6 @@ class AlertEvaluationService:
     ) -> Optional[float]:
         """
         Compute the aggregated metric value for an alert.
-
-        Args:
-            alert: Alert ORM object
-            db: Database session
-
-        Returns:
-            Computed metric value, or None if no data
         """
         metric_type = alert.metric_type
         aggregation = alert.aggregation
@@ -450,7 +422,6 @@ class AlertEvaluationService:
     ) -> Optional[float]:
         """
         Compute custom metric - counts all evaluator results.
-        Custom metrics can be extended based on specific requirements.
         """
         query = self._build_evaluator_result_query(
             db, organization_id, agent_ids, window_start
@@ -499,13 +470,6 @@ class AlertEvaluationService:
     def _should_notify(self, alert: Alert, db: Session) -> bool:
         """
         Check if the alert should send a notification based on frequency cooldown.
-
-        Args:
-            alert: Alert ORM object
-            db: Database session
-
-        Returns:
-            True if notification should be sent
         """
         frequency = alert.notify_frequency
         cooldown_seconds = FREQUENCY_COOLDOWN.get(frequency, 0)
@@ -549,14 +513,6 @@ class AlertEvaluationService:
     ) -> Dict[str, Any]:
         """
         Trigger an alert: create history record and send notifications.
-
-        Args:
-            alert: Alert ORM object
-            triggered_value: The value that triggered the alert
-            db: Database session
-
-        Returns:
-            Trigger result dict
         """
         triggered_at = datetime.utcnow()
 

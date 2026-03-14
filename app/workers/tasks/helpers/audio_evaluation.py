@@ -28,9 +28,9 @@ def evaluate_audio_metrics(
     Returns:
         Dictionary mapping metric ID to score info
     """
-    from app.services.s3_service import s3_service
-    from app.services.voice_quality_service import calculate_audio_metrics
-    from app.services.qualitative_voice_service import qualitative_voice_service
+    from app.services.storage.s3_service import s3_service
+    from app.services.audio.voice_quality_service import calculate_audio_metrics
+    from app.services.audio.qualitative_voice_service import qualitative_voice_service
 
     metric_scores: dict[str, dict[str, Any]] = {}
 

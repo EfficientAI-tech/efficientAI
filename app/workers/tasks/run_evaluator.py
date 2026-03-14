@@ -30,7 +30,7 @@ def run_evaluator_task(self, evaluator_id: str, evaluator_result_id: str):
 
     try:
         from app.models.database import Evaluator, Agent
-        from app.services.test_agent_bridge_service import test_agent_bridge_service
+        from app.services.testing.test_agent_bridge_service import test_agent_bridge_service
 
         evaluator_uuid = UUID(evaluator_id)
         result_uuid = UUID(evaluator_result_id)

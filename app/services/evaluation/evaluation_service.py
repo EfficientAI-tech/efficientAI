@@ -7,12 +7,13 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from app.models.database import Evaluation, EvaluationResult, EvaluationStatus, AudioFile
-from app.services.metrics_service import metrics_service
-from app.services.audio_service import AudioService
+from app.services.evaluation.metrics_service import metrics_service
+from app.services.audio.audio_service import AudioService
 from app.core.exceptions import EvaluationNotFoundError, AudioFileNotFoundError
 
 # Lazy import for whisper (optional dependency)
 whisper = None
+
 
 def _get_whisper():
     """Lazy load whisper module."""
@@ -20,6 +21,7 @@ def _get_whisper():
     if whisper is None:
         try:
             import whisper as _whisper
+
             whisper = _whisper
         except ImportError:
             raise ImportError(
@@ -27,6 +29,7 @@ def _get_whisper():
                 "pip install 'efficientai[local-whisper]' or use the OpenAI Whisper API instead."
             )
     return whisper
+
 
 audio_service = AudioService()
 
@@ -188,4 +191,3 @@ class EvaluationService:
 
 # Singleton instance
 evaluation_service = EvaluationService()
-

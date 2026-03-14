@@ -18,8 +18,8 @@ def generate_tts_report_pdf_task(self, report_job_id: str):
         TTSReportJob,
         TTSReportJobStatus,
     )
-    from app.services.s3_service import s3_service
-    from app.services.voice_playground_report_service import voice_playground_report_service
+    from app.services.storage.s3_service import s3_service
+    from app.services.reporting.voice_playground_report_service import voice_playground_report_service
 
     db = SessionLocal()
     try:

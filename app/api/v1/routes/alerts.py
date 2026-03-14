@@ -19,8 +19,8 @@ from app.models.schemas import (
     AlertHistoryResponse,
     AlertHistoryUpdate,
 )
-from app.services.alert_evaluation_service import alert_evaluation_service
-from app.services.alert_notification_service import alert_notification_service
+from app.services.alerts.alert_evaluation_service import alert_evaluation_service
+from app.services.alerts.alert_notification_service import alert_notification_service
 
 router = APIRouter(prefix="/alerts", tags=["alerts"])
 

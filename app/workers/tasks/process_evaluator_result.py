@@ -54,7 +54,7 @@ def _load_related_entities(db, result):
 
 def _transcribe_audio(result, ai_providers, db):
     """Transcribe audio file and return transcript with timing info."""
-    from app.services.transcription_service import transcription_service
+    from app.services.ai.transcription_service import transcription_service
 
     stt_provider = ModelProvider.OPENAI
     stt_model = "whisper-1"

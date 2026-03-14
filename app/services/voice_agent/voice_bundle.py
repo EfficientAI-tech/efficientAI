@@ -49,7 +49,7 @@ from efficientai.transports.websocket.fastapi import FastAPIWebsocketParams, Fas
 from efficientai.transports.base_transport import BaseTransport, TransportParams
 from efficientai.turns.bot.turn_analyzer_bot_turn_start_strategy import TurnAnalyzerBotTurnStartStrategy
 from efficientai.turns.turn_start_strategies import TurnStartStrategies
-from app.services.s3_service import s3_service
+from app.services.storage.s3_service import s3_service
 
 load_dotenv(override=True)
 

@@ -17,7 +17,7 @@ class VoicePlaygroundReportService:
     """Build and render comprehensive Voice Playground benchmark reports."""
 
     def __init__(self) -> None:
-        templates_dir = Path(__file__).parent.parent / "templates"
+        templates_dir = Path(__file__).parent.parent.parent / "templates"
         self._jinja_env = Environment(
             loader=FileSystemLoader(str(templates_dir)),
             autoescape=select_autoescape(["html", "xml"]),
@@ -29,7 +29,7 @@ class VoicePlaygroundReportService:
     @staticmethod
     def _build_logo_data_uri() -> str | None:
         """Load frontend favicon and convert it to an embeddable data URI."""
-        project_root = Path(__file__).parent.parent.parent
+        project_root = Path(__file__).parent.parent.parent.parent
         candidate_paths = [
             project_root / "frontend" / "public" / "favicon_dark.png",
             project_root / "frontend" / "public" / "favicon_light.png",

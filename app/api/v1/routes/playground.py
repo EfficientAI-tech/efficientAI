@@ -314,7 +314,7 @@ def poll_call_metrics(
                 try:
                     import requests as _http
                     import uuid as _uuid
-                    from app.services.s3_service import s3_service
+                    from app.services.storage.s3_service import s3_service
 
                     recording_urls = call_metrics.get("recording_urls", {})
                     audio_bytes = None
@@ -865,7 +865,7 @@ async def re_evaluate_call_recording(
     """
     import requests as http_requests
     import uuid as _uuid
-    from app.services.s3_service import s3_service
+    from app.services.storage.s3_service import s3_service
 
     call_recording = db.query(CallRecording).filter(
         CallRecording.call_short_id == call_short_id,

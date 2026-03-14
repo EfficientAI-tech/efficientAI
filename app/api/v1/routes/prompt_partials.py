@@ -112,7 +112,7 @@ async def generate_prompt_with_ai(
     db: Session = Depends(get_db),
 ):
     """Generate a new prompt using AI from a description."""
-    from app.services.llm_service import llm_service
+    from app.services.ai.llm_service import llm_service
 
     if not data.description.strip():
         raise HTTPException(400, "Description is required")
@@ -158,7 +158,7 @@ async def improve_prompt_with_ai(
     db: Session = Depends(get_db),
 ):
     """Improve/reformat existing prompt content using AI."""
-    from app.services.llm_service import llm_service
+    from app.services.ai.llm_service import llm_service
 
     if not data.content.strip():
         raise HTTPException(400, "Content is required")

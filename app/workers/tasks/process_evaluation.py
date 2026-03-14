@@ -3,7 +3,7 @@
 from uuid import UUID
 
 from app.database import SessionLocal
-from app.services.evaluation_service import evaluation_service
+from app.services.evaluation.evaluation_service import evaluation_service
 
 from app.workers.config import celery_app
 

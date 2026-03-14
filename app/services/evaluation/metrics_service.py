@@ -197,4 +197,3 @@ class MetricsService:
 
 # Singleton instance
 metrics_service = MetricsService()
-

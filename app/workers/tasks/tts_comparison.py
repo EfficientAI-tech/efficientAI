@@ -194,8 +194,8 @@ def generate_tts_comparison_task(self, comparison_id: str):
         TTSSampleStatus,
         ModelProvider,
     )
-    from app.services.tts_service import tts_service, get_audio_file_extension
-    from app.services.s3_service import s3_service
+    from app.services.ai.tts_service import tts_service, get_audio_file_extension
+    from app.services.storage.s3_service import s3_service
 
     db = SessionLocal()
     try:
@@ -342,8 +342,8 @@ def evaluate_tts_comparison_task(self, comparison_id: str):
         TTSComparisonStatus,
         TTSSampleStatus,
     )
-    from app.services.s3_service import s3_service
-    from app.services.qualitative_voice_service import qualitative_voice_service
+    from app.services.storage.s3_service import s3_service
+    from app.services.audio.qualitative_voice_service import qualitative_voice_service
 
     db = SessionLocal()
     try:

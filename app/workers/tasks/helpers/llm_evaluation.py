@@ -213,7 +213,7 @@ def evaluate_with_llm(
     Returns:
         Tuple of (metric_scores dict, evaluation_time in seconds)
     """
-    from app.services.llm_service import llm_service
+    from app.services.ai.llm_service import llm_service
 
     evaluation_prompt = build_evaluation_prompt(
         transcription=transcription,

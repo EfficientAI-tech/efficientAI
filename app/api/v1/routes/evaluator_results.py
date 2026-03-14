@@ -479,7 +479,7 @@ def re_evaluate_result(
             import uuid as _uuid
             from app.models.database import Agent, Integration
             from app.core.encryption import decrypt_api_key
-            from app.services.s3_service import s3_service
+            from app.services.storage.s3_service import s3_service
 
             call_data = result.call_data or {}
             platform = (result.provider_platform or "").lower()

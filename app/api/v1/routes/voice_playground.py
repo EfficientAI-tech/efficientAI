@@ -27,10 +27,10 @@ from app.models.database import (
     ModelProvider,
     VoiceBundle,
 )
-from app.services.model_config_service import model_config_service
-from app.services.s3_service import s3_service
-from app.services.llm_service import llm_service
-from app.services.voice_playground_report_service import voice_playground_report_service
+from app.services.ai.model_config_service import model_config_service
+from app.services.storage.s3_service import s3_service
+from app.services.ai.llm_service import llm_service
+from app.services.reporting.voice_playground_report_service import voice_playground_report_service
 
 router = APIRouter(
     prefix="/voice-playground",

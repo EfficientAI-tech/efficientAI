@@ -1,9 +1,7 @@
 """File storage service for handling audio file uploads and storage."""
 
-import os
 import uuid
 from pathlib import Path
-from typing import BinaryIO
 from fastapi import UploadFile
 from app.config import settings
 from app.core.exceptions import StorageError, InvalidAudioFormatError
@@ -141,4 +139,3 @@ class StorageService:
 
 # Singleton instance
 storage_service = StorageService()
-

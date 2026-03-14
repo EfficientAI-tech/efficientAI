@@ -8,9 +8,9 @@ from app.database import get_db
 from app.dependencies import get_api_key, get_organization_id
 from app.models.database import AudioFile
 from app.models.schemas import AudioFileResponse, MessageResponse
-from app.services.storage_service import storage_service
-from app.services.audio_service import AudioService
-from app.services.s3_service import s3_service
+from app.services.storage.storage_service import storage_service
+from app.services.audio.audio_service import AudioService
+from app.services.storage.s3_service import s3_service
 from app.core.exceptions import AudioFileNotFoundError, StorageError
 from uuid import UUID
 from loguru import logger
