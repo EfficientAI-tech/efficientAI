@@ -101,6 +101,22 @@ fix: Correct latency calculation for long audio files
 docs: Improve CONTRIBUTING.md with PR format instructions
 ```
 
+### Release Labels (Semantic Versioning)
+
+For PRs that merge to `main`/`master`, release versioning is automated from PR labels:
+
+- `major` -> bumps major (`v2.0.0`)
+- `minor` -> bumps minor (`v1.3.0`)
+- `fix` or `patch` -> bumps patch (`v1.2.4`)
+
+If no release label is set, the workflow defaults to a patch bump.
+
+On merge, CI automatically creates the GitHub release tag and publishes Docker images for:
+
+- `X.Y.Z`
+- `X.Y`
+- `latest`
+
 ### PR Description
 
 Your PR description **must** include the following sections:

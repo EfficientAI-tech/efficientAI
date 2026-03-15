@@ -71,6 +71,8 @@ There are two ways to run the application:
    
    Edit `config.yml` and `config.docker.yml` with your settings (S3, API keys, etc.). See the [Configuration](#️-configuration) section for details.
 
+   **Version note:** `EFFICIENTAI_VERSION` must match a published Docker image tag (for example `1.0.0`). If a tag is not available yet, use `latest`.
+
 3. **Create an API key**
    ```bash
    docker compose exec api python scripts/create_api_key.py "My API Key"
@@ -535,6 +537,30 @@ This runs Vite dev server on `http://localhost:3000` with instant hot module rep
 
 ---
 
+## 📦 Release Versioning
+
+EfficientAI uses automated semantic version releases for merged PRs to `main`/`master`.
+
+- Add a PR label to control the bump:
+  - `major` -> next `X.0.0`
+  - `minor` -> next `x.Y.0`
+  - `fix` (or `patch`) -> next `x.y.Z`
+- If no release label is provided, the release defaults to a patch bump.
+- On merge, CI automatically:
+  - creates the git tag and GitHub release (`vX.Y.Z`)
+  - publishes Docker images for both API and worker with tags:
+    - `X.Y.Z`
+    - `X.Y`
+    - `latest`
+
+This means you can deploy a specific release with:
+
+```bash
+EFFICIENTAI_VERSION=1.1.0 docker compose up -d
+```
+
+---
+
 ## 🔧 Troubleshooting
 
 ### Database Migration Issues
@@ -596,6 +622,12 @@ psycopg2.errors.UndefinedColumn: column "organization_id" of relation "api_keys"
    - If they don't, run them manually as shown above
 
 **Prevention:** Always ensure migrations run successfully before using the application. Check the startup logs for migration status messages.
+
+---
+
+## 🤝 Contributing
+
+See `CONTRIBUTING.md` for PR format, review expectations, and release label conventions.
 
 ---
 
