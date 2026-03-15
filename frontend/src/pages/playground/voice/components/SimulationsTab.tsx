@@ -66,8 +66,8 @@ export default function SimulationsTab() {
               isDownloading={isDownloading}
               isCreatingReport={isCreatingReport}
               reportJob={viewedReportJob || null}
-              onDownloadPdf={() => downloadReport(viewedComparison.id)}
-              onGenerateAsync={() => createReportJob(viewedComparison.id)}
+              onDownloadPdf={(options) => downloadReport(viewedComparison.id, options)}
+              onGenerateAsync={(options) => createReportJob(viewedComparison.id, options)}
               onOpenAsyncReport={() => openAsyncReport(viewedReportJob)}
             />
 

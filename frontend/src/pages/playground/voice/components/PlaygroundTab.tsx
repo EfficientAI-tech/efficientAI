@@ -387,8 +387,8 @@ export default function PlaygroundTab() {
           isDownloading={isDownloading}
           isCreatingReport={isCreatingReport}
           reportJob={activeReportJob || null}
-          onDownloadPdf={() => downloadReport(comparison.id)}
-          onGenerateAsync={() => createReportJob(comparison.id)}
+          onDownloadPdf={(options) => downloadReport(comparison.id, options)}
+          onGenerateAsync={(options) => createReportJob(comparison.id, options)}
           onOpenAsyncReport={() => openAsyncReport(activeReportJob)}
         />
 

@@ -109,8 +109,77 @@ export interface TTSReportJob {
   error_message?: string | null
   task_id?: string | null
   download_url?: string | null
+  report_options?: Partial<TTSReportOptions>
   created_at?: string | null
   updated_at?: string | null
+}
+
+export type TTSMetricThresholdOverride = {
+  good_min?: number
+  neutral_min?: number
+  good_max?: number
+  neutral_max?: number
+}
+
+export type TTSZoneThresholdOverrides = Partial<Record<
+  | 'avg_mos'
+  | 'avg_prosody'
+  | 'avg_valence'
+  | 'avg_arousal'
+  | 'avg_wer'
+  | 'avg_cer'
+  | 'avg_ttfb_ms'
+  | 'avg_latency_ms',
+  TTSMetricThresholdOverride
+>>
+
+export interface TTSReportOptions {
+  show_runs: boolean
+  min_runs_to_show: number
+  include_latency: boolean
+  include_ttfb: boolean
+  include_endpoint: boolean
+  include_naturalness: boolean
+  include_hallucination: boolean
+  include_prosody: boolean
+  include_arousal: boolean
+  include_valence: boolean
+  include_cer: boolean
+  include_wer: boolean
+  include_hallucination_examples: boolean
+  hallucination_examples_limit: number
+  include_disclaimer_sections: boolean
+  include_methodology_sections: boolean
+  zone_threshold_overrides: TTSZoneThresholdOverrides
+}
+
+export const DEFAULT_TTS_REPORT_OPTIONS: TTSReportOptions = {
+  show_runs: true,
+  min_runs_to_show: 100,
+  include_latency: true,
+  include_ttfb: true,
+  include_endpoint: true,
+  include_naturalness: true,
+  include_hallucination: true,
+  include_prosody: true,
+  include_arousal: true,
+  include_valence: true,
+  include_cer: true,
+  include_wer: true,
+  include_hallucination_examples: true,
+  hallucination_examples_limit: 5,
+  include_disclaimer_sections: true,
+  include_methodology_sections: false,
+  zone_threshold_overrides: {
+    avg_mos: { neutral_min: 3.0, good_min: 4.0 },
+    avg_prosody: { neutral_min: 0.4, good_min: 0.7 },
+    avg_valence: { neutral_min: -0.2, good_min: 0.3 },
+    avg_arousal: { neutral_min: 0.4, good_min: 0.7 },
+    avg_wer: { good_max: 0.1, neutral_max: 0.25 },
+    avg_cer: { good_max: 0.08, neutral_max: 0.2 },
+    avg_ttfb_ms: { good_max: 350, neutral_max: 800 },
+    avg_latency_ms: { good_max: 1500, neutral_max: 3000 },
+  },
 }
 
 export type AnalyticsSortKey =

@@ -3,6 +3,7 @@ Voice Playground API Routes
 TTS A/B comparison: generate audio, blind test, and quality evaluation.
 """
 
+import json
 import random
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -18,6 +19,7 @@ from app.models.database import (
     AIProvider,
     CustomTTSVoice,
     Integration,
+    Organization,
     TTSComparison,
     TTSSample,
     TTSComparisonStatus,
@@ -205,6 +207,47 @@ class CustomVoiceUpdate(BaseModel):
     gender: Optional[str] = None
     accent: Optional[str] = None
     description: Optional[str] = None
+
+
+class TTSReportOptions(BaseModel):
+    show_runs: bool = True
+    min_runs_to_show: int = 100
+    include_latency: bool = True
+    include_ttfb: bool = True
+    include_endpoint: bool = True
+    include_naturalness: bool = True
+    include_hallucination: bool = True
+    include_prosody: bool = True
+    include_arousal: bool = True
+    include_valence: bool = True
+    include_cer: bool = True
+    include_wer: bool = True
+    include_hallucination_examples: bool = True
+    hallucination_examples_limit: int = 5
+    include_disclaimer_sections: bool = True
+    include_methodology_sections: bool = False
+    zone_threshold_overrides: Optional[Dict[str, Dict[str, float]]] = None
+
+
+class TTSReportJobCreate(BaseModel):
+    report_options: Optional[TTSReportOptions] = None
+
+
+class VoicePlaygroundThresholdDefaultsUpdate(BaseModel):
+    zone_threshold_overrides: Optional[Dict[str, Dict[str, float]]] = None
+    reset_to_system_defaults: bool = False
+
+
+DEFAULT_ZONE_THRESHOLD_OVERRIDES: Dict[str, Dict[str, float]] = {
+    "avg_mos": {"neutral_min": 3.0, "good_min": 4.0},
+    "avg_prosody": {"neutral_min": 0.4, "good_min": 0.7},
+    "avg_valence": {"neutral_min": -0.2, "good_min": 0.3},
+    "avg_arousal": {"neutral_min": 0.4, "good_min": 0.7},
+    "avg_wer": {"good_max": 0.1, "neutral_max": 0.25},
+    "avg_cer": {"good_max": 0.08, "neutral_max": 0.2},
+    "avg_ttfb_ms": {"good_max": 350.0, "neutral_max": 800.0},
+    "avg_latency_ms": {"good_max": 1500.0, "neutral_max": 3000.0},
+}
 
 
 SAMPLE_GENERATION_SYSTEM_PROMPT = """You are an expert at creating realistic text-to-speech sample scripts. \
@@ -871,10 +914,58 @@ async def get_tts_analytics(
     return result
 
 
+@router.get("/report-threshold-defaults", operation_id="getVoicePlaygroundReportThresholdDefaults")
+async def get_voice_playground_report_threshold_defaults(
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    org = db.query(Organization).filter(Organization.id == organization_id).first()
+    if not org:
+        raise HTTPException(404, "Organization not found")
+
+    stored = _sanitize_zone_threshold_overrides(org.voice_playground_threshold_overrides)
+    is_custom = bool(stored)
+    return {
+        "zone_threshold_overrides": stored if is_custom else DEFAULT_ZONE_THRESHOLD_OVERRIDES,
+        "is_custom": is_custom,
+    }
+
+
+@router.put("/report-threshold-defaults", operation_id="updateVoicePlaygroundReportThresholdDefaults")
+async def update_voice_playground_report_threshold_defaults(
+    data: VoicePlaygroundThresholdDefaultsUpdate,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    org = db.query(Organization).filter(Organization.id == organization_id).first()
+    if not org:
+        raise HTTPException(404, "Organization not found")
+
+    if data.reset_to_system_defaults:
+        org.voice_playground_threshold_overrides = None
+    else:
+        sanitized = _sanitize_zone_threshold_overrides(data.zone_threshold_overrides or {})
+        org.voice_playground_threshold_overrides = sanitized
+
+    db.commit()
+    db.refresh(org)
+
+    stored = _sanitize_zone_threshold_overrides(org.voice_playground_threshold_overrides)
+    is_custom = bool(stored)
+    return {
+        "zone_threshold_overrides": stored if is_custom else DEFAULT_ZONE_THRESHOLD_OVERRIDES,
+        "is_custom": is_custom,
+        "message": "Voice Playground threshold defaults updated",
+    }
+
+
 @router.get("/comparisons/{comparison_id}/report.pdf", operation_id="downloadTTSComparisonReport")
 async def download_tts_comparison_report(
     comparison_id: UUID,
     include_unfinished_samples: bool = False,
+    report_options: Optional[str] = None,
     organization_id: UUID = Depends(get_organization_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
@@ -895,8 +986,16 @@ async def download_tts_comparison_report(
         raise HTTPException(400, "No samples found to generate report")
 
     try:
-        payload = voice_playground_report_service.build_payload(comparison, samples)
+        options_dict = _parse_report_options(report_options)
+        options_dict = _merge_org_threshold_defaults(db, organization_id, options_dict)
+        payload = voice_playground_report_service.build_payload(
+            comparison,
+            samples,
+            report_options=options_dict,
+        )
         pdf_bytes = voice_playground_report_service.render_pdf(payload)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(500, f"Failed to generate PDF report: {str(e)}")
 
@@ -911,6 +1010,7 @@ async def download_tts_comparison_report(
 @router.post("/comparisons/{comparison_id}/reports", operation_id="createTTSComparisonReportJob")
 async def create_tts_comparison_report_job(
     comparison_id: UUID,
+    data: Optional[TTSReportJobCreate] = None,
     organization_id: UUID = Depends(get_organization_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
@@ -932,7 +1032,13 @@ async def create_tts_comparison_report_job(
     try:
         from app.workers.celery_app import generate_tts_report_pdf_task
 
-        task = generate_tts_report_pdf_task.delay(str(report_job.id))
+        options_dict = (
+            data.report_options.model_dump(exclude_none=True)
+            if (data and data.report_options is not None)
+            else {}
+        )
+        options_dict = _merge_org_threshold_defaults(db, organization_id, options_dict)
+        task = generate_tts_report_pdf_task.delay(str(report_job.id), options_dict)
         report_job.celery_task_id = task.id
         db.commit()
     except Exception as e:
@@ -947,6 +1053,7 @@ async def create_tts_comparison_report_job(
         "status": report_job.status,
         "format": report_job.format,
         "task_id": report_job.celery_task_id,
+        "report_options": options_dict,
         "created_at": report_job.created_at.isoformat() if report_job.created_at else None,
     }
 
@@ -994,6 +1101,72 @@ async def get_tts_comparison_report_job(
 # ======================================================================
 # Helpers
 # ======================================================================
+
+
+def _sanitize_zone_threshold_overrides(raw: Any) -> Dict[str, Dict[str, float]]:
+    if not isinstance(raw, dict):
+        return {}
+
+    allowed_metric_keys = set(DEFAULT_ZONE_THRESHOLD_OVERRIDES.keys())
+    allowed_threshold_keys = {"good_min", "neutral_min", "good_max", "neutral_max"}
+    sanitized: Dict[str, Dict[str, float]] = {}
+
+    for metric_key, metric_values in raw.items():
+        if metric_key not in allowed_metric_keys or not isinstance(metric_values, dict):
+            continue
+        bucket: Dict[str, float] = {}
+        for threshold_key, raw_val in metric_values.items():
+            if threshold_key not in allowed_threshold_keys:
+                continue
+            try:
+                bucket[threshold_key] = float(raw_val)
+            except (TypeError, ValueError):
+                continue
+        if bucket:
+            sanitized[metric_key] = bucket
+    return sanitized
+
+
+def _merge_org_threshold_defaults(db: Session, organization_id: UUID, report_options: Dict[str, Any]) -> Dict[str, Any]:
+    merged = dict(report_options or {})
+
+    org = db.query(Organization).filter(Organization.id == organization_id).first()
+    org_defaults = _sanitize_zone_threshold_overrides(
+        org.voice_playground_threshold_overrides if org else None
+    )
+    base_thresholds = org_defaults or DEFAULT_ZONE_THRESHOLD_OVERRIDES
+
+    incoming_overrides = _sanitize_zone_threshold_overrides(merged.get("zone_threshold_overrides"))
+    merged_thresholds: Dict[str, Dict[str, float]] = {}
+    for metric_key, default_values in base_thresholds.items():
+        merged_thresholds[metric_key] = dict(default_values)
+        if metric_key in incoming_overrides:
+            merged_thresholds[metric_key].update(incoming_overrides[metric_key])
+    for metric_key, override_values in incoming_overrides.items():
+        if metric_key not in merged_thresholds:
+            merged_thresholds[metric_key] = dict(override_values)
+
+    merged["zone_threshold_overrides"] = merged_thresholds
+    return merged
+
+
+def _parse_report_options(report_options_raw: Optional[str]) -> Dict[str, Any]:
+    if not report_options_raw:
+        return {}
+    try:
+        parsed = json.loads(report_options_raw)
+    except json.JSONDecodeError:
+        raise HTTPException(400, "Invalid report_options JSON")
+
+    if not isinstance(parsed, dict):
+        raise HTTPException(400, "report_options must be a JSON object")
+
+    try:
+        validated = TTSReportOptions(**parsed)
+    except Exception as exc:
+        raise HTTPException(400, f"Invalid report options: {str(exc)}")
+
+    return validated.model_dump(exclude_none=True)
 
 
 def _get_comparison_or_404(comparison_id: UUID, organization_id: UUID, db: Session) -> TTSComparison:

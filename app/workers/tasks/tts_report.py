@@ -10,7 +10,7 @@ from app.workers.config import celery_app
 
 
 @celery_app.task(name="generate_tts_report_pdf", bind=True, max_retries=1)
-def generate_tts_report_pdf_task(self, report_job_id: str):
+def generate_tts_report_pdf_task(self, report_job_id: str, report_options: dict | None = None):
     """Generate a Voice Playground PDF report and store it in S3."""
     from app.models.database import (
         TTSComparison,
@@ -53,7 +53,11 @@ def generate_tts_report_pdf_task(self, report_job_id: str):
             .all()
         )
 
-        payload = voice_playground_report_service.build_payload(comparison, samples)
+        payload = voice_playground_report_service.build_payload(
+            comparison,
+            samples,
+            report_options=report_options or {},
+        )
         pdf_bytes = voice_playground_report_service.render_pdf(payload)
 
         report_filename = (

@@ -39,6 +39,31 @@ export interface LicenseInfoResponse {
   organization?: string
 }
 
+type TTSReportOptionsPayload = {
+  show_runs?: boolean
+  min_runs_to_show?: number
+  include_latency?: boolean
+  include_ttfb?: boolean
+  include_endpoint?: boolean
+  include_naturalness?: boolean
+  include_hallucination?: boolean
+  include_prosody?: boolean
+  include_arousal?: boolean
+  include_valence?: boolean
+  include_cer?: boolean
+  include_wer?: boolean
+  include_hallucination_examples?: boolean
+  hallucination_examples_limit?: number
+  include_disclaimer_sections?: boolean
+  include_methodology_sections?: boolean
+  zone_threshold_overrides?: Record<string, {
+    good_min?: number
+    neutral_min?: number
+    good_max?: number
+    neutral_max?: number
+  }>
+}
+
 // When running in production (served from same origin), use relative path
 // Otherwise use environment variable or default
 const API_BASE_URL = import.meta.env.VITE_API_URL ||
@@ -1323,27 +1348,58 @@ class ApiClient {
 
   async downloadTTSComparisonReport(
     comparisonId: string,
-    includeUnfinishedSamples = false
+    includeUnfinishedSamples = false,
+    reportOptions?: TTSReportOptionsPayload
   ): Promise<Blob> {
     const response = await this.client.get(
       `/api/v1/voice-playground/comparisons/${comparisonId}/report.pdf`,
       {
-        params: { include_unfinished_samples: includeUnfinishedSamples },
+        params: {
+          include_unfinished_samples: includeUnfinishedSamples,
+          ...(reportOptions ? { report_options: JSON.stringify(reportOptions) } : {}),
+        },
         responseType: 'blob',
       }
     )
     return response.data
   }
 
-  async createTTSComparisonReportJob(comparisonId: string): Promise<{
+  async createTTSComparisonReportJob(
+    comparisonId: string,
+    reportOptions?: TTSReportOptionsPayload
+  ): Promise<{
     id: string
     comparison_id: string
     status: string
     format: string
     task_id?: string
+    report_options?: TTSReportOptionsPayload
     created_at?: string | null
   }> {
-    const response = await this.client.post(`/api/v1/voice-playground/comparisons/${comparisonId}/reports`)
+    const response = await this.client.post(
+      `/api/v1/voice-playground/comparisons/${comparisonId}/reports`,
+      reportOptions ? { report_options: reportOptions } : {}
+    )
+    return response.data
+  }
+
+  async getVoicePlaygroundReportThresholdDefaults(): Promise<{
+    zone_threshold_overrides: NonNullable<TTSReportOptionsPayload['zone_threshold_overrides']>
+    is_custom: boolean
+  }> {
+    const response = await this.client.get('/api/v1/voice-playground/report-threshold-defaults')
+    return response.data
+  }
+
+  async updateVoicePlaygroundReportThresholdDefaults(data: {
+    zone_threshold_overrides?: NonNullable<TTSReportOptionsPayload['zone_threshold_overrides']>
+    reset_to_system_defaults?: boolean
+  }): Promise<{
+    zone_threshold_overrides: NonNullable<TTSReportOptionsPayload['zone_threshold_overrides']>
+    is_custom: boolean
+    message: string
+  }> {
+    const response = await this.client.put('/api/v1/voice-playground/report-threshold-defaults', data)
     return response.data
   }
 
@@ -1356,6 +1412,7 @@ class ApiClient {
     error_message?: string | null
     task_id?: string | null
     download_url?: string | null
+    report_options?: TTSReportOptionsPayload
     created_at?: string | null
     updated_at?: string | null
   }> {

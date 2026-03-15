@@ -1,10 +1,12 @@
 import { Trophy, Download, FileText, Loader2, Headphones } from 'lucide-react'
+import { useState } from 'react'
 import Button from '../../../../components/Button'
 import ProviderLogo, { getProviderInfo } from '../../../../components/shared/ProviderLogo'
-import { TTSComparison, TTSReportJob } from '../types'
+import { DEFAULT_TTS_REPORT_OPTIONS, TTSComparison, TTSReportJob, TTSReportOptions } from '../types'
 import MetricCard from './MetricCard'
 import SampleGroup from './SampleGroup'
 import StatusBadge from './StatusBadge'
+import ReportConfigModal from './ReportConfigModal'
 
 function hasSecondProvider(comp: {
   provider_b?: string | null
@@ -35,8 +37,8 @@ interface ComparisonResultsViewProps {
   isDownloading: boolean
   isCreatingReport: boolean
   reportJob: TTSReportJob | null
-  onDownloadPdf: () => void
-  onGenerateAsync: () => void
+  onDownloadPdf: (options?: TTSReportOptions) => void
+  onGenerateAsync: (options?: TTSReportOptions) => void
   onOpenAsyncReport: () => void
 }
 
@@ -52,6 +54,20 @@ export default function ComparisonResultsView({
   onOpenAsyncReport,
 }: ComparisonResultsViewProps) {
   const hzMaps = buildVoiceHzMaps(comparison)
+  const [showReportConfig, setShowReportConfig] = useState(false)
+  const [lastOptions, setLastOptions] = useState<TTSReportOptions>(DEFAULT_TTS_REPORT_OPTIONS)
+
+  const handleDownload = (options: TTSReportOptions) => {
+    setLastOptions(options)
+    onDownloadPdf(options)
+    setShowReportConfig(false)
+  }
+
+  const handleGenerateAsync = (options: TTSReportOptions) => {
+    setLastOptions(options)
+    onGenerateAsync(options)
+    setShowReportConfig(false)
+  }
 
   return (
     <div className="space-y-6">
@@ -86,7 +102,7 @@ export default function ComparisonResultsView({
                     <Download className="w-4 h-4" />
                   )
                 }
-                onClick={onDownloadPdf}
+                onClick={() => setShowReportConfig(true)}
                 disabled={comparison.status !== 'completed' || isDownloading}
               >
                 Download PDF
@@ -101,7 +117,7 @@ export default function ComparisonResultsView({
                     <FileText className="w-4 h-4" />
                   )
                 }
-                onClick={onGenerateAsync}
+                onClick={() => setShowReportConfig(true)}
                 disabled={isCreatingReport}
               >
                 Generate Async
@@ -161,7 +177,7 @@ export default function ComparisonResultsView({
             const sumB = comparison.evaluation_summary.provider_b || {}
             const hasTwoProviders = hasSecondProvider(comparison)
             return (
-              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3 mb-6">
+              <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3 mb-6">
                 <MetricCard
                   label="MOS Score"
                   valueA={sumA['MOS Score']}
@@ -298,6 +314,16 @@ export default function ComparisonResultsView({
           ))}
         </div>
       </div>
+
+      <ReportConfigModal
+        isOpen={showReportConfig}
+        initialOptions={lastOptions}
+        isDownloading={isDownloading}
+        isCreatingReport={isCreatingReport}
+        onClose={() => setShowReportConfig(false)}
+        onDownloadPdf={handleDownload}
+        onGenerateAsync={handleGenerateAsync}
+      />
     </div>
   )
 }
