@@ -7,7 +7,7 @@ from typing import Optional, Dict, Any, Tuple
 from uuid import UUID
 
 from app.models.database import ModelProvider, AIProvider, Integration
-from app.services.s3_service import s3_service
+from app.services.storage.s3_service import s3_service
 from efficientai.services.cartesia.http_tts import synthesize_cartesia_bytes
 from efficientai.services.deepgram.http_tts import synthesize_deepgram_bytes
 from efficientai.services.elevenlabs.http_tts import synthesize_elevenlabs_bytes
@@ -34,6 +34,7 @@ PROVIDER_SUPPORTED_SAMPLE_RATES: Dict[str, list] = {
     "voicemaker": [8000, 16000, 22050, 24000, 44100, 48000],
 }
 
+
 def get_audio_file_extension(provider: str, sample_rate_hz: Optional[int] = None) -> str:
     """Determine audio file extension based on provider and requested sample rate."""
     if provider == "sarvam":
@@ -56,19 +57,19 @@ class TTSService:
         """Get AI provider configuration from database."""
         from sqlalchemy import func
 
-        provider_value = provider.value if hasattr(provider, 'value') else provider
+        provider_value = provider.value if hasattr(provider, "value") else provider
 
         ai_provider = db.query(AIProvider).filter(
             AIProvider.provider == provider_value,
             AIProvider.organization_id == organization_id,
-            AIProvider.is_active == True
+            AIProvider.is_active == True,
         ).first()
 
         if not ai_provider:
             ai_provider = db.query(AIProvider).filter(
                 func.lower(AIProvider.provider) == provider_value.lower(),
                 AIProvider.organization_id == organization_id,
-                AIProvider.is_active == True
+                AIProvider.is_active == True,
             ).first()
 
         return ai_provider
@@ -85,11 +86,11 @@ class TTSService:
             return decrypt_api_key(ai_provider.api_key)
 
         # Fallback: check Integration table for cartesia/elevenlabs/deepgram
-        provider_value = provider.value if hasattr(provider, 'value') else provider
+        provider_value = provider.value if hasattr(provider, "value") else provider
         integration = db.query(Integration).filter(
             func.lower(Integration.platform) == provider_value.lower(),
             Integration.organization_id == organization_id,
-            Integration.is_active == True
+            Integration.is_active == True,
         ).first()
         if integration:
             return decrypt_api_key(integration.api_key)
@@ -107,7 +108,7 @@ class TTSService:
         return synthesize_openai_bytes(text=text, model=model, api_key=api_key, voice=voice, config=config)
 
     # ------------------------------------------------------------------
-    # Google (unary RPC – no streaming; TTFB ≈ total API time)
+    # Google (unary RPC - no streaming; TTFB ~= total API time)
     # ------------------------------------------------------------------
 
     def _synthesize_with_google(
@@ -229,7 +230,7 @@ class TTSService:
     ) -> bytes:
         """
         Synthesize speech from text.
-        
+
         Args:
             text: Text to convert to speech
             tts_provider: TTS provider to use
@@ -238,7 +239,7 @@ class TTSService:
             db: Database session
             voice: Voice selection (if applicable)
             config: Additional provider-specific configuration
-            
+
         Returns:
             Audio bytes (MP3 format)
         """
@@ -280,6 +281,7 @@ class TTSService:
         audio_bytes = self.synthesize(text, tts_provider, tts_model, organization_id, db, voice, config)
 
         import uuid as _uuid
+
         file_id = _uuid.uuid4()
         s3_key = s3_service.upload_file(
             file_id=file_id,
@@ -292,4 +294,3 @@ class TTSService:
 
 # Singleton instance
 tts_service = TTSService()
-

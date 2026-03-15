@@ -1,13 +1,11 @@
 import { Lock, Mail, ExternalLink } from 'lucide-react'
-
-const FEATURE_LABELS: Record<string, { title: string }> = {
-  voice_playground: { title: 'Voice Playground' },
-}
+import { useLicenseStore } from '../../store/licenseStore'
 
 const FALLBACK_TITLE = 'Enterprise Feature'
 
 export default function EnterpriseUpgrade({ feature }: { feature: string }) {
-  const title = FEATURE_LABELS[feature]?.title ?? FALLBACK_TITLE
+  const getFeatureMeta = useLicenseStore((state) => state.getFeatureMeta)
+  const title = getFeatureMeta(feature)?.title ?? FALLBACK_TITLE
 
   return (
     <div className="flex items-center justify-center min-h-[60vh]">

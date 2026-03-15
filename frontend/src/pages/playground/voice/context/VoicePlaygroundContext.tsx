@@ -11,6 +11,7 @@ import {
   TTSAnalyticsRow,
   CustomTTSVoice,
   TTSReportJob,
+  TTSReportOptions,
   AnalyticsSortKey,
   BenchmarkMetricKey,
   DEFAULT_SAMPLE_TEXTS,
@@ -131,9 +132,9 @@ interface VoicePlaygroundContextType {
   isCreating: boolean
   submitBlindTest: () => void
   isSubmittingBlindTest: boolean
-  downloadReport: (comparisonId: string) => void
+  downloadReport: (comparisonId: string, options?: TTSReportOptions) => void
   isDownloading: boolean
-  createReportJob: (comparisonId: string) => void
+  createReportJob: (comparisonId: string, options?: TTSReportOptions) => void
   isCreatingReport: boolean
   deleteComparison: (id: string) => void
   isDeleting: boolean
@@ -472,9 +473,10 @@ export function VoicePlaygroundProvider({ children }: { children: ReactNode }) {
   })
 
   const downloadReportMutation = useMutation({
-    mutationFn: (comparisonId: string) => apiClient.downloadTTSComparisonReport(comparisonId),
-    onSuccess: (blob, comparisonId) => {
-      const filename = `voice-playground-report-${comparisonId.slice(0, 8)}.pdf`
+    mutationFn: ({ comparisonId, options }: { comparisonId: string; options?: TTSReportOptions }) =>
+      apiClient.downloadTTSComparisonReport(comparisonId, false, options),
+    onSuccess: (blob, variables) => {
+      const filename = `voice-playground-report-${variables.comparisonId.slice(0, 8)}.pdf`
       const url = window.URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
@@ -487,7 +489,8 @@ export function VoicePlaygroundProvider({ children }: { children: ReactNode }) {
   })
 
   const createReportJobMutation = useMutation({
-    mutationFn: (comparisonId: string) => apiClient.createTTSComparisonReportJob(comparisonId),
+    mutationFn: ({ comparisonId, options }: { comparisonId: string; options?: TTSReportOptions }) =>
+      apiClient.createTTSComparisonReportJob(comparisonId, options),
     onSuccess: (job) => {
       setReportJobByComparisonId(prev => ({ ...prev, [job.comparison_id]: job.id }))
     },
@@ -710,9 +713,11 @@ export function VoicePlaygroundProvider({ children }: { children: ReactNode }) {
     isCreating: createMutation.isPending,
     submitBlindTest: () => blindTestMutation.mutate(),
     isSubmittingBlindTest: blindTestMutation.isPending,
-    downloadReport: (id: string) => downloadReportMutation.mutate(id),
+    downloadReport: (id: string, options?: TTSReportOptions) =>
+      downloadReportMutation.mutate({ comparisonId: id, options }),
     isDownloading: downloadReportMutation.isPending,
-    createReportJob: (id: string) => createReportJobMutation.mutate(id),
+    createReportJob: (id: string, options?: TTSReportOptions) =>
+      createReportJobMutation.mutate({ comparisonId: id, options }),
     isCreatingReport: createReportJobMutation.isPending,
     deleteComparison: (id: string) => deleteMutation.mutate(id),
     isDeleting: deleteMutation.isPending,

@@ -11,9 +11,9 @@ from app.database import get_db
 from app.dependencies import get_api_key, get_organization_id
 from app.models.database import ConversationEvaluation, ManualTranscription, Agent, ModelProvider, Metric
 from app.models.schemas import ConversationEvaluationCreate, ConversationEvaluationResponse, MessageResponse
-from app.services.llm_service import llm_service
-from app.services.voice_quality_service import is_audio_metric, calculate_audio_metrics, AUDIO_METRICS
-from app.services.s3_service import s3_service
+from app.services.ai.llm_service import llm_service
+from app.services.audio.voice_quality_service import is_audio_metric, calculate_audio_metrics, AUDIO_METRICS
+from app.services.storage.s3_service import s3_service
 
 router = APIRouter(prefix="/conversation-evaluations", tags=["Conversation Evaluations"])
 

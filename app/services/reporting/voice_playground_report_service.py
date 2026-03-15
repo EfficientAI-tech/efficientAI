@@ -15,9 +15,28 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 class VoicePlaygroundReportService:
     """Build and render comprehensive Voice Playground benchmark reports."""
+    DEFAULT_REPORT_OPTIONS: dict[str, Any] = {
+        "show_runs": True,
+        "min_runs_to_show": 100,
+        "include_latency": True,
+        "include_ttfb": True,
+        "include_endpoint": True,
+        "include_naturalness": True,
+        "include_hallucination": True,
+        "include_prosody": True,
+        "include_arousal": True,
+        "include_valence": True,
+        "include_cer": True,
+        "include_wer": True,
+        "include_hallucination_examples": True,
+        "hallucination_examples_limit": 5,
+        "include_disclaimer_sections": True,
+        "include_methodology_sections": False,
+        "zone_threshold_overrides": {},
+    }
 
     def __init__(self) -> None:
-        templates_dir = Path(__file__).parent.parent / "templates"
+        templates_dir = Path(__file__).parent.parent.parent / "templates"
         self._jinja_env = Environment(
             loader=FileSystemLoader(str(templates_dir)),
             autoescape=select_autoescape(["html", "xml"]),
@@ -29,7 +48,7 @@ class VoicePlaygroundReportService:
     @staticmethod
     def _build_logo_data_uri() -> str | None:
         """Load frontend favicon and convert it to an embeddable data URI."""
-        project_root = Path(__file__).parent.parent.parent
+        project_root = Path(__file__).parent.parent.parent.parent
         candidate_paths = [
             project_root / "frontend" / "public" / "favicon_dark.png",
             project_root / "frontend" / "public" / "favicon_light.png",
@@ -153,8 +172,96 @@ class VoicePlaygroundReportService:
             return "Streaming (inferred)"
         return "Non-streaming (inferred)"
 
-    def build_payload(self, comparison: Any, samples: list[Any]) -> dict[str, Any]:
+    @staticmethod
+    def _to_bool(value: Any, default: bool) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"1", "true", "yes", "on"}:
+                return True
+            if lowered in {"0", "false", "no", "off"}:
+                return False
+        if isinstance(value, (int, float)):
+            return bool(value)
+        return default
+
+    def _normalize_report_options(self, report_options: dict[str, Any] | None) -> dict[str, Any]:
+        normalized = dict(self.DEFAULT_REPORT_OPTIONS)
+        if not isinstance(report_options, dict):
+            return normalized
+
+        bool_keys = {
+            "show_runs",
+            "include_latency",
+            "include_ttfb",
+            "include_endpoint",
+            "include_naturalness",
+            "include_hallucination",
+            "include_prosody",
+            "include_arousal",
+            "include_valence",
+            "include_cer",
+            "include_wer",
+            "include_hallucination_examples",
+            "include_disclaimer_sections",
+            "include_methodology_sections",
+        }
+        for key in bool_keys:
+            if key in report_options:
+                normalized[key] = self._to_bool(report_options.get(key), bool(normalized[key]))
+
+        try:
+            normalized["min_runs_to_show"] = max(0, int(report_options.get("min_runs_to_show", normalized["min_runs_to_show"])))
+        except (TypeError, ValueError):
+            normalized["min_runs_to_show"] = int(self.DEFAULT_REPORT_OPTIONS["min_runs_to_show"])
+
+        try:
+            normalized["hallucination_examples_limit"] = max(
+                0, min(50, int(report_options.get("hallucination_examples_limit", normalized["hallucination_examples_limit"])))
+            )
+        except (TypeError, ValueError):
+            normalized["hallucination_examples_limit"] = int(self.DEFAULT_REPORT_OPTIONS["hallucination_examples_limit"])
+
+        raw_threshold_overrides = report_options.get("zone_threshold_overrides")
+        clean_threshold_overrides: dict[str, dict[str, float]] = {}
+        if isinstance(raw_threshold_overrides, dict):
+            allowed_metric_keys = {
+                "avg_mos",
+                "avg_prosody",
+                "avg_valence",
+                "avg_arousal",
+                "avg_wer",
+                "avg_cer",
+                "avg_ttfb_ms",
+                "avg_latency_ms",
+            }
+            allowed_threshold_keys = {"good_min", "neutral_min", "good_max", "neutral_max"}
+            for metric_key, maybe_values in raw_threshold_overrides.items():
+                if metric_key not in allowed_metric_keys or not isinstance(maybe_values, dict):
+                    continue
+                cleaned_metric_values: dict[str, float] = {}
+                for threshold_key, raw_value in maybe_values.items():
+                    if threshold_key not in allowed_threshold_keys:
+                        continue
+                    try:
+                        cleaned_metric_values[threshold_key] = float(raw_value)
+                    except (TypeError, ValueError):
+                        continue
+                if cleaned_metric_values:
+                    clean_threshold_overrides[metric_key] = cleaned_metric_values
+        normalized["zone_threshold_overrides"] = clean_threshold_overrides
+
+        return normalized
+
+    def build_payload(
+        self,
+        comparison: Any,
+        samples: list[Any],
+        report_options: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Build template context from comparison and sample rows."""
+        normalized_options = self._normalize_report_options(report_options)
         grouped: dict[tuple[str, str, str, str], list[Any]] = defaultdict(list)
         for sample in samples:
             grouped[
@@ -262,7 +369,14 @@ class VoicePlaygroundReportService:
 
         provider_rows.sort(key=lambda r: ((r["avg_mos"] is None), -(r["avg_mos"] or 0)))
         hallucination_examples.sort(key=lambda e: e["wer"], reverse=True)
-        hallucination_examples = hallucination_examples[:5]
+        if (
+            normalized_options["include_hallucination"]
+            and normalized_options["include_hallucination_examples"]
+            and normalized_options["include_wer"]
+        ):
+            hallucination_examples = hallucination_examples[: normalized_options["hallucination_examples_limit"]]
+        else:
+            hallucination_examples = []
 
         run_variability_rows: list[dict[str, Any]] = []
         for (text, provider, model, voice_name), run_samples in run_groups.items():
@@ -436,10 +550,18 @@ class VoicePlaygroundReportService:
                 return max(valid, key=lambda r: float(r[key]))
             return min(valid, key=lambda r: float(r[key]))
 
-        top_naturalness = _winner(provider_rows, "avg_mos", "max")
-        lowest_latency = _winner(provider_rows, "avg_latency_ms", "min")
-        lowest_hallucination = _winner(provider_rows, "avg_wer", "min")
-        best_context = _winner(provider_rows, "avg_prosody", "max")
+        has_comparison_variants = len(provider_rows) > 1
+        top_naturalness = _winner(provider_rows, "avg_mos", "max") if normalized_options["include_naturalness"] else None
+        lowest_latency = _winner(provider_rows, "avg_latency_ms", "min") if normalized_options["include_latency"] else None
+        lowest_hallucination = (
+            _winner(provider_rows, "avg_wer", "min")
+            if (
+                normalized_options["include_hallucination"]
+                and normalized_options["include_wer"]
+            )
+            else None
+        )
+        best_context = _winner(provider_rows, "avg_prosody", "max") if normalized_options["include_prosody"] else None
 
         recommendations = []
         if top_naturalness:
@@ -484,94 +606,142 @@ class VoicePlaygroundReportService:
                 "title": "MOS Score Ranking",
                 "full_form": "Mean Opinion Score (MOS)",
                 "subtitle": "Higher is better",
+                "definition": "Perceived speech naturalness and quality on a 1-5 scale.",
                 "higher_is_better": True,
                 "min_value": 1.0,
                 "max_value": 5.0,
                 "format_kind": "score",
                 "range_label": "Measured range: 1.0 to 5.0",
+                "zone_thresholds": {"good_min": 4.0, "neutral_min": 3.0},
             },
             {
                 "key": "avg_prosody",
                 "title": "Prosody Score Ranking",
                 "full_form": "Prosody Score",
                 "subtitle": "Higher is better",
+                "definition": "Expressiveness proxy based on rhythm, stress, and intonation stability.",
                 "higher_is_better": True,
                 "min_value": 0.0,
                 "max_value": 1.0,
                 "format_kind": "score",
                 "range_label": "Measured range: 0.0 to 1.0",
+                "zone_thresholds": {"good_min": 0.7, "neutral_min": 0.4},
             },
             {
                 "key": "avg_valence",
                 "title": "Valence Ranking",
                 "full_form": "Valence",
                 "subtitle": "Higher is better",
+                "definition": "Estimated emotional polarity from negative to positive.",
                 "higher_is_better": True,
                 "min_value": -1.0,
                 "max_value": 1.0,
                 "format_kind": "score",
                 "range_label": "Measured range: -1.0 to 1.0",
+                "zone_thresholds": {"good_min": 0.3, "neutral_min": -0.2},
             },
             {
                 "key": "avg_arousal",
                 "title": "Arousal Ranking",
                 "full_form": "Arousal",
                 "subtitle": "Higher is better",
+                "definition": "Estimated emotional intensity from calm to energetic.",
                 "higher_is_better": True,
                 "min_value": 0.0,
                 "max_value": 1.0,
                 "format_kind": "score",
                 "range_label": "Measured range: 0.0 to 1.0",
+                "zone_thresholds": {"good_min": 0.7, "neutral_min": 0.4},
             },
             {
                 "key": "avg_wer",
                 "title": "WER Ranking",
                 "full_form": "Word Error Rate (WER)",
                 "subtitle": "Lower is better",
+                "definition": "Word-level transcription mismatch between prompt and ASR output.",
                 "higher_is_better": False,
                 "min_value": 0.0,
                 "max_value": 1.0,
                 "format_kind": "pct",
                 "range_label": "Measured range: 0.0 to 1.0 (0% to 100%)",
+                "zone_thresholds": {"good_max": 0.1, "neutral_max": 0.25},
             },
             {
                 "key": "avg_cer",
                 "title": "CER Ranking",
                 "full_form": "Character Error Rate (CER)",
                 "subtitle": "Lower is better",
+                "definition": "Character-level transcription mismatch between prompt and ASR output.",
                 "higher_is_better": False,
                 "min_value": 0.0,
                 "max_value": 1.0,
                 "format_kind": "pct",
                 "range_label": "Measured range: 0.0 to 1.0 (0% to 100%)",
+                "zone_thresholds": {"good_max": 0.08, "neutral_max": 0.2},
             },
             {
                 "key": "avg_ttfb_ms",
                 "title": "TTFB Ranking",
                 "full_form": "Time to First Byte (TTFB)",
                 "subtitle": "Lower is better",
+                "definition": "Time from request start to first audio byte received.",
                 "higher_is_better": False,
                 "min_value": None,
                 "max_value": None,
                 "format_kind": "ms",
                 "range_label": "Measured range: dataset-dependent (milliseconds)",
+                "zone_thresholds": {"good_max": 350.0, "neutral_max": 800.0},
             },
             {
                 "key": "avg_latency_ms",
                 "title": "Total Latency Ranking",
                 "full_form": "Total Synthesis Latency",
                 "subtitle": "Lower is better",
+                "definition": "End-to-end time from request start to complete audio payload.",
                 "higher_is_better": False,
                 "min_value": None,
                 "max_value": None,
                 "format_kind": "ms",
                 "range_label": "Measured range: dataset-dependent (milliseconds)",
+                "zone_thresholds": {"good_max": 1500.0, "neutral_max": 3000.0},
             },
         ]
+
+        threshold_overrides = normalized_options.get("zone_threshold_overrides") or {}
+        if isinstance(threshold_overrides, dict):
+            for metric in metric_definitions:
+                metric_key = metric.get("key")
+                if not metric_key:
+                    continue
+                override_values = threshold_overrides.get(metric_key)
+                if not isinstance(override_values, dict):
+                    continue
+                merged_thresholds = dict(metric.get("zone_thresholds") or {})
+                for threshold_key in ("good_min", "neutral_min", "good_max", "neutral_max"):
+                    if threshold_key not in override_values:
+                        continue
+                    try:
+                        merged_thresholds[threshold_key] = float(override_values[threshold_key])
+                    except (TypeError, ValueError):
+                        continue
+                metric["zone_thresholds"] = merged_thresholds
 
         metric_sections: list[dict[str, Any]] = []
         for metric in metric_definitions:
             key = metric["key"]
+            metric_visibility_option = {
+                "avg_mos": "include_naturalness",
+                "avg_prosody": "include_prosody",
+                "avg_valence": "include_valence",
+                "avg_arousal": "include_arousal",
+                "avg_wer": "include_wer",
+                "avg_cer": "include_cer",
+                "avg_ttfb_ms": "include_ttfb",
+                "avg_latency_ms": "include_latency",
+            }.get(key)
+            if metric_visibility_option and not normalized_options.get(metric_visibility_option, True):
+                continue
+
             valid_rows = [
                 {
                     "provider": r["provider"],
@@ -600,6 +770,7 @@ class VoicePlaygroundReportService:
             spread = max_bound - min_bound
 
             section_rows = []
+            thresholds = metric.get("zone_thresholds") or {}
             for row in valid_rows:
                 value = float(row["value"])
                 if spread <= 0:
@@ -612,6 +783,26 @@ class VoicePlaygroundReportService:
                     pct = normalized * 100.0
                 pct = max(8.0, min(100.0, pct))
 
+                zone_class = "zone-neutral"
+                if metric["higher_is_better"]:
+                    good_min = thresholds.get("good_min")
+                    neutral_min = thresholds.get("neutral_min")
+                    if good_min is not None and value >= float(good_min):
+                        zone_class = "zone-good"
+                    elif neutral_min is not None and value >= float(neutral_min):
+                        zone_class = "zone-neutral"
+                    else:
+                        zone_class = "zone-bad"
+                else:
+                    good_max = thresholds.get("good_max")
+                    neutral_max = thresholds.get("neutral_max")
+                    if good_max is not None and value <= float(good_max):
+                        zone_class = "zone-good"
+                    elif neutral_max is not None and value <= float(neutral_max):
+                        zone_class = "zone-neutral"
+                    else:
+                        zone_class = "zone-bad"
+
                 section_rows.append(
                     {
                         "provider": row["provider"],
@@ -621,17 +812,102 @@ class VoicePlaygroundReportService:
                         "value": value,
                         "display_value": self._format_metric_value(value, metric["format_kind"]),
                         "bar_pct": pct,
+                        "zone_class": zone_class,
                     }
                 )
+
+            zone_gradient = "linear-gradient(90deg, #ef4444 0%, #f59e0b 50%, #16a34a 100%)"
+            zone_labels = {
+                "start": "Low",
+                "middle": "Neutral",
+                "end": "High",
+            }
+            zone_ticks: list[dict[str, Any]] = []
+
+            def _threshold_to_pct(raw_threshold: Any) -> float | None:
+                if raw_threshold is None:
+                    return None
+                try:
+                    threshold = float(raw_threshold)
+                except (TypeError, ValueError):
+                    return None
+                if spread <= 0:
+                    return 50.0
+                pct = ((threshold - min_bound) / spread) * 100.0
+                return max(0.0, min(100.0, pct))
+
+            if metric["higher_is_better"]:
+                good_min = thresholds.get("good_min")
+                neutral_min = thresholds.get("neutral_min")
+                zone_labels = {
+                    "start": (
+                        f"Red: < {self._format_metric_value(float(neutral_min), metric['format_kind'])}"
+                        if neutral_min is not None
+                        else "Red: low values"
+                    ),
+                    "middle": (
+                        "Neutral: "
+                        f"{self._format_metric_value(float(neutral_min), metric['format_kind'])}"
+                        f" - {self._format_metric_value(float(good_min), metric['format_kind'])}"
+                        if (neutral_min is not None and good_min is not None)
+                        else "Neutral: mid-range values"
+                    ),
+                    "end": (
+                        f"Green: >= {self._format_metric_value(float(good_min), metric['format_kind'])}"
+                        if good_min is not None
+                        else "Green: high values"
+                    ),
+                }
+                neutral_tick = _threshold_to_pct(neutral_min)
+                good_tick = _threshold_to_pct(good_min)
+                if neutral_tick is not None:
+                    zone_ticks.append({"position_pct": neutral_tick, "label": "Neutral threshold"})
+                if good_tick is not None:
+                    zone_ticks.append({"position_pct": good_tick, "label": "Good threshold"})
+            else:
+                zone_gradient = "linear-gradient(90deg, #16a34a 0%, #f59e0b 50%, #ef4444 100%)"
+                good_max = thresholds.get("good_max")
+                neutral_max = thresholds.get("neutral_max")
+                zone_labels = {
+                    "start": (
+                        f"Green: <= {self._format_metric_value(float(good_max), metric['format_kind'])}"
+                        if good_max is not None
+                        else "Green: low values"
+                    ),
+                    "middle": (
+                        "Neutral: "
+                        f"{self._format_metric_value(float(good_max), metric['format_kind'])}"
+                        f" - {self._format_metric_value(float(neutral_max), metric['format_kind'])}"
+                        if (good_max is not None and neutral_max is not None)
+                        else "Neutral: mid-range values"
+                    ),
+                    "end": (
+                        f"Red: > {self._format_metric_value(float(neutral_max), metric['format_kind'])}"
+                        if neutral_max is not None
+                        else "Red: high values"
+                    ),
+                }
+                good_tick = _threshold_to_pct(good_max)
+                neutral_tick = _threshold_to_pct(neutral_max)
+                if good_tick is not None:
+                    zone_ticks.append({"position_pct": good_tick, "label": "Good threshold"})
+                if neutral_tick is not None:
+                    zone_ticks.append({"position_pct": neutral_tick, "label": "Neutral threshold"})
+
+            zone_ticks.sort(key=lambda t: float(t["position_pct"]))
 
             metric_sections.append(
                 {
                     "title": metric["title"],
                     "full_form": metric["full_form"],
                     "subtitle": metric["subtitle"],
+                    "definition": metric.get("definition"),
                     "range_label": (
                         f"{metric.get('range_label')} | Bar length represents raw metric magnitude"
                     ),
+                    "zone_gradient": zone_gradient,
+                    "zone_labels": zone_labels,
+                    "zone_ticks": zone_ticks,
                     "rows": section_rows,
                 }
             )
@@ -644,6 +920,43 @@ class VoicePlaygroundReportService:
         }
 
         endpoint_modes = sorted({r["endpoint_type"] for r in provider_rows if r.get("endpoint_type")})
+
+        aggregate_metric_columns = []
+        if normalized_options["include_naturalness"]:
+            aggregate_metric_columns.append({"key": "avg_mos", "label": "MOS", "format_kind": "score"})
+        if normalized_options["include_valence"]:
+            aggregate_metric_columns.append({"key": "avg_valence", "label": "Valence", "format_kind": "score"})
+        if normalized_options["include_arousal"]:
+            aggregate_metric_columns.append({"key": "avg_arousal", "label": "Arousal", "format_kind": "score"})
+        if normalized_options["include_prosody"]:
+            aggregate_metric_columns.append({"key": "avg_prosody", "label": "Prosody", "format_kind": "score"})
+        if normalized_options["include_wer"]:
+            aggregate_metric_columns.append({"key": "avg_wer", "label": "WER", "format_kind": "pct"})
+        if normalized_options["include_cer"]:
+            aggregate_metric_columns.append({"key": "avg_cer", "label": "CER", "format_kind": "pct"})
+        if normalized_options["include_latency"]:
+            aggregate_metric_columns.append({"key": "avg_latency_ms", "label": "Latency", "format_kind": "ms"})
+        if normalized_options["include_ttfb"]:
+            aggregate_metric_columns.append({"key": "avg_ttfb_ms", "label": "TTFB", "format_kind": "ms"})
+
+        evaluation_dimensions: list[str] = []
+        if normalized_options["include_naturalness"]:
+            evaluation_dimensions.append("Naturalness (MOS - Mean Opinion Score)")
+        if normalized_options["include_latency"] or normalized_options["include_ttfb"]:
+            evaluation_dimensions.append("Latency performance")
+        if normalized_options["include_wer"] or normalized_options["include_cer"]:
+            evaluation_dimensions.append("Speech accuracy (WER/CER)")
+        if normalized_options["include_valence"] or normalized_options["include_arousal"]:
+            evaluation_dimensions.append("Emotional quality (Valence/Arousal)")
+        if normalized_options["include_prosody"]:
+            evaluation_dimensions.append("Prosody / context stability proxy")
+        if normalized_options["include_endpoint"]:
+            evaluation_dimensions.append("Endpoint behavior (streaming vs non-streaming, inferred)")
+
+        total_runs_observed = len({s.run_index for s in samples})
+        show_run_summary = normalized_options["show_runs"] and (
+            total_runs_observed >= normalized_options["min_runs_to_show"]
+        )
 
         metrics_glossary = [
             {
@@ -727,13 +1040,6 @@ class VoicePlaygroundReportService:
                     "Metrics can drift with prompt style, sentence length, and voice persona; compare providers on matched prompts and run counts.",
                     "Single-run results are less stable; multi-run comparisons are recommended for procurement or policy decisions.",
                     "For repeated transcripts, this report shows a representative run plus best/worst outliers to highlight variability without duplicating every sample.",
-                ],
-            },
-            {
-                "title": "Cost and Recommendation Disclaimer",
-                "points": [
-                    "Cost values are included only when available in current benchmark metadata and may not include provider minimums, surcharges, or burst pricing.",
-                    "Recommendations are deterministic outputs from configured metric rules and should be validated against your product constraints, compliance needs, and customer profile.",
                 ],
             },
         ]
@@ -820,12 +1126,18 @@ class VoicePlaygroundReportService:
             "tested_variants": sorted({r["variant_label"] for r in provider_rows}),
             "provider_overview": provider_overview,
             "num_runs": comparison.num_runs or 1,
-            "total_runs_observed": len({s.run_index for s in samples}),
+            "total_runs_observed": total_runs_observed,
+            "show_run_summary": show_run_summary,
             "sample_count": len(samples),
             "endpoint_modes": endpoint_modes,
             "summary": summary,
+            "has_comparison_variants": has_comparison_variants,
             "provider_rows": provider_rows,
             "provider_aggregate_rows": provider_aggregate_rows,
+            "aggregate_metric_columns": aggregate_metric_columns,
+            "evaluation_dimensions": evaluation_dimensions,
+            "show_endpoint_column": normalized_options["include_endpoint"],
+            "show_hallucination_section": normalized_options["include_hallucination"],
             "metric_sections": metric_sections,
             "hallucination_examples": hallucination_examples,
             "metrics_glossary": metrics_glossary,
@@ -834,8 +1146,13 @@ class VoicePlaygroundReportService:
             "run_variability_rows": run_variability_rows,
             "has_run_variability": len(run_variability_rows) > 0,
             "recommendations": recommendations,
-            "disclaimer_sections": disclaimer_sections,
-            "methodology_sections": methodology_sections,
+            "disclaimer_sections": (
+                disclaimer_sections if normalized_options["include_disclaimer_sections"] else []
+            ),
+            "methodology_sections": (
+                methodology_sections if normalized_options["include_methodology_sections"] else []
+            ),
+            "report_options": normalized_options,
         }
 
     def render_pdf(self, payload: dict[str, Any]) -> bytes:

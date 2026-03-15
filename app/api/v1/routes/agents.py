@@ -95,7 +95,7 @@ async def generate_agent_description(
     db: Session = Depends(get_db),
 ):
     """Generate an agent description using AI from a brief description."""
-    from app.services.llm_service import llm_service
+    from app.services.ai.llm_service import llm_service
 
     if not data.description.strip():
         raise HTTPException(400, "Description is required")

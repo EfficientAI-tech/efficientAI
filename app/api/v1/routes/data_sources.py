@@ -8,7 +8,7 @@ import io
 
 from app.dependencies import get_api_key, get_organization_id
 from app.models.schemas import MessageResponse, S3ListFilesResponse, S3FileInfo, S3BrowseResponse, S3FolderInfo
-from app.services.s3_service import s3_service
+from app.services.storage.s3_service import s3_service
 from app.core.exceptions import StorageError
 from uuid import UUID
 

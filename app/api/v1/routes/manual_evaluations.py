@@ -10,8 +10,8 @@ from app.database import get_db
 from app.dependencies import get_api_key, get_organization_id
 from app.models.database import ManualTranscription, ModelProvider, AudioFile
 from app.models.schemas import MessageResponse, S3ListFilesResponse, S3FileInfo
-from app.services.transcription_service import transcription_service
-from app.services.s3_service import s3_service
+from app.services.ai.transcription_service import transcription_service
+from app.services.storage.s3_service import s3_service
 
 router = APIRouter(prefix="/manual-evaluations", tags=["Manual Evaluations"])
 

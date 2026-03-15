@@ -55,7 +55,7 @@ def format_custom_prompt(
     db: Session = Depends(get_db),
 ):
     """Reformat a raw custom prompt into well-structured markdown using the org's LLM."""
-    from app.services.llm_service import llm_service
+    from app.services.ai.llm_service import llm_service
     from app.models.database import AIProvider
     from app.models.enums import ModelProvider
 

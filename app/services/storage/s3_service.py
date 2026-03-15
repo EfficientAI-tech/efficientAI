@@ -2,7 +2,7 @@
 
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
-from typing import Optional, List, BinaryIO
+from typing import Optional, List
 from pathlib import Path
 import uuid
 from app.config import settings
@@ -16,22 +16,22 @@ class S3Service:
         """Initialize S3 service with configuration."""
         self.s3_client = None
         self._initialization_error = None
-    
+
     @property
     def enabled(self) -> bool:
         """Get S3 enabled status from settings."""
         return settings.S3_ENABLED
-    
+
     @property
     def bucket_name(self) -> Optional[str]:
         """Get S3 bucket name from settings."""
         return settings.S3_BUCKET_NAME
-    
+
     @property
     def region(self) -> str:
         """Get S3 region from settings."""
         return settings.S3_REGION
-    
+
     @property
     def prefix(self) -> str:
         """Get S3 prefix from settings."""
@@ -41,20 +41,20 @@ class S3Service:
         """Lazily initialize S3 client if not already initialized."""
         if self.s3_client is not None:
             return
-        
+
         if not self.enabled:
             return
-        
+
         if not self.bucket_name:
             self._initialization_error = "S3 is enabled but bucket_name is not configured"
             return
-        
+
         try:
             # Initialize S3 client
             s3_kwargs = {
                 "region_name": self.region,
             }
-            
+
             # Add credentials if provided
             if settings.S3_ACCESS_KEY_ID and settings.S3_SECRET_ACCESS_KEY:
                 s3_kwargs["aws_access_key_id"] = settings.S3_ACCESS_KEY_ID
@@ -62,13 +62,13 @@ class S3Service:
             else:
                 self._initialization_error = "S3 credentials not configured"
                 return
-            
+
             # Add endpoint URL for S3-compatible services (e.g., MinIO, DigitalOcean Spaces)
             if settings.S3_ENDPOINT_URL:
                 s3_kwargs["endpoint_url"] = settings.S3_ENDPOINT_URL
-            
+
             self.s3_client = boto3.client("s3", **s3_kwargs)
-            
+
             # Test connection by checking if bucket exists (non-blocking)
             try:
                 self.s3_client.head_bucket(Bucket=self.bucket_name)
@@ -86,7 +86,7 @@ class S3Service:
             except NoCredentialsError:
                 self._initialization_error = "S3 credentials not found. Check your configuration."
                 self.s3_client = None
-                
+
         except Exception as e:
             self._initialization_error = f"Failed to initialize S3 service: {str(e)}"
             self.s3_client = None
@@ -97,7 +97,7 @@ class S3Service:
             return False
         self._ensure_initialized()
         return self.s3_client is not None
-    
+
     def get_status_message(self) -> Optional[str]:
         """Get status message if there's an initialization error."""
         if not self.enabled:
@@ -106,65 +106,36 @@ class S3Service:
         return self._initialization_error
 
     def _get_key(
-        self, 
-        file_id: uuid.UUID, 
-        file_format: str, 
+        self,
+        file_id: uuid.UUID,
+        file_format: str,
         organization_id: Optional[str] = None,
         evaluator_id: Optional[str] = None,
         meaningful_id: Optional[str] = None
     ) -> str:
         """
         Generate S3 key for a file.
-        
-        Args:
-            file_id: Unique file identifier (UUID)
-            file_format: File format extension
-            organization_id: Optional organization ID
-            evaluator_id: Optional evaluator ID for organizing by evaluator
-            meaningful_id: Optional meaningful identifier (e.g., result_id, timestamp-based ID)
-        
-        Returns:
-            S3 key path
         """
         # Use meaningful_id if provided, otherwise use file_id
         file_identifier = meaningful_id if meaningful_id else str(file_id)
         base_key = f"{file_identifier}.{file_format}"
-        
+
         if organization_id:
             if evaluator_id:
-                # Organize by evaluator: prefix/organizations/{org_id}/evaluators/{evaluator_id}/audio/{meaningful_id}.{format}
                 return f"{self.prefix}organizations/{organization_id}/evaluators/{evaluator_id}/audio/{base_key}"
-            else:
-                # Organize files by organization: prefix/organizations/{org_id}/audio/{file_id}.{format}
-                return f"{self.prefix}organizations/{organization_id}/audio/{base_key}"
+            return f"{self.prefix}organizations/{organization_id}/audio/{base_key}"
         return f"{self.prefix}{base_key}"
 
     def upload_file(
-        self, 
-        file_content: bytes, 
-        file_id: uuid.UUID, 
-        file_format: str, 
+        self,
+        file_content: bytes,
+        file_id: uuid.UUID,
+        file_format: str,
         organization_id: Optional[str] = None,
         evaluator_id: Optional[str] = None,
         meaningful_id: Optional[str] = None
     ) -> str:
-        """
-        Upload file to S3.
-
-        Args:
-            file_content: File content as bytes
-            file_id: Unique identifier for the file
-            file_format: File format extension
-            organization_id: Optional organization ID to organize files in folders
-            evaluator_id: Optional evaluator ID to organize files by evaluator
-            meaningful_id: Optional meaningful identifier (e.g., result_id, timestamp-based ID)
-
-        Returns:
-            S3 key (path) of the uploaded file
-
-        Raises:
-            StorageError: If upload fails
-        """
+        """Upload file to S3."""
         self._ensure_initialized()
         if not self.is_enabled():
             error_msg = self._initialization_error or "S3 is not enabled or not configured"
@@ -172,7 +143,7 @@ class S3Service:
 
         try:
             key = self._get_key(file_id, file_format, organization_id, evaluator_id, meaningful_id)
-            
+
             # Determine content type based on file format
             content_type_map = {
                 "wav": "audio/wav",
@@ -188,7 +159,6 @@ class S3Service:
                 Body=file_content,
                 ContentType=content_type,
             )
-
             return key
         except ClientError as e:
             raise StorageError(f"Failed to upload file to S3: {str(e)}")
@@ -216,19 +186,7 @@ class S3Service:
             raise StorageError(f"Unexpected error uploading file to S3: {str(e)}")
 
     def download_file(self, file_id: uuid.UUID, file_format: str) -> bytes:
-        """
-        Download file from S3.
-
-        Args:
-            file_id: File identifier
-            file_format: File format extension
-
-        Returns:
-            File content as bytes
-
-        Raises:
-            StorageError: If download fails or file not found
-        """
+        """Download file from S3."""
         self._ensure_initialized()
         if not self.is_enabled():
             error_msg = self._initialization_error or "S3 is not enabled or not configured"
@@ -247,19 +205,7 @@ class S3Service:
             raise StorageError(f"Unexpected error downloading file from S3: {str(e)}")
 
     def delete_file(self, file_id: uuid.UUID, file_format: str) -> bool:
-        """
-        Delete file from S3.
-
-        Args:
-            file_id: File identifier
-            file_format: File format extension
-
-        Returns:
-            True if file was deleted, False if it didn't exist
-
-        Raises:
-            StorageError: If delete fails
-        """
+        """Delete file from S3."""
         self._ensure_initialized()
         if not self.is_enabled():
             error_msg = self._initialization_error or "S3 is not enabled or not configured"
@@ -278,18 +224,7 @@ class S3Service:
             raise StorageError(f"Unexpected error deleting file from S3: {str(e)}")
 
     def delete_file_by_key(self, key: str) -> bool:
-        """
-        Delete file from S3 by key.
-
-        Args:
-            key: S3 key (path) of the file
-
-        Returns:
-            True if file was deleted, False if it didn't exist
-
-        Raises:
-            StorageError: If delete fails
-        """
+        """Delete file from S3 by key."""
         self._ensure_initialized()
         if not self.is_enabled():
             error_msg = self._initialization_error or "S3 is not enabled or not configured"
@@ -307,16 +242,7 @@ class S3Service:
             raise StorageError(f"Unexpected error deleting file from S3: {str(e)}")
 
     def file_exists(self, file_id: uuid.UUID, file_format: str) -> bool:
-        """
-        Check if file exists in S3.
-
-        Args:
-            file_id: File identifier
-            file_format: File format extension
-
-        Returns:
-            True if file exists, False otherwise
-        """
+        """Check if file exists in S3."""
         self._ensure_initialized()
         if not self.is_enabled():
             return False
@@ -329,26 +255,12 @@ class S3Service:
             error_code = e.response.get("Error", {}).get("Code", "")
             if error_code == "404":
                 return False
-            # For other errors, assume file doesn't exist
             return False
         except Exception:
             return False
 
     def list_audio_files(self, prefix: Optional[str] = None, max_keys: int = 1000, organization_id: Optional[str] = None) -> List[dict]:
-        """
-        List audio files in S3 bucket.
-
-        Args:
-            prefix: Optional prefix to filter files (defaults to configured prefix)
-            max_keys: Maximum number of keys to return
-            organization_id: Optional organization ID to filter files for a specific organization
-
-        Returns:
-            List of file metadata dictionaries with keys: key, size, last_modified
-
-        Raises:
-            StorageError: If listing fails
-        """
+        """List audio files in S3 bucket."""
         self._ensure_initialized()
         if not self.is_enabled():
             error_msg = self._initialization_error or "S3 is not enabled or not configured"
@@ -396,14 +308,6 @@ class S3Service:
         """
         Browse a folder within an organization's S3 namespace.
         Uses S3 delimiter to return folders and files at the current level only.
-
-        Args:
-            organization_id: Organization ID to scope the browsing
-            path: Relative path within the org folder (e.g. "audio/" or "evaluators/abc/")
-            max_keys: Maximum number of keys to return
-
-        Returns:
-            Dict with 'folders' (list of folder names) and 'files' (list of file dicts)
         """
         self._ensure_initialized()
         if not self.is_enabled():
@@ -459,18 +363,7 @@ class S3Service:
             raise StorageError(f"Unexpected error browsing S3 folder: {str(e)}")
 
     def download_file_by_key(self, key: str) -> bytes:
-        """
-        Download file from S3 by key.
-
-        Args:
-            key: S3 key (path) of the file
-
-        Returns:
-            File content as bytes
-
-        Raises:
-            StorageError: If download fails or file not found
-        """
+        """Download file from S3 by key."""
         self._ensure_initialized()
         if not self.is_enabled():
             error_msg = self._initialization_error or "S3 is not enabled or not configured"
@@ -488,20 +381,7 @@ class S3Service:
             raise StorageError(f"Unexpected error downloading file from S3: {str(e)}")
 
     def generate_presigned_url(self, file_id: uuid.UUID, file_format: str, expiration: int = 3600) -> str:
-        """
-        Generate a presigned URL for temporary file access.
-
-        Args:
-            file_id: File identifier
-            file_format: File format extension
-            expiration: URL expiration time in seconds (default: 1 hour)
-
-        Returns:
-            Presigned URL string
-
-        Raises:
-            StorageError: If URL generation fails
-        """
+        """Generate a presigned URL for temporary file access."""
         self._ensure_initialized()
         if not self.is_enabled():
             error_msg = self._initialization_error or "S3 is not enabled or not configured"
@@ -521,19 +401,7 @@ class S3Service:
             raise StorageError(f"Unexpected error generating presigned URL: {str(e)}")
 
     def generate_presigned_url_by_key(self, key: str, expiration: int = 3600) -> str:
-        """
-        Generate a presigned URL for temporary file access by key.
-
-        Args:
-            key: S3 key (path) of the file
-            expiration: URL expiration time in seconds (default: 1 hour)
-
-        Returns:
-            Presigned URL string
-
-        Raises:
-            StorageError: If URL generation fails
-        """
+        """Generate a presigned URL for temporary file access by key."""
         self._ensure_initialized()
         if not self.is_enabled():
             error_msg = self._initialization_error or "S3 is not enabled or not configured"
@@ -554,4 +422,3 @@ class S3Service:
 
 # Singleton instance
 s3_service = S3Service()
-

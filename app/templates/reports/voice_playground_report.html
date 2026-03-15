@@ -178,17 +178,37 @@
       color: #6b3c2a;
     }
     .report-footer {
-      margin-top: 22px;
+      margin-top: 24px;
       border-top: 1px solid #1f2937;
-      padding-top: 8px;
+      padding-top: 10px;
       display: flex;
       justify-content: space-between;
-      color: #666;
+      align-items: flex-start;
+      gap: 16px;
+      color: #4b5563;
       font-size: 10px;
+    }
+    .footer-left {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .footer-right {
+      text-align: right;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .report-footer .brand-title {
+      color: #111827;
+      font-weight: 800;
+      font-size: 11px;
+      letter-spacing: 0.2px;
     }
     .report-footer .brand-link {
       color: #d16532;
       font-weight: 700;
+      text-decoration: none;
     }
     .run-row {
       border: 1px solid #e2e2e2;
@@ -232,6 +252,19 @@
       font-size: 14px;
       font-weight: 700;
     }
+    .metric-title-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .metric-color-chip {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(17, 24, 39, 0.15);
+      flex-shrink: 0;
+      background: linear-gradient(90deg, #ef4444 0%, #f59e0b 50%, #16a34a 100%);
+    }
     .metric-section .sub {
       margin: 2px 0 8px;
       color: #666;
@@ -261,6 +294,9 @@
       height: 100%;
       background: #f97316;
     }
+    .metric-fill.zone-good { background: #16a34a; }
+    .metric-fill.zone-neutral { background: #f59e0b; }
+    .metric-fill.zone-bad { background: #ef4444; }
     .metric-value {
       width: 60px;
       text-align: right;
@@ -278,6 +314,39 @@
       flex-direction: column;
       gap: 2px;
     }
+    .metric-zone-gradient {
+      margin-top: 6px;
+    }
+    .metric-zone-track-wrap {
+      position: relative;
+    }
+    .metric-zone-track {
+      height: 8px;
+      border-radius: 999px;
+      border: 1px solid #d1d5db;
+    }
+    .metric-zone-tick {
+      position: absolute;
+      top: -2px;
+      bottom: -2px;
+      width: 2px;
+      background: #111827;
+      opacity: 0.55;
+      transform: translateX(-1px);
+      border-radius: 999px;
+    }
+    .metric-zone-labels {
+      margin-top: 4px;
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 6px;
+      font-size: 9px;
+      color: #4b5563;
+      align-items: start;
+    }
+    .metric-zone-labels span:nth-child(1) { text-align: left; }
+    .metric-zone-labels span:nth-child(2) { text-align: center; }
+    .metric-zone-labels span:nth-child(3) { text-align: right; }
     .brand-header {
       display: flex;
       align-items: center;
@@ -344,10 +413,20 @@
       <div class="kv"><strong>Comparison ID:</strong> {{ simulation_id or comparison_id }}</div>
       <div class="kv"><strong>Providers tested:</strong> {{ providers_tested | join(", ") }}</div>
       <div class="kv"><strong>Voices tested:</strong> {{ voices_tested | join(", ") }}</div>
+      {% if show_run_summary %}
       <div class="kv"><strong>Total runs / Samples:</strong> {{ total_runs_observed }} runs observed, {{ sample_count }} samples</div>
+      {% else %}
+      <div class="kv"><strong>Total Samples:</strong> {{ sample_count }} samples</div>
+      {% endif %}
+      {% if report_options.include_endpoint %}
       <div class="kv"><strong>Endpoint modes:</strong> {{ endpoint_modes | join(", ") if endpoint_modes else "Unknown" }}</div>
+      {% endif %}
+      {% if report_options.include_latency or report_options.include_ttfb %}
       <div class="kv small"><strong>Latency formula:</strong> Total Latency = TTFB + remaining audio delivery time</div>
+      {% endif %}
+      {% if report_options.include_ttfb %}
       <div class="kv small"><strong>TTFB:</strong> Time to First Byte (request start to first audio byte)</div>
+      {% endif %}
       <div class="kv"><strong>Provider / Model / Voice tested:</strong></div>
       <table class="tested-config-table">
         <thead>
@@ -372,19 +451,17 @@
 
       <h3 style="margin-top:16px;">Key evaluation dimensions:</h3>
       <ul class="grid">
-        <li>Naturalness (MOS - Mean Opinion Score)</li>
-        <li>Latency</li>
-        <li>Speech accuracy (WER/CER)</li>
-        <li>Emotional quality (Valence/Arousal)</li>
-        <li>Prosody / context stability proxy</li>
-        <li>Endpoint behavior (streaming vs non-streaming, inferred)</li>
+        {% for dimension in evaluation_dimensions %}
+        <li>{{ dimension }}</li>
+        {% endfor %}
       </ul>
     </div>
 
     <div class="right">
       <h3>Summary Insights</h3>
+      {% if summary.top_naturalness %}
       <div class="insight">
-        <div class="label">Top Naturalness</div>
+        <div class="label">{{ "Top Naturalness" if has_comparison_variants else "Naturalness Score" }}</div>
         <div class="value">{{ service._to_score(summary.top_naturalness.avg_mos) if summary.top_naturalness else "N/A" }} MOS</div>
         {% if summary.top_naturalness %}
         <div class="identity-list">
@@ -396,8 +473,10 @@
         <div class="sub">N/A</div>
         {% endif %}
       </div>
+      {% endif %}
+      {% if summary.lowest_latency %}
       <div class="insight">
-        <div class="label">Lowest Latency</div>
+        <div class="label">{{ "Lowest Latency" if has_comparison_variants else "Latency" }}</div>
         <div class="value">{{ service._to_ms(summary.lowest_latency.avg_latency_ms) if summary.lowest_latency else "N/A" }}</div>
         {% if summary.lowest_latency %}
         <div class="identity-list">
@@ -408,10 +487,14 @@
         {% else %}
         <div class="sub">N/A</div>
         {% endif %}
+        {% if report_options.include_endpoint %}
         <div class="sub">{{ summary.lowest_latency.endpoint_type if summary.lowest_latency else "N/A" }}</div>
+        {% endif %}
       </div>
+      {% endif %}
+      {% if summary.lowest_hallucination %}
       <div class="insight">
-        <div class="label">Lowest Hallucination</div>
+        <div class="label">{{ "Lowest Hallucination" if has_comparison_variants else "Hallucination Rate" }}</div>
         <div class="value">{{ service._to_pct(summary.lowest_hallucination.avg_wer) if summary.lowest_hallucination else "N/A" }} WER</div>
         {% if summary.lowest_hallucination %}
         <div class="identity-list">
@@ -423,8 +506,10 @@
         <div class="sub">N/A</div>
         {% endif %}
       </div>
+      {% endif %}
+      {% if summary.best_context %}
       <div class="insight">
-        <div class="label">Best Prosody</div>
+        <div class="label">{{ "Best Prosody" if has_comparison_variants else "Prosody Score" }}</div>
         <div class="value">{{ service._to_score(summary.best_context.avg_prosody, 3) if summary.best_context else "N/A" }}</div>
         {% if summary.best_context %}
         <div class="identity-list">
@@ -436,6 +521,10 @@
         <div class="sub">N/A</div>
         {% endif %}
       </div>
+      {% endif %}
+      {% if not summary.top_naturalness and not summary.lowest_latency and not summary.lowest_hallucination and not summary.best_context %}
+      <div class="note">No summary cards selected for this report configuration.</div>
+      {% endif %}
     </div>
   </div>
 
@@ -448,15 +537,12 @@
         <th>Provider</th>
         <th>Model</th>
         <th>Voice</th>
-        <th>MOS</th>
-        <th>Valence</th>
-        <th>Arousal</th>
-        <th>Prosody</th>
-        <th>WER</th>
-        <th>CER</th>
-        <th>Latency</th>
-        <th>TTFB</th>
+        {% for column in aggregate_metric_columns %}
+        <th>{{ column.label }}</th>
+        {% endfor %}
+        {% if show_endpoint_column %}
         <th>Endpoint</th>
+        {% endif %}
       </tr>
     </thead>
     <tbody>
@@ -465,41 +551,78 @@
         <td>{{ row.provider_display }}</td>
         <td>{{ row.model_display }}</td>
         <td>{{ row.voice_display }}</td>
-        <td class="{{ (row.metric_classes | default({})).get('avg_mos', 'metric-neutral') }}">{{ service._to_score(row.avg_mos) }}</td>
-        <td class="{{ (row.metric_classes | default({})).get('avg_valence', 'metric-neutral') }}">{{ service._to_score(row.avg_valence) }}</td>
-        <td class="{{ (row.metric_classes | default({})).get('avg_arousal', 'metric-neutral') }}">{{ service._to_score(row.avg_arousal) }}</td>
-        <td class="{{ (row.metric_classes | default({})).get('avg_prosody', 'metric-neutral') }}">{{ service._to_score(row.avg_prosody, 3) }}</td>
-        <td class="{{ (row.metric_classes | default({})).get('avg_wer', 'metric-neutral') }}">{{ service._to_pct(row.avg_wer) }}</td>
-        <td class="{{ (row.metric_classes | default({})).get('avg_cer', 'metric-neutral') }}">{{ service._to_pct(row.avg_cer) }}</td>
-        <td class="{{ (row.metric_classes | default({})).get('avg_latency_ms', 'metric-neutral') }}">{{ service._to_ms(row.avg_latency_ms) }}</td>
-        <td class="{{ (row.metric_classes | default({})).get('avg_ttfb_ms', 'metric-neutral') }}">{{ service._to_ms(row.avg_ttfb_ms) }}</td>
+        {% for column in aggregate_metric_columns %}
+        <td class="{{ (row.metric_classes | default({})).get(column.key, 'metric-neutral') }}">
+          {% if column.format_kind == 'ms' %}
+          {{ service._to_ms(row[column.key]) }}
+          {% elif column.format_kind == 'pct' %}
+          {{ service._to_pct(row[column.key]) }}
+          {% else %}
+          {{ service._to_score(row[column.key], 3 if column.key == 'avg_prosody' else 2) }}
+          {% endif %}
+        </td>
+        {% endfor %}
+        {% if show_endpoint_column %}
         <td>{{ row.endpoint_type }}</td>
+        {% endif %}
       </tr>
       {% endfor %}
     </tbody>
   </table>
 
   <h2>2. Metric Rankings by Category</h2>
+  {% if metric_sections %}
   {% for metric in metric_sections %}
   <div class="metric-section">
-    <h4>{{ metric.title }}</h4>
+    <div class="metric-title-row">
+      <span class="metric-color-chip"></span>
+      <h4>{{ metric.title }}</h4>
+    </div>
     <div class="sub"><strong>{{ metric.full_form }}</strong></div>
     <div class="sub">{{ metric.subtitle }}</div>
+    {% if metric.definition %}
+    <div class="sub"><em>Definition:</em> {{ metric.definition }}</div>
+    {% endif %}
     {% for row in metric.rows %}
     <div class="metric-chart-row">
       <div class="metric-provider">{{ row.variant_label }}</div>
       <div class="metric-track">
-        <div class="metric-fill" style="width: {{ "%.1f"|format(row.bar_pct) }}%;"></div>
+        <div class="metric-fill {{ row.zone_class }}" style="width: {{ "%.1f"|format(row.bar_pct) }}%;"></div>
       </div>
       <div class="metric-value">{{ row.display_value }}</div>
     </div>
     {% endfor %}
     <div class="metric-legend">
       <div><strong>Legend:</strong> {{ metric.range_label }}</div>
+      {% if metric.zone_labels %}
+      <div class="metric-zone-gradient">
+        <div class="metric-zone-track-wrap">
+          <div class="metric-zone-track" style="background: {{ metric.zone_gradient }};"></div>
+          {% if metric.zone_ticks %}
+          {% for tick in metric.zone_ticks %}
+          <span
+            class="metric-zone-tick"
+            style="left: {{ "%.2f"|format(tick.position_pct) }}%;"
+            title="{{ tick.label }}"
+          ></span>
+          {% endfor %}
+          {% endif %}
+        </div>
+        <div class="metric-zone-labels">
+          <span>{{ metric.zone_labels.start }}</span>
+          <span>{{ metric.zone_labels.middle }}</span>
+          <span>{{ metric.zone_labels.end }}</span>
+        </div>
+      </div>
+      {% endif %}
     </div>
   </div>
   {% endfor %}
+  {% else %}
+  <div class="note">No ranking metrics selected for this report configuration.</div>
+  {% endif %}
 
+  {% if show_hallucination_section %}
   <h2>3. Speech Accuracy & Hallucination</h2>
   <p class="muted">
     Accuracy metrics are computed from existing Voice Playground evaluation outputs (WER/CER and ASR transcript where available).
@@ -510,8 +633,12 @@
         <th>Provider</th>
         <th>Model</th>
         <th>Voice</th>
+        {% if report_options.include_wer %}
         <th>WER</th>
+        {% endif %}
+        {% if report_options.include_cer %}
         <th>CER</th>
+        {% endif %}
       </tr>
     </thead>
     <tbody>
@@ -520,15 +647,22 @@
         <td>{{ row.provider_display }}</td>
         <td>{{ row.model_display }}</td>
         <td>{{ row.voice_display }}</td>
+        {% if report_options.include_wer %}
         <td class="{{ (row.metric_classes | default({})).get('avg_wer', 'metric-neutral') }}">{{ service._to_pct(row.avg_wer) }}</td>
+        {% endif %}
+        {% if report_options.include_cer %}
         <td class="{{ (row.metric_classes | default({})).get('avg_cer', 'metric-neutral') }}">{{ service._to_pct(row.avg_cer) }}</td>
+        {% endif %}
       </tr>
       {% endfor %}
     </tbody>
   </table>
 
+  {% if report_options.include_hallucination_examples %}
   <h3>Hallucination Examples</h3>
-  {% if hallucination_examples %}
+  {% if not report_options.include_wer %}
+    <div class="note">Enable WER to include hallucination example ranking in the report.</div>
+  {% elif hallucination_examples %}
     {% for example in hallucination_examples %}
     <div class="box">
       <div><strong>{{ example.provider_display }} • {{ example.model_display }} • {{ example.voice_display }}</strong> <span class="accent">WER {{ service._to_pct(example.wer) }}</span></div>
@@ -539,129 +673,36 @@
   {% else %}
     <div class="note">No ASR transcript examples available in current comparison outputs.</div>
   {% endif %}
-
-  <h2>4. Metric Categories: Qualitative vs Quantitative</h2>
-  <p class="muted small">
-    Metrics are separated into qualitative perception metrics and quantitative measurement metrics.
-  </p>
-  <div class="category-grid">
-    <div class="category-panel">
-      <h4>Qualitative Metrics</h4>
-      {% for metric in qualitative_metrics %}
-      <div class="metric-card">
-        <div class="major">{{ metric.major_metric }}</div>
-        <div class="submetric">{{ metric.sub_metric }}</div>
-        <div class="fullform">{{ metric.full_form }}</div>
-        <div class="small" style="margin-top:4px;">{{ metric.description }}</div>
-      </div>
-      {% endfor %}
-    </div>
-    <div class="category-panel">
-      <h4>Quantitative Metrics</h4>
-      {% for metric in quantitative_metrics %}
-      <div class="metric-card">
-        <div class="major">{{ metric.major_metric }}</div>
-        <div class="submetric">{{ metric.sub_metric }}</div>
-        <div class="fullform">{{ metric.full_form }}</div>
-        <div class="small" style="margin-top:4px;">{{ metric.description }}</div>
-      </div>
-      {% endfor %}
-    </div>
-  </div>
-
-  <h2>5. Run-to-Run Variability (Representative + Outliers)</h2>
-  {% if has_run_variability %}
-    {% for row in run_variability_rows %}
-    <div class="run-row">
-      <div><strong>Transcript:</strong> {{ row.text }}</div>
-      <div class="meta">
-        {{ row.provider_display }} • {{ row.model_display }} • {{ row.voice_display }} &middot; {{ row.runs }} runs
-      </div>
-      <div class="run-grid">
-        <div class="run-card">
-          <h5>Representative (Run {{ row.representative.run_index }})</h5>
-          <div class="run-kv">MOS: {{ service._to_score(row.representative.mos) }}</div>
-          <div class="run-kv">Valence: {{ service._to_score(row.representative.valence) }}</div>
-          <div class="run-kv">Arousal: {{ service._to_score(row.representative.arousal) }}</div>
-          <div class="run-kv">Prosody: {{ service._to_score(row.representative.prosody, 3) }}</div>
-          <div class="run-kv">WER/CER: {{ service._to_pct(row.representative.wer) }} / {{ service._to_pct(row.representative.cer) }}</div>
-          <div class="run-kv">Latency/TTFB: {{ service._to_ms(row.representative.latency_ms) }} / {{ service._to_ms(row.representative.ttfb_ms) }}</div>
-        </div>
-        <div class="run-card">
-          <h5>Best (Run {{ row.best.run_index }})</h5>
-          <div class="run-kv">MOS: {{ service._to_score(row.best.mos) }}</div>
-          <div class="run-kv">Valence: {{ service._to_score(row.best.valence) }}</div>
-          <div class="run-kv">Arousal: {{ service._to_score(row.best.arousal) }}</div>
-          <div class="run-kv">Prosody: {{ service._to_score(row.best.prosody, 3) }}</div>
-          <div class="run-kv">WER/CER: {{ service._to_pct(row.best.wer) }} / {{ service._to_pct(row.best.cer) }}</div>
-          <div class="run-kv">Latency/TTFB: {{ service._to_ms(row.best.latency_ms) }} / {{ service._to_ms(row.best.ttfb_ms) }}</div>
-        </div>
-        <div class="run-card">
-          <h5>Worst (Run {{ row.worst.run_index }})</h5>
-          <div class="run-kv">MOS: {{ service._to_score(row.worst.mos) }}</div>
-          <div class="run-kv">Valence: {{ service._to_score(row.worst.valence) }}</div>
-          <div class="run-kv">Arousal: {{ service._to_score(row.worst.arousal) }}</div>
-          <div class="run-kv">Prosody: {{ service._to_score(row.worst.prosody, 3) }}</div>
-          <div class="run-kv">WER/CER: {{ service._to_pct(row.worst.wer) }} / {{ service._to_pct(row.worst.cer) }}</div>
-          <div class="run-kv">Latency/TTFB: {{ service._to_ms(row.worst.latency_ms) }} / {{ service._to_ms(row.worst.ttfb_ms) }}</div>
-        </div>
-      </div>
-    </div>
-    {% endfor %}
-  {% else %}
-    <div class="note">No repeated transcript runs were detected in this comparison, so outlier analysis is not shown.</div>
+  {% endif %}
   {% endif %}
 
-  <h2>6. Recommended Providers by Use Case</h2>
-  <table>
-    <thead>
-      <tr><th>Use Case</th><th>Recommended Provider</th><th>Reason</th></tr>
-    </thead>
-    <tbody>
-      {% for rec in recommendations %}
-      <tr>
-        <td>{{ rec.use_case }}</td>
-        <td class="accent">{{ rec.provider }}</td>
-        <td>{{ rec.reason }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-
-  <h2>7. Disclaimer & Interpretation Guidance</h2>
-  {% for disclaimer in disclaimer_sections %}
+  {% if disclaimer_sections %}
+  <h2>4. Disclaimer & Interpretation Guidance</h2>
+  {% for section in disclaimer_sections %}
   <div class="disclaimer">
-    <h4>{{ disclaimer.title }}</h4>
+    <h4>{{ section.title }}</h4>
     <ul>
-      {% for point in disclaimer.points %}
+      {% for point in section.points %}
       <li>{{ point }}</li>
       {% endfor %}
     </ul>
   </div>
   {% endfor %}
-
-  <h2>8. Benchmark Methodology</h2>
-  {% for section in methodology_sections %}
-  <div class="method-card">
-    <h4>{{ section.title }}</h4>
-    <p>{{ section.body }}</p>
-    {% if section.bullets %}
-    <ul>
-      {% for bullet in section.bullets %}
-      <li>{{ bullet }}</li>
-      {% endfor %}
-    </ul>
-    {% endif %}
-  </div>
-  {% endfor %}
+  {% endif %}
 
   <div class="report-footer">
-    <div>
-      Generated using <strong>EfficientAI</strong><br />
-      Voice AI Evaluation Platform
+    <div class="footer-left">
+      <div class="brand-title">Powered by EfficientAI</div>
+      <div>Voice AI Evaluation Platform</div>
+      <div>
+        Website:
+        <a href="https://efficientai.cloud" class="brand-link">https://efficientai.cloud</a>
+      </div>
     </div>
-    <div>
-      Run your own benchmark at <span class="brand-link">EfficientAI</span>
+    <div class="footer-right">
+      <div>Comparison ID: {{ comparison_id }}</div>
+      <div>Generated: {{ generated_at.strftime("%Y-%m-%d %H:%M UTC") }}</div>
+      <div>Benchmark reports by EfficientAI Cloud</div>
     </div>
   </div>
 </body>

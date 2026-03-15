@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from typing import Dict, List, Any
 from app.dependencies import get_api_key
 from app.models.database import ModelProvider
-from app.services.model_config_service import model_config_service
+from app.services.ai.model_config_service import model_config_service
 
 router = APIRouter(prefix="/model-config", tags=["Model Config"])
 

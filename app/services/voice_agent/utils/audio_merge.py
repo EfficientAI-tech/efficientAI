@@ -4,7 +4,7 @@ import subprocess
 import time
 import uuid
 from loguru import logger
-from app.services.s3_service import s3_service
+from app.services.storage.s3_service import s3_service
 
 
 def merge_and_upload_audio(

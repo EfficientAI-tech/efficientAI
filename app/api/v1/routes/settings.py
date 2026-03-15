@@ -14,7 +14,12 @@ from app.dependencies import get_db, get_api_key, get_organization_id
 from app.models.database import APIKey, User, Organization
 from app.models.schemas import MessageResponse
 from app.api.v1.routes.profile import get_current_user
-from app.core.license import get_license_info, is_feature_enabled, ENTERPRISE_FEATURES
+from app.core.license import (
+    get_feature_catalog,
+    get_license_info,
+    is_feature_enabled,
+    ENTERPRISE_FEATURES,
+)
 
 
 class APIKeyCreateRequest(BaseModel):
@@ -34,13 +39,14 @@ def license_info(organization_id: UUID = Depends(get_organization_id)):
     that match the requesting organization.
     """
     data = get_license_info()
-    all_licensed = data.get("features", [])
+    all_licensed = data.get("features", []) if isinstance(data.get("features"), list) else []
     enabled_for_org = [f for f in all_licensed if is_feature_enabled(f, organization_id)]
     return {
         "is_enterprise": bool(enabled_for_org),
         "enabled_features": enabled_for_org,
         "all_enterprise_features": ENTERPRISE_FEATURES,
-        "organization": data.get("org"),
+        "feature_catalog": get_feature_catalog(),
+        "organization": data.get("org_id"),
     }
 
 

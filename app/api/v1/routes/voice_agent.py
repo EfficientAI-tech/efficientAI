@@ -15,7 +15,7 @@ from app.models.database import AIProvider, ModelProvider, Integration, Integrat
 from app.core.encryption import decrypt_api_key
 from app.services.voice_agent.bot_fast_api import run_bot
 from app.services.voice_agent.voice_bundle import run_voice_bundle_fastapi
-from app.services.s3_service import s3_service
+from app.services.storage.s3_service import s3_service
 
 router = APIRouter(prefix="/voice-agent", tags=["voice-agent"])
 

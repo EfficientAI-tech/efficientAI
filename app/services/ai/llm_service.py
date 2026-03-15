@@ -2,8 +2,8 @@
 LLM service for generating text responses using various LLM providers.
 
 Uses LiteLLM as a unified gateway so every provider (OpenAI, Anthropic,
-Google, DeepSeek, Groq, Azure, AWS Bedrock, …) is accessed through a
-single interface.  LiteLLM handles message-format translation, parameter
+Google, DeepSeek, Groq, Azure, AWS Bedrock, ...) is accessed through a
+single interface. LiteLLM handles message-format translation, parameter
 mapping, and endpoint selection (e.g. OpenAI Responses API vs Chat
 Completions) automatically.
 """

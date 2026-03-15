@@ -35,24 +35,6 @@ class AlertNotificationService:
     ) -> Dict[str, Any]:
         """
         Send a Slack notification via incoming webhook.
-
-        Args:
-            webhook_url: Slack incoming webhook URL
-            alert_name: Name of the alert
-            alert_description: Description of the alert
-            metric_type: Type of metric (e.g., "number_of_calls")
-            aggregation: Aggregation type (e.g., "sum")
-            operator: Comparison operator (e.g., ">")
-            threshold_value: The configured threshold
-            triggered_value: The actual value that triggered the alert
-            time_window_minutes: Time window for the metric
-            triggered_at: When the alert was triggered
-            agent_names: Optional list of agent names in scope
-            alert_id: Optional alert ID for reference
-            history_id: Optional alert history ID for reference
-
-        Returns:
-            Dict with success status and details
         """
         try:
             # Build Slack Block Kit message
@@ -198,24 +180,6 @@ class AlertNotificationService:
     ) -> Dict[str, Any]:
         """
         Send an email notification for a triggered alert.
-
-        Args:
-            to_email: Recipient email address
-            alert_name: Name of the alert
-            alert_description: Description of the alert
-            metric_type: Type of metric
-            aggregation: Aggregation type
-            operator: Comparison operator
-            threshold_value: The configured threshold
-            triggered_value: The actual value that triggered the alert
-            time_window_minutes: Time window for the metric
-            triggered_at: When the alert was triggered
-            agent_names: Optional list of agent names in scope
-            alert_id: Optional alert ID for reference
-            history_id: Optional alert history ID for reference
-
-        Returns:
-            Dict with success status and details
         """
         from app.config import settings
 
@@ -343,16 +307,6 @@ class AlertNotificationService:
     ) -> List[Dict[str, Any]]:
         """
         Send notifications to all configured channels for an alert.
-
-        Args:
-            alert: Alert ORM object with notification configuration
-            triggered_value: The actual value that triggered the alert
-            triggered_at: When the alert was triggered
-            agent_names: Optional list of agent names in scope
-            history_id: Optional alert history ID for reference
-
-        Returns:
-            List of notification results
         """
         results = []
 
@@ -410,20 +364,20 @@ class AlertNotificationService:
         if operator in (">", ">="):
             ratio = actual / threshold if threshold > 0 else 2.0
             if ratio >= 2.0:
-                return "\U0001f6a8"  # rotating light
+                return "🚨"  # rotating light
             elif ratio >= 1.5:
-                return "\u26a0\ufe0f"  # warning
+                return "⚠️"  # warning
             else:
-                return "\U0001f514"  # bell
+                return "🔔"  # bell
         elif operator in ("<", "<="):
             ratio = threshold / actual if actual > 0 else 2.0
             if ratio >= 2.0:
-                return "\U0001f6a8"
+                return "🚨"
             elif ratio >= 1.5:
-                return "\u26a0\ufe0f"
+                return "⚠️"
             else:
-                return "\U0001f514"
-        return "\U0001f514"
+                return "🔔"
+        return "🔔"
 
     def _get_severity_label(
         self, operator: str, threshold: float, actual: float

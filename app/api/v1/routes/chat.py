@@ -9,7 +9,7 @@ from uuid import UUID
 from pydantic import BaseModel
 
 from app.dependencies import get_db, get_organization_id
-from app.services.llm_service import llm_service
+from app.services.ai.llm_service import llm_service
 from app.models.schemas import ModelProvider
 
 router = APIRouter(prefix="/chat", tags=["chat"])

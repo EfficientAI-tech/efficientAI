@@ -16,7 +16,7 @@ from app.models.schemas import (
     TestAgentConversationUpdate,
     TestAgentConversationResponse
 )
-from app.services.test_agent_service import test_agent_service
+from app.services.testing.test_agent_service import test_agent_service
 
 router = APIRouter(prefix="/test-agents", tags=["test-agents"])
 
@@ -188,7 +188,7 @@ async def get_response_audio(
         raise HTTPException(status_code=404, detail="Audio segment key not found")
     
     # Download from S3
-    from app.services.s3_service import s3_service
+    from app.services.storage.s3_service import s3_service
     try:
         audio_bytes = s3_service.download_file_by_key(audio_key)
         from fastapi.responses import Response
