@@ -1,9 +1,34 @@
-"""Audio processing service for extracting metadata and handling audio files."""
+"""Audio processing service for extracting metadata and handling audio files.
 
-import librosa
-import soundfile as sf
+This module uses lazy imports to avoid loading heavy audio libraries (librosa, soundfile)
+at module import time. Libraries are only loaded when methods are actually called.
+"""
+
 from pathlib import Path
 from app.core.exceptions import AudioFileNotFoundError
+
+
+# Lazy import cache
+_librosa = None
+_soundfile = None
+
+
+def _get_librosa():
+    """Lazy load librosa."""
+    global _librosa
+    if _librosa is None:
+        import librosa
+        _librosa = librosa
+    return _librosa
+
+
+def _get_soundfile():
+    """Lazy load soundfile."""
+    global _soundfile
+    if _soundfile is None:
+        import soundfile as sf
+        _soundfile = sf
+    return _soundfile
 
 
 class AudioService:
@@ -26,6 +51,9 @@ class AudioService:
             raise AudioFileNotFoundError(f"Audio file not found: {file_path}")
 
         try:
+            librosa = _get_librosa()
+            sf = _get_soundfile()
+            
             # Use librosa to load audio and get metadata
             y, sr = librosa.load(file_path, sr=None)
             duration = librosa.get_duration(y=y, sr=sr)

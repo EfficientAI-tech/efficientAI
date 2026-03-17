@@ -41,6 +41,22 @@ dependencies = [
     "jiwer>=3.0.0",
     "litellm>=1.60.0",
     "jinja2>=3.1.0",
+    "wait-for2>=0.4.0",
+    "docstring-parser>=0.15",
+    "pyloudnorm>=0.1.0",
+    "numpy>=1.24.0",
+    "aiohttp>=3.9.0",
+    "websockets>=12.0",
+    "pillow>=10.0.0",
+    "protobuf>=4.25.0",
+    "requests>=2.31.0",
+    "nltk>=3.8.0",
+    "openai>=1.0.0",
+    "anthropic>=0.18.0",
+    "huggingface-hub>=0.20.0",
+    "soxr>=0.3.0",
+    "typing-extensions>=4.9.0",
+    "onnxruntime>=1.17.0",
 ]
 
 [project.optional-dependencies]
@@ -87,6 +103,12 @@ nemo-asr = [
 ]
 sarvam = [
     "sarvamai>=0.1.0",
+]
+# Google AI services (Gemini, Cloud TTS, Cloud Speech)
+google = [
+    "google-genai>=1.0.0",
+    "google-cloud-texttospeech>=2.16.0",
+    "google-cloud-speech>=2.26.0",
 ]
 # Optional: Speaker Consistency metric (has version conflicts with torchaudio)
 # speechbrain = ["speechbrain>=1.0.0"]

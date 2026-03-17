@@ -39,11 +39,11 @@ services:
     # Pre-built image from GitHub Container Registry
     # Use EFFICIENTAI_VERSION env var to pin to a specific version (e.g., 1.0.0)
     image: ghcr.io/efficientai-tech/efficientai-api:${EFFICIENTAI_VERSION:-latest}
-    # For local development, uncomment below to build instead of pull:
+    # For local development, uncomment below and comment out the image line:
     # build:
     #   context: .
     #   dockerfile: docker/Dockerfile.api
-    container_name: efficientai_api
+    # container_name: efficientai_api
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-efficientai}
       REDIS_URL: redis://redis:6379/0
@@ -65,20 +65,19 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: eai start --config /app/config.yml --host 0.0.0.0 --port 8000 --no-build-frontend
+    command: eai start --config /app/config.yml --host 0.0.0.0 --port 8000 --no-build-frontend --no-reload
 
   worker:
     # Pre-built image from GitHub Container Registry
     # Use EFFICIENTAI_VERSION env var to pin to a specific version (e.g., 1.0.0)
     image: ghcr.io/efficientai-tech/efficientai-worker:${EFFICIENTAI_VERSION:-latest}
-    # For local development, uncomment below to build instead of pull:
+    # For local development, uncomment below and comment out the image line:
     # build:
     #   context: .
     #   dockerfile: docker/Dockerfile.worker
     #   args:
     #     INSTALL_EXTRAS: "qualitative-voice,reports"
-    #     PRELOAD_MODELS: "true"
-    container_name: efficientai_worker
+    # container_name: efficientai_worker
     # Use host network mode for WebRTC connectivity (Retell/Vapi calls)
     network_mode: host
     environment:
