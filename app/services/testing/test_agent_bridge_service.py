@@ -633,9 +633,10 @@ class TestAgentBridgeService:
                 async def send_audio_chunks(audio: bytes):
                     """Stream audio to voice provider in real-time chunks."""
                     await test_agent.stream_audio_chunks(audio, webrtc_bridge.receive_audio_from_test_agent, chunk_duration_ms=chunk_ms)
-                    # ElevenLabs needs trailing silence so its VAD detects end-of-speech
-                    if provider_platform == "elevenlabs" and hasattr(webrtc_bridge, "send_silence"):
-                        await webrtc_bridge.send_silence(duration_ms=600)
+                    # Tell ElevenLabs bridge that we're done sending real audio
+                    # so the background silence stream can resume immediately.
+                    if provider_platform == "elevenlabs" and hasattr(webrtc_bridge, "mark_user_audio_done"):
+                        webrtc_bridge.mark_user_audio_done()
 
                 async def on_transcript_received(transcript: str):
                     """When voice agent finishes speaking, process with test agent."""
@@ -645,6 +646,9 @@ class TestAgentBridgeService:
                         logger.info(f"[Bridge WebRTC] Streaming {len(audio)} bytes of audio to {provider_platform}...")
                         await send_audio_chunks(audio)
                         logger.info("[Bridge WebRTC] Audio streaming complete")
+                    else:
+                        logger.warning(f"[Bridge WebRTC] ⚠️ No audio generated for transcript — test agent silent this turn "
+                                       f"(TTS={test_agent.config.tts_provider}, turn={test_agent.turn_count})")
 
                 async def on_agent_start_talking():
                     """Voice AI agent started speaking -- test agent should wait."""
@@ -666,6 +670,9 @@ class TestAgentBridgeService:
                             logger.info(f"[Bridge WebRTC] Streaming {len(audio)} bytes of audio to {provider_platform}...")
                             await send_audio_chunks(audio)
                             logger.info("[Bridge WebRTC] Audio streaming complete")
+                        else:
+                            logger.warning(f"[Bridge WebRTC] ⚠️ No audio generated for pending transcript — test agent silent "
+                                           f"(TTS={test_agent.config.tts_provider}, turn={test_agent.turn_count})")
 
                 async def on_call_should_end():
                     """Test agent decided to end the call."""
@@ -677,9 +684,12 @@ class TestAgentBridgeService:
                 webrtc_bridge.on_agent_stop_talking = on_agent_stop_talking
                 test_agent.on_call_should_end = on_call_should_end
 
-                # ElevenLabs agents have a built-in greeting
+                # ElevenLabs agents have a built-in greeting; we skip the test
+                # agent's first message and let the ElevenLabs agent speak first.
+                # The background silence loop (started at connection time) simulates
+                # a live microphone so ElevenLabs' VAD activates normally.
                 if provider_platform == "elevenlabs":
-                    logger.info("[Bridge WebRTC] ElevenLabs: skipping first message — waiting for agent greeting")
+                    logger.info("[Bridge WebRTC] ElevenLabs: waiting for agent greeting (background silence stream active)")
                 else:
                     # Retell / Vapi: test agent initiates the conversation
                     logger.info("[Bridge WebRTC] Sending test agent's first message...")
@@ -688,6 +698,9 @@ class TestAgentBridgeService:
                         logger.info(f"[Bridge WebRTC] Streaming first message ({len(first_audio)} bytes)...")
                         await send_audio_chunks(first_audio)
                         logger.info(f"[Bridge WebRTC] ✅ First message sent to {provider_platform}")
+                    else:
+                        logger.error(f"[Bridge WebRTC] ⚠️ First message TTS returned no audio — test agent will be silent! "
+                                     f"Check TTS provider ({test_agent.config.tts_provider}) config and ffmpeg availability.")
 
                 logger.info("[Bridge WebRTC] ✅ Test agent connected, conversation starting...")
             else:

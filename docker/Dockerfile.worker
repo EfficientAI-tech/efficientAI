@@ -2,7 +2,7 @@ FROM python:3.11-slim
 
 # Build arguments for configurable installs
 ARG INSTALL_EXTRAS="qualitative-voice,reports"
-ARG PRELOAD_MODELS="true"
+ARG TORCH_CPU_ONLY="true"
 
 # Install system dependencies (git needed for torch.hub clone, build-essential +
 # cmake needed for packages like praat-parselmouth on arm64/Apple Silicon)
@@ -26,6 +26,15 @@ COPY pyproject.toml README.md ./
 # Create minimal src structure for editable install
 RUN mkdir -p src/efficientai && touch src/efficientai/__init__.py
 
+# Install CPU-only PyTorch first if requested (saves ~1.5GB vs full PyTorch)
+# This must be done before installing other deps that depend on torch
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=cache,target=/root/.cache/pip \
+    if [ "$TORCH_CPU_ONLY" = "true" ]; then \
+        echo "Installing CPU-only PyTorch..." && \
+        uv pip install --system torch torchaudio --index-url https://download.pytorch.org/whl/cpu; \
+    fi
+
 # Install dependencies based on INSTALL_EXTRAS arg
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=cache,target=/root/.cache/pip \
@@ -36,28 +45,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     fi
 
 # ============================================================
-# LAYER 2: Pre-download ML models (cached, conditional)
-# ============================================================
-
-# Download qualitative-voice models if that extra is installed
-# Note: UTMOS uses torch.hub which can hit GitHub rate limits in CI
-# We skip UTMOS preload in Docker (it will download on first use) but preload HuggingFace models
-RUN if [ "$PRELOAD_MODELS" = "true" ] && echo "$INSTALL_EXTRAS" | grep -q "qualitative-voice"; then \
-    echo "Downloading emotion classifier from HuggingFace..." && \
-    python -c "from transformers import pipeline; pipeline('audio-classification', model='ehcalabres/wav2vec2-lg-xlsr-en-speech-emotion-recognition'); print('Emotion classifier cached')" && \
-    echo "Downloading valence/arousal model from HuggingFace..." && \
-    python -c "from transformers import AutoProcessor, AutoModelForAudioClassification; AutoProcessor.from_pretrained('audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim'); AutoModelForAudioClassification.from_pretrained('audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim'); print('Valence/arousal cached')" && \
-    echo "Note: UTMOS model will be downloaded on first use (torch.hub has GitHub rate limits in CI)"; \
-    fi
-
-# Download NeMo ASR model if that extra is installed
-RUN if [ "$PRELOAD_MODELS" = "true" ] && echo "$INSTALL_EXTRAS" | grep -q "nemo-asr"; then \
-    echo "Downloading NeMo ASR model..." && \
-    python -c "import nemo.collections.asr as nemo_asr; nemo_asr.models.ASRModel.from_pretrained('stt_en_conformer_ctc_large'); print('NeMo ASR cached')"; \
-    fi
-
-# ============================================================
-# LAYER 3: Application code (rebuilds on code changes only)
+# LAYER 2: Application code (rebuilds on code changes only)
 # ============================================================
 COPY src/ ./src/
 COPY app/ ./app/
@@ -68,6 +56,14 @@ RUN uv pip install --system -e .
 
 # Create uploads directory
 RUN mkdir -p /app/uploads
+
+# Notes:
+# - CPU-only PyTorch is installed by default (TORCH_CPU_ONLY=true), saving ~1.5GB
+#   Set TORCH_CPU_ONLY=false if you need GPU support
+# - ML models (emotion classifier, valence/arousal, UTMOS, NeMo ASR) are
+#   downloaded lazily on first use, keeping the image smaller
+# - For persistent model caching across container restarts, mount volumes:
+#   /root/.cache/huggingface and /root/.cache/torch
 
 # Run Celery worker
 CMD ["celery", "-A", "app.workers.celery_app", "worker", "--loglevel=info"]

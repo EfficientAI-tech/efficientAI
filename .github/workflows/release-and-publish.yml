@@ -187,7 +187,6 @@ jobs:
           platforms: linux/amd64
           build-args: |
             INSTALL_EXTRAS=qualitative-voice,reports
-            PRELOAD_MODELS=true
 
       - name: Create GitHub release
         env:

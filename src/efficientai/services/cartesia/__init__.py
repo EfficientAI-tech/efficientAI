@@ -4,11 +4,20 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-import sys
+"""Cartesia services - uses lazy imports to avoid loading heavy dependencies at package import."""
 
-from efficientai.services import DeprecatedModuleProxy
 
-from .stt import *
-from .tts import *
-
-sys.modules[__name__] = DeprecatedModuleProxy(globals(), "cartesia", "cartesia.[stt,tts]")
+def __getattr__(name):
+    """Lazy import handler for cartesia submodules."""
+    if name in ("CartesiaSTTService",):
+        from .stt import CartesiaSTTService
+        return CartesiaSTTService
+    elif name in ("CartesiaTTSService", "CartesiaHttpTTSService"):
+        from .tts import CartesiaTTSService, CartesiaHttpTTSService
+        if name == "CartesiaTTSService":
+            return CartesiaTTSService
+        return CartesiaHttpTTSService
+    elif name == "synthesize_cartesia_bytes":
+        from .http_tts import synthesize_cartesia_bytes
+        return synthesize_cartesia_bytes
+    raise AttributeError(f"module 'efficientai.services.cartesia' has no attribute '{name}'")

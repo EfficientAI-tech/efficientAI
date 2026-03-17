@@ -4,6 +4,12 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
+"""Voice bundle pipeline for STT+LLM+TTS over WebSocket.
+
+This module uses lazy imports to avoid loading heavy AI service dependencies
+at module import time. Services are only loaded when actually used.
+"""
+
 import os
 import time
 import wave
@@ -12,46 +18,145 @@ import uuid
 from dotenv import load_dotenv
 from loguru import logger
 
-try:
-    from efficientai.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
-except Exception as e:  # pragma: no cover
-    LocalSmartTurnAnalyzerV3 = None  # Optional dependency; fallback below
-    logger.warning(
-        "LocalSmartTurnAnalyzerV3 unavailable (missing optional deps like transformers). "
-        "Continuing without smart turn analyzer. Error: %s",
-        e,
-    )
-from efficientai.audio.vad.silero import SileroVADAnalyzer
-from efficientai.audio.vad.vad_analyzer import VADParams
-from efficientai.frames.frames import LLMRunFrame
-from efficientai.pipeline.pipeline import Pipeline
-from efficientai.pipeline.runner import PipelineRunner
-from efficientai.pipeline.task import PipelineParams, PipelineTask
-from efficientai.processors.aggregators.llm_context import LLMContext
-from efficientai.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
-from efficientai.processors.frameworks.rtvi import RTVIConfig, RTVIObserver, RTVIProcessor
-from efficientai.processors.audio.audio_buffer_processor import AudioBufferProcessor
-from efficientai.runner.types import RunnerArguments
-from efficientai.runner.utils import create_transport
-from efficientai.serializers.protobuf import ProtobufFrameSerializer
-from efficientai.services.cartesia.tts import CartesiaTTSService
-from efficientai.services.deepgram.stt import DeepgramSTTService
-from efficientai.services.elevenlabs.stt import ElevenLabsRealtimeSTTService
-from efficientai.services.elevenlabs.tts import ElevenLabsHttpTTSService
-from efficientai.services.google.llm import GoogleLLMService
-from efficientai.services.murf.tts import MurfTTSService
-from efficientai.services.openai.llm import OpenAILLMService
-from efficientai.services.openai.stt import OpenAISTTService
-from efficientai.services.openai.tts import OpenAITTSService
-from efficientai.services.sarvam.stt import SarvamSTTService
-from efficientai.services.sarvam.tts import SarvamTTSService
-from efficientai.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
-from efficientai.transports.base_transport import BaseTransport, TransportParams
-from efficientai.turns.bot.turn_analyzer_bot_turn_start_strategy import TurnAnalyzerBotTurnStartStrategy
-from efficientai.turns.turn_start_strategies import TurnStartStrategies
 from app.services.storage.s3_service import s3_service
 
 load_dotenv(override=True)
+
+
+def _get_core_imports():
+    """Lazy import core efficientai dependencies (no provider SDKs).
+    
+    Returns a dict with core pipeline classes. Provider-specific services
+    are loaded separately via _get_service() to avoid loading unused SDKs.
+    """
+    from efficientai.audio.vad.silero import SileroVADAnalyzer
+    from efficientai.audio.vad.vad_analyzer import VADParams
+    from efficientai.frames.frames import LLMRunFrame
+    from efficientai.pipeline.pipeline import Pipeline
+    from efficientai.pipeline.runner import PipelineRunner
+    from efficientai.pipeline.task import PipelineParams, PipelineTask
+    from efficientai.processors.aggregators.llm_context import LLMContext
+    from efficientai.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
+    from efficientai.processors.frameworks.rtvi import RTVIConfig, RTVIObserver, RTVIProcessor
+    from efficientai.processors.audio.audio_buffer_processor import AudioBufferProcessor
+    from efficientai.runner.types import RunnerArguments
+    from efficientai.runner.utils import create_transport
+    from efficientai.serializers.protobuf import ProtobufFrameSerializer
+    from efficientai.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
+    from efficientai.transports.base_transport import BaseTransport, TransportParams
+    from efficientai.turns.bot.turn_analyzer_bot_turn_start_strategy import TurnAnalyzerBotTurnStartStrategy
+    from efficientai.turns.turn_start_strategies import TurnStartStrategies
+    
+    return {
+        "SileroVADAnalyzer": SileroVADAnalyzer,
+        "VADParams": VADParams,
+        "LLMRunFrame": LLMRunFrame,
+        "Pipeline": Pipeline,
+        "PipelineRunner": PipelineRunner,
+        "PipelineParams": PipelineParams,
+        "PipelineTask": PipelineTask,
+        "LLMContext": LLMContext,
+        "LLMContextAggregatorPair": LLMContextAggregatorPair,
+        "RTVIConfig": RTVIConfig,
+        "RTVIObserver": RTVIObserver,
+        "RTVIProcessor": RTVIProcessor,
+        "AudioBufferProcessor": AudioBufferProcessor,
+        "RunnerArguments": RunnerArguments,
+        "create_transport": create_transport,
+        "ProtobufFrameSerializer": ProtobufFrameSerializer,
+        "FastAPIWebsocketParams": FastAPIWebsocketParams,
+        "FastAPIWebsocketTransport": FastAPIWebsocketTransport,
+        "BaseTransport": BaseTransport,
+        "TransportParams": TransportParams,
+        "TurnAnalyzerBotTurnStartStrategy": TurnAnalyzerBotTurnStartStrategy,
+        "TurnStartStrategies": TurnStartStrategies,
+    }
+
+
+# Cache for core imports
+_core_imports_cache = None
+
+# Cache for provider services (keyed by service name)
+_service_cache = {}
+
+
+def _get_imports():
+    """Get cached core imports."""
+    global _core_imports_cache
+    if _core_imports_cache is None:
+        _core_imports_cache = _get_core_imports()
+    return _core_imports_cache
+
+
+def _get_service(service_name: str):
+    """Get a provider service class by name (lazy loaded).
+    
+    Each provider's SDK is only loaded when that specific service is requested.
+    This allows the voice agent to work even if some provider SDKs are not installed,
+    as long as you don't try to use those providers.
+    """
+    global _service_cache
+    
+    if service_name in _service_cache:
+        return _service_cache[service_name]
+    
+    service_class = None
+    
+    # STT Services
+    if service_name == "DeepgramSTTService":
+        from efficientai.services.deepgram.stt import DeepgramSTTService
+        service_class = DeepgramSTTService
+    elif service_name == "OpenAISTTService":
+        from efficientai.services.openai.stt import OpenAISTTService
+        service_class = OpenAISTTService
+    elif service_name == "ElevenLabsRealtimeSTTService":
+        from efficientai.services.elevenlabs.stt import ElevenLabsRealtimeSTTService
+        service_class = ElevenLabsRealtimeSTTService
+    elif service_name == "SarvamSTTService":
+        from efficientai.services.sarvam.stt import SarvamSTTService
+        service_class = SarvamSTTService
+    
+    # TTS Services
+    elif service_name == "CartesiaTTSService":
+        from efficientai.services.cartesia.tts import CartesiaTTSService
+        service_class = CartesiaTTSService
+    elif service_name == "OpenAITTSService":
+        from efficientai.services.openai.tts import OpenAITTSService
+        service_class = OpenAITTSService
+    elif service_name == "ElevenLabsHttpTTSService":
+        from efficientai.services.elevenlabs.tts import ElevenLabsHttpTTSService
+        service_class = ElevenLabsHttpTTSService
+    elif service_name == "MurfTTSService":
+        from efficientai.services.murf.tts import MurfTTSService
+        service_class = MurfTTSService
+    elif service_name == "SarvamTTSService":
+        from efficientai.services.sarvam.tts import SarvamTTSService
+        service_class = SarvamTTSService
+    
+    # LLM Services
+    elif service_name == "OpenAILLMService":
+        from efficientai.services.openai.llm import OpenAILLMService
+        service_class = OpenAILLMService
+    elif service_name == "GoogleLLMService":
+        from efficientai.services.google.llm import GoogleLLMService
+        service_class = GoogleLLMService
+    
+    # Optional: Smart Turn Analyzer
+    elif service_name == "LocalSmartTurnAnalyzerV3":
+        try:
+            from efficientai.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
+            service_class = LocalSmartTurnAnalyzerV3
+        except Exception as e:
+            logger.warning(
+                "LocalSmartTurnAnalyzerV3 unavailable (missing optional deps). Error: %s", e
+            )
+            service_class = None
+    
+    else:
+        raise ValueError(f"Unknown service: {service_name}")
+    
+    _service_cache[service_name] = service_class
+    return service_class
 
 # ---------------------------------------------------------------------------
 # Provider Registries  (STT & TTS)
@@ -67,130 +172,134 @@ load_dotenv(override=True)
 # To add a new provider, simply add a dict entry to the relevant registry.
 # ---------------------------------------------------------------------------
 
-# ---- STT Providers --------------------------------------------------------
-STT_PROVIDERS = {
-    "deepgram": {
-        "env_key": "DEEPGRAM_API_KEY",
-        "default_model": None,  # Deepgram defaults to nova-3-general internally
-        "factory": lambda api_key, model: DeepgramSTTService(
-            api_key=api_key,
-            **({"model": model} if model else {}),
-        ),
-    },
-    "openai": {
-        "env_key": "OPENAI_API_KEY",
-        "default_model": "gpt-4o-transcribe",
-        "factory": lambda api_key, model: OpenAISTTService(
-            api_key=api_key,
-            **({"model": model} if model else {}),
-        ),
-    },
-    "elevenlabs": {
-        "env_key": "ELEVENLABS_API_KEY",
-        "default_model": "scribe_v2_realtime",
-        "factory": lambda api_key, model: ElevenLabsRealtimeSTTService(
-            api_key=api_key,
-            **({"model": model} if model else {}),
-        ),
-    },
-    "sarvam": {
-        "env_key": "SARVAM_API_KEY",
-        "default_model": "saarika:v2.5",
-        "factory": lambda api_key, model: SarvamSTTService(
-            api_key=api_key,
-            model=model if model else "saarika:v2.5",
-        ),
-    },
-}
+
+def _get_stt_providers():
+    """Get STT provider registry with truly lazy-loaded service classes.
+    
+    Each provider's SDK is only loaded when that provider is actually used.
+    """
+    return {
+        "deepgram": {
+            "env_key": "DEEPGRAM_API_KEY",
+            "default_model": None,
+            "factory": lambda api_key, model: _get_service("DeepgramSTTService")(
+                api_key=api_key,
+                **({"model": model} if model else {}),
+            ),
+        },
+        "openai": {
+            "env_key": "OPENAI_API_KEY",
+            "default_model": "gpt-4o-transcribe",
+            "factory": lambda api_key, model: _get_service("OpenAISTTService")(
+                api_key=api_key,
+                **({"model": model} if model else {}),
+            ),
+        },
+        "elevenlabs": {
+            "env_key": "ELEVENLABS_API_KEY",
+            "default_model": "scribe_v2_realtime",
+            "factory": lambda api_key, model: _get_service("ElevenLabsRealtimeSTTService")(
+                api_key=api_key,
+                **({"model": model} if model else {}),
+            ),
+        },
+        "sarvam": {
+            "env_key": "SARVAM_API_KEY",
+            "default_model": "saarika:v2.5",
+            "factory": lambda api_key, model: _get_service("SarvamSTTService")(
+                api_key=api_key,
+                model=model if model else "saarika:v2.5",
+            ),
+        },
+    }
+
+
+def _get_tts_providers():
+    """Get TTS provider registry with truly lazy-loaded service classes.
+    
+    Each provider's SDK is only loaded when that provider is actually used.
+    """
+    return {
+        "cartesia": {
+            "env_key": "CARTESIA_API_KEY",
+            "default_voice": "9626c31c-bec5-4cca-baa8-f8ba9e84c8bc",
+            "default_model": None,
+            "factory": lambda api_key, voice_id, model: _get_service("CartesiaTTSService")(
+                api_key=api_key,
+                voice_id=voice_id,
+            ),
+        },
+        "elevenlabs": {
+            "env_key": "ELEVENLABS_API_KEY",
+            "default_voice": "JBFqnCBsd6RMkjVDRZzb",
+            "default_model": "eleven_multilingual_v2",
+            "factory": lambda api_key, voice_id, model: _get_service("ElevenLabsHttpTTSService")(
+                api_key=api_key,
+                voice_id=voice_id,
+                model=model,
+                aiohttp_session=__import__("aiohttp").ClientSession(),
+            ),
+        },
+        "openai": {
+            "env_key": "OPENAI_API_KEY",
+            "default_voice": "alloy",
+            "default_model": "gpt-4o-mini-tts",
+            "factory": lambda api_key, voice_id, model: _get_service("OpenAITTSService")(
+                api_key=api_key,
+                voice=voice_id,
+                model=model,
+            ),
+        },
+        "murf": {
+            "env_key": "MURF_API_KEY",
+            "default_voice": "en-US-natalie",
+            "default_model": "GEN2",
+            "factory": lambda api_key, voice_id, model: _get_service("MurfTTSService")(
+                api_key=api_key,
+                voice_id=voice_id,
+                model=model if model else "GEN2",
+            ),
+        },
+        "sarvam": {
+            "env_key": "SARVAM_API_KEY",
+            "default_voice": "ritu",
+            "default_model": "bulbul:v3",
+            "factory": lambda api_key, voice_id, model: _get_service("SarvamTTSService")(
+                api_key=api_key,
+                voice_id=voice_id,
+                model=model if model else "bulbul:v3",
+            ),
+        },
+    }
+
+
+def _get_llm_providers():
+    """Get LLM provider registry with truly lazy-loaded service classes.
+    
+    Each provider's SDK is only loaded when that provider is actually used.
+    """
+    return {
+        "openai": {
+            "env_key": "OPENAI_API_KEY",
+            "default_model": "gpt-4.1",
+            "factory": lambda api_key, model: _get_service("OpenAILLMService")(
+                api_key=api_key,
+                model=model,
+            ),
+        },
+        "google": {
+            "env_key": "GOOGLE_API_KEY",
+            "default_model": "gemini-2.5-flash",
+            "factory": lambda api_key, model: _get_service("GoogleLLMService")(
+                api_key=api_key,
+                model=model,
+            ),
+        },
+    }
+
 
 DEFAULT_STT_PROVIDER = None
-
-# ---- TTS Providers --------------------------------------------------------
-TTS_PROVIDERS = {
-    "cartesia": {
-        "env_key": "CARTESIA_API_KEY",
-        "default_voice": "9626c31c-bec5-4cca-baa8-f8ba9e84c8bc",  # British Reading Lady
-        "default_model": None,
-        "factory": lambda api_key, voice_id, model: CartesiaTTSService(
-            api_key=api_key,
-            voice_id=voice_id,
-        ),
-    },
-    "elevenlabs": {
-        "env_key": "ELEVENLABS_API_KEY",
-        "default_voice": "JBFqnCBsd6RMkjVDRZzb",
-        "default_model": "eleven_multilingual_v2",
-        "factory": lambda api_key, voice_id, model: ElevenLabsHttpTTSService(
-            api_key=api_key,
-            voice_id=voice_id,
-            model=model,
-            aiohttp_session=__import__("aiohttp").ClientSession(),
-        ),
-    },
-    "openai": {
-        "env_key": "OPENAI_API_KEY",
-        "default_voice": "alloy",
-        "default_model": "gpt-4o-mini-tts",
-        "factory": lambda api_key, voice_id, model: OpenAITTSService(
-            api_key=api_key,
-            voice=voice_id,
-            model=model,
-        ),
-    },
-    # To add a new TTS provider, e.g. "azure":
-    # "azure": {
-    #     "env_key": "AZURE_SPEECH_API_KEY",
-    #     "default_voice": "en-US-JennyNeural",
-    #     "default_model": None,
-    #     "factory": lambda api_key, voice_id, model: AzureTTSService(
-    #         api_key=api_key,
-    #         voice_id=voice_id,
-    #     ),
-    # },
-    "murf": {
-        "env_key": "MURF_API_KEY",
-        "default_voice": "en-US-natalie",
-        "default_model": "GEN2",
-        "factory": lambda api_key, voice_id, model: MurfTTSService(
-            api_key=api_key,
-            voice_id=voice_id,
-            model=model if model else "GEN2",
-        ),
-    },
-    "sarvam": {
-        "env_key": "SARVAM_API_KEY",
-        "default_voice": "ritu",
-        "default_model": "bulbul:v3",
-        "factory": lambda api_key, voice_id, model: SarvamTTSService(
-            api_key=api_key,
-            voice_id=voice_id,
-            model=model if model else "bulbul:v3",
-        ),
-    },
-}
-
 DEFAULT_TTS_PROVIDER = None
-
-# ---- LLM Providers --------------------------------------------------------
-LLM_PROVIDERS = {
-    "openai": {
-        "env_key": "OPENAI_API_KEY",
-        "default_model": "gpt-4.1",
-        "factory": lambda api_key, model: OpenAILLMService(
-            api_key=api_key,
-            model=model,
-        ),
-    },
-    "google": {
-        "env_key": "GOOGLE_API_KEY",
-        "default_model": "gemini-2.5-flash",
-        "factory": lambda api_key, model: GoogleLLMService(
-            api_key=api_key,
-            model=model,
-        ),
-    },
-}
-
 DEFAULT_LLM_PROVIDER = None
 
 
@@ -211,26 +320,34 @@ def _resolve_provider(voice_bundle, attr: str, default: str | None = None) -> st
     return value.lower()
 
 
-# We store functions so objects (e.g. SileroVADAnalyzer) don't get
-# instantiated. The function will be called when the desired transport gets
-# selected.
-transport_params = {
-    "twilio": lambda: FastAPIWebsocketParams(
-        audio_in_enabled=True,
-        audio_out_enabled=True,
-        vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2)),
-    ),
-    "webrtc": lambda: TransportParams(
-        audio_in_enabled=True,
-        audio_out_enabled=True,
-        vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2)),
-    ),
-}
+def _get_transport_params():
+    """Get transport params with lazy-loaded classes."""
+    imports = _get_imports()
+    return {
+        "twilio": lambda: imports["FastAPIWebsocketParams"](
+            audio_in_enabled=True,
+            audio_out_enabled=True,
+            vad_analyzer=imports["SileroVADAnalyzer"](params=imports["VADParams"](stop_secs=0.2)),
+        ),
+        "webrtc": lambda: imports["TransportParams"](
+            audio_in_enabled=True,
+            audio_out_enabled=True,
+            vad_analyzer=imports["SileroVADAnalyzer"](params=imports["VADParams"](stop_secs=0.2)),
+        ),
+    }
 
 
-async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
+async def run_bot(transport, runner_args):
+    """Run the bot pipeline with the given transport."""
+    imports = _get_imports()
+    
     logger.info(f"Starting bot")
 
+    # Use _get_service for provider-specific classes
+    DeepgramSTTService = _get_service("DeepgramSTTService")
+    CartesiaTTSService = _get_service("CartesiaTTSService")
+    OpenAILLMService = _get_service("OpenAILLMService")
+    
     stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"))
 
     tts = CartesiaTTSService(
@@ -247,10 +364,10 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         },
     ]
 
-    context = LLMContext(messages)
-    context_aggregator = LLMContextAggregatorPair(context)
+    context = imports["LLMContext"](messages)
+    context_aggregator = imports["LLMContextAggregatorPair"](context)
 
-    pipeline = Pipeline(
+    pipeline = imports["Pipeline"](
         [
             transport.input(),  # Transport user input
             stt,
@@ -263,17 +380,18 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
     )
 
     bot_turn_strategies = []
+    LocalSmartTurnAnalyzerV3 = _get_service("LocalSmartTurnAnalyzerV3")
     if LocalSmartTurnAnalyzerV3:
-        bot_turn_strategies = [TurnAnalyzerBotTurnStartStrategy(turn_analyzer=LocalSmartTurnAnalyzerV3())]
+        bot_turn_strategies = [imports["TurnAnalyzerBotTurnStartStrategy"](turn_analyzer=LocalSmartTurnAnalyzerV3())]
     else:
         logger.info("Running without LocalSmartTurnAnalyzerV3 (optional dependency not installed).")
 
-    task = PipelineTask(
+    task = imports["PipelineTask"](
         pipeline,
-        params=PipelineParams(
+        params=imports["PipelineParams"](
             enable_metrics=True,
             enable_usage_metrics=True,
-            turn_start_strategies=TurnStartStrategies(bot=bot_turn_strategies),
+            turn_start_strategies=imports["TurnStartStrategies"](bot=bot_turn_strategies),
         ),
         idle_timeout_secs=runner_args.pipeline_idle_timeout_secs,
     )
@@ -283,21 +401,23 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         logger.info(f"Client connected")
         # Kick off the conversation.
         messages.append({"role": "system", "content": "Please introduce yourself to the user."})
-        await task.queue_frames([LLMRunFrame()])
+        await task.queue_frames([imports["LLMRunFrame"]()])
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
         logger.info(f"Client disconnected")
         await task.cancel()
 
-    runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
+    runner = imports["PipelineRunner"](handle_sigint=runner_args.handle_sigint)
 
     await runner.run(task)
 
 
-async def bot(runner_args: RunnerArguments):
+async def bot(runner_args):
     """Main bot entry point compatible with efficientai Cloud."""
-    transport = await create_transport(runner_args, transport_params)
+    imports = _get_imports()
+    transport_params = _get_transport_params()
+    transport = await imports["create_transport"](runner_args, transport_params)
     await run_bot(transport, runner_args)
 
 
@@ -319,6 +439,11 @@ async def run_voice_bundle_fastapi(
     Run the STT+LLM+TTS voice bundle pipeline over a FastAPI WebSocket.
     Uses AudioBufferProcessor for proper conversation audio recording.
     """
+    # Lazy load all efficientai dependencies
+    imports = _get_imports()
+    STT_PROVIDERS = _get_stt_providers()
+    TTS_PROVIDERS = _get_tts_providers()
+    LLM_PROVIDERS = _get_llm_providers()
 
     call_start_time = time.time()
     s3_key_result = None
@@ -370,14 +495,14 @@ async def run_voice_bundle_fastapi(
         raise ValueError(f"Missing required API keys for voice bundle: {', '.join(missing)}")
 
     try:
-        ws_transport = FastAPIWebsocketTransport(
+        ws_transport = imports["FastAPIWebsocketTransport"](
             websocket=websocket_client,
-            params=FastAPIWebsocketParams(
+            params=imports["FastAPIWebsocketParams"](
                 audio_in_enabled=True,
                 audio_out_enabled=True,
                 add_wav_header=False,
-                vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2)),
-                serializer=ProtobufFrameSerializer(),
+                vad_analyzer=imports["SileroVADAnalyzer"](params=imports["VADParams"](stop_secs=0.2)),
+                serializer=imports["ProtobufFrameSerializer"](),
             ),
         )
 
@@ -421,23 +546,20 @@ async def run_voice_bundle_fastapi(
             },
         ]
 
-        context = LLMContext(messages)
-        context_aggregator = LLMContextAggregatorPair(context)
+        context = imports["LLMContext"](messages)
+        context_aggregator = imports["LLMContextAggregatorPair"](context)
 
         # RTVI events for efficientai client UI
-        rtvi = RTVIProcessor(config=RTVIConfig(config=[]))
+        rtvi = imports["RTVIProcessor"](config=imports["RTVIConfig"](config=[]))
 
         # Use AudioBufferProcessor for proper conversation recording
-        # - sample_rate=24000 for consistency with TTS
-        # - num_channels=1 for mono (properly mixed user+bot audio via mix_audio)
-        # Place it right after transport.input() to capture InputAudioRawFrame
-        audio_buffer_input = AudioBufferProcessor(
+        audio_buffer_input = imports["AudioBufferProcessor"](
             sample_rate=24000,
             num_channels=1,
         )
         
         # Second buffer to capture OutputAudioRawFrame (bot audio)
-        audio_buffer_output = AudioBufferProcessor(
+        audio_buffer_output = imports["AudioBufferProcessor"](
             sample_rate=24000,
             num_channels=1,
         )
@@ -463,7 +585,7 @@ async def run_voice_bundle_fastapi(
             recorded_audio_data["sample_rate"] = sample_rate
             recorded_audio_data["num_channels"] = num_channels
 
-        pipeline = Pipeline(
+        pipeline = imports["Pipeline"](
             [
                 ws_transport.input(),
                 audio_buffer_input,  # Capture user input audio here
@@ -478,13 +600,13 @@ async def run_voice_bundle_fastapi(
             ]
         )
 
-        task = PipelineTask(
+        task = imports["PipelineTask"](
             pipeline,
-            params=PipelineParams(
+            params=imports["PipelineParams"](
                 enable_metrics=True,
                 enable_usage_metrics=True,
             ),
-            observers=[RTVIObserver(rtvi)],
+            observers=[imports["RTVIObserver"](rtvi)],
         )
 
         @rtvi.event_handler("on_client_ready")
@@ -494,7 +616,7 @@ async def run_voice_bundle_fastapi(
             await audio_buffer_input.start_recording()
             await audio_buffer_output.start_recording()
             logger.info("AudioBufferProcessors started recording (input + output)")
-            await task.queue_frames([LLMRunFrame()])
+            await task.queue_frames([imports["LLMRunFrame"]()])
 
         @ws_transport.event_handler("on_client_connected")
         async def on_client_connected(transport, client):
@@ -508,7 +630,7 @@ async def run_voice_bundle_fastapi(
         if websocket_client.client_state.name != "CONNECTED":
             raise Exception(f"WebSocket is not in CONNECTED state: {websocket_client.client_state.name}")
 
-        runner = PipelineRunner(handle_sigint=False)
+        runner = imports["PipelineRunner"](handle_sigint=False)
 
         try:
             await runner.run(task)
