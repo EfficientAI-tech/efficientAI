@@ -265,14 +265,16 @@ def start(config: str, host: Optional[str], port: Optional[int], build_frontend:
             click.echo("❌ npm not found. Please install Node.js and npm.", err=True)
             sys.exit(1)
     
-    # Run migrations before starting (unless explicitly skipped)
+    # Initialize DB tables and run migrations before starting (unless explicitly skipped)
     if not skip_migrations:
-        click.echo("🔄 Running database migrations before startup...")
+        click.echo("🔄 Initializing database and running migrations...")
+        from app.database import init_db
         from app.core.migrations import run_migrations, ensure_migrations_directory
         try:
+            init_db()
             ensure_migrations_directory()
             run_migrations()
-            click.echo("✅ Migrations completed successfully")
+            click.echo("✅ Database initialized and migrations completed")
         except Exception as e:
             click.echo(f"❌ Migration failed: {e}", err=True)
             click.echo("💡 You can skip migrations with --skip-migrations (not recommended)", err=True)
@@ -472,14 +474,16 @@ def start_all(config: str, host: Optional[str], port: Optional[int], build_front
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     
-    # Run migrations before starting (unless explicitly skipped)
+    # Initialize DB tables and run migrations before starting (unless explicitly skipped)
     if not skip_migrations:
-        click.echo("🔄 Running database migrations before startup...")
+        click.echo("🔄 Initializing database and running migrations...")
+        from app.database import init_db
         from app.core.migrations import run_migrations, ensure_migrations_directory
         try:
+            init_db()
             ensure_migrations_directory()
             run_migrations()
-            click.echo("✅ Migrations completed successfully")
+            click.echo("✅ Database initialized and migrations completed")
         except Exception as e:
             click.echo(f"❌ Migration failed: {e}", err=True)
             click.echo("💡 You can skip migrations with --skip-migrations (not recommended)", err=True)

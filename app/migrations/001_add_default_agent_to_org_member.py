@@ -14,6 +14,15 @@ description = "Add default_agent_id column to organization_members table"
 def upgrade(db: Session):
     """Add default_agent_id column with foreign key to agents table."""
     
+    # Check if the table exists at all (on fresh DBs, create_all handles this)
+    table_check = db.execute(text("""
+        SELECT 1 FROM information_schema.tables
+        WHERE table_name = 'organization_members'
+    """))
+    if table_check.fetchone() is None:
+        print("Table organization_members does not exist yet (fresh DB, handled by create_all), skipping...")
+        return
+
     # Check if column already exists
     result = db.execute(text("""
         SELECT column_name 

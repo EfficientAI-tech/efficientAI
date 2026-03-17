@@ -37,6 +37,11 @@ def get_db():
 
 def init_db():
     """Initialize database by creating all tables and run column migrations."""
+    # Import all models so SQLAlchemy registers them with Base.metadata
+    # before create_all is called. Without this, tables won't be created
+    # on a fresh database.
+    import app.models.database  # noqa: F401
+
     Base.metadata.create_all(bind=engine)
     _run_column_migrations()
 
