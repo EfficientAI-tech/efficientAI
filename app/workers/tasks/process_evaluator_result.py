@@ -87,6 +87,90 @@ def _transcribe_audio(result, ai_providers, db):
     )
 
 
+def _generate_call_analysis(transcription, ai_providers, organization_id, result_id, db, agent=None, scenario=None):
+    """Generate call analysis (summary, sentiment, success) using LLM."""
+    from app.services.ai.llm_service import llm_service
+
+    llm_provider = ModelProvider.OPENAI
+    llm_model = "gpt-4o-mini"
+
+    chosen_provider = next(
+        (p for p in ai_providers if provider_matches(p.provider, llm_provider)),
+        None,
+    )
+    if not chosen_provider:
+        llm_provider = ModelProvider.GOOGLE
+        llm_model = "gemini-2.0-flash"
+        chosen_provider = next(
+            (p for p in ai_providers if provider_matches(p.provider, llm_provider)),
+            None,
+        )
+    if not chosen_provider:
+        logger.warning(f"[EvaluatorResult {result_id}] No LLM provider available for call analysis")
+        return None
+
+    agent_context = ""
+    if agent and agent.description:
+        agent_context = f"\n\nAgent Description:\n{agent.description}"
+    if scenario:
+        scenario_name = getattr(scenario, 'name', '')
+        scenario_desc = getattr(scenario, 'description', '')
+        if scenario_name or scenario_desc:
+            agent_context += f"\n\nScenario: {scenario_name}"
+            if scenario_desc:
+                agent_context += f"\nScenario Description: {scenario_desc}"
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a call analysis expert. Analyze the following conversation transcript "
+                "and provide a structured analysis. Respond ONLY with valid JSON, no markdown."
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"""Analyze this conversation transcript and provide:
+1. A concise summary of the call (2-3 sentences)
+2. The user/caller's overall sentiment (one of: Positive, Negative, Neutral, Mixed)
+3. Whether the call was successful in achieving its objective (true/false)
+{agent_context}
+
+Transcript:
+{transcription}
+
+Respond in this exact JSON format:
+{{"call_summary": "...", "user_sentiment": "...", "call_successful": true/false}}""",
+        },
+    ]
+
+    try:
+        llm_result = llm_service.generate_response(
+            messages=messages,
+            llm_provider=llm_provider,
+            llm_model=llm_model,
+            organization_id=organization_id,
+            db=db,
+            temperature=0.3,
+            max_tokens=500,
+        )
+        import json
+        import re
+        text = llm_result.get("text", "")
+        json_match = re.search(r'\{[^{}]*\}', text, re.DOTALL)
+        if json_match:
+            analysis = json.loads(json_match.group())
+            required_keys = {"call_summary", "user_sentiment", "call_successful"}
+            if required_keys.issubset(analysis.keys()):
+                logger.info(f"[EvaluatorResult {result_id}] Call analysis generated successfully")
+                return analysis
+        logger.warning(f"[EvaluatorResult {result_id}] Could not parse call analysis from LLM response")
+        return None
+    except Exception as e:
+        logger.error(f"[EvaluatorResult {result_id}] Call analysis failed: {e}", exc_info=True)
+        return None
+
+
 def _categorize_metrics(enabled_metrics, has_audio):
     """Split metrics into LLM-evaluable and audio-only categories."""
     llm_metrics = []
@@ -247,7 +331,26 @@ def process_evaluator_result_task(self, result_id: str):
                         "skipping evaluation"
                     )
 
-            # Step 5: Complete
+            # Step 5: Call Analysis
+            if transcription and not (result.call_data and result.call_data.get("call_analysis")):
+                try:
+                    call_analysis = _generate_call_analysis(
+                        transcription=transcription,
+                        ai_providers=ai_providers,
+                        organization_id=result.organization_id,
+                        result_id=result.result_id,
+                        db=db,
+                        agent=agent,
+                        scenario=scenario,
+                    )
+                    if call_analysis:
+                        result.call_data = {"call_analysis": call_analysis}
+                except Exception as analysis_err:
+                    logger.warning(
+                        f"[EvaluatorResult {result.result_id}] Call analysis failed (non-fatal): {analysis_err}"
+                    )
+
+            # Step 6: Complete
             result.metric_scores = metric_scores
             result.status = EvaluatorResultStatus.COMPLETED.value
             db.commit()

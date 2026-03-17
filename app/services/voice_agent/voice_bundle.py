@@ -448,6 +448,8 @@ async def run_voice_bundle_fastapi(
     call_start_time = time.time()
     s3_key_result = None
     duration_result = None
+    transcript_text = None
+    conversation_turns = []
     
     # Storage for audio data from the buffer processor
     recorded_audio_data = {"audio": None, "sample_rate": None, "num_channels": None}
@@ -643,6 +645,34 @@ async def run_voice_bundle_fastapi(
             # Calculate duration
             duration_result = time.time() - call_start_time
             
+            # Extract conversation transcript from the LLM context
+            try:
+                raw_messages = context.messages if hasattr(context, 'messages') else []
+                conversation_turns = []
+                transcript_parts = []
+                elapsed = 0.0
+                for msg in raw_messages:
+                    role = msg.get("role", "")
+                    content = msg.get("content", "")
+                    if not content or role == "system":
+                        continue
+                    speaker = "user" if role == "user" else "assistant"
+                    turn_duration = max(1.0, len(content.split()) * 0.4)
+                    conversation_turns.append({
+                        "speaker": speaker,
+                        "text": content,
+                        "start": round(elapsed, 2),
+                        "end": round(elapsed + turn_duration, 2),
+                    })
+                    transcript_parts.append(f"{speaker}: {content}")
+                    elapsed += turn_duration
+                transcript_text = "\n".join(transcript_parts) if transcript_parts else None
+                logger.info(f"Captured {len(conversation_turns)} conversation turns from live pipeline")
+            except Exception as ctx_err:
+                logger.warning(f"Failed to extract conversation context: {ctx_err}")
+                conversation_turns = []
+                transcript_text = None
+            
             # Merge captured audio chunks
             total_input_audio = b''.join(input_audio_chunks) if input_audio_chunks else b''
             total_output_audio = b''.join(output_audio_chunks) if output_audio_chunks else b''
@@ -700,26 +730,23 @@ async def run_voice_bundle_fastapi(
             "agent_id": agent_id,
             "persona_id": persona_id,
             "scenario_id": scenario_id,
+            "transcription": transcript_text,
+            "speaker_segments": conversation_turns if conversation_turns else None,
             "error": str(e),
         }
 
-    if s3_key_result:
-        return {
-            "s3_key": s3_key_result,
-            "duration": duration_result,
-            "agent_id": agent_id,
-            "persona_id": persona_id,
-            "scenario_id": scenario_id,
-        }
-
-    return {
-        "s3_key": None,
+    metadata = {
+        "s3_key": s3_key_result,
         "duration": duration_result,
         "agent_id": agent_id,
         "persona_id": persona_id,
         "scenario_id": scenario_id,
-        "error": "No audio file was uploaded",
+        "transcription": transcript_text,
+        "speaker_segments": conversation_turns if conversation_turns else None,
     }
+    if not s3_key_result and not transcript_text:
+        metadata["error"] = "No audio file was uploaded and no transcript captured"
+    return metadata
 
 
 if __name__ == "__main__":

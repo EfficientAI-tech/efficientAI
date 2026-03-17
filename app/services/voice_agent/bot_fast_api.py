@@ -237,6 +237,8 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
     call_start_time = time.time()
     s3_key_result = None
     duration_result = None
+    transcript_text = None
+    conversation_turns = []
     
     try:
         ws_transport = imports["FastAPIWebsocketTransport"](
@@ -360,6 +362,34 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
                 evaluator_id=evaluator_id,
                 result_id=result_id,
             )
+            
+            # Extract conversation transcript from the LLM context
+            try:
+                raw_messages = context.messages if hasattr(context, 'messages') else []
+                conversation_turns = []
+                transcript_parts = []
+                elapsed = 0.0
+                for msg in raw_messages:
+                    role = msg.get("role", "")
+                    content = msg.get("content", "")
+                    if not content or role == "system":
+                        continue
+                    speaker = "user" if role == "user" else "assistant"
+                    turn_duration = max(1.0, len(content.split()) * 0.4)
+                    conversation_turns.append({
+                        "speaker": speaker,
+                        "text": content,
+                        "start": round(elapsed, 2),
+                        "end": round(elapsed + turn_duration, 2),
+                    })
+                    transcript_parts.append(f"{speaker}: {content}")
+                    elapsed += turn_duration
+                transcript_text = "\n".join(transcript_parts) if transcript_parts else None
+                logger.info(f"Captured {len(conversation_turns)} conversation turns from live Gemini pipeline")
+            except Exception as ctx_err:
+                logger.warning(f"Failed to extract conversation context: {ctx_err}")
+                conversation_turns = []
+                transcript_text = None
 
     except Exception as e:
         logger.error(f"Error in run_bot: {e}", exc_info=True)
@@ -369,24 +399,21 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
             "agent_id": agent_id,
             "persona_id": persona_id,
             "scenario_id": scenario_id,
+            "transcription": transcript_text,
+            "speaker_segments": conversation_turns if conversation_turns else None,
             "error": str(e)
         }
     
-    if s3_key_result:
-        return {
-            "s3_key": s3_key_result,
-            "duration": duration_result,
-            "agent_id": agent_id,
-            "persona_id": persona_id,
-            "scenario_id": scenario_id
-        }
-    else:
-        return {
-            "s3_key": None,
-            "duration": duration_result,
-            "agent_id": agent_id,
-            "persona_id": persona_id,
-            "scenario_id": scenario_id,
-            "error": "No audio file was uploaded"
-        }
+    metadata = {
+        "s3_key": s3_key_result,
+        "duration": duration_result,
+        "agent_id": agent_id,
+        "persona_id": persona_id,
+        "scenario_id": scenario_id,
+        "transcription": transcript_text,
+        "speaker_segments": conversation_turns if conversation_turns else None,
+    }
+    if not s3_key_result and not transcript_text:
+        metadata["error"] = "No audio file was uploaded and no transcript captured"
+    return metadata
 

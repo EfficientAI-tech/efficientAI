@@ -450,8 +450,11 @@ async def websocket_endpoint(
             # Continue to try creating evaluator result if we have metadata
         
         # Create evaluator result if we have the required data (only if no error)
-        # Create evaluator result for all test calls (with or without persona/scenario)
-        if call_metadata and call_metadata.get("s3_key") and not call_metadata.get("error") and agent_id and result_id:
+        # Also create if we have a live transcript even without S3 audio
+        has_audio = call_metadata and call_metadata.get("s3_key")
+        has_transcript = call_metadata and call_metadata.get("transcription")
+        has_usable_data = has_audio or has_transcript
+        if call_metadata and has_usable_data and not call_metadata.get("error") and agent_id and result_id:
             # If we don't have evaluator but have persona/scenario, try to create one
             if not evaluator and agent_id and persona_id and scenario_id:
                 try:
@@ -523,7 +526,9 @@ async def websocket_endpoint(
                         name=result_name,
                         duration_seconds=call_metadata.get("duration"),
                         status=EvaluatorResultStatus.QUEUED.value,  # Use .value to get the string
-                        audio_s3_key=call_metadata.get("s3_key")
+                        audio_s3_key=call_metadata.get("s3_key"),
+                        transcription=call_metadata.get("transcription"),
+                        speaker_segments=call_metadata.get("speaker_segments"),
                     )
                     db.add(evaluator_result)
                     db.commit()

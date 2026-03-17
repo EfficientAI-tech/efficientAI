@@ -166,12 +166,14 @@ export default function TestVoiceAgentResultDetails({ resultData }: TestVoiceAge
         ? resultData.metric_scores.successful.value 
         : null)
 
-  // Map speaker labels - Speaker 1 is typically the Test Agent (caller), Speaker 2 is Voice AI Agent
   const getSpeakerLabel = (speaker: string) => {
     if (speaker === 'Speaker 1' || speaker === 'user' || speaker === 'caller') {
-      return 'Test Agent'
+      return 'You'
     }
-    return resultData.agent?.name || 'Voice AI Agent'
+    if (speaker === 'assistant' || speaker === 'Speaker 2' || speaker === 'bot') {
+      return resultData.agent?.name || 'Agent'
+    }
+    return resultData.agent?.name || 'Agent'
   }
 
   const isUserSpeaker = (speaker: string) => {
