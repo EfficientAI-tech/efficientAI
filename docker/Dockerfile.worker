@@ -27,12 +27,19 @@ COPY pyproject.toml README.md ./
 RUN mkdir -p src/efficientai && touch src/efficientai/__init__.py
 
 # Install CPU-only PyTorch first if requested (saves ~1.5GB vs full PyTorch)
-# This must be done before installing other deps that depend on torch
+# This must be done before installing other deps that depend on torch.
+# The CPU-only index only publishes x86_64 wheels; on ARM64 (Apple Silicon)
+# the default PyPI torch is already CPU-only, so we install without the index.
+ARG TARGETARCH
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=cache,target=/root/.cache/pip \
     if [ "$TORCH_CPU_ONLY" = "true" ]; then \
-        echo "Installing CPU-only PyTorch..." && \
-        uv pip install --system torch torchaudio --index-url https://download.pytorch.org/whl/cpu; \
+        echo "Installing CPU-only PyTorch (arch=$TARGETARCH)..." && \
+        if [ "$TARGETARCH" = "amd64" ]; then \
+            uv pip install --system torch torchaudio --index-url https://download.pytorch.org/whl/cpu; \
+        else \
+            uv pip install --system torch torchaudio; \
+        fi; \
     fi
 
 # Install dependencies based on INSTALL_EXTRAS arg
