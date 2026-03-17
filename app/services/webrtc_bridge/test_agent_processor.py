@@ -402,15 +402,13 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
         voice_id = self.config.tts_voice_id
         model_id = self.config.tts_model or "eleven_multilingual_v2"
 
-        # Request raw PCM directly from ElevenLabs (avoids ffmpeg/pydub dependency)
-        pcm_format = f"pcm_{self.config.sample_rate}"
-
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format={pcm_format}",
+                f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
                 headers={
                     "xi-api-key": self.config.tts_api_key,
                     "Content-Type": "application/json",
+                    "Accept": "audio/mpeg",
                 },
                 json={
                     "text": text,
@@ -427,7 +425,16 @@ After {self.config.max_turns} exchanges, wrap up the conversation politely."""
                 logger.error(f"[TestAgent] ElevenLabs TTS error: {response.status_code} - {response.text}")
                 return None
 
-            return response.content
+            # ElevenLabs returns MP3 — convert to raw PCM s16le for the WebRTC bridge
+            try:
+                from pydub import AudioSegment
+
+                audio_seg = AudioSegment.from_mp3(io.BytesIO(response.content))
+                audio_seg = audio_seg.set_frame_rate(self.config.sample_rate).set_channels(1).set_sample_width(2)
+                return audio_seg.raw_data
+            except ImportError:
+                logger.error("[TestAgent] pydub not installed — cannot convert ElevenLabs MP3 to PCM")
+                return None
 
     async def _tts_openai(self, text: str) -> Optional[bytes]:
         """Synthesize speech via OpenAI TTS and return raw PCM s16le bytes."""

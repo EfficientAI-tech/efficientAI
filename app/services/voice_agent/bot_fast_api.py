@@ -3,87 +3,33 @@
 #
 # SPDX-License-Identifier: BSD 2-Clause License
 #
-
-"""Bot FastAPI module - uses lazy imports to avoid loading heavy dependencies at module import.
-
-This module defers importing efficientai services until run_bot() is actually called,
-allowing the API/worker to start without loading Google AI SDKs at import time.
-"""
-
 import os
 import sys
+from loguru import logger
+from efficientai.audio.vad.silero import SileroVADAnalyzer
+from efficientai.frames.frames import LLMRunFrame
+from efficientai.pipeline.pipeline import Pipeline
+from efficientai.pipeline.runner import PipelineRunner
+from efficientai.pipeline.task import PipelineParams, PipelineTask
+from efficientai.processors.aggregators.llm_context import LLMContext
+from efficientai.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
+from efficientai.processors.frameworks.rtvi import RTVIConfig, RTVIObserver, RTVIProcessor
+from efficientai.serializers.protobuf import ProtobufFrameSerializer
+from efficientai.services.google.gemini_live.llm import GeminiLiveLLMService
+from efficientai.transports.websocket.fastapi import (
+    FastAPIWebsocketParams,
+    FastAPIWebsocketTransport,
+)
+from efficientai.processors.frame_processor import FrameProcessor
+from efficientai.frames.frames import (
+    Frame, AudioRawFrame, OutputAudioRawFrame, TTSAudioRawFrame,
+    EndFrame, StartFrame, CancelFrame
+)
 import wave
 import tempfile
 import time
-
 import numpy as np
-from loguru import logger
-
 from app.services.voice_agent.utils.audio_merge import merge_and_upload_audio
-
-
-def _get_lazy_imports():
-    """Lazy import all efficientai dependencies when needed.
-    
-    Returns a dict with all required classes/functions for the bot.
-    This avoids loading heavy AI SDKs at module import time.
-    """
-    from efficientai.audio.vad.silero import SileroVADAnalyzer
-    from efficientai.frames.frames import (
-        LLMRunFrame, Frame, AudioRawFrame, OutputAudioRawFrame, 
-        TTSAudioRawFrame, EndFrame, StartFrame, CancelFrame
-    )
-    from efficientai.pipeline.pipeline import Pipeline
-    from efficientai.pipeline.runner import PipelineRunner
-    from efficientai.pipeline.task import PipelineParams, PipelineTask
-    from efficientai.processors.aggregators.llm_context import LLMContext
-    from efficientai.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
-    from efficientai.processors.frameworks.rtvi import RTVIConfig, RTVIObserver, RTVIProcessor
-    from efficientai.serializers.protobuf import ProtobufFrameSerializer
-    from efficientai.services.google.gemini_live.llm import GeminiLiveLLMService
-    from efficientai.transports.websocket.fastapi import (
-        FastAPIWebsocketParams,
-        FastAPIWebsocketTransport,
-    )
-    from efficientai.processors.frame_processor import FrameProcessor
-    
-    return {
-        "SileroVADAnalyzer": SileroVADAnalyzer,
-        "LLMRunFrame": LLMRunFrame,
-        "Frame": Frame,
-        "AudioRawFrame": AudioRawFrame,
-        "OutputAudioRawFrame": OutputAudioRawFrame,
-        "TTSAudioRawFrame": TTSAudioRawFrame,
-        "EndFrame": EndFrame,
-        "StartFrame": StartFrame,
-        "CancelFrame": CancelFrame,
-        "Pipeline": Pipeline,
-        "PipelineRunner": PipelineRunner,
-        "PipelineParams": PipelineParams,
-        "PipelineTask": PipelineTask,
-        "LLMContext": LLMContext,
-        "LLMContextAggregatorPair": LLMContextAggregatorPair,
-        "RTVIConfig": RTVIConfig,
-        "RTVIObserver": RTVIObserver,
-        "RTVIProcessor": RTVIProcessor,
-        "ProtobufFrameSerializer": ProtobufFrameSerializer,
-        "GeminiLiveLLMService": GeminiLiveLLMService,
-        "FastAPIWebsocketParams": FastAPIWebsocketParams,
-        "FastAPIWebsocketTransport": FastAPIWebsocketTransport,
-        "FrameProcessor": FrameProcessor,
-    }
-
-
-# Cache for lazy imports (loaded once, reused)
-_imports_cache = None
-
-
-def _get_imports():
-    """Get cached lazy imports."""
-    global _imports_cache
-    if _imports_cache is None:
-        _imports_cache = _get_lazy_imports()
-    return _imports_cache
 
 
 
@@ -98,125 +44,128 @@ Your output will be converted to audio so don't include special characters in yo
 Respond to what the user said in a creative and helpful way. Keep your responses brief. One or two sentences at most.
 """
 
+class AudioRecorder(FrameProcessor):
+    def __init__(self, filename: str, start_time: float, target_sample_rate: int = 24000, recorder_name: str = "AudioRecorder"):
+        super().__init__()
+        self.filename = filename
+        self.start_time = start_time
+        self.target_sample_rate = target_sample_rate
+        self.recorder_name = recorder_name
+        self.wave_file = None
+        self.params_set = False
+        self.sample_rate = 0
+        self.num_channels = 0
+        self.frames_received = 0
+        self.audio_frames_received = 0
+        self.last_frame_time = None  # Track when last frame was received
+        self.total_samples_written = 0  # Track total samples written
 
-def _create_audio_recorder_class():
-    """Create AudioRecorder class with lazy imports."""
-    imports = _get_imports()
-    FrameProcessor = imports["FrameProcessor"]
-    AudioRawFrame = imports["AudioRawFrame"]
-    EndFrame = imports["EndFrame"]
-    CancelFrame = imports["CancelFrame"]
-    
-    class AudioRecorder(FrameProcessor):
-        def __init__(self, filename: str, start_time: float, target_sample_rate: int = 24000, recorder_name: str = "AudioRecorder"):
-            super().__init__()
-            self.filename = filename
-            self.start_time = start_time
-            self.target_sample_rate = target_sample_rate
-            self.recorder_name = recorder_name
-            self.wave_file = None
-            self.params_set = False
-            self.sample_rate = 0
-            self.num_channels = 0
-            self.frames_received = 0
-            self.audio_frames_received = 0
-            self.last_frame_time = None
-            self.total_samples_written = 0
+    def _resample_audio(self, audio_bytes: bytes, in_rate: int, out_rate: int, num_channels: int) -> bytes:
+        """Resample audio using simple linear interpolation."""
+        if in_rate == out_rate:
+            return audio_bytes
+        
+        # Convert bytes to numpy array (16-bit signed integers)
+        audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
+        
+        # Reshape for multi-channel if needed
+        if num_channels > 1:
+            audio_array = audio_array.reshape(-1, num_channels)
+        
+        # Calculate resampling ratio
+        ratio = out_rate / in_rate
+        original_length = len(audio_array)
+        new_length = int(original_length * ratio)
+        
+        # Create indices for interpolation
+        old_indices = np.arange(original_length)
+        new_indices = np.linspace(0, original_length - 1, new_length)
+        
+        # Interpolate
+        if num_channels > 1:
+            resampled = np.zeros((new_length, num_channels), dtype=np.int16)
+            for ch in range(num_channels):
+                resampled[:, ch] = np.interp(new_indices, old_indices, audio_array[:, ch]).astype(np.int16)
+            return resampled.tobytes()
+        else:
+            resampled = np.interp(new_indices, old_indices, audio_array).astype(np.int16)
+            return resampled.tobytes()
 
-        def _resample_audio(self, audio_bytes: bytes, in_rate: int, out_rate: int, num_channels: int) -> bytes:
-            """Resample audio using simple linear interpolation."""
-            if in_rate == out_rate:
-                return audio_bytes
+    async def process_frame(self, frame: Frame, direction):
+        await super().process_frame(frame, direction)
+        
+        self.frames_received += 1
+        
+        # Handle both input and output audio frames
+        # OutputAudioRawFrame (TTSAudioRawFrame) is a subclass of AudioRawFrame
+        if isinstance(frame, AudioRawFrame):
+            self.audio_frames_received += 1
+            if not self.wave_file:
+                try:
+                    self.wave_file = wave.open(self.filename, 'wb')
+                    self.num_channels = frame.num_channels
+                    # Use target sample rate for the file
+                    self.sample_rate = self.target_sample_rate
+                    self.wave_file.setnchannels(self.num_channels)
+                    self.wave_file.setsampwidth(2) # 16-bit PCM
+                    self.wave_file.setframerate(self.sample_rate)
+                    self.params_set = True
+                except Exception as e:
+                    logger.error(f"Failed to open wave file {self.filename}: {e}")
             
-            audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
-            
-            if num_channels > 1:
-                audio_array = audio_array.reshape(-1, num_channels)
-            
-            ratio = out_rate / in_rate
-            original_length = len(audio_array)
-            new_length = int(original_length * ratio)
-            
-            old_indices = np.arange(original_length)
-            new_indices = np.linspace(0, original_length - 1, new_length)
-            
-            if num_channels > 1:
-                resampled = np.zeros((new_length, num_channels), dtype=np.int16)
-                for ch in range(num_channels):
-                    resampled[:, ch] = np.interp(new_indices, old_indices, audio_array[:, ch]).astype(np.int16)
-                return resampled.tobytes()
-            else:
-                resampled = np.interp(new_indices, old_indices, audio_array).astype(np.int16)
-                return resampled.tobytes()
-
-        async def process_frame(self, frame, direction):
-            await super().process_frame(frame, direction)
-            
-            self.frames_received += 1
-            
-            if isinstance(frame, AudioRawFrame):
-                self.audio_frames_received += 1
-                if not self.wave_file:
-                    try:
-                        self.wave_file = wave.open(self.filename, 'wb')
-                        self.num_channels = frame.num_channels
-                        self.sample_rate = self.target_sample_rate
-                        self.wave_file.setnchannels(self.num_channels)
-                        self.wave_file.setsampwidth(2)
-                        self.wave_file.setframerate(self.sample_rate)
-                        self.params_set = True
-                    except Exception as e:
-                        logger.error(f"Failed to open wave file {self.filename}: {e}")
-                
-                if self.wave_file and self.params_set:
-                    try:
-                        current_time = time.time()
+            if self.wave_file and self.params_set:
+                try:
+                    current_time = time.time()
+                    
+                    # Resample if needed
+                    if frame.sample_rate != self.sample_rate:
+                        audio_to_write = self._resample_audio(
+                            frame.audio,
+                            frame.sample_rate,
+                            self.sample_rate,
+                            frame.num_channels
+                        )
+                    else:
+                        audio_to_write = frame.audio
+                    
+                    # Verify channels match
+                    if frame.num_channels != self.num_channels:
+                        logger.warning(
+                            f"Channel mismatch: expected {self.num_channels}ch, got {frame.num_channels}ch. Skipping frame."
+                        )
+                    else:
+                        # Calculate expected position based on time elapsed
+                        elapsed_time = current_time - self.start_time
+                        expected_samples = int(elapsed_time * self.sample_rate)
                         
-                        if frame.sample_rate != self.sample_rate:
-                            audio_to_write = self._resample_audio(
-                                frame.audio,
-                                frame.sample_rate,
-                                self.sample_rate,
-                                frame.num_channels
-                            )
-                        else:
-                            audio_to_write = frame.audio
+                        # If we're behind (gap in audio), pad with silence
+                        if expected_samples > self.total_samples_written:
+                            samples_to_pad = expected_samples - self.total_samples_written
+                            # Limit padding to reasonable amount (max 1 second gap)
+                            if samples_to_pad <= self.sample_rate:
+                                silence_bytes = b'\x00' * (samples_to_pad * self.num_channels * 2)
+                                self.wave_file.writeframes(silence_bytes)
+                                self.total_samples_written += samples_to_pad
                         
-                        if frame.num_channels != self.num_channels:
-                            logger.warning(
-                                f"Channel mismatch: expected {self.num_channels}ch, got {frame.num_channels}ch. Skipping frame."
-                            )
-                        else:
-                            elapsed_time = current_time - self.start_time
-                            expected_samples = int(elapsed_time * self.sample_rate)
-                            
-                            if expected_samples > self.total_samples_written:
-                                samples_to_pad = expected_samples - self.total_samples_written
-                                if samples_to_pad <= self.sample_rate:
-                                    silence_bytes = b'\x00' * (samples_to_pad * self.num_channels * 2)
-                                    self.wave_file.writeframes(silence_bytes)
-                                    self.total_samples_written += samples_to_pad
-                            
-                            num_samples = len(audio_to_write) // (self.num_channels * 2)
-                            self.wave_file.writeframes(audio_to_write)
-                            self.total_samples_written += num_samples
-                            self.last_frame_time = current_time
-                    except Exception as e:
-                        logger.error(f"Error writing audio frame: {e}")
-            
-            elif isinstance(frame, (EndFrame, CancelFrame)):
-                if self.wave_file:
-                    self.wave_file.close()
-                    self.wave_file = None
-            
-            await self.push_frame(frame, direction)
-
-        async def cleanup(self):
+                        # Write audio frame
+                        num_samples = len(audio_to_write) // (self.num_channels * 2)
+                        self.wave_file.writeframes(audio_to_write)
+                        self.total_samples_written += num_samples
+                        self.last_frame_time = current_time
+                except Exception as e:
+                    logger.error(f"Error writing audio frame: {e}")
+        
+        elif isinstance(frame, (EndFrame, CancelFrame)):
             if self.wave_file:
                 self.wave_file.close()
                 self.wave_file = None
-    
-    return AudioRecorder
+        
+        await self.push_frame(frame, direction)
+
+    async def cleanup(self):
+        if self.wave_file:
+            self.wave_file.close()
+            self.wave_file = None
 
 
 async def run_bot(websocket_client, google_api_key: str, system_instruction: str = None, organization_id: str = None, agent_id: str = None, persona_id: str = None, scenario_id: str = None, evaluator_id: str = None, result_id: str = None, model_name: str = None):
@@ -229,28 +178,25 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
         system_instruction: Optional system instruction (overrides default)
         organization_id: Organization ID for organizing S3 uploads
     """
-    # Lazy load all efficientai dependencies
-    imports = _get_imports()
-    AudioRecorder = _create_audio_recorder_class()
-    
     # Initialize variables for return values
     call_start_time = time.time()
     s3_key_result = None
     duration_result = None
     
     try:
-        ws_transport = imports["FastAPIWebsocketTransport"](
+        ws_transport = FastAPIWebsocketTransport(
             websocket=websocket_client,
-            params=imports["FastAPIWebsocketParams"](
+            params=FastAPIWebsocketParams(
                 audio_in_enabled=True,
                 audio_out_enabled=True,
                 add_wav_header=False,
-                vad_analyzer=imports["SileroVADAnalyzer"](),
-                serializer=imports["ProtobufFrameSerializer"](),
+                vad_analyzer=SileroVADAnalyzer(),
+                serializer=ProtobufFrameSerializer(),
             ),
         )
 
         # Use provided system instruction or fallback to default
+        # If system_instruction is None or empty, use the default
         if system_instruction and system_instruction.strip():
             instruction = system_instruction.strip()
         else:
@@ -260,24 +206,26 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
         if not google_api_key or not google_api_key.strip():
             raise ValueError("Google API key is empty or invalid")
         
-        # Determine model name
+        # Determine model name - use from agent's voice bundle if provided, otherwise use default
         if model_name:
+            # Format model name for Gemini Live API (add "models/" prefix if not present)
             if not model_name.startswith("models/"):
                 formatted_model_name = f"models/{model_name}"
             else:
                 formatted_model_name = model_name
         else:
+            # Fallback to default model if not provided
             formatted_model_name = "models/gemini-2.5-flash-native-audio-preview-12-2025"
         logger.info(f"Using Gemini Live model: {formatted_model_name}")
         
-        llm = imports["GeminiLiveLLMService"](
+        llm = GeminiLiveLLMService(
             api_key=google_api_key,
-            voice_id="Puck",
+            voice_id="Puck",  # Aoede, Charon, Fenrir, Kore, Puck
             transcribe_model_audio=True,
             system_instruction=instruction,
             model=formatted_model_name,
         )
-        context = imports["LLMContext"](
+        context = LLMContext(
             [
                 {
                     "role": "user",
@@ -286,10 +234,11 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
             ],
         )
 
-        context_aggregator = imports["LLMContextAggregatorPair"](context)
+        context_aggregator = LLMContextAggregatorPair(context)
 
         # RTVI events for efficientai client UI
-        rtvi = imports["RTVIProcessor"](config=imports["RTVIConfig"](config=[]))
+        # RTVIProcessor handles the RTVI protocol handshake with the client
+        rtvi = RTVIProcessor(config=RTVIConfig(config=[]))
 
         # Create temporary files for recording
         user_audio_fd, user_audio_path = tempfile.mkstemp(suffix=".wav")
@@ -302,36 +251,40 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
         user_recorder = AudioRecorder(user_audio_path, start_time, recorder_name="UserAudioRecorder")
         bot_recorder = AudioRecorder(bot_audio_path, start_time, recorder_name="BotAudioRecorder")
 
-        pipeline = imports["Pipeline"](
+        pipeline = Pipeline(
             [
                 ws_transport.input(),
-                user_recorder,
+                user_recorder, # Record user audio
                 context_aggregator.user(),
                 rtvi,
-                llm,
-                bot_recorder,
+                llm,  # LLM
+                bot_recorder, # Record bot audio
                 ws_transport.output(),
                 context_aggregator.assistant(),
             ]
         )
 
-        task = imports["PipelineTask"](
+        task = PipelineTask(
             pipeline,
-            params=imports["PipelineParams"](
+            params=PipelineParams(
                 enable_metrics=True,
                 enable_usage_metrics=True,
             ),
-            observers=[imports["RTVIObserver"](rtvi)],
+            observers=[RTVIObserver(rtvi)],
         )
 
         @rtvi.event_handler("on_client_ready")
         async def on_client_ready(rtvi):
             await rtvi.set_bot_ready()
-            await task.queue_frames([imports["LLMRunFrame"]()])
+            # Kick off the conversation.
+            await task.queue_frames([LLMRunFrame()])
 
         @ws_transport.event_handler("on_client_connected")
         async def on_client_connected(transport, client):
             logger.info("efficientai client connected via WebSocket")
+            # Note: The RTVI handshake is typically initiated by the client
+            # If the client uses transport.connect() directly instead of startBotAndConnect(),
+            # it might not send RTVI protocol messages automatically
 
         @ws_transport.event_handler("on_client_disconnected")
         async def on_client_disconnected(transport, client):
@@ -341,7 +294,7 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
         # Verify WebSocket is still open before starting
         if websocket_client.client_state.name != "CONNECTED":
             raise Exception(f"WebSocket is not in CONNECTED state: {websocket_client.client_state.name}")
-        runner = imports["PipelineRunner"](handle_sigint=False)
+        runner = PipelineRunner(handle_sigint=False)
         
         try:
             await runner.run(task)
@@ -363,6 +316,7 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
 
     except Exception as e:
         logger.error(f"Error in run_bot: {e}", exc_info=True)
+        # Still return metadata if we have it, even if there was an error
         return {
             "s3_key": s3_key_result,
             "duration": duration_result,
@@ -372,6 +326,8 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
             "error": str(e)
         }
     
+    # Return call metadata for evaluator result creation
+    # Only return if we have valid results
     if s3_key_result:
         return {
             "s3_key": s3_key_result,
@@ -381,6 +337,7 @@ async def run_bot(websocket_client, google_api_key: str, system_instruction: str
             "scenario_id": scenario_id
         }
     else:
+        # Return empty result if no audio was uploaded
         return {
             "s3_key": None,
             "duration": duration_result,
