@@ -37,7 +37,6 @@ dependencies = [
     "av>=10.0.0",
     "croniter>=2.0.0",
     "pytz>=2024.1",
-    "praat-parselmouth>=0.4.3",
     "jiwer>=3.0.0",
     "litellm>=1.60.0",
     "jinja2>=3.1.0",
@@ -96,6 +95,7 @@ qualitative-voice = [
     "librosa>=0.10.0",
     "scipy>=1.11.0",
     "pyannote.audio>=3.1.0",
+    "praat-parselmouth>=0.4.3",
 ]
 # NVIDIA NeMo ASR for TTS hallucination detection (WER/CER via Conformer CTC)
 nemo-asr = [
