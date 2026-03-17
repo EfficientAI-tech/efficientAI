@@ -100,10 +100,6 @@ class ElevenLabsWSBridge:
         self._last_audio_ts: float = 0.0
         # Handle for the silence-detection background task
         self._silence_task: Optional[asyncio.Task] = None
-        # Background task that simulates a live microphone by sending silence
-        self._bg_silence_task: Optional[asyncio.Task] = None
-        # Suppresses background silence while the test agent is actively sending audio
-        self._user_is_sending = False
 
         logger.info(f"[ElevenLabsWS] Initialized bridge (sample_rate={sample_rate})")
 
@@ -157,11 +153,6 @@ class ElevenLabsWSBridge:
             # Start background message receiver
             asyncio.create_task(self._receive_loop())
 
-            # Start continuous silence stream to simulate a live microphone.
-            # Without this, ElevenLabs' VAD stalls between turns because it
-            # expects a constant audio input (just like a browser mic provides).
-            self._bg_silence_task = asyncio.create_task(self._background_silence_loop())
-
             return True
 
         except Exception as e:
@@ -183,8 +174,6 @@ class ElevenLabsWSBridge:
             return
 
         try:
-            self._user_is_sending = True
-
             if self.recording_enabled:
                 self._recording_buffer.append(audio_bytes)
 
@@ -193,20 +182,21 @@ class ElevenLabsWSBridge:
         except Exception as e:
             logger.error(f"[ElevenLabsWS] Error sending audio: {e}")
 
-    def mark_user_audio_done(self):
-        """Signal that the test agent finished sending its utterance.
-
-        Called by the bridge service after ``send_audio_chunks`` completes
-        so the background silence loop can resume.
-        """
-        self._user_is_sending = False
-
     async def send_silence(self, duration_ms: int = 500):
-        """Send an explicit silence buffer (e.g. trailing silence after an utterance)."""
+        """Send a silence buffer so ElevenLabs detects end-of-speech.
+
+        In a real browser session the microphone always streams audio
+        (including ambient silence).  Our bridge only sends audio when
+        the test agent is speaking, so ElevenLabs can get stuck in
+        "listening" mode after an interruption.  Sending a brief silence
+        buffer after each utterance mimics the continuous microphone
+        stream and lets ElevenLabs' VAD trigger normally.
+        """
         if not self.is_connected or not self._ws:
             return
 
         try:
+            # PCM silence = zero bytes.  Send in 20ms chunks like real audio.
             chunk_samples = (self.sample_rate * 20) // 1000  # 20ms
             chunk_bytes = b"\x00" * (chunk_samples * BYTES_PER_SAMPLE)
             total_chunks = duration_ms // 20
@@ -219,39 +209,6 @@ class ElevenLabsWSBridge:
             logger.debug(f"[ElevenLabsWS] Sent {duration_ms}ms silence ({total_chunks} chunks)")
         except Exception as e:
             logger.error(f"[ElevenLabsWS] Error sending silence: {e}")
-
-    async def _background_silence_loop(self):
-        """Continuously stream silence to ElevenLabs to simulate a live microphone.
-
-        A real browser mic sends a constant 16 kHz PCM stream (mostly zeros
-        during silence).  Without this, ElevenLabs' VAD cannot detect
-        end-of-speech between turns and the conversation stalls.
-
-        The loop yields whenever the test agent is actively sending real
-        audio (``_user_is_sending`` is True).
-        """
-        chunk_samples = (self.sample_rate * 20) // 1000  # 20ms worth of samples
-        chunk_bytes = b"\x00" * (chunk_samples * BYTES_PER_SAMPLE)
-        chunk_b64 = base64.b64encode(chunk_bytes).decode()
-        silence_msg = json.dumps({"user_audio_chunk": chunk_b64})
-
-        logger.info("[ElevenLabsWS] Background silence stream started")
-        try:
-            while self.is_connected and not self._should_stop.is_set():
-                if self._user_is_sending:
-                    await asyncio.sleep(0.05)
-                    continue
-                try:
-                    if self._ws:
-                        await self._ws.send(silence_msg)
-                except Exception:
-                    break
-                await asyncio.sleep(0.02)  # 20ms cadence
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.error(f"[ElevenLabsWS] Background silence loop error: {e}")
-        logger.info("[ElevenLabsWS] Background silence stream stopped")
 
     # ------------------------------------------------------------------
     # Receiving messages
@@ -515,8 +472,6 @@ class ElevenLabsWSBridge:
 
             if self._silence_task and not self._silence_task.done():
                 self._silence_task.cancel()
-            if self._bg_silence_task and not self._bg_silence_task.done():
-                self._bg_silence_task.cancel()
 
             if self._ws:
                 await self._ws.close()

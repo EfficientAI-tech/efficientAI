@@ -1,12 +1,9 @@
-"""Celery task: process evaluation.
-
-Uses lazy imports to avoid loading heavy dependencies (whisper, librosa)
-at module import time.
-"""
+"""Celery task: process evaluation."""
 
 from uuid import UUID
 
 from app.database import SessionLocal
+from app.services.evaluation.evaluation_service import evaluation_service
 
 from app.workers.config import celery_app
 
@@ -23,9 +20,6 @@ def process_evaluation_task(self, evaluation_id: str):
     Returns:
         Dictionary with evaluation results
     """
-    # Lazy import to avoid loading whisper/librosa at worker startup
-    from app.services.evaluation.evaluation_service import evaluation_service
-    
     db = SessionLocal()
     try:
         eval_id = UUID(evaluation_id)

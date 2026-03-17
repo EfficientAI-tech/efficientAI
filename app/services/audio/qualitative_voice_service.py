@@ -8,145 +8,71 @@ This service calculates advanced qualitative metrics for Voice AI evaluation:
 
 These metrics go beyond traditional latency/speed measurements to evaluate
 the "human" qualities of Voice AI.
-
-IMPORTANT: This module uses lazy imports to avoid loading heavy ML libraries
-(torch, transformers, librosa, etc.) at module import time. Libraries are only
-loaded when metrics are actually calculated.
 """
 
 import os
 from typing import Dict, Any, Optional, List, Set, Tuple
-
 import numpy as np
 from loguru import logger
 
+# Library availability flags
+SPEECHMOS_AVAILABLE = False
+TRANSFORMERS_AVAILABLE = False
+SPEECHBRAIN_AVAILABLE = False
+TORCH_AVAILABLE = False
+LIBROSA_AVAILABLE = False
+PARSELMOUTH_AVAILABLE = False
 
-# Library availability flags - checked lazily on first use
-_availability_checked = False
-_TORCH_AVAILABLE = False
-_LIBROSA_AVAILABLE = False
-_PARSELMOUTH_AVAILABLE = False
-_TRANSFORMERS_AVAILABLE = False
-_SPEECHBRAIN_AVAILABLE = False
-_SPEECHMOS_AVAILABLE = False
+# Try importing required libraries
+try:
+    import torch
 
-# Lazy import cache
-_torch = None
-_librosa = None
-_parselmouth = None
-_transformers_pipeline = None
-_transformers_processor = None
-_transformers_model = None
-_speechbrain_encoder = None
+    TORCH_AVAILABLE = True
+except ImportError:
+    logger.warning("torch not installed. Qualitative voice metrics will not be available.")
 
+try:
+    import librosa
 
-def _check_availability():
-    """Check library availability on first use (lazy)."""
-    global _availability_checked
-    global _TORCH_AVAILABLE, _LIBROSA_AVAILABLE, _PARSELMOUTH_AVAILABLE
-    global _TRANSFORMERS_AVAILABLE, _SPEECHBRAIN_AVAILABLE, _SPEECHMOS_AVAILABLE
-    
-    if _availability_checked:
-        return
-    
-    _availability_checked = True
-    
-    try:
-        import torch
-        _TORCH_AVAILABLE = True
-    except ImportError:
-        logger.warning("torch not installed. Qualitative voice metrics will not be available.")
-    
-    try:
-        import librosa
-        _LIBROSA_AVAILABLE = True
-    except ImportError:
-        logger.warning("librosa not installed. Audio loading may be limited.")
-    
-    try:
-        import parselmouth
-        _PARSELMOUTH_AVAILABLE = True
-    except ImportError:
-        logger.warning("praat-parselmouth not installed. Prosody metrics will not be available.")
-    
-    try:
-        from transformers import pipeline
-        _TRANSFORMERS_AVAILABLE = True
-    except ImportError:
-        logger.warning("transformers not installed. Emotion metrics will not be available.")
-    
-    try:
-        from speechbrain.inference.speaker import EncoderClassifier
-        _SPEECHBRAIN_AVAILABLE = True
-        logger.info("speechbrain loaded successfully. Speaker consistency metric available.")
-    except ImportError:
-        pass
-    except Exception as e:
-        logger.debug(f"speechbrain not available: {e}")
-    
-    _SPEECHMOS_AVAILABLE = _TORCH_AVAILABLE
+    LIBROSA_AVAILABLE = True
+except ImportError:
+    logger.warning("librosa not installed. Audio loading may be limited.")
 
+try:
+    import parselmouth
+    from parselmouth.praat import call
 
-def _get_torch():
-    """Lazy load torch."""
-    global _torch
-    _check_availability()
-    if _torch is None and _TORCH_AVAILABLE:
-        import torch
-        _torch = torch
-    return _torch
+    PARSELMOUTH_AVAILABLE = True
+except ImportError:
+    logger.warning("praat-parselmouth not installed. Prosody metrics will not be available.")
 
+try:
+    from transformers import pipeline, AutoProcessor, AutoModelForAudioClassification
 
-def _get_librosa():
-    """Lazy load librosa."""
-    global _librosa
-    _check_availability()
-    if _librosa is None and _LIBROSA_AVAILABLE:
-        import librosa
-        _librosa = librosa
-    return _librosa
+    TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    logger.warning("transformers not installed. Emotion metrics will not be available.")
 
+# SpeechBrain is optional - disabled by default due to torchaudio version conflicts
+# To enable Speaker Consistency metric: pip install speechbrain
+SPEECHBRAIN_AVAILABLE = False
+try:
+    from speechbrain.inference.speaker import EncoderClassifier
 
-def _get_parselmouth():
-    """Lazy load parselmouth."""
-    global _parselmouth
-    _check_availability()
-    if _parselmouth is None and _PARSELMOUTH_AVAILABLE:
-        import parselmouth
-        _parselmouth = parselmouth
-    return _parselmouth
+    SPEECHBRAIN_AVAILABLE = True
+    logger.info("speechbrain loaded successfully. Speaker consistency metric available.")
+except ImportError:
+    pass  # Expected - speechbrain is optional
+except Exception as e:
+    logger.debug(f"speechbrain not available: {e}")
 
-
-# Compatibility properties for existing code
-@property
-def TORCH_AVAILABLE():
-    _check_availability()
-    return _TORCH_AVAILABLE
-
-@property  
-def LIBROSA_AVAILABLE():
-    _check_availability()
-    return _LIBROSA_AVAILABLE
-
-@property
-def PARSELMOUTH_AVAILABLE():
-    _check_availability()
-    return _PARSELMOUTH_AVAILABLE
-
-@property
-def TRANSFORMERS_AVAILABLE():
-    _check_availability()
-    return _TRANSFORMERS_AVAILABLE
-
-@property
-def SPEECHBRAIN_AVAILABLE():
-    _check_availability()
-    return _SPEECHBRAIN_AVAILABLE
-
-@property
-def SPEECHMOS_AVAILABLE():
-    _check_availability()
-    return _SPEECHMOS_AVAILABLE
+# Try SpeechMOS - note: may need to be installed separately
+try:
+    # SpeechMOS uses torch and provides UTMOS model for MOS prediction
+    # If not available, we'll use a fallback approach
+    SPEECHMOS_AVAILABLE = TORCH_AVAILABLE
+except ImportError:
+    logger.warning("SpeechMOS dependencies not fully available.")
 
 
 # Qualitative metrics names
@@ -176,28 +102,15 @@ class QualitativeVoiceMetricsService:
         self._valence_arousal_processor = None
         self._speaker_encoder = None
         self._mos_predictor = None
-        self._device = None  # Determined lazily
-    
-    def _get_device(self):
-        """Get compute device (lazy initialization)."""
-        if self._device is None:
-            _check_availability()
-            torch = _get_torch()
-            if torch is not None and torch.cuda.is_available():
-                self._device = "cuda"
-            else:
-                self._device = "cpu"
-            logger.info(f"[QualitativeVoice] Initialized with device: {self._device}")
-        return self._device
+        self._device = "cuda" if TORCH_AVAILABLE and torch.cuda.is_available() else "cpu"
+        logger.info(f"[QualitativeVoice] Initialized with device: {self._device}")
 
     def _load_audio(self, audio_path: str, target_sr: int = 16000) -> Optional[Tuple[np.ndarray, int]]:
         """
         Load audio file and resample to target sample rate.
         """
         try:
-            _check_availability()
-            librosa = _get_librosa()
-            if librosa is not None:
+            if LIBROSA_AVAILABLE:
                 audio, sr = librosa.load(audio_path, sr=target_sr, mono=True)
                 return audio, sr
             else:
@@ -223,15 +136,13 @@ class QualitativeVoiceMetricsService:
 
     def _get_mos_predictor(self):
         """Lazy load MOS predictor model (UTMOS-based)."""
-        _check_availability()
-        torch = _get_torch()
-        if self._mos_predictor is None and torch is not None:
+        if self._mos_predictor is None and TORCH_AVAILABLE:
             try:
                 # Try to use UTMOS model from torch hub
                 logger.info("[QualitativeVoice] Loading MOS predictor (UTMOS)...")
                 self._mos_predictor = torch.hub.load("tarepan/SpeechMOS:v1.2.0", "utmos22_strong", trust_repo=True)
                 self._mos_predictor.eval()
-                if self._get_device() == "cuda":
+                if self._device == "cuda":
                     self._mos_predictor = self._mos_predictor.cuda()
                 logger.info("[QualitativeVoice] MOS predictor loaded successfully")
             except Exception as e:
@@ -263,9 +174,8 @@ class QualitativeVoiceMetricsService:
             audio, sr = audio_data
 
             # Convert to torch tensor
-            torch = _get_torch()
             audio_tensor = torch.from_numpy(audio).float().unsqueeze(0)
-            if self._get_device() == "cuda":
+            if self._device == "cuda":
                 audio_tensor = audio_tensor.cuda()
 
             # Predict MOS
@@ -285,9 +195,7 @@ class QualitativeVoiceMetricsService:
     def _estimate_mos_from_acoustics(self, audio_path: str) -> Optional[float]:
         """Fallback MOS estimation using acoustic features."""
         try:
-            _check_availability()
-            parselmouth = _get_parselmouth()
-            if parselmouth is None:
+            if not PARSELMOUTH_AVAILABLE:
                 return None
 
             sound = parselmouth.Sound(audio_path)
@@ -319,15 +227,13 @@ class QualitativeVoiceMetricsService:
 
     def _get_emotion_classifier(self):
         """Lazy load emotion classification model."""
-        _check_availability()
-        if self._emotion_classifier is None and _TRANSFORMERS_AVAILABLE:
+        if self._emotion_classifier is None and TRANSFORMERS_AVAILABLE:
             try:
-                from transformers import pipeline
                 logger.info("[QualitativeVoice] Loading emotion classifier (wav2vec2-ser)...")
                 self._emotion_classifier = pipeline(
                     "audio-classification",
                     model="ehcalabres/wav2vec2-lg-xlsr-en-speech-emotion-recognition",
-                    device=0 if self._get_device() == "cuda" else -1,
+                    device=0 if self._device == "cuda" else -1,
                 )
                 logger.info("[QualitativeVoice] Emotion classifier loaded successfully")
             except Exception as e:
@@ -336,15 +242,13 @@ class QualitativeVoiceMetricsService:
 
     def _get_valence_arousal_model(self):
         """Lazy load valence/arousal model."""
-        _check_availability()
-        if self._valence_arousal_model is None and _TRANSFORMERS_AVAILABLE:
+        if self._valence_arousal_model is None and TRANSFORMERS_AVAILABLE:
             try:
-                from transformers import AutoProcessor, AutoModelForAudioClassification
                 logger.info("[QualitativeVoice] Loading valence/arousal model...")
                 model_name = "audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim"
                 self._valence_arousal_processor = AutoProcessor.from_pretrained(model_name)
                 self._valence_arousal_model = AutoModelForAudioClassification.from_pretrained(model_name)
-                if self._get_device() == "cuda":
+                if self._device == "cuda":
                     self._valence_arousal_model = self._valence_arousal_model.cuda()
                 self._valence_arousal_model.eval()
                 logger.info("[QualitativeVoice] Valence/arousal model loaded successfully")
@@ -395,11 +299,10 @@ class QualitativeVoiceMetricsService:
 
             # Process audio
             inputs = self._valence_arousal_processor(audio, sampling_rate=sr, return_tensors="pt")
-            if self._get_device() == "cuda":
+            if self._device == "cuda":
                 inputs = {k: v.cuda() for k, v in inputs.items()}
 
             # Get predictions
-            torch = _get_torch()
             with torch.no_grad():
                 outputs = model(**inputs)
                 # Model outputs: arousal, dominance, valence
@@ -427,15 +330,13 @@ class QualitativeVoiceMetricsService:
 
     def _get_speaker_encoder(self):
         """Lazy load speaker encoder (ECAPA-TDNN)."""
-        _check_availability()
-        if self._speaker_encoder is None and _SPEECHBRAIN_AVAILABLE:
+        if self._speaker_encoder is None and SPEECHBRAIN_AVAILABLE:
             try:
-                from speechbrain.inference.speaker import EncoderClassifier
                 logger.info("[QualitativeVoice] Loading speaker encoder (ECAPA-TDNN)...")
                 self._speaker_encoder = EncoderClassifier.from_hparams(
                     source="speechbrain/spkrec-ecapa-voxceleb",
                     savedir="pretrained_models/spkrec-ecapa-voxceleb",
-                    run_opts={"device": self._get_device()},
+                    run_opts={"device": self._device},
                 )
                 logger.info("[QualitativeVoice] Speaker encoder loaded successfully")
             except Exception as e:
@@ -471,7 +372,6 @@ class QualitativeVoiceMetricsService:
             end_segment = audio[-segment_samples:]
 
             # Convert to torch tensors
-            torch = _get_torch()
             start_tensor = torch.from_numpy(start_segment).float().unsqueeze(0)
             end_tensor = torch.from_numpy(end_segment).float().unsqueeze(0)
 
@@ -506,9 +406,7 @@ class QualitativeVoiceMetricsService:
         Calculate prosody/expressiveness score.
         """
         try:
-            _check_availability()
-            parselmouth = _get_parselmouth()
-            if parselmouth is None:
+            if not PARSELMOUTH_AVAILABLE:
                 logger.warning("[QualitativeVoice] Parselmouth not available for prosody calculation")
                 return None
 
