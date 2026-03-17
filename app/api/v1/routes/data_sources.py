@@ -42,7 +42,7 @@ async def test_s3_connection(api_key: str = Depends(get_api_key)):
     if not enabled:
         error = s3_service.get_status_message() or "S3 is not enabled or not configured."
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"S3 connection test failed: {error}",
         )
     

@@ -81,11 +81,16 @@ services:
     # Use host network mode for WebRTC connectivity (Retell/Vapi calls)
     network_mode: host
     environment:
+      # Worker is on host network, so it reaches DB/Redis via localhost (exposed ports)
+      DATABASE_URL: postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@localhost:5432/${POSTGRES_DB:-efficientai}
+      REDIS_URL: redis://localhost:6379/0
+      CELERY_BROKER_URL: redis://localhost:6379/0
+      CELERY_RESULT_BACKEND: redis://localhost:6379/0
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
     volumes:
       - ./uploads:/app/uploads
       - ./.encryption_key:/app/.encryption_key:ro
-      - ./config.yml:/app/config.yml:ro
+      - ./config.docker.yml:/app/config.yml:ro
     command: eai worker --config /app/config.yml --loglevel info
 
 volumes:
