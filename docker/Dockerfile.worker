@@ -4,12 +4,21 @@ FROM python:3.11-slim
 ARG INSTALL_EXTRAS="qualitative-voice,reports"
 ARG TORCH_CPU_ONLY="true"
 
-# Install system dependencies (git needed for torch.hub clone, build-essential +
-# cmake needed for packages like praat-parselmouth on arm64/Apple Silicon)
+# Install system dependencies:
+#   - git: needed for torch.hub clone
+#   - build-essential + cmake: needed for packages like praat-parselmouth on arm64
+#   - libgobject/libpango/libcairo/libgdk-pixbuf/libffi/shared-mime-info: WeasyPrint PDF rendering
 RUN apt-get update && apt-get install -y \
     git \
     build-essential \
     cmake \
+    libgobject-2.0-0 \
+    libpango-1.0-0 \
+    libpangocairo-1.0-0 \
+    libcairo2 \
+    libgdk-pixbuf-2.0-0 \
+    libffi-dev \
+    shared-mime-info \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv
@@ -67,6 +76,9 @@ RUN mkdir -p /app/uploads
 # Notes:
 # - CPU-only PyTorch is installed by default (TORCH_CPU_ONLY=true), saving ~1.5GB
 #   Set TORCH_CPU_ONLY=false if you need GPU support
+# - NeMo ASR (WER/CER hallucination metrics) is NOT included by default (~2GB).
+#   It will be auto-installed on first use, or you can bake it in at build time:
+#     docker compose build --build-arg INSTALL_EXTRAS="qualitative-voice,reports,nemo-asr" worker
 # - ML models (emotion classifier, valence/arousal, UTMOS, NeMo ASR) are
 #   downloaded lazily on first use, keeping the image smaller
 # - For persistent model caching across container restarts, mount volumes:

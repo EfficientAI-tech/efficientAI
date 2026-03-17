@@ -1155,13 +1155,56 @@ class VoicePlaygroundReportService:
             "report_options": normalized_options,
         }
 
+    _weasyprint_deps_checked = False
+
+    @staticmethod
+    def _ensure_weasyprint_system_deps():
+        """One-shot check/install of system libraries required by WeasyPrint."""
+        if VoicePlaygroundReportService._weasyprint_deps_checked:
+            return
+        VoicePlaygroundReportService._weasyprint_deps_checked = True
+
+        import ctypes.util
+        if ctypes.util.find_library("gobject-2.0"):
+            return
+
+        import shutil, subprocess, os
+        if shutil.which("apt-get") and os.geteuid() == 0:
+            from loguru import logger
+            logger.info("[PDF] WeasyPrint system libs missing – installing via apt-get...")
+            try:
+                subprocess.check_call(
+                    ["apt-get", "update", "-qq"],
+                    timeout=120,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                subprocess.check_call(
+                    [
+                        "apt-get", "install", "-y", "-qq",
+                        "libgobject-2.0-0", "libpango-1.0-0", "libpangocairo-1.0-0",
+                        "libcairo2", "libgdk-pixbuf-2.0-0", "libffi-dev", "shared-mime-info",
+                    ],
+                    timeout=120,
+                )
+                logger.info("[PDF] WeasyPrint system libs installed successfully")
+            except Exception as e:
+                logger.warning(f"[PDF] Auto-install of system libs failed: {e}")
+
     def render_pdf(self, payload: dict[str, Any]) -> bytes:
         """Render report payload to PDF bytes."""
+        self._ensure_weasyprint_system_deps()
+
         try:
             from weasyprint import HTML
         except ImportError as exc:
             raise RuntimeError(
                 "PDF generation requires weasyprint. Install dependencies and retry."
+            ) from exc
+        except OSError as exc:
+            raise RuntimeError(
+                f"WeasyPrint system libraries missing: {exc}. "
+                "Install them with: apt-get install -y libgobject-2.0-0 libpango-1.0-0 "
+                "libpangocairo-1.0-0 libcairo2 libgdk-pixbuf-2.0-0 libffi-dev shared-mime-info"
             ) from exc
 
         template = self._jinja_env.get_template("reports/voice_playground_report.html")

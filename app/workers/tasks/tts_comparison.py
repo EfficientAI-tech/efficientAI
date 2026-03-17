@@ -120,11 +120,35 @@ def _compute_wer_cer(ground_truth: str, predicted: str):
         }
 
 
+_nemo_install_attempted = False
+
+
+def _lazy_install_nemo():
+    """One-shot attempt to pip-install nemo_toolkit[asr] at runtime."""
+    global _nemo_install_attempted
+    if _nemo_install_attempted:
+        return False
+    _nemo_install_attempted = True
+
+    logger.info("[TTS Eval] NeMo not found – attempting auto-install (this may take a few minutes)...")
+    try:
+        import subprocess, sys
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "--quiet", "nemo_toolkit[asr]>=1.20.0"],
+            timeout=600,
+        )
+        logger.info("[TTS Eval] nemo_toolkit[asr] installed successfully")
+        return True
+    except Exception as install_err:
+        logger.warning(f"[TTS Eval] Auto-install of nemo_toolkit[asr] failed: {install_err}")
+        return False
+
+
 def _get_nemo_asr_model():
     """Lazy-load NVIDIA NeMo Conformer CTC model for hallucination detection.
 
-    Requires: pip install efficientai[nemo-asr]
-    Returns the model instance, or None if NeMo is not installed.
+    On first call, if NeMo is not installed, attempts a one-time pip install.
+    Returns the model instance, or None if unavailable.
     """
     global _nemo_asr_model
 
@@ -133,30 +157,28 @@ def _get_nemo_asr_model():
 
     try:
         import nemo.collections.asr as nemo_asr
+    except ImportError:
+        if _lazy_install_nemo():
+            try:
+                import nemo.collections.asr as nemo_asr
+            except ImportError:
+                logger.warning("[TTS Eval] NeMo still not importable after install – WER/CER will be skipped")
+                return None
+        else:
+            logger.warning(
+                "[TTS Eval] NeMo is not installed – WER/CER hallucination metrics will be skipped. "
+                "To install manually: pip install 'nemo_toolkit[asr]'"
+            )
+            return None
 
+    try:
         logger.info("[TTS Eval] Loading NeMo ASR model (stt_en_conformer_ctc_large)...")
         _nemo_asr_model = nemo_asr.models.ASRModel.from_pretrained("stt_en_conformer_ctc_large")
         logger.info("[TTS Eval] NeMo ASR model loaded successfully")
         return _nemo_asr_model
-    except ImportError as e:
-        logger.warning(
-            f"[TTS Eval] NeMo import failed: {e} – "
-            "WER/CER hallucination metrics will be skipped. "
-            "To enable, run:\n"
-            "  pip install 'nemo_toolkit[asr]'\n"
-            "  python -c \"import nemo.collections.asr as nemo_asr; "
-            "nemo_asr.models.ASRModel.from_pretrained('stt_en_conformer_ctc_large')\""
-        )
     except Exception as e:
-        logger.error(
-            f"[TTS Eval] NeMo ASR model failed to load: {e} – "
-            "The model may not be cached yet. To download it manually, run:\n"
-            "  python -c \"import nemo.collections.asr as nemo_asr; "
-            "nemo_asr.models.ASRModel.from_pretrained('stt_en_conformer_ctc_large')\"",
-            exc_info=True,
-        )
-
-    return None
+        logger.error(f"[TTS Eval] NeMo ASR model failed to load: {e}", exc_info=True)
+        return None
 
 
 def _transcribe_audio_for_eval(audio_path: str) -> str | None:
