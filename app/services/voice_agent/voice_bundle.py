@@ -132,6 +132,9 @@ def _get_service(service_name: str):
     elif service_name == "SarvamTTSService":
         from efficientai.services.sarvam.tts import SarvamTTSService
         service_class = SarvamTTSService
+    elif service_name == "VoiceMakerTTSService":
+        from efficientai.services.voicemaker.tts import VoiceMakerTTSService
+        service_class = VoiceMakerTTSService
     
     # LLM Services
     elif service_name == "OpenAILLMService":
@@ -268,6 +271,16 @@ def _get_tts_providers():
                 api_key=api_key,
                 voice_id=voice_id,
                 model=model if model else "bulbul:v3",
+            ),
+        },
+        "voicemaker": {
+            "env_key": "VOICEMAKER_API_KEY",
+            "default_voice": "ai3-Jony",
+            "default_model": "neural",
+            "factory": lambda api_key, voice_id, model: _get_service("VoiceMakerTTSService")(
+                api_key=api_key,
+                voice_id=voice_id,
+                model=model if model else "neural",
             ),
         },
     }
