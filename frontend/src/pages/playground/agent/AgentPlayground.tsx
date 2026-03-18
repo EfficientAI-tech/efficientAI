@@ -1057,6 +1057,13 @@ export default function AgentPlayground() {
                 </div>
               )}
 
+              <div className="flex items-start gap-2.5 p-3 bg-blue-50 border border-blue-200 rounded-lg mb-1">
+                <AlertTriangle className="h-4 w-4 text-blue-500 flex-shrink-0 mt-0.5" />
+                <p className="text-xs text-blue-700">
+                  First-time runs may take longer as ML models required for audio evaluation metrics are downloaded and cached locally. Subsequent runs will be significantly faster.
+                </p>
+              </div>
+
               <div className="space-y-3">
                 {hasTestAgent && (
                   <button

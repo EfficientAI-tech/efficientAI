@@ -5,7 +5,7 @@ import { apiClient } from '../../../lib/api'
 import { useAgentStore } from '../../../store/agentStore'
 import { ModelProvider, AIProvider, Integration, IntegrationPlatform } from '../../../types/api'
 import Button from '../../../components/Button'
-import { Plus, Trash2, Play, X, CheckSquare, Square, Sparkles, Brain, ChevronDown } from 'lucide-react'
+import { Plus, Trash2, Play, X, CheckSquare, Square, Sparkles, Brain, ChevronDown, AlertTriangle } from 'lucide-react'
 import { useToast } from '../../../hooks/useToast'
 import { getProviderLabel, getProviderLogo } from '../../../config/providers'
 
@@ -1018,6 +1018,13 @@ export default function EvaluateTestAgents() {
                   <div className="bg-blue-50 border border-blue-100 rounded-lg p-4">
                     <p className="text-sm text-blue-800">
                       <span className="font-semibold">{selectedEvaluatorIds.size * runCount}</span> total evaluation{selectedEvaluatorIds.size * runCount > 1 ? 's' : ''} will be queued and run in parallel.
+                    </p>
+                  </div>
+
+                  <div className="flex items-start gap-2.5 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                    <AlertTriangle className="h-4 w-4 text-amber-500 flex-shrink-0 mt-0.5" />
+                    <p className="text-xs text-amber-700">
+                      First-time runs may take longer as ML models required for audio evaluation metrics are downloaded and cached locally. Subsequent runs will be significantly faster.
                     </p>
                   </div>
 
