@@ -1115,14 +1115,21 @@ function AIGenerateModal({
               {/* Review step - name and save options */}
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Name</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Name <span className="text-red-500">*</span>
+                  </label>
                   <input
                     type="text"
                     value={promptName}
                     onChange={(e) => setPromptName(e.target.value)}
                     placeholder="e.g., Customer Support System Prompt"
-                    className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
+                    className={`w-full px-3 py-2 text-sm border rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent ${
+                      !promptName.trim() ? 'border-amber-300 bg-amber-50/30' : 'border-gray-300'
+                    }`}
                   />
+                  {!promptName.trim() && (
+                    <p className="mt-1 text-xs text-amber-600">Required to save the prompt</p>
+                  )}
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
