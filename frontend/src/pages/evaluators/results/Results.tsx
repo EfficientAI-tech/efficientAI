@@ -679,6 +679,13 @@ export default function Results() {
               </div>
 
               <div className="p-6 overflow-y-auto max-h-[60vh] space-y-6">
+                <div className="flex items-start gap-2.5 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                  <AlertTriangle className="h-4 w-4 text-amber-500 flex-shrink-0 mt-0.5" />
+                  <p className="text-xs text-amber-700">
+                    First-time runs may take longer as ML models required for audio evaluation metrics are downloaded and cached locally. Subsequent runs will be significantly faster.
+                  </p>
+                </div>
+
                 {/* Audio File Selection */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">

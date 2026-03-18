@@ -527,7 +527,7 @@ export default function Personas() {
                       value={formData.name}
                       onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                      placeholder="e.g., Grumpy Old Man"
+                      placeholder="Name of the persona"
                     />
                   </div>
                   <div>

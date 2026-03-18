@@ -40,10 +40,10 @@ services:
     # Use EFFICIENTAI_VERSION env var to pin to a specific version (e.g., 1.0.0)
     image: ghcr.io/efficientai-tech/efficientai-api:${EFFICIENTAI_VERSION:-latest}
     # For local development, uncomment below and comment out the image line:
-    # build:
-    #   context: .
-    #   dockerfile: docker/Dockerfile.api
-    # container_name: efficientai_api
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    container_name: efficientai_api
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-efficientai}
       REDIS_URL: redis://redis:6379/0
@@ -56,7 +56,7 @@ services:
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
     volumes:
       - ./uploads:/app/uploads
-      - ./.encryption_key:/app/.encryption_key:ro
+      - ./.data:/app/.data
       - ./config.docker.yml:/app/config.yml:ro
     ports:
       - "8000:8000"
@@ -72,14 +72,12 @@ services:
     # Use EFFICIENTAI_VERSION env var to pin to a specific version (e.g., 1.0.0)
     image: ghcr.io/efficientai-tech/efficientai-worker:${EFFICIENTAI_VERSION:-latest}
     # For local development, uncomment below and comment out the image line:
-    # build:
-    #   context: .
-    #   dockerfile: docker/Dockerfile.worker
-    #   args:
-    #     INSTALL_EXTRAS: "qualitative-voice,reports"
-    # container_name: efficientai_worker
-    # Use host network mode for WebRTC connectivity (Retell/Vapi calls)
-    network_mode: host
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+      args:
+        INSTALL_EXTRAS: "qualitative-voice,reports"
+    container_name: efficientai_worker
     environment:
       # Worker is on host network, so it reaches DB/Redis via localhost (exposed ports)
       DATABASE_URL: postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@localhost:5432/${POSTGRES_DB:-efficientai}
@@ -87,9 +85,14 @@ services:
       CELERY_BROKER_URL: redis://localhost:6379/0
       CELERY_RESULT_BACKEND: redis://localhost:6379/0
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     volumes:
       - ./uploads:/app/uploads
-      - ./.encryption_key:/app/.encryption_key:ro
+      - ./.data:/app/.data
       - ./config.docker.yml:/app/config.yml:ro
     command: eai worker --config /app/config.yml --loglevel info
 

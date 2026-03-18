@@ -223,11 +223,23 @@ class VapiVoiceProvider(BaseVoiceProvider):
         try:
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json"
             }
             
-            response = requests.get(f"{self.api_url}/call/{call_id}", headers=headers, timeout=30)
-            response.raise_for_status()
+            url = f"{self.api_url}/call/{call_id}"
+            logger.debug(f"[VapiProvider] Fetching call metrics: GET {url}")
+            
+            response = requests.get(url, headers=headers, timeout=30)
+            
+            if not response.ok:
+                try:
+                    error_body = response.json()
+                except Exception:
+                    error_body = response.text[:500]
+                logger.error(
+                    f"[VapiProvider] GET /call/{call_id} returned {response.status_code}: {error_body}"
+                )
+                response.raise_for_status()
+            
             data = response.json()
             
             # Log raw response for debugging

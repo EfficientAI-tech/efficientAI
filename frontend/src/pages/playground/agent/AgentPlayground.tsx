@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAgentStore } from '../../../store/agentStore'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../../lib/api'
-import { Play, X, Phone, PhoneOff, RefreshCw, Eye, Mic, Bot, PhoneCall, Trash2, AlertTriangle } from 'lucide-react'
+import { Play, X, Phone, PhoneOff, RefreshCw, Mic, Bot, PhoneCall, Trash2, AlertTriangle, CheckSquare, Square } from 'lucide-react'
 import Button from '../../../components/Button'
 import { useToast } from '../../../hooks/useToast'
 import { RetellWebClient } from 'retell-client-js-sdk'
@@ -93,6 +93,10 @@ export default function AgentPlayground() {
   })
 
   const [activeTab, setActiveTab] = useState<'test_agents' | 'voice_ai_agents'>('voice_ai_agents')
+  const [selectedCallIds, setSelectedCallIds] = useState<Set<string>>(new Set())
+  const [isDeletingSelected, setIsDeletingSelected] = useState(false)
+  const [selectedTestResultIds, setSelectedTestResultIds] = useState<Set<string>>(new Set())
+  const [isDeletingSelectedTests, setIsDeletingSelectedTests] = useState(false)
 
 
   // Find the integration for the agent
@@ -262,7 +266,8 @@ export default function AgentPlayground() {
         console.error('Failed to connect Retell:', error)
         setIsConnecting(false)
         setIsConnected(false)
-        showToast(`Failed to connect: ${error.message}`, 'error')
+        const detail = error?.response?.data?.detail || error?.message || 'Unknown error'
+        showToast(`Failed to connect: ${detail}`, 'error')
       }
     } else if (isVapiAgent) {
       const client = vapiClientRef.current
@@ -361,7 +366,8 @@ export default function AgentPlayground() {
         console.error('Failed to connect Vapi:', error)
         setIsConnecting(false)
         setIsConnected(false)
-        showToast(`Failed to connect: ${error.message}`, 'error')
+        const detail = error?.response?.data?.detail || error?.message || 'Unknown error'
+        showToast(`Failed to connect: ${detail}`, 'error')
       }
     } else if (isElevenLabsAgent) {
       try {
@@ -469,8 +475,9 @@ export default function AgentPlayground() {
         console.error('Failed to connect ElevenLabs:', error)
         setIsConnecting(false)
         setIsConnected(false)
-        const msg = typeof error === 'string' ? error : error?.message || JSON.stringify(error)
-        showToast(`Failed to connect: ${msg}`, 'error')
+        const detail = error?.response?.data?.detail
+          || (typeof error === 'string' ? error : error?.message || JSON.stringify(error))
+        showToast(`Failed to connect: ${detail}`, 'error')
       }
     }
   }
@@ -529,55 +536,103 @@ export default function AgentPlayground() {
     navigate(`/playground/test-agent-results/${resultId}`)
   }
 
-  // Delete mutation for test agent results
-  const deleteTestResultMutation = useMutation({
-    mutationFn: (resultId: string) => apiClient.deleteEvaluatorResult(resultId),
-    onSuccess: () => {
-      showToast('Test result deleted successfully', 'success')
-      queryClient.invalidateQueries({ queryKey: ['test-voice-agent-results'] })
-    },
-    onError: (error: any) => {
-      showToast(error?.response?.data?.detail || 'Failed to delete test result', 'error')
-    },
-  })
+  const toggleTestResultSelection = (resultId: string) => {
+    setSelectedTestResultIds(prev => {
+      const next = new Set(prev)
+      if (next.has(resultId)) {
+        next.delete(resultId)
+      } else {
+        next.add(resultId)
+      }
+      return next
+    })
+  }
 
-  const handleDeleteTestResult = async (resultId: string, e: React.MouseEvent) => {
-    e.stopPropagation()
-    if (window.confirm('Are you sure you want to delete this test result? This action cannot be undone.')) {
-      deleteTestResultMutation.mutate(resultId)
+  const toggleSelectAllTestResults = () => {
+    const allIds = testVoiceAgentResults.map((r: any) => r.id)
+    const allSelected = allIds.length > 0 && allIds.every((id: string) => selectedTestResultIds.has(id))
+    setSelectedTestResultIds(allSelected ? new Set() : new Set(allIds))
+  }
+
+  const handleDeleteSelectedTestResults = async () => {
+    if (selectedTestResultIds.size === 0) return
+    if (!window.confirm(`Delete ${selectedTestResultIds.size} test result${selectedTestResultIds.size > 1 ? 's' : ''}? This cannot be undone.`)) return
+
+    setIsDeletingSelectedTests(true)
+    const ids = Array.from(selectedTestResultIds)
+    try {
+      const results = await Promise.allSettled(ids.map(id => apiClient.deleteEvaluatorResult(id)))
+      const successCount = results.filter(r => r.status === 'fulfilled').length
+      const failCount = results.filter(r => r.status === 'rejected').length
+
+      if (successCount > 0) {
+        queryClient.invalidateQueries({ queryKey: ['test-voice-agent-results'] })
+        showToast(`Deleted ${successCount} test result${successCount > 1 ? 's' : ''}`, 'success')
+      }
+      if (failCount > 0) {
+        showToast(`Failed to delete ${failCount} result${failCount > 1 ? 's' : ''}`, 'error')
+      }
+
+      setSelectedTestResultIds(prev => {
+        const next = new Set(prev)
+        ids.filter((_, i) => results[i].status === 'fulfilled').forEach(id => next.delete(id))
+        return next
+      })
+    } finally {
+      setIsDeletingSelectedTests(false)
     }
   }
 
-  // Delete mutation for call recordings
-  const deleteMutation = useMutation({
-    mutationFn: (callShortId: string) => apiClient.deleteCallRecording(callShortId),
-    onSuccess: () => {
-      showToast('Call recording deleted successfully', 'success')
-      queryClient.invalidateQueries({ queryKey: ['call-recordings'] })
-    },
-    onError: (error: any) => {
-      showToast(error?.response?.data?.detail || 'Failed to delete call recording', 'error')
-    },
-  })
 
   const handleViewCallRecording = (callShortId: string) => {
     navigate(`/playground/call-recordings/${callShortId}`)
   }
 
-  const handleRefreshCallRecording = async (callShortId: string) => {
-    try {
-      await apiClient.refreshCallRecording(callShortId)
-      refetchCallRecordings()
-      showToast('Call recording refreshed', 'success')
-    } catch (error: any) {
-      showToast(error?.response?.data?.detail || 'Failed to refresh call recording', 'error')
-    }
+
+  const toggleCallSelection = (callShortId: string) => {
+    setSelectedCallIds(prev => {
+      const next = new Set(prev)
+      if (next.has(callShortId)) {
+        next.delete(callShortId)
+      } else {
+        next.add(callShortId)
+      }
+      return next
+    })
   }
 
-  const handleDeleteCallRecording = (callShortId: string, e: React.MouseEvent) => {
-    e.stopPropagation()
-    if (window.confirm('Are you sure you want to delete this call recording? This action cannot be undone.')) {
-      deleteMutation.mutate(callShortId)
+  const toggleSelectAllCalls = () => {
+    const allIds = callRecordings.map((r: any) => r.call_short_id)
+    const allSelected = allIds.length > 0 && allIds.every((id: string) => selectedCallIds.has(id))
+    setSelectedCallIds(allSelected ? new Set() : new Set(allIds))
+  }
+
+  const handleDeleteSelectedCalls = async () => {
+    if (selectedCallIds.size === 0) return
+    if (!window.confirm(`Delete ${selectedCallIds.size} call recording${selectedCallIds.size > 1 ? 's' : ''}? This cannot be undone.`)) return
+
+    setIsDeletingSelected(true)
+    const ids = Array.from(selectedCallIds)
+    try {
+      const results = await Promise.allSettled(ids.map(id => apiClient.deleteCallRecording(id)))
+      const successCount = results.filter(r => r.status === 'fulfilled').length
+      const failCount = results.filter(r => r.status === 'rejected').length
+
+      if (successCount > 0) {
+        queryClient.invalidateQueries({ queryKey: ['call-recordings'] })
+        showToast(`Deleted ${successCount} recording${successCount > 1 ? 's' : ''}`, 'success')
+      }
+      if (failCount > 0) {
+        showToast(`Failed to delete ${failCount} recording${failCount > 1 ? 's' : ''}`, 'error')
+      }
+
+      setSelectedCallIds(prev => {
+        const next = new Set(prev)
+        ids.filter((_, i) => results[i].status === 'fulfilled').forEach(id => next.delete(id))
+        return next
+      })
+    } finally {
+      setIsDeletingSelected(false)
     }
   }
 
@@ -693,6 +748,20 @@ export default function AgentPlayground() {
             {/* Test Agents Tab Content */}
             {activeTab === 'test_agents' && (
               <div className="mt-4">
+                {selectedTestResultIds.size > 0 && (
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-sm text-gray-600">{selectedTestResultIds.size} selected</span>
+                    <Button
+                      variant="danger"
+                      onClick={handleDeleteSelectedTestResults}
+                      disabled={isDeletingSelectedTests}
+                      isLoading={isDeletingSelectedTests}
+                      leftIcon={!isDeletingSelectedTests ? <Trash2 className="h-4 w-4" /> : undefined}
+                    >
+                      Delete ({selectedTestResultIds.size})
+                    </Button>
+                  </div>
+                )}
                 {testVoiceAgentResults.length === 0 ? (
                   <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
                     <p className="text-sm text-gray-600">No test agent results found</p>
@@ -702,6 +771,20 @@ export default function AgentPlayground() {
                     <table className="min-w-full divide-y divide-gray-200">
                       <thead className="bg-gray-50">
                         <tr>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-10">
+                            <button
+                              type="button"
+                              onClick={toggleSelectAllTestResults}
+                              className="flex-shrink-0"
+                              aria-label="Select all test results"
+                            >
+                              {testVoiceAgentResults.length > 0 && testVoiceAgentResults.every((r: any) => selectedTestResultIds.has(r.id)) ? (
+                                <CheckSquare className="w-5 h-5 text-primary-600" />
+                              ) : (
+                                <Square className="w-5 h-5 text-gray-400" />
+                              )}
+                            </button>
+                          </th>
                           <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                             Call ID
                           </th>
@@ -714,70 +797,59 @@ export default function AgentPlayground() {
                           <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                             Created
                           </th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                            Actions
-                          </th>
                         </tr>
                       </thead>
                       <tbody className="bg-white divide-y divide-gray-200">
-                        {testVoiceAgentResults.map((result: any) => (
-                          <tr key={result.id} className="hover:bg-gray-50">
-                            <td className="px-4 py-3 whitespace-nowrap">
-                              <button
-                                onClick={() => handleViewTestResult(result.id)}
-                                className="font-mono text-sm font-semibold text-primary-600 hover:text-primary-800 hover:underline"
-                              >
-                                {result.result_id || result.id.substring(0, 8)}
-                              </button>
-                            </td>
-                            <td className="px-4 py-3 whitespace-nowrap">
-                              <span
-                                className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                                  result.status === 'completed'
-                                    ? 'bg-green-100 text-green-800'
-                                    : result.status === 'failed'
-                                    ? 'bg-red-100 text-red-800'
-                                    : 'bg-yellow-100 text-yellow-800'
-                                }`}
-                              >
-                                {result.status}
-                              </span>
-                            </td>
-                            <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
-                              {result.agent?.name || 'N/A'}
-                            </td>
-                            <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
-                              {result.created_at
-                                ? new Date(result.created_at).toLocaleString()
-                                : 'N/A'}
-                            </td>
-                            <td className="px-4 py-3 whitespace-nowrap text-sm font-medium">
-                              <div className="flex items-center gap-2">
+                        {testVoiceAgentResults.map((result: any) => {
+                          const isSelected = selectedTestResultIds.has(result.id)
+                          return (
+                            <tr
+                              key={result.id}
+                              className={`hover:bg-gray-50 cursor-pointer transition-colors ${isSelected ? 'bg-blue-50' : ''}`}
+                              onClick={() => handleViewTestResult(result.id)}
+                            >
+                              <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                                 <button
-                                  onClick={() => handleViewTestResult(result.id)}
-                                  className="text-blue-600 hover:text-blue-900"
+                                  type="button"
+                                  onClick={() => toggleTestResultSelection(result.id)}
+                                  className="flex-shrink-0"
                                 >
-                                  <Eye className="h-4 w-4" />
+                                  {isSelected ? (
+                                    <CheckSquare className="w-5 h-5 text-primary-600" />
+                                  ) : (
+                                    <Square className="w-5 h-5 text-gray-400" />
+                                  )}
                                 </button>
-                                <button
-                                  onClick={() => refetchTestResults()}
-                                  className="text-gray-600 hover:text-gray-900"
-                                  title="Refresh"
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap">
+                                <span className="font-mono text-sm font-semibold text-primary-600">
+                                  {result.result_id || result.id.substring(0, 8)}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap">
+                                <span
+                                  className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                                    result.status === 'completed'
+                                      ? 'bg-green-100 text-green-800'
+                                      : result.status === 'failed'
+                                      ? 'bg-red-100 text-red-800'
+                                      : 'bg-yellow-100 text-yellow-800'
+                                  }`}
                                 >
-                                  <RefreshCw className="h-4 w-4" />
-                                </button>
-                                <button
-                                  onClick={(e) => handleDeleteTestResult(result.id, e)}
-                                  className="text-red-600 hover:text-red-900"
-                                  title="Delete"
-                                  disabled={deleteTestResultMutation.isPending}
-                                >
-                                  <Trash2 className="h-4 w-4" />
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
+                                  {result.status}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                                {result.agent?.name || 'N/A'}
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                                {result.created_at
+                                  ? new Date(result.created_at).toLocaleString()
+                                  : 'N/A'}
+                              </td>
+                            </tr>
+                          )
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -788,6 +860,20 @@ export default function AgentPlayground() {
             {/* Voice AI Agents Tab Content */}
             {activeTab === 'voice_ai_agents' && (
               <div className="mt-4">
+                {selectedCallIds.size > 0 && (
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-sm text-gray-600">{selectedCallIds.size} selected</span>
+                    <Button
+                      variant="danger"
+                      onClick={handleDeleteSelectedCalls}
+                      disabled={isDeletingSelected}
+                      isLoading={isDeletingSelected}
+                      leftIcon={!isDeletingSelected ? <Trash2 className="h-4 w-4" /> : undefined}
+                    >
+                      Delete ({selectedCallIds.size})
+                    </Button>
+                  </div>
+                )}
                 {callRecordings.length === 0 ? (
                   <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
                     <p className="text-sm text-gray-600">No call recordings found</p>
@@ -797,6 +883,20 @@ export default function AgentPlayground() {
                     <table className="min-w-full divide-y divide-gray-200">
                       <thead className="bg-gray-50">
                         <tr>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-10">
+                            <button
+                              type="button"
+                              onClick={toggleSelectAllCalls}
+                              className="flex-shrink-0"
+                              aria-label="Select all call recordings"
+                            >
+                              {callRecordings.length > 0 && callRecordings.every((r: any) => selectedCallIds.has(r.call_short_id)) ? (
+                                <CheckSquare className="w-5 h-5 text-primary-600" />
+                              ) : (
+                                <Square className="w-5 h-5 text-gray-400" />
+                              )}
+                            </button>
+                          </th>
                           <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                             Call ID
                           </th>
@@ -812,118 +912,104 @@ export default function AgentPlayground() {
                           <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                             Created
                           </th>
-                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                            Actions
-                          </th>
                         </tr>
                       </thead>
                       <tbody className="bg-white divide-y divide-gray-200">
-                        {callRecordings.map((recording: any) => (
-                          <tr key={recording.id} className="hover:bg-gray-50">
-                            <td className="px-4 py-3 whitespace-nowrap">
-                              <button
-                                onClick={() => handleViewCallRecording(recording.call_short_id)}
-                                className="font-mono text-sm font-semibold text-primary-600 hover:text-primary-800 hover:underline"
-                              >
-                                {recording.call_short_id}
-                              </button>
-                            </td>
-                            <td className="px-4 py-3 whitespace-nowrap">
-                              <span
-                                className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${recording.status === 'UPDATED'
-                                  ? 'bg-green-100 text-green-800'
-                                  : 'bg-yellow-100 text-yellow-800'
-                                  }`}
-                              >
-                                {recording.status}
-                              </span>
-                            </td>
-                            <td className="px-4 py-3 whitespace-nowrap">
-                              {recording.evaluator_result_id ? (
+                        {callRecordings.map((recording: any) => {
+                          const isSelected = selectedCallIds.has(recording.call_short_id)
+                          return (
+                            <tr
+                              key={recording.id}
+                              className={`hover:bg-gray-50 cursor-pointer transition-colors ${isSelected ? 'bg-blue-50' : ''}`}
+                              onClick={() => handleViewCallRecording(recording.call_short_id)}
+                            >
+                              <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                                <button
+                                  type="button"
+                                  onClick={() => toggleCallSelection(recording.call_short_id)}
+                                  className="flex-shrink-0"
+                                >
+                                  {isSelected ? (
+                                    <CheckSquare className="w-5 h-5 text-primary-600" />
+                                  ) : (
+                                    <Square className="w-5 h-5 text-gray-400" />
+                                  )}
+                                </button>
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap">
+                                <span className="font-mono text-sm font-semibold text-primary-600">
+                                  {recording.call_short_id}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap">
                                 <span
-                                  className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
-                                    recording.evaluation_status === 'completed'
-                                      ? 'bg-green-100 text-green-800'
-                                      : recording.evaluation_status === 'failed'
-                                      ? 'bg-red-100 text-red-800'
-                                      : recording.evaluation_status === 'evaluating'
-                                      ? 'bg-blue-100 text-blue-800'
-                                      : 'bg-yellow-100 text-yellow-800'
-                                  }`}
+                                  className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${recording.status === 'UPDATED'
+                                    ? 'bg-green-100 text-green-800'
+                                    : 'bg-yellow-100 text-yellow-800'
+                                    }`}
                                 >
-                                  {recording.evaluation_status || 'queued'}
+                                  {recording.status}
                                 </span>
-                              ) : recording.status === 'UPDATED' ? (
-                                <span className="inline-flex px-2 py-1 text-xs font-semibold rounded-full bg-gray-100 text-gray-600">
-                                  Pending
-                                </span>
-                              ) : (
-                                <span className="text-xs text-gray-400">—</span>
-                              )}
-                            </td>
-                            <td className="px-4 py-3 whitespace-nowrap">
-                              <div className="flex items-center gap-2">
-                                {recording.provider_platform === 'retell' && (
-                                  <img
-                                    src="/retellai.png"
-                                    alt="Retell"
-                                    className="h-5 w-5 object-contain"
-                                  />
-                                )}
-                                {recording.provider_platform === 'vapi' && (
-                                  <img
-                                    src="/vapiai.jpg"
-                                    alt="Vapi"
-                                    className="h-5 w-5 object-contain"
-                                  />
-                                )}
-                                {recording.provider_platform === 'elevenlabs' && (
-                                  <img
-                                    src="/elevenlabs.jpg"
-                                    alt="ElevenLabs"
-                                    className="h-5 w-5 rounded-full object-contain"
-                                  />
-                                )}
-                                <span className="text-sm text-gray-500 capitalize">
-                                  {recording.provider_platform || 'N/A'}
-                                </span>
-                              </div>
-                            </td>
-                            <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
-                              {recording.created_at
-                                ? new Date(recording.created_at).toLocaleString()
-                                : 'N/A'}
-                            </td>
-                            <td className="px-4 py-3 whitespace-nowrap text-sm font-medium">
-                              <div className="flex items-center gap-2">
-                                <button
-                                  onClick={() => handleViewCallRecording(recording.call_short_id)}
-                                  className="text-blue-600 hover:text-blue-900"
-                                  title="View call details"
-                                >
-                                  <Eye className="h-4 w-4" />
-                                </button>
-                                {recording.status === 'PENDING' && (
-                                  <button
-                                    onClick={() => handleRefreshCallRecording(recording.call_short_id)}
-                                    className="text-gray-600 hover:text-gray-900"
-                                    title="Refresh"
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap">
+                                {recording.evaluator_result_id ? (
+                                  <span
+                                    className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                                      recording.evaluation_status === 'completed'
+                                        ? 'bg-green-100 text-green-800'
+                                        : recording.evaluation_status === 'failed'
+                                        ? 'bg-red-100 text-red-800'
+                                        : recording.evaluation_status === 'evaluating'
+                                        ? 'bg-blue-100 text-blue-800'
+                                        : 'bg-yellow-100 text-yellow-800'
+                                    }`}
                                   >
-                                    <RefreshCw className="h-4 w-4" />
-                                  </button>
+                                    {recording.evaluation_status || 'queued'}
+                                  </span>
+                                ) : recording.status === 'UPDATED' ? (
+                                  <span className="inline-flex px-2 py-1 text-xs font-semibold rounded-full bg-gray-100 text-gray-600">
+                                    Pending
+                                  </span>
+                                ) : (
+                                  <span className="text-xs text-gray-400">—</span>
                                 )}
-                                <button
-                                  onClick={(e) => handleDeleteCallRecording(recording.call_short_id, e)}
-                                  className="text-red-600 hover:text-red-900"
-                                  title="Delete"
-                                  disabled={deleteMutation.isPending}
-                                >
-                                  <Trash2 className="h-4 w-4" />
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap">
+                                <div className="flex items-center gap-2">
+                                  {recording.provider_platform === 'retell' && (
+                                    <img
+                                      src="/retellai.png"
+                                      alt="Retell"
+                                      className="h-5 w-5 object-contain"
+                                    />
+                                  )}
+                                  {recording.provider_platform === 'vapi' && (
+                                    <img
+                                      src="/vapiai.jpg"
+                                      alt="Vapi"
+                                      className="h-5 w-5 object-contain"
+                                    />
+                                  )}
+                                  {recording.provider_platform === 'elevenlabs' && (
+                                    <img
+                                      src="/elevenlabs.jpg"
+                                      alt="ElevenLabs"
+                                      className="h-5 w-5 rounded-full object-contain"
+                                    />
+                                  )}
+                                  <span className="text-sm text-gray-500 capitalize">
+                                    {recording.provider_platform || 'N/A'}
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">
+                                {recording.created_at
+                                  ? new Date(recording.created_at).toLocaleString()
+                                  : 'N/A'}
+                              </td>
+                            </tr>
+                          )
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -970,6 +1056,13 @@ export default function AgentPlayground() {
                   </div>
                 </div>
               )}
+
+              <div className="flex items-start gap-2.5 p-3 bg-blue-50 border border-blue-200 rounded-lg mb-1">
+                <AlertTriangle className="h-4 w-4 text-blue-500 flex-shrink-0 mt-0.5" />
+                <p className="text-xs text-blue-700">
+                  First-time runs may take longer as ML models required for audio evaluation metrics are downloaded and cached locally. Subsequent runs will be significantly faster.
+                </p>
+              </div>
 
               <div className="space-y-3">
                 {hasTestAgent && (

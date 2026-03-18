@@ -52,13 +52,6 @@ interface NavSection {
 
 const navigationSections: NavSection[] = [
   {
-    title: 'Prompt Partials',
-    icon: ScrollText,
-    items: [
-      { name: 'Prompt Partials', href: '/prompt-partials', icon: ScrollText },
-    ],
-  },
-  {
     title: 'Simulations',
     icon: Play,
     items: [
@@ -115,6 +108,7 @@ const navigationSections: NavSection[] = [
 
 const otherNavigation: NavItem[] = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
+  { name: 'Prompt Partials', href: '/prompt-partials', icon: ScrollText },
 ]
 
 const bottomNavigation = [
@@ -373,7 +367,7 @@ function SidebarContent({
 }) {
   const { isFeatureEnabled } = useLicenseStore()
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
-    new Set(['Prompt Partials', 'Simulations', 'Playground', 'Evaluations', 'Observability', 'Alerting', 'Configurations'])
+    new Set(['Simulations', 'Playground', 'Evaluations', 'Observability', 'Alerting', 'Configurations'])
   )
 
   const toggleSection = (title: string) => {

@@ -5,7 +5,7 @@ import { apiClient } from '../../../lib/api'
 import { useAgentStore } from '../../../store/agentStore'
 import { ModelProvider, AIProvider, Integration, IntegrationPlatform } from '../../../types/api'
 import Button from '../../../components/Button'
-import { Plus, Trash2, Play, X, CheckSquare, Square, Sparkles, Brain, ChevronDown } from 'lucide-react'
+import { Plus, Trash2, Play, X, CheckSquare, Square, Sparkles, Brain, ChevronDown, AlertTriangle } from 'lucide-react'
 import { useToast } from '../../../hooks/useToast'
 import { getProviderLabel, getProviderLogo } from '../../../config/providers'
 
@@ -60,10 +60,16 @@ export default function EvaluateTestAgents() {
   const [runCount, setRunCount] = useState(1)
   const [showDeleteSelectedModal, setShowDeleteSelectedModal] = useState(false)
   const [isDeletingSelected, setIsDeletingSelected] = useState(false)
+  const [modalAgentId, setModalAgentId] = useState<string>('')
   const [selectedLlmProvider, setSelectedLlmProvider] = useState<ModelProvider | null>(null)
   const [selectedLlmModel, setSelectedLlmModel] = useState<string>('')
   const [showLlmDropdown, setShowLlmDropdown] = useState(false)
   const llmDropdownRef = useRef<HTMLDivElement>(null)
+
+  const { data: agents = [] } = useQuery({
+    queryKey: ['agents'],
+    queryFn: () => apiClient.listAgents(),
+  })
 
   const { data: personas = [] } = useQuery({
     queryKey: ['personas'],
@@ -158,6 +164,7 @@ export default function EvaluateTestAgents() {
       queryClient.invalidateQueries({ queryKey: ['evaluators'] })
       setShowCreateModal(false)
       setStandardName('')
+      setModalAgentId('')
       setSelectedScenario('')
       setSelectedPersonas([])
       setSelectedTags([])
@@ -215,8 +222,8 @@ export default function EvaluateTestAgents() {
       return
     }
 
-    if (!selectedAgent) {
-      alert('Please select an agent first')
+    if (!modalAgentId) {
+      alert('Please select an agent')
       return
     }
     if (!selectedScenario) {
@@ -230,7 +237,7 @@ export default function EvaluateTestAgents() {
 
     createBulkMutation.mutate({
       name: standardName.trim() || undefined,
-      agent_id: selectedAgent.id,
+      agent_id: modalAgentId,
       scenario_id: selectedScenario,
       persona_ids: selectedPersonas,
       tags: selectedTags.length > 0 ? selectedTags : undefined,
@@ -398,21 +405,16 @@ export default function EvaluateTestAgents() {
             )}
             <Button
               variant="primary"
-              onClick={() => setShowCreateModal(true)}
+              onClick={() => {
+                setModalAgentId(selectedAgent?.id || '')
+                setShowCreateModal(true)
+              }}
               leftIcon={<Plus className="w-4 h-4" />}
             >
               Create Evaluator
             </Button>
           </div>
         </div>
-
-        {!selectedAgent && (
-          <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-            <p className="text-sm text-yellow-800">
-              Please select an agent from the top bar to create evaluators.
-            </p>
-          </div>
-        )}
 
         {/* Evaluators List - Table Format */}
         <div className="bg-white shadow rounded-lg overflow-hidden">
@@ -456,6 +458,9 @@ export default function EvaluateTestAgents() {
                     </th>
                     <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Name
+                    </th>
+                    <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Agent
                     </th>
                     <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Persona
@@ -523,6 +528,17 @@ export default function EvaluateTestAgents() {
                         <td className="px-4 py-4">
                           {evaluator.name ? (
                             <span className="text-sm text-gray-900">{evaluator.name}</span>
+                          ) : (
+                            <span className="text-xs text-gray-400">—</span>
+                          )}
+                        </td>
+
+                        {/* Agent */}
+                        <td className="px-4 py-4 whitespace-nowrap">
+                          {evaluator.agent_id ? (
+                            <span className="text-sm text-gray-900">
+                              {agents.find((a: any) => a.id === evaluator.agent_id)?.name || 'Unknown'}
+                            </span>
                           ) : (
                             <span className="text-xs text-gray-400">—</span>
                           )}
@@ -776,6 +792,23 @@ export default function EvaluateTestAgents() {
                     <>
                       <div>
                         <label className="block text-sm font-medium text-gray-700 mb-1">
+                          Agent *
+                        </label>
+                        <select
+                          value={modalAgentId}
+                          onChange={(e) => setModalAgentId(e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
+                        >
+                          <option value="">Select an agent</option>
+                          {agents.map((agent: any) => (
+                            <option key={agent.id} value={agent.id}>
+                              {agent.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
                           Evaluator Name
                         </label>
                         <input
@@ -985,6 +1018,13 @@ export default function EvaluateTestAgents() {
                   <div className="bg-blue-50 border border-blue-100 rounded-lg p-4">
                     <p className="text-sm text-blue-800">
                       <span className="font-semibold">{selectedEvaluatorIds.size * runCount}</span> total evaluation{selectedEvaluatorIds.size * runCount > 1 ? 's' : ''} will be queued and run in parallel.
+                    </p>
+                  </div>
+
+                  <div className="flex items-start gap-2.5 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                    <AlertTriangle className="h-4 w-4 text-amber-500 flex-shrink-0 mt-0.5" />
+                    <p className="text-xs text-amber-700">
+                      First-time runs may take longer as ML models required for audio evaluation metrics are downloaded and cached locally. Subsequent runs will be significantly faster.
                     </p>
                   </div>
 

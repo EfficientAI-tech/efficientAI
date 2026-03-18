@@ -94,25 +94,22 @@ class RetellVoiceProvider(BaseVoiceProvider):
                     ),
                 }
         except Exception as e:
-            # Extract more detailed error information
             error_message = str(e)
-            
-            # Check if it's a Retell API error with more details
-            if hasattr(e, 'status_code'):
+
+            # Try to extract the human-readable message from Retell's API error body
+            upstream_msg = None
+            if hasattr(e, 'body') and isinstance(e.body, dict):
+                upstream_msg = e.body.get('message')
+            elif hasattr(e, 'response') and isinstance(e.response, dict):
+                upstream_msg = e.response.get('message')
+
+            if upstream_msg:
+                error_message = upstream_msg
+            elif hasattr(e, 'status_code'):
                 error_message = f"Retell API error (status {e.status_code}): {error_message}"
-            elif hasattr(e, 'response'):
-                try:
-                    error_detail = e.response
-                    if isinstance(error_detail, dict):
-                        error_message = f"Retell API error: {error_detail.get('message', error_message)}"
-                except:
-                    pass
-            
-            # Include agent_id in error for debugging
+
             raise ValueError(
-                f"Failed to create Retell web call for agent_id '{agent_id}': {error_message}. "
-                f"Please verify: 1) The agent_id exists in Retell, 2) The API key has access to this agent, "
-                f"3) The agent is configured for web calls."
+                f"Retell: {error_message}"
             )
     
     def create_agent(
