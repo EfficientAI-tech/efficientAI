@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAgentStore } from '../../../store/agentStore'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../../lib/api'
-import { Play, X, Phone, PhoneOff, RefreshCw, Eye, Mic, Bot, PhoneCall, Trash2 } from 'lucide-react'
+import { Play, X, Phone, PhoneOff, RefreshCw, Eye, Mic, Bot, PhoneCall, Trash2, AlertTriangle } from 'lucide-react'
 import Button from '../../../components/Button'
 import { useToast } from '../../../hooks/useToast'
 import { RetellWebClient } from 'retell-client-js-sdk'
@@ -83,6 +83,13 @@ export default function AgentPlayground() {
       }
       return false
     },
+  })
+
+  // Check S3 storage status for warning
+  const { data: s3Status } = useQuery({
+    queryKey: ['s3-status'],
+    queryFn: () => apiClient.getS3Status(),
+    staleTime: 60_000,
   })
 
   const [activeTab, setActiveTab] = useState<'test_agents' | 'voice_ai_agents'>('voice_ai_agents')
@@ -255,7 +262,8 @@ export default function AgentPlayground() {
         console.error('Failed to connect Retell:', error)
         setIsConnecting(false)
         setIsConnected(false)
-        showToast(`Failed to connect: ${error.message}`, 'error')
+        const detail = error?.response?.data?.detail || error?.message || 'Unknown error'
+        showToast(`Failed to connect: ${detail}`, 'error')
       }
     } else if (isVapiAgent) {
       const client = vapiClientRef.current
@@ -354,7 +362,8 @@ export default function AgentPlayground() {
         console.error('Failed to connect Vapi:', error)
         setIsConnecting(false)
         setIsConnected(false)
-        showToast(`Failed to connect: ${error.message}`, 'error')
+        const detail = error?.response?.data?.detail || error?.message || 'Unknown error'
+        showToast(`Failed to connect: ${detail}`, 'error')
       }
     } else if (isElevenLabsAgent) {
       try {
@@ -462,8 +471,9 @@ export default function AgentPlayground() {
         console.error('Failed to connect ElevenLabs:', error)
         setIsConnecting(false)
         setIsConnected(false)
-        const msg = typeof error === 'string' ? error : error?.message || JSON.stringify(error)
-        showToast(`Failed to connect: ${msg}`, 'error')
+        const detail = error?.response?.data?.detail
+          || (typeof error === 'string' ? error : error?.message || JSON.stringify(error))
+        showToast(`Failed to connect: ${detail}`, 'error')
       }
     }
   }
@@ -951,6 +961,18 @@ export default function AgentPlayground() {
                   Choose how you want to test this agent
                 </p>
               </div>
+
+              {s3Status && !s3Status.enabled && (
+                <div className="flex items-start gap-3 p-3 bg-amber-50 border border-amber-200 rounded-lg mb-3">
+                  <AlertTriangle className="h-5 w-5 text-amber-500 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-sm font-medium text-amber-800">Storage not configured</p>
+                    <p className="text-xs text-amber-700 mt-0.5">
+                      S3 storage is not configured. Audio recordings will not be saved. Configure storage in Settings &gt; Data Sources to enable audio playback.
+                    </p>
+                  </div>
+                </div>
+              )}
 
               <div className="space-y-3">
                 {hasTestAgent && (

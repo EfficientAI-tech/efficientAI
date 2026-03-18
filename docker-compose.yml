@@ -40,10 +40,10 @@ services:
     # Use EFFICIENTAI_VERSION env var to pin to a specific version (e.g., 1.0.0)
     image: ghcr.io/efficientai-tech/efficientai-api:${EFFICIENTAI_VERSION:-latest}
     # For local development, uncomment below and comment out the image line:
-    # build:
-    #   context: .
-    #   dockerfile: docker/Dockerfile.api
-    # container_name: efficientai_api
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    container_name: efficientai_api
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-efficientai}
       REDIS_URL: redis://redis:6379/0
@@ -56,7 +56,7 @@ services:
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
     volumes:
       - ./uploads:/app/uploads
-      - encryption_key:/app/encryption_key_data
+      - ./.data:/app/.data
       - ./config.docker.yml:/app/config.yml:ro
     ports:
       - "8000:8000"
@@ -65,31 +65,19 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: >
-      sh -c '
-      if [ ! -f /app/encryption_key_data/.encryption_key ]; then
-        python3 -c "from cryptography.fernet import Fernet; open(\"/app/encryption_key_data/.encryption_key\", \"wb\").write(Fernet.generate_key())";
-        echo "Generated new encryption key";
-      fi &&
-      ln -sf /app/encryption_key_data/.encryption_key /app/.encryption_key &&
-      exec eai start --config /app/config.yml --host 0.0.0.0 --port 8000 --no-build-frontend --no-reload
-      '
+    command: eai start --config /app/config.yml --host 0.0.0.0 --port 8000 --no-build-frontend --no-reload
 
   worker:
     # Pre-built image from GitHub Container Registry
     # Use EFFICIENTAI_VERSION env var to pin to a specific version (e.g., 1.0.0)
     image: ghcr.io/efficientai-tech/efficientai-worker:${EFFICIENTAI_VERSION:-latest}
     # For local development, uncomment below and comment out the image line:
-    # build:
-    #   context: .
-    #   dockerfile: docker/Dockerfile.worker
-    #   args:
-    #     INSTALL_EXTRAS: "qualitative-voice,reports"
-    # container_name: efficientai_worker
-    # Use host network mode for WebRTC connectivity (Retell/Vapi calls).
-    # NOTE: host networking means Docker DNS is unavailable, so connection URLs
-    # must use "localhost" instead of Docker service names like "db" / "redis".
-    network_mode: host
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+      args:
+        INSTALL_EXTRAS: "qualitative-voice,reports"
+    container_name: efficientai_worker
     environment:
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
     depends_on:
@@ -99,14 +87,9 @@ services:
         condition: service_healthy
     volumes:
       - ./uploads:/app/uploads
-      - encryption_key:/app/encryption_key_data
-      - ./config.docker.worker.yml:/app/config.yml:ro
-    command: >
-      sh -c '
-      ln -sf /app/encryption_key_data/.encryption_key /app/.encryption_key &&
-      exec eai worker --config /app/config.yml --loglevel info
-      '
+      - ./.data:/app/.data
+      - ./config.docker.yml:/app/config.yml:ro
+    command: eai worker --config /app/config.yml --loglevel info
 
 volumes:
   postgres_data:
-  encryption_key:

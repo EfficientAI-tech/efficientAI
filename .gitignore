@@ -29,7 +29,6 @@ env/
 ENV/
 .venv
 config.yml
-config.docker.yml
 # uv
 .python-version
 uv.lock
@@ -45,8 +44,9 @@ uv.lock
 .env
 .env.local
 
-# Encryption key file (should never be committed)
+# Encryption key file / data directory (should never be committed)
 .encryption_key
+.data/
 
 # Docker
 .dockerignore
