@@ -56,7 +56,7 @@ services:
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
     volumes:
       - ./uploads:/app/uploads
-      - ./.encryption_key:/app/.encryption_key:ro
+      - encryption_key:/app/encryption_key_data
       - ./config.docker.yml:/app/config.yml:ro
     ports:
       - "8000:8000"
@@ -65,7 +65,15 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: eai start --config /app/config.yml --host 0.0.0.0 --port 8000 --no-build-frontend --no-reload
+    command: >
+      sh -c '
+      if [ ! -f /app/encryption_key_data/.encryption_key ]; then
+        python3 -c "from cryptography.fernet import Fernet; open(\"/app/encryption_key_data/.encryption_key\", \"wb\").write(Fernet.generate_key())";
+        echo "Generated new encryption key";
+      fi &&
+      ln -sf /app/encryption_key_data/.encryption_key /app/.encryption_key &&
+      exec eai start --config /app/config.yml --host 0.0.0.0 --port 8000 --no-build-frontend --no-reload
+      '
 
   worker:
     # Pre-built image from GitHub Container Registry
@@ -78,15 +86,27 @@ services:
     #   args:
     #     INSTALL_EXTRAS: "qualitative-voice,reports"
     # container_name: efficientai_worker
-    # Use host network mode for WebRTC connectivity (Retell/Vapi calls)
+    # Use host network mode for WebRTC connectivity (Retell/Vapi calls).
+    # NOTE: host networking means Docker DNS is unavailable, so connection URLs
+    # must use "localhost" instead of Docker service names like "db" / "redis".
     network_mode: host
     environment:
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     volumes:
       - ./uploads:/app/uploads
-      - ./.encryption_key:/app/.encryption_key:ro
-      - ./config.yml:/app/config.yml:ro
-    command: eai worker --config /app/config.yml --loglevel info
+      - encryption_key:/app/encryption_key_data
+      - ./config.docker.worker.yml:/app/config.yml:ro
+    command: >
+      sh -c '
+      ln -sf /app/encryption_key_data/.encryption_key /app/.encryption_key &&
+      exec eai worker --config /app/config.yml --loglevel info
+      '
 
 volumes:
   postgres_data:
+  encryption_key:
