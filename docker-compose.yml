@@ -79,11 +79,11 @@ services:
         INSTALL_EXTRAS: "qualitative-voice,reports"
     container_name: efficientai_worker
     environment:
-      # Worker is on host network, so it reaches DB/Redis via localhost (exposed ports)
-      DATABASE_URL: postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@localhost:5432/${POSTGRES_DB:-efficientai}
-      REDIS_URL: redis://localhost:6379/0
-      CELERY_BROKER_URL: redis://localhost:6379/0
-      CELERY_RESULT_BACKEND: redis://localhost:6379/0
+      # Worker uses Docker network, so it reaches DB/Redis via service names
+      DATABASE_URL: postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-efficientai}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
     depends_on:
       db:
