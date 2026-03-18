@@ -9,9 +9,11 @@ import { useState, useRef, useEffect } from 'react'
 import { PipecatClient, PipecatClientOptions, RTVIEvent } from '@pipecat-ai/client-js'
 import { WebSocketTransport } from '@pipecat-ai/websocket-transport'
 import ReactMarkdown from 'react-markdown'
-import { Mic, MicOff, Loader, MessageSquare } from 'lucide-react'
+import { Mic, MicOff, Loader, MessageSquare, AlertTriangle } from 'lucide-react'
+import { useQuery } from '@tanstack/react-query'
 import Button from './Button'
 import { useAgentStore } from '../store/agentStore'
+import { apiClient } from '../lib/api'
 
 interface VoiceAgentProps {
   personaId?: string
@@ -29,6 +31,12 @@ export default function VoiceAgent({ personaId, scenarioId, agentId }: VoiceAgen
   const [status, setStatus] = useState<string>('Disconnected')
   const [error, setError] = useState<string | null>(null)
   const [logs, setLogs] = useState<Array<{ timestamp: string; message: string; type: 'user' | 'bot' | 'system' }>>([])
+
+  const { data: s3Status } = useQuery({
+    queryKey: ['s3-status'],
+    queryFn: () => apiClient.getS3Status(),
+    staleTime: 60_000,
+  })
 
   const pcClientRef = useRef<PipecatClient | null>(null)
   const botAudioRef = useRef<HTMLAudioElement | null>(null)
@@ -310,6 +318,18 @@ export default function VoiceAgent({ personaId, scenarioId, agentId }: VoiceAgen
             )}
           </div>
         </div>
+
+        {s3Status && !s3Status.enabled && (
+          <div className="flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-lg p-4 mb-4">
+            <AlertTriangle className="h-5 w-5 text-amber-500 flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-medium text-amber-800">Storage not configured</p>
+              <p className="text-xs text-amber-700 mt-0.5">
+                Audio recordings will not be saved. Transcripts and analysis will still be captured from the live conversation.
+              </p>
+            </div>
+          </div>
+        )}
 
         {error && (
           <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">

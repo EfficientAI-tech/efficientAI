@@ -48,9 +48,10 @@ export default function TestAgentResultDetail() {
     )
   }
 
-  // Prepare the result data with audio URL
+  // Prepare the result data with audio URL and extract call_analysis from call_data
   const resultData = {
     ...result,
+    call_analysis: result.call_data?.call_analysis || undefined,
     audioUrl: presignedUrl?.url || undefined,
   }
 
