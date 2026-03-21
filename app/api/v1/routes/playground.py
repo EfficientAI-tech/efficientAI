@@ -51,14 +51,15 @@ def extract_transcript_from_call_data(call_data: Dict[str, Any], provider_platfo
     provider_platform_lower = provider_platform.lower() if provider_platform else ""
     
     if provider_platform_lower == "vapi":
-        # Vapi: transcript is in call_data["transcript"] or build from transcript_object
+        # Vapi: keep provider payload raw and derive transcript from transcript/messages.
         transcript_text = call_data.get("transcript", "")
         
         # Get structured messages for speaker segments
         transcript_object = call_data.get("transcript_object", [])
         if not transcript_object:
             # Try messages array
-            messages = call_data.get("messages", [])
+            artifact = call_data.get("artifact", {}) if isinstance(call_data, dict) else {}
+            messages = call_data.get("messages", []) or artifact.get("messages", [])
             for msg in messages:
                 role = msg.get("role", "unknown")
                 content = msg.get("message", "") or msg.get("content", "")
@@ -261,9 +262,14 @@ def poll_call_metrics(
                 db.commit()
                 db.refresh(call_recording)
                 
-                # Check if call is complete (has end_timestamp or call_status indicates completion)
-                call_status = call_metrics.get("call_status", "")
-                end_timestamp = call_metrics.get("end_timestamp")
+                # Check if call is complete (supports raw + normalized payloads)
+                call_status = (
+                    call_metrics.get("call_status")
+                    or call_metrics.get("status")
+                    or ""
+                )
+                call_status = str(call_status).lower()
+                end_timestamp = call_metrics.get("end_timestamp") or call_metrics.get("endedAt")
                 
                 # If call is complete, stop polling
                 if end_timestamp or call_status in ["ended", "completed", "failed", "end-of-call-report", "done"]:
@@ -282,7 +288,7 @@ def poll_call_metrics(
                 logger.info(f"[Poll Call Metrics] Call complete, creating EvaluatorResult for call {provider_call_id}")
                 
                 # Extract transcript and speaker segments from call_data
-                transcript_text, speaker_segments = extract_transcript_from_call_data(
+                transcript_text, _ = extract_transcript_from_call_data(
                     call_metrics, 
                     provider_platform
                 )
@@ -298,8 +304,8 @@ def poll_call_metrics(
                 duration_seconds = call_metrics.get("duration_seconds", 0)
                 if not duration_seconds:
                     # Try to calculate from timestamps
-                    start_ts = call_metrics.get("start_timestamp")
-                    end_ts = call_metrics.get("end_timestamp")
+                    start_ts = call_metrics.get("start_timestamp") or call_metrics.get("startedAt")
+                    end_ts = call_metrics.get("end_timestamp") or call_metrics.get("endedAt")
                     if start_ts and end_ts:
                         try:
                             from dateutil import parser
@@ -333,10 +339,17 @@ def poll_call_metrics(
                             if resp.status_code == 200:
                                 audio_bytes = resp.content
                     elif plat == "vapi":
+                        artifact = call_metrics.get("artifact", {})
+                        recording = artifact.get("recording", {}) if isinstance(artifact, dict) else {}
+                        mono_recording = recording.get("mono", {}) if isinstance(recording, dict) else {}
                         audio_url = (
-                            recording_urls.get("combined_url")
+                            call_metrics.get("recordingUrl")
+                            or call_metrics.get("stereoRecordingUrl")
+                            or artifact.get("recordingUrl")
+                            or artifact.get("stereoRecordingUrl")
+                            or mono_recording.get("combinedUrl")
+                            or recording_urls.get("combined_url")
                             or recording_urls.get("stereo_url")
-                            or call_metrics.get("recordingUrl")
                         )
                         if audio_url:
                             resp = _http.get(audio_url, timeout=120)
@@ -371,7 +384,6 @@ def poll_call_metrics(
                     status=EvaluatorResultStatus.QUEUED.value,
                     audio_s3_key=audio_s3_key,
                     transcription=transcript_text,
-                    speaker_segments=speaker_segments if speaker_segments else None,
                     provider_call_id=provider_call_id,
                     provider_platform=provider_platform,
                     call_data=call_metrics,
@@ -906,31 +918,55 @@ async def re_evaluate_call_recording(
 
         decrypted_key = decrypt_api_key(integration.api_key)
 
-        recording_urls = call_data.get("recording_urls", {})
-        audio_bytes = None
+        def _download_audio_from_payload(payload: Dict[str, Any]):
+            payload_urls = payload.get("recording_urls", {}) if isinstance(payload, dict) else {}
+            artifact = payload.get("artifact", {}) if isinstance(payload, dict) else {}
+            recording = artifact.get("recording", {}) if isinstance(artifact, dict) else {}
+            mono_recording = recording.get("mono", {}) if isinstance(recording, dict) else {}
+            url = None
+            headers = None
+            if platform == "elevenlabs":
+                url = payload_urls.get("conversation_audio")
+                headers = {"xi-api-key": decrypted_key}
+            elif platform == "retell":
+                url = payload.get("recording_url")
+            elif platform == "vapi":
+                url = (
+                    payload.get("recordingUrl")
+                    or payload.get("stereoRecordingUrl")
+                    or artifact.get("recordingUrl")
+                    or artifact.get("stereoRecordingUrl")
+                    or mono_recording.get("combinedUrl")
+                    or payload_urls.get("combined_url")
+                    or payload_urls.get("stereo_url")
+                )
+            if not url:
+                return None, None
+            response = http_requests.get(url, headers=headers, timeout=120)
+            if response.status_code != 200:
+                return None, response
+            return response.content, response
 
-        if platform == "elevenlabs":
-            audio_url = recording_urls.get("conversation_audio")
-            if audio_url:
-                resp = http_requests.get(audio_url, headers={"xi-api-key": decrypted_key}, timeout=120)
-                if resp.status_code == 200:
-                    audio_bytes = resp.content
-        elif platform == "retell":
-            audio_url = call_data.get("recording_url")
-            if audio_url:
-                resp = http_requests.get(audio_url, timeout=120)
-                if resp.status_code == 200:
-                    audio_bytes = resp.content
-        elif platform == "vapi":
-            audio_url = (
-                recording_urls.get("combined_url")
-                or recording_urls.get("stereo_url")
-                or call_data.get("recordingUrl")
-            )
-            if audio_url:
-                resp = http_requests.get(audio_url, timeout=120)
-                if resp.status_code == 200:
-                    audio_bytes = resp.content
+        audio_bytes, resp = _download_audio_from_payload(call_data)
+
+        # Retry once with fresh provider payload (new signed URL) using provider_call_id
+        if not audio_bytes and call_recording.provider_call_id:
+            try:
+                provider_class = get_voice_provider(platform)
+                provider_kwargs: Dict[str, Any] = {"api_key": decrypted_key}
+                if platform == "vapi" and integration.public_key:
+                    provider_kwargs["public_key"] = integration.public_key
+                provider = provider_class(**provider_kwargs)
+                if hasattr(provider, "retrieve_call_metrics"):
+                    refreshed_call_data = provider.retrieve_call_metrics(call_recording.provider_call_id)
+                    if isinstance(refreshed_call_data, dict) and refreshed_call_data:
+                        call_data = refreshed_call_data
+                        call_recording.call_data = refreshed_call_data
+                        db.commit()
+                        logger.info(f"[Re-evaluate] Refreshed provider call data for call {call_recording.provider_call_id}")
+                        audio_bytes, resp = _download_audio_from_payload(call_data)
+            except Exception as refresh_err:
+                logger.warning(f"[Re-evaluate] Provider audio URL refresh failed: {refresh_err}")
 
         if not audio_bytes:
             raise HTTPException(
@@ -952,14 +988,16 @@ async def re_evaluate_call_recording(
         logger.info(f"[Re-evaluate] Reusing existing S3 audio: {audio_s3_key}")
 
     # --- Extract transcript from existing call data ------------------------
-    transcript_text, speaker_segments = extract_transcript_from_call_data(call_data, platform)
+    transcript_text, _ = extract_transcript_from_call_data(call_data, platform)
 
     # --- Create or reset EvaluatorResult -----------------------------------
     if existing_result:
         existing_result.status = EvaluatorResultStatus.QUEUED.value
         existing_result.audio_s3_key = audio_s3_key
+        # Preserve full provider payload on re-evaluation so debug/inspection data
+        # is not reduced to call_analysis-only shape.
+        existing_result.call_data = call_data if isinstance(call_data, dict) else existing_result.call_data
         existing_result.transcription = transcript_text or existing_result.transcription
-        existing_result.speaker_segments = speaker_segments if speaker_segments else existing_result.speaker_segments
         existing_result.metric_scores = None
         existing_result.error_message = None
         existing_result.celery_task_id = None
@@ -971,6 +1009,15 @@ async def re_evaluate_call_recording(
         agent = db.query(Agent).filter(Agent.id == call_recording.agent_id).first()
         result_id = generate_unique_result_id(db)
         duration_seconds = call_data.get("duration_seconds", 0)
+        if not duration_seconds:
+            start_ts = call_data.get("start_timestamp") or call_data.get("startedAt")
+            end_ts = call_data.get("end_timestamp") or call_data.get("endedAt")
+            if start_ts and end_ts:
+                try:
+                    from dateutil import parser
+                    duration_seconds = (parser.parse(end_ts) - parser.parse(start_ts)).total_seconds()
+                except Exception:
+                    duration_seconds = 0
         result_name = f"Voice AI Call - {agent.name}" if agent else "Voice AI Call"
 
         evaluator_result = EvaluatorResult(
@@ -985,7 +1032,6 @@ async def re_evaluate_call_recording(
             status=EvaluatorResultStatus.QUEUED.value,
             audio_s3_key=audio_s3_key,
             transcription=transcript_text,
-            speaker_segments=speaker_segments if speaker_segments else None,
             provider_call_id=call_recording.provider_call_id,
             provider_platform=platform,
             call_data=call_data,
@@ -1046,8 +1092,16 @@ async def stream_call_audio(
 
     # For Retell / Vapi the URL is public – redirect directly
     if platform in ("retell", "vapi"):
+        artifact = call_data.get("artifact", {})
+        recording = artifact.get("recording", {}) if isinstance(artifact, dict) else {}
+        mono_recording = recording.get("mono", {}) if isinstance(recording, dict) else {}
         url = (
-            recording_urls.get("combined_url")
+            call_data.get("recordingUrl")
+            or call_data.get("stereoRecordingUrl")
+            or artifact.get("recordingUrl")
+            or artifact.get("stereoRecordingUrl")
+            or mono_recording.get("combinedUrl")
+            or recording_urls.get("combined_url")
             or recording_urls.get("stereo_url")
             or call_data.get("recording_url")
         )

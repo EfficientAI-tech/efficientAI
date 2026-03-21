@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from uuid import UUID
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 from app.database import get_db
 from app.dependencies import get_organization_id, get_api_key
@@ -19,6 +19,115 @@ from app.models.schemas import (
 )
 
 router = APIRouter(prefix="/evaluator-results", tags=["evaluator-results"])
+
+
+def _derive_speaker_segments_from_call_data(
+    call_data: Optional[Dict[str, Any]],
+    provider_platform: Optional[str],
+) -> Optional[List[Dict[str, Any]]]:
+    """Derive speaker segments from provider call_data without persisting duplicates."""
+    if not isinstance(call_data, dict):
+        return None
+
+    platform = (provider_platform or "").lower()
+    segments: List[Dict[str, Any]] = []
+
+    def _append_segment(speaker: str, text: str, start: float, end: float):
+        if not text or not str(text).strip():
+            return
+        segments.append(
+            {
+                "speaker": speaker,
+                "text": str(text).strip(),
+                "start": float(start or 0),
+                "end": float(end or start or 0),
+            }
+        )
+
+    if platform == "vapi":
+        transcript_object = call_data.get("transcript_object", [])
+        if isinstance(transcript_object, list) and transcript_object:
+            for entry in transcript_object:
+                role = entry.get("role", "")
+                if role == "user":
+                    speaker = "Speaker 1"
+                elif role in ("agent", "assistant", "bot"):
+                    speaker = "Speaker 2"
+                else:
+                    continue
+                start = entry.get("seconds_from_start", 0)
+                duration_ms = entry.get("duration_ms", 0)
+                _append_segment(speaker, entry.get("content", ""), start, start + ((duration_ms or 0) / 1000))
+        else:
+            artifact = call_data.get("artifact", {})
+            messages = call_data.get("messages", []) or (artifact.get("messages", []) if isinstance(artifact, dict) else [])
+            if isinstance(messages, list):
+                for msg in messages:
+                    role = msg.get("role", "")
+                    if role == "user":
+                        speaker = "Speaker 1"
+                    elif role in ("agent", "assistant", "bot"):
+                        speaker = "Speaker 2"
+                    else:
+                        continue
+                    start = msg.get("secondsFromStart", 0)
+                    duration_ms = msg.get("duration", 0)
+                    content = msg.get("message", "") or msg.get("content", "")
+                    _append_segment(speaker, content, start, start + ((duration_ms or 0) / 1000))
+
+    elif platform == "retell":
+        transcript_object = call_data.get("transcript_object", [])
+        if isinstance(transcript_object, list) and transcript_object:
+            for entry in transcript_object:
+                role = entry.get("role", "")
+                speaker = "Speaker 1" if role == "user" else "Speaker 2"
+                start = entry.get("start_time", entry.get("timestamp", 0)) or 0
+                end = entry.get("end_time", start) or start
+                _append_segment(speaker, entry.get("content", "") or entry.get("text", ""), start, end)
+        else:
+            transcript = call_data.get("transcript", "")
+            if isinstance(transcript, str):
+                for line in transcript.split("\n"):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line.lower().startswith("user:"):
+                        _append_segment("Speaker 1", line.split(":", 1)[1], 0, 0)
+                    elif line.lower().startswith("agent:"):
+                        _append_segment("Speaker 2", line.split(":", 1)[1], 0, 0)
+
+    elif platform == "elevenlabs":
+        transcript_object = call_data.get("transcript_object", [])
+        if isinstance(transcript_object, list):
+            for entry in transcript_object:
+                speaker_raw = str(entry.get("speaker", "")).lower()
+                speaker = "Speaker 2" if speaker_raw in ("agent", "assistant", "ai") else "Speaker 1"
+                _append_segment(
+                    speaker,
+                    entry.get("text", ""),
+                    entry.get("start", 0),
+                    entry.get("end", entry.get("start", 0)),
+                )
+        elif isinstance(call_data.get("transcript"), list):
+            for entry in call_data.get("transcript", []):
+                role = entry.get("role", "")
+                speaker = "Speaker 2" if role in ("agent", "assistant", "ai") else "Speaker 1"
+                t = entry.get("time_in_call_secs", 0)
+                _append_segment(speaker, entry.get("message", "") or entry.get("text", ""), t, t)
+
+    return segments or None
+
+
+def _resolve_speaker_segments(result: EvaluatorResult) -> Optional[List[Dict[str, Any]]]:
+    """
+    Prefer deriving speaker segments from provider call_data for provider-linked results.
+    Falls back to persisted speaker_segments for non-provider/manual results.
+    """
+    if result.provider_platform and isinstance(result.call_data, dict):
+        derived = _derive_speaker_segments_from_call_data(result.call_data, result.provider_platform)
+        if derived:
+            return derived
+    return result.speaker_segments
 
 
 @router.get("", response_model=List[EvaluatorResultResponse])
@@ -86,7 +195,7 @@ def list_evaluator_results(
             "status": result.status,
             "audio_s3_key": result.audio_s3_key,
             "transcription": result.transcription,
-            "speaker_segments": result.speaker_segments,
+            "speaker_segments": _resolve_speaker_segments(result),
             "metric_scores": result.metric_scores,
             "celery_task_id": result.celery_task_id,
             "error_message": result.error_message,
@@ -171,7 +280,7 @@ def get_evaluator_result(
         "status": result.status,
         "audio_s3_key": result.audio_s3_key,
         "transcription": result.transcription,
-        "speaker_segments": result.speaker_segments,
+        "speaker_segments": _resolve_speaker_segments(result),
         "metric_scores": result.metric_scores,
         "celery_task_id": result.celery_task_id,
         "error_message": result.error_message,
@@ -484,6 +593,10 @@ def re_evaluate_result(
             call_data = result.call_data or {}
             platform = (result.provider_platform or "").lower()
             recording_urls = call_data.get("recording_urls", {})
+            provider_payload = call_data.get("provider_payload", {})
+            artifact = call_data.get("artifact", {}) if isinstance(call_data, dict) else {}
+            recording = artifact.get("recording", {}) if isinstance(artifact, dict) else {}
+            mono_recording = recording.get("mono", {}) if isinstance(recording, dict) else {}
             audio_bytes = None
             decrypted_key = None
 
@@ -511,9 +624,16 @@ def re_evaluate_result(
                         audio_bytes = resp.content
             elif platform == "vapi":
                 audio_url = (
-                    recording_urls.get("combined_url")
+                    call_data.get("recordingUrl")
+                    or call_data.get("stereoRecordingUrl")
+                    or artifact.get("recordingUrl")
+                    or artifact.get("stereoRecordingUrl")
+                    or mono_recording.get("combinedUrl")
+                    or recording_urls.get("combined_url")
                     or recording_urls.get("stereo_url")
                     or call_data.get("recordingUrl")
+                    or provider_payload.get("recordingUrl")
+                    or provider_payload.get("stereoRecordingUrl")
                 )
                 if audio_url:
                     resp = _http.get(audio_url, timeout=120)
