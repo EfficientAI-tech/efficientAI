@@ -10,8 +10,9 @@ RUN apt-get update && apt-get install -y \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Install uv
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+# Install uv via pip to get the glibc-linked binary (the musl-linked binary
+# from ghcr.io/astral-sh/uv has DNS resolution issues inside Docker)
+RUN pip install --no-cache-dir uv
 
 # Set working directory
 WORKDIR /app
@@ -25,9 +26,14 @@ COPY pyproject.toml README.md ./
 RUN mkdir -p src/efficientai && touch src/efficientai/__init__.py
 
 # Install Python dependencies
-# Explicitly use PyPI index to avoid any cached index configuration issues
-RUN --mount=type=cache,target=/root/.cache/pip \
-    uv pip install --system --index-url https://pypi.org/simple/ -e .
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=cache,target=/root/.cache/pip \
+    uv pip install --system -e .
+
+# Security: fail build if compromised litellm .pth file is present (CVE: supply chain attack on litellm 1.82.8)
+RUN if find /usr/local/lib/ -name "litellm_init.pth" 2>/dev/null | grep -q .; then \
+        echo "SECURITY: Malicious litellm_init.pth detected! Aborting build." && exit 1; \
+    fi
 
 # ============================================================
 # LAYER 2: Frontend dependencies (cached unless package.json changes)
@@ -57,7 +63,7 @@ COPY app/ ./app/
 COPY scripts/ ./scripts/
 
 # Re-run editable install to link the actual code
-RUN uv pip install --system --index-url https://pypi.org/simple/ -e .
+RUN uv pip install --system -e .
 
 # Create uploads directory
 RUN mkdir -p /app/uploads
