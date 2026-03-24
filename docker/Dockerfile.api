@@ -25,9 +25,9 @@ COPY pyproject.toml README.md ./
 RUN mkdir -p src/efficientai && touch src/efficientai/__init__.py
 
 # Install Python dependencies
-RUN --mount=type=cache,target=/root/.cache/uv \
-    --mount=type=cache,target=/root/.cache/pip \
-    uv pip install --system --refresh -e .
+# Explicitly use PyPI index to avoid any cached index configuration issues
+RUN --mount=type=cache,target=/root/.cache/pip \
+    uv pip install --system --index-url https://pypi.org/simple/ -e .
 
 # ============================================================
 # LAYER 2: Frontend dependencies (cached unless package.json changes)
@@ -57,7 +57,7 @@ COPY app/ ./app/
 COPY scripts/ ./scripts/
 
 # Re-run editable install to link the actual code
-RUN uv pip install --system -e .
+RUN uv pip install --system --index-url https://pypi.org/simple/ -e .
 
 # Create uploads directory
 RUN mkdir -p /app/uploads
