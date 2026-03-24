@@ -93,6 +93,7 @@ qualitative-voice = [
     "torchaudio>=2.1.0",
     "transformers>=4.41.0",
     "librosa>=0.10.0",
+    "imageio-ffmpeg>=0.5.1",
     "scipy>=1.11.0",
     "pyannote.audio>=3.1.0",
     "praat-parselmouth>=0.4.3",

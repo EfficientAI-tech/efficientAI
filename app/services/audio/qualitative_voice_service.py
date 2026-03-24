@@ -15,6 +15,7 @@ loaded when metrics are actually calculated.
 """
 
 import os
+import shutil
 from typing import Dict, Any, Optional, List, Set, Tuple
 
 import numpy as np
@@ -38,6 +39,74 @@ _transformers_pipeline = None
 _transformers_processor = None
 _transformers_model = None
 _speechbrain_encoder = None
+
+# ffmpeg availability (used by transformers/librosa backends for audio decode)
+_ffmpeg_checked = False
+_ffmpeg_available = False
+_ffmpeg_path = None
+
+
+def _ensure_ffmpeg_available() -> bool:
+    """
+    Ensure `ffmpeg` executable is available.
+
+    Strategy:
+    1. Use system ffmpeg from PATH if present.
+    2. Lazily download bundled ffmpeg via imageio-ffmpeg and expose as `ffmpeg`
+       on PATH for libraries that call the `ffmpeg` binary directly.
+    """
+    global _ffmpeg_checked, _ffmpeg_available, _ffmpeg_path
+
+    if _ffmpeg_checked:
+        return _ffmpeg_available
+
+    _ffmpeg_checked = True
+
+    # Fast path: system ffmpeg already installed.
+    existing = shutil.which("ffmpeg")
+    if existing:
+        _ffmpeg_available = True
+        _ffmpeg_path = existing
+        logger.info(f"[QualitativeVoice] Using system ffmpeg: {existing}")
+        return True
+
+    # Fallback: lazy download with imageio-ffmpeg.
+    try:
+        import imageio_ffmpeg
+
+        downloaded_exe = imageio_ffmpeg.get_ffmpeg_exe()
+        if downloaded_exe and os.path.exists(downloaded_exe):
+            shim_dir = os.path.join("/tmp", "efficientai_ffmpeg")
+            os.makedirs(shim_dir, exist_ok=True)
+            shim_path = os.path.join(shim_dir, "ffmpeg")
+
+            # Create a stable `ffmpeg` command path for subprocess callers.
+            if not os.path.exists(shim_path):
+                try:
+                    os.symlink(downloaded_exe, shim_path)
+                except OSError:
+                    # Fallback if symlink isn't allowed in this runtime.
+                    shutil.copy2(downloaded_exe, shim_path)
+                    os.chmod(shim_path, 0o755)
+
+            current_path = os.environ.get("PATH", "")
+            if shim_dir not in current_path.split(os.pathsep):
+                os.environ["PATH"] = shim_dir + os.pathsep + current_path
+
+            resolved = shutil.which("ffmpeg")
+            if resolved:
+                _ffmpeg_available = True
+                _ffmpeg_path = resolved
+                logger.info(f"[QualitativeVoice] Bootstrapped ffmpeg lazily: {resolved}")
+                return True
+    except Exception as e:
+        logger.warning(f"[QualitativeVoice] Lazy ffmpeg bootstrap failed: {e}")
+
+    logger.warning(
+        "[QualitativeVoice] ffmpeg not available. Emotion/advanced audio metrics may be missing. "
+        "Install system ffmpeg or include imageio-ffmpeg."
+    )
+    return False
 
 
 def _check_availability():
@@ -85,6 +154,7 @@ def _check_availability():
         logger.debug(f"speechbrain not available: {e}")
     
     _SPEECHMOS_AVAILABLE = _TORCH_AVAILABLE
+    _ensure_ffmpeg_available()
 
 
 def _get_torch():
@@ -196,6 +266,7 @@ class QualitativeVoiceMetricsService:
         """
         try:
             _check_availability()
+            _ensure_ffmpeg_available()
             librosa = _get_librosa()
             if librosa is not None:
                 audio, sr = librosa.load(audio_path, sr=target_sr, mono=True)
@@ -357,6 +428,10 @@ class QualitativeVoiceMetricsService:
         Classify the dominant emotion in the audio.
         """
         try:
+            if not _ensure_ffmpeg_available():
+                logger.warning("[QualitativeVoice] Skipping emotion classification: ffmpeg unavailable")
+                return None, None
+
             classifier = self._get_emotion_classifier()
             if classifier is None:
                 return None, None
@@ -382,6 +457,10 @@ class QualitativeVoiceMetricsService:
         Calculate Valence and Arousal scores.
         """
         try:
+            if not _ensure_ffmpeg_available():
+                logger.warning("[QualitativeVoice] Skipping valence/arousal: ffmpeg unavailable")
+                return None, None
+
             model = self._get_valence_arousal_model()
             if model is None or self._valence_arousal_processor is None:
                 return None, None
