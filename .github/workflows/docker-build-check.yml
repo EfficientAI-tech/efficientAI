@@ -59,8 +59,8 @@ jobs:
           push: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=api-check
+          cache-to: type=gha,scope=api-check,mode=max
           platforms: linux/amd64
 
   build-worker:
@@ -105,8 +105,8 @@ jobs:
           push: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=worker-check
+          cache-to: type=gha,scope=worker-check,mode=max
           platforms: linux/amd64
           build-args: |
             INSTALL_EXTRAS=qualitative-voice,reports

@@ -27,7 +27,7 @@ RUN mkdir -p src/efficientai && touch src/efficientai/__init__.py
 # Install Python dependencies
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=cache,target=/root/.cache/pip \
-    uv pip install --system -e .
+    uv pip install --system --refresh -e .
 
 # ============================================================
 # LAYER 2: Frontend dependencies (cached unless package.json changes)

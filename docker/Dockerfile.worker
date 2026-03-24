@@ -39,25 +39,27 @@ RUN mkdir -p src/efficientai && touch src/efficientai/__init__.py
 # This must be done before installing other deps that depend on torch.
 # The CPU-only index only publishes x86_64 wheels; on ARM64 (Apple Silicon)
 # the default PyPI torch is already CPU-only, so we install without the index.
+# NOTE: We use --extra-index-url (not --index-url) to keep PyPI available for other packages.
 ARG TARGETARCH
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=cache,target=/root/.cache/pip \
     if [ "$TORCH_CPU_ONLY" = "true" ]; then \
         echo "Installing CPU-only PyTorch (arch=$TARGETARCH)..." && \
         if [ "$TARGETARCH" = "amd64" ]; then \
-            uv pip install --system torch torchaudio --index-url https://download.pytorch.org/whl/cpu; \
+            uv pip install --system torch torchaudio --extra-index-url https://download.pytorch.org/whl/cpu; \
         else \
             uv pip install --system torch torchaudio; \
         fi; \
     fi
 
 # Install dependencies based on INSTALL_EXTRAS arg
+# Use --refresh to ensure fresh package resolution from PyPI (not stale cache from PyTorch index)
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=cache,target=/root/.cache/pip \
     if [ -n "$INSTALL_EXTRAS" ]; then \
-        uv pip install --system -e ".[$INSTALL_EXTRAS]"; \
+        uv pip install --system --refresh -e ".[$INSTALL_EXTRAS]"; \
     else \
-        uv pip install --system -e .; \
+        uv pip install --system --refresh -e .; \
     fi
 
 # ============================================================
