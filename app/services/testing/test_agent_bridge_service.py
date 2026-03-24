@@ -845,8 +845,13 @@ class TestAgentBridgeService:
                         continue
 
                     # Check call status
-                    call_status = call_metrics.get("call_status", "")
-                    end_timestamp = call_metrics.get("end_timestamp")
+                    call_status = (
+                        call_metrics.get("call_status")
+                        or call_metrics.get("status")
+                        or ""
+                    )
+                    call_status = str(call_status).lower()
+                    end_timestamp = call_metrics.get("end_timestamp") or call_metrics.get("endedAt")
                     transcript = call_metrics.get("transcript", "")
 
                     logger.info(
@@ -861,7 +866,7 @@ class TestAgentBridgeService:
                         continue
 
                     # If call is complete, process results
-                    if end_timestamp or call_status in ["ended", "completed", "failed", "done"]:
+                    if end_timestamp or call_status in ["ended", "completed", "failed", "done", "end-of-call-report"]:
                         call_completed = True
                         logger.info(f"[Bridge Poll] ✅ Call completed: status={call_status}")
 
@@ -880,17 +885,26 @@ class TestAgentBridgeService:
                         result.call_data = call_metrics
                         logger.info(f"[Bridge Poll] ✅ Stored call_data with {len(call_metrics)} keys: {list(call_metrics.keys())}")
 
-                        # Extract duration (Retell uses duration_ms, Vapi uses duration_seconds)
+                        # Extract duration (provider-specific)
                         duration_ms = call_metrics.get("duration_ms")
                         duration_seconds = call_metrics.get("duration_seconds")
                         if duration_ms:
                             result.duration_seconds = duration_ms / 1000.0
                         elif duration_seconds:
                             result.duration_seconds = duration_seconds
+                        else:
+                            started_at = call_metrics.get("start_timestamp") or call_metrics.get("startedAt")
+                            ended_at = call_metrics.get("end_timestamp") or call_metrics.get("endedAt")
+                            if started_at and ended_at:
+                                try:
+                                    from dateutil import parser
+                                    result.duration_seconds = (parser.parse(ended_at) - parser.parse(started_at)).total_seconds()
+                                except Exception:
+                                    pass
                         if result.duration_seconds:
                             logger.info(f"[Bridge Poll] Duration: {result.duration_seconds:.1f}s")
 
-                        # Extract transcript and speaker segments
+                        # Extract transcript from provider call data
                         transcript_text, speaker_segments = self._extract_transcript_from_call_data(call_metrics, provider_platform)
 
                         if transcript_text:
@@ -900,8 +914,7 @@ class TestAgentBridgeService:
                             logger.warning("[Bridge Poll] ⚠️ No transcript extracted from call_data")
 
                         if speaker_segments:
-                            result.speaker_segments = speaker_segments
-                            logger.info(f"[Bridge Poll] ✅ Extracted {len(speaker_segments)} speaker segments")
+                            logger.info(f"[Bridge Poll] ✅ Derived {len(speaker_segments)} speaker segments from call_data")
 
                         # Download call audio from provider and upload to S3
                         audio_s3_key = None
@@ -910,6 +923,7 @@ class TestAgentBridgeService:
                             import uuid as _uuid
 
                             recording_urls = call_metrics.get("recording_urls", {})
+                            provider_payload = call_metrics.get("provider_payload", {})
                             audio_bytes = None
                             plat = provider_platform.lower()
 
@@ -926,10 +940,20 @@ class TestAgentBridgeService:
                                     if resp.status_code == 200:
                                         audio_bytes = resp.content
                             elif plat == "vapi":
+                                artifact = call_metrics.get("artifact", {}) if isinstance(call_metrics, dict) else {}
+                                recording = artifact.get("recording", {}) if isinstance(artifact, dict) else {}
+                                mono_recording = recording.get("mono", {}) if isinstance(recording, dict) else {}
                                 audio_url = (
-                                    recording_urls.get("combined_url")
+                                    call_metrics.get("recordingUrl")
+                                    or call_metrics.get("stereoRecordingUrl")
+                                    or artifact.get("recordingUrl")
+                                    or artifact.get("stereoRecordingUrl")
+                                    or mono_recording.get("combinedUrl")
+                                    or recording_urls.get("combined_url")
                                     or recording_urls.get("stereo_url")
                                     or call_metrics.get("recordingUrl")
+                                    or provider_payload.get("recordingUrl")
+                                    or provider_payload.get("stereoRecordingUrl")
                                 )
                                 if audio_url:
                                     resp = _http.get(audio_url, timeout=120)
@@ -1042,11 +1066,12 @@ class TestAgentBridgeService:
 
         elif provider_platform == "vapi":
             # Vapi format
+            artifact = call_data.get("artifact", {}) if isinstance(call_data, dict) else {}
             transcript_text = call_data.get("transcript", "")
 
             # Get structured transcript object (preferred) or fall back to messages
             transcript_obj = call_data.get("transcript_object", [])
-            messages = call_data.get("messages", [])
+            messages = call_data.get("messages", []) or artifact.get("messages", [])
 
             # Use transcript_object if available
             if transcript_obj:

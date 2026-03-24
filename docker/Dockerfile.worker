@@ -21,8 +21,9 @@ RUN apt-get update && apt-get install -y \
     shared-mime-info \
     && rm -rf /var/lib/apt/lists/*
 
-# Install uv
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+# Install uv via pip to get the glibc-linked binary (the musl-linked binary
+# from ghcr.io/astral-sh/uv has DNS resolution issues inside Docker)
+RUN pip install --no-cache-dir uv
 
 # Set working directory
 WORKDIR /app
@@ -58,6 +59,11 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         uv pip install --system -e ".[$INSTALL_EXTRAS]"; \
     else \
         uv pip install --system -e .; \
+    fi
+
+# Security: fail build if compromised litellm .pth file is present (CVE: supply chain attack on litellm 1.82.8)
+RUN if find /usr/local/lib/ -name "litellm_init.pth" 2>/dev/null | grep -q .; then \
+        echo "SECURITY: Malicious litellm_init.pth detected! Aborting build." && exit 1; \
     fi
 
 # ============================================================

@@ -61,7 +61,22 @@ def get_recording_url(call_data: Optional[Dict[str, Any]], provider_platform: Op
     if provider_platform == "vapi":
         # Vapi stores recording URLs in recording_urls object
         recording_urls = call_data.get("recording_urls", {})
-        return recording_urls.get("combined_url") or recording_urls.get("stereo_url") or call_data.get("recordingUrl")
+        provider_payload = call_data.get("provider_payload", {})
+        artifact = call_data.get("artifact", {}) if isinstance(call_data, dict) else {}
+        recording = artifact.get("recording", {}) if isinstance(artifact, dict) else {}
+        mono_recording = recording.get("mono", {}) if isinstance(recording, dict) else {}
+        return (
+            call_data.get("recordingUrl")
+            or call_data.get("stereoRecordingUrl")
+            or artifact.get("recordingUrl")
+            or artifact.get("stereoRecordingUrl")
+            or mono_recording.get("combinedUrl")
+            or recording_urls.get("combined_url")
+            or recording_urls.get("stereo_url")
+            or call_data.get("recordingUrl")
+            or provider_payload.get("recordingUrl")
+            or provider_payload.get("stereoRecordingUrl")
+        )
     elif provider_platform == "retell":
         # Retell stores recording URL directly
         return call_data.get("recording_url")

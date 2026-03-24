@@ -277,6 +277,12 @@ const hasValidValue = (metric: { value: any }) => {
   return true
 }
 
+const isAudioCategoryMetric = (metricName?: string): boolean => {
+  if (!metricName) return false
+  const info = getMetricInfo(metricName)
+  return info?.category === 'acoustic' || info?.category === 'ai_voice'
+}
+
 function EvaluationStepper({ status }: { status: string }) {
   const [dots, setDots] = useState('')
 
@@ -603,9 +609,30 @@ export default function CallRecordingDetail() {
                     return !info || info.category === 'llm'
                   }
                 )
+                const unavailableAudioMetrics = Object.entries(metricScores).filter(
+                  ([, metric]: [string, any]) => {
+                    const metricName = metric.metric_name || ''
+                    if (!isAudioCategoryMetric(metricName)) return false
+                    if (metric.skipped === 'audio_required') return true
+                    if (typeof metric.error === 'string' && metric.error.trim().length > 0) return true
+                    return false
+                  }
+                )
+                const hasAnyAudioMetric = Object.entries(metricScores).some(
+                  ([, metric]: [string, any]) => isAudioCategoryMetric(metric.metric_name || '')
+                )
+                const hasAudioUnavailableNotice = hasAnyAudioMetric && unavailableAudioMetrics.length > 0
                 
                 return (
                   <div className="space-y-6">
+                    {hasAudioUnavailableNotice && (
+                      <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                        {unavailableAudioMetrics.length === 1
+                          ? 'An audio metric is unavailable for this run. We retried fetching call audio from the provider, but audio analysis could not complete.'
+                          : 'Some audio metrics are unavailable for this run. We retried fetching call audio from the provider, but audio analysis could not fully complete.'}
+                      </div>
+                    )}
+
                     {/* AI Voice Quality Metrics */}
                     {aiVoiceMetrics.length > 0 && (
                       <div>

@@ -482,8 +482,6 @@ async def evaluate_call(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to generate unique result ID")
 
     transcript = _messages_to_transcript(messages)
-    speaker_segments = _messages_to_speaker_segments(messages)
-
     duration_seconds: Optional[float] = None
     if call_data.get("startedAt") and call_data.get("endedAt"):
         try:
@@ -504,7 +502,8 @@ async def evaluate_call(
         duration_seconds=duration_seconds,
         status=EvaluatorResultStatus.QUEUED.value,
         transcription=transcript,
-        speaker_segments=speaker_segments,
+        # Keep transcript structure in provider call_data; derive speaker segments on read.
+        speaker_segments=None,
         provider_call_id=call_recording.provider_call_id,
         provider_platform=call_recording.provider_platform,
         call_data=call_data,

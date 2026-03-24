@@ -242,193 +242,26 @@ class VapiVoiceProvider(BaseVoiceProvider):
             
             data = response.json()
             
-            # Log raw response for debugging
-            logger.info(f"[VapiProvider] Retrieved call {call_id}, status: {data.get('status')}, ended_reason: {data.get('endedReason')}")
+            logger.info(
+                f"[VapiProvider] Retrieved call {call_id}, status: {data.get('status')}, "
+                f"ended_reason: {data.get('endedReason')}"
+            )
             logger.debug(f"[VapiProvider] Raw call data keys: {list(data.keys())}")
-            
-            # Extract nested fields safely
-            artifact = data.get("artifact") or {}
-            analysis = data.get("analysis") or {}
-            cost_breakdown = data.get("costBreakdown") or {}
-            
-            # Get transcript from multiple possible locations
-            transcript = data.get("transcript") or artifact.get("transcript", "")
-            
-            # Get messages (structured conversation) from multiple possible locations
-            messages = data.get("messages") or artifact.get("messages", []) or []
-            
-            # Filter out system messages for display (keep for raw_data)
-            display_messages = [m for m in messages if m.get("role") != "system"]
-            
-            logger.info(f"[VapiProvider] Call {call_id}: transcript_len={len(transcript) if transcript else 0}, messages_count={len(display_messages)}")
-            
-            # Log end reason for debugging
-            if data.get("endedReason"):
-                logger.info(f"[VapiProvider] Call ended reason: {data.get('endedReason')}")
-            
-            # === Timestamps and Duration ===
-            started_at = data.get("startedAt")
-            ended_at = data.get("endedAt")
-            
-            duration_seconds = 0
-            if started_at and ended_at:
-                from dateutil import parser
-                try:
-                    start_time = parser.parse(started_at)
-                    end_time = parser.parse(ended_at)
-                    duration_seconds = (end_time - start_time).total_seconds()
-                except Exception as e:
-                    logger.warning(f"[VapiProvider] Failed to parse timestamps: {e}")
 
-            # === Recording URLs ===
-            recording = artifact.get("recording") or {}
-            mono_recording = recording.get("mono") or {}
-            
-            recording_urls = {
-                "combined_url": data.get("recordingUrl") or artifact.get("recordingUrl") or mono_recording.get("combinedUrl"),
-                "stereo_url": data.get("stereoRecordingUrl") or artifact.get("stereoRecordingUrl") or recording.get("stereoUrl"),
-                "assistant_url": mono_recording.get("assistantUrl"),
-                "customer_url": mono_recording.get("customerUrl"),
-            }
-
-            # === Performance Metrics (from Vapi's artifact) ===
-            perf_metrics = artifact.get("performanceMetrics") or {}
-            turn_latencies = perf_metrics.get("turnLatencies") or []
-            
-            # Use Vapi's pre-calculated averages if available
-            latency_stats = {}
-            if perf_metrics:
-                latency_stats = {
-                    "model_latency_avg": perf_metrics.get("modelLatencyAverage"),
-                    "voice_latency_avg": perf_metrics.get("voiceLatencyAverage"),
-                    "transcriber_latency_avg": perf_metrics.get("transcriberLatencyAverage"),
-                    "endpointing_latency_avg": perf_metrics.get("endpointingLatencyAverage"),
-                    "turn_latency_avg": perf_metrics.get("turnLatencyAverage"),
-                    "from_transport_latency_avg": perf_metrics.get("fromTransportLatencyAverage"),
-                    "to_transport_latency_avg": perf_metrics.get("toTransportLatencyAverage"),
-                    "num_assistant_interrupted": perf_metrics.get("numAssistantInterrupted", 0),
-                    "turn_latencies": turn_latencies,
+            # Store provider payload as-is and only add generated metadata.
+            result = dict(data)
+            generated = result.get("generated")
+            if not isinstance(generated, dict):
+                generated = {}
+            generated.update(
+                {
+                    "provider": "vapi",
+                    "schema_mode": "raw_provider_payload",
+                    "generated_by": "efficientai",
                 }
-            
-            # Calculate additional latency percentiles if we have turn latencies
-            if turn_latencies:
-                import numpy as np
-                total_latencies = [t.get("turnLatency", 0) for t in turn_latencies if t.get("turnLatency")]
-                if total_latencies:
-                    # Convert NumPy types to native Python types for JSON serialization
-                    latency_stats.update({
-                        "p50": float(round(np.percentile(total_latencies, 50), 2)),
-                        "p90": float(round(np.percentile(total_latencies, 90), 2)),
-                        "p95": float(round(np.percentile(total_latencies, 95), 2)),
-                        "p99": float(round(np.percentile(total_latencies, 99), 2)),
-                        "max": float(round(np.max(total_latencies), 2)),
-                        "min": float(round(np.min(total_latencies), 2)),
-                        "num_turns": int(len(total_latencies))
-                    })
+            )
+            result["generated"] = generated
 
-            # === Interruption Count ===
-            interruption_count = perf_metrics.get("numAssistantInterrupted", 0)
-            
-            # If not provided by Vapi, calculate manually
-            if not interruption_count and messages:
-                for i, msg in enumerate(messages):
-                    if msg.get("role") == "user" and i > 0:
-                        prev_msg = messages[i-1]
-                        if prev_msg.get("role") in ["assistant", "bot"]:
-                            prev_agent_end = (prev_msg.get("secondsFromStart") or 0) + ((prev_msg.get("duration") or 0) / 1000)
-                            user_start = msg.get("secondsFromStart") or 0
-                            if user_start < (prev_agent_end - 0.5):
-                                interruption_count += 1
-
-            # === Cost Breakdown (detailed) ===
-            analysis_cost = cost_breakdown.get("analysisCostBreakdown") or {}
-            
-            normalized_cost_breakdown = {
-                "transport": cost_breakdown.get("transport", 0),
-                "stt": cost_breakdown.get("stt", 0),
-                "llm": cost_breakdown.get("llm", 0),
-                "tts": cost_breakdown.get("tts", 0),
-                "vapi": cost_breakdown.get("vapi", 0),
-                "total": cost_breakdown.get("total", 0),
-                # Token usage
-                "llm_prompt_tokens": cost_breakdown.get("llmPromptTokens", 0),
-                "llm_completion_tokens": cost_breakdown.get("llmCompletionTokens", 0),
-                "llm_cached_prompt_tokens": cost_breakdown.get("llmCachedPromptTokens", 0),
-                "tts_characters": cost_breakdown.get("ttsCharacters", 0),
-                # Analysis costs
-                "analysis": {
-                    "summary": analysis_cost.get("summary", 0),
-                    "success_evaluation": analysis_cost.get("successEvaluation", 0),
-                    "structured_data": analysis_cost.get("structuredData", 0),
-                },
-            }
-
-            # === Analysis (summary, success evaluation) ===
-            summary = analysis.get("summary") or data.get("summary") or ""
-            success_evaluation = analysis.get("successEvaluation")
-            
-            normalized_analysis = {
-                "summary": summary,
-                "success_evaluation": success_evaluation,
-                "latency_stats": latency_stats,
-                "interruption_count": interruption_count,
-            }
-
-            # === Build Transcript Object (structured with timing) ===
-            # Filter to only user and bot messages for the transcript object
-            transcript_object = []
-            for msg in display_messages:
-                role = msg.get("role", "unknown")
-                content = msg.get("message", "") or msg.get("content", "")
-                
-                if not content or role == "system":
-                    continue
-                
-                # Map roles for consistency
-                if role in ["bot", "assistant"]:
-                    normalized_role = "agent"
-                elif role == "user":
-                    normalized_role = "user"
-                else:
-                    continue
-                
-                transcript_entry = {
-                    "role": normalized_role,
-                    "content": content,
-                    "seconds_from_start": msg.get("secondsFromStart", 0),
-                    "duration_ms": msg.get("duration", 0),
-                    "end_time_ms": msg.get("endTime"),
-                    "time_ms": msg.get("time"),
-                }
-                
-                # Include word-level confidence if available
-                metadata = msg.get("metadata") or {}
-                if metadata.get("wordLevelConfidence"):
-                    transcript_entry["words"] = metadata["wordLevelConfidence"]
-                
-                transcript_object.append(transcript_entry)
-
-            result = {
-                "call_id": data.get("id"),
-                "call_status": data.get("status"),
-                "start_timestamp": started_at,
-                "end_timestamp": ended_at,
-                "duration_seconds": duration_seconds,
-                "cost": data.get("cost", 0),
-                "cost_breakdown": normalized_cost_breakdown,
-                "transcript": transcript,
-                "transcript_object": transcript_object,
-                "messages": display_messages,
-                "analysis": normalized_analysis,
-                "recording_urls": recording_urls,
-                "monitor": data.get("monitor"),
-                "ended_reason": data.get("endedReason") or data.get("reason"),
-                "metadata": data.get("metadata"),
-                "assistant_id": data.get("assistantId"),
-                "call_type": data.get("type"),
-                "raw_data": data
-            }
-            
             # Ensure all values are JSON serializable (convert NumPy types, etc.)
             return self._make_json_serializable(result)
         except Exception as e:

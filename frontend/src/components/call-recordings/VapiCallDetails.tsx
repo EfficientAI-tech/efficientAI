@@ -107,6 +107,7 @@ interface VapiCallDetailsProps {
 }
 
 const COLORS = ['#8b5cf6', '#06b6d4', '#f59e0b', '#ef4444', '#10b981'];
+type LatencyStats = NonNullable<NonNullable<VapiCallData['analysis']>['latency_stats']>
 
 export default function VapiCallDetails({ callData, hideTranscript = false }: VapiCallDetailsProps) {
   const [activeTab, setActiveTab] = useState<'overview' | 'transcript'>('overview')
@@ -123,17 +124,88 @@ export default function VapiCallDetails({ callData, hideTranscript = false }: Va
     return new Date(timestamp).toLocaleString()
   }
 
-  // Get recording URL - prefer combined, then stereo
-  const recordingUrl = callData.recording_urls?.combined_url || 
-                       callData.recording_urls?.stereo_url ||
-                       callData.raw_data?.recordingUrl ||
-                       callData.raw_data?.stereoRecordingUrl
+  const raw = callData as any
+  const artifact = raw.artifact || {}
+  const artifactRecording = artifact.recording || {}
+  const artifactMono = artifactRecording.mono || {}
+  const rawCostBreakdown = raw.costBreakdown || {}
+  const rawAnalysis = raw.analysis || {}
+  const perf = artifact.performanceMetrics || {}
 
-  // Prepare transcript for display
-  const transcriptEntries = callData.transcript_object || []
-  
+  const callId = callData.call_id || raw.id
+  const assistantId = callData.assistant_id || raw.assistantId
+  const startTimestamp = callData.start_timestamp || raw.startedAt
+  const endTimestamp = callData.end_timestamp || raw.endedAt
+  const callStatus = callData.call_status || raw.status
+  const callType = callData.call_type || raw.type
+  const endedReason = callData.ended_reason || raw.endedReason || raw.reason
+
+  const computedDurationSeconds = (() => {
+    if (typeof callData.duration_seconds === 'number') return callData.duration_seconds
+    if (startTimestamp && endTimestamp) {
+      const startMs = Date.parse(startTimestamp)
+      const endMs = Date.parse(endTimestamp)
+      if (!Number.isNaN(startMs) && !Number.isNaN(endMs) && endMs >= startMs) {
+        return (endMs - startMs) / 1000
+      }
+    }
+    return undefined
+  })()
+
+  const recordingLinks = {
+    combined:
+      callData.recording_urls?.combined_url ||
+      raw.recordingUrl ||
+      artifact.recordingUrl ||
+      artifactMono.combinedUrl,
+    stereo:
+      callData.recording_urls?.stereo_url ||
+      raw.stereoRecordingUrl ||
+      artifact.stereoRecordingUrl ||
+      artifactRecording.stereoUrl,
+    assistant: callData.recording_urls?.assistant_url || artifactMono.assistantUrl,
+    customer: callData.recording_urls?.customer_url || artifactMono.customerUrl,
+  }
+
+  // Get recording URL - prefer combined, then stereo
+  const recordingUrl = recordingLinks.combined || recordingLinks.stereo
+
+  // Prepare transcript for display (prefer normalized transcript_object if present)
+  const transcriptEntries: VapiTranscriptEntry[] =
+    (callData.transcript_object && callData.transcript_object.length > 0
+      ? callData.transcript_object
+      : (raw.messages || artifact.messages || [])
+          .filter((msg: any) => msg?.role !== 'system')
+          .map((msg: any) => ({
+            role: msg.role === 'bot' ? 'agent' : msg.role,
+            content: msg.message || msg.content || '',
+            seconds_from_start: msg.secondsFromStart,
+            duration_ms: msg.duration,
+            end_time_ms: msg.endTime,
+            time_ms: msg.time,
+            words: msg.metadata?.wordLevelConfidence,
+          }))
+          .filter((entry: VapiTranscriptEntry) => !!entry.content))
+
   // Prepare latency data for chart
-  const latencyStats = callData.analysis?.latency_stats
+  const latencyStats: LatencyStats = callData.analysis?.latency_stats || {
+    model_latency_avg: perf.modelLatencyAverage,
+    voice_latency_avg: perf.voiceLatencyAverage,
+    transcriber_latency_avg: perf.transcriberLatencyAverage,
+    endpointing_latency_avg: perf.endpointingLatencyAverage,
+    turn_latency_avg: perf.turnLatencyAverage,
+    from_transport_latency_avg: perf.fromTransportLatencyAverage,
+    to_transport_latency_avg: perf.toTransportLatencyAverage,
+    num_assistant_interrupted: perf.numAssistantInterrupted,
+    turn_latencies: perf.turnLatencies,
+    p50: undefined,
+    p90: undefined,
+    p95: undefined,
+    p99: undefined,
+    max: undefined,
+    min: undefined,
+    num_turns: undefined,
+  }
   const latencyData = [
     { name: 'Model', avg: latencyStats?.model_latency_avg, p50: latencyStats?.p50 },
     { name: 'Voice', avg: latencyStats?.voice_latency_avg },
@@ -143,7 +215,7 @@ export default function VapiCallDetails({ callData, hideTranscript = false }: Va
   ].filter(item => item.avg !== undefined && item.avg !== null)
 
   // Prepare cost data for pie chart
-  const costBreakdown = callData.cost_breakdown
+  const costBreakdown = callData.cost_breakdown || rawCostBreakdown
   const costData = [
     { name: 'Transport', value: costBreakdown?.transport || 0 },
     { name: 'STT', value: costBreakdown?.stt || 0 },
@@ -153,8 +225,9 @@ export default function VapiCallDetails({ callData, hideTranscript = false }: Va
   ].filter(item => item.value > 0)
 
   const SummaryCard = () => {
-    const analysis = callData.analysis
-    const successEval = analysis?.success_evaluation
+    const summary = rawAnalysis.summary || raw.summary || callData.analysis?.summary
+    const successEval = rawAnalysis.successEvaluation ?? callData.analysis?.success_evaluation
+    const interruptionCount = perf.numAssistantInterrupted ?? callData.analysis?.interruption_count ?? 0
     const isSuccessful = successEval === true || successEval === 'true'
     
     return (
@@ -164,13 +237,13 @@ export default function VapiCallDetails({ callData, hideTranscript = false }: Va
           Call Analysis
         </h3>
 
-        {analysis ? (
+        {summary || successEval !== undefined ? (
           <div className="space-y-6">
-            {analysis.summary && (
+            {summary && (
               <div className="p-4 bg-violet-50 rounded-lg border border-violet-100">
                 <p className="text-sm font-medium text-violet-900 mb-2">Summary</p>
                 <p className="text-sm text-violet-800 leading-relaxed">
-                  {analysis.summary}
+                  {summary}
                 </p>
               </div>
             )}
@@ -200,21 +273,21 @@ export default function VapiCallDetails({ callData, hideTranscript = false }: Va
               <div className="p-4 bg-gray-50 rounded-lg">
                 <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-1">Interruptions</p>
                 <span className="text-lg font-bold text-gray-900">
-                  {analysis.interruption_count ?? 0}
+                  {interruptionCount}
                 </span>
               </div>
 
               <div className="p-4 bg-gray-50 rounded-lg">
                 <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-1">Ended Reason</p>
                 <span className="text-sm font-medium text-gray-900 capitalize">
-                  {callData.ended_reason?.replace(/-/g, ' ') || 'Normal'}
+                  {endedReason?.replace(/-/g, ' ') || 'Normal'}
                 </span>
               </div>
 
               <div className="p-4 bg-gray-50 rounded-lg">
                 <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-1">Call Type</p>
                 <span className="text-sm font-medium text-gray-900 capitalize">
-                  {callData.call_type || 'Web Call'}
+                  {callType || 'Web Call'}
                 </span>
               </div>
             </div>
@@ -272,11 +345,11 @@ export default function VapiCallDetails({ callData, hideTranscript = false }: Va
               </div>
             )
           })
-        ) : callData.transcript ? (
+        ) : (callData.transcript || raw.transcript) ? (
           // Fallback to plain transcript if no transcript_object
           <div className="p-4 bg-gray-50 rounded-lg">
             <pre className="text-sm whitespace-pre-wrap text-gray-800 font-sans">
-              {callData.transcript}
+              {callData.transcript || raw.transcript}
             </pre>
           </div>
         ) : (
@@ -299,10 +372,10 @@ export default function VapiCallDetails({ callData, hideTranscript = false }: Va
             <div className="mb-4">
               <p className="text-sm text-gray-500">Total Cost</p>
               <p className="text-3xl font-bold text-gray-900">
-                ${callData.cost?.toFixed(4) || costBreakdown?.total?.toFixed(4) || '0.0000'}
+                ${(callData.cost ?? raw.cost)?.toFixed?.(4) || costBreakdown?.total?.toFixed(4) || '0.0000'}
               </p>
               <p className="text-xs text-gray-500 mt-1">
-                Duration: {formatDuration(callData.duration_seconds)}
+                Duration: {formatDuration(computedDurationSeconds)}
               </p>
             </div>
             <div className="space-y-2">
@@ -338,26 +411,26 @@ export default function VapiCallDetails({ callData, hideTranscript = false }: Va
               )}
             </div>
             {/* Token Usage */}
-            {(costBreakdown?.llm_prompt_tokens || costBreakdown?.tts_characters) && (
+            {(costBreakdown?.llm_prompt_tokens || costBreakdown?.llmPromptTokens || costBreakdown?.tts_characters || costBreakdown?.ttsCharacters) && (
               <div className="mt-4 pt-4 border-t border-gray-200">
                 <p className="text-xs text-gray-500 uppercase font-semibold mb-2">Usage</p>
                 <div className="space-y-1 text-xs">
-                  {costBreakdown.llm_prompt_tokens && (
+                  {(costBreakdown.llm_prompt_tokens || costBreakdown.llmPromptTokens) && (
                     <div className="flex justify-between">
                       <span className="text-gray-500">LLM Prompt Tokens</span>
-                      <span className="text-gray-700">{costBreakdown.llm_prompt_tokens.toLocaleString()}</span>
+                      <span className="text-gray-700">{(costBreakdown.llm_prompt_tokens || costBreakdown.llmPromptTokens).toLocaleString()}</span>
                     </div>
                   )}
-                  {costBreakdown.llm_completion_tokens && (
+                  {(costBreakdown.llm_completion_tokens || costBreakdown.llmCompletionTokens) && (
                     <div className="flex justify-between">
                       <span className="text-gray-500">LLM Completion Tokens</span>
-                      <span className="text-gray-700">{costBreakdown.llm_completion_tokens.toLocaleString()}</span>
+                      <span className="text-gray-700">{(costBreakdown.llm_completion_tokens || costBreakdown.llmCompletionTokens).toLocaleString()}</span>
                     </div>
                   )}
-                  {costBreakdown.tts_characters && (
+                  {(costBreakdown.tts_characters || costBreakdown.ttsCharacters) && (
                     <div className="flex justify-between">
                       <span className="text-gray-500">TTS Characters</span>
-                      <span className="text-gray-700">{costBreakdown.tts_characters.toLocaleString()}</span>
+                      <span className="text-gray-700">{(costBreakdown.tts_characters || costBreakdown.ttsCharacters).toLocaleString()}</span>
                     </div>
                   )}
                 </div>
@@ -472,38 +545,38 @@ export default function VapiCallDetails({ callData, hideTranscript = false }: Va
         <div className="grid grid-cols-2 gap-4 text-sm">
           <div>
             <p className="text-gray-500 mb-1">Call ID</p>
-            <p className="font-mono bg-gray-50 p-1 rounded text-gray-700 truncate text-xs">{callData.call_id}</p>
+            <p className="font-mono bg-gray-50 p-1 rounded text-gray-700 truncate text-xs">{callId}</p>
           </div>
           <div>
             <p className="text-gray-500 mb-1">Assistant ID</p>
-            <p className="font-mono bg-gray-50 p-1 rounded text-gray-700 truncate text-xs">{callData.assistant_id}</p>
+            <p className="font-mono bg-gray-50 p-1 rounded text-gray-700 truncate text-xs">{assistantId}</p>
           </div>
           <div>
             <p className="text-gray-500 mb-1">Start Time</p>
-            <p className="text-gray-700 text-xs">{formatTimestamp(callData.start_timestamp)}</p>
+            <p className="text-gray-700 text-xs">{formatTimestamp(startTimestamp)}</p>
           </div>
           <div>
             <p className="text-gray-500 mb-1">End Time</p>
-            <p className="text-gray-700 text-xs">{formatTimestamp(callData.end_timestamp)}</p>
+            <p className="text-gray-700 text-xs">{formatTimestamp(endTimestamp)}</p>
           </div>
           <div>
             <p className="text-gray-500 mb-1">Duration</p>
-            <p className="text-gray-700">{formatDuration(callData.duration_seconds)}</p>
+            <p className="text-gray-700">{formatDuration(computedDurationSeconds)}</p>
           </div>
           <div>
             <p className="text-gray-500 mb-1">Status</p>
-            <p className="text-gray-700 capitalize">{callData.call_status}</p>
+            <p className="text-gray-700 capitalize">{callStatus}</p>
           </div>
         </div>
 
         {/* Recording URLs */}
-        {callData.recording_urls && Object.values(callData.recording_urls).some(Boolean) && (
+        {Object.values(recordingLinks).some(Boolean) && (
           <div className="mt-4 pt-4 border-t border-gray-200">
             <p className="text-xs text-gray-500 uppercase font-semibold mb-2">Recordings</p>
             <div className="space-y-2">
-              {callData.recording_urls.combined_url && (
+              {recordingLinks.combined && (
                 <a 
-                  href={callData.recording_urls.combined_url} 
+                  href={recordingLinks.combined} 
                   target="_blank" 
                   rel="noopener noreferrer"
                   className="flex items-center gap-2 text-xs text-violet-600 hover:text-violet-800"
@@ -512,9 +585,9 @@ export default function VapiCallDetails({ callData, hideTranscript = false }: Va
                   Combined (Mono)
                 </a>
               )}
-              {callData.recording_urls.stereo_url && (
+              {recordingLinks.stereo && (
                 <a 
-                  href={callData.recording_urls.stereo_url} 
+                  href={recordingLinks.stereo} 
                   target="_blank" 
                   rel="noopener noreferrer"
                   className="flex items-center gap-2 text-xs text-violet-600 hover:text-violet-800"
@@ -523,9 +596,9 @@ export default function VapiCallDetails({ callData, hideTranscript = false }: Va
                   Stereo
                 </a>
               )}
-              {callData.recording_urls.assistant_url && (
+              {recordingLinks.assistant && (
                 <a 
-                  href={callData.recording_urls.assistant_url} 
+                  href={recordingLinks.assistant} 
                   target="_blank" 
                   rel="noopener noreferrer"
                   className="flex items-center gap-2 text-xs text-violet-600 hover:text-violet-800"
@@ -534,9 +607,9 @@ export default function VapiCallDetails({ callData, hideTranscript = false }: Va
                   Assistant Only
                 </a>
               )}
-              {callData.recording_urls.customer_url && (
+              {recordingLinks.customer && (
                 <a 
-                  href={callData.recording_urls.customer_url} 
+                  href={recordingLinks.customer} 
                   target="_blank" 
                   rel="noopener noreferrer"
                   className="flex items-center gap-2 text-xs text-violet-600 hover:text-violet-800"

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import {
   Clock, MessageSquare, TrendingUp, Download, Server, BarChart3, CheckCircle, XCircle, HelpCircle, Brain, Sparkles, AudioWaveform
 } from 'lucide-react'
@@ -11,77 +11,161 @@ const METRIC_INFO: Record<string, {
   category: 'acoustic' | 'ai_voice' | 'llm'
 }> = {
   'Pitch Variance': { 
-    description: 'F0 variation measuring prosodic expressiveness.',
+    description: 'F0 variation measuring prosodic expressiveness. Higher values indicate more expressive speech.',
     ideal: '20-50 Hz (natural speech)',
     unit: 'Hz',
     category: 'acoustic'
   },
   'Jitter': { 
-    description: 'Cycle-to-cycle pitch period variation.',
+    description: 'Cycle-to-cycle pitch period variation indicating vocal stability. Lower is better.',
     ideal: '< 1% (healthy voice)',
     unit: '%',
     category: 'acoustic'
   },
   'Shimmer': { 
-    description: 'Amplitude perturbation measuring voice quality.',
+    description: 'Amplitude perturbation measuring voice quality consistency. Lower is better.',
     ideal: '< 3% (clear voice)',
     unit: '%',
     category: 'acoustic'
   },
   'HNR': { 
-    description: 'Harmonics-to-Noise Ratio measuring signal clarity.',
-    ideal: '> 20 dB (clear voice)',
+    description: 'Harmonics-to-Noise Ratio measuring signal clarity. Higher indicates cleaner voice.',
+    ideal: '> 20 dB (clear, non-breathy)',
     unit: 'dB',
     category: 'acoustic'
   },
   'MOS Score': { 
-    description: 'Mean Opinion Score (1-5 scale).',
-    ideal: '4.0+ (studio quality)',
+    description: 'Mean Opinion Score predicting human perception of audio quality (1-5 scale).',
+    ideal: '4.0+ (studio quality), 3.0 (phone quality), <2.0 (poor/robotic)',
+    category: 'ai_voice'
+  },
+  'Emotion Category': {
+    description: 'Dominant emotion detected in the voice (angry, happy, sad, neutral, fearful, etc.).',
+    ideal: 'Depends on context - should match expected tone',
     category: 'ai_voice'
   },
   'Emotion Confidence': { 
-    description: 'Confidence score for detected emotion.',
+    description: 'Confidence score for the detected emotion category.',
     ideal: '> 0.7 (high confidence)',
     category: 'ai_voice'
   },
   'Valence': { 
-    description: 'Emotional positivity/negativity scale.',
-    ideal: '-1.0 to +1.0',
+    description: 'Emotional positivity/negativity scale. Negative = sad/angry, Positive = happy/excited.',
+    ideal: '-1.0 to +1.0 (context dependent)',
     category: 'ai_voice'
   },
   'Arousal': { 
-    description: 'Emotional intensity/energy level.',
-    ideal: '0.3-0.6 (engaged)',
+    description: 'Emotional intensity/energy level. Low = calm/sleepy, High = excited/energetic.',
+    ideal: '0.3-0.6 (engaged but not agitated)',
+    category: 'ai_voice'
+  },
+  'Speaker Consistency': {
+    description: 'Voice identity stability throughout the call. Detects if voice changed mid-call (glitch).',
+    ideal: '> 0.8 (same voice), < 0.5 indicates voice glitch',
     category: 'ai_voice'
   },
   'Prosody Score': { 
-    description: 'Expressiveness/drama score.',
-    ideal: '0.4-0.7 (natural)',
+    description: 'Expressiveness/drama score. Low = monotone/flat, High = expressive/dynamic.',
+    ideal: '0.4-0.7 (natural expressiveness)',
     category: 'ai_voice'
   },
   'Follow Instructions': { 
-    description: 'How well the agent followed instructions.',
+    description: 'How well the agent followed the given instructions and guidelines.',
     ideal: '> 0.8 (80%+)',
     category: 'llm'
   },
   'Problem Resolution': { 
-    description: 'Whether the agent resolved the problem.',
-    ideal: 'true',
+    description: 'Whether the agent successfully resolved the customer\'s problem or query.',
+    ideal: '> 0.8 (80%+)',
     category: 'llm'
   },
   'Professionalism': { 
-    description: 'Professional demeanor and language.',
+    description: 'Professional demeanor, appropriate language, and courteous behavior.',
     ideal: '> 0.85 (85%+)',
     category: 'llm'
   },
   'Clarity and Empathy': { 
-    description: 'Clear communication with empathy.',
+    description: 'Clear communication combined with understanding and acknowledgment of customer feelings.',
+    ideal: '> 0.8 (80%+)',
+    category: 'llm'
+  },
+  'Objective Achieved': {
+    description: 'Whether the conversation\'s primary objective was successfully achieved.',
+    ideal: 'Yes/True',
+    category: 'llm'
+  },
+  'Overall Quality': {
+    description: 'Holistic assessment of the entire conversation quality.',
     ideal: '> 0.8 (80%+)',
     category: 'llm'
   },
 }
 
 const getMetricInfo = (metricName: string) => METRIC_INFO[metricName] || null
+
+const SECTION_INFO: Record<'conversation' | 'ai_voice' | 'acoustic', string> = {
+  conversation: 'LLM-based evaluation of how well the agent handled intent, instructions, and resolution quality.',
+  ai_voice: 'ML-based voice quality metrics on naturalness, affect, consistency, and expressiveness.',
+  acoustic: 'Signal-level acoustic measurements from the recording (pitch stability, perturbation, noise ratio).',
+}
+
+const MetricTooltip = ({ metricName }: { metricName: string }) => {
+  const [isVisible, setIsVisible] = useState(false)
+  const info = getMetricInfo(metricName)
+
+  if (!info) return null
+
+  return (
+    <div className="relative inline-block ml-1">
+      <button
+        type="button"
+        className="text-gray-400 hover:text-gray-600 focus:outline-none transition-colors"
+        onMouseEnter={() => setIsVisible(true)}
+        onMouseLeave={() => setIsVisible(false)}
+        onClick={() => setIsVisible(!isVisible)}
+        aria-label={`Info about ${metricName}`}
+      >
+        <HelpCircle className="w-3.5 h-3.5" />
+      </button>
+      {isVisible && (
+        <div className="absolute z-50 left-1/2 -translate-x-1/2 bottom-full mb-2 w-64 p-3 text-xs bg-gray-900 text-white rounded-lg shadow-xl pointer-events-none">
+          <div className="font-semibold text-gray-100 mb-1.5">{metricName}</div>
+          <p className="text-gray-300 mb-2 leading-relaxed">{info.description}</p>
+          <div className="flex items-center gap-1 pt-1.5 border-t border-gray-700">
+            <span className="text-emerald-400 font-medium">Ideal:</span>
+            <span className="text-gray-200">{info.ideal}</span>
+          </div>
+          <div className="absolute left-1/2 -translate-x-1/2 top-full w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[6px] border-t-gray-900" />
+        </div>
+      )}
+    </div>
+  )
+}
+
+const SectionTooltip = ({ section }: { section: 'conversation' | 'ai_voice' | 'acoustic' }) => {
+  const [isVisible, setIsVisible] = useState(false)
+
+  return (
+    <div className="relative inline-block">
+      <button
+        type="button"
+        className="text-gray-400 hover:text-gray-600 focus:outline-none transition-colors"
+        onMouseEnter={() => setIsVisible(true)}
+        onMouseLeave={() => setIsVisible(false)}
+        onClick={() => setIsVisible(!isVisible)}
+        aria-label={`Info about ${section} metrics`}
+      >
+        <HelpCircle className="w-3.5 h-3.5" />
+      </button>
+      {isVisible && (
+        <div className="absolute z-50 left-1/2 -translate-x-1/2 bottom-full mb-2 w-72 p-3 text-xs bg-gray-900 text-white rounded-lg shadow-xl pointer-events-none">
+          <p className="text-gray-200 leading-relaxed">{SECTION_INFO[section]}</p>
+          <div className="absolute left-1/2 -translate-x-1/2 top-full w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[6px] border-t-gray-900" />
+        </div>
+      )}
+    </div>
+  )
+}
 
 interface TestVoiceAgentResultData {
   id?: string
@@ -97,7 +181,16 @@ interface TestVoiceAgentResultData {
     start: number
     end: number
   }> | null
-  metric_scores?: Record<string, { value: any; type: string; metric_name: string }> | null
+  metric_scores?: Record<
+    string,
+    {
+      value: any
+      type: string
+      metric_name: string
+      skipped?: string
+      error?: string | null
+    }
+  > | null
   call_analysis?: {
     call_summary?: string
     user_sentiment?: string
@@ -249,33 +342,115 @@ export default function TestVoiceAgentResultDetails({ resultData }: TestVoiceAge
   )
 
   // Helper function to format metric values
-  const formatMetricValue = (value: any, type: string, metricName: string): string => {
-    if (value === null || value === undefined) return 'N/A'
-    if (type === 'boolean') return value ? 'Yes' : 'No'
-    if (type === 'rating') return `${(value * 100).toFixed(0)}%`
-    if (typeof value === 'number') {
-      const info = getMetricInfo(metricName)
-      if (info?.unit) return `${value.toFixed(2)} ${info.unit}`
-      return value.toFixed(2)
+  const formatMetricValue = (value: any, type: string, metricName: string): ReactNode => {
+    if (value === null || value === undefined) return <span className="text-gray-400">N/A</span>
+
+    const normalizedType = type?.toLowerCase()
+
+    if (metricName === 'Emotion Category') {
+      const emotion = String(value).toLowerCase()
+      const emotionConfig: Record<string, { emoji: string; color: string; bg: string }> = {
+        neutral: { emoji: '😐', color: 'text-gray-700', bg: 'bg-gray-100' },
+        happy: { emoji: '😊', color: 'text-green-700', bg: 'bg-green-100' },
+        sad: { emoji: '😢', color: 'text-blue-700', bg: 'bg-blue-100' },
+        angry: { emoji: '😠', color: 'text-red-700', bg: 'bg-red-100' },
+        fearful: { emoji: '😨', color: 'text-purple-700', bg: 'bg-purple-100' },
+        fear: { emoji: '😨', color: 'text-purple-700', bg: 'bg-purple-100' },
+        surprised: { emoji: '😲', color: 'text-yellow-700', bg: 'bg-yellow-100' },
+        surprise: { emoji: '😲', color: 'text-yellow-700', bg: 'bg-yellow-100' },
+        disgusted: { emoji: '🤢', color: 'text-green-800', bg: 'bg-green-200' },
+        disgust: { emoji: '🤢', color: 'text-green-800', bg: 'bg-green-200' },
+        calm: { emoji: '😌', color: 'text-teal-700', bg: 'bg-teal-100' },
+      }
+      const config = emotionConfig[emotion] || { emoji: '🎭', color: 'text-gray-700', bg: 'bg-gray-100' }
+
+      return (
+        <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full ${config.bg}`}>
+          <span className="text-xl">{config.emoji}</span>
+          <span className={`font-semibold capitalize ${config.color}`}>{value}</span>
+        </div>
+      )
     }
-    return String(value)
+
+    if (normalizedType === 'boolean') {
+      const boolValue = value === true || value === 1 || value === '1' || value === 'true'
+      return boolValue ? (
+        <div className="flex items-center space-x-1.5 text-green-600">
+          <CheckCircle className="w-5 h-5" />
+          <span className="font-semibold">Yes</span>
+        </div>
+      ) : (
+        <div className="flex items-center space-x-1.5 text-red-600">
+          <XCircle className="w-5 h-5" />
+          <span className="font-semibold">No</span>
+        </div>
+      )
+    }
+
+    if (normalizedType === 'rating') {
+      if (typeof value === 'string' && isNaN(parseFloat(value))) {
+        return (
+          <span className="inline-flex items-center px-3 py-1.5 rounded-full bg-purple-100 text-purple-700 font-semibold capitalize">
+            {value}
+          </span>
+        )
+      }
+
+      const numValue = typeof value === 'number' ? value : parseFloat(value)
+      if (isNaN(numValue)) return <span className="text-gray-400">N/A</span>
+
+      const normalizedValue = Math.max(0, Math.min(1, numValue))
+      const percentage = Math.round(normalizedValue * 100)
+      const getBarColor = (pct: number): string => {
+        if (pct >= 70) return 'bg-green-500'
+        if (pct >= 50) return 'bg-yellow-500'
+        return 'bg-red-500'
+      }
+
+      return (
+        <div className="flex flex-col gap-2">
+          <span className="text-2xl font-bold text-gray-900">{percentage}%</span>
+          <div className="w-full h-3 bg-gray-200 rounded-full overflow-hidden">
+            <div className={`h-full rounded-full transition-all ${getBarColor(percentage)}`} style={{ width: `${percentage}%` }} />
+          </div>
+        </div>
+      )
+    }
+
+    if (normalizedType === 'number') {
+      const numValue = typeof value === 'number' ? value : parseFloat(value)
+      if (isNaN(numValue)) return <span className="text-gray-400">N/A</span>
+
+      const info = getMetricInfo(metricName)
+      if (info?.category === 'acoustic' || info?.category === 'ai_voice') {
+        return (
+          <div className="flex items-baseline gap-1">
+            <span className="text-2xl font-bold text-gray-900">{numValue.toFixed(2)}</span>
+            <span className="text-sm font-medium text-violet-600">{info.unit || ''}</span>
+          </div>
+        )
+      }
+      return <span className="text-2xl font-bold text-gray-900">{numValue.toFixed(1)}</span>
+    }
+
+    return <span className="text-2xl font-bold text-gray-900">{String(value)}</span>
   }
 
   // Helper to check if metric has a valid value
   const hasValidValue = (metric: any): boolean => {
-    return metric?.value !== null && metric?.value !== undefined && !metric?.error
+    const val = metric?.value
+    if (val === null || val === undefined) return false
+    if (val === '') return false
+    if (typeof val === 'string' && val.toLowerCase() === 'n/a') return false
+    if (typeof val === 'string' && val.toLowerCase() === 'na') return false
+    if (typeof val === 'string' && val.trim() === '') return false
+    return true
   }
 
-  // Helper to get metric icon based on value quality
-  const getMetricIcon = (value: any, type: string) => {
-    if (value === null || value === undefined) return <HelpCircle className="w-4 h-4 text-gray-400" />
-    if (type === 'boolean') return value ? <CheckCircle className="w-4 h-4 text-green-500" /> : <XCircle className="w-4 h-4 text-red-500" />
-    if (type === 'rating') {
-      if (value >= 0.8) return <CheckCircle className="w-4 h-4 text-green-500" />
-      if (value >= 0.6) return <HelpCircle className="w-4 h-4 text-yellow-500" />
-      return <XCircle className="w-4 h-4 text-red-500" />
-    }
-    return null
+  const isAudioCategoryMetric = (metricName?: string): boolean => {
+    if (!metricName) return false
+    const info = getMetricInfo(metricName)
+    return info?.category === 'acoustic' || info?.category === 'ai_voice'
   }
 
   const MetricsCard = () => {
@@ -300,6 +475,14 @@ export default function TestVoiceAgentResultDetails({ resultData }: TestVoiceAge
       const info = getMetricInfo(m.metric_name)
       return info?.category === 'ai_voice'
     })
+    const unavailableAudioMetrics = metrics.filter(([, m]) => {
+      if (!isAudioCategoryMetric(m?.metric_name)) return false
+      if (m?.skipped === 'audio_required') return true
+      if (typeof m?.error === 'string' && m.error.trim().length > 0) return true
+      return false
+    })
+    const hasAnyAudioMetric = metrics.some(([, m]) => isAudioCategoryMetric(m?.metric_name))
+    const hasAudioUnavailableNotice = hasAnyAudioMetric && unavailableAudioMetrics.length > 0
 
     return (
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
@@ -309,23 +492,33 @@ export default function TestVoiceAgentResultDetails({ resultData }: TestVoiceAge
         </h3>
         
         <div className="space-y-6">
+          {hasAudioUnavailableNotice && (
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              {unavailableAudioMetrics.length === 1
+                ? 'An audio metric is unavailable for this run. Audio analysis could not complete for that metric.'
+                : 'Some audio metrics are unavailable for this run. Audio analysis could not fully complete for one or more metrics.'}
+            </div>
+          )}
+
           {/* LLM Conversation Metrics */}
           {llmMetrics.length > 0 && (
             <div>
               <div className="flex items-center gap-2 mb-3">
-                <Brain className="w-4 h-4 text-blue-600" />
-                <h4 className="text-sm font-semibold text-blue-800 uppercase tracking-wide">Conversation Quality</h4>
+                <Brain className="w-4 h-4 text-emerald-600" />
+                <h4 className="text-sm font-semibold text-emerald-800 uppercase tracking-wide">Conversation Quality</h4>
+                <SectionTooltip section="conversation" />
+                <span className="px-2 py-0.5 text-xs bg-emerald-100 text-emerald-700 rounded-full">LLM Evaluation</span>
               </div>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
                 {llmMetrics.map(([id, metric]) => (
-                  <div key={id} className="p-3 bg-blue-50 rounded-lg border border-blue-100">
-                    <div className="flex items-center justify-between mb-1">
-                      <p className="text-xs text-blue-700 font-medium truncate">{metric.metric_name}</p>
-                      {getMetricIcon(metric.value, metric.type)}
+                  <div key={id} className="border border-gray-200 rounded-lg p-4">
+                    <div className="text-sm font-medium text-gray-500 mb-2 flex items-center">
+                      <span>{metric.metric_name}</span>
+                      <MetricTooltip metricName={metric.metric_name} />
                     </div>
-                    <p className="text-lg font-bold text-blue-900">
+                    <div>
                       {formatMetricValue(metric.value, metric.type, metric.metric_name)}
-                    </p>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -338,19 +531,19 @@ export default function TestVoiceAgentResultDetails({ resultData }: TestVoiceAge
               <div className="flex items-center gap-2 mb-3">
                 <Sparkles className="w-4 h-4 text-purple-600" />
                 <h4 className="text-sm font-semibold text-purple-800 uppercase tracking-wide">AI Voice Quality</h4>
+                <SectionTooltip section="ai_voice" />
+                <span className="px-2 py-0.5 text-xs bg-purple-100 text-purple-700 rounded-full">ML Analysis</span>
               </div>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 {aiVoiceMetrics.map(([id, metric]) => (
-                  <div key={id} className="p-3 bg-purple-50 rounded-lg border border-purple-100">
-                    <p className="text-xs text-purple-700 font-medium truncate mb-1">{metric.metric_name}</p>
-                    <p className="text-lg font-bold text-purple-900">
+                  <div key={id} className="border border-purple-200 bg-purple-50/50 rounded-lg p-4">
+                    <div className="text-sm font-medium text-purple-700 mb-2 flex items-center">
+                      <span>{metric.metric_name}</span>
+                      <MetricTooltip metricName={metric.metric_name} />
+                    </div>
+                    <div>
                       {formatMetricValue(metric.value, metric.type, metric.metric_name)}
-                    </p>
-                    {getMetricInfo(metric.metric_name)?.ideal && (
-                      <p className="text-[10px] text-purple-600 mt-1">
-                        Ideal: {getMetricInfo(metric.metric_name)?.ideal}
-                      </p>
-                    )}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -361,21 +554,21 @@ export default function TestVoiceAgentResultDetails({ resultData }: TestVoiceAge
           {acousticMetrics.length > 0 && (
             <div>
               <div className="flex items-center gap-2 mb-3">
-                <AudioWaveform className="w-4 h-4 text-green-600" />
-                <h4 className="text-sm font-semibold text-green-800 uppercase tracking-wide">Acoustic Analysis</h4>
+                <AudioWaveform className="w-4 h-4 text-violet-600" />
+                <h4 className="text-sm font-semibold text-violet-800 uppercase tracking-wide">Acoustic Analysis</h4>
+                <SectionTooltip section="acoustic" />
+                <span className="px-2 py-0.5 text-xs bg-violet-100 text-violet-700 rounded-full">Signal Analysis</span>
               </div>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 {acousticMetrics.map(([id, metric]) => (
-                  <div key={id} className="p-3 bg-green-50 rounded-lg border border-green-100">
-                    <p className="text-xs text-green-700 font-medium truncate mb-1">{metric.metric_name}</p>
-                    <p className="text-lg font-bold text-green-900">
+                  <div key={id} className="border border-violet-200 bg-violet-50/50 rounded-lg p-4">
+                    <div className="text-sm font-medium text-violet-700 mb-2 flex items-center">
+                      <span>{metric.metric_name}</span>
+                      <MetricTooltip metricName={metric.metric_name} />
+                    </div>
+                    <div>
                       {formatMetricValue(metric.value, metric.type, metric.metric_name)}
-                    </p>
-                    {getMetricInfo(metric.metric_name)?.ideal && (
-                      <p className="text-[10px] text-green-600 mt-1">
-                        Ideal: {getMetricInfo(metric.metric_name)?.ideal}
-                      </p>
-                    )}
+                    </div>
                   </div>
                 ))}
               </div>

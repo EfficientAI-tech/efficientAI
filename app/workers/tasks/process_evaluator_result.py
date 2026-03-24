@@ -1,6 +1,7 @@
 """Celery task: process evaluator result (transcribe and evaluate metrics)."""
 
 import time
+import uuid as _uuid
 from uuid import UUID
 
 from loguru import logger
@@ -194,6 +195,156 @@ def _categorize_metrics(enabled_metrics, has_audio):
     return llm_metrics, audio_metrics, skipped_scores
 
 
+def _normalize_platform(platform: object) -> str:
+    """Normalize provider platform enum/string into lowercase string."""
+    if not platform:
+        return ""
+    if hasattr(platform, "value"):
+        return str(platform.value).lower()
+    return str(platform).lower()
+
+
+def _extract_audio_url(call_data: dict, platform: str) -> str | None:
+    """Extract provider-specific audio URL from call data."""
+    recording_urls = call_data.get("recording_urls", {}) if isinstance(call_data, dict) else {}
+    provider_payload = call_data.get("provider_payload", {}) if isinstance(call_data, dict) else {}
+    artifact = call_data.get("artifact", {}) if isinstance(call_data, dict) else {}
+    recording = artifact.get("recording", {}) if isinstance(artifact, dict) else {}
+    mono_recording = recording.get("mono", {}) if isinstance(recording, dict) else {}
+    if platform == "elevenlabs":
+        return recording_urls.get("conversation_audio")
+    if platform == "retell":
+        return call_data.get("recording_url")
+    if platform == "vapi":
+        return (
+            call_data.get("recordingUrl")
+            or call_data.get("stereoRecordingUrl")
+            or artifact.get("recordingUrl")
+            or artifact.get("stereoRecordingUrl")
+            or mono_recording.get("combinedUrl")
+            or recording_urls.get("combined_url")
+            or recording_urls.get("stereo_url")
+            or call_data.get("recordingUrl")
+            or provider_payload.get("recordingUrl")
+            or provider_payload.get("stereoRecordingUrl")
+        )
+    return None
+
+
+def _recover_missing_audio_for_result(result, db, refresh_call_data: bool = True) -> bool:
+    """
+    Attempt to recover missing audio from provider, upload to S3, and persist key.
+
+    Returns True when a new S3 key is successfully stored.
+    """
+    import requests as _http
+
+    from app.core.encryption import decrypt_api_key
+    from app.models.database import Agent, Integration
+    from app.services.storage.s3_service import s3_service
+    from app.services.voice_providers import get_voice_provider
+
+    platform = _normalize_platform(result.provider_platform)
+    if platform not in {"retell", "vapi", "elevenlabs"}:
+        return False
+    if not result.provider_call_id:
+        return False
+
+    agent = db.query(Agent).filter(Agent.id == result.agent_id).first() if result.agent_id else None
+    integration = None
+    decrypted_key = None
+    if agent and agent.voice_ai_integration_id:
+        integration = db.query(Integration).filter(
+            Integration.id == agent.voice_ai_integration_id,
+            Integration.organization_id == result.organization_id,
+        ).first()
+        if integration:
+            try:
+                decrypted_key = decrypt_api_key(integration.api_key)
+            except Exception as decrypt_err:
+                logger.warning(
+                    f"[EvaluatorResult {result.result_id}] Unable to decrypt integration key "
+                    f"for audio recovery: {decrypt_err}"
+                )
+
+    call_data = result.call_data or {}
+    if refresh_call_data and decrypted_key:
+        try:
+            provider_class = get_voice_provider(platform)
+            provider_kwargs = {"api_key": decrypted_key}
+            if platform == "vapi" and integration and getattr(integration, "public_key", None):
+                provider_kwargs["public_key"] = integration.public_key
+            provider = provider_class(**provider_kwargs)
+            if hasattr(provider, "retrieve_call_metrics"):
+                refreshed = provider.retrieve_call_metrics(result.provider_call_id)
+                if isinstance(refreshed, dict) and refreshed:
+                    call_data = refreshed
+                    result.call_data = refreshed
+                    db.commit()
+        except Exception as refresh_err:
+            logger.warning(
+                f"[EvaluatorResult {result.result_id}] Audio recovery could not refresh provider metrics: "
+                f"{refresh_err}"
+            )
+
+    audio_url = _extract_audio_url(call_data, platform)
+    if not audio_url:
+        logger.warning(
+            f"[EvaluatorResult {result.result_id}] Audio recovery failed: no provider recording URL available"
+        )
+        return False
+
+    headers = {"xi-api-key": decrypted_key} if platform == "elevenlabs" and decrypted_key else None
+    try:
+        response = _http.get(audio_url, headers=headers, timeout=120)
+    except Exception as download_err:
+        logger.warning(
+            f"[EvaluatorResult {result.result_id}] Audio recovery download failed: {download_err}"
+        )
+        return False
+
+    if response.status_code != 200 or not response.content:
+        logger.warning(
+            f"[EvaluatorResult {result.result_id}] Audio recovery download returned "
+            f"status={response.status_code}"
+        )
+        return False
+
+    content_type = response.headers.get("content-type", "audio/mpeg")
+    ext = "wav" if "wav" in content_type else "mp3"
+    org_id = str(result.organization_id)
+    s3_key = (
+        f"audio/organizations/{org_id}/evaluations/"
+        f"{result.provider_call_id}/{_uuid.uuid4()}.{ext}"
+    )
+
+    try:
+        s3_service.upload_file_by_key(response.content, s3_key, content_type=content_type)
+    except Exception as upload_err:
+        logger.warning(
+            f"[EvaluatorResult {result.result_id}] Audio recovery upload failed: {upload_err}"
+        )
+        return False
+
+    result.audio_s3_key = s3_key
+    db.commit()
+    db.refresh(result)
+    logger.info(
+        f"[EvaluatorResult {result.result_id}] Recovered missing audio and stored at {s3_key}"
+    )
+    return True
+
+
+def _all_audio_scores_download_failed(audio_scores: dict[str, dict[str, object]]) -> bool:
+    """Check whether every audio metric failed due to missing/unreadable S3 object."""
+    if not audio_scores:
+        return False
+    return all(
+        isinstance(score, dict) and score.get("error") == "audio_download_failed"
+        for score in audio_scores.values()
+    )
+
+
 @celery_app.task(name="process_evaluator_result", bind=True, max_retries=3)
 def process_evaluator_result_task(self, result_id: str):
     """
@@ -229,9 +380,11 @@ def process_evaluator_result_task(self, result_id: str):
         result.celery_task_id = self.request.id
         db.commit()
 
-        has_existing_transcript = bool(result.transcription)
-
         try:
+            if not result.audio_s3_key:
+                _recover_missing_audio_for_result(result, db, refresh_call_data=True)
+
+            has_existing_transcript = bool(result.transcription)
             if not result.audio_s3_key and not has_existing_transcript:
                 raise ValueError("No audio S3 key or existing transcript found")
 
@@ -259,7 +412,9 @@ def process_evaluator_result_task(self, result_id: str):
                     result, ai_providers, db
                 )
                 result.transcription = transcription
-                result.speaker_segments = speaker_segments if speaker_segments else None
+                # Avoid duplicating transcript structure when provider call_data already carries it.
+                if not result.call_data:
+                    result.speaker_segments = speaker_segments if speaker_segments else None
                 db.commit()
 
             # Step 2: Load and categorize metrics
@@ -285,6 +440,20 @@ def process_evaluator_result_task(self, result_id: str):
                         audio_metrics=audio_metrics,
                         result_id=result.result_id,
                     )
+
+                    if _all_audio_scores_download_failed(audio_scores):
+                        logger.warning(
+                            f"[EvaluatorResult {result.result_id}] Existing S3 audio unavailable; "
+                            "attempting provider audio recovery"
+                        )
+                        recovered = _recover_missing_audio_for_result(result, db, refresh_call_data=True)
+                        if recovered and result.audio_s3_key:
+                            audio_scores = evaluate_audio_metrics(
+                                audio_s3_key=result.audio_s3_key,
+                                audio_metrics=audio_metrics,
+                                result_id=result.result_id,
+                            )
+
                     metric_scores.update(audio_scores)
                 except Exception as audio_err:
                     logger.error(
@@ -344,7 +513,14 @@ def process_evaluator_result_task(self, result_id: str):
                         scenario=scenario,
                     )
                     if call_analysis:
-                        result.call_data = {"call_analysis": call_analysis}
+                        existing_call_data = dict(result.call_data) if isinstance(result.call_data, dict) else {}
+                        existing_call_data["call_analysis"] = call_analysis
+                        generated = existing_call_data.get("generated", {})
+                        if not isinstance(generated, dict):
+                            generated = {}
+                        generated["call_analysis"] = call_analysis
+                        existing_call_data["generated"] = generated
+                        result.call_data = existing_call_data
                 except Exception as analysis_err:
                     logger.warning(
                         f"[EvaluatorResult {result.result_id}] Call analysis failed (non-fatal): {analysis_err}"
