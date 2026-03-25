@@ -24,6 +24,9 @@ class VoiceMakerProvider(BaseVoiceProvider):
     def retrieve_call_metrics(self, call_id: str) -> Dict[str, Any]:
         raise NotImplementedError("VoiceMaker call metrics are not supported in this app")
 
+    def update_agent_prompt(self, agent_id: str, system_prompt: str, **kwargs) -> Dict[str, Any]:
+        raise NotImplementedError("VoiceMaker does not support agent prompt updates")
+
     def test_connection(self) -> bool:
         """Validate API key via a tiny TTS conversion request."""
         url = "https://developer.voicemaker.in/api/v1/voice/convert"

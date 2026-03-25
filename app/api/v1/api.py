@@ -31,6 +31,7 @@ from app.api.v1.routes import (
     cron_jobs,
     voice_playground,
     prompt_partials,
+    prompt_optimization,
 )
 
 api_router = APIRouter()
@@ -65,4 +66,5 @@ api_router.include_router(alerts.router)
 api_router.include_router(cron_jobs.router)
 api_router.include_router(voice_playground.router)
 api_router.include_router(prompt_partials.router)
+api_router.include_router(prompt_optimization.router)
 

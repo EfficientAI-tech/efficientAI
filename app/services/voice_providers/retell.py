@@ -279,6 +279,51 @@ class RetellVoiceProvider(BaseVoiceProvider):
         except Exception as e:
             raise ValueError(f"Failed to retrieve Retell call metrics: {str(e)}")
 
+    def update_agent_prompt(self, agent_id: str, system_prompt: str, **kwargs) -> Dict[str, Any]:
+        """
+        Update a Retell agent's system prompt.
+
+        Retrieves the current agent to find its LLM configuration, then updates
+        the prompt via the agent update endpoint.
+
+        Args:
+            agent_id: Retell agent ID
+            system_prompt: New system prompt text
+
+        Returns:
+            Updated agent data from Retell
+        """
+        try:
+            current = self.get_agent(agent_id)
+            response_engine = current.get("response_engine") or {}
+
+            llm_id = response_engine.get("llm_id")
+            if llm_id:
+                llm_response = self.client.llm.update(
+                    llm_id=llm_id,
+                    general_prompt=system_prompt,
+                )
+                if isinstance(llm_response, dict):
+                    return llm_response
+                elif hasattr(llm_response, "model_dump"):
+                    return llm_response.model_dump()
+                return {"llm_id": llm_id, "updated": True}
+
+            update_response = self.client.agent.update(
+                agent_id=agent_id,
+                response_engine={
+                    **response_engine,
+                    "system_prompt": system_prompt,
+                },
+            )
+            if isinstance(update_response, dict):
+                return update_response
+            elif hasattr(update_response, "model_dump"):
+                return update_response.model_dump()
+            return {"agent_id": agent_id, "updated": True}
+        except Exception as e:
+            raise ValueError(f"Failed to update Retell agent prompt: {str(e)}")
+
     def test_connection(self) -> bool:
         """
         Test Retell connection by attempting to list agents.

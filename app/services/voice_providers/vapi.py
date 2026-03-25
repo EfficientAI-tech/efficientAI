@@ -183,6 +183,46 @@ class VapiVoiceProvider(BaseVoiceProvider):
         except Exception as e:
             raise ValueError(f"Failed to get Vapi agent: {str(e)}")
 
+    def update_agent_prompt(self, agent_id: str, system_prompt: str, **kwargs) -> Dict[str, Any]:
+        """
+        Update a Vapi assistant's system prompt via PATCH /assistant/{id}.
+
+        Args:
+            agent_id: Vapi assistant ID
+            system_prompt: New system prompt text
+
+        Returns:
+            Updated assistant data from Vapi
+        """
+        try:
+            url = f"{self.api_url}/assistant/{agent_id}"
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "model": {
+                    "messages": [{"role": "system", "content": system_prompt}],
+                },
+            }
+            logger.info(f"[VapiProvider] Updating assistant prompt: PATCH {url}")
+            response = requests.patch(url, headers=headers, json=payload, timeout=30)
+
+            if not response.ok:
+                try:
+                    error_body = response.json()
+                except Exception:
+                    error_body = response.text[:500]
+                raise ValueError(
+                    f"Vapi API error ({response.status_code}): {error_body}"
+                )
+
+            data = response.json()
+            logger.info(f"[VapiProvider] Assistant {agent_id} prompt updated")
+            return data
+        except requests.exceptions.RequestException as e:
+            raise ValueError(f"Failed to update Vapi assistant prompt: {str(e)}")
+
     def _make_json_serializable(self, obj: Any) -> Any:
         """
         Recursively convert NumPy types and other non-JSON-serializable types to native Python types.

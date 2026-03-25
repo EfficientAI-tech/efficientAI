@@ -11,7 +11,8 @@ from app.models.enums import (
     LanguageEnum, CallTypeEnum, CallMediumEnum, GenderEnum, AccentEnum, BackgroundNoiseEnum,
     IntegrationPlatform, ModelProvider, VoiceBundleType, TestAgentConversationStatus,
     MetricType, MetricTrigger, CallRecordingStatus, AlertMetricType, AlertAggregation,
-    AlertOperator, AlertNotifyFrequency, AlertStatus, AlertHistoryStatus, CronJobStatus
+    AlertOperator, AlertNotifyFrequency, AlertStatus, AlertHistoryStatus, CronJobStatus,
+    PromptOptimizationStatus,
 )
 
 def get_enum_values(enum_class):
@@ -871,3 +872,73 @@ class CustomTTSVoice(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+# ============================================
+# GEPA PROMPT OPTIMIZATION (Enterprise)
+# ============================================
+
+
+class PromptOptimizationRun(Base):
+    """Tracks a GEPA prompt optimization run for a voice agent."""
+    __tablename__ = "prompt_optimization_runs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
+    evaluator_id = Column(UUID(as_uuid=True), ForeignKey("evaluators.id"), nullable=True, index=True)
+    voice_bundle_id = Column(UUID(as_uuid=True), ForeignKey("voicebundles.id"), nullable=True, index=True)
+
+    seed_prompt = Column(Text, nullable=False)
+    best_prompt = Column(Text, nullable=True)
+    best_score = Column(Float, nullable=True)
+
+    status = Column(String(20), nullable=False, default=PromptOptimizationStatus.PENDING.value)
+    config = Column(JSON, nullable=True)
+    reflection_trace = Column(JSON, nullable=True)
+    metric_history = Column(JSON, nullable=True)
+
+    num_iterations = Column(Integer, nullable=True)
+    num_metric_calls = Column(Integer, nullable=True)
+
+    celery_task_id = Column(String, nullable=True, index=True)
+    error_message = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_by = Column(String, nullable=True)
+
+    candidates = relationship(
+        "PromptOptimizationCandidate",
+        back_populates="optimization_run",
+        cascade="all, delete-orphan",
+        order_by="PromptOptimizationCandidate.score.desc()",
+    )
+
+
+class PromptOptimizationCandidate(Base):
+    """A Pareto-optimal prompt candidate produced by a GEPA optimization run."""
+    __tablename__ = "prompt_optimization_candidates"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    optimization_run_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("prompt_optimization_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    prompt_text = Column(Text, nullable=False)
+    score = Column(Float, nullable=True)
+    metric_breakdown = Column(JSON, nullable=True)
+    reflection_summary = Column(Text, nullable=True)
+
+    parent_candidate_id = Column(UUID(as_uuid=True), ForeignKey("prompt_optimization_candidates.id"), nullable=True)
+
+    is_accepted = Column(Boolean, nullable=False, default=False)
+    pushed_to_provider_at = Column(DateTime(timezone=True), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    optimization_run = relationship("PromptOptimizationRun", back_populates="candidates")
+    parent = relationship("PromptOptimizationCandidate", remote_side="PromptOptimizationCandidate.id")

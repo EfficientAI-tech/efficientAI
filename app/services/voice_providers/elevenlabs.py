@@ -207,6 +207,50 @@ class ElevenLabsVoiceProvider(BaseVoiceProvider):
             logger.error(f"[ElevenLabsProvider] Error getting conversation: {e}", exc_info=True)
             raise ValueError(f"Failed to retrieve ElevenLabs conversation: {str(e)}")
 
+    def update_agent_prompt(self, agent_id: str, system_prompt: str, **kwargs) -> Dict[str, Any]:
+        """
+        Update an ElevenLabs Conversational AI agent's system prompt.
+
+        Args:
+            agent_id: ElevenLabs agent ID
+            system_prompt: New system prompt text
+
+        Returns:
+            Updated agent data from ElevenLabs
+        """
+        try:
+            url = f"{self.api_url}/convai/agents/{agent_id}"
+            headers = {
+                "xi-api-key": self.api_key,
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "conversation_config": {
+                    "agent": {
+                        "prompt": {
+                            "prompt": system_prompt,
+                        },
+                    },
+                },
+            }
+            logger.info(f"[ElevenLabsProvider] Updating agent prompt: PATCH {url}")
+            response = requests.patch(url, headers=headers, json=payload, timeout=30)
+
+            if not response.ok:
+                try:
+                    error_body = response.json()
+                except Exception:
+                    error_body = response.text[:500]
+                raise ValueError(
+                    f"ElevenLabs API error ({response.status_code}): {error_body}"
+                )
+
+            data = response.json()
+            logger.info(f"[ElevenLabsProvider] Agent {agent_id} prompt updated")
+            return data
+        except requests.exceptions.RequestException as e:
+            raise ValueError(f"Failed to update ElevenLabs agent prompt: {str(e)}")
+
     def test_connection(self) -> bool:
         """Test the ElevenLabs API connection."""
         try:

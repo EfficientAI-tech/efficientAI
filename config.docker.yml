@@ -59,6 +59,11 @@ cors:
     - "http://localhost:3000"
     - "http://localhost:8000"
 
+# GEPA Prompt Optimization (LM resolved from VoiceBundle at runtime)
+gepa:
+  max_metric_calls: 20
+  default_minibatch_size: 3
+
 # API Settings
 api:
   prefix: "/api/v1"

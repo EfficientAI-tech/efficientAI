@@ -111,6 +111,11 @@ google = [
     "google-cloud-texttospeech>=2.16.0",
     "google-cloud-speech>=2.26.0",
 ]
+# GEPA prompt optimization (enterprise feature)
+gepa = [
+    "gepa",
+    "dspy",
+]
 # Optional: Speaker Consistency metric (has version conflicts with torchaudio)
 # speechbrain = ["speechbrain>=1.0.0"]
 

@@ -33,6 +33,7 @@ import {
   Lock,
   ScrollText,
   Github,
+  Sparkles,
 } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import Logo from './Logo'
@@ -109,6 +110,7 @@ const navigationSections: NavSection[] = [
 const otherNavigation: NavItem[] = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
   { name: 'Prompt Partials', href: '/prompt-partials', icon: ScrollText },
+  { name: 'Prompt Optimization', href: '/prompt-optimization', icon: Sparkles, enterpriseFeature: 'gepa_optimization' },
 ]
 
 const bottomNavigation = [
@@ -397,13 +399,16 @@ function SidebarContent({
           {/* Other Navigation */}
           {otherNavigation.map((item) => {
             const isActive = location.pathname === item.href
+            const isGated = item.enterpriseFeature && !isFeatureEnabled(item.enterpriseFeature)
             return (
               <Link
                 key={item.name}
                 to={item.href}
                 className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md relative overflow-hidden ${isActive
                   ? 'bg-gradient-to-r from-gray-900 via-gray-700 to-gray-400 text-white'
-                  : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
+                  : isGated
+                    ? 'text-gray-400 hover:bg-gray-50'
+                    : 'text-gray-700 hover:bg-gray-50 hover:text-gray-900'
                   }`}
               >
                 <item.icon
@@ -411,6 +416,7 @@ function SidebarContent({
                     }`}
                 />
                 {item.name}
+                {isGated && <Lock className="ml-auto h-3.5 w-3.5 text-gray-400" />}
               </Link>
             )
           })}

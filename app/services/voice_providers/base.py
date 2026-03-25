@@ -79,6 +79,21 @@ class BaseVoiceProvider(ABC):
         pass
 
     @abstractmethod
+    def update_agent_prompt(self, agent_id: str, system_prompt: str, **kwargs) -> Dict[str, Any]:
+        """
+        Update the agent's system prompt / instructions in the provider platform.
+
+        Args:
+            agent_id: The agent ID from the voice provider
+            system_prompt: The new system prompt text
+            **kwargs: Additional provider-specific parameters
+
+        Returns:
+            Dictionary containing the updated agent information
+        """
+        pass
+
+    @abstractmethod
     def test_connection(self) -> bool:
         """
         Test the connection to the voice provider API.
