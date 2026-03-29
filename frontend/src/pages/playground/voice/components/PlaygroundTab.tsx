@@ -431,6 +431,7 @@ const ALL_STT_OPTIONS: Array<{ provider: string; model: string; label: string }>
   { provider: 'openai', model: 'gpt-4o-mini-transcribe', label: 'OpenAI / gpt-4o-mini-transcribe' },
   { provider: 'deepgram', model: 'nova-2', label: 'Deepgram / nova-2' },
   { provider: 'deepgram', model: 'nova-3', label: 'Deepgram / nova-3' },
+  { provider: 'elevenlabs', model: 'scribe_v2', label: 'ElevenLabs / Scribe v2' },
 ]
 
 const INTEGRATION_TO_PROVIDER: Record<string, string> = {
