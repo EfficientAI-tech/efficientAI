@@ -175,6 +175,8 @@ class TTSComparisonCreate(BaseModel):
     voices_b: Optional[List[Dict[str, Any]]] = None
     sample_texts: List[str]
     num_runs: int = 1
+    eval_stt_provider: Optional[str] = None
+    eval_stt_model: Optional[str] = None
 
 
 class BlindTestSubmit(BaseModel):
@@ -663,6 +665,8 @@ async def create_comparison(
         voices_b=[v if isinstance(v, dict) else {"id": v} for v in voices_b] if voices_b else [],
         sample_texts=data.sample_texts,
         num_runs=num_runs,
+        eval_stt_provider=data.eval_stt_provider,
+        eval_stt_model=data.eval_stt_model,
     )
     db.add(comparison)
     db.flush()
@@ -1248,6 +1252,8 @@ def _serialize_comparison(c: TTSComparison, db: Session) -> Dict[str, Any]:
         "num_runs": c.num_runs or 1,
         "blind_test_results": c.blind_test_results,
         "evaluation_summary": c.evaluation_summary,
+        "eval_stt_provider": getattr(c, "eval_stt_provider", None),
+        "eval_stt_model": getattr(c, "eval_stt_model", None),
         "error_message": c.error_message,
         "samples": serialized_samples,
         "created_at": c.created_at.isoformat() if c.created_at else None,

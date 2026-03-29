@@ -1,4 +1,7 @@
-import { Loader2, Hash, Play, RotateCcw, ArrowRight, Volume2, Plus, CheckCircle2, Pause } from 'lucide-react'
+import { useState, useMemo } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { Loader2, Hash, Play, RotateCcw, ArrowRight, Volume2, Plus, CheckCircle2, Pause, ChevronDown, ChevronRight, Mic } from 'lucide-react'
+import { apiClient } from '../../../../lib/api'
 import Button from '../../../../components/Button'
 import ProviderLogo, { getProviderInfo } from '../../../../components/shared/ProviderLogo'
 import { useVoicePlayground } from '../context'
@@ -32,6 +35,11 @@ export default function PlaygroundTab() {
     setSampleRateB,
     numRuns,
     setNumRuns,
+    evalSttProvider,
+    setEvalSttProvider,
+    evalSttModel,
+    setEvalSttModel,
+    voiceBundles,
     canRun,
     createComparison,
     isCreating,
@@ -106,6 +114,15 @@ export default function PlaygroundTab() {
             </button>
           </div>
         </div>
+
+        {/* Evaluation STT Settings */}
+        <EvalSttPanel
+          evalSttProvider={evalSttProvider}
+          setEvalSttProvider={setEvalSttProvider}
+          evalSttModel={evalSttModel}
+          setEvalSttModel={setEvalSttModel}
+          voiceBundles={voiceBundles}
+        />
 
         {/* Provider Config Panel */}
         <div className="bg-white rounded-xl shadow-lg p-6">
@@ -406,4 +423,138 @@ export default function PlaygroundTab() {
   }
 
   return null
+}
+
+const ALL_STT_OPTIONS: Array<{ provider: string; model: string; label: string }> = [
+  { provider: 'openai', model: 'whisper-1', label: 'OpenAI / whisper-1' },
+  { provider: 'openai', model: 'gpt-4o-transcribe', label: 'OpenAI / gpt-4o-transcribe' },
+  { provider: 'openai', model: 'gpt-4o-mini-transcribe', label: 'OpenAI / gpt-4o-mini-transcribe' },
+  { provider: 'deepgram', model: 'nova-2', label: 'Deepgram / nova-2' },
+  { provider: 'deepgram', model: 'nova-3', label: 'Deepgram / nova-3' },
+  { provider: 'elevenlabs', model: 'scribe_v2', label: 'ElevenLabs / Scribe v2' },
+]
+
+const INTEGRATION_TO_PROVIDER: Record<string, string> = {
+  deepgram: 'deepgram',
+  elevenlabs: 'elevenlabs',
+  cartesia: 'cartesia',
+  sarvam: 'sarvam',
+}
+
+function EvalSttPanel({
+  evalSttProvider,
+  setEvalSttProvider,
+  evalSttModel,
+  setEvalSttModel,
+  voiceBundles,
+}: {
+  evalSttProvider: string
+  setEvalSttProvider: (p: string) => void
+  evalSttModel: string
+  setEvalSttModel: (m: string) => void
+  voiceBundles: Array<{ id: string; name: string; stt_provider?: string | null; stt_model?: string | null }>
+}) {
+  const [expanded, setExpanded] = useState(false)
+
+  const { data: aiProviders = [] } = useQuery<Array<{ id: string; provider: string; is_active: boolean }>>({
+    queryKey: ['ai-providers'],
+    queryFn: () => apiClient.listAIProviders(),
+  })
+
+  const { data: integrations = [] } = useQuery<Array<{ id: string; platform: string; is_active: boolean }>>({
+    queryKey: ['integrations'],
+    queryFn: () => apiClient.listIntegrations(),
+  })
+
+  const activeProviderNames = useMemo(() => {
+    const names = new Set<string>()
+    for (const p of aiProviders) {
+      if (p.is_active) names.add(p.provider.toLowerCase())
+    }
+    for (const i of integrations) {
+      if (i.is_active) {
+        const mapped = INTEGRATION_TO_PROVIDER[i.platform.toLowerCase()]
+        if (mapped) names.add(mapped)
+      }
+    }
+    return names
+  }, [aiProviders, integrations])
+
+  const availableSttOptions = useMemo(
+    () => ALL_STT_OPTIONS.filter(opt => activeProviderNames.has(opt.provider)),
+    [activeProviderNames],
+  )
+
+  const bundleWithStt = voiceBundles.find(b => b.stt_provider && b.stt_model)
+  const autoLabel = bundleWithStt
+    ? `Auto — ${bundleWithStt.stt_provider} / ${bundleWithStt.stt_model} (from "${bundleWithStt.name}")`
+    : 'Auto — uses first Voice Bundle with STT configured'
+
+  const selectedValue = evalSttProvider && evalSttModel
+    ? `${evalSttProvider}::${evalSttModel}`
+    : ''
+
+  const selectedLabel = selectedValue
+    ? availableSttOptions.find(o => `${o.provider}::${o.model}` === selectedValue)?.label ?? `${evalSttProvider} / ${evalSttModel}`
+    : 'Auto'
+
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-gray-100">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full p-3 flex items-center justify-between text-left"
+      >
+        <div className="flex items-center gap-3">
+          <Mic className="w-5 h-5 text-gray-500" />
+          <div>
+            <p className="font-medium text-gray-900 text-sm">Evaluation STT Provider</p>
+            <p className="text-xs text-gray-500">
+              STT service used to transcribe audio for WER/CER metrics
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-gray-400">{selectedLabel}</span>
+          {expanded ? <ChevronDown className="w-4 h-4 text-gray-400" /> : <ChevronRight className="w-4 h-4 text-gray-400" />}
+        </div>
+      </button>
+
+      {expanded && (
+        <div className="px-3 pb-3 border-t border-gray-100 pt-3">
+          <select
+            value={selectedValue}
+            onChange={(e) => {
+              const val = e.target.value
+              if (!val) {
+                setEvalSttProvider('')
+                setEvalSttModel('')
+              } else {
+                const [p, m] = val.split('::')
+                setEvalSttProvider(p)
+                setEvalSttModel(m)
+              }
+            }}
+            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+          >
+            <option value="">{autoLabel}</option>
+            {availableSttOptions.map((opt) => (
+              <option key={`${opt.provider}::${opt.model}`} value={`${opt.provider}::${opt.model}`}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+          {availableSttOptions.length === 0 && !bundleWithStt && (
+            <p className="mt-2 text-xs text-amber-600">
+              No STT-capable providers (OpenAI, Deepgram) are configured in Integrations. Add one or configure a Voice Bundle with STT to enable WER/CER evaluation.
+            </p>
+          )}
+          {availableSttOptions.length === 0 && bundleWithStt && (
+            <p className="mt-2 text-xs text-gray-500">
+              No additional STT providers available. The Voice Bundle default will be used.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  )
 }

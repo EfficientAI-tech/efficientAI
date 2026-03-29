@@ -46,7 +46,7 @@ from typing import Optional, Dict, Any, List
 from uuid import UUID
 from pathlib import Path
 
-from app.models.database import ModelProvider, AIProvider
+from app.models.database import ModelProvider, AIProvider, Integration
 from app.services.storage.s3_service import s3_service
 from app.core.exceptions import StorageError
 from sqlalchemy.orm import Session
@@ -84,6 +84,32 @@ class TranscriptionService:
             ).first()
 
         return ai_provider
+
+    def _get_api_key_for_provider(
+        self, provider: ModelProvider, db: Session, organization_id: UUID
+    ) -> Optional[str]:
+        """Resolve and decrypt API key from AIProvider or Integration tables.
+
+        Checks AIProvider first (LLM-style providers like OpenAI), then falls
+        back to the Integration table (voice platforms like Deepgram, ElevenLabs).
+        """
+        from app.core.encryption import decrypt_api_key
+        from sqlalchemy import func
+
+        ai_provider = self._get_ai_provider(provider, db, organization_id)
+        if ai_provider:
+            return decrypt_api_key(ai_provider.api_key)
+
+        provider_value = provider.value if hasattr(provider, "value") else provider
+        integration = db.query(Integration).filter(
+            func.lower(Integration.platform) == provider_value.lower(),
+            Integration.organization_id == organization_id,
+            Integration.is_active == True,
+        ).first()
+        if integration:
+            return decrypt_api_key(integration.api_key)
+
+        return None
 
     def _download_audio_to_temp(self, audio_file_key: str, db: Optional[Session] = None) -> str:
         """
@@ -131,119 +157,11 @@ class TranscriptionService:
         # If all else fails, raise error
         raise StorageError(f"Failed to download audio file: S3 is not enabled and local file not found for key: {audio_file_key}")
 
-    def _transcribe_with_openai(self, audio_file_path: str, model: str, api_key: str, language: Optional[str] = None) -> Dict[str, Any]:
-        """Transcribe audio using OpenAI Whisper API with word-level timestamps."""
-        try:
-            from openai import OpenAI
+    # Provider-specific transcription is delegated to app.services.ai.stt_clients
 
-            client = OpenAI(api_key=api_key)
-
-            with open(audio_file_path, "rb") as audio_file:
-                transcript = client.audio.transcriptions.create(
-                    model=model,
-                    file=audio_file,
-                    language=language,
-                    response_format="verbose_json",
-                    timestamp_granularities=["word", "segment"],
-                )
-
-            result = {
-                "text": transcript.text if hasattr(transcript, "text") else str(transcript),
-                "language": getattr(transcript, "language", language) if language else getattr(transcript, "language", "en"),
-                "segments": [],
-                "words": [],
-            }
-
-            if hasattr(transcript, "segments") and transcript.segments:
-                for seg in transcript.segments:
-                    result["segments"].append(
-                        {
-                            "start": getattr(seg, "start", 0),
-                            "end": getattr(seg, "end", 0),
-                            "text": getattr(seg, "text", ""),
-                        }
-                    )
-            elif isinstance(transcript, dict) and "segments" in transcript:
-                for seg in transcript["segments"]:
-                    result["segments"].append(
-                        {
-                            "start": seg.get("start", 0),
-                            "end": seg.get("end", 0),
-                            "text": seg.get("text", ""),
-                        }
-                    )
-
-            if hasattr(transcript, "words") and transcript.words:
-                for w in transcript.words:
-                    # Handle both object attributes and dict-like access
-                    if isinstance(w, dict):
-                        word_text = w.get("word", "")
-                        word_start = w.get("start", 0) or 0
-                        word_end = w.get("end", 0) or 0
-                    else:
-                        word_text = getattr(w, "word", "") or ""
-                        word_start = getattr(w, "start", None)
-                        word_end = getattr(w, "end", None)
-                        # Some SDK versions may use 'start_time'/'end_time'
-                        if word_start is None:
-                            word_start = getattr(w, "start_time", 0) or 0
-                        if word_end is None:
-                            word_end = getattr(w, "end_time", 0) or 0
-                        word_start = float(word_start) if word_start else 0.0
-                        word_end = float(word_end) if word_end else 0.0
-                    result["words"].append(
-                        {
-                            "word": word_text,
-                            "start": word_start,
-                            "end": word_end,
-                        }
-                    )
-            elif isinstance(transcript, dict) and "words" in transcript:
-                for w in transcript["words"]:
-                    result["words"].append(
-                        {
-                            "word": w.get("word", ""),
-                            "start": w.get("start", 0) or 0,
-                            "end": w.get("end", 0) or 0,
-                        }
-                    )
-
-            if not result["segments"] and result["text"]:
-                import re
-                sentences = re.split(r"[.!?]+\s+", result["text"].strip())
-                sentences = [s.strip() for s in sentences if s.strip()]
-
-                if sentences:
-                    total_words = len(result["text"].split())
-                    estimated_duration = max(1.0, (total_words / 150.0) * 60.0)
-
-                    current_time = 0.0
-                    for sentence in sentences:
-                        sentence_words = len(sentence.split())
-                        sentence_duration = max(0.5, (sentence_words / 150.0) * 60.0)
-                        result["segments"].append(
-                            {
-                                "start": current_time,
-                                "end": current_time + sentence_duration,
-                                "text": sentence,
-                            }
-                        )
-                        current_time += sentence_duration
-                else:
-                    word_count = len(result["text"].split())
-                    estimated_duration = max(1.0, (word_count / 150.0) * 60.0)
-                    result["segments"] = [{"start": 0.0, "end": estimated_duration, "text": result["text"]}]
-
-            return result
-        except ImportError:
-            raise RuntimeError("OpenAI library not installed. Install with: pip install openai")
-        except Exception as e:
-            import traceback
-            error_details = traceback.format_exc()
-            raise RuntimeError(f"OpenAI transcription failed: {str(e)}\nDetails: {error_details}")
-
-    def _transcribe_with_whisper_local(self, audio_file_path: str, model_name: str = "base") -> Dict[str, Any]:
-        """Transcribe audio using local Whisper model."""
+    @staticmethod
+    def _transcribe_with_whisper_local(audio_file_path: str, model_name: str = "base") -> Dict[str, Any]:
+        """Transcribe audio using local Whisper model (not a remote API)."""
         try:
             import whisper
 
@@ -576,6 +494,47 @@ class TranscriptionService:
 
         return speaker_segments
 
+    def transcribe_text_only(
+        self,
+        audio_file_path: str,
+        stt_provider: ModelProvider,
+        stt_model: str,
+        organization_id: UUID,
+        db: Session,
+    ) -> Optional[str]:
+        """Transcribe a local audio file and return just the text.
+
+        Lightweight alternative to `transcribe()` -- skips S3 download,
+        diarization, and segment extraction.  Designed for WER/CER
+        evaluation where only the transcript string is needed.
+        """
+        api_key = self._get_api_key_for_provider(stt_provider, db, organization_id)
+        if not api_key:
+            logger.warning(
+                f"[TranscriptionService] No API key found for {stt_provider} "
+                f"(checked AIProvider and Integration tables) for org {organization_id}"
+            )
+            return None
+
+        from app.services.ai.stt_clients import transcribe_openai, transcribe_deepgram, transcribe_elevenlabs
+
+        try:
+            if stt_provider == ModelProvider.OPENAI:
+                result = transcribe_openai(audio_file_path, stt_model, api_key)
+            elif stt_provider == ModelProvider.DEEPGRAM:
+                result = transcribe_deepgram(audio_file_path, stt_model, api_key)
+            elif stt_provider == ModelProvider.ELEVENLABS:
+                result = transcribe_elevenlabs(audio_file_path, stt_model, api_key)
+            else:
+                logger.warning(f"[TranscriptionService] Unsupported STT provider for text-only: {stt_provider}")
+                return None
+
+            text = (result.get("text") or "").strip()
+            return text or None
+        except Exception as e:
+            logger.error(f"[TranscriptionService] text-only transcription failed ({stt_provider}/{stt_model}): {e}")
+            return None
+
     def transcribe(
         self,
         audio_file_key: str,
@@ -596,38 +555,32 @@ class TranscriptionService:
             # Download audio to temporary file
             temp_file_path = self._download_audio_to_temp(audio_file_key, db=db)
 
-            # Get provider API key
-            ai_provider = self._get_ai_provider(stt_provider, db, organization_id)
-            if not ai_provider:
-                raise RuntimeError(f"AI provider {stt_provider} not configured for this organization. Please configure an AI provider in the settings.")
+            api_key = self._get_api_key_for_provider(stt_provider, db, organization_id)
+            if not api_key:
+                raise RuntimeError(
+                    f"No API key found for {stt_provider} (checked AIProvider and Integration tables). "
+                    f"Please configure the provider in Settings."
+                )
 
-            # Decrypt API key
-            from app.core.encryption import decrypt_api_key
-            try:
-                api_key = decrypt_api_key(ai_provider.api_key)
-            except Exception as e:
-                raise RuntimeError(f"Failed to decrypt API key for provider {stt_provider}: {str(e)}")
+            from app.services.ai.stt_clients import transcribe_openai, transcribe_deepgram, transcribe_elevenlabs
 
-            # Transcribe based on provider
             if stt_provider == ModelProvider.OPENAI:
                 if stt_model.startswith("whisper-"):
-                    # Use OpenAI API
-                    result = self._transcribe_with_openai(temp_file_path, stt_model, api_key, language)
+                    result = transcribe_openai(temp_file_path, stt_model, api_key, language)
                 else:
-                    # Fallback to local Whisper
                     model_name = stt_model.replace("whisper-", "") if stt_model.startswith("whisper-") else "base"
                     result = self._transcribe_with_whisper_local(temp_file_path, model_name)
+            elif stt_provider == ModelProvider.DEEPGRAM:
+                result = transcribe_deepgram(temp_file_path, stt_model, api_key, language)
+            elif stt_provider == ModelProvider.ELEVENLABS:
+                result = transcribe_elevenlabs(temp_file_path, stt_model, api_key, language)
             elif stt_provider == ModelProvider.GOOGLE:
-                # TODO: Implement Google Speech-to-Text
                 raise NotImplementedError("Google Speech-to-Text not yet implemented")
             elif stt_provider == ModelProvider.AZURE:
-                # TODO: Implement Azure Speech Services
                 raise NotImplementedError("Azure Speech Services not yet implemented")
             elif stt_provider == ModelProvider.AWS:
-                # TODO: Implement AWS Transcribe
                 raise NotImplementedError("AWS Transcribe not yet implemented")
             else:
-                # Default to local Whisper
                 result = self._transcribe_with_whisper_local(temp_file_path, "base")
 
             # Apply speaker diarization if enabled
