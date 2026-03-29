@@ -12,9 +12,6 @@ from app.database import SessionLocal
 
 from app.workers.config import celery_app
 
-# Singleton for the NeMo ASR model (loaded once per worker process)
-_nemo_asr_model = None
-
 
 def _compute_wer_cer(ground_truth: str, predicted: str):
     """Compute raw and normalized WER/CER between reference and ASR text.
@@ -120,87 +117,33 @@ def _compute_wer_cer(ground_truth: str, predicted: str):
         }
 
 
-_nemo_install_attempted = False
+def _resolve_stt_config(comp, db) -> tuple:
+    """Resolve STT provider/model for WER/CER evaluation.
 
+    Priority:
+      1. Per-comparison override (comp.eval_stt_provider / eval_stt_model)
+      2. First Voice Bundle in the org that has STT configured
+      3. (None, None) – WER/CER will be skipped
+    """
+    if getattr(comp, "eval_stt_provider", None) and getattr(comp, "eval_stt_model", None):
+        return comp.eval_stt_provider, comp.eval_stt_model
 
-def _lazy_install_nemo():
-    """One-shot attempt to pip-install nemo_toolkit[asr] at runtime."""
-    global _nemo_install_attempted
-    if _nemo_install_attempted:
-        return False
-    _nemo_install_attempted = True
+    from app.models.database import VoiceBundle
 
-    logger.info("[TTS Eval] NeMo not found – attempting auto-install (this may take a few minutes)...")
-    try:
-        import subprocess, sys
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "--quiet", "nemo_toolkit[asr]>=1.20.0"],
-            timeout=600,
+    bundle = (
+        db.query(VoiceBundle)
+        .filter(
+            VoiceBundle.organization_id == comp.organization_id,
+            VoiceBundle.stt_provider.isnot(None),
+            VoiceBundle.stt_model.isnot(None),
         )
-        logger.info("[TTS Eval] nemo_toolkit[asr] installed successfully")
-        return True
-    except Exception as install_err:
-        logger.warning(f"[TTS Eval] Auto-install of nemo_toolkit[asr] failed: {install_err}")
-        return False
+        .order_by(VoiceBundle.created_at)
+        .first()
+    )
+    if bundle:
+        return bundle.stt_provider, bundle.stt_model
 
-
-def _get_nemo_asr_model():
-    """Lazy-load NVIDIA NeMo Conformer CTC model for hallucination detection.
-
-    On first call, if NeMo is not installed, attempts a one-time pip install.
-    Returns the model instance, or None if unavailable.
-    """
-    global _nemo_asr_model
-
-    if _nemo_asr_model is not None:
-        return _nemo_asr_model
-
-    try:
-        import nemo.collections.asr as nemo_asr
-    except ImportError:
-        if _lazy_install_nemo():
-            try:
-                import nemo.collections.asr as nemo_asr
-            except ImportError:
-                logger.warning("[TTS Eval] NeMo still not importable after install – WER/CER will be skipped")
-                return None
-        else:
-            logger.warning(
-                "[TTS Eval] NeMo is not installed – WER/CER hallucination metrics will be skipped. "
-                "To install manually: pip install 'nemo_toolkit[asr]'"
-            )
-            return None
-
-    try:
-        logger.info("[TTS Eval] Loading NeMo ASR model (stt_en_conformer_ctc_large)...")
-        _nemo_asr_model = nemo_asr.models.ASRModel.from_pretrained("stt_en_conformer_ctc_large")
-        logger.info("[TTS Eval] NeMo ASR model loaded successfully")
-        return _nemo_asr_model
-    except Exception as e:
-        logger.error(f"[TTS Eval] NeMo ASR model failed to load: {e}", exc_info=True)
-        return None
-
-
-def _transcribe_audio_for_eval(audio_path: str) -> str | None:
-    """Transcribe an audio file using NVIDIA NeMo Conformer CTC.
-
-    Runs entirely on the worker – no API key needed.
-    """
-    model = _get_nemo_asr_model()
-    if model is None:
-        return None
-
-    try:
-        transcriptions = model.transcribe([audio_path])
-        if transcriptions and len(transcriptions) > 0:
-            text = transcriptions[0]
-            if hasattr(text, "text"):
-                text = text.text
-            return str(text).strip() or None
-        return None
-    except Exception as e:
-        logger.warning(f"[TTS Eval] ASR transcription failed: {e}")
-        return None
+    return None, None
 
 
 @celery_app.task(name="generate_tts_comparison", bind=True, max_retries=1)
@@ -363,9 +306,11 @@ def evaluate_tts_comparison_task(self, comparison_id: str):
         TTSSample,
         TTSComparisonStatus,
         TTSSampleStatus,
+        ModelProvider,
     )
     from app.services.storage.s3_service import s3_service
     from app.services.audio.qualitative_voice_service import qualitative_voice_service
+    from app.services.ai.transcription_service import transcription_service
 
     db = SessionLocal()
     try:
@@ -388,7 +333,15 @@ def evaluate_tts_comparison_task(self, comparison_id: str):
             db.commit()
             return {"evaluated": 0}
 
-        nemo_model = _get_nemo_asr_model()
+        stt_provider_str, stt_model = _resolve_stt_config(comp, db)
+        stt_available = bool(stt_provider_str and stt_model)
+        if stt_available:
+            logger.info(f"[TTS Eval] Using STT provider {stt_provider_str}/{stt_model} for WER/CER")
+        else:
+            logger.warning(
+                "[TTS Eval] No STT provider configured (check comparison settings or Voice Bundles) "
+                "– WER/CER metrics will be skipped"
+            )
 
         evaluated = 0
         for sample in samples:
@@ -410,8 +363,14 @@ def evaluate_tts_comparison_task(self, comparison_id: str):
 
                 metrics = qualitative_voice_service.calculate_all_metrics(tmp_path)
 
-                if nemo_model is not None and sample.text:
-                    asr_transcript = _transcribe_audio_for_eval(tmp_path)
+                if stt_available and sample.text:
+                    asr_transcript = transcription_service.transcribe_text_only(
+                        audio_file_path=tmp_path,
+                        stt_provider=ModelProvider(stt_provider_str),
+                        stt_model=stt_model,
+                        organization_id=comp.organization_id,
+                        db=db,
+                    )
                     if asr_transcript:
                         score_bundle = _compute_wer_cer(sample.text, asr_transcript)
                         metrics["WER Raw"] = score_bundle.get("raw_wer")

@@ -51,6 +51,8 @@ export interface TTSComparison {
   num_runs: number
   blind_test_results: Array<{ sample_index: number; preferred: string }> | null
   evaluation_summary: Record<string, any> | null
+  eval_stt_provider?: string | null
+  eval_stt_model?: string | null
   error_message: string | null
   samples: TTSSample[]
   created_at: string

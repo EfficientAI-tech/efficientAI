@@ -576,6 +576,75 @@ class TranscriptionService:
 
         return speaker_segments
 
+    def _transcribe_with_deepgram(self, audio_file_path: str, model: str, api_key: str, language: Optional[str] = None) -> Dict[str, Any]:
+        """Transcribe audio using the Deepgram SDK (prerecorded / REST)."""
+        from deepgram import DeepgramClient
+
+        client = DeepgramClient(api_key=api_key)
+
+        with open(audio_file_path, "rb") as f:
+            audio_bytes = f.read()
+
+        options: Dict[str, Any] = {"model": model or "nova-2", "smart_format": True}
+        if language:
+            options["language"] = language
+
+        response = client.listen.rest.v("1").transcribe_file(
+            {"buffer": audio_bytes}, options
+        )
+
+        transcript = ""
+        try:
+            transcript = response.results.channels[0].alternatives[0].transcript
+        except (AttributeError, IndexError):
+            pass
+
+        return {"text": transcript, "language": language or "en", "segments": []}
+
+    def transcribe_text_only(
+        self,
+        audio_file_path: str,
+        stt_provider: ModelProvider,
+        stt_model: str,
+        organization_id: UUID,
+        db: Session,
+    ) -> Optional[str]:
+        """Transcribe a local audio file and return just the text.
+
+        Lightweight alternative to `transcribe()` -- skips S3 download,
+        diarization, and segment extraction.  Designed for WER/CER
+        evaluation where only the transcript string is needed.
+        """
+        ai_provider = self._get_ai_provider(stt_provider, db, organization_id)
+        if not ai_provider:
+            logger.warning(
+                f"[TranscriptionService] AI provider {stt_provider} not configured "
+                f"for org {organization_id} – cannot transcribe"
+            )
+            return None
+
+        from app.core.encryption import decrypt_api_key
+        try:
+            api_key = decrypt_api_key(ai_provider.api_key)
+        except Exception as e:
+            logger.error(f"[TranscriptionService] Failed to decrypt API key for {stt_provider}: {e}")
+            return None
+
+        try:
+            if stt_provider == ModelProvider.OPENAI:
+                result = self._transcribe_with_openai(audio_file_path, stt_model, api_key)
+            elif stt_provider == ModelProvider.DEEPGRAM:
+                result = self._transcribe_with_deepgram(audio_file_path, stt_model, api_key)
+            else:
+                logger.warning(f"[TranscriptionService] Unsupported STT provider for text-only: {stt_provider}")
+                return None
+
+            text = (result.get("text") or "").strip()
+            return text or None
+        except Exception as e:
+            logger.error(f"[TranscriptionService] text-only transcription failed ({stt_provider}/{stt_model}): {e}")
+            return None
+
     def transcribe(
         self,
         audio_file_key: str,

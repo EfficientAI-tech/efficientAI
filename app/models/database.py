@@ -750,6 +750,9 @@ class TTSComparison(Base):
     blind_test_results = Column(JSON, nullable=True)
     evaluation_summary = Column(JSON, nullable=True)
 
+    eval_stt_provider = Column(String(100), nullable=True)
+    eval_stt_model = Column(String(100), nullable=True)
+
     celery_task_id = Column(String, nullable=True, index=True)
     error_message = Column(String, nullable=True)
 

@@ -95,6 +95,11 @@ interface VoicePlaygroundContextType {
   numRuns: number
   setNumRuns: (n: number) => void
 
+  evalSttProvider: string
+  setEvalSttProvider: (p: string) => void
+  evalSttModel: string
+  setEvalSttModel: (m: string) => void
+
   // AI sample generation
   showAiGenerate: boolean
   setShowAiGenerate: (show: boolean) => void
@@ -311,6 +316,9 @@ export function VoicePlaygroundProvider({ children }: { children: ReactNode }) {
   const [customText, setCustomText] = useState('')
   const [numRuns, setNumRuns] = useState(1)
 
+  const [evalSttProvider, setEvalSttProvider] = useState('')
+  const [evalSttModel, setEvalSttModel] = useState('')
+
   // AI sample generation
   const [showAiGenerate, setShowAiGenerate] = useState(false)
   const [aiScenario, setAiScenario] = useState('')
@@ -443,6 +451,10 @@ export function VoicePlaygroundProvider({ children }: { children: ReactNode }) {
           id: v.id, name: v.name,
           ...(sampleRateB ? { sample_rate_hz: sampleRateB } : {}),
         }))
+      }
+      if (evalSttProvider && evalSttModel) {
+        payload.eval_stt_provider = evalSttProvider
+        payload.eval_stt_model = evalSttModel
       }
       const comp = await apiClient.createTTSComparison(payload)
       await apiClient.generateTTSComparison(comp.id)
@@ -617,6 +629,8 @@ export function VoicePlaygroundProvider({ children }: { children: ReactNode }) {
     setSelectedVoicesB([])
     setSampleTexts(DEFAULT_SAMPLE_TEXTS.slice(0, 1))
     setNumRuns(1)
+    setEvalSttProvider('')
+    setEvalSttModel('')
     setActiveComparisonId(null)
     setStep('configure')
     setBlindChoices({})
@@ -685,6 +699,10 @@ export function VoicePlaygroundProvider({ children }: { children: ReactNode }) {
     setCustomText,
     numRuns,
     setNumRuns,
+    evalSttProvider,
+    setEvalSttProvider,
+    evalSttModel,
+    setEvalSttModel,
     showAiGenerate,
     setShowAiGenerate,
     aiScenario,
