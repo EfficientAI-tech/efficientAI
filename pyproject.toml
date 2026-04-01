@@ -56,6 +56,7 @@ dependencies = [
     "soxr>=0.3.0",
     "typing-extensions>=4.9.0",
     "onnxruntime>=1.17.0",
+    "plivo>=4.47.0",
 ]
 
 [project.optional-dependencies]
@@ -110,6 +111,9 @@ google = [
     "google-genai>=1.0.0",
     "google-cloud-texttospeech>=2.16.0",
     "google-cloud-speech>=2.26.0",
+]
+plivo = [
+    "plivo>=4.47.0",
 ]
 # Optional: Speaker Consistency metric (has version conflicts with torchaudio)
 # speechbrain = ["speechbrain>=1.0.0"]

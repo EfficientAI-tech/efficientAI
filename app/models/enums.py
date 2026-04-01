@@ -61,6 +61,7 @@ class CallMediumEnum(str, enum.Enum):
     """Call medium"""
     PHONE_CALL = "phone_call"
     WEB_CALL = "web_call"
+    SIP_CALL = "sip_call"
 
 class GenderEnum(str, enum.Enum):
     """Gender options for personas"""
@@ -99,6 +100,11 @@ class IntegrationPlatform(str, enum.Enum):
     MURF = "murf"
     SARVAM = "sarvam"
     VOICEMAKER = "voicemaker"
+
+
+class TelephonyProvider(str, enum.Enum):
+    """Telephony provider enumeration - extensible for future providers."""
+    PLIVO = "plivo"
 
 class ModelProvider(str, enum.Enum):
     """Model provider enumeration for extensibility."""

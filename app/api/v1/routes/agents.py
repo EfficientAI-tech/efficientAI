@@ -15,7 +15,7 @@ from app.dependencies import get_db, get_organization_id, get_api_key
 from app.models.database import (
     Agent, ConversationEvaluation, TestAgentConversation, VoiceBundle,
     AIProvider, Integration, IntegrationPlatform, CallMediumEnum,
-    Evaluator, EvaluatorResult, CallRecording,
+    Evaluator, EvaluatorResult, CallRecording, TelephonyPhoneNumber,
 )
 from sqlalchemy import and_
 from app.models.schemas import (
@@ -147,6 +147,38 @@ def generate_unique_agent_id(db: Session) -> str:
     )
 
 
+def _get_telephony_number_for_agent(
+    db: Session,
+    organization_id: UUID,
+    telephony_phone_number_id: Optional[UUID],
+    current_agent_id: Optional[UUID] = None,
+) -> Optional[TelephonyPhoneNumber]:
+    """Validate a telephony number can be linked to the agent."""
+    if not telephony_phone_number_id:
+        return None
+
+    telephony_number = db.query(TelephonyPhoneNumber).filter(
+        and_(
+            TelephonyPhoneNumber.id == telephony_phone_number_id,
+            TelephonyPhoneNumber.organization_id == organization_id,
+            TelephonyPhoneNumber.is_active == True,
+        )
+    ).first()
+    if not telephony_number:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Telephony phone number not found or inactive",
+        )
+
+    if telephony_number.agent_id and telephony_number.agent_id != current_agent_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Selected telephony phone number is already assigned to another agent",
+        )
+
+    return telephony_number
+
+
 def get_agent_dependencies(db: Session, organization_id: UUID, agent_uuid: UUID) -> dict:
     """Return dependency counts that block non-force delete."""
     evaluators_count = db.query(Evaluator).filter(
@@ -196,8 +228,19 @@ async def create_agent(
     db: Session = Depends(get_db)
 ):
     """Create a new test agent"""
+    selected_telephony_number = None
+    resolved_phone_number = agent.phone_number
+    if agent.call_medium == CallMediumEnumSchema.PHONE_CALL:
+        selected_telephony_number = _get_telephony_number_for_agent(
+            db=db,
+            organization_id=organization_id,
+            telephony_phone_number_id=agent.telephony_phone_number_id,
+        )
+        if selected_telephony_number:
+            resolved_phone_number = selected_telephony_number.phone_number
+
     # Validate phone_number is provided when call_medium is phone_call
-    if agent.call_medium == CallMediumEnumSchema.PHONE_CALL and not agent.phone_number:
+    if agent.call_medium == CallMediumEnumSchema.PHONE_CALL and not resolved_phone_number:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="phone_number is required when call_medium is phone_call"
@@ -245,17 +288,21 @@ async def create_agent(
         agent_id=agent_id,
         organization_id=organization_id,
         name=agent.name,
-        phone_number=agent.phone_number,
+        phone_number=resolved_phone_number,
         language=agent.language,
         description=agent.description,
         call_type=agent.call_type,
         call_medium=agent.call_medium,
+        telephony_phone_number_id=selected_telephony_number.id if selected_telephony_number else None,
         voice_bundle_id=agent.voice_bundle_id,
         ai_provider_id=agent.ai_provider_id,
         voice_ai_integration_id=agent.voice_ai_integration_id,
         voice_ai_agent_id=agent.voice_ai_agent_id
     )
     db.add(db_agent)
+    db.flush()
+    if selected_telephony_number:
+        selected_telephony_number.agent_id = db_agent.id
     db.commit()
     db.refresh(db_agent)
     return db_agent
@@ -334,12 +381,39 @@ async def update_agent(
     if not db_agent:
         raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
     
+    update_data = agent_update.model_dump(exclude_unset=True, exclude_none=False)
+    old_telephony_phone_number_id = db_agent.telephony_phone_number_id
+    next_telephony_phone_number_id = update_data.get(
+        "telephony_phone_number_id",
+        old_telephony_phone_number_id,
+    )
     # Determine the call_medium to validate
-    call_medium = agent_update.call_medium if agent_update.call_medium is not None else db_agent.call_medium
+    call_medium = (
+        agent_update.call_medium
+        if agent_update.call_medium is not None
+        else db_agent.call_medium
+    )
+    call_medium_value = call_medium.value if hasattr(call_medium, "value") else str(call_medium)
+    selected_telephony_number = None
+    if call_medium_value == CallMediumEnum.PHONE_CALL.value:
+        selected_telephony_number = _get_telephony_number_for_agent(
+            db=db,
+            organization_id=organization_id,
+            telephony_phone_number_id=next_telephony_phone_number_id,
+            current_agent_id=db_agent.id,
+        )
     
     # Validate phone_number is provided when call_medium is phone_call
-    if call_medium == CallMediumEnum.PHONE_CALL:
-        phone_number = agent_update.phone_number if agent_update.phone_number is not None else db_agent.phone_number
+    if call_medium_value == CallMediumEnum.PHONE_CALL.value:
+        phone_number = (
+            selected_telephony_number.phone_number
+            if selected_telephony_number
+            else (
+                agent_update.phone_number
+                if agent_update.phone_number is not None
+                else db_agent.phone_number
+            )
+        )
         if not phone_number:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -381,13 +455,34 @@ async def update_agent(
                 detail="voice_ai_agent_id is required when voice_ai_integration_id is provided"
             )
     
-    # Convert the update model to dict, handling None values properly
-    # Use model_dump with exclude_unset to only get fields that were explicitly provided
-    update_data = agent_update.model_dump(exclude_unset=True, exclude_none=False)
+    if call_medium_value != CallMediumEnum.PHONE_CALL.value:
+        update_data["telephony_phone_number_id"] = None
+
+    if selected_telephony_number:
+        update_data["telephony_phone_number_id"] = selected_telephony_number.id
+        update_data["phone_number"] = selected_telephony_number.phone_number
     
     # Apply updates
     for field, value in update_data.items():
         setattr(db_agent, field, value)
+
+    final_telephony_phone_number_id = update_data.get(
+        "telephony_phone_number_id",
+        old_telephony_phone_number_id,
+    )
+    if old_telephony_phone_number_id and old_telephony_phone_number_id != final_telephony_phone_number_id:
+        old_telephony_number = db.query(TelephonyPhoneNumber).filter(
+            and_(
+                TelephonyPhoneNumber.id == old_telephony_phone_number_id,
+                TelephonyPhoneNumber.organization_id == organization_id,
+                TelephonyPhoneNumber.agent_id == db_agent.id,
+            )
+        ).first()
+        if old_telephony_number:
+            old_telephony_number.agent_id = None
+
+    if selected_telephony_number:
+        selected_telephony_number.agent_id = db_agent.id
     
     db.commit()
     db.refresh(db_agent)

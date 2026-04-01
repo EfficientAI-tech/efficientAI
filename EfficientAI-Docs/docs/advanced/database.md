@@ -89,7 +89,7 @@ Install the required system and Python packages:
 sudo apt-get update
 sudo apt-get install -y graphviz libgraphviz-dev pkg-config
 
-# Install Python packages
+# Install Python packagesdl
 pip install eralchemy graphviz
 ```
 
