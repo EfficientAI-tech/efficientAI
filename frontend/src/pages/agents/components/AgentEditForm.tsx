@@ -4,6 +4,7 @@ import { Sparkles, Loader2, Bot, Eye, Code, Trash2, Save } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import Button from '../../../components/Button'
 import { apiClient } from '../../../lib/api'
+import type { TelephonyIntegrationResponse, TelephonyPhoneNumberResponse } from '../../../lib/api'
 import { VoiceBundle, Integration, AIProvider, ModelProvider } from '../../../types/api'
 import { getProviderLabel } from '../../../config/providers'
 
@@ -14,6 +15,7 @@ interface FormData {
   description: string
   call_type: string
   call_medium: 'phone_call' | 'web_call'
+  telephony_phone_number_id: string
   voice_bundle_id: string
   voice_ai_integration_id: string
   voice_ai_agent_id: string
@@ -49,6 +51,7 @@ export default function AgentEditForm({
   const [aiFormat, setAiFormat] = useState('structured')
   const [aiProvider, setAiProvider] = useState('')
   const [aiModel, setAiModel] = useState('')
+  const [phoneNumberInputMode, setPhoneNumberInputMode] = useState<'provider' | 'custom'>('provider')
 
   const { data: aiProviders = [] } = useQuery<AIProvider[]>({
     queryKey: ['ai-providers'],
@@ -60,6 +63,17 @@ export default function AgentEditForm({
     queryFn: () => apiClient.getModelOptions(aiProvider),
     enabled: !!aiProvider,
   })
+  const { data: telephonyConfig, isError: isTelephonyConfigError } = useQuery<TelephonyIntegrationResponse>({
+    queryKey: ['telephony-config', 'plivo'],
+    queryFn: () => apiClient.getTelephonyConfig('plivo'),
+    enabled: formData.call_medium === 'phone_call',
+    retry: false,
+  })
+  const { data: telephonyNumbers = [] } = useQuery<TelephonyPhoneNumberResponse[]>({
+    queryKey: ['telephony-numbers'],
+    queryFn: () => apiClient.listTelephonyNumbers(),
+    enabled: formData.call_medium === 'phone_call',
+  })
 
   const llmModels = modelOptions?.llm || []
 
@@ -68,6 +82,33 @@ export default function AgentEditForm({
       setAiModel(llmModels[0])
     }
   }, [aiProvider, llmModels, aiModel])
+
+  useEffect(() => {
+    if (formData.call_medium !== 'phone_call') {
+      return
+    }
+
+    if (formData.telephony_phone_number_id) {
+      setPhoneNumberInputMode('provider')
+      return
+    }
+
+    if (!telephonyConfig || telephonyNumbers.length === 0) {
+      setPhoneNumberInputMode('custom')
+      return
+    }
+
+    const selectedExists = telephonyNumbers.some((n) => n.id === formData.telephony_phone_number_id)
+    if (!selectedExists && phoneNumberInputMode === 'provider') {
+      onChange({ ...formData, telephony_phone_number_id: '', phone_number: '' })
+    }
+  }, [
+    formData,
+    onChange,
+    phoneNumberInputMode,
+    telephonyConfig,
+    telephonyNumbers,
+  ])
 
   const generateDescriptionMutation = useMutation({
     mutationFn: (data: { description: string; tone?: string; format_style?: string; provider?: string; model?: string }) =>
@@ -131,16 +172,93 @@ export default function AgentEditForm({
 
             {/* Phone Number */}
             {formData.call_medium === 'phone_call' && (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Phone Number *</label>
-                <input
-                  type="text"
-                  required
-                  value={formData.phone_number}
-                  onChange={(e) => onChange({ ...formData, phone_number: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                  placeholder="+1234567890"
-                />
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="block text-sm font-medium text-gray-700">Phone Number *</label>
+                  <div className="inline-flex rounded-lg border border-gray-300 overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPhoneNumberInputMode('provider')
+                        onChange({ ...formData, phone_number: '' })
+                      }}
+                      disabled={!telephonyConfig || telephonyNumbers.length === 0}
+                      className={`px-3 py-1 text-xs font-medium ${
+                        phoneNumberInputMode === 'provider'
+                          ? 'bg-primary-600 text-white'
+                          : 'bg-white text-gray-700 hover:bg-gray-50'
+                      } disabled:bg-gray-100 disabled:text-gray-400`}
+                    >
+                      Select from provider
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPhoneNumberInputMode('custom')
+                        onChange({ ...formData, telephony_phone_number_id: '' })
+                      }}
+                      className={`px-3 py-1 text-xs font-medium border-l border-gray-300 ${
+                        phoneNumberInputMode === 'custom'
+                          ? 'bg-primary-600 text-white'
+                          : 'bg-white text-gray-700 hover:bg-gray-50'
+                      }`}
+                    >
+                      Enter custom
+                    </button>
+                  </div>
+                </div>
+
+                {(!telephonyConfig || isTelephonyConfigError) && (
+                  <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                    No telephony provider is configured yet. You can still enter a custom number, or configure
+                    telephony in Integrations.
+                  </p>
+                )}
+
+                {phoneNumberInputMode === 'provider' ? (
+                  <select
+                    required
+                    value={formData.telephony_phone_number_id}
+                    onChange={(e) => {
+                      const selected = telephonyNumbers.find((n) => n.id === e.target.value)
+                      onChange({
+                        ...formData,
+                        telephony_phone_number_id: e.target.value,
+                        phone_number: selected?.phone_number || '',
+                      })
+                    }}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
+                    disabled={!telephonyConfig || telephonyNumbers.length === 0}
+                  >
+                    <option value="">Select a synced telephony number</option>
+                    {telephonyNumbers.map((number) => (
+                      <option
+                        key={number.id}
+                        value={number.id}
+                        disabled={!!number.agent_id && number.id !== formData.telephony_phone_number_id}
+                      >
+                        {number.phone_number}
+                        {number.region ? ` - ${number.region}` : ''}
+                        {number.country_iso2 ? ` (${number.country_iso2})` : ''}
+                        {number.agent_id ? ' [In use]' : ''}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    type="text"
+                    required
+                    value={formData.phone_number}
+                    onChange={(e) =>
+                      onChange({
+                        ...formData,
+                        phone_number: e.target.value.replace(/[^\d+]/g, ''),
+                      })
+                    }
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    placeholder="+1234567890"
+                  />
+                )}
               </div>
             )}
 

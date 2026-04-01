@@ -178,6 +178,10 @@ export enum IntegrationPlatform {
   VOICEMAKER = 'voicemaker',
 }
 
+export enum TelephonyProvider {
+  PLIVO = 'plivo',
+}
+
 export interface Integration {
   id: string
   organization_id: string
@@ -295,6 +299,7 @@ export interface TestAgent {
   agent_id?: string | null
   name: string
   phone_number?: string | null
+  telephony_phone_number_id?: string | null
   language: string
   description: string | null
   call_type: string
