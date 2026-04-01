@@ -39,6 +39,52 @@ export interface LicenseInfoResponse {
   organization?: string
 }
 
+export interface TelephonyIntegrationResponse {
+  id: string
+  organization_id: string
+  provider: string
+  verify_app_uuid?: string | null
+  voice_app_id?: string | null
+  sip_domain?: string | null
+  masking_config?: Record<string, any> | null
+  is_active: boolean
+  last_tested_at?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface TelephonyIntegrationCreatePayload {
+  provider?: string
+  auth_id: string
+  auth_token: string
+  verify_app_uuid?: string
+  sip_domain?: string
+  masking_config?: Record<string, any>
+}
+
+export interface TelephonyIntegrationUpdatePayload {
+  auth_id?: string
+  auth_token?: string
+  verify_app_uuid?: string
+  voice_app_id?: string
+  sip_domain?: string
+  masking_config?: Record<string, any>
+  is_active?: boolean
+}
+
+export interface TelephonyPhoneNumberResponse {
+  id: string
+  phone_number: string
+  country_iso2?: string | null
+  region?: string | null
+  number_type?: string | null
+  capabilities?: Record<string, any> | null
+  is_masking_pool: boolean
+  agent_id?: string | null
+  is_active: boolean
+  created_at: string
+}
+
 type TTSReportOptionsPayload = {
   show_runs?: boolean
   min_runs_to_show?: number
@@ -249,6 +295,7 @@ class ApiClient {
   async createAgent(data: {
     name: string
     phone_number?: string
+    telephony_phone_number_id?: string
     language: string
     description?: string | null
     call_type: string
@@ -277,12 +324,15 @@ class ApiClient {
   async updateAgent(agentId: string, data: {
     name?: string
     phone_number?: string
+    telephony_phone_number_id?: string | null
     language?: string
     description?: string | null
     call_type?: string
     call_medium?: string
     voice_bundle_id?: string
     ai_provider_id?: string
+    voice_ai_integration_id?: string
+    voice_ai_agent_id?: string
   }): Promise<any> {
     const response = await this.client.put(`/api/v1/agents/${agentId}`, data)
     return response.data
@@ -631,6 +681,45 @@ class ApiClient {
 
   async getIntegrationApiKey(integrationId: string): Promise<{ api_key: string; public_key?: string | null }> {
     const response = await this.client.get(`/api/v1/integrations/${integrationId}/api-key`)
+    return response.data
+  }
+
+  // Telephony endpoints (provider-agnostic)
+  async createTelephonyConfig(data: TelephonyIntegrationCreatePayload): Promise<TelephonyIntegrationResponse> {
+    const response = await this.client.post('/api/v1/telephony/config', data)
+    return response.data
+  }
+
+  async getTelephonyConfig(provider: string = 'plivo'): Promise<TelephonyIntegrationResponse> {
+    const response = await this.client.get('/api/v1/telephony/config', { params: { provider } })
+    return response.data
+  }
+
+  async updateTelephonyConfig(data: TelephonyIntegrationUpdatePayload): Promise<TelephonyIntegrationResponse> {
+    const response = await this.client.put('/api/v1/telephony/config', data)
+    return response.data
+  }
+
+  async testTelephonyConfig(provider: string = 'plivo'): Promise<{ success: boolean }> {
+    const response = await this.client.post('/api/v1/telephony/config/test', null, { params: { provider } })
+    return response.data
+  }
+
+  async syncTelephonyNumbers(): Promise<TelephonyPhoneNumberResponse[]> {
+    const response = await this.client.post('/api/v1/telephony/numbers/sync')
+    return response.data
+  }
+
+  async listTelephonyNumbers(): Promise<TelephonyPhoneNumberResponse[]> {
+    const response = await this.client.get('/api/v1/telephony/numbers')
+    return response.data
+  }
+
+  async updateTelephonyNumber(
+    numberId: string,
+    data: { is_masking_pool?: boolean; agent_id?: string | null; is_active?: boolean }
+  ): Promise<TelephonyPhoneNumberResponse> {
+    const response = await this.client.patch(`/api/v1/telephony/numbers/${numberId}`, data)
     return response.data
   }
 

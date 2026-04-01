@@ -220,6 +220,12 @@ class Agent(Base):
     provider_prompt_synced_at = Column(DateTime(timezone=True), nullable=True)
     call_type = Column(String, nullable=False, default=CallTypeEnum.OUTBOUND.value)
     call_medium = Column(String, nullable=False, default=CallMediumEnum.PHONE_CALL.value)
+    telephony_phone_number_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("telephony_phone_numbers.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
 
 
@@ -877,7 +883,6 @@ class CustomTTSVoice(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
-
 class PromptOptimizationRun(Base):
     """A single GEPA prompt optimization run for an agent."""
     __tablename__ = "prompt_optimization_runs"
@@ -930,3 +935,100 @@ class PromptOptimizationCandidate(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     optimization_run = relationship("PromptOptimizationRun", back_populates="candidates")
+
+
+class TelephonyIntegration(Base):
+    """Per-organization telephony provider credentials and configuration."""
+
+    __tablename__ = "telephony_integrations"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "provider", name="uq_telephony_integration_org_provider"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    provider = Column(String(50), nullable=False, default="plivo")
+
+    auth_id = Column(String(255), nullable=False)
+    auth_token = Column(String(512), nullable=False)
+
+    verify_app_uuid = Column(String(255), nullable=True)
+    voice_app_id = Column(String(255), nullable=True)
+    sip_domain = Column(String(255), nullable=True)
+    masking_config = Column(JSON, nullable=True)
+
+    is_active = Column(Boolean, default=True, nullable=False)
+    last_tested_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class TelephonyPhoneNumber(Base):
+    """Inventory of telephony phone numbers owned by an organization."""
+
+    __tablename__ = "telephony_phone_numbers"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "phone_number", name="uq_telephony_number_org_phone"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    telephony_integration_id = Column(
+        UUID(as_uuid=True), ForeignKey("telephony_integrations.id"), nullable=False, index=True
+    )
+
+    phone_number = Column(String(20), nullable=False, index=True)
+    country_iso2 = Column(String(2), nullable=True)
+    region = Column(String(100), nullable=True)
+    number_type = Column(String(20), nullable=True)
+    capabilities = Column(JSON, nullable=True)
+    provider_app_id = Column(String(255), nullable=True)
+
+    is_masking_pool = Column(Boolean, default=False, nullable=False)
+    agent_id = Column(
+        UUID(as_uuid=True), ForeignKey("agents.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class TelephonyVerifySession(Base):
+    """Tracks voice OTP verification sessions via telephony provider."""
+
+    __tablename__ = "telephony_verify_sessions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    provider_session_uuid = Column(String(255), nullable=False, unique=True, index=True)
+    recipient_number = Column(String(20), nullable=False)
+    channel = Column(String(10), nullable=False, default="voice")
+    status = Column(String(20), nullable=False, default="pending")
+    initiated_by = Column(String(255), nullable=True)
+    verify_app_uuid = Column(String(255), nullable=True)
+    verified_at = Column(DateTime(timezone=True), nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class TelephonyMaskedSession(Base):
+    """Number-masking session between two parties through a middle number."""
+
+    __tablename__ = "telephony_masked_sessions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    telephony_integration_id = Column(UUID(as_uuid=True), ForeignKey("telephony_integrations.id"), nullable=False)
+    masked_number_id = Column(
+        UUID(as_uuid=True), ForeignKey("telephony_phone_numbers.id"), nullable=False, index=True
+    )
+    masked_number = Column(String(20), nullable=False)
+    party_a_number = Column(String(20), nullable=False)
+    party_b_number = Column(String(20), nullable=False)
+    status = Column(String(20), nullable=False, default="active")
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    ended_at = Column(DateTime(timezone=True), nullable=True)
+    session_metadata = Column("metadata", JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

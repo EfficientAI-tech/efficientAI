@@ -180,6 +180,7 @@ class AgentCreate(BaseModel):
     description: str = Field(..., min_length=1)
     call_type: CallTypeEnum = CallTypeEnum.OUTBOUND
     call_medium: CallMediumEnum = CallMediumEnum.PHONE_CALL
+    telephony_phone_number_id: Optional[UUID] = None
     voice_bundle_id: Optional[UUID] = None
     ai_provider_id: Optional[UUID] = None
     voice_ai_integration_id: UUID = Field(..., description="Voice AI integration is required")
@@ -230,6 +231,7 @@ class AgentUpdate(BaseModel):
     description: Optional[str] = None
     call_type: Optional[CallTypeEnum] = None
     call_medium: Optional[CallMediumEnum] = None
+    telephony_phone_number_id: Optional[UUID] = None
     voice_bundle_id: Optional[UUID] = None
     voice_ai_integration_id: Optional[UUID] = None
     voice_ai_agent_id: Optional[str] = None
@@ -267,6 +269,7 @@ class AgentResponse(BaseModel):
     description: Optional[str]
     call_type: CallTypeEnum
     call_medium: CallMediumEnum
+    telephony_phone_number_id: Optional[UUID]
     voice_bundle_id: Optional[UUID]
     ai_provider_id: Optional[UUID]
     voice_ai_integration_id: Optional[UUID]
@@ -1594,3 +1597,146 @@ class PromptPartialDetailResponse(PromptPartialResponse):
     versions: List[PromptPartialVersionResponse] = []
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# ============================================
+# TELEPHONY SCHEMAS (provider-agnostic)
+# ============================================
+
+
+class TelephonyIntegrationCreate(BaseModel):
+    """Schema for creating a telephony provider integration."""
+
+    provider: str = "plivo"
+    auth_id: str
+    auth_token: str
+    verify_app_uuid: Optional[str] = None
+    voice_app_id: Optional[str] = None
+    sip_domain: Optional[str] = None
+    masking_config: Optional[Dict[str, Any]] = None
+
+
+class TelephonyIntegrationUpdate(BaseModel):
+    """Schema for partial updates to a telephony provider integration."""
+
+    provider: Optional[str] = None
+    auth_id: Optional[str] = None
+    auth_token: Optional[str] = None
+    verify_app_uuid: Optional[str] = None
+    voice_app_id: Optional[str] = None
+    sip_domain: Optional[str] = None
+    masking_config: Optional[Dict[str, Any]] = None
+    is_active: Optional[bool] = None
+
+
+class TelephonyIntegrationResponse(BaseModel):
+    """Safe response model for telephony integration without secrets."""
+
+    id: UUID
+    organization_id: UUID
+    provider: str
+    verify_app_uuid: Optional[str]
+    voice_app_id: Optional[str]
+    sip_domain: Optional[str]
+    masking_config: Optional[Dict[str, Any]]
+    is_active: bool
+    last_tested_at: Optional[datetime]
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class TelephonyPhoneNumberResponse(BaseModel):
+    """Telephony phone number inventory response schema."""
+
+    id: UUID
+    phone_number: str
+    country_iso2: Optional[str]
+    region: Optional[str]
+    number_type: Optional[str]
+    capabilities: Optional[Dict[str, Any]]
+    is_masking_pool: bool
+    agent_id: Optional[UUID]
+    is_active: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class TelephonyVerifyStartRequest(BaseModel):
+    """Request schema for starting voice OTP verification."""
+
+    phone_number: str
+    provider: str = "plivo"
+
+
+class TelephonyVerifyStartResponse(BaseModel):
+    """Response schema for started voice OTP verification."""
+
+    session_id: UUID
+    provider_session_uuid: str
+    status: str
+    message: str
+
+
+class TelephonyVerifyCheckRequest(BaseModel):
+    """Request schema for checking a submitted OTP code."""
+
+    session_id: UUID
+    otp_code: str
+    provider: str = "plivo"
+
+
+class TelephonyVerifyCheckResponse(BaseModel):
+    """Response schema for OTP check status."""
+
+    verified: bool
+    status: str
+    message: str
+
+
+class TelephonyMaskingSessionCreate(BaseModel):
+    """Request schema for creating a number masking session."""
+
+    party_a_number: str
+    party_b_number: str
+    expires_in_minutes: Optional[int] = 60
+    metadata: Optional[Dict[str, Any]] = None
+    provider: str = "plivo"
+
+
+class TelephonyMaskingSessionResponse(BaseModel):
+    """Response schema for masking sessions."""
+
+    id: UUID
+    masked_number: str
+    party_a_number: str
+    party_b_number: str
+    status: str
+    expires_at: Optional[datetime]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class TelephonyOutboundCallRequest(BaseModel):
+    """Request schema for outbound call initiation."""
+
+    from_number: str
+    to_number: str
+    answer_url: Optional[str] = None
+    agent_id: Optional[UUID] = None
+
+
+class TelephonyOutboundCallResponse(BaseModel):
+    """Response schema for outbound call initiation."""
+
+    provider_request_uuid: str
+    call_status: str
+    from_number: str
+    to_number: str
+    message: str

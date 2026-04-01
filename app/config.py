@@ -80,6 +80,12 @@ class Settings(BaseSettings):
     # Enterprise License (JWT signed with RS256)
     EFFICIENTAI_LICENSE: Optional[str] = None
 
+    # Plivo Telephony (optional)
+    PLIVO_AUTH_ID: str = ""
+    PLIVO_AUTH_TOKEN: str = ""
+    PLIVO_VERIFY_APP_UUID: str = ""
+    PLIVO_WEBHOOK_BASE_URL: str = ""
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -315,6 +321,17 @@ def load_config_from_file(config_path: str) -> None:
         license_config = config_data["license"]
         if "key" in license_config:
             settings.EFFICIENTAI_LICENSE = license_config["key"]
+
+    if "plivo" in config_data:
+        plivo_cfg = config_data["plivo"]
+        if plivo_cfg.get("auth_id"):
+            settings.PLIVO_AUTH_ID = plivo_cfg["auth_id"]
+        if plivo_cfg.get("auth_token"):
+            settings.PLIVO_AUTH_TOKEN = plivo_cfg["auth_token"]
+        if plivo_cfg.get("verify_app_uuid"):
+            settings.PLIVO_VERIFY_APP_UUID = plivo_cfg["verify_app_uuid"]
+        if plivo_cfg.get("webhook_base_url"):
+            settings.PLIVO_WEBHOOK_BASE_URL = plivo_cfg["webhook_base_url"]
 
     # Update Celery URLs if they weren't explicitly set
     if not settings.CELERY_BROKER_URL:
