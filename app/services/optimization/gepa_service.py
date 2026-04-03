@@ -24,17 +24,51 @@ from app.services.optimization.data_preparation import build_trainset
 from app.services.optimization.evaluator import build_evaluator
 from app.services.optimization.lm_resolver import resolve_api_key, resolve_lm
 
-GEPA_AVAILABLE = False
-_gepa_import_error: str | None = None
+_gepa_install_attempted = False
 
-try:
-    from gepa import optimize as gepa_optimize
-    from gepa.adapters.default_adapter.default_adapter import DefaultAdapter
 
-    GEPA_AVAILABLE = True
-except Exception as _exc:
-    _gepa_import_error = str(_exc)
-    logger.warning(f"GEPA not available: {_exc}")
+def _lazy_install_gepa() -> bool:
+    """One-shot attempt to pip-install gepa + dspy at runtime."""
+    global _gepa_install_attempted
+    if _gepa_install_attempted:
+        return False
+    _gepa_install_attempted = True
+
+    logger.info("[GEPA] gepa not found – attempting auto-install (this may take a few minutes)...")
+    try:
+        import subprocess, sys
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "--quiet", "gepa", "dspy"],
+            timeout=300,
+        )
+        logger.info("[GEPA] gepa + dspy installed successfully")
+        return True
+    except Exception as install_err:
+        logger.warning(f"[GEPA] Auto-install failed: {install_err}")
+        return False
+
+
+def _ensure_gepa():
+    """Import gepa, auto-installing on first failure. Returns (gepa_optimize, DefaultAdapter)."""
+    try:
+        from gepa import optimize as gepa_optimize
+        from gepa.adapters.default_adapter.default_adapter import DefaultAdapter
+        return gepa_optimize, DefaultAdapter
+    except ImportError:
+        if _lazy_install_gepa():
+            try:
+                from gepa import optimize as gepa_optimize
+                from gepa.adapters.default_adapter.default_adapter import DefaultAdapter
+                return gepa_optimize, DefaultAdapter
+            except ImportError as e:
+                raise ImportError(
+                    f"[GEPA] Still not importable after install: {e}. "
+                    "Try manually: pip install gepa dspy"
+                ) from e
+        raise ImportError(
+            "[GEPA] Not installed and auto-install failed. "
+            "Install manually: pip install gepa dspy"
+        )
 
 
 def run_optimization(
@@ -54,12 +88,7 @@ def run_optimization(
     Returns a dict with keys: ``best_candidate``, ``best_score``,
     ``candidates``, ``metric_history``, ``total_metric_calls``.
     """
-    if not GEPA_AVAILABLE:
-        detail = f" Import error: {_gepa_import_error}" if _gepa_import_error else ""
-        raise ImportError(
-            "GEPA is not available. Install with: pip install -e '.[gepa]' "
-            f"(local dev) or pip install 'efficientai[gepa]' (production).{detail}"
-        )
+    gepa_optimize, DefaultAdapter = _ensure_gepa()
 
     config = config or {}
     max_metric_calls = config.get("max_metric_calls", 20)

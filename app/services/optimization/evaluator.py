@@ -17,10 +17,14 @@ from loguru import logger
 from app.models.database import AIProvider, Metric
 from app.workers.tasks.helpers.score_utils import get_metric_type_value
 
-try:
-    from gepa.adapters.default_adapter.default_adapter import EvaluationResult
-except Exception:
-    EvaluationResult = None  # type: ignore[assignment,misc]
+
+def _get_evaluation_result_class():
+    """Lazy-import EvaluationResult; gepa will already be installed by the time this is called."""
+    try:
+        from gepa.adapters.default_adapter.default_adapter import EvaluationResult
+        return EvaluationResult
+    except ImportError:
+        return None
 
 
 def build_evaluator(
@@ -39,6 +43,8 @@ def build_evaluator(
         f'- "{m.name}" ({get_metric_type_value(m)}): {m.description or f"Evaluate {m.name}"}'
         for m in metrics
     )
+
+    EvaluationResult = _get_evaluation_result_class()
 
     def evaluator_fn(data: Dict[str, Any], response: str) -> Any:
         transcript = data["input"]
