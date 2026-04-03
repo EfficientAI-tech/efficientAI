@@ -1,21 +1,149 @@
 """
 Personas API Routes
-Complete CRUD operations for test personas
+CRUD for TTS provider-tied voice personas, voice-options catalog,
+and custom voice management (ungated).
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Body, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from uuid import UUID
+from pydantic import BaseModel
 
 from app.dependencies import get_db, get_organization_id
-from app.models.database import Persona, Evaluator, EvaluatorResult, TestAgentConversation
+from app.models.database import (
+    Persona, Evaluator, EvaluatorResult, TestAgentConversation, CustomTTSVoice,
+    PromptOptimizationRun, CallRecording,
+)
 from app.models.schemas import (
     PersonaCreate, PersonaUpdate, PersonaResponse, PersonaCloneRequest
 )
+from app.models.enums import ModelProvider
+from app.services.ai.model_config_service import model_config_service
 
 router = APIRouter(prefix="/personas", tags=["personas"])
+
+
+# ---------------------------------------------------------------------------
+# Built-in voice catalog (same data used in voice_playground)
+# ---------------------------------------------------------------------------
+TTS_VOICES: Dict[str, List[Dict[str, str]]] = {
+    "openai": [
+        {"id": "alloy", "name": "Alloy", "gender": "Neutral"},
+        {"id": "ash", "name": "Ash", "gender": "Male"},
+        {"id": "coral", "name": "Coral", "gender": "Female"},
+        {"id": "echo", "name": "Echo", "gender": "Male"},
+        {"id": "fable", "name": "Fable", "gender": "Male"},
+        {"id": "onyx", "name": "Onyx", "gender": "Male"},
+        {"id": "nova", "name": "Nova", "gender": "Female"},
+        {"id": "sage", "name": "Sage", "gender": "Female"},
+        {"id": "shimmer", "name": "Shimmer", "gender": "Female"},
+    ],
+    "elevenlabs": [
+        {"id": "21m00Tcm4TlvDq8ikWAM", "name": "Rachel", "gender": "Female"},
+        {"id": "AZnzlk1XvdvUeBnXmlld", "name": "Domi", "gender": "Female"},
+        {"id": "EXAVITQu4vr4xnSDxMaL", "name": "Bella", "gender": "Female"},
+        {"id": "ErXwobaYiN019PkySvjV", "name": "Antoni", "gender": "Male"},
+        {"id": "MF3mGyEYCl7XYWbV9V6O", "name": "Elli", "gender": "Female"},
+        {"id": "TxGEqnHWrfWFTfGW9XjX", "name": "Josh", "gender": "Male"},
+        {"id": "VR6AewLTigWG4xSOukaG", "name": "Arnold", "gender": "Male"},
+        {"id": "pNInz6obpgDQGcFmaJgB", "name": "Adam", "gender": "Male"},
+        {"id": "yoZ06aMxZJJ28mfd3POQ", "name": "Sam", "gender": "Male"},
+        {"id": "jBpfuIE2acCO8z3wKNLl", "name": "Gigi", "gender": "Female"},
+    ],
+    "cartesia": [
+        {"id": "a0e99841-438c-4a64-b679-ae501e7d6091", "name": "Barbershop Man", "gender": "Male"},
+        {"id": "79a125e8-cd45-4c13-8a67-188112f4dd22", "name": "British Lady", "gender": "Female"},
+        {"id": "b7d50908-b17c-442d-ad8d-7c56a2ec8e67", "name": "Confident Woman", "gender": "Female"},
+        {"id": "c8605446-247c-4f39-993c-e0e2ee1c5112", "name": "Friendly Sidekick", "gender": "Male"},
+        {"id": "87748186-23bb-4571-ad1f-24094e1acbc5", "name": "Wise Guide", "gender": "Male"},
+        {"id": "41534e16-2966-4c6b-9670-111411def906", "name": "Nonfiction Man", "gender": "Male"},
+        {"id": "00a77add-48d5-4ef6-8157-71e5437b282d", "name": "Sportsman", "gender": "Male"},
+        {"id": "638efaaa-4d0c-442e-b701-3fae16aad012", "name": "Southern Woman", "gender": "Female"},
+    ],
+    "deepgram": [
+        {"id": "aura-asteria-en", "name": "Asteria", "gender": "Female"},
+        {"id": "aura-luna-en", "name": "Luna", "gender": "Female"},
+        {"id": "aura-stella-en", "name": "Stella", "gender": "Female"},
+        {"id": "aura-athena-en", "name": "Athena", "gender": "Female"},
+        {"id": "aura-hera-en", "name": "Hera", "gender": "Female"},
+        {"id": "aura-orion-en", "name": "Orion", "gender": "Male"},
+        {"id": "aura-arcas-en", "name": "Arcas", "gender": "Male"},
+        {"id": "aura-perseus-en", "name": "Perseus", "gender": "Male"},
+        {"id": "aura-angus-en", "name": "Angus", "gender": "Male"},
+        {"id": "aura-orpheus-en", "name": "Orpheus", "gender": "Male"},
+        {"id": "aura-helios-en", "name": "Helios", "gender": "Male"},
+        {"id": "aura-zeus-en", "name": "Zeus", "gender": "Male"},
+    ],
+    "google": [
+        {"id": "en-US-Neural2-A", "name": "Neural2 A", "gender": "Male"},
+        {"id": "en-US-Neural2-C", "name": "Neural2 C", "gender": "Female"},
+        {"id": "en-US-Neural2-D", "name": "Neural2 D", "gender": "Male"},
+        {"id": "en-US-Neural2-E", "name": "Neural2 E", "gender": "Female"},
+        {"id": "en-US-Neural2-F", "name": "Neural2 F", "gender": "Female"},
+        {"id": "en-US-Neural2-G", "name": "Neural2 G", "gender": "Female"},
+        {"id": "en-US-Neural2-H", "name": "Neural2 H", "gender": "Female"},
+        {"id": "en-US-Neural2-I", "name": "Neural2 I", "gender": "Male"},
+        {"id": "en-US-Neural2-J", "name": "Neural2 J", "gender": "Male"},
+    ],
+    "sarvam": [
+        {"id": "aditya", "name": "Aditya", "gender": "Male"},
+        {"id": "ritu", "name": "Ritu", "gender": "Female"},
+        {"id": "ashutosh", "name": "Ashutosh", "gender": "Male"},
+        {"id": "priya", "name": "Priya", "gender": "Female"},
+        {"id": "neha", "name": "Neha", "gender": "Female"},
+        {"id": "rahul", "name": "Rahul", "gender": "Male"},
+        {"id": "pooja", "name": "Pooja", "gender": "Female"},
+        {"id": "rohan", "name": "Rohan", "gender": "Male"},
+        {"id": "simran", "name": "Simran", "gender": "Female"},
+        {"id": "kavya", "name": "Kavya", "gender": "Female"},
+    ],
+    "voicemaker": [
+        {"id": "ai3-Jony", "name": "Jony", "gender": "Male"},
+        {"id": "ai2-Katie", "name": "Katie", "gender": "Female"},
+        {"id": "ai1-Joanna", "name": "Joanna", "gender": "Female"},
+        {"id": "pro1-Catherine", "name": "Catherine", "gender": "Female"},
+        {"id": "proplus-Richard", "name": "Richard", "gender": "Male"},
+        {"id": "proplus-Emma", "name": "Emma", "gender": "Female"},
+        {"id": "ai3-Ana", "name": "Ana", "gender": "Female"},
+        {"id": "ai3-Lea", "name": "Lea", "gender": "Female"},
+        {"id": "ai3-Keiko", "name": "Keiko", "gender": "Female"},
+        {"id": "ai3-Liang", "name": "Liang", "gender": "Male"},
+    ],
+    "murf": [],
+}
+
+PROVIDER_DISPLAY_NAMES: Dict[str, str] = {
+    "openai": "OpenAI",
+    "elevenlabs": "ElevenLabs",
+    "cartesia": "Cartesia",
+    "deepgram": "Deepgram",
+    "google": "Google",
+    "sarvam": "Sarvam",
+    "voicemaker": "VoiceMaker",
+    "murf": "Murf",
+    "azure": "Azure",
+    "aws": "AWS Polly",
+}
+
+
+# ---------------------------------------------------------------------------
+# Custom voice schemas (inline, kept simple)
+# ---------------------------------------------------------------------------
+class CustomVoiceCreateRequest(BaseModel):
+    provider: str
+    voice_id: str
+    name: str
+    gender: Optional[str] = None
+    description: Optional[str] = None
+
+
+class CustomVoiceUpdateRequest(BaseModel):
+    voice_id: Optional[str] = None
+    name: Optional[str] = None
+    gender: Optional[str] = None
+    description: Optional[str] = None
 
 
 @router.post("", response_model=PersonaResponse, status_code=status.HTTP_201_CREATED)
@@ -29,10 +157,11 @@ async def create_persona(
         db_persona = Persona(
             organization_id=organization_id,
             name=persona.name,
-            language=persona.language,
-            accent=persona.accent,
             gender=persona.gender,
-            background_noise=persona.background_noise
+            tts_provider=persona.tts_provider,
+            tts_voice_id=persona.tts_voice_id,
+            tts_voice_name=persona.tts_voice_name,
+            is_custom=persona.is_custom,
         )
         db.add(db_persona)
         db.commit()
@@ -93,6 +222,218 @@ async def list_personas(
         )
 
 
+# ============================================
+# VOICE OPTIONS (built-in + custom, ungated)
+# Must be registered BEFORE /{persona_id} routes.
+# ============================================
+
+def _serialize_custom_voice(voice: CustomTTSVoice) -> Dict[str, Any]:
+    return {
+        "id": str(voice.id),
+        "provider": voice.provider,
+        "voice_id": voice.voice_id,
+        "name": voice.name,
+        "gender": voice.gender or "Unknown",
+        "description": voice.description,
+        "is_custom": True,
+        "created_at": voice.created_at.isoformat() if voice.created_at else None,
+    }
+
+
+@router.get("/voice-options", operation_id="getPersonaVoiceOptions")
+async def get_voice_options(
+    provider: Optional[str] = None,
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+):
+    """Return available TTS voices grouped by provider.
+
+    Merges built-in static voices, model-config voices (e.g. Murf voice files),
+    and the org's custom voices. Not enterprise-gated.
+    """
+    model_voices_by_provider: Dict[str, List[Dict[str, Any]]] = {}
+    for provider_enum in ModelProvider:
+        try:
+            tts_models = model_config_service.get_models_by_type(provider_enum, "tts")
+        except Exception:
+            tts_models = []
+        for model_name in tts_models:
+            try:
+                voices_list = model_config_service.get_voices_for_model(model_name)
+            except Exception:
+                voices_list = []
+            if voices_list and isinstance(voices_list, list):
+                existing = model_voices_by_provider.setdefault(provider_enum.value, [])
+                for v in voices_list:
+                    if isinstance(v, dict) and v.get("id"):
+                        existing.append({
+                            "id": v["id"],
+                            "name": v.get("name", v["id"]),
+                            "gender": v.get("gender", "Unknown"),
+                        })
+
+    custom_query = db.query(CustomTTSVoice).filter(CustomTTSVoice.organization_id == organization_id)
+    if provider:
+        custom_query = custom_query.filter(CustomTTSVoice.provider == provider.lower())
+    custom_voices = custom_query.order_by(CustomTTSVoice.name.asc()).all()
+
+    custom_by_provider: Dict[str, List[Dict[str, Any]]] = {}
+    for cv in custom_voices:
+        custom_by_provider.setdefault(cv.provider, []).append({
+            "id": cv.voice_id,
+            "name": cv.name,
+            "gender": cv.gender or "Unknown",
+            "is_custom": True,
+            "custom_voice_id": str(cv.id),
+            "description": cv.description,
+        })
+
+    all_keys: set = set(TTS_VOICES.keys()) | set(model_voices_by_provider.keys()) | set(custom_by_provider.keys())
+    if provider:
+        all_keys = {k for k in all_keys if k == provider.lower()}
+
+    result = []
+    for key in sorted(all_keys):
+        seen: set = set()
+        voices: List[Dict[str, Any]] = []
+        for v in TTS_VOICES.get(key, []):
+            if v["id"] not in seen:
+                seen.add(v["id"])
+                voices.append({**v, "is_custom": False})
+        for v in model_voices_by_provider.get(key, []):
+            if v["id"] not in seen:
+                seen.add(v["id"])
+                voices.append({**v, "is_custom": False})
+        for v in custom_by_provider.get(key, []):
+            if v["id"] not in seen:
+                seen.add(v["id"])
+                voices.append(v)
+        if voices:
+            result.append({
+                "id": key,
+                "name": PROVIDER_DISPLAY_NAMES.get(key, key.title()),
+                "voices": voices,
+            })
+
+    return {"providers": result}
+
+
+# ============================================
+# CUSTOM VOICES (ungated, org-scoped)
+# Must be registered BEFORE /{persona_id} routes.
+# ============================================
+
+@router.get("/custom-voices", operation_id="listPersonaCustomVoices")
+async def list_custom_voices(
+    provider: Optional[str] = None,
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+):
+    """List custom TTS voices for the organization."""
+    query = db.query(CustomTTSVoice).filter(CustomTTSVoice.organization_id == organization_id)
+    if provider:
+        query = query.filter(CustomTTSVoice.provider == provider.lower())
+    voices = query.order_by(CustomTTSVoice.provider.asc(), CustomTTSVoice.name.asc()).all()
+    return [_serialize_custom_voice(v) for v in voices]
+
+
+@router.post("/custom-voices", status_code=status.HTTP_201_CREATED, operation_id="createPersonaCustomVoice")
+async def create_custom_voice(
+    data: CustomVoiceCreateRequest,
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+):
+    """Create a custom TTS voice (org-scoped)."""
+    prov = data.provider.strip().lower()
+    vid = data.voice_id.strip()
+    vname = data.name.strip()
+    if not prov or not vid or not vname:
+        raise HTTPException(400, "provider, voice_id, and name are required")
+
+    existing = db.query(CustomTTSVoice).filter(
+        CustomTTSVoice.organization_id == organization_id,
+        CustomTTSVoice.provider == prov,
+        CustomTTSVoice.voice_id == vid,
+    ).first()
+    if existing:
+        raise HTTPException(409, f"Custom voice with provider={prov} voice_id={vid} already exists")
+
+    voice = CustomTTSVoice(
+        organization_id=organization_id,
+        provider=prov,
+        voice_id=vid,
+        name=vname,
+        gender=data.gender,
+        description=data.description,
+    )
+    db.add(voice)
+    db.commit()
+    db.refresh(voice)
+    return _serialize_custom_voice(voice)
+
+
+@router.put("/custom-voices/{custom_voice_id}", operation_id="updatePersonaCustomVoice")
+async def update_custom_voice(
+    custom_voice_id: UUID,
+    data: CustomVoiceUpdateRequest,
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+):
+    """Update a custom TTS voice."""
+    voice = db.query(CustomTTSVoice).filter(
+        CustomTTSVoice.id == custom_voice_id,
+        CustomTTSVoice.organization_id == organization_id,
+    ).first()
+    if not voice:
+        raise HTTPException(404, "Custom voice not found")
+
+    if data.voice_id is not None:
+        cleaned = data.voice_id.strip()
+        if not cleaned:
+            raise HTTPException(400, "voice_id cannot be empty")
+        dup = db.query(CustomTTSVoice).filter(
+            CustomTTSVoice.organization_id == organization_id,
+            CustomTTSVoice.provider == voice.provider,
+            CustomTTSVoice.voice_id == cleaned,
+            CustomTTSVoice.id != custom_voice_id,
+        ).first()
+        if dup:
+            raise HTTPException(409, f"Another custom voice already uses voice_id={cleaned}")
+        voice.voice_id = cleaned
+    if data.name is not None:
+        voice.name = data.name.strip()
+    if data.gender is not None:
+        voice.gender = data.gender
+    if data.description is not None:
+        voice.description = data.description
+
+    db.commit()
+    db.refresh(voice)
+    return _serialize_custom_voice(voice)
+
+
+@router.delete("/custom-voices/{custom_voice_id}", operation_id="deletePersonaCustomVoice")
+async def delete_custom_voice(
+    custom_voice_id: UUID,
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+):
+    """Delete a custom TTS voice."""
+    voice = db.query(CustomTTSVoice).filter(
+        CustomTTSVoice.id == custom_voice_id,
+        CustomTTSVoice.organization_id == organization_id,
+    ).first()
+    if not voice:
+        raise HTTPException(404, "Custom voice not found")
+    db.delete(voice)
+    db.commit()
+    return {"message": "Custom voice deleted"}
+
+
+# ============================================
+# PERSONA BY ID (parameterized routes last)
+# ============================================
+
 @router.get("/{persona_id}", response_model=PersonaResponse)
 async def get_persona(
     persona_id: UUID,
@@ -138,7 +479,7 @@ async def update_persona(
         if not db_persona:
             raise HTTPException(status_code=404, detail=f"Persona {persona_id} not found")
         
-        update_data = persona_update.dict(exclude_unset=True)
+        update_data = persona_update.model_dump(exclude_unset=True)
         for field, value in update_data.items():
             setattr(db_persona, field, value)
         
@@ -228,25 +569,56 @@ async def delete_persona(
             },
         )
 
-    if dependencies:
-        # Delete in FK-safe order
-        db.query(EvaluatorResult).filter(
-            EvaluatorResult.persona_id == persona_id,
-            EvaluatorResult.organization_id == organization_id,
-        ).delete(synchronize_session=False)
+    try:
+        if dependencies:
+            evaluator_ids = [
+                e.id for e in db.query(Evaluator.id).filter(
+                    Evaluator.persona_id == persona_id,
+                    Evaluator.organization_id == organization_id,
+                ).all()
+            ]
 
-        db.query(Evaluator).filter(
-            Evaluator.persona_id == persona_id,
-            Evaluator.organization_id == organization_id,
-        ).delete(synchronize_session=False)
+            result_ids = [
+                r.id for r in db.query(EvaluatorResult.id).filter(
+                    EvaluatorResult.persona_id == persona_id,
+                    EvaluatorResult.organization_id == organization_id,
+                ).all()
+            ]
 
-        db.query(TestAgentConversation).filter(
-            TestAgentConversation.persona_id == persona_id,
-            TestAgentConversation.organization_id == organization_id,
-        ).delete(synchronize_session=False)
+            # Delete deepest FK children first
+            if evaluator_ids:
+                db.query(PromptOptimizationRun).filter(
+                    PromptOptimizationRun.evaluator_id.in_(evaluator_ids),
+                ).delete(synchronize_session=False)
 
-    db.delete(db_persona)
-    db.commit()
+            if result_ids:
+                db.query(CallRecording).filter(
+                    CallRecording.evaluator_result_id.in_(result_ids),
+                ).delete(synchronize_session=False)
+
+            db.query(EvaluatorResult).filter(
+                EvaluatorResult.persona_id == persona_id,
+                EvaluatorResult.organization_id == organization_id,
+            ).delete(synchronize_session=False)
+
+            db.query(Evaluator).filter(
+                Evaluator.persona_id == persona_id,
+                Evaluator.organization_id == organization_id,
+            ).delete(synchronize_session=False)
+
+            db.query(TestAgentConversation).filter(
+                TestAgentConversation.persona_id == persona_id,
+                TestAgentConversation.organization_id == organization_id,
+            ).delete(synchronize_session=False)
+
+        db.delete(db_persona)
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to cascade-delete persona dependencies: {str(e.orig)}",
+        )
 
     if dependencies:
         return JSONResponse(
@@ -276,14 +648,14 @@ async def clone_persona(
         if not source_persona:
             raise HTTPException(status_code=404, detail=f"Persona {persona_id} not found")
         
-        # Create new persona with same attributes
         new_persona = Persona(
             organization_id=organization_id,
             name=clone_request.name if clone_request.name else f"{source_persona.name} (Copy)",
-            language=source_persona.language,
-            accent=source_persona.accent,
             gender=source_persona.gender,
-            background_noise=source_persona.background_noise
+            tts_provider=source_persona.tts_provider,
+            tts_voice_id=source_persona.tts_voice_id,
+            tts_voice_name=source_persona.tts_voice_name,
+            is_custom=source_persona.is_custom,
         )
         db.add(new_persona)
         db.commit()
@@ -334,13 +706,12 @@ async def seed_demo_data(
     from app.models.database import Scenario
     
     try:
-        # Example personas
         personas_data = [
-            {"name": "Grumpy Old Man", "language": "en", "accent": "american", "gender": "male", "background_noise": "none"},
-            {"name": "Confused Senior", "language": "en", "accent": "american", "gender": "female", "background_noise": "home"},
-            {"name": "Busy Professional", "language": "en", "accent": "american", "gender": "neutral", "background_noise": "office"},
-            {"name": "Friendly Customer", "language": "en", "accent": "american", "gender": "female", "background_noise": "none"},
-            {"name": "Angry Caller", "language": "en", "accent": "american", "gender": "male", "background_noise": "street"},
+            {"name": "Grumpy Old Man", "gender": "male", "tts_provider": "openai", "tts_voice_id": "onyx", "tts_voice_name": "Onyx"},
+            {"name": "Confused Senior", "gender": "female", "tts_provider": "openai", "tts_voice_id": "nova", "tts_voice_name": "Nova"},
+            {"name": "Busy Professional", "gender": "neutral", "tts_provider": "openai", "tts_voice_id": "alloy", "tts_voice_name": "Alloy"},
+            {"name": "Friendly Customer", "gender": "female", "tts_provider": "elevenlabs", "tts_voice_id": "21m00Tcm4TlvDq8ikWAM", "tts_voice_name": "Rachel"},
+            {"name": "Angry Caller", "gender": "male", "tts_provider": "elevenlabs", "tts_voice_id": "TxGEqnHWrfWFTfGW9XjX", "tts_voice_name": "Josh"},
         ]
         
         # Check if personas already exist to avoid duplicates

@@ -12,7 +12,7 @@ from loguru import logger
 
 from app.database import get_db
 from app.dependencies import get_organization_id, get_api_key
-from app.models.database import Evaluator, Agent, Persona, Scenario, EvaluatorResult, EvaluatorResultStatus
+from app.models.database import Evaluator, Agent, Persona, Scenario, EvaluatorResult, EvaluatorResultStatus, VoiceBundle
 from app.models.schemas import (
     EvaluatorCreate,
     EvaluatorUpdate,
@@ -142,6 +142,21 @@ def create_evaluator(
         if not scenario:
             raise HTTPException(status_code=404, detail="Scenario not found")
 
+        if agent.voice_bundle_id and persona.tts_provider:
+            voice_bundle = db.query(VoiceBundle).filter(VoiceBundle.id == agent.voice_bundle_id).first()
+            if voice_bundle and voice_bundle.tts_provider:
+                vb_provider = (voice_bundle.tts_provider.value if hasattr(voice_bundle.tts_provider, "value") else str(voice_bundle.tts_provider)).lower()
+                persona_provider = persona.tts_provider.lower()
+                if vb_provider != persona_provider:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Persona '{persona.name}' uses TTS provider '{persona.tts_provider}' "
+                            f"but agent '{agent.name}' voice bundle uses '{voice_bundle.tts_provider}'. "
+                            f"The persona's TTS provider must match the agent's voice bundle TTS provider."
+                        )
+                    )
+
     evaluator_id = generate_unique_evaluator_id(db)
 
     evaluator = Evaluator(
@@ -190,6 +205,25 @@ def create_evaluators_bulk(
     ).all()
     if len(personas) != len(bulk_data.persona_ids):
         raise HTTPException(status_code=404, detail="One or more personas not found")
+
+    # Validate TTS provider compatibility between personas and voice bundle
+    if agent.voice_bundle_id:
+        voice_bundle = db.query(VoiceBundle).filter(VoiceBundle.id == agent.voice_bundle_id).first()
+        if voice_bundle and voice_bundle.tts_provider:
+            vb_provider = (voice_bundle.tts_provider.value if hasattr(voice_bundle.tts_provider, "value") else str(voice_bundle.tts_provider)).lower()
+            mismatched = [
+                p.name for p in personas
+                if p.tts_provider and p.tts_provider.lower() != vb_provider
+            ]
+            if mismatched:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"The following personas use a different TTS provider than the agent's voice bundle "
+                        f"('{voice_bundle.tts_provider}'): {', '.join(mismatched)}. "
+                        f"All personas must use a TTS provider that matches the agent's voice bundle."
+                    )
+                )
 
     # Create evaluators for each persona
     evaluators = []

@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 from uuid import UUID
 from datetime import datetime, timezone
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from app.dependencies import get_db, get_api_key, get_organization_id
 from app.models.database import (
@@ -29,8 +29,7 @@ class UserPreferencesResponse(BaseModel):
     default_agent_id: Optional[UUID] = None
     default_agent: Optional[dict] = None  # Include agent details if set
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class UserPreferencesUpdate(BaseModel):

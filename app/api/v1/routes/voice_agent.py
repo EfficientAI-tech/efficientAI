@@ -244,15 +244,14 @@ async def websocket_endpoint(
                 if persona:
                     persona_parts = []
                     persona_parts.append(f"\n\nPersona: {persona.name}")
-                    if persona.language:
-                        persona_parts.append(f"Language: {persona.language.value}")
-                    if persona.accent:
-                        persona_parts.append(f"Accent: {persona.accent.value}")
                     if persona.gender:
-                        persona_parts.append(f"Gender: {persona.gender.value}")
-                    if persona.background_noise and persona.background_noise.value != "none":
-                        persona_parts.append(f"Background noise: {persona.background_noise.value}")
-                    
+                        gender_val = persona.gender.value if hasattr(persona.gender, "value") else persona.gender
+                        persona_parts.append(f"Gender: {gender_val}")
+                    if getattr(persona, "tts_provider", None):
+                        persona_parts.append(f"Voice provider: {persona.tts_provider}")
+                    if getattr(persona, "tts_voice_name", None):
+                        persona_parts.append(f"Voice: {persona.tts_voice_name}")
+
                     if persona_parts:
                         instruction_parts.append("\n".join(persona_parts))
             except ValueError:

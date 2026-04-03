@@ -414,20 +414,19 @@ export default function EvaluatorDetail() {
                           <div className="p-6 space-y-3">
                             <p className="text-base font-medium text-gray-900">{details.persona.name}</p>
                             <div className="flex flex-wrap gap-2">
-                              <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-purple-50 text-purple-800 border border-purple-200">
-                                Language: {details.persona.language}
-                              </span>
-                              <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-purple-50 text-purple-800 border border-purple-200">
-                                Accent: {details.persona.accent}
-                              </span>
+                              {details.persona.tts_provider && (
+                                <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-purple-50 text-purple-800 border border-purple-200">
+                                  Provider: {details.persona.tts_provider}
+                                </span>
+                              )}
+                              {details.persona.tts_voice_name && (
+                                <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-purple-50 text-purple-800 border border-purple-200">
+                                  Voice: {details.persona.tts_voice_name}
+                                </span>
+                              )}
                               <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-purple-50 text-purple-800 border border-purple-200">
                                 Gender: {details.persona.gender}
                               </span>
-                              {details.persona.background_noise && (
-                                <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-purple-50 text-purple-800 border border-purple-200">
-                                  Noise: {details.persona.background_noise}
-                                </span>
-                              )}
                             </div>
                           </div>
                         </div>

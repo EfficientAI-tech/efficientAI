@@ -238,19 +238,18 @@ class Agent(Base):
 
 
 class Persona(Base):
-    """Persona - The simulated caller/user for testing"""
+    """Persona - TTS provider-tied voice identity for testing"""
     __tablename__ = "personas"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
     name = Column(String, nullable=False)
-    language = Column(String, nullable=False, default=LanguageEnum.ENGLISH.value)
-    accent = Column(String, nullable=False, default=AccentEnum.AMERICAN.value)
     gender = Column(String, nullable=False, default=GenderEnum.NEUTRAL.value)
-    background_noise = Column(String, nullable=False, default=BackgroundNoiseEnum.NONE.value)
+    tts_provider = Column(String(100), nullable=True)
+    tts_voice_id = Column(String(255), nullable=True)
+    tts_voice_name = Column(String(255), nullable=True)
+    is_custom = Column(Boolean, default=False)
 
-
-    
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     created_by = Column(String)

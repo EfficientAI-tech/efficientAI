@@ -331,10 +331,11 @@ class ApiClient {
 
   async createPersona(data: {
     name: string
-    language: string
-    accent: string
     gender: string
-    background_noise: string
+    tts_provider?: string
+    tts_voice_id?: string
+    tts_voice_name?: string
+    is_custom?: boolean
   }): Promise<any> {
     const response = await this.client.post('/api/v1/personas', data)
     return response.data
@@ -359,6 +360,61 @@ class ApiClient {
 
   async seedDemoData(): Promise<any> {
     const response = await this.client.post('/api/v1/personas/seed-data')
+    return response.data
+  }
+
+  // Persona voice options (built-in + custom voices, ungated)
+  async getPersonaVoiceOptions(provider?: string): Promise<{
+    providers: Array<{
+      id: string
+      name: string
+      voices: Array<{
+        id: string
+        name: string
+        gender: string
+        is_custom: boolean
+        custom_voice_id?: string
+        description?: string | null
+      }>
+    }>
+  }> {
+    const response = await this.client.get('/api/v1/personas/voice-options', {
+      params: provider ? { provider } : undefined,
+    })
+    return response.data
+  }
+
+  // Custom voice CRUD (persona-scoped, ungated)
+  async listPersonaCustomVoices(provider?: string): Promise<any[]> {
+    const response = await this.client.get('/api/v1/personas/custom-voices', {
+      params: provider ? { provider } : undefined,
+    })
+    return response.data
+  }
+
+  async createPersonaCustomVoice(data: {
+    provider: string
+    voice_id: string
+    name: string
+    gender?: string
+    description?: string
+  }): Promise<any> {
+    const response = await this.client.post('/api/v1/personas/custom-voices', data)
+    return response.data
+  }
+
+  async updatePersonaCustomVoice(customVoiceId: string, data: {
+    voice_id?: string
+    name?: string
+    gender?: string
+    description?: string
+  }): Promise<any> {
+    const response = await this.client.put(`/api/v1/personas/custom-voices/${customVoiceId}`, data)
+    return response.data
+  }
+
+  async deletePersonaCustomVoice(customVoiceId: string): Promise<any> {
+    const response = await this.client.delete(`/api/v1/personas/custom-voices/${customVoiceId}`)
     return response.data
   }
 

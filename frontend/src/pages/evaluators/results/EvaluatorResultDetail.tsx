@@ -196,10 +196,11 @@ interface EvaluatorResultDetail {
   persona?: {
     id: string
     name: string
-    language: string
-    accent: string
     gender: string
-    background_noise: string
+    tts_provider?: string | null
+    tts_voice_id?: string | null
+    tts_voice_name?: string | null
+    is_custom?: boolean
   }
   scenario?: {
     id: string
@@ -684,7 +685,7 @@ export default function EvaluatorResultDetailPage() {
                 <div>
                   <p className="text-xs text-gray-500 font-medium mb-1">Persona Details</p>
                   <p className="text-xs text-gray-500">
-                    {resultData.persona.language} &middot; {resultData.persona.accent} &middot; {resultData.persona.gender}
+                    {resultData.persona.tts_provider || '--'} &middot; {resultData.persona.tts_voice_name || '--'} &middot; {resultData.persona.gender}
                   </p>
                 </div>
               )}
@@ -1056,8 +1057,12 @@ export default function EvaluatorResultDetailPage() {
                           <p className="text-[10px] text-gray-400 uppercase tracking-wider font-semibold mb-1">Persona</p>
                           <p className="text-sm font-medium text-gray-900">{resultData.persona.name}</p>
                           <div className="flex flex-wrap gap-1.5 mt-1.5">
-                            <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded">{resultData.persona.language}</span>
-                            <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded">{resultData.persona.accent}</span>
+                            {resultData.persona.tts_provider && (
+                              <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded">{resultData.persona.tts_provider}</span>
+                            )}
+                            {resultData.persona.tts_voice_name && (
+                              <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded">{resultData.persona.tts_voice_name}</span>
+                            )}
                             <span className="text-[10px] px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded">{resultData.persona.gender}</span>
                           </div>
                         </div>

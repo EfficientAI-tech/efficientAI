@@ -1,6 +1,6 @@
 """Pydantic schemas for request/response validation."""
 
-from pydantic import BaseModel, Field, field_validator, validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from uuid import UUID
@@ -41,8 +41,7 @@ class AudioFileResponse(AudioFileBase):
     channels: Optional[int] = None
     uploaded_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # Evaluation Schemas
@@ -57,7 +56,8 @@ class EvaluationCreate(BaseModel):
         default=["wer", "latency"], description="Metrics to calculate"
     )
 
-    @validator("metrics")
+    @field_validator("metrics")
+    @classmethod
     def validate_metrics(cls, v):
         """Validate metrics list."""
         allowed_metrics = ["wer", "cer", "latency", "quality_score", "rtf"]
@@ -83,8 +83,7 @@ class EvaluationResponse(BaseModel):
     completed_at: Optional[datetime] = None
     error_message: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class EvaluationStatusResponse(BaseModel):
@@ -109,8 +108,7 @@ class EvaluationResultResponse(BaseModel):
     model_used: Optional[str] = None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class MetricsResponse(BaseModel):
@@ -125,7 +123,7 @@ class MetricsResponse(BaseModel):
 class ComparisonRequest(BaseModel):
     """Schema for comparing multiple evaluations."""
 
-    evaluation_ids: List[UUID] = Field(..., min_items=2, description="At least 2 evaluation IDs to compare")
+    evaluation_ids: List[UUID] = Field(..., min_length=2, description="At least 2 evaluation IDs to compare")
 
 
 class ComparisonResponse(BaseModel):
@@ -151,8 +149,7 @@ class APIKeyResponse(BaseModel):
     is_active: bool
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # Generic Response Schemas
@@ -211,8 +208,7 @@ class AgentCreate(BaseModel):
             raise ValueError('phone_number is required when call_medium is phone_call')
         return self
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "name": "Customer Support Bot",
                 "phone_number": "+1234567890",
@@ -223,7 +219,7 @@ class AgentCreate(BaseModel):
                 "voice_ai_integration_id": "123e4567-e89b-12d3-a456-426614174001",
                 "voice_ai_agent_id": "agent_abc123"
             }
-        }
+        })
 
 
 class AgentUpdate(BaseModel):
@@ -280,7 +276,8 @@ class AgentResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    @validator('language', pre=True)
+    @field_validator('language', mode='before')
+    @classmethod
     def convert_language(cls, v):
         """Convert string to LanguageEnum (handles uppercase DB values like ENGLISH -> en)."""
         if v is None:
@@ -301,7 +298,8 @@ class AgentResponse(BaseModel):
                 raise ValueError(f"Invalid LanguageEnum value: {v}")
         return v
 
-    @validator('call_type', pre=True)
+    @field_validator('call_type', mode='before')
+    @classmethod
     def convert_call_type(cls, v):
         """Convert string to CallTypeEnum (handles uppercase DB values)."""
         if v is None:
@@ -317,7 +315,8 @@ class AgentResponse(BaseModel):
                 raise ValueError(f"Invalid CallTypeEnum value: {v}")
         return v
 
-    @validator('call_medium', pre=True)
+    @field_validator('call_medium', mode='before')
+    @classmethod
     def convert_call_medium(cls, v):
         """Convert string to CallMediumEnum (handles uppercase DB values)."""
         if v is None:
@@ -333,110 +332,54 @@ class AgentResponse(BaseModel):
                 raise ValueError(f"Invalid CallMediumEnum value: {v}")
         return v
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # Persona Schemas
 class PersonaCreate(BaseModel):
-    """Schema for creating a new persona"""
+    """Schema for creating a new persona (TTS provider-tied voice identity)"""
     name: str = Field(..., min_length=1, max_length=255)
-    language: LanguageEnum = LanguageEnum.ENGLISH
-    accent: AccentEnum = AccentEnum.AMERICAN
     gender: GenderEnum = GenderEnum.NEUTRAL
-    background_noise: BackgroundNoiseEnum = BackgroundNoiseEnum.NONE
+    tts_provider: Optional[str] = None
+    tts_voice_id: Optional[str] = None
+    tts_voice_name: Optional[str] = None
+    is_custom: bool = False
 
 
 class PersonaUpdate(BaseModel):
     """Schema for updating a persona"""
     name: Optional[str] = None
-    language: Optional[LanguageEnum] = None
-    accent: Optional[AccentEnum] = None
     gender: Optional[GenderEnum] = None
-    background_noise: Optional[BackgroundNoiseEnum] = None
+    tts_provider: Optional[str] = None
+    tts_voice_id: Optional[str] = None
+    tts_voice_name: Optional[str] = None
+    is_custom: Optional[bool] = None
 
 
 class PersonaResponse(BaseModel):
     """Schema for persona response"""
     id: UUID
     name: str
-    language: LanguageEnum
-    accent: AccentEnum
-    gender: GenderEnum
-    background_noise: BackgroundNoiseEnum
+    gender: str
+    tts_provider: Optional[str] = None
+    tts_voice_id: Optional[str] = None
+    tts_voice_name: Optional[str] = None
+    is_custom: bool = False
     created_at: datetime
     updated_at: datetime
 
-    @validator('language', pre=True)
-    def convert_language(cls, v):
-        """Convert string to LanguageEnum (handles uppercase DB values)."""
-        if v is None:
-            return None
-        if isinstance(v, str):
-            v_lower = v.lower()
-            language_map = {'english': 'en', 'spanish': 'es', 'french': 'fr', 'german': 'de', 
-                          'chinese': 'zh', 'japanese': 'ja', 'hindi': 'hi', 'arabic': 'ar'}
-            if v_lower in language_map:
-                return LanguageEnum(language_map[v_lower])
-            try:
-                return LanguageEnum(v_lower)
-            except ValueError:
-                for enum_member in LanguageEnum:
-                    if enum_member.name == v or enum_member.value == v:
-                        return enum_member
-                raise ValueError(f"Invalid LanguageEnum value: {v}")
-        return v
-
-    @validator('accent', pre=True)
-    def convert_accent(cls, v):
-        """Convert string to AccentEnum (handles uppercase DB values)."""
-        if v is None:
-            return None
-        if isinstance(v, str):
-            v_lower = v.lower()
-            try:
-                return AccentEnum(v_lower)
-            except ValueError:
-                for enum_member in AccentEnum:
-                    if enum_member.name == v or enum_member.value == v:
-                        return enum_member
-                raise ValueError(f"Invalid AccentEnum value: {v}")
-        return v
-
-    @validator('gender', pre=True)
+    @field_validator('gender', mode='before')
+    @classmethod
     def convert_gender(cls, v):
-        """Convert string to GenderEnum (handles uppercase DB values)."""
         if v is None:
-            return None
+            return "neutral"
         if isinstance(v, str):
-            v_lower = v.lower()
-            try:
-                return GenderEnum(v_lower)
-            except ValueError:
-                for enum_member in GenderEnum:
-                    if enum_member.name == v or enum_member.value == v:
-                        return enum_member
-                raise ValueError(f"Invalid GenderEnum value: {v}")
+            return v.lower()
+        if hasattr(v, 'value'):
+            return v.value
         return v
 
-    @validator('background_noise', pre=True)
-    def convert_background_noise(cls, v):
-        """Convert string to BackgroundNoiseEnum (handles uppercase DB values)."""
-        if v is None:
-            return None
-        if isinstance(v, str):
-            v_lower = v.lower()
-            try:
-                return BackgroundNoiseEnum(v_lower)
-            except ValueError:
-                for enum_member in BackgroundNoiseEnum:
-                    if enum_member.name == v or enum_member.value == v:
-                        return enum_member
-                raise ValueError(f"Invalid BackgroundNoiseEnum value: {v}")
-        return v
-
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PersonaCloneRequest(BaseModel):
@@ -471,8 +414,7 @@ class ScenarioResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ============================================
@@ -505,8 +447,7 @@ class UserResponse(BaseModel):
     is_active: bool
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class OrganizationMemberResponse(BaseModel):
@@ -518,8 +459,7 @@ class OrganizationMemberResponse(BaseModel):
     joined_at: datetime
     user: UserResponse  # Include user details
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # Invitation Schemas
@@ -540,7 +480,8 @@ class InvitationResponse(BaseModel):
     created_at: datetime
     organization_name: Optional[str] = None  # Include organization name
 
-    @validator('role', pre=True)
+    @field_validator('role', mode='before')
+    @classmethod
     def convert_role(cls, v):
         """Convert string to RoleEnum (handles uppercase DB values)."""
         if v is None:
@@ -556,7 +497,8 @@ class InvitationResponse(BaseModel):
                 raise ValueError(f"Invalid RoleEnum value: {v}")
         return v
 
-    @validator('status', pre=True)
+    @field_validator('status', mode='before')
+    @classmethod
     def convert_status(cls, v):
         """Convert string to InvitationStatus (handles uppercase DB values)."""
         if v is None:
@@ -572,8 +514,7 @@ class InvitationResponse(BaseModel):
                 raise ValueError(f"Invalid InvitationStatus value: {v}")
         return v
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class InvitationUpdate(BaseModel):
@@ -597,8 +538,7 @@ class ProfileResponse(BaseModel):
     created_at: datetime
     organizations: List[dict] = Field(default_factory=list)  # List of org memberships
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ============================================
@@ -634,7 +574,8 @@ class IntegrationResponse(BaseModel):
     last_tested_at: Optional[datetime] = None
     # Note: api_key is NOT included in response for security
 
-    @validator('platform', pre=True)
+    @field_validator('platform', mode='before')
+    @classmethod
     def convert_platform(cls, v):
         """Convert string to IntegrationPlatform enum if needed (handles uppercase DB values)."""
         if v is None:
@@ -652,8 +593,7 @@ class IntegrationResponse(BaseModel):
                 raise ValueError(f"Invalid IntegrationPlatform value: {v}")
         return v
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ============================================
@@ -739,7 +679,8 @@ class AIProviderResponse(BaseModel):
     updated_at: datetime
     last_tested_at: Optional[datetime]
 
-    @validator('provider', pre=True)
+    @field_validator('provider', mode='before')
+    @classmethod
     def convert_provider(cls, v):
         """Convert string to ModelProvider (handles uppercase DB values)."""
         if v is None:
@@ -755,8 +696,7 @@ class AIProviderResponse(BaseModel):
                 raise ValueError(f"Invalid ModelProvider value: {v}")
         return v
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # VoiceBundle Schemas
@@ -853,7 +793,8 @@ class VoiceBundleResponse(BaseModel):
     # Bundle type - can be string from DB or enum, validator handles conversion
     bundle_type: VoiceBundleType
     
-    @validator('bundle_type', pre=True)
+    @field_validator('bundle_type', mode='before')
+    @classmethod
     def convert_bundle_type(cls, v):
         """Convert string to VoiceBundleType enum if needed."""
         if isinstance(v, str):
@@ -867,7 +808,8 @@ class VoiceBundleResponse(BaseModel):
                 raise ValueError(f"Invalid bundle_type value: {v}")
         return v
     
-    @validator('stt_provider', 'llm_provider', 'tts_provider', 's2s_provider', pre=True)
+    @field_validator('stt_provider', 'llm_provider', 'tts_provider', 's2s_provider', mode='before')
+    @classmethod
     def convert_model_provider(cls, v):
         """Convert string to ModelProvider enum if needed (handles uppercase DB values)."""
         if v is None:
@@ -914,8 +856,7 @@ class VoiceBundleResponse(BaseModel):
     updated_at: datetime
     created_by: Optional[str]
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # Test Agent Conversation Schemas
@@ -927,15 +868,14 @@ class TestAgentConversationCreate(BaseModel):
     voice_bundle_id: UUID
     conversation_metadata: Optional[Dict[str, Any]] = None
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "agent_id": "123e4567-e89b-12d3-a456-426614174000",
                 "persona_id": "123e4567-e89b-12d3-a456-426614174001",
                 "scenario_id": "123e4567-e89b-12d3-a456-426614174002",
                 "voice_bundle_id": "123e4567-e89b-12d3-a456-426614174003"
             }
-        }
+        })
 
 
 class TestAgentConversationUpdate(BaseModel):
@@ -966,8 +906,7 @@ class TestAgentConversationResponse(BaseModel):
     updated_at: datetime
     created_by: Optional[str]
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ConversationTurn(BaseModel):
@@ -986,15 +925,14 @@ class ConversationEvaluationCreate(BaseModel):
     llm_provider: Optional[ModelProvider] = ModelProvider.OPENAI
     llm_model: Optional[str] = "gpt-4o"
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "transcription_id": "123e4567-e89b-12d3-a456-426614174000",
                 "agent_id": "123e4567-e89b-12d3-a456-426614174001",
                 "llm_provider": "openai",
                 "llm_model": "gpt-4o"
             }
-        }
+        })
 
 
 class ConversationEvaluationResponse(BaseModel):
@@ -1012,8 +950,7 @@ class ConversationEvaluationResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # Evaluator Schemas
@@ -1058,7 +995,8 @@ class EvaluatorResponse(BaseModel):
     updated_at: datetime
     created_by: Optional[str]
 
-    @validator('llm_provider', pre=True)
+    @field_validator('llm_provider', mode='before')
+    @classmethod
     def convert_llm_provider(cls, v):
         """Convert string to ModelProvider (handles uppercase DB values)."""
         if v is None:
@@ -1074,8 +1012,7 @@ class EvaluatorResponse(BaseModel):
                 raise ValueError(f"Invalid ModelProvider value: {v}")
         return v
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class EvaluatorBulkCreate(BaseModel):
@@ -1097,11 +1034,9 @@ class RunEvaluatorsResponse(BaseModel):
     task_ids: List[str] = Field(..., description="List of Celery task IDs for tracking")
     evaluator_results: List["EvaluatorResultResponse"] = Field(default_factory=list, description="List of created evaluator results")
     
-    class Config:
-        from_attributes = True
-    
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_schema_extra={
             "example": {
                 "agent_id": "123e4567-e89b-12d3-a456-426614174000",
                 "scenario_id": "123e4567-e89b-12d3-a456-426614174002",
@@ -1111,7 +1046,8 @@ class RunEvaluatorsResponse(BaseModel):
                 ],
                 "tags": ["test", "production"]
             }
-        }
+        },
+    )
 
 
 # Metric Schemas
@@ -1123,8 +1059,7 @@ class MetricCreate(BaseModel):
     trigger: MetricTrigger = MetricTrigger.ALWAYS
     enabled: bool = True
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "name": "Professionalism",
                 "description": "Measures the professional tone and behavior",
@@ -1132,7 +1067,7 @@ class MetricCreate(BaseModel):
                 "trigger": "always",
                 "enabled": True
             }
-        }
+        })
 
 
 class MetricUpdate(BaseModel):
@@ -1158,7 +1093,8 @@ class MetricResponse(BaseModel):
     updated_at: datetime
     created_by: Optional[str]
 
-    @validator('metric_type', pre=True)
+    @field_validator('metric_type', mode='before')
+    @classmethod
     def convert_metric_type(cls, v):
         """Convert string to MetricType (handles uppercase DB values)."""
         if v is None:
@@ -1174,7 +1110,8 @@ class MetricResponse(BaseModel):
                 raise ValueError(f"Invalid MetricType value: {v}")
         return v
 
-    @validator('trigger', pre=True)
+    @field_validator('trigger', mode='before')
+    @classmethod
     def convert_trigger(cls, v):
         """Convert string to MetricTrigger (handles uppercase DB values)."""
         if v is None:
@@ -1190,8 +1127,7 @@ class MetricResponse(BaseModel):
                 raise ValueError(f"Invalid MetricTrigger value: {v}")
         return v
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # Evaluator Result Schemas
@@ -1258,7 +1194,8 @@ class EvaluatorResultResponse(BaseModel):
     scenario: Optional[ScenarioResponse] = None
     evaluator: Optional[EvaluatorResponse] = None
 
-    @validator('status', pre=True)
+    @field_validator('status', mode='before')
+    @classmethod
     def convert_status(cls, v):
         """Convert string to EvaluatorResultStatus (handles uppercase DB values)."""
         if v is None:
@@ -1274,8 +1211,7 @@ class EvaluatorResultResponse(BaseModel):
                 raise ValueError(f"Invalid EvaluatorResultStatus value: {v}")
         return v
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ============================================
@@ -1302,8 +1238,7 @@ class AlertCreate(BaseModel):
     notify_emails: Optional[List[str]] = Field(default=None, description="List of email addresses to notify")
     notify_webhooks: Optional[List[str]] = Field(default=None, description="List of webhook URLs (Slack, etc.)")
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "name": "High Call Volume Alert",
                 "description": "Alert when call volume exceeds threshold",
@@ -1317,7 +1252,7 @@ class AlertCreate(BaseModel):
                 "notify_emails": ["admin@example.com"],
                 "notify_webhooks": ["https://hooks.slack.com/services/xxx"]
             }
-        }
+        })
 
 
 class AlertUpdate(BaseModel):
@@ -1374,7 +1309,8 @@ class AlertResponse(BaseModel):
     updated_at: datetime
     created_by: Optional[str]
 
-    @validator('metric_type', pre=True)
+    @field_validator('metric_type', mode='before')
+    @classmethod
     def convert_metric_type(cls, v):
         """Convert string to AlertMetricType."""
         if v is None:
@@ -1390,7 +1326,8 @@ class AlertResponse(BaseModel):
                 raise ValueError(f"Invalid AlertMetricType value: {v}")
         return v
 
-    @validator('aggregation', pre=True)
+    @field_validator('aggregation', mode='before')
+    @classmethod
     def convert_aggregation(cls, v):
         """Convert string to AlertAggregation."""
         if v is None:
@@ -1406,7 +1343,8 @@ class AlertResponse(BaseModel):
                 raise ValueError(f"Invalid AlertAggregation value: {v}")
         return v
 
-    @validator('operator', pre=True)
+    @field_validator('operator', mode='before')
+    @classmethod
     def convert_operator(cls, v):
         """Convert string to AlertOperator."""
         if v is None:
@@ -1421,7 +1359,8 @@ class AlertResponse(BaseModel):
                 raise ValueError(f"Invalid AlertOperator value: {v}")
         return v
 
-    @validator('notify_frequency', pre=True)
+    @field_validator('notify_frequency', mode='before')
+    @classmethod
     def convert_notify_frequency(cls, v):
         """Convert string to AlertNotifyFrequency."""
         if v is None:
@@ -1437,7 +1376,8 @@ class AlertResponse(BaseModel):
                 raise ValueError(f"Invalid AlertNotifyFrequency value: {v}")
         return v
 
-    @validator('status', pre=True)
+    @field_validator('status', mode='before')
+    @classmethod
     def convert_status(cls, v):
         """Convert string to AlertStatus."""
         if v is None:
@@ -1453,8 +1393,7 @@ class AlertResponse(BaseModel):
                 raise ValueError(f"Invalid AlertStatus value: {v}")
         return v
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AlertHistoryResponse(BaseModel):
@@ -1492,7 +1431,8 @@ class AlertHistoryResponse(BaseModel):
     # Related alert info (optional)
     alert: Optional[AlertResponse] = None
 
-    @validator('status', pre=True)
+    @field_validator('status', mode='before')
+    @classmethod
     def convert_status(cls, v):
         """Convert string to AlertHistoryStatus."""
         if v is None:
@@ -1508,8 +1448,7 @@ class AlertHistoryResponse(BaseModel):
                 raise ValueError(f"Invalid AlertHistoryStatus value: {v}")
         return v
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AlertHistoryUpdate(BaseModel):
@@ -1532,8 +1471,7 @@ class CronJobCreate(BaseModel):
     max_runs: int = Field(default=10, ge=1, le=1000, description="Maximum number of times to run")
     evaluator_ids: List[UUID] = Field(..., min_length=1, description="List of evaluator IDs to trigger")
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "name": "Daily Evaluation Run",
                 "cron_expression": "0 9 * * 1-5",
@@ -1541,7 +1479,7 @@ class CronJobCreate(BaseModel):
                 "max_runs": 100,
                 "evaluator_ids": ["123e4567-e89b-12d3-a456-426614174000"]
             }
-        }
+        })
 
 
 class CronJobUpdate(BaseModel):
@@ -1571,7 +1509,8 @@ class CronJobResponse(BaseModel):
     updated_at: datetime
     created_by: Optional[str]
 
-    @validator('status', pre=True)
+    @field_validator('status', mode='before')
+    @classmethod
     def convert_status(cls, v):
         """Convert string to CronJobStatus."""
         if v is None:
@@ -1587,7 +1526,8 @@ class CronJobResponse(BaseModel):
                 raise ValueError(f"Invalid status: {v}")
         return v
 
-    @validator('evaluator_ids', pre=True)
+    @field_validator('evaluator_ids', mode='before')
+    @classmethod
     def convert_evaluator_ids(cls, v):
         """Convert evaluator_ids from JSON to list of UUIDs."""
         if v is None:
@@ -1596,8 +1536,7 @@ class CronJobResponse(BaseModel):
             return [UUID(str(id)) if not isinstance(id, UUID) else id for id in v]
         return v
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ============================================
@@ -1631,8 +1570,7 @@ class PromptPartialVersionResponse(BaseModel):
     created_at: datetime
     created_by: Optional[str]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PromptPartialResponse(BaseModel):
@@ -1648,13 +1586,11 @@ class PromptPartialResponse(BaseModel):
     updated_at: datetime
     created_by: Optional[str]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PromptPartialDetailResponse(PromptPartialResponse):
     """Schema for prompt partial detail with versions."""
     versions: List[PromptPartialVersionResponse] = []
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

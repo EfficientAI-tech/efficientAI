@@ -130,7 +130,7 @@ async def update_aiprovider(
             status_code=404, detail=f"AI Provider {aiprovider_id} not found"
         )
     
-    update_data = aiprovider_update.dict(exclude_unset=True)
+    update_data = aiprovider_update.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         if field == 'api_key' and value:
             encrypted_api_key = encrypt_api_key(value)
@@ -189,8 +189,8 @@ async def test_aiprovider(
     
     # TODO: Implement actual API key testing based on provider type
     # For now, just update the last_tested_at timestamp
-    from datetime import datetime
-    aiprovider.last_tested_at = datetime.utcnow()
+    from datetime import datetime, timezone
+    aiprovider.last_tested_at = datetime.now(timezone.utc)
     db.commit()
     
     return {"status": "success", "message": "API key test completed"}

@@ -234,7 +234,7 @@ async def update_conversation(
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
     
-    update_data = conversation_update.dict(exclude_unset=True)
+    update_data = conversation_update.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(conversation, field, value)
     

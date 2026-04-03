@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, Union
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_api_key, get_db, get_organization_id
@@ -35,9 +35,9 @@ class CallIngestionPayload(BaseModel):
     recording_url: Optional[str] = None
     provider_platform: Optional[str] = None
 
-    class Config:
-        extra = "allow"
-        json_schema_extra = {
+    model_config = ConfigDict(
+        extra="allow",
+        json_schema_extra={
             "example": {
                 "id": "0199e72d-795e-7ffe-b9b9-d3b08a3a11ae",
                 "agent_id": 2,
@@ -57,7 +57,8 @@ class CallIngestionPayload(BaseModel):
                 "endedReason": "customer-hungup",
                 "recording_url": "https://storage.example.com/recordings/call_123.wav",
             }
-        }
+        },
+    )
 
 
 def _serialize_call_recording(call_recording: CallRecording, include_data: bool = False) -> Dict[str, Any]:

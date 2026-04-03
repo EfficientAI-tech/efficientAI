@@ -108,7 +108,7 @@ async def update_voicebundle(
             status_code=404, detail=f"VoiceBundle {voicebundle_id} not found"
         )
     
-    update_data = voicebundle_update.dict(exclude_unset=True)
+    update_data = voicebundle_update.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         # Convert bundle_type enum to string value if present
         if field == 'bundle_type' and value is not None:

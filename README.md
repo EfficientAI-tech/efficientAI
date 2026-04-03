@@ -183,6 +183,43 @@ docker compose up -d
 - PostgreSQL running (locally or remote)
 - Redis running (locally or remote)
 
+### Test Commands (Make)
+
+If you prefer shorthand commands, use the root `Makefile`:
+
+```bash
+# Run all backend tests
+make test
+
+# Run tests against a running Docker Compose Postgres
+make test-docker-db
+
+# Run current Phase 1 suites
+make test-phase1
+
+# Run only unit or integration tests
+make test-unit
+make test-integration
+
+# Run a specific file
+make test-file FILE=tests/test_core/test_password.py
+
+# Run tests by keyword
+make test-k K=password
+```
+
+You can also pass extra pytest args:
+
+```bash
+make test PYTEST_ARGS="-x -vv"
+```
+
+To override DB connection values for `make test-docker-db`:
+
+```bash
+make test-docker-db TEST_DB_HOST=localhost TEST_DB_PORT=5432 TEST_DB_NAME=efficientai TEST_DB_USER=efficientai TEST_DB_PASSWORD=password
+```
+
 ---
 
 ## 💻 CLI Commands
