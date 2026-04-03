@@ -54,11 +54,12 @@ class TestAgentService:
 
         # Persona information
         prompt_parts.append(f"\nYou are role-playing as: {persona.name}")
-        prompt_parts.append(f"Persona language: {persona.language.value}")
-        prompt_parts.append(f"Persona accent: {persona.accent.value}")
-        prompt_parts.append(f"Persona gender: {persona.gender.value}")
-        if persona.background_noise:
-            prompt_parts.append(f"Background noise: {persona.background_noise.value}")
+        gender_val = persona.gender.value if hasattr(persona.gender, "value") else persona.gender
+        prompt_parts.append(f"Persona gender: {gender_val}")
+        if persona.tts_provider:
+            prompt_parts.append(f"Voice provider: {persona.tts_provider}")
+        if persona.tts_voice_name:
+            prompt_parts.append(f"Voice: {persona.tts_voice_name}")
 
         # Scenario information
         prompt_parts.append(f"\nScenario: {scenario.name}")

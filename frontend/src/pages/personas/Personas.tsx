@@ -6,153 +6,93 @@ import {
   Plus,
   Edit,
   Trash2,
-  Copy,
   X,
   Loader2,
   UserPlus,
-  Languages,
-  Globe,
-  Volume2,
-  VolumeX,
-  Building2,
-  Car,
-  Coffee,
-  Home,
   ChevronDown,
   AlertCircle,
+  Mic,
+  PlusCircle,
 } from 'lucide-react'
-// Use emoji flags with better styling - most reliable solution
-// Emoji flags work everywhere and don't require additional dependencies
 import { apiClient } from '../../lib/api'
 import { useToast } from '../../hooks/useToast'
 import Button from '../../components/Button'
+import ProviderLogo, { getProviderInfo } from '../../components/shared/ProviderLogo'
 
 interface Persona {
   id: string
   name: string
-  language: string
-  accent: string
   gender: string
-  background_noise: string
+  tts_provider?: string | null
+  tts_voice_id?: string | null
+  tts_voice_name?: string | null
+  is_custom?: boolean
   created_at: string
   updated_at: string
   created_by?: string | null
 }
 
-const genderIcons: Record<string, string> = {
-  male: '👨',
-  female: '👩',
-  neutral: '🧑',
+interface VoiceOption {
+  id: string
+  name: string
+  gender: string
+  is_custom: boolean
+  custom_voice_id?: string
+  description?: string | null
 }
 
-// Mapping accents to country codes for flags
-const accentToCountry: Record<string, string> = {
-  american: 'US',
-  british: 'GB',
-  australian: 'AU',
-  indian: 'IN',
-  chinese: 'CN',
-  spanish: 'ES',
-  french: 'FR',
-  german: 'DE',
-  neutral: '',
+interface ProviderOption {
+  id: string
+  name: string
+  voices: VoiceOption[]
 }
 
-// Mapping languages to country codes for flags
-const languageToCountry: Record<string, string> = {
-  en: 'GB',
-  es: 'ES',
-  fr: 'FR',
-  de: 'DE',
-}
-
-// Emoji flag mapping - reliable and works everywhere
-const emojiFlags: Record<string, string> = {
-  US: '🇺🇸',
-  GB: '🇬🇧',
-  AU: '🇦🇺',
-  IN: '🇮🇳',
-  CN: '🇨🇳',
-  ES: '🇪🇸',
-  FR: '🇫🇷',
-  DE: '🇩🇪',
-}
-
-// Helper component to render flags using emoji
-const FlagIcon = ({ code, className = 'w-5 h-4', title }: { code: string; className?: string; title?: string }) => {
-  if (!code || !emojiFlags[code]) {
-    return <Globe className={className} />
-  }
-  return (
-    <span 
-      className={`inline-block ${className}`}
-      style={{ fontSize: '1.25rem', lineHeight: '1' }}
-      title={title || code}
-      role="img"
-      aria-label={title || code}
-    >
-      {emojiFlags[code]}
-    </span>
-  )
-}
-
-const languages = ['en', 'es', 'fr', 'de']
-const accents = ['american', 'british', 'australian', 'indian', 'chinese', 'spanish', 'french', 'german', 'neutral']
 const genders = ['male', 'female', 'neutral']
-const backgroundNoises = ['none', 'office', 'street', 'cafe', 'home']
-
-// Language display config
-const languageConfig: Record<string, { label: string; color: string; bgColor: string }> = {
-  en: { label: 'English', color: 'text-blue-700', bgColor: 'bg-blue-100' },
-  es: { label: 'Spanish', color: 'text-red-700', bgColor: 'bg-red-100' },
-  fr: { label: 'French', color: 'text-indigo-700', bgColor: 'bg-indigo-100' },
-  de: { label: 'German', color: 'text-yellow-700', bgColor: 'bg-yellow-100' },
-}
-
-// Accent display config
-const accentConfig: Record<string, { label: string; color: string; bgColor: string }> = {
-  american: { label: 'American', color: 'text-blue-700', bgColor: 'bg-blue-100' },
-  british: { label: 'British', color: 'text-red-700', bgColor: 'bg-red-100' },
-  australian: { label: 'Australian', color: 'text-green-700', bgColor: 'bg-green-100' },
-  indian: { label: 'Indian', color: 'text-orange-700', bgColor: 'bg-orange-100' },
-  chinese: { label: 'Chinese', color: 'text-red-600', bgColor: 'bg-red-50' },
-  spanish: { label: 'Spanish', color: 'text-yellow-700', bgColor: 'bg-yellow-100' },
-  french: { label: 'French', color: 'text-blue-600', bgColor: 'bg-blue-50' },
-  german: { label: 'German', color: 'text-black', bgColor: 'bg-gray-200' },
-  neutral: { label: 'Neutral', color: 'text-gray-700', bgColor: 'bg-gray-100' },
-}
-
-// Background noise display config
-const noiseConfig: Record<string, { label: string; icon: any; color: string; bgColor: string }> = {
-  none: { label: 'None', icon: VolumeX, color: 'text-gray-700', bgColor: 'bg-gray-100' },
-  office: { label: 'Office', icon: Building2, color: 'text-blue-700', bgColor: 'bg-blue-100' },
-  street: { label: 'Street', icon: Car, color: 'text-orange-700', bgColor: 'bg-orange-100' },
-  cafe: { label: 'Cafe', icon: Coffee, color: 'text-amber-700', bgColor: 'bg-amber-100' },
-  home: { label: 'Home', icon: Home, color: 'text-green-700', bgColor: 'bg-green-100' },
-}
 
 export default function Personas() {
   const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
-  const [showMainModal, setShowMainModal] = useState(false)
+
+  // Tab state
+  const [activeTab, setActiveTab] = useState<'personas' | 'custom-voices'>('personas')
+
+  // Modal state
+  const [showCreateModal, setShowCreateModal] = useState(false)
   const [showEditModal, setShowEditModal] = useState(false)
-  const [showCloneModal, setShowCloneModal] = useState(false)
   const [showDeleteModal, setShowDeleteModal] = useState(false)
+  const [showCustomVoiceModal, setShowCustomVoiceModal] = useState(false)
+  const [showEditCustomVoiceModal, setShowEditCustomVoiceModal] = useState(false)
+  const [deleteCustomVoiceConfirm, setDeleteCustomVoiceConfirm] = useState<{ id: string; name: string } | null>(null)
+  const [editingCustomVoice, setEditingCustomVoice] = useState<any>(null)
   const [selectedPersona, setSelectedPersona] = useState<Persona | null>(null)
   const [deleteDependencies, setDeleteDependencies] = useState<Record<string, number> | null>(null)
+
+  // Persona form
   const [formData, setFormData] = useState({
     name: '',
-    language: 'en',
-    accent: 'american',
     gender: 'neutral',
-    background_noise: 'none',
+    tts_provider: '',
+    tts_voice_id: '',
+    tts_voice_name: '',
+    is_custom: false,
   })
+
+  // Custom voice form
+  const [customVoiceForm, setCustomVoiceForm] = useState({
+    provider: '',
+    voice_id: '',
+    name: '',
+    gender: '',
+    description: '',
+  })
+
+  // Gender filter in voice selector
+  const [voiceGenderFilter, setVoiceGenderFilter] = useState<string>('all')
 
   const renderModal = (content: ReactNode) => {
     if (typeof document === 'undefined') return null
     return createPortal(content, document.body)
   }
-
 
   // Fetch personas
   const { data: personas = [], isLoading, error, isError } = useQuery({
@@ -161,22 +101,58 @@ export default function Personas() {
     retry: 1,
   })
 
+  // Fetch voice options
+  const { data: voiceOptionsData } = useQuery({
+    queryKey: ['persona-voice-options'],
+    queryFn: () => apiClient.getPersonaVoiceOptions(),
+    retry: 1,
+  })
+
+  // Fetch existing custom voices
+  const { data: customVoices = [] } = useQuery({
+    queryKey: ['persona-custom-voices'],
+    queryFn: () => apiClient.listPersonaCustomVoices(),
+    retry: 1,
+  })
+
+  const providers: ProviderOption[] = useMemo(
+    () => voiceOptionsData?.providers ?? [],
+    [voiceOptionsData],
+  )
+
+  const selectedProviderVoices = useMemo(() => {
+    if (!formData.tts_provider) return []
+    const provider = providers.find((p) => p.id === formData.tts_provider)
+    if (!provider) return []
+    if (voiceGenderFilter === 'all') return provider.voices
+    return provider.voices.filter(
+      (v) => v.gender.toLowerCase() === voiceGenderFilter,
+    )
+  }, [providers, formData.tts_provider, voiceGenderFilter])
+
   const userPersonas = useMemo(() => personas as Persona[], [personas])
 
-  // Create persona mutation
+  // Mutations
   const createMutation = useMutation({
-    mutationFn: (data: typeof formData) => apiClient.createPersona(data),
+    mutationFn: (data: typeof formData) =>
+      apiClient.createPersona({
+        name: data.name,
+        gender: data.gender,
+        tts_provider: data.tts_provider || undefined,
+        tts_voice_id: data.tts_voice_id || undefined,
+        tts_voice_name: data.tts_voice_name || undefined,
+        is_custom: data.is_custom,
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['personas'] })
       showToast('Persona created successfully!', 'success')
-      handleCloseMainModal()
+      handleCloseCreateModal()
     },
     onError: (error: any) => {
       showToast(`Failed to create persona: ${error.response?.data?.detail || error.message}`, 'error')
     },
   })
 
-  // Update persona mutation
   const updateMutation = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Partial<typeof formData> }) =>
       apiClient.updatePersona(id, data),
@@ -192,7 +168,6 @@ export default function Personas() {
     },
   })
 
-  // Delete persona mutation
   const deleteMutation = useMutation({
     mutationFn: ({ id, force }: { id: string; force?: boolean }) => apiClient.deletePersona(id, force),
     onSuccess: () => {
@@ -205,12 +180,10 @@ export default function Personas() {
     onError: (error: any) => {
       const status = error.response?.status
       const detail = error.response?.data?.detail
-
       if (status === 409 && detail?.dependencies) {
         setDeleteDependencies(detail.dependencies)
         return
       }
-
       const errorMessage = typeof detail === 'string'
         ? detail
         : detail?.message || error.message || 'Failed to delete persona.'
@@ -218,39 +191,106 @@ export default function Personas() {
     },
   })
 
-  // Clone persona mutation
-  const cloneMutation = useMutation({
-    mutationFn: ({ id, name }: { id: string; name?: string }) => apiClient.clonePersona(id, name),
+  const createCustomVoiceMutation = useMutation({
+    mutationFn: (data: typeof customVoiceForm) =>
+      apiClient.createPersonaCustomVoice({
+        provider: data.provider,
+        voice_id: data.voice_id,
+        name: data.name,
+        gender: data.gender || undefined,
+        description: data.description || undefined,
+      }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['personas'] })
-      setShowCloneModal(false)
-      setSelectedPersona(null)
-      resetForm()
-      showToast('Persona cloned successfully!', 'success')
+      queryClient.invalidateQueries({ queryKey: ['persona-voice-options'] })
+      queryClient.invalidateQueries({ queryKey: ['persona-custom-voices'] })
+      showToast('Custom voice added successfully!', 'success')
+      setShowCustomVoiceModal(false)
+      resetCustomVoiceForm()
     },
     onError: (error: any) => {
-      showToast(`Failed to clone persona: ${error.response?.data?.detail || error.message}`, 'error')
+      showToast(`Failed to add custom voice: ${error.response?.data?.detail || error.message}`, 'error')
+    },
+  })
+
+  const deleteCustomVoiceMutation = useMutation({
+    mutationFn: (customVoiceId: string) => apiClient.deletePersonaCustomVoice(customVoiceId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['persona-custom-voices'] })
+      queryClient.invalidateQueries({ queryKey: ['persona-voice-options'] })
+      setDeleteCustomVoiceConfirm(null)
+      showToast('Custom voice deleted', 'success')
+    },
+    onError: (error: any) => {
+      showToast(`Failed to delete custom voice: ${error.response?.data?.detail || error.message}`, 'error')
+    },
+  })
+
+  const updateCustomVoiceMutation = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: { voice_id?: string; name?: string; gender?: string; description?: string } }) =>
+      apiClient.updatePersonaCustomVoice(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['persona-custom-voices'] })
+      queryClient.invalidateQueries({ queryKey: ['persona-voice-options'] })
+      setShowEditCustomVoiceModal(false)
+      setEditingCustomVoice(null)
+      resetCustomVoiceForm()
+      showToast('Custom voice updated', 'success')
+    },
+    onError: (error: any) => {
+      showToast(`Failed to update custom voice: ${error.response?.data?.detail || error.message}`, 'error')
     },
   })
 
   const resetForm = () => {
     setFormData({
       name: '',
-      language: 'en',
-      accent: 'american',
       gender: 'neutral',
-      background_noise: 'none',
+      tts_provider: '',
+      tts_voice_id: '',
+      tts_voice_name: '',
+      is_custom: false,
+    })
+    setVoiceGenderFilter('all')
+  }
+
+  const resetCustomVoiceForm = () => {
+    setCustomVoiceForm({ provider: '', voice_id: '', name: '', gender: '', description: '' })
+  }
+
+  const openEditCustomVoiceModal = (cv: any) => {
+    setEditingCustomVoice(cv)
+    setCustomVoiceForm({
+      provider: cv.provider,
+      voice_id: cv.voice_id,
+      name: cv.name,
+      gender: cv.gender || '',
+      description: cv.description || '',
+    })
+    setShowEditCustomVoiceModal(true)
+  }
+
+  const handleUpdateCustomVoice = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!editingCustomVoice) return
+    updateCustomVoiceMutation.mutate({
+      id: editingCustomVoice.id,
+      data: {
+        voice_id: customVoiceForm.voice_id,
+        name: customVoiceForm.name,
+        gender: customVoiceForm.gender || undefined,
+        description: customVoiceForm.description || undefined,
+      },
     })
   }
 
   const openCreateModal = () => {
     resetForm()
     setSelectedPersona(null)
-    setShowMainModal(true)
+    setShowCreateModal(true)
   }
 
-  const handleCloseMainModal = () => {
-    setShowMainModal(false)
+  const handleCloseCreateModal = () => {
+    setShowCreateModal(false)
     resetForm()
     setSelectedPersona(null)
   }
@@ -259,24 +299,23 @@ export default function Personas() {
     setSelectedPersona(persona)
     setFormData({
       name: persona.name,
-      language: persona.language,
-      accent: persona.accent,
       gender: persona.gender,
-      background_noise: persona.background_noise,
+      tts_provider: persona.tts_provider || '',
+      tts_voice_id: persona.tts_voice_id || '',
+      tts_voice_name: persona.tts_voice_name || '',
+      is_custom: persona.is_custom || false,
     })
     setShowEditModal(true)
   }
 
-  const openCloneModal = (persona: Persona) => {
-    setSelectedPersona(persona)
-    setFormData({
-      name: `${persona.name} (Copy)`,
-      language: persona.language,
-      accent: persona.accent,
-      gender: persona.gender,
-      background_noise: persona.background_noise,
-    })
-    setShowCloneModal(true)
+  const handleVoiceSelect = (voice: VoiceOption) => {
+    setFormData((prev) => ({
+      ...prev,
+      tts_voice_id: voice.id,
+      tts_voice_name: voice.name,
+      gender: voice.gender.toLowerCase(),
+      is_custom: voice.is_custom,
+    }))
   }
 
   const handleCreate = (e: React.FormEvent) => {
@@ -302,12 +341,140 @@ export default function Personas() {
     }
   }
 
-  const handleClone = (e: React.FormEvent) => {
+  const handleCreateCustomVoice = (e: React.FormEvent) => {
     e.preventDefault()
-    if (!selectedPersona) return
-    cloneMutation.mutate({ id: selectedPersona.id, name: formData.name })
+    createCustomVoiceMutation.mutate(customVoiceForm)
   }
 
+  // -- Voice selection form fields (shared between create and edit modals) --
+  const renderVoiceFields = () => (
+    <>
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">
+          TTS Provider
+        </label>
+        <div className="grid grid-cols-2 gap-2">
+          {providers.map((p) => {
+            const isSelected = formData.tts_provider === p.id
+            return (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => {
+                  setFormData((prev) => ({
+                    ...prev,
+                    tts_provider: prev.tts_provider === p.id ? '' : p.id,
+                    tts_voice_id: prev.tts_provider === p.id ? '' : prev.tts_voice_id,
+                    tts_voice_name: prev.tts_provider === p.id ? '' : prev.tts_voice_name,
+                  }))
+                  setVoiceGenderFilter('all')
+                }}
+                className={`flex items-center gap-2.5 px-3 py-2.5 rounded-lg border text-left transition-all ${
+                  isSelected
+                    ? 'border-primary-400 bg-primary-50 ring-1 ring-primary-200'
+                    : 'border-gray-200 bg-white hover:border-gray-300 hover:bg-gray-50'
+                }`}
+              >
+                <ProviderLogo provider={p.id} size="sm" />
+                <div className="min-w-0 flex-1">
+                  <span className={`text-sm font-medium block truncate ${isSelected ? 'text-primary-700' : 'text-gray-700'}`}>
+                    {p.name}
+                  </span>
+                  <span className="text-[11px] text-gray-400">{p.voices.length} voices</span>
+                </div>
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
+      {formData.tts_provider && (
+        <>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Filter by Gender
+            </label>
+            <div className="flex gap-2">
+              {['all', 'male', 'female'].map((g) => (
+                <button
+                  key={g}
+                  type="button"
+                  onClick={() => setVoiceGenderFilter(g)}
+                  className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
+                    voiceGenderFilter === g
+                      ? 'bg-primary-100 border-primary-300 text-primary-700'
+                      : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  {g === 'all' ? 'All' : g.charAt(0).toUpperCase() + g.slice(1)}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Voice ({selectedProviderVoices.length} available)
+            </label>
+            <div className="max-h-48 overflow-y-auto border border-gray-200 rounded-lg divide-y divide-gray-100">
+              {selectedProviderVoices.length === 0 ? (
+                <div className="p-4 text-center text-sm text-gray-500">
+                  No voices match the current filter
+                </div>
+              ) : (
+                selectedProviderVoices.map((voice) => (
+                  <button
+                    key={voice.id}
+                    type="button"
+                    onClick={() => handleVoiceSelect(voice)}
+                    className={`w-full flex items-center justify-between px-3 py-2.5 text-left hover:bg-gray-50 transition-colors ${
+                      formData.tts_voice_id === voice.id
+                        ? 'bg-primary-50 border-l-2 border-primary-500'
+                        : ''
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <Mic className="h-3.5 w-3.5 text-gray-400" />
+                      <span className="text-sm font-medium text-gray-900">{voice.name}</span>
+                      {voice.is_custom && (
+                        <span className="px-1.5 py-0.5 text-[10px] font-medium bg-amber-100 text-amber-700 rounded">
+                          Custom
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-xs text-gray-500 capitalize">{voice.gender}</span>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+        </>
+      )}
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">
+          Gender
+        </label>
+        <div className="relative">
+          <select
+            value={formData.gender}
+            onChange={(e) => setFormData({ ...formData, gender: e.target.value })}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent appearance-none bg-white pr-8"
+          >
+            {genders.map((g) => (
+              <option key={g} value={g}>
+                {g.charAt(0).toUpperCase() + g.slice(1)}
+              </option>
+            ))}
+          </select>
+          <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
+        </div>
+        <p className="text-xs text-gray-500 mt-1">Auto-set when you pick a voice, but can be overridden.</p>
+      </div>
+    </>
+  )
+
+  // -- Loading / Error states --
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -326,11 +493,8 @@ export default function Personas() {
           <p className="text-gray-500 mb-4">
             {(error as any)?.response?.data?.detail || (error as any)?.message || 'Failed to load personas'}
           </p>
-          <Button
-            variant="ghost"
-            onClick={() => queryClient.invalidateQueries({ queryKey: ['personas'] })}
-          >
-            Try again →
+          <Button variant="ghost" onClick={() => queryClient.invalidateQueries({ queryKey: ['personas'] })}>
+            Try again
           </Button>
         </div>
       </div>
@@ -341,627 +505,609 @@ export default function Personas() {
     <>
       <ToastContainer />
       <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900">Test Personas</h1>
-          <p className="text-gray-600 mt-1">Create and manage personas for testing voice AI agents</p>
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold text-gray-900">Test Personas</h1>
+            <p className="text-gray-600 mt-1">
+              Create and manage voice personas for testing voice AI agents
+            </p>
+          </div>
+          {activeTab === 'personas' ? (
+            <Button
+              variant="primary"
+              onClick={openCreateModal}
+              leftIcon={<Plus className="h-5 w-5" />}
+            >
+              Create Persona
+            </Button>
+          ) : (
+            <Button
+              variant="primary"
+              onClick={() => setShowCustomVoiceModal(true)}
+              leftIcon={<PlusCircle className="h-5 w-5" />}
+            >
+              Add Custom Voice
+            </Button>
+          )}
         </div>
-        <div className="flex gap-3">
-          <Button
-            variant="primary"
-            onClick={openCreateModal}
-            leftIcon={<Plus className="h-5 w-5" />}
-          >
-            Create Persona
-          </Button>
-        </div>
-      </div>
 
-      {personas.length === 0 ? (
-        <div className="bg-white rounded-lg shadow p-12 text-center">
-          <Users className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-          <h3 className="text-lg font-medium text-gray-900 mb-2">No personas yet</h3>
-          <p className="text-gray-500 mb-4">Create your first custom persona to get started</p>
-          <Button variant="ghost" onClick={openCreateModal}>
-            Create Persona →
-          </Button>
+        {/* Tab Nav */}
+        <div className="border-b border-gray-200">
+          <nav className="-mb-px flex gap-6" aria-label="Tabs">
+            <button
+              onClick={() => setActiveTab('personas')}
+              className={`flex items-center gap-2 whitespace-nowrap border-b-2 py-3 px-1 text-sm font-medium transition-colors ${
+                activeTab === 'personas'
+                  ? 'border-primary-500 text-primary-600'
+                  : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700'
+              }`}
+            >
+              <UserPlus className="h-4 w-4" />
+              Personas
+              {userPersonas.length > 0 && (
+                <span className={`ml-1 rounded-full px-2 py-0.5 text-xs font-medium ${
+                  activeTab === 'personas' ? 'bg-primary-100 text-primary-700' : 'bg-gray-100 text-gray-600'
+                }`}>
+                  {userPersonas.length}
+                </span>
+              )}
+            </button>
+            <button
+              onClick={() => setActiveTab('custom-voices')}
+              className={`flex items-center gap-2 whitespace-nowrap border-b-2 py-3 px-1 text-sm font-medium transition-colors ${
+                activeTab === 'custom-voices'
+                  ? 'border-primary-500 text-primary-600'
+                  : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700'
+              }`}
+            >
+              <Mic className="h-4 w-4" />
+              Custom Voices
+              {customVoices.length > 0 && (
+                <span className={`ml-1 rounded-full px-2 py-0.5 text-xs font-medium ${
+                  activeTab === 'custom-voices' ? 'bg-primary-100 text-primary-700' : 'bg-gray-100 text-gray-600'
+                }`}>
+                  {customVoices.length}
+                </span>
+              )}
+            </button>
+          </nav>
         </div>
-      ) : (
-        <div className="space-y-8">
-          {/* User-Created Personas Section */}
-          <div className="bg-white shadow rounded-lg overflow-hidden">
-            <div className="px-6 py-4 bg-gradient-to-r from-green-50 to-emerald-50 border-b border-green-200">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <UserPlus className="h-5 w-5 text-green-600" />
-                  <h2 className="text-lg font-semibold text-gray-900">Your Personas</h2>
-                  <span className="px-2 py-1 text-xs font-medium text-green-700 bg-green-100 rounded-full">
-                    {userPersonas.length}
-                  </span>
-                </div>
-                <p className="text-sm text-gray-600">Personas you've created or cloned</p>
-              </div>
-            </div>
-            {userPersonas.length === 0 ? (
-              <div className="p-12 text-center">
-                <UserPlus className="w-12 h-12 text-gray-300 mx-auto mb-4" />
-                <h3 className="text-lg font-medium text-gray-900 mb-2">No custom personas yet</h3>
-                <p className="text-gray-500 mb-4">Create your first custom persona to get started</p>
-                <Button
-                  variant="ghost"
-                  onClick={openCreateModal}
-                >
-                  Create Persona →
+
+        {/* ===================== PERSONAS TAB ===================== */}
+        {activeTab === 'personas' && (
+          <>
+            {personas.length === 0 ? (
+              <div className="bg-white rounded-lg shadow p-12 text-center">
+                <Users className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                <h3 className="text-lg font-medium text-gray-900 mb-2">No personas yet</h3>
+                <p className="text-gray-500 mb-4">Create your first voice persona to get started</p>
+                <Button variant="ghost" onClick={openCreateModal}>
+                  Create Persona
                 </Button>
               </div>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-gray-200">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Name
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Gender
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Language
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Accent
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Background Noise
-                      </th>
-                      <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        Actions
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="bg-white divide-y divide-gray-200">
-                    {userPersonas.map((persona) => {
-                      const langConfig = languageConfig[persona.language] || { label: persona.language.toUpperCase(), color: 'text-gray-700', bgColor: 'bg-gray-100' }
-                      const accConfig = accentConfig[persona.accent] || { label: persona.accent, color: 'text-gray-700', bgColor: 'bg-gray-100' }
-                      const noiseInfo = noiseConfig[persona.background_noise] || { label: persona.background_noise, icon: Volume2, color: 'text-gray-700', bgColor: 'bg-gray-100' }
-                      const NoiseIcon = noiseInfo.icon
-                      
-                      return (
-                        <tr key={persona.id} className="hover:bg-gray-50">
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <span className="text-sm font-medium text-gray-900">{persona.name}</span>
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800 capitalize">
-                              {persona.gender}
-                            </span>
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium ${langConfig.bgColor} ${langConfig.color}`}>
-                              <Languages className="h-3.5 w-3.5" />
-                              {langConfig.label}
-                            </span>
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium ${accConfig.bgColor} ${accConfig.color}`}>
-                              <Globe className="h-3.5 w-3.5" />
-                              {accConfig.label}
-                            </span>
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium ${noiseInfo.bgColor} ${noiseInfo.color}`}>
-                              <NoiseIcon className="h-3.5 w-3.5" />
-                              {noiseInfo.label}
-                            </span>
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                            <div className="flex items-center justify-end gap-2">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => openEditModal(persona)}
-                              leftIcon={<Edit className="h-4 w-4" />}
-                              title="Edit persona"
-                            >
-                              Edit
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => openCloneModal(persona)}
-                              leftIcon={<Copy className="h-4 w-4" />}
-                              title="Clone persona"
-                              className="text-blue-600 hover:text-blue-700 hover:bg-blue-50"
-                            >
-                              Clone
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => handleDelete(persona)}
-                              isLoading={deleteMutation.isPending}
-                              leftIcon={!deleteMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined}
-                              title="Delete persona"
-                              className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                            >
-                              Delete
-                            </Button>
-                            </div>
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
+              <div className="bg-white shadow rounded-lg overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="min-w-full divide-y divide-gray-200">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Name
+                        </th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Provider
+                        </th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Voice
+                        </th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Gender
+                        </th>
+                        <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Actions
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-200">
+                      {userPersonas.map((persona) => {
+                        const providerInfo = persona.tts_provider ? getProviderInfo(persona.tts_provider) : null
+                        return (
+                          <tr key={persona.id} className="hover:bg-gray-50">
+                            <td className="px-6 py-4 whitespace-nowrap">
+                              <span className="text-sm font-medium text-gray-900">{persona.name}</span>
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap">
+                              {persona.tts_provider ? (
+                                <div className="flex items-center gap-2">
+                                  <ProviderLogo provider={persona.tts_provider} size="sm" />
+                                  <span className="text-sm text-gray-700">{providerInfo?.label || persona.tts_provider}</span>
+                                </div>
+                              ) : (
+                                <span className="text-xs text-gray-400">--</span>
+                              )}
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-sm text-gray-900">{persona.tts_voice_name || '--'}</span>
+                                {persona.is_custom && (
+                                  <span className="px-1.5 py-0.5 text-[10px] font-medium bg-amber-100 text-amber-700 rounded">
+                                    Custom
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap">
+                              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800 capitalize">
+                                {persona.gender}
+                              </span>
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                              <div className="flex items-center justify-end gap-2">
+                                <Button variant="ghost" size="sm" onClick={() => openEditModal(persona)} leftIcon={<Edit className="h-4 w-4" />} title="Edit">
+                                  Edit
+                                </Button>
+                                <Button variant="ghost" size="sm" onClick={() => handleDelete(persona)} isLoading={deleteMutation.isPending} leftIcon={!deleteMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined} title="Delete" className="text-red-600 hover:text-red-700 hover:bg-red-50">
+                                  Delete
+                                </Button>
+                              </div>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
-          </div>
-        </div>
-      )}
+          </>
+        )}
 
-      {/* Main Create Persona Modal */}
-      {showMainModal && renderModal(
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]">
-          <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-hidden flex flex-col">
-            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-              <h3 className="text-lg font-semibold">Create Persona</h3>
-              <button
-                onClick={handleCloseMainModal}
-                className="text-gray-400 hover:text-gray-600"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            <div className="p-6 overflow-y-auto flex-1">
-                <h4 className="text-lg font-semibold text-gray-900 mb-4">Create Custom Persona</h4>
-                <form onSubmit={handleCreate} className="space-y-4">
-                  <div>
-                    <label htmlFor="create-name" className="block text-sm font-medium text-gray-700 mb-1">
-                      Name *
-                    </label>
-                    <input
-                      id="create-name"
-                      type="text"
-                      required
-                      value={formData.name}
-                      onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                      placeholder="Name of the persona"
-                    />
-                  </div>
-                  <div>
-                    <label htmlFor="create-language" className="block text-sm font-medium text-gray-700 mb-1">
-                      <span className="flex items-center gap-2">
-                        <Languages className="h-4 w-4" />
-                        Language
-                      </span>
-                    </label>
-                    <div className="relative">
-                      <span className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none z-10">
-                        <FlagIcon code={languageToCountry[formData.language] || ''} className="w-5 h-4" title={formData.language.toUpperCase()} />
-                      </span>
-                      <select
-                        id="create-language"
-                        value={formData.language}
-                        onChange={(e) => setFormData({ ...formData, language: e.target.value })}
-                        className="w-full pl-10 pr-8 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent appearance-none bg-white"
-                      >
-                        {languages.map((lang) => (
-                          <option key={lang} value={lang}>
-                            {lang.toUpperCase()}
-                          </option>
-                        ))}
-                      </select>
-                      <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
-                    </div>
-                  </div>
-                  <div>
-                    <label htmlFor="create-accent" className="block text-sm font-medium text-gray-700 mb-1">
-                      <span className="flex items-center gap-2">
-                        <Globe className="h-4 w-4" />
-                        Accent
-                      </span>
-                    </label>
-                    <div className="relative">
-                      <span className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none z-10">
-                        <FlagIcon code={accentToCountry[formData.accent] || ''} className="w-5 h-4" title={formData.accent.charAt(0).toUpperCase() + formData.accent.slice(1)} />
-                      </span>
-                      <select
-                        id="create-accent"
-                        value={formData.accent}
-                        onChange={(e) => setFormData({ ...formData, accent: e.target.value })}
-                        className="w-full pl-10 pr-8 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent appearance-none bg-white"
-                      >
-                        {accents.map((accent) => (
-                          <option key={accent} value={accent}>
-                            {accent.charAt(0).toUpperCase() + accent.slice(1)}
-                          </option>
-                        ))}
-                      </select>
-                      <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
-                    </div>
-                  </div>
-                  <div>
-                    <label htmlFor="create-gender" className="block text-sm font-medium text-gray-700 mb-1">
-                      Gender
-                    </label>
-                    <div className="relative">
-                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-lg pointer-events-none z-10">
-                        {genderIcons[formData.gender] || '🧑'}
-                      </span>
-                      <select
-                        id="create-gender"
-                        value={formData.gender}
-                        onChange={(e) => setFormData({ ...formData, gender: e.target.value })}
-                        className="w-full pl-10 pr-8 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent appearance-none bg-white"
-                      >
-                        {genders.map((gender) => (
-                          <option key={gender} value={gender}>
-                            {gender.charAt(0).toUpperCase() + gender.slice(1)}
-                          </option>
-                        ))}
-                      </select>
-                      <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
-                    </div>
-                  </div>
-                  <div>
-                    <label htmlFor="create-noise" className="block text-sm font-medium text-gray-700 mb-1">
-                      Background Noise
-                    </label>
-                    <select
-                      id="create-noise"
-                      value={formData.background_noise}
-                      onChange={(e) => setFormData({ ...formData, background_noise: e.target.value })}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+        {/* ===================== CUSTOM VOICES TAB ===================== */}
+        {activeTab === 'custom-voices' && (
+          <>
+            {customVoices.length === 0 ? (
+              <div className="bg-white rounded-lg shadow p-12 text-center">
+                <Mic className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                <h3 className="text-lg font-medium text-gray-900 mb-2">No custom voices yet</h3>
+                <p className="text-gray-500 mb-4">
+                  Register voice IDs from your TTS providers to use them when creating personas
+                </p>
+                <Button variant="ghost" onClick={() => setShowCustomVoiceModal(true)}>
+                  Add Custom Voice
+                </Button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                {customVoices.map((cv: any) => {
+                  const providerInfo = getProviderInfo(cv.provider)
+                  return (
+                    <div
+                      key={cv.id}
+                      className="bg-white rounded-xl border border-gray-200 shadow-sm hover:shadow-md transition-shadow overflow-hidden"
                     >
-                      {backgroundNoises.map((noise) => (
-                        <option key={noise} value={noise}>
-                          {noise === 'none' ? 'None' : noise.charAt(0).toUpperCase() + noise.slice(1)}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="flex gap-3 pt-4">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={handleCloseMainModal}
-                      className="flex-1"
-                    >
-                      Cancel
-                    </Button>
-                    <Button
-                      type="submit"
-                      variant="primary"
-                      isLoading={createMutation.isPending}
-                      className="flex-1"
-                    >
-                      Create
-                    </Button>
-                  </div>
-                </form>
-              </div>
-          </div>
-        </div>
-      )}
+                      <div className="p-5">
+                        <div className="flex items-start justify-between mb-4">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <ProviderLogo provider={cv.provider} size="md" />
+                            <div className="min-w-0">
+                              <h3 className="text-sm font-semibold text-gray-900 truncate">{cv.name}</h3>
+                              <span className="text-xs text-gray-500">{providerInfo.label}</span>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1 ml-2 flex-shrink-0">
+                            <button
+                              onClick={() => openEditCustomVoiceModal(cv)}
+                              className="p-1.5 text-gray-400 hover:text-blue-500 hover:bg-blue-50 rounded-lg transition-colors"
+                              title="Edit custom voice"
+                            >
+                              <Edit className="h-4 w-4" />
+                            </button>
+                            <button
+                              onClick={() => setDeleteCustomVoiceConfirm({ id: cv.id, name: cv.name })}
+                              className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                              title="Delete custom voice"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </div>
+                        </div>
 
-      {/* Edit Modal */}
-      {showEditModal && selectedPersona && renderModal(
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]">
-          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
-            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-              <h3 className="text-lg font-semibold">Edit Persona</h3>
-              <button
-                onClick={() => {
-                  setShowEditModal(false)
-                  setSelectedPersona(null)
-                  resetForm()
-                }}
-                className="text-gray-400 hover:text-gray-600"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            <form onSubmit={handleUpdate} className="p-6 space-y-4">
-              <div>
-                <label htmlFor="edit-name" className="block text-sm font-medium text-gray-700 mb-1">
-                  Name *
-                </label>
-                <input
-                  id="edit-name"
-                  type="text"
-                  required
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                />
-              </div>
-              <div>
-                <label htmlFor="edit-language" className="block text-sm font-medium text-gray-700 mb-1">
-                  <span className="flex items-center gap-2">
-                    <Languages className="h-4 w-4" />
-                    Language
-                  </span>
-                </label>
-                <div className="relative">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none z-10">
-                    <FlagIcon code={languageToCountry[formData.language] || ''} className="w-5 h-4" title={formData.language.toUpperCase()} />
-                  </span>
-                  <select
-                    id="edit-language"
-                    value={formData.language}
-                    onChange={(e) => setFormData({ ...formData, language: e.target.value })}
-                    className="w-full pl-10 pr-8 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent appearance-none bg-white"
-                  >
-                    {languages.map((lang) => (
-                      <option key={lang} value={lang}>
-                        {lang.toUpperCase()}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
-                </div>
-              </div>
-              <div>
-                <label htmlFor="edit-accent" className="block text-sm font-medium text-gray-700 mb-1">
-                  <span className="flex items-center gap-2">
-                    <Globe className="h-4 w-4" />
-                    Accent
-                  </span>
-                </label>
-                <div className="relative">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none z-10">
-                    <FlagIcon code={accentToCountry[formData.accent] || ''} className="w-5 h-4" title={formData.accent.charAt(0).toUpperCase() + formData.accent.slice(1)} />
-                  </span>
-                  <select
-                    id="edit-accent"
-                    value={formData.accent}
-                    onChange={(e) => setFormData({ ...formData, accent: e.target.value })}
-                    className="w-full pl-10 pr-8 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent appearance-none bg-white"
-                  >
-                    {accents.map((accent) => (
-                      <option key={accent} value={accent}>
-                        {accent.charAt(0).toUpperCase() + accent.slice(1)}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
-                </div>
-              </div>
-              <div>
-                <label htmlFor="edit-gender" className="block text-sm font-medium text-gray-700 mb-1">
-                  Gender
-                </label>
-                <div className="relative">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-lg pointer-events-none z-10">
-                    {genderIcons[formData.gender] || '🧑'}
-                  </span>
-                  <select
-                    id="edit-gender"
-                    value={formData.gender}
-                    onChange={(e) => setFormData({ ...formData, gender: e.target.value })}
-                    className="w-full pl-10 pr-8 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent appearance-none bg-white"
-                  >
-                    {genders.map((gender) => (
-                      <option key={gender} value={gender}>
-                        {gender.charAt(0).toUpperCase() + gender.slice(1)}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
-                </div>
-              </div>
-              <div>
-                <label htmlFor="edit-noise" className="block text-sm font-medium text-gray-700 mb-1">
-                  Background Noise
-                </label>
-                <select
-                  id="edit-noise"
-                  value={formData.background_noise}
-                  onChange={(e) => setFormData({ ...formData, background_noise: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                >
-                  {backgroundNoises.map((noise) => (
-                    <option key={noise} value={noise}>
-                      {noise === 'none' ? 'None' : noise.charAt(0).toUpperCase() + noise.slice(1)}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="flex gap-3 pt-4">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => {
-                    setShowEditModal(false)
-                    setSelectedPersona(null)
-                    resetForm()
-                  }}
-                  className="flex-1"
-                >
-                  Cancel
-                </Button>
-                <Button
-                  type="submit"
-                  variant="primary"
-                  isLoading={updateMutation.isPending}
-                  className="flex-1"
-                >
-                  Update
-                </Button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Clone Modal */}
-      {showCloneModal && selectedPersona && renderModal(
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]">
-          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
-            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-              <h3 className="text-lg font-semibold">Clone Persona</h3>
-              <button
-                onClick={() => {
-                  setShowCloneModal(false)
-                  setSelectedPersona(null)
-                  resetForm()
-                }}
-                className="text-gray-400 hover:text-gray-600"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            <form onSubmit={handleClone} className="p-6 space-y-4">
-              <p className="text-sm text-gray-600 mb-4">
-                Create a copy of "{selectedPersona.name}" with a new name. All other attributes will be copied.
-              </p>
-              <div>
-                <label htmlFor="clone-name" className="block text-sm font-medium text-gray-700 mb-1">
-                  New Name *
-                </label>
-                <input
-                  id="clone-name"
-                  type="text"
-                  required
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                />
-              </div>
-              <div className="flex gap-3 pt-4">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => {
-                    setShowCloneModal(false)
-                    setSelectedPersona(null)
-                    resetForm()
-                  }}
-                  className="flex-1"
-                >
-                  Cancel
-                </Button>
-                <Button
-                  type="submit"
-                  variant="primary"
-                  isLoading={cloneMutation.isPending}
-                  className="flex-1"
-                >
-                  Clone
-                </Button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-
-      {/* Delete Confirmation Modal */}
-      {showDeleteModal && selectedPersona && renderModal(
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]" onClick={() => {
-          setShowDeleteModal(false)
-          setSelectedPersona(null)
-          setDeleteDependencies(null)
-        }}>
-          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
-            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-              <h3 className="text-lg font-semibold text-gray-900">Delete Persona</h3>
-              <button
-                onClick={() => {
-                  setShowDeleteModal(false)
-                  setSelectedPersona(null)
-                  setDeleteDependencies(null)
-                }}
-                className="text-gray-400 hover:text-gray-600"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            <div className="p-6">
-              {deleteDependencies && (
-                <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-lg">
-                  <div className="flex items-start gap-3">
-                    <AlertCircle className="h-5 w-5 text-amber-600 flex-shrink-0 mt-0.5" />
-                    <div className="flex-1">
-                      <p className="text-sm font-medium text-amber-800 mb-2">
-                        This persona has dependent records
-                      </p>
-                      <ul className="text-xs text-amber-700 space-y-1 mb-3">
-                        {deleteDependencies.evaluators && (
-                          <li>{deleteDependencies.evaluators} evaluator{deleteDependencies.evaluators !== 1 ? 's' : ''}</li>
+                        {cv.description && (
+                          <p className="text-xs text-gray-500 mb-3 line-clamp-2">{cv.description}</p>
                         )}
-                        {deleteDependencies.evaluator_results && (
-                          <li>{deleteDependencies.evaluator_results} evaluator result{deleteDependencies.evaluator_results !== 1 ? 's' : ''}</li>
-                        )}
-                        {deleteDependencies.test_conversations && (
-                          <li>{deleteDependencies.test_conversations} test conversation{deleteDependencies.test_conversations !== 1 ? 's' : ''}</li>
-                        )}
-                      </ul>
-                      <p className="text-xs text-amber-700">
-                        Force deleting will remove the persona and all its dependent records.
-                      </p>
+
+                        <div className="space-y-2.5">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs text-gray-500">Voice ID</span>
+                            <code className="text-[11px] bg-gray-100 text-gray-700 px-1.5 py-0.5 rounded font-mono max-w-[160px] truncate" title={cv.voice_id}>
+                              {cv.voice_id}
+                            </code>
+                          </div>
+
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs text-gray-500">Gender</span>
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800 capitalize">
+                              {cv.gender || 'Unknown'}
+                            </span>
+                          </div>
+
+                          {cv.created_at && (
+                            <div className="flex items-center justify-between pt-1 border-t border-gray-100">
+                              <span className="text-xs text-gray-400">Added</span>
+                              <span className="text-xs text-gray-400">
+                                {new Date(cv.created_at).toLocaleDateString()}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                </div>
-              )}
-
-              <div className="flex items-start gap-4 mb-6">
-                <div className="flex-shrink-0">
-                  <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center">
-                    <Trash2 className="h-6 w-6 text-red-600" />
-                  </div>
-                </div>
-                <div className="flex-1">
-                  <p className="text-sm text-gray-700 mb-2">
-                    Are you sure you want to delete <span className="font-semibold text-gray-900">"{selectedPersona.name}"</span>?
-                  </p>
-                  <p className="text-xs text-gray-500">
-                    This action cannot be undone. The persona will be permanently deleted.
-                  </p>
-                </div>
+                  )
+                })}
               </div>
-              <div className="flex gap-3">
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    setShowDeleteModal(false)
-                    setSelectedPersona(null)
-                    setDeleteDependencies(null)
-                  }}
-                  className="flex-1"
-                >
-                  Cancel
-                </Button>
-                {deleteDependencies ? (
-                  <Button
-                    variant="danger"
-                    onClick={() => confirmDelete(true)}
-                    isLoading={deleteMutation.isPending}
-                    leftIcon={!deleteMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined}
-                    className="flex-1"
-                  >
-                    Force Delete All
+            )}
+          </>
+        )}
+
+        {/* ===================== CREATE PERSONA MODAL ===================== */}
+        {showCreateModal && renderModal(
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]">
+            <div className="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4 max-h-[90vh] overflow-hidden flex flex-col">
+              <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+                <h3 className="text-lg font-semibold">Create Persona</h3>
+                <button onClick={handleCloseCreateModal} className="text-gray-400 hover:text-gray-600">
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+              <form onSubmit={handleCreate} className="p-6 overflow-y-auto flex-1 space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Name *</label>
+                  <input
+                    type="text"
+                    required
+                    value={formData.name}
+                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    placeholder="e.g. Friendly Customer"
+                  />
+                </div>
+                {renderVoiceFields()}
+                <div className="flex gap-3 pt-4">
+                  <Button type="button" variant="outline" onClick={handleCloseCreateModal} className="flex-1">
+                    Cancel
                   </Button>
-                ) : (
+                  <Button type="submit" variant="primary" isLoading={createMutation.isPending} className="flex-1">
+                    Create
+                  </Button>
+                </div>
+              </form>
+            </div>
+          </div>,
+        )}
+
+        {/* ===================== EDIT PERSONA MODAL ===================== */}
+        {showEditModal && selectedPersona && renderModal(
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]">
+            <div className="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4 max-h-[90vh] overflow-hidden flex flex-col">
+              <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+                <h3 className="text-lg font-semibold">Edit Persona</h3>
+                <button onClick={() => { setShowEditModal(false); setSelectedPersona(null); resetForm() }} className="text-gray-400 hover:text-gray-600">
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+              <form onSubmit={handleUpdate} className="p-6 overflow-y-auto flex-1 space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Name *</label>
+                  <input
+                    type="text"
+                    required
+                    value={formData.name}
+                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  />
+                </div>
+                {renderVoiceFields()}
+                <div className="flex gap-3 pt-4">
+                  <Button type="button" variant="outline" onClick={() => { setShowEditModal(false); setSelectedPersona(null); resetForm() }} className="flex-1">
+                    Cancel
+                  </Button>
+                  <Button type="submit" variant="primary" isLoading={updateMutation.isPending} className="flex-1">
+                    Update
+                  </Button>
+                </div>
+              </form>
+            </div>
+          </div>,
+        )}
+
+        {/* ===================== DELETE MODAL ===================== */}
+        {showDeleteModal && selectedPersona && renderModal(
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]" onClick={() => { setShowDeleteModal(false); setSelectedPersona(null); setDeleteDependencies(null) }}>
+            <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
+              <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+                <h3 className="text-lg font-semibold text-gray-900">Delete Persona</h3>
+                <button onClick={() => { setShowDeleteModal(false); setSelectedPersona(null); setDeleteDependencies(null) }} className="text-gray-400 hover:text-gray-600">
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+              <div className="p-6">
+                {deleteDependencies && (
+                  <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+                    <div className="flex items-start gap-3">
+                      <AlertCircle className="h-5 w-5 text-amber-600 flex-shrink-0 mt-0.5" />
+                      <div className="flex-1">
+                        <p className="text-sm font-medium text-amber-800 mb-2">This persona has dependent records</p>
+                        <ul className="text-xs text-amber-700 space-y-1 mb-3">
+                          {deleteDependencies.evaluators && <li>{deleteDependencies.evaluators} evaluator{deleteDependencies.evaluators !== 1 ? 's' : ''}</li>}
+                          {deleteDependencies.evaluator_results && <li>{deleteDependencies.evaluator_results} evaluator result{deleteDependencies.evaluator_results !== 1 ? 's' : ''}</li>}
+                          {deleteDependencies.test_conversations && <li>{deleteDependencies.test_conversations} test conversation{deleteDependencies.test_conversations !== 1 ? 's' : ''}</li>}
+                        </ul>
+                        <p className="text-xs text-amber-700">Force deleting will remove the persona and all its dependent records.</p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                <div className="flex items-start gap-4 mb-6">
+                  <div className="flex-shrink-0">
+                    <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center">
+                      <Trash2 className="h-6 w-6 text-red-600" />
+                    </div>
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-sm text-gray-700 mb-2">
+                      Are you sure you want to delete <span className="font-semibold text-gray-900">"{selectedPersona.name}"</span>?
+                    </p>
+                    <p className="text-xs text-gray-500">This action cannot be undone.</p>
+                  </div>
+                </div>
+                <div className="flex gap-3">
+                  <Button variant="outline" onClick={() => { setShowDeleteModal(false); setSelectedPersona(null); setDeleteDependencies(null) }} className="flex-1">
+                    Cancel
+                  </Button>
+                  {deleteDependencies ? (
+                    <Button variant="danger" onClick={() => confirmDelete(true)} isLoading={deleteMutation.isPending} leftIcon={!deleteMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined} className="flex-1">
+                      Force Delete All
+                    </Button>
+                  ) : (
+                    <Button variant="danger" onClick={() => confirmDelete()} isLoading={deleteMutation.isPending} leftIcon={!deleteMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined} className="flex-1">
+                      Delete
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>,
+        )}
+
+        {/* ===================== ADD CUSTOM VOICE MODAL ===================== */}
+        {showCustomVoiceModal && renderModal(
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]">
+            <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
+              <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+                <h3 className="text-lg font-semibold">Add Custom Voice</h3>
+                <button onClick={() => { setShowCustomVoiceModal(false); resetCustomVoiceForm() }} className="text-gray-400 hover:text-gray-600">
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+              <form onSubmit={handleCreateCustomVoice} className="p-6 space-y-4">
+                <p className="text-sm text-gray-600">
+                  Register a custom voice ID from your TTS provider. Once added, it will appear in the voice selector when creating personas.
+                </p>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Provider *</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {providers.map((p) => {
+                      const isSelected = customVoiceForm.provider === p.id
+                      return (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() => setCustomVoiceForm({ ...customVoiceForm, provider: isSelected ? '' : p.id })}
+                          className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-left transition-all ${
+                            isSelected
+                              ? 'border-primary-400 bg-primary-50 ring-1 ring-primary-200'
+                              : 'border-gray-200 bg-white hover:border-gray-300 hover:bg-gray-50'
+                          }`}
+                        >
+                          <ProviderLogo provider={p.id} size="sm" />
+                          <span className={`text-sm font-medium truncate ${isSelected ? 'text-primary-700' : 'text-gray-700'}`}>
+                            {p.name}
+                          </span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Voice ID *</label>
+                  <input
+                    type="text"
+                    required
+                    value={customVoiceForm.voice_id}
+                    onChange={(e) => setCustomVoiceForm({ ...customVoiceForm, voice_id: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    placeholder="Provider-specific voice identifier"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Display Name *</label>
+                  <input
+                    type="text"
+                    required
+                    value={customVoiceForm.name}
+                    onChange={(e) => setCustomVoiceForm({ ...customVoiceForm, name: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    placeholder="e.g. My Custom Voice"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Gender</label>
+                  <div className="relative">
+                    <select
+                      value={customVoiceForm.gender}
+                      onChange={(e) => setCustomVoiceForm({ ...customVoiceForm, gender: e.target.value })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent appearance-none bg-white pr-8"
+                    >
+                      <option value="">Not specified</option>
+                      <option value="Male">Male</option>
+                      <option value="Female">Female</option>
+                      <option value="Neutral">Neutral</option>
+                    </select>
+                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
+                  <textarea
+                    value={customVoiceForm.description}
+                    onChange={(e) => setCustomVoiceForm({ ...customVoiceForm, description: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    rows={2}
+                    placeholder="Optional description..."
+                  />
+                </div>
+                <div className="flex gap-3 pt-4">
+                  <Button type="button" variant="outline" onClick={() => { setShowCustomVoiceModal(false); resetCustomVoiceForm() }} className="flex-1">
+                    Cancel
+                  </Button>
+                  <Button type="submit" variant="primary" isLoading={createCustomVoiceMutation.isPending} className="flex-1">
+                    Add Voice
+                  </Button>
+                </div>
+              </form>
+            </div>
+          </div>,
+        )}
+
+        {/* ===================== EDIT CUSTOM VOICE MODAL ===================== */}
+        {showEditCustomVoiceModal && editingCustomVoice && renderModal(
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]">
+            <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
+              <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+                <div className="flex items-center gap-3">
+                  <ProviderLogo provider={editingCustomVoice.provider} size="sm" />
+                  <h3 className="text-lg font-semibold">Edit Custom Voice</h3>
+                </div>
+                <button onClick={() => { setShowEditCustomVoiceModal(false); setEditingCustomVoice(null); resetCustomVoiceForm() }} className="text-gray-400 hover:text-gray-600">
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+              <form onSubmit={handleUpdateCustomVoice} className="p-6 space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Voice ID *</label>
+                  <input
+                    type="text"
+                    required
+                    value={customVoiceForm.voice_id}
+                    onChange={(e) => setCustomVoiceForm({ ...customVoiceForm, voice_id: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    placeholder="Provider-specific voice identifier"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Display Name *</label>
+                  <input
+                    type="text"
+                    required
+                    value={customVoiceForm.name}
+                    onChange={(e) => setCustomVoiceForm({ ...customVoiceForm, name: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Gender</label>
+                  <div className="relative">
+                    <select
+                      value={customVoiceForm.gender}
+                      onChange={(e) => setCustomVoiceForm({ ...customVoiceForm, gender: e.target.value })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent appearance-none bg-white pr-8"
+                    >
+                      <option value="">Not specified</option>
+                      <option value="Male">Male</option>
+                      <option value="Female">Female</option>
+                      <option value="Neutral">Neutral</option>
+                    </select>
+                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
+                  <textarea
+                    value={customVoiceForm.description}
+                    onChange={(e) => setCustomVoiceForm({ ...customVoiceForm, description: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    rows={2}
+                    placeholder="Optional description..."
+                  />
+                </div>
+                <div className="flex gap-3 pt-4">
+                  <Button type="button" variant="outline" onClick={() => { setShowEditCustomVoiceModal(false); setEditingCustomVoice(null); resetCustomVoiceForm() }} className="flex-1">
+                    Cancel
+                  </Button>
+                  <Button type="submit" variant="primary" isLoading={updateCustomVoiceMutation.isPending} className="flex-1">
+                    Save Changes
+                  </Button>
+                </div>
+              </form>
+            </div>
+          </div>,
+        )}
+
+        {/* ===================== DELETE CUSTOM VOICE CONFIRMATION ===================== */}
+        {deleteCustomVoiceConfirm && renderModal(
+          <div
+            className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]"
+            onClick={() => setDeleteCustomVoiceConfirm(null)}
+          >
+            <div
+              className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+                <h3 className="text-lg font-semibold text-gray-900">Delete Custom Voice</h3>
+                <button
+                  onClick={() => setDeleteCustomVoiceConfirm(null)}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+              <div className="p-6">
+                <div className="flex items-start gap-4 mb-6">
+                  <div className="flex-shrink-0">
+                    <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center">
+                      <Trash2 className="h-6 w-6 text-red-600" />
+                    </div>
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-sm text-gray-700 mb-2">
+                      Are you sure you want to delete <span className="font-semibold text-gray-900">"{deleteCustomVoiceConfirm.name}"</span>?
+                    </p>
+                    <p className="text-xs text-gray-500">
+                      This voice will be removed and will no longer appear in the voice selector when creating personas.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex gap-3">
+                  <Button variant="outline" onClick={() => setDeleteCustomVoiceConfirm(null)} className="flex-1">
+                    Cancel
+                  </Button>
                   <Button
                     variant="danger"
-                    onClick={() => confirmDelete()}
-                    isLoading={deleteMutation.isPending}
-                    leftIcon={!deleteMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined}
+                    onClick={() => deleteCustomVoiceMutation.mutate(deleteCustomVoiceConfirm.id)}
+                    isLoading={deleteCustomVoiceMutation.isPending}
+                    leftIcon={!deleteCustomVoiceMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined}
                     className="flex-1"
                   >
                     Delete
                   </Button>
-                )}
+                </div>
               </div>
             </div>
-          </div>
-        </div>
-      )}
+          </div>,
+        )}
       </div>
     </>
   )
 }
-

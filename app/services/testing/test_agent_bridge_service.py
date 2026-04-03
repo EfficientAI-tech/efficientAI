@@ -577,17 +577,14 @@ class TestAgentBridgeService:
                         scenario_goal = scenario.required_info.get("goal", scenario_goal)
                         first_message = scenario.required_info.get("first_message", first_message)
 
-                # Build persona description from available fields
                 persona_traits = []
                 if hasattr(persona, "gender") and persona.gender:
                     gender_val = persona.gender.value if hasattr(persona.gender, "value") else persona.gender
                     persona_traits.append(f"{gender_val} caller")
-                if hasattr(persona, "accent") and persona.accent:
-                    accent_val = persona.accent.value if hasattr(persona.accent, "value") else persona.accent
-                    persona_traits.append(f"with {accent_val} accent")
-                if hasattr(persona, "language") and persona.language:
-                    language_val = persona.language.value if hasattr(persona.language, "value") else persona.language
-                    persona_traits.append(f"speaking {language_val}")
+                if hasattr(persona, "tts_voice_name") and persona.tts_voice_name:
+                    persona_traits.append(f"voice: {persona.tts_voice_name}")
+                if hasattr(persona, "tts_provider") and persona.tts_provider:
+                    persona_traits.append(f"provider: {persona.tts_provider}")
 
                 persona_description = f"A caller named {persona.name}"
                 if persona_traits:

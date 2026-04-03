@@ -62,11 +62,12 @@ The following is the system prompt / instructions that the agent was configured 
             if agent and agent.call_type
             else "conversations"
         )
-        language_val = (
-            (persona.language.value if hasattr(persona.language, "value") else persona.language)
-            if persona and persona.language
-            else "N/A"
-        )
+        language_val = "N/A"
+        if persona:
+            if hasattr(persona, "tts_voice_name") and persona.tts_voice_name:
+                language_val = f"{persona.tts_voice_name} ({persona.tts_provider or 'unknown'})"
+            elif hasattr(persona, "language") and persona.language:
+                language_val = persona.language.value if hasattr(persona.language, "value") else persona.language
         agent_objective = (
             agent.description
             if agent and agent.description

@@ -5,7 +5,8 @@ import { apiClient } from '../../../lib/api'
 import { useAgentStore } from '../../../store/agentStore'
 import { ModelProvider, AIProvider, Integration, IntegrationPlatform } from '../../../types/api'
 import Button from '../../../components/Button'
-import { Plus, Trash2, Play, X, CheckSquare, Square, Sparkles, Brain, ChevronDown, AlertTriangle } from 'lucide-react'
+import ProviderLogo from '../../../components/shared/ProviderLogo'
+import { Plus, Trash2, Play, X, CheckSquare, Square, Sparkles, Brain, ChevronDown, AlertTriangle, Info } from 'lucide-react'
 import { useToast } from '../../../hooks/useToast'
 import { getProviderLabel, getProviderLogo } from '../../../config/providers'
 
@@ -154,8 +155,29 @@ export default function EvaluateTestAgents() {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [showLlmDropdown])
 
-  const filteredPersonas = personas.filter((p: any) => !DEFAULT_PERSONA_NAMES.includes(p.name))
+  const selectedAgentObj = agents.find((a: any) => a.id === modalAgentId) as any
+  const selectedAgentVoiceBundleId = selectedAgentObj?.voice_bundle_id
+
+  const { data: agentVoiceBundle } = useQuery({
+    queryKey: ['voicebundle', selectedAgentVoiceBundleId],
+    queryFn: () => apiClient.getVoiceBundle(selectedAgentVoiceBundleId),
+    enabled: !!selectedAgentVoiceBundleId,
+  })
+
+  const voiceBundleTtsProvider = agentVoiceBundle?.tts_provider
+    ? (typeof agentVoiceBundle.tts_provider === 'string' ? agentVoiceBundle.tts_provider : String(agentVoiceBundle.tts_provider)).toLowerCase()
+    : null
+
+  const allPersonas = personas.filter((p: any) => !DEFAULT_PERSONA_NAMES.includes(p.name))
   const filteredScenarios = scenarios.filter((s: any) => !DEFAULT_SCENARIO_NAMES.includes(s.name))
+
+  const filteredPersonas = voiceBundleTtsProvider
+    ? allPersonas.filter((p: any) => p.tts_provider && p.tts_provider.toLowerCase() === voiceBundleTtsProvider)
+    : allPersonas
+
+  const incompatibleCount = voiceBundleTtsProvider
+    ? allPersonas.length - filteredPersonas.length
+    : 0
 
   const createBulkMutation = useMutation({
     mutationFn: (data: { name?: string; agent_id: string; scenario_id: string; persona_ids: string[]; tags?: string[] }) =>
@@ -555,7 +577,7 @@ export default function EvaluateTestAgents() {
                               </span>
                               {persona && (
                                 <span className="text-xs text-gray-500">
-                                  {persona.language} • {persona.accent} • {persona.gender}
+                                  {persona.tts_provider || '--'} • {persona.tts_voice_name || '--'} • {persona.gender}
                                 </span>
                               )}
                             </div>
@@ -796,7 +818,10 @@ export default function EvaluateTestAgents() {
                         </label>
                         <select
                           value={modalAgentId}
-                          onChange={(e) => setModalAgentId(e.target.value)}
+                          onChange={(e) => {
+                            setModalAgentId(e.target.value)
+                            setSelectedPersonas([])
+                          }}
                           className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
                         >
                           <option value="">Select an agent</option>
@@ -841,9 +866,40 @@ export default function EvaluateTestAgents() {
                         <label className="block text-sm font-medium text-gray-700 mb-2">
                           Personas * ({selectedPersonas.length} selected)
                         </label>
+
+                        {voiceBundleTtsProvider && (
+                          <div className="mb-2 flex items-start gap-2 p-2.5 bg-blue-50 border border-blue-200 rounded-lg">
+                            <Info className="h-4 w-4 text-blue-500 flex-shrink-0 mt-0.5" />
+                            <div className="text-xs text-blue-700">
+                              <span className="font-medium">Only showing personas that match the agent's voice bundle TTS provider</span>
+                              <span className="inline-flex items-center gap-1 ml-1">
+                                (<ProviderLogo provider={voiceBundleTtsProvider} size="sm" />
+                                <span className="font-medium">{voiceBundleTtsProvider}</span>)
+                              </span>
+                              {incompatibleCount > 0 && (
+                                <span className="text-blue-600 ml-1">
+                                  — {incompatibleCount} persona{incompatibleCount !== 1 ? 's' : ''} hidden due to provider mismatch
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        )}
+
+                        {!modalAgentId && (
+                          <div className="mb-2 flex items-center gap-2 p-2.5 bg-gray-50 border border-gray-200 rounded-lg">
+                            <Info className="h-4 w-4 text-gray-400 flex-shrink-0" />
+                            <span className="text-xs text-gray-500">Select an agent first to filter compatible personas</span>
+                          </div>
+                        )}
+
                         <div className="border border-gray-300 rounded-md max-h-48 overflow-y-auto">
                           {filteredPersonas.length === 0 ? (
-                            <div className="p-4 text-center text-gray-500">No personas available</div>
+                            <div className="p-4 text-center text-gray-500">
+                              {voiceBundleTtsProvider
+                                ? `No personas available for provider "${voiceBundleTtsProvider}". Create a persona with this provider first.`
+                                : 'No personas available'
+                              }
+                            </div>
                           ) : (
                             <div className="divide-y divide-gray-200">
                               {filteredPersonas.map((persona: any) => (
@@ -857,10 +913,13 @@ export default function EvaluateTestAgents() {
                                     onChange={() => togglePersona(persona.id)}
                                     className="mr-3 h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
                                   />
-                                  <div>
-                                    <div className="text-sm font-medium text-gray-900">{persona.name}</div>
-                                    <div className="text-xs text-gray-500">
-                                      {persona.language} • {persona.accent} • {persona.gender}
+                                  <div className="flex items-center gap-2">
+                                    {persona.tts_provider && <ProviderLogo provider={persona.tts_provider} size="sm" />}
+                                    <div>
+                                      <div className="text-sm font-medium text-gray-900">{persona.name}</div>
+                                      <div className="text-xs text-gray-500">
+                                        {persona.tts_voice_name || '--'} • {persona.gender}
+                                      </div>
                                     </div>
                                   </div>
                                 </label>

@@ -339,100 +339,45 @@ class AgentResponse(BaseModel):
 
 # Persona Schemas
 class PersonaCreate(BaseModel):
-    """Schema for creating a new persona"""
+    """Schema for creating a new persona (TTS provider-tied voice identity)"""
     name: str = Field(..., min_length=1, max_length=255)
-    language: LanguageEnum = LanguageEnum.ENGLISH
-    accent: AccentEnum = AccentEnum.AMERICAN
     gender: GenderEnum = GenderEnum.NEUTRAL
-    background_noise: BackgroundNoiseEnum = BackgroundNoiseEnum.NONE
+    tts_provider: Optional[str] = None
+    tts_voice_id: Optional[str] = None
+    tts_voice_name: Optional[str] = None
+    is_custom: bool = False
 
 
 class PersonaUpdate(BaseModel):
     """Schema for updating a persona"""
     name: Optional[str] = None
-    language: Optional[LanguageEnum] = None
-    accent: Optional[AccentEnum] = None
     gender: Optional[GenderEnum] = None
-    background_noise: Optional[BackgroundNoiseEnum] = None
+    tts_provider: Optional[str] = None
+    tts_voice_id: Optional[str] = None
+    tts_voice_name: Optional[str] = None
+    is_custom: Optional[bool] = None
 
 
 class PersonaResponse(BaseModel):
     """Schema for persona response"""
     id: UUID
     name: str
-    language: LanguageEnum
-    accent: AccentEnum
-    gender: GenderEnum
-    background_noise: BackgroundNoiseEnum
+    gender: str
+    tts_provider: Optional[str] = None
+    tts_voice_id: Optional[str] = None
+    tts_voice_name: Optional[str] = None
+    is_custom: bool = False
     created_at: datetime
     updated_at: datetime
 
-    @validator('language', pre=True)
-    def convert_language(cls, v):
-        """Convert string to LanguageEnum (handles uppercase DB values)."""
-        if v is None:
-            return None
-        if isinstance(v, str):
-            v_lower = v.lower()
-            language_map = {'english': 'en', 'spanish': 'es', 'french': 'fr', 'german': 'de', 
-                          'chinese': 'zh', 'japanese': 'ja', 'hindi': 'hi', 'arabic': 'ar'}
-            if v_lower in language_map:
-                return LanguageEnum(language_map[v_lower])
-            try:
-                return LanguageEnum(v_lower)
-            except ValueError:
-                for enum_member in LanguageEnum:
-                    if enum_member.name == v or enum_member.value == v:
-                        return enum_member
-                raise ValueError(f"Invalid LanguageEnum value: {v}")
-        return v
-
-    @validator('accent', pre=True)
-    def convert_accent(cls, v):
-        """Convert string to AccentEnum (handles uppercase DB values)."""
-        if v is None:
-            return None
-        if isinstance(v, str):
-            v_lower = v.lower()
-            try:
-                return AccentEnum(v_lower)
-            except ValueError:
-                for enum_member in AccentEnum:
-                    if enum_member.name == v or enum_member.value == v:
-                        return enum_member
-                raise ValueError(f"Invalid AccentEnum value: {v}")
-        return v
-
     @validator('gender', pre=True)
     def convert_gender(cls, v):
-        """Convert string to GenderEnum (handles uppercase DB values)."""
         if v is None:
-            return None
+            return "neutral"
         if isinstance(v, str):
-            v_lower = v.lower()
-            try:
-                return GenderEnum(v_lower)
-            except ValueError:
-                for enum_member in GenderEnum:
-                    if enum_member.name == v or enum_member.value == v:
-                        return enum_member
-                raise ValueError(f"Invalid GenderEnum value: {v}")
-        return v
-
-    @validator('background_noise', pre=True)
-    def convert_background_noise(cls, v):
-        """Convert string to BackgroundNoiseEnum (handles uppercase DB values)."""
-        if v is None:
-            return None
-        if isinstance(v, str):
-            v_lower = v.lower()
-            try:
-                return BackgroundNoiseEnum(v_lower)
-            except ValueError:
-                for enum_member in BackgroundNoiseEnum:
-                    if enum_member.name == v or enum_member.value == v:
-                        return enum_member
-                raise ValueError(f"Invalid BackgroundNoiseEnum value: {v}")
+            return v.lower()
+        if hasattr(v, 'value'):
+            return v.value
         return v
 
     class Config:
