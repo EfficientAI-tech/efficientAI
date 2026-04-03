@@ -33,6 +33,11 @@ FEATURE_CATALOG: Dict[str, Dict[str, str]] = {
         "description": "A/B test TTS providers with blind tests and quality analytics.",
         "category": "playground",
     },
+    "gepa_optimization": {
+        "title": "Prompt Optimization",
+        "description": "Self-improving voice agents via reflective prompt evolution.",
+        "category": "optimization",
+    },
 }
 
 # Backward-compatible export used by existing API response shape.

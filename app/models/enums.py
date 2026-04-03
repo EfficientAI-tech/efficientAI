@@ -202,3 +202,11 @@ class CronJobStatus(str, enum.Enum):
     ACTIVE = "active"
     PAUSED = "paused"
     COMPLETED = "completed"
+
+
+class PromptOptimizationStatus(str, enum.Enum):
+    """Prompt optimization run status."""
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"

@@ -16,6 +16,7 @@ from app.workers.tasks import (
     generate_tts_comparison_task,
     evaluate_tts_comparison_task,
     generate_tts_report_pdf_task,
+    run_prompt_optimization_task,
 )
 
 __all__ = [
@@ -26,4 +27,5 @@ __all__ = [
     "generate_tts_comparison_task",
     "evaluate_tts_comparison_task",
     "generate_tts_report_pdf_task",
+    "run_prompt_optimization_task",
 ]

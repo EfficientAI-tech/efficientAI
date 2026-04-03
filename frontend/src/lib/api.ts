@@ -1504,6 +1504,59 @@ class ApiClient {
     const response = await this.client.get('/api/v1/settings/license-info')
     return response.data
   }
+
+  // GEPA Prompt Optimization (Enterprise)
+  async createOptimizationRun(data: {
+    agent_id: string
+    evaluator_id?: string
+    voice_bundle_id?: string
+    config?: Record<string, any>
+  }): Promise<any> {
+    const response = await this.client.post('/api/v1/prompt-optimization/runs', data)
+    return response.data
+  }
+
+  async deleteOptimizationRun(runId: string): Promise<void> {
+    await this.client.delete(`/api/v1/prompt-optimization/runs/${runId}`)
+  }
+
+  async listOptimizationRuns(agentId?: string): Promise<any[]> {
+    const params = agentId ? { agent_id: agentId } : {}
+    const response = await this.client.get('/api/v1/prompt-optimization/runs', { params })
+    return response.data
+  }
+
+  async getOptimizationRun(runId: string): Promise<any> {
+    const response = await this.client.get(`/api/v1/prompt-optimization/runs/${runId}`)
+    return response.data
+  }
+
+  async listOptimizationCandidates(runId: string): Promise<any[]> {
+    const response = await this.client.get(`/api/v1/prompt-optimization/runs/${runId}/candidates`)
+    return response.data
+  }
+
+  async acceptCandidate(runId: string, candidateId: string): Promise<any> {
+    const response = await this.client.post(
+      `/api/v1/prompt-optimization/runs/${runId}/candidates/${candidateId}/accept`
+    )
+    return response.data
+  }
+
+  async pushCandidateToProvider(runId: string, candidateId: string): Promise<any> {
+    const response = await this.client.post(
+      `/api/v1/prompt-optimization/runs/${runId}/candidates/${candidateId}/push`
+    )
+    return response.data
+  }
+
+  async syncProviderPrompt(agentId: string): Promise<{
+    provider_prompt: string | null
+    provider_prompt_synced_at: string | null
+  }> {
+    const response = await this.client.post(`/api/v1/agents/${agentId}/sync-provider-prompt`)
+    return response.data
+  }
 }
 
 // Factory function to create ApiClient instance

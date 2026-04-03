@@ -66,6 +66,9 @@ import IAM from './pages/iam/IAM'
 // Profile
 import Profile from './pages/profile/Profile'
 
+// Prompt Optimization (Enterprise)
+import PromptOptimization from './pages/promptOptimization/PromptOptimization'
+
 // Enterprise
 import EnterpriseUpgrade from './pages/enterprise/EnterpriseUpgrade'
 
@@ -141,6 +144,7 @@ function App() {
           <Route path="voice-playground" element={<EnterpriseGate feature="voice_playground"><VoicePlayground /></EnterpriseGate>} />
           <Route path="cron-jobs" element={<CronJobs />} />
           <Route path="prompt-partials" element={<PromptPartials />} />
+          <Route path="prompt-optimization" element={<EnterpriseGate feature="gepa_optimization"><PromptOptimization /></EnterpriseGate>} />
         </Route>
       </Routes>
     </BrowserRouter>

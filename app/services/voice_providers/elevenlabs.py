@@ -207,6 +207,84 @@ class ElevenLabsVoiceProvider(BaseVoiceProvider):
             logger.error(f"[ElevenLabsProvider] Error getting conversation: {e}", exc_info=True)
             raise ValueError(f"Failed to retrieve ElevenLabs conversation: {str(e)}")
 
+    def extract_agent_prompt(self, agent_id: str) -> Optional[str]:
+        """Extract the system prompt from an ElevenLabs Conversational AI agent."""
+        try:
+            data = self.get_agent(agent_id)
+            conv_config = data.get("conversation_config") or {}
+            agent_config = conv_config.get("agent") or {}
+            prompt_config = agent_config.get("prompt") or {}
+            prompt = prompt_config.get("prompt")
+            if prompt:
+                prompt = self._strip_code_fences(prompt)
+            return prompt
+        except Exception as e:
+            logger.warning(f"[ElevenLabsProvider] Failed to extract agent prompt: {e}")
+            return None
+
+    @staticmethod
+    def _strip_code_fences(text: str) -> str:
+        """Remove wrapping triple-backtick code fences that some providers add.
+
+        Handles both complete fences (opening + closing) and prompts that
+        only start with an opening fence (e.g. truncated or provider quirk).
+        """
+        import re
+        trimmed = text.strip()
+        # Try complete fence first (opening + closing)
+        m = re.match(r'^```[\w]*\n?([\s\S]*?)```\s*$', trimmed)
+        if m:
+            return m.group(1).strip()
+        # Opening fence only (no closing)
+        m = re.match(r'^```[\w]*\n?([\s\S]*)$', trimmed)
+        if m:
+            return m.group(1).strip()
+        return trimmed
+
+    def update_agent_prompt(self, agent_id: str, system_prompt: str, **kwargs) -> Dict[str, Any]:
+        """
+        Update an ElevenLabs Conversational AI agent's system prompt.
+
+        Args:
+            agent_id: ElevenLabs agent ID
+            system_prompt: New system prompt text
+
+        Returns:
+            Updated agent data from ElevenLabs
+        """
+        try:
+            url = f"{self.api_url}/convai/agents/{agent_id}"
+            headers = {
+                "xi-api-key": self.api_key,
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "conversation_config": {
+                    "agent": {
+                        "prompt": {
+                            "prompt": system_prompt,
+                        },
+                    },
+                },
+            }
+            logger.info(f"[ElevenLabsProvider] Updating agent prompt: PATCH {url}")
+            response = requests.patch(url, headers=headers, json=payload, timeout=30)
+
+            if not response.ok:
+                try:
+                    error_body = response.json()
+                except Exception:
+                    error_body = response.text[:500]
+                raise ValueError(
+                    f"ElevenLabs API error ({response.status_code}): {error_body}"
+                )
+
+            data = response.json()
+            logger.info(f"[ElevenLabsProvider] Agent {agent_id} prompt updated")
+            return data
+        except requests.exceptions.RequestException as e:
+            raise ValueError(f"Failed to update ElevenLabs agent prompt: {str(e)}")
+
     def test_connection(self) -> bool:
         """Test the ElevenLabs API connection."""
         try:

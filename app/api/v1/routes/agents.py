@@ -258,6 +258,17 @@ async def create_agent(
     db.add(db_agent)
     db.commit()
     db.refresh(db_agent)
+
+    if agent.voice_ai_integration_id and agent.voice_ai_agent_id:
+        try:
+            from app.services.voice_providers.prompt_sync import sync_provider_prompt
+            integration = db.query(Integration).filter(Integration.id == agent.voice_ai_integration_id).first()
+            if integration:
+                sync_provider_prompt(db_agent, integration, db)
+                db.refresh(db_agent)
+        except Exception as e:
+            logger.warning(f"[Agents] Best-effort provider prompt sync failed on create: {e}")
+
     return db_agent
 
 
@@ -391,7 +402,70 @@ async def update_agent(
     
     db.commit()
     db.refresh(db_agent)
+
+    if "voice_ai_agent_id" in update_data or "voice_ai_integration_id" in update_data:
+        integration_id = db_agent.voice_ai_integration_id
+        if integration_id and db_agent.voice_ai_agent_id:
+            try:
+                from app.services.voice_providers.prompt_sync import sync_provider_prompt
+                integration = db.query(Integration).filter(Integration.id == integration_id).first()
+                if integration:
+                    sync_provider_prompt(db_agent, integration, db)
+                    db.refresh(db_agent)
+            except Exception as e:
+                logger.warning(f"[Agents] Best-effort provider prompt sync failed on update: {e}")
+
     return db_agent
+
+
+@router.post("/{agent_id}/sync-provider-prompt")
+async def sync_agent_provider_prompt(
+    agent_id: str,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """Fetch and store the current system prompt from the voice provider."""
+    try:
+        agent_uuid = UUID(agent_id)
+        db_agent = db.query(Agent).filter(
+            and_(Agent.id == agent_uuid, Agent.organization_id == organization_id)
+        ).first()
+    except ValueError:
+        db_agent = db.query(Agent).filter(
+            and_(Agent.agent_id == agent_id, Agent.organization_id == organization_id)
+        ).first()
+
+    if not db_agent:
+        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
+
+    if not db_agent.voice_ai_integration_id or not db_agent.voice_ai_agent_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Agent is not linked to an external voice provider",
+        )
+
+    integration = db.query(Integration).filter(
+        and_(
+            Integration.id == db_agent.voice_ai_integration_id,
+            Integration.organization_id == organization_id,
+            Integration.is_active == True,
+        )
+    ).first()
+    if not integration:
+        raise HTTPException(status_code=404, detail="Integration not found or inactive")
+
+    try:
+        from app.services.voice_providers.prompt_sync import sync_provider_prompt
+        prompt = sync_provider_prompt(db_agent, integration, db)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch prompt from provider: {str(e)}")
+
+    db.refresh(db_agent)
+    return {
+        "provider_prompt": db_agent.provider_prompt,
+        "provider_prompt_synced_at": db_agent.provider_prompt_synced_at.isoformat() if db_agent.provider_prompt_synced_at else None,
+    }
 
 
 @router.delete("/{agent_id}")

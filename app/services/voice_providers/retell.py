@@ -4,6 +4,7 @@ Handles integration with Retell AI voice agents
 """
 from typing import Dict, Any, Optional
 from retell import Retell
+from loguru import logger
 
 from app.services.voice_providers.base import BaseVoiceProvider
 
@@ -278,6 +279,130 @@ class RetellVoiceProvider(BaseVoiceProvider):
                 }
         except Exception as e:
             raise ValueError(f"Failed to retrieve Retell call metrics: {str(e)}")
+
+    def extract_agent_prompt(self, agent_id: str) -> Optional[str]:
+        """Extract the system prompt from a Retell agent.
+
+        Handles all three response engine types:
+        - retell-llm: fetch LLM by llm_id, read general_prompt
+        - conversation-flow: fetch flow by conversation_flow_id, read global_prompt
+        - custom-llm: no extractable prompt (websocket-based)
+        """
+        try:
+            agent_response = self.client.agent.retrieve(agent_id=agent_id)
+
+            response_engine = getattr(agent_response, "response_engine", None)
+            if response_engine is None:
+                logger.warning("[RetellProvider] No response_engine on agent")
+                return None
+
+            engine_type = getattr(response_engine, "type", None)
+            if isinstance(response_engine, dict):
+                engine_type = response_engine.get("type")
+
+            logger.debug(f"[RetellProvider] response_engine type={engine_type}")
+
+            # --- retell-llm: fetch the LLM and read general_prompt ---
+            llm_id = getattr(response_engine, "llm_id", None)
+            if isinstance(response_engine, dict):
+                llm_id = response_engine.get("llm_id", llm_id)  
+
+            if llm_id:
+                logger.debug(f"[RetellProvider] Fetching LLM {llm_id}")
+                llm_response = self.client.llm.retrieve(llm_id=llm_id)
+
+                prompt = getattr(llm_response, "general_prompt", None)
+                if isinstance(llm_response, dict):
+                    prompt = llm_response.get("general_prompt", prompt)
+                if prompt:
+                    return prompt
+
+                if hasattr(llm_response, "model_dump"):
+                    prompt = llm_response.model_dump().get("general_prompt")
+                    if prompt:
+                        return prompt
+
+                logger.warning(f"[RetellProvider] LLM {llm_id} returned no general_prompt")
+                return None
+
+            # --- conversation-flow: fetch the flow and read global_prompt ---
+            flow_id = getattr(response_engine, "conversation_flow_id", None)
+            if isinstance(response_engine, dict):
+                flow_id = response_engine.get("conversation_flow_id", flow_id)
+
+            if flow_id:
+                logger.debug(f"[RetellProvider] Fetching conversation flow {flow_id}")
+                flow_response = self.client.conversation_flow.retrieve(
+                    conversation_flow_id=flow_id
+                )
+
+                prompt = getattr(flow_response, "global_prompt", None)
+                if isinstance(flow_response, dict):
+                    prompt = flow_response.get("global_prompt", prompt)
+                if prompt:
+                    return prompt
+
+                if hasattr(flow_response, "model_dump"):
+                    prompt = flow_response.model_dump().get("global_prompt")
+                    if prompt:
+                        return prompt
+
+                logger.warning(f"[RetellProvider] Conversation flow {flow_id} returned no global_prompt")
+                return None
+
+            # --- custom-llm or unknown: try system_prompt fallback ---
+            if isinstance(response_engine, dict):
+                return response_engine.get("system_prompt")
+            return getattr(response_engine, "system_prompt", None)
+
+        except Exception as e:
+            logger.warning(f"[RetellProvider] Failed to extract agent prompt: {e}")
+            return None
+
+    def update_agent_prompt(self, agent_id: str, system_prompt: str, **kwargs) -> Dict[str, Any]:
+        """
+        Update a Retell agent's system prompt.
+
+        Retrieves the current agent to find its LLM configuration, then updates
+        the prompt via the agent update endpoint.
+
+        Args:
+            agent_id: Retell agent ID
+            system_prompt: New system prompt text
+
+        Returns:
+            Updated agent data from Retell
+        """
+        try:
+            current = self.get_agent(agent_id)
+            response_engine = current.get("response_engine") or {}
+
+            llm_id = response_engine.get("llm_id")
+            if llm_id:
+                llm_response = self.client.llm.update(
+                    llm_id=llm_id,
+                    general_prompt=system_prompt,
+                )
+                if isinstance(llm_response, dict):
+                    return llm_response
+                elif hasattr(llm_response, "model_dump"):
+                    return llm_response.model_dump()
+                return {"llm_id": llm_id, "updated": True}
+
+            update_response = self.client.agent.update(
+                agent_id=agent_id,
+                response_engine={
+                    **response_engine,
+                    "system_prompt": system_prompt,
+                },
+            )
+            if isinstance(update_response, dict):
+                return update_response
+            elif hasattr(update_response, "model_dump"):
+                return update_response.model_dump()
+            return {"agent_id": agent_id, "updated": True}
+        except Exception as e:
+            raise ValueError(f"Failed to update Retell agent prompt: {str(e)}")
 
     def test_connection(self) -> bool:
         """

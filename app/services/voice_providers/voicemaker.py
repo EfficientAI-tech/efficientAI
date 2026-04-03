@@ -2,7 +2,7 @@
 VoiceMaker Provider (API-key validation support).
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import requests
 
@@ -23,6 +23,12 @@ class VoiceMakerProvider(BaseVoiceProvider):
 
     def retrieve_call_metrics(self, call_id: str) -> Dict[str, Any]:
         raise NotImplementedError("VoiceMaker call metrics are not supported in this app")
+
+    def extract_agent_prompt(self, agent_id: str) -> Optional[str]:
+        raise NotImplementedError("VoiceMaker does not support agent prompt extraction")
+
+    def update_agent_prompt(self, agent_id: str, system_prompt: str, **kwargs) -> Dict[str, Any]:
+        raise NotImplementedError("VoiceMaker does not support agent prompt updates")
 
     def test_connection(self) -> bool:
         """Validate API key via a tiny TTS conversion request."""
