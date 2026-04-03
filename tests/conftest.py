@@ -308,6 +308,8 @@ def client(db_session, api_key, org_id):
 
     from app.database import get_db
     from app.dependencies import get_api_key, get_organization_id, require_enterprise_feature
+    from app.models.database import Organization
+    import app.dependencies as app_dependencies
     from app.api.v1.routes import (
         aiproviders,
         agents,
@@ -373,6 +375,10 @@ def client(db_session, api_key, org_id):
     app.include_router(voice_agent.router, prefix="/api/v1")
     app.include_router(voice_playground.router, prefix="/api/v1")
 
+    # Enterprise route dependencies call app.dependencies.is_feature_enabled at runtime.
+    # Force-enable it for API tests so tests remain focused on route behavior.
+    app_dependencies.is_feature_enabled = lambda *_args, **_kwargs: True
+
     def _override_get_db():
         yield db_session
 
@@ -393,8 +399,17 @@ def client(db_session, api_key, org_id):
 
 
 @pytest.fixture
-def authenticated_client(client, api_key):
+def authenticated_client(client, api_key, db_session, org_id):
     """Client pre-populated with auth header."""
+    from app.models.database import Organization
+
+    # Authenticated routes usually persist rows scoped to organization_id.
+    # Ensure the organization exists to satisfy FK constraints on Postgres.
+    existing_org = db_session.query(Organization).filter(Organization.id == org_id).first()
+    if existing_org is None:
+        db_session.add(Organization(id=org_id, name="Test Organization"))
+        db_session.commit()
+
     client.headers.update({"X-API-Key": api_key})
     return client
 

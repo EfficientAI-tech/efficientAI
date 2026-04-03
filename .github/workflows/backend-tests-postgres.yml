@@ -1,12 +1,14 @@
 name: Backend Tests (Postgres)
 
 on:
-  push:
-    branches:
-      - "**"
   pull_request:
     branches:
-      - "**"
+      - main
+      - master
+  push:
+    branches:
+      - main
+      - master
 
 jobs:
   postgres-test:

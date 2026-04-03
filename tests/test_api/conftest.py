@@ -36,9 +36,11 @@ from app.models.enums import EvaluationStatus, IntegrationPlatform, MetricTrigge
 
 @pytest.fixture
 def seed_org(db_session, org_id):
-    org = Organization(id=org_id, name="Test Org")
-    db_session.add(org)
-    db_session.commit()
+    org = db_session.query(Organization).filter(Organization.id == org_id).first()
+    if org is None:
+        org = Organization(id=org_id, name="Test Org")
+        db_session.add(org)
+        db_session.commit()
     return org
 
 
