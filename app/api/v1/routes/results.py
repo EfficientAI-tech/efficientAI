@@ -176,10 +176,12 @@ def compare_evaluations(
     """
     evaluation_results = []
 
-    for eval_id_str in comparison_data.evaluation_ids:
+    for eval_id_input in comparison_data.evaluation_ids:
         try:
-            eval_id = UUID(eval_id_str)
-        except ValueError:
+            # ComparisonRequest already validates UUIDs, but keep this branch for
+            # defensive compatibility if non-UUID inputs reach this code path.
+            eval_id = eval_id_input if isinstance(eval_id_input, UUID) else UUID(eval_id_input)
+        except (ValueError, TypeError):
             continue
 
         # Verify evaluation belongs to organization

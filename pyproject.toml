@@ -14,7 +14,7 @@ dependencies = [
     "pydantic-settings>=2.1.0",
     "python-multipart>=0.0.6",
     "python-jose[cryptography]>=3.3.0",
-    "passlib[bcrypt]>=1.7.4",
+    "bcrypt>=4.2.0",
     "cryptography>=41.0.0",
     "celery>=5.3.0",
     "redis>=5.0.0",
@@ -63,6 +63,9 @@ dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.1.0",
+    "pytest-mock>=3.14.0",
+    "factory-boy>=3.3.1",
+    "moto[s3]>=5.0.0",
     "black>=23.11.0",
     "ruff>=0.1.0",
     "mypy>=1.7.0",
@@ -149,4 +152,18 @@ python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+asyncio_mode = "auto"
+markers = [
+    "unit: fast pure unit tests",
+    "integration: database or app-level integration tests",
+    "slow: expensive or long-running tests",
+]
+filterwarnings = [
+    "ignore:Error loading \\.env file, using defaults\\..*:UserWarning:app\\.database",
+    "ignore:'audioop' is deprecated and slated for removal in Python 3.13:DeprecationWarning:efficientai\\.audio\\.utils",
+]
 

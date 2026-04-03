@@ -23,6 +23,13 @@ from app.core.password import hash_password
 router = APIRouter(prefix="/iam", tags=["IAM"])
 
 
+def _to_aware_utc(dt: datetime) -> datetime:
+    """Normalize datetimes to timezone-aware UTC for safe comparisons."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def get_user_from_api_key(api_key: str, db: Session) -> User:
     """
     Get user associated with API key.
@@ -201,7 +208,7 @@ async def invite_user(
     
     if existing_invitation:
         # Check if expired
-        if existing_invitation.expires_at < datetime.now(timezone.utc):
+        if _to_aware_utc(existing_invitation.expires_at) < datetime.now(timezone.utc):
             existing_invitation.status = InvitationStatus.EXPIRED
             db.commit()
         else:
@@ -264,7 +271,7 @@ async def list_invitations(
     result = []
     for invitation in invitations:
         # Check if expired
-        if invitation.status == InvitationStatus.PENDING and invitation.expires_at < datetime.now(timezone.utc):
+        if invitation.status == InvitationStatus.PENDING and _to_aware_utc(invitation.expires_at) < datetime.now(timezone.utc):
             invitation.status = InvitationStatus.EXPIRED
             db.commit()
         

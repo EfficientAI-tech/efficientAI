@@ -1,7 +1,7 @@
 """Core evaluation service for processing audio evaluations."""
 
 import time
-from datetime import datetime
+from datetime import datetime, UTC
 from typing import Optional, Dict, Any
 from uuid import UUID
 from sqlalchemy.orm import Session
@@ -94,7 +94,7 @@ class EvaluationService:
 
         # Update status to processing
         evaluation.status = EvaluationStatus.PROCESSING
-        evaluation.started_at = datetime.utcnow()
+        evaluation.started_at = datetime.now(UTC)
         db.commit()
 
         try:
@@ -132,7 +132,7 @@ class EvaluationService:
 
             # Update evaluation status
             evaluation.status = EvaluationStatus.COMPLETED
-            evaluation.completed_at = datetime.utcnow()
+            evaluation.completed_at = datetime.now(UTC)
             db.commit()
 
             return {
@@ -148,7 +148,7 @@ class EvaluationService:
             # Update status to failed
             evaluation.status = EvaluationStatus.FAILED
             evaluation.error_message = str(e)
-            evaluation.completed_at = datetime.utcnow()
+            evaluation.completed_at = datetime.now(UTC)
             db.commit()
 
             raise

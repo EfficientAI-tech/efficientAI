@@ -1,11 +1,9 @@
 name: Release and Publish Docker Images
 
 on:
-  pull_request_target:
-    types: [closed]
-    branches:
-      - main
-      - master
+  workflow_run:
+    workflows: ["Backend Tests (Postgres)"]
+    types: [completed]
 
 env:
   REGISTRY: ghcr.io
@@ -18,13 +16,16 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: release-${{ github.event.pull_request.base.ref }}
+  group: release-${{ github.event.workflow_run.head_branch || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   # ── Step 1: Compute version and create git tag ──────────────
   release:
-    if: github.event.pull_request.merged == true
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      (github.event.workflow_run.head_branch == 'main' || github.event.workflow_run.head_branch == 'master')
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -32,14 +33,32 @@ jobs:
       next_tag: ${{ steps.version.outputs.next_tag }}
 
     steps:
-      - name: Determine bump type from PR labels
+      - name: Determine bump type from associated PR labels
         id: bump
         uses: actions/github-script@v7
+        env:
+          MERGE_SHA: ${{ github.event.workflow_run.head_sha }}
         with:
           script: |
-            const labels = (context.payload.pull_request.labels || []).map((label) =>
-              label.name.toLowerCase()
-            );
+            const { owner, repo } = context.repo;
+            const mergeSha = process.env.MERGE_SHA;
+            let labels = [];
+            try {
+              const response = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                owner,
+                repo,
+                commit_sha: mergeSha,
+              });
+              const mergedPR = (response.data || []).find((pr) => pr.merged_at);
+              if (mergedPR) {
+                labels = (mergedPR.labels || []).map((label) => label.name.toLowerCase());
+                core.info(`Using labels from PR #${mergedPR.number}`);
+              } else {
+                core.info("No merged PR associated with this commit. Defaulting to patch.");
+              }
+            } catch (err) {
+              core.warning(`Unable to resolve PR labels for commit ${mergeSha}: ${err.message}`);
+            }
             core.info(`PR labels: ${labels.join(", ") || "none"}`);
 
             let bump = "patch";
@@ -58,12 +77,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
 
       - name: Compute next semantic version
         id: version
         env:
-          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          MERGE_SHA: ${{ github.event.workflow_run.head_sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -130,7 +150,7 @@ jobs:
         if: steps.version.outputs.create_tag == 'true'
         env:
           NEXT_TAG: ${{ steps.version.outputs.next_tag }}
-          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          MERGE_SHA: ${{ github.event.workflow_run.head_sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -287,7 +307,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NEXT_TAG: ${{ needs.release.outputs.next_tag }}
-          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          MERGE_SHA: ${{ github.event.workflow_run.head_sha }}
         shell: bash
         run: |
           set -euo pipefail

@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from uuid import UUID
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.database import get_db
 from app.dependencies import get_organization_id
@@ -354,7 +354,7 @@ def test_alert_notification(
         raise HTTPException(status_code=404, detail="Alert not found")
 
     results = []
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     common_params = dict(
         alert_name=f"[TEST] {alert.name}",
@@ -531,12 +531,12 @@ def update_alert_history(
         
         # Set timestamps based on status transition
         if new_status == AlertHistoryStatus.ACKNOWLEDGED.value and history.acknowledged_at is None:
-            history.acknowledged_at = datetime.utcnow()
+            history.acknowledged_at = datetime.now(timezone.utc)
             if update_data.acknowledged_by:
                 history.acknowledged_by = update_data.acknowledged_by
         
         if new_status == AlertHistoryStatus.RESOLVED.value and history.resolved_at is None:
-            history.resolved_at = datetime.utcnow()
+            history.resolved_at = datetime.now(timezone.utc)
             if update_data.resolved_by:
                 history.resolved_by = update_data.resolved_by
             if update_data.resolution_notes:

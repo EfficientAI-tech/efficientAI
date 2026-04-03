@@ -479,7 +479,7 @@ async def update_persona(
         if not db_persona:
             raise HTTPException(status_code=404, detail=f"Persona {persona_id} not found")
         
-        update_data = persona_update.dict(exclude_unset=True)
+        update_data = persona_update.model_dump(exclude_unset=True)
         for field, value in update_data.items():
             setattr(db_persona, field, value)
         

@@ -98,7 +98,7 @@ async def update_scenario(
         if not linked_agent:
             raise HTTPException(status_code=404, detail=f"Agent {scenario_update.agent_id} not found")
 
-    update_data = scenario_update.dict(exclude_unset=True)
+    update_data = scenario_update.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         setattr(db_scenario, field, value)
     
