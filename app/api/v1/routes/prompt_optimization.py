@@ -107,8 +107,8 @@ def create_optimization_run(
     if not agent:
         raise HTTPException(404, "Agent not found")
 
-    if not agent.description:
-        raise HTTPException(400, "Agent has no description / system prompt to optimize")
+    if not agent.provider_prompt and not agent.description:
+        raise HTTPException(400, "Agent has no provider prompt or description to optimize")
 
     evaluator = None
     if data.evaluator_id:
@@ -130,7 +130,7 @@ def create_optimization_run(
         agent_id=agent.id,
         evaluator_id=data.evaluator_id,
         voice_bundle_id=voice_bundle_id,
-        seed_prompt=agent.description,
+        seed_prompt=agent.provider_prompt or agent.description,
         status=PromptOptimizationStatus.PENDING.value,
         config=data.config,
     )
@@ -297,6 +297,8 @@ def push_candidate_to_provider(
     candidate.pushed_to_provider_at = datetime.now(timezone.utc)
 
     agent.description = candidate.prompt_text
+    agent.provider_prompt = candidate.prompt_text
+    agent.provider_prompt_synced_at = datetime.now(timezone.utc)
     db.commit()
 
     return {

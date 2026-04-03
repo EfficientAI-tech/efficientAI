@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { X, Sparkles, Loader2, Bot, Eye, Code, FileText } from 'lucide-react'
+import { X, Sparkles, Loader2, Bot, Eye, Code, FileText, PhoneOutgoing, PhoneIncoming } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import Button from '../../../components/Button'
 import { apiClient } from '../../../lib/api'
@@ -123,7 +123,7 @@ export default function CreateAgentModal({
       setShowUseSavedModal(false)
       setSavedPromptSearch('')
       setSelectedSavedPromptId('')
-      showToast('Saved prompt applied to System Prompt', 'success')
+      showToast('Saved prompt applied to Test Agent Prompt', 'success')
     },
     onError: (err: any) => {
       showToast(err?.response?.data?.detail || 'Failed to load saved prompt', 'error')
@@ -315,12 +315,13 @@ export default function CreateAgentModal({
                   key={type}
                   type="button"
                   onClick={() => setFormData({ ...formData, call_type: type })}
-                  className={`px-4 py-2 text-sm font-medium transition-colors focus:outline-none ${
+                  className={`inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium transition-colors focus:outline-none ${
                     formData.call_type === type
                       ? 'bg-primary-600 text-white'
                       : 'bg-white text-gray-700 hover:bg-gray-50'
                   } ${type === 'outbound' ? 'border-r border-gray-300' : ''}`}
                 >
+                  {type === 'outbound' ? <PhoneOutgoing className="h-3.5 w-3.5" /> : <PhoneIncoming className="h-3.5 w-3.5" />}
                   {type === 'outbound' ? 'Outbound' : 'Inbound'}
                 </button>
               ))}
@@ -330,7 +331,7 @@ export default function CreateAgentModal({
           {/* Description with AI Generate */}
           <div>
             <div className="flex items-center justify-between mb-1">
-              <label className="block text-sm font-medium text-gray-700">Description *</label>
+              <label className="block text-sm font-medium text-gray-700">Test Agent Prompt *</label>
               <div className="flex items-center gap-2">
                 <button
                   type="button"

@@ -62,10 +62,10 @@ def run_optimization(
         )
 
     config = config or {}
-    max_metric_calls = config.get("max_metric_calls", 150)
+    max_metric_calls = config.get("max_metric_calls", 20)
     minibatch_size = config.get("minibatch_size", 5)
 
-    seed_prompt = agent.description or ""
+    seed_prompt = agent.provider_prompt or agent.description or ""
     lm_identifier = resolve_lm(voice_bundle, evaluator)
     api_key = resolve_api_key(lm_identifier, ai_providers)
 

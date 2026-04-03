@@ -275,6 +275,8 @@ class AgentResponse(BaseModel):
     ai_provider_id: Optional[UUID]
     voice_ai_integration_id: Optional[UUID]
     voice_ai_agent_id: Optional[str]
+    provider_prompt: Optional[str] = None
+    provider_prompt_synced_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 

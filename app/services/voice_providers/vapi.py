@@ -169,23 +169,56 @@ class VapiVoiceProvider(BaseVoiceProvider):
 
     def get_agent(self, agent_id: str) -> Dict[str, Any]:
         """
-        Get Vapi agent details.
-        
+        Get Vapi assistant details via GET /assistant/{id}.
+
         Args:
-            agent_id: Vapi agent ID
-            
+            agent_id: Vapi assistant ID
+
         Returns:
-            Dictionary containing agent information
+            Dictionary containing assistant information
         """
         try:
-            # agent_response = self.client.agents.get(agent_id)
-            return {"agent_id": agent_id, "name": "Vapi Agent"}
-        except Exception as e:
+            url = f"{self.api_url}/assistant/{agent_id}"
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            }
+            logger.debug(f"[VapiProvider] Fetching assistant: GET {url}")
+            response = requests.get(url, headers=headers, timeout=15)
+
+            if not response.ok:
+                try:
+                    error_body = response.json()
+                except Exception:
+                    error_body = response.text[:500]
+                raise ValueError(
+                    f"Vapi API error ({response.status_code}): {error_body}"
+                )
+
+            return response.json()
+        except requests.exceptions.RequestException as e:
             raise ValueError(f"Failed to get Vapi agent: {str(e)}")
+
+    def extract_agent_prompt(self, agent_id: str) -> Optional[str]:
+        """Extract the system prompt from a Vapi assistant."""
+        try:
+            data = self.get_agent(agent_id)
+            model = data.get("model") or {}
+            messages = model.get("messages") or []
+            for msg in messages:
+                if msg.get("role") == "system":
+                    return msg.get("content")
+            return None
+        except Exception as e:
+            logger.warning(f"[VapiProvider] Failed to extract agent prompt: {e}")
+            return None
 
     def update_agent_prompt(self, agent_id: str, system_prompt: str, **kwargs) -> Dict[str, Any]:
         """
         Update a Vapi assistant's system prompt via PATCH /assistant/{id}.
+
+        Fetches the current assistant first to preserve required model fields
+        (provider, model, temperature, etc.) that Vapi requires on the model object.
 
         Args:
             agent_id: Vapi assistant ID
@@ -195,16 +228,29 @@ class VapiVoiceProvider(BaseVoiceProvider):
             Updated assistant data from Vapi
         """
         try:
+            current_data = self.get_agent(agent_id)
+            existing_model = current_data.get("model") or {}
+
+            updated_messages = []
+            system_replaced = False
+            for msg in existing_model.get("messages") or []:
+                if msg.get("role") == "system" and not system_replaced:
+                    updated_messages.append({"role": "system", "content": system_prompt})
+                    system_replaced = True
+                else:
+                    updated_messages.append(msg)
+            if not system_replaced:
+                updated_messages.insert(0, {"role": "system", "content": system_prompt})
+
+            model_payload = {k: v for k, v in existing_model.items() if k != "messages"}
+            model_payload["messages"] = updated_messages
+
             url = f"{self.api_url}/assistant/{agent_id}"
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
             }
-            payload = {
-                "model": {
-                    "messages": [{"role": "system", "content": system_prompt}],
-                },
-            }
+            payload = {"model": model_payload}
             logger.info(f"[VapiProvider] Updating assistant prompt: PATCH {url}")
             response = requests.patch(url, headers=headers, json=payload, timeout=30)
 

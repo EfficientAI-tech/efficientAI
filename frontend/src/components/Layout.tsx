@@ -79,6 +79,14 @@ const navigationSections: NavSection[] = [
     ],
   },
   {
+    title: 'Prompts',
+    icon: ScrollText,
+    items: [
+      { name: 'Partials', href: '/prompt-partials', icon: FileText },
+      { name: 'Optimization', href: '/prompt-optimization', icon: Sparkles, enterpriseFeature: 'gepa_optimization' },
+    ],
+  },
+  {
     title: 'Observability',
     icon: BarChart3,
     items: [
@@ -109,8 +117,6 @@ const navigationSections: NavSection[] = [
 
 const otherNavigation: NavItem[] = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
-  { name: 'Prompt Partials', href: '/prompt-partials', icon: ScrollText },
-  { name: 'Prompt Optimization', href: '/prompt-optimization', icon: Sparkles, enterpriseFeature: 'gepa_optimization' },
 ]
 
 const bottomNavigation = [
@@ -369,7 +375,7 @@ function SidebarContent({
 }) {
   const { isFeatureEnabled } = useLicenseStore()
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
-    new Set(['Simulations', 'Playground', 'Evaluations', 'Observability', 'Alerting', 'Configurations'])
+    new Set(['Simulations', 'Playground', 'Evaluations', 'Prompts', 'Observability', 'Alerting', 'Configurations'])
   )
 
   const toggleSection = (title: string) => {

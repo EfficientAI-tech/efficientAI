@@ -2,7 +2,7 @@
 Base Voice Provider Interface
 All voice providers should inherit from this class
 """
-from abc import ABC, abstractmethod 
+from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
 
 
@@ -75,6 +75,17 @@ class BaseVoiceProvider(ABC):
             
         Returns:
             Dictionary containing call information (transcript, metrics, etc.)
+        """
+        pass
+
+    @abstractmethod
+    def extract_agent_prompt(self, agent_id: str) -> Optional[str]:
+        """
+        Fetch the current system prompt / instructions from the provider
+        for the given agent.
+
+        Returns:
+            The system prompt string, or None if it cannot be determined.
         """
         pass
 

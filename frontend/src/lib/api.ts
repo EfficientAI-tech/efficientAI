@@ -1549,6 +1549,14 @@ class ApiClient {
     )
     return response.data
   }
+
+  async syncProviderPrompt(agentId: string): Promise<{
+    provider_prompt: string | null
+    provider_prompt_synced_at: string | null
+  }> {
+    const response = await this.client.post(`/api/v1/agents/${agentId}/sync-provider-prompt`)
+    return response.data
+  }
 }
 
 // Factory function to create ApiClient instance

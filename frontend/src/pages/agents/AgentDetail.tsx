@@ -124,6 +124,21 @@ export default function AgentDetail() {
     },
   })
 
+  const syncPromptMutation = useMutation({
+    mutationFn: () => apiClient.syncProviderPrompt(id!),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['agent', id] })
+      queryClient.invalidateQueries({ queryKey: ['agents'] })
+      showToast('Provider prompt synced successfully!', 'success')
+    },
+    onError: (error: any) => {
+      showToast(
+        `Failed to sync provider prompt: ${error.response?.data?.detail || error.message}`,
+        'error'
+      )
+    },
+  })
+
   const savePromptPartialMutation = useMutation({
     mutationFn: (data: { name: string; description?: string; content: string; tags?: string[] }) =>
       apiClient.createPromptPartial(data),
@@ -279,6 +294,8 @@ export default function AgentDetail() {
             agent={agent}
             voiceBundles={voiceBundles}
             integrations={integrations}
+            onSyncProviderPrompt={() => syncPromptMutation.mutate()}
+            isSyncingPrompt={syncPromptMutation.isPending}
           />
         ) : (
           <AgentEditForm
