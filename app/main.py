@@ -12,6 +12,7 @@ from app.api.v1.api import api_router
 from app.database import init_db
 from app.core.migrations import run_migrations, ensure_migrations_directory, check_migrations_status
 from app.core.migration_middleware import MigrationCheckMiddleware
+from prometheus_fastapi_instrumentator import Instrumentator
 import logging
 
 logger = logging.getLogger(__name__)
@@ -104,6 +105,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Per-org logging middleware (active only when multi-tenant Loki is enabled)
+if settings.LOKI_ENABLED and settings.LOKI_MULTI_TENANT:
+    from app.core.observability_middleware import OrgLoggingMiddleware
+    app.add_middleware(OrgLoggingMiddleware)
+
+# Prometheus metrics instrumentation - exposes /metrics for scraping
+Instrumentator(
+    should_group_status_codes=True,
+    should_ignore_untemplated=True,
+    should_group_untemplated=True,
+    excluded_handlers=["/health", "/metrics"],
+).instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
+
 # Include API router (must be before frontend routes)
 app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 
@@ -126,6 +140,7 @@ if frontend_dist.exists() and frontend_dist.is_dir():
             or full_path.startswith("redoc")
             or full_path.startswith("assets/")
             or full_path == "health"
+            or full_path == "metrics"
         ):
             return {"detail": "Not found"}
         

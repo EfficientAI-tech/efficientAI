@@ -1,0 +1,508 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "panels": [
+    {
+      "type": "row",
+      "title": "PostgreSQL",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false
+    },
+    {
+      "type": "stat",
+      "title": "PG Active Connections",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "targets": [
+        {
+          "expr": "sum(pg_stat_activity_count{state=\"active\"})",
+          "legendFormat": "active"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 50 },
+              { "color": "red", "value": 90 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "gauge",
+      "title": "PG Cache Hit Ratio",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "targets": [
+        {
+          "expr": "sum(pg_stat_database_blks_hit{datname=\"efficientai\"}) / (sum(pg_stat_database_blks_hit{datname=\"efficientai\"}) + sum(pg_stat_database_blks_read{datname=\"efficientai\"})) * 100",
+          "legendFormat": "hit ratio"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 90 },
+              { "color": "green", "value": 99 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "PG Database Size",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "targets": [
+        {
+          "expr": "pg_database_size_bytes{datname=\"efficientai\"}",
+          "legendFormat": "size"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1073741824 },
+              { "color": "red", "value": 10737418240 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "PG Deadlocks",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "targets": [
+        {
+          "expr": "sum(increase(pg_stat_database_deadlocks{datname=\"efficientai\"}[5m]))",
+          "legendFormat": "deadlocks"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "PG Transactions / sec",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "targets": [
+        {
+          "expr": "rate(pg_stat_database_xact_commit{datname=\"efficientai\"}[1m])",
+          "legendFormat": "commits/s"
+        },
+        {
+          "expr": "rate(pg_stat_database_xact_rollback{datname=\"efficientai\"}[1m])",
+          "legendFormat": "rollbacks/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 15
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "PG Rows Read / Written",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "targets": [
+        {
+          "expr": "rate(pg_stat_database_tup_fetched{datname=\"efficientai\"}[1m])",
+          "legendFormat": "rows fetched/s"
+        },
+        {
+          "expr": "rate(pg_stat_database_tup_inserted{datname=\"efficientai\"}[1m])",
+          "legendFormat": "rows inserted/s"
+        },
+        {
+          "expr": "rate(pg_stat_database_tup_updated{datname=\"efficientai\"}[1m])",
+          "legendFormat": "rows updated/s"
+        },
+        {
+          "expr": "rate(pg_stat_database_tup_deleted{datname=\"efficientai\"}[1m])",
+          "legendFormat": "rows deleted/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "Redis",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 13 },
+      "collapsed": false
+    },
+    {
+      "type": "stat",
+      "title": "Redis Connected Clients",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "targets": [
+        {
+          "expr": "redis_connected_clients",
+          "legendFormat": "clients"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 100 },
+              { "color": "red", "value": 500 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "gauge",
+      "title": "Redis Memory Usage",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "targets": [
+        {
+          "expr": "redis_memory_used_bytes",
+          "legendFormat": "used"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 268435456 },
+              { "color": "red", "value": 536870912 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Redis Hit Rate",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "targets": [
+        {
+          "expr": "redis_keyspace_hits_total / (redis_keyspace_hits_total + redis_keyspace_misses_total) * 100",
+          "legendFormat": "hit rate"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 80 },
+              { "color": "green", "value": 95 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Redis Evicted Keys",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "targets": [
+        {
+          "expr": "increase(redis_evicted_keys_total[5m])",
+          "legendFormat": "evicted"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Redis Commands / sec",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "targets": [
+        {
+          "expr": "rate(redis_commands_processed_total[1m])",
+          "legendFormat": "commands/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 15
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Redis Memory Over Time",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "targets": [
+        {
+          "expr": "redis_memory_used_bytes",
+          "legendFormat": "used"
+        },
+        {
+          "expr": "redis_memory_used_peak_bytes",
+          "legendFormat": "peak"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "Celery Workers",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 26 },
+      "collapsed": false
+    },
+    {
+      "type": "stat",
+      "title": "Celery Active Workers",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 27 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "targets": [
+        {
+          "expr": "celery_workers",
+          "legendFormat": "workers"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Task Success Rate (5m)",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 27 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "targets": [
+        {
+          "expr": "sum(increase(celery_tasks_total{state=\"SUCCEEDED\"}[5m])) / sum(increase(celery_tasks_total[5m])) * 100",
+          "legendFormat": "success %"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 90 },
+              { "color": "green", "value": 99 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Failed Tasks (5m)",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 27 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "targets": [
+        {
+          "expr": "sum(increase(celery_tasks_total{state=\"FAILED\"}[5m]))",
+          "legendFormat": "failed"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Queue Depth",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 27 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "targets": [
+        {
+          "expr": "sum(celery_queue_length)",
+          "legendFormat": "queued"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 100 },
+              { "color": "red", "value": 500 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Celery Task Throughput by State",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 31 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "targets": [
+        {
+          "expr": "sum(rate(celery_tasks_total{state=\"SUCCEEDED\"}[1m])) ",
+          "legendFormat": "succeeded/s"
+        },
+        {
+          "expr": "sum(rate(celery_tasks_total{state=\"FAILED\"}[1m]))",
+          "legendFormat": "failed/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 15
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Celery Task Runtime (by task name)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 31 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(celery_tasks_runtime_seconds_bucket[5m])) by (le, name))",
+          "legendFormat": "{{name}} p95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      }
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["efficientai", "infrastructure"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "EfficientAI - Infrastructure",
+  "uid": "efficientai-infra",
+  "version": 1
+}

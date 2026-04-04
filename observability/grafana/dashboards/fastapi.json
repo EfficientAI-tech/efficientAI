@@ -1,0 +1,230 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Total Requests (last 5m)",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "targets": [
+        {
+          "expr": "sum(increase(http_requests_total[5m]))",
+          "legendFormat": "requests"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1000 },
+              { "color": "red", "value": 5000 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Error Rate (5xx)",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total{status=~\"5..\"}[5m])) / sum(rate(http_requests_total[5m])) * 100",
+          "legendFormat": "error %"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 5 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Avg Latency (p50)",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p50"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.5 },
+              { "color": "red", "value": 2 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "In-Flight Requests",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "targets": [
+        {
+          "expr": "sum(http_requests_in_progress)",
+          "legendFormat": "in-flight"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 50 },
+              { "color": "red", "value": 100 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Request Rate by Status Code",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total[1m])) by (status)",
+          "legendFormat": "{{status}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "pointSize": 5,
+            "showPoints": "auto"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Request Latency Percentiles",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.90, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p90"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "pointSize": 5,
+            "showPoints": "auto"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Request Rate by Endpoint (Top 10)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "targets": [
+        {
+          "expr": "topk(10, sum(rate(http_requests_total[5m])) by (handler))",
+          "legendFormat": "{{handler}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 1,
+            "fillOpacity": 50,
+            "pointSize": 5,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Response Size",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "targets": [
+        {
+          "expr": "sum(rate(http_response_size_bytes_sum[5m])) / sum(rate(http_response_size_bytes_count[5m]))",
+          "legendFormat": "avg response size"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "pointSize": 5,
+            "showPoints": "auto"
+          }
+        },
+        "overrides": []
+      }
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["efficientai", "fastapi"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "EfficientAI - FastAPI",
+  "uid": "efficientai-fastapi",
+  "version": 1
+}

@@ -77,6 +77,18 @@ class Settings(BaseSettings):
     HUGGINGFACE_TOKEN: Optional[str] = None  # For pyannote.audio speaker diarization
     DIARIZATION_NUM_SPEAKERS: Optional[int] = 2  # Force pyannote to detect this many speakers (None = auto-detect)
 
+    # Observability / Loki
+    LOKI_ENABLED: bool = True
+    LOKI_URL: str = "http://loki:3100"
+    LOKI_STORAGE: str = "filesystem"  # "filesystem" or "s3"
+    LOKI_MULTI_TENANT: bool = False
+    LOKI_PLATFORM_TENANT: str = "platform"
+    LOKI_S3_BUCKET_NAME: Optional[str] = None
+    LOKI_S3_REGION: str = "us-east-1"
+    LOKI_S3_ACCESS_KEY_ID: Optional[str] = None
+    LOKI_S3_SECRET_ACCESS_KEY: Optional[str] = None
+    LOKI_S3_PREFIX: str = "logs/"
+
     # Enterprise License (JWT signed with RS256)
     EFFICIENTAI_LICENSE: Optional[str] = None
 
@@ -315,6 +327,33 @@ def load_config_from_file(config_path: str) -> None:
         license_config = config_data["license"]
         if "key" in license_config:
             settings.EFFICIENTAI_LICENSE = license_config["key"]
+
+    if "observability" in config_data:
+        obs_config = config_data["observability"]
+        if "loki" in obs_config:
+            loki_config = obs_config["loki"]
+            if "enabled" in loki_config:
+                settings.LOKI_ENABLED = loki_config["enabled"]
+            if "url" in loki_config:
+                settings.LOKI_URL = loki_config["url"]
+            if "storage" in loki_config:
+                settings.LOKI_STORAGE = loki_config["storage"]
+            if "multi_tenant" in loki_config:
+                settings.LOKI_MULTI_TENANT = loki_config["multi_tenant"]
+            if "platform_tenant" in loki_config:
+                settings.LOKI_PLATFORM_TENANT = loki_config["platform_tenant"]
+            if "s3" in loki_config:
+                loki_s3 = loki_config["s3"]
+                if "bucket_name" in loki_s3:
+                    settings.LOKI_S3_BUCKET_NAME = loki_s3["bucket_name"]
+                if "region" in loki_s3:
+                    settings.LOKI_S3_REGION = loki_s3["region"]
+                if "access_key_id" in loki_s3:
+                    settings.LOKI_S3_ACCESS_KEY_ID = loki_s3["access_key_id"]
+                if "secret_access_key" in loki_s3:
+                    settings.LOKI_S3_SECRET_ACCESS_KEY = loki_s3["secret_access_key"]
+                if "prefix" in loki_s3:
+                    settings.LOKI_S3_PREFIX = loki_s3["prefix"]
 
     # Update Celery URLs if they weren't explicitly set
     if not settings.CELERY_BROKER_URL:

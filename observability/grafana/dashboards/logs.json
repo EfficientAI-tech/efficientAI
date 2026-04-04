@@ -1,0 +1,267 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Log Volume (last 5m)",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "loki", "uid": "" },
+      "targets": [
+        {
+          "expr": "sum(count_over_time({environment=\"docker\"}[5m]))",
+          "legendFormat": "total lines"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 10000 },
+              { "color": "red", "value": 50000 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Error Lines (last 5m)",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "loki", "uid": "" },
+      "targets": [
+        {
+          "expr": "sum(count_over_time({environment=\"docker\"} |~ \"(?i)(error|exception|traceback|critical)\"[5m]))",
+          "legendFormat": "errors"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 10 },
+              { "color": "red", "value": 50 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Warning Lines (last 5m)",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "loki", "uid": "" },
+      "targets": [
+        {
+          "expr": "sum(count_over_time({environment=\"docker\"} |~ \"(?i)(warn|warning)\"[5m]))",
+          "legendFormat": "warnings"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 50 },
+              { "color": "red", "value": 200 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "piechart",
+      "title": "Log Volume by Service",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "loki", "uid": "" },
+      "targets": [
+        {
+          "expr": "sum by (service) (count_over_time({environment=\"docker\"}[5m]))",
+          "legendFormat": "{{service}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short" },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Log Rate by Service",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 4 },
+      "datasource": { "type": "loki", "uid": "" },
+      "targets": [
+        {
+          "expr": "sum by (service) (rate({environment=\"docker\"}[1m]))",
+          "legendFormat": "{{service}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 1,
+            "fillOpacity": 50,
+            "stacking": { "mode": "normal" },
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Error Rate by Service",
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 12 },
+      "datasource": { "type": "loki", "uid": "" },
+      "targets": [
+        {
+          "expr": "sum by (service) (rate({environment=\"docker\"} |~ \"(?i)(error|exception|traceback|critical)\"[1m]))",
+          "legendFormat": "{{service}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "showPoints": "auto"
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "logs",
+      "title": "API Logs",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 18 },
+      "datasource": { "type": "loki", "uid": "" },
+      "targets": [
+        {
+          "expr": "{service=\"api\"}",
+          "legendFormat": ""
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": true,
+        "showCommonLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "sortOrder": "Descending",
+        "dedupStrategy": "none"
+      }
+    },
+    {
+      "type": "logs",
+      "title": "Worker Logs",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 28 },
+      "datasource": { "type": "loki", "uid": "" },
+      "targets": [
+        {
+          "expr": "{service=\"worker\"}",
+          "legendFormat": ""
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": true,
+        "showCommonLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "sortOrder": "Descending",
+        "dedupStrategy": "none"
+      }
+    },
+    {
+      "type": "logs",
+      "title": "PostgreSQL Logs",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 38 },
+      "datasource": { "type": "loki", "uid": "" },
+      "targets": [
+        {
+          "expr": "{service=\"postgres\"}",
+          "legendFormat": ""
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "wrapLogMessage": true,
+        "enableLogDetails": true,
+        "sortOrder": "Descending",
+        "dedupStrategy": "none"
+      }
+    },
+    {
+      "type": "logs",
+      "title": "Redis Logs",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 38 },
+      "datasource": { "type": "loki", "uid": "" },
+      "targets": [
+        {
+          "expr": "{service=\"redis\"}",
+          "legendFormat": ""
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "wrapLogMessage": true,
+        "enableLogDetails": true,
+        "sortOrder": "Descending",
+        "dedupStrategy": "none"
+      }
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["efficientai", "logs"],
+  "templating": {
+    "list": [
+      {
+        "name": "tenant",
+        "type": "textbox",
+        "label": "Org / Tenant ID",
+        "description": "Leave empty for platform logs. Enter an organization UUID for per-org logs (requires multi-tenant Loki).",
+        "current": { "value": "", "text": "" },
+        "options": [],
+        "query": "",
+        "hide": 0
+      },
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "label": "Loki Datasource",
+        "description": "Use 'Loki' for single-tenant or 'Loki (Multi-Tenant)' for per-org queries.",
+        "query": "loki",
+        "current": {},
+        "hide": 0
+      }
+    ]
+  },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "EfficientAI - Logs",
+  "uid": "efficientai-logs",
+  "version": 1
+}
