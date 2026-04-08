@@ -157,6 +157,21 @@ def _check_availability():
     _ensure_ffmpeg_available()
 
 
+def _patch_none_vocab_size(config_value: Any) -> Any:
+    """Recursively patch vocab_size=None entries in config data."""
+    if isinstance(config_value, dict):
+        patched = {}
+        for key, value in config_value.items():
+            if key == "vocab_size" and value is None:
+                patched[key] = 32
+            else:
+                patched[key] = _patch_none_vocab_size(value)
+        return patched
+    if isinstance(config_value, list):
+        return [_patch_none_vocab_size(item) for item in config_value]
+    return config_value
+
+
 def _get_torch():
     """Lazy load torch."""
     global _torch
@@ -410,17 +425,29 @@ class QualitativeVoiceMetricsService:
         _check_availability()
         if self._valence_arousal_model is None and _TRANSFORMERS_AVAILABLE:
             try:
-                from transformers import AutoProcessor, AutoModelForAudioClassification
+                from transformers import AutoModelForAudioClassification
+                from transformers.models.wav2vec2 import Wav2Vec2Config, Wav2Vec2FeatureExtractor
                 logger.info("[QualitativeVoice] Loading valence/arousal model...")
                 model_name = "audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim"
-                self._valence_arousal_processor = AutoProcessor.from_pretrained(model_name)
-                self._valence_arousal_model = AutoModelForAudioClassification.from_pretrained(model_name)
+
+                # The upstream config ships vocab_size=null which fails
+                # strict validation added in newer transformers releases.
+                # Fetch the raw config dict (plain JSON, no validation),
+                # patch vocab_size, then construct the config object.
+                config_dict, _ = Wav2Vec2Config.get_config_dict(model_name)
+                config = Wav2Vec2Config.from_dict(_patch_none_vocab_size(config_dict))
+
+                self._valence_arousal_model = AutoModelForAudioClassification.from_pretrained(
+                    model_name, config=config
+                )
+                self._valence_arousal_processor = Wav2Vec2FeatureExtractor.from_pretrained(model_name)
+
                 if self._get_device() == "cuda":
                     self._valence_arousal_model = self._valence_arousal_model.cuda()
                 self._valence_arousal_model.eval()
                 logger.info("[QualitativeVoice] Valence/arousal model loaded successfully")
             except Exception as e:
-                logger.error(f"[QualitativeVoice] Failed to load valence/arousal model: {e}")
+                logger.error(f"[QualitativeVoice] Failed to load valence/arousal model: {type(e).__name__}: {e}")
         return self._valence_arousal_model
 
     def calculate_emotion_category(self, audio_path: str) -> Tuple[Optional[str], Optional[float]]:
