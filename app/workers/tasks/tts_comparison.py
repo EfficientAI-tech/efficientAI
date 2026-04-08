@@ -4,13 +4,32 @@ import os
 import re
 import string
 import tempfile
+from typing import Any, Dict
 from uuid import UUID
 
+import numpy as np
 from loguru import logger
 
 from app.database import SessionLocal
 
 from app.workers.config import celery_app
+
+
+def _sanitize_metrics(metrics: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert numpy scalars to native Python types so the dict is JSON-serializable."""
+    out: Dict[str, Any] = {}
+    for key, value in metrics.items():
+        if isinstance(value, (np.floating, np.float32, np.float64)):
+            out[key] = float(value)
+        elif isinstance(value, (np.integer, np.int32, np.int64)):
+            out[key] = int(value)
+        elif isinstance(value, np.ndarray):
+            out[key] = value.tolist()
+        elif isinstance(value, np.bool_):
+            out[key] = bool(value)
+        else:
+            out[key] = value
+    return out
 
 
 def _compute_wer_cer(ground_truth: str, predicted: str):
@@ -260,7 +279,7 @@ def generate_tts_comparison_task(self, comparison_id: str):
                 )
 
             except Exception as e:
-                logger.error(f"[TTS Generate] Sample {sample.id} failed: {e}")
+                logger.error("[TTS Generate] Sample {} failed: {}", sample.id, e)
                 sample.status = TTSSampleStatus.FAILED.value
                 sample.error_message = str(e)[:500]
                 db.commit()
@@ -280,7 +299,7 @@ def generate_tts_comparison_task(self, comparison_id: str):
         return {"generated": total - failed_count, "failed": failed_count}
 
     except Exception as exc:
-        logger.error(f"[TTS Generate] Task failed: {exc}", exc_info=True)
+        logger.error("[TTS Generate] Task failed: {}", exc, exc_info=True)
         try:
             comp = db.query(TTSComparison).filter(TTSComparison.id == UUID(comparison_id)).first()
             if comp:
@@ -397,14 +416,14 @@ def evaluate_tts_comparison_task(self, comparison_id: str):
                         metrics["CER Normalized"] = None
                         metrics["ASR Transcript"] = None
 
-                sample.evaluation_metrics = metrics
+                sample.evaluation_metrics = _sanitize_metrics(metrics)
                 db.commit()
                 evaluated += 1
 
                 logger.info(f"[TTS Eval] Sample {sample.id} metrics: {metrics}")
 
             except Exception as e:
-                logger.warning(f"[TTS Eval] Sample {sample.id} eval failed: {e}")
+                logger.warning("[TTS Eval] Sample {} eval failed: {}", sample.id, e)
             finally:
                 if tmp_path and os.path.exists(tmp_path):
                     try:
@@ -425,7 +444,7 @@ def evaluate_tts_comparison_task(self, comparison_id: str):
         return {"evaluated": evaluated}
 
     except Exception as exc:
-        logger.error(f"[TTS Eval] Task failed: {exc}", exc_info=True)
+        logger.error("[TTS Eval] Task failed: {}", exc, exc_info=True)
         try:
             comp = db.query(TTSComparison).filter(TTSComparison.id == UUID(comparison_id)).first()
             if comp:
