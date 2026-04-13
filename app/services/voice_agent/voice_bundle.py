@@ -115,6 +115,9 @@ def _get_service(service_name: str):
     elif service_name == "SarvamSTTService":
         from efficientai.services.sarvam.stt import SarvamSTTService
         service_class = SarvamSTTService
+    elif service_name == "SmallestSTTService":
+        from efficientai.services.smallest.stt import SmallestSTTService
+        service_class = SmallestSTTService
     
     # TTS Services
     elif service_name == "CartesiaTTSService":
@@ -135,6 +138,9 @@ def _get_service(service_name: str):
     elif service_name == "VoiceMakerTTSService":
         from efficientai.services.voicemaker.tts import VoiceMakerTTSService
         service_class = VoiceMakerTTSService
+    elif service_name == "SmallestTTSService":
+        from efficientai.services.smallest.tts import SmallestTTSService
+        service_class = SmallestTTSService
     
     # LLM Services
     elif service_name == "OpenAILLMService":
@@ -214,6 +220,14 @@ def _get_stt_providers():
                 model=model if model else "saarika:v2.5",
             ),
         },
+        "smallest": {
+            "env_key": "SMALLEST_API_KEY",
+            "default_model": "pulse-v4",
+            "factory": lambda api_key, model: _get_service("SmallestSTTService")(
+                api_key=api_key,
+                model=model if model else "pulse-v4",
+            ),
+        },
     }
 
 
@@ -281,6 +295,17 @@ def _get_tts_providers():
                 api_key=api_key,
                 voice_id=voice_id,
                 model=model if model else "neural",
+            ),
+        },
+        "smallest": {
+            "env_key": "SMALLEST_API_KEY",
+            "default_voice": "daniel",
+            "default_model": "lightning-v3.1",
+            "factory": lambda api_key, voice_id, model: _get_service("SmallestTTSService")(
+                api_key=api_key,
+                voice_id=voice_id if voice_id else "daniel",
+                model=model if model else "lightning-v3.1",
+                sample_rate=24000,
             ),
         },
     }

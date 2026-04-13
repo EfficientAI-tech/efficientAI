@@ -17,6 +17,8 @@ RUN pip install --no-cache-dir uv
 # Set working directory
 WORKDIR /app
 
+ARG INSTALL_EXTRAS=""
+
 # ============================================================
 # LAYER 1: Python dependencies (cached unless pyproject.toml changes)
 # ============================================================
@@ -25,10 +27,14 @@ COPY pyproject.toml README.md ./
 # Create minimal src structure for editable install
 RUN mkdir -p src/efficientai && touch src/efficientai/__init__.py
 
-# Install Python dependencies
+# Install Python dependencies (optionally with extras)
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=cache,target=/root/.cache/pip \
-    uv pip install --system -e .
+    if [ -n "$INSTALL_EXTRAS" ]; then \
+        uv pip install --system -e ".[${INSTALL_EXTRAS}]"; \
+    else \
+        uv pip install --system -e .; \
+    fi
 
 # Security: fail build if compromised litellm .pth file is present (CVE: supply chain attack on litellm 1.82.8)
 RUN if find /usr/local/lib/ -name "litellm_init.pth" 2>/dev/null | grep -q .; then \
@@ -62,8 +68,12 @@ COPY src/ ./src/
 COPY app/ ./app/
 COPY scripts/ ./scripts/
 
-# Re-run editable install to link the actual code
-RUN uv pip install --system -e .
+# Re-run editable install to link the actual code (preserve extras)
+RUN if [ -n "$INSTALL_EXTRAS" ]; then \
+        uv pip install --system -e ".[${INSTALL_EXTRAS}]"; \
+    else \
+        uv pip install --system -e .; \
+    fi
 
 # Create uploads directory
 RUN mkdir -p /app/uploads

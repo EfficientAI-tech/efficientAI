@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from app.services.voice_providers import get_voice_provider
 from app.services.voice_providers.retell import RetellVoiceProvider
+from app.services.voice_providers.smallest import SmallestVoiceProvider
 from app.services.voice_providers.vapi import VapiVoiceProvider
 
 prompt_sync_module = importlib.import_module("app.services.voice_providers.prompt_sync")
@@ -13,6 +14,7 @@ prompt_sync_module = importlib.import_module("app.services.voice_providers.promp
 def test_get_voice_provider_returns_expected_classes():
     assert get_voice_provider("retell") is RetellVoiceProvider
     assert get_voice_provider("VAPI") is VapiVoiceProvider
+    assert get_voice_provider("SMALLEST") is SmallestVoiceProvider
 
 
 def test_sync_provider_prompt_updates_agent_and_commits(monkeypatch):

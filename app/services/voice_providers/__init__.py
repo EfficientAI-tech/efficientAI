@@ -7,6 +7,7 @@ from app.services.voice_providers.retell import RetellVoiceProvider
 from app.services.voice_providers.vapi import VapiVoiceProvider
 from app.services.voice_providers.elevenlabs import ElevenLabsVoiceProvider
 from app.services.voice_providers.voicemaker import VoiceMakerProvider
+from app.services.voice_providers.smallest import SmallestVoiceProvider
 
 __all__ = [
     "BaseVoiceProvider",
@@ -14,6 +15,7 @@ __all__ = [
     "VapiVoiceProvider",
     "ElevenLabsVoiceProvider",
     "VoiceMakerProvider",
+    "SmallestVoiceProvider",
 ]
 
 # Registry of voice providers by platform
@@ -22,6 +24,7 @@ VOICE_PROVIDERS = {
     "vapi": VapiVoiceProvider,
     "elevenlabs": ElevenLabsVoiceProvider,
     "voicemaker": VoiceMakerProvider,
+    "smallest": SmallestVoiceProvider,
 }
 
 def get_voice_provider(platform: str) -> type[BaseVoiceProvider]:

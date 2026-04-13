@@ -60,6 +60,26 @@ def test_transcribe_text_only_unsupported_provider_returns_none(monkeypatch):
     assert result is None
 
 
+def test_transcribe_text_only_smallest_success(monkeypatch):
+    service = TranscriptionService()
+    monkeypatch.setattr(service, "_get_api_key_for_provider", lambda *_args, **_kwargs: "key-1")
+    monkeypatch.setattr(
+        stt_clients_module,
+        "transcribe_smallest",
+        lambda *_args, **_kwargs: {"text": "  smallest transcript  "},
+    )
+
+    result = service.transcribe_text_only(
+        audio_file_path="/tmp/a.wav",
+        stt_provider=ModelProvider.SMALLEST,
+        stt_model="pulse-v4",
+        organization_id=uuid4(),
+        db=object(),
+    )
+
+    assert result == "smallest transcript"
+
+
 def test_transcribe_returns_standard_shape_without_diarization(monkeypatch, tmp_path):
     service = TranscriptionService()
     temp_audio = tmp_path / "sample.wav"

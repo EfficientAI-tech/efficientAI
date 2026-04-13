@@ -34,8 +34,8 @@ def extract_transcript_from_call_data(call_data: Dict[str, Any], provider_platfo
     Extract transcript and speaker segments from provider call_data.
     
     Args:
-        call_data: Full call data from voice provider (Vapi/Retell)
-        provider_platform: The provider platform ("vapi" or "retell")
+        call_data: Full call data from voice provider
+        provider_platform: The provider platform ("vapi", "retell", "elevenlabs", "smallest")
         
     Returns:
         Tuple of (transcript_text, speaker_segments)
@@ -135,6 +135,53 @@ def extract_transcript_from_call_data(call_data: Dict[str, Any], provider_platfo
             transcript_text = "\n".join(
                 f"{seg['speaker']}: {seg['text']}" for seg in speaker_segments
             )
+
+    elif provider_platform_lower == "smallest":
+        transcript_raw = call_data.get("transcript")
+        transcript_object = call_data.get("transcript_object", [])
+        if isinstance(transcript_object, list) and transcript_object:
+            for entry in transcript_object:
+                if not isinstance(entry, dict):
+                    continue
+                text = entry.get("text", "")
+                if not text:
+                    continue
+                speaker = entry.get("speaker", "Unknown")
+                speaker_segments.append(
+                    {
+                        "speaker": speaker,
+                        "text": text,
+                        "start": entry.get("start", 0),
+                        "end": entry.get("end", entry.get("start", 0)),
+                    }
+                )
+            if not transcript_text:
+                transcript_text = "\n".join(
+                    f"{seg['speaker']}: {seg['text']}" for seg in speaker_segments
+                )
+        elif isinstance(transcript_raw, list):
+            for entry in transcript_raw:
+                if not isinstance(entry, dict):
+                    continue
+                role = str(entry.get("speaker") or entry.get("role") or "").lower()
+                speaker = "Agent" if role in ("agent", "assistant", "ai", "bot") else "User"
+                text = entry.get("text", "") or entry.get("message", "") or entry.get("content", "")
+                if not text:
+                    continue
+                ts = entry.get("timeInCallSecs", 0) or entry.get("start", 0) or entry.get("timestamp", 0)
+                speaker_segments.append(
+                    {
+                        "speaker": speaker,
+                        "text": text,
+                        "start": ts,
+                        "end": entry.get("end", ts),
+                    }
+                )
+            transcript_text = "\n".join(
+                f"{seg['speaker']}: {seg['text']}" for seg in speaker_segments
+            )
+        elif isinstance(transcript_raw, str):
+            transcript_text = transcript_raw
 
     elif provider_platform_lower == "retell":
         # Retell: transcript can be a string or list of objects
@@ -940,6 +987,13 @@ async def re_evaluate_call_recording(
                     or payload_urls.get("combined_url")
                     or payload_urls.get("stereo_url")
                 )
+            elif platform == "smallest":
+                url = (
+                    payload.get("recording_url")
+                    or payload.get("recordingUrl")
+                    or payload_urls.get("combined_url")
+                    or payload_urls.get("conversation_audio")
+                )
             if not url:
                 return None, None
             response = http_requests.get(url, headers=headers, timeout=120)
@@ -1090,8 +1144,8 @@ async def stream_call_audio(
     recording_urls = call_data.get("recording_urls", {})
     platform = (call_recording.provider_platform or "").lower()
 
-    # For Retell / Vapi the URL is public – redirect directly
-    if platform in ("retell", "vapi"):
+    # For Retell / Vapi / Smallest the URL is public – redirect directly
+    if platform in ("retell", "vapi", "smallest"):
         artifact = call_data.get("artifact", {})
         recording = artifact.get("recording", {}) if isinstance(artifact, dict) else {}
         mono_recording = recording.get("mono", {}) if isinstance(recording, dict) else {}
@@ -1104,6 +1158,7 @@ async def stream_call_audio(
             or recording_urls.get("combined_url")
             or recording_urls.get("stereo_url")
             or call_data.get("recording_url")
+            or recording_urls.get("conversation_audio")
         )
         if not url:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No recording URL available")

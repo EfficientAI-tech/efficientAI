@@ -115,6 +115,42 @@ def _derive_speaker_segments_from_call_data(
                 t = entry.get("time_in_call_secs", 0)
                 _append_segment(speaker, entry.get("message", "") or entry.get("text", ""), t, t)
 
+    elif platform == "smallest":
+        transcript_object = call_data.get("transcript_object", [])
+        if isinstance(transcript_object, list) and transcript_object:
+            for entry in transcript_object:
+                speaker_raw = str(entry.get("speaker", "")).lower()
+                speaker = "Speaker 2" if speaker_raw in ("agent", "assistant", "ai", "bot") else "Speaker 1"
+                _append_segment(
+                    speaker,
+                    entry.get("text", "") or entry.get("message", ""),
+                    entry.get("start", 0),
+                    entry.get("end", entry.get("start", 0)),
+                )
+        elif isinstance(call_data.get("transcript"), list):
+            for entry in call_data.get("transcript", []):
+                role = str(entry.get("speaker") or entry.get("role") or "").lower()
+                speaker = "Speaker 2" if role in ("agent", "assistant", "ai", "bot") else "Speaker 1"
+                t = (
+                    entry.get("timeInCallSecs", 0)
+                    or entry.get("start", 0)
+                    or entry.get("timestamp", 0)
+                )
+                _append_segment(
+                    speaker,
+                    entry.get("text", "") or entry.get("message", "") or entry.get("content", ""),
+                    t,
+                    entry.get("end", t),
+                )
+        elif isinstance(call_data.get("transcript"), str):
+            for line in call_data.get("transcript", "").split("\n"):
+                line = line.strip()
+                if not line or ":" not in line:
+                    continue
+                speaker_label, text = line.split(":", 1)
+                speaker = "Speaker 2" if speaker_label.strip().lower() in ("agent", "assistant", "ai", "bot") else "Speaker 1"
+                _append_segment(speaker, text, 0, 0)
+
     return segments or None
 
 
@@ -634,6 +670,17 @@ def re_evaluate_result(
                     or call_data.get("recordingUrl")
                     or provider_payload.get("recordingUrl")
                     or provider_payload.get("stereoRecordingUrl")
+                )
+                if audio_url:
+                    resp = _http.get(audio_url, timeout=120)
+                    if resp.status_code == 200:
+                        audio_bytes = resp.content
+            elif platform == "smallest":
+                audio_url = (
+                    call_data.get("recording_url")
+                    or call_data.get("recordingUrl")
+                    or recording_urls.get("combined_url")
+                    or recording_urls.get("conversation_audio")
                 )
                 if audio_url:
                     resp = _http.get(audio_url, timeout=120)
