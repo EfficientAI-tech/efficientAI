@@ -74,7 +74,7 @@ export const MODEL_PROVIDER_CONFIG: Record<ModelProvider, ProviderMetadata> = {
   },
   [ModelProvider.SMALLEST]: {
     label: 'Smallest.ai',
-    logo: null,
+    logo: '/smallest.jpeg',
     description: 'Smallest Pulse STT, Lightning TTS, and Atoms agents',
   },
 }
@@ -138,7 +138,7 @@ export const INTEGRATION_PLATFORM_CONFIG: Record<IntegrationPlatform, Integratio
   },
   [IntegrationPlatform.SMALLEST]: {
     label: 'Smallest.ai',
-    logo: null,
+    logo: '/smallest.jpeg',
     description: 'Smallest Atoms agents with Pulse STT and Lightning TTS',
     modelProvider: ModelProvider.SMALLEST,
   },

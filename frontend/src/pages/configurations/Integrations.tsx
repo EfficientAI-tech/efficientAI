@@ -337,7 +337,7 @@ export default function Integrations() {
       id: IntegrationPlatform.SMALLEST,
       name: 'Smallest.ai',
       description: 'Connect your Smallest Atoms, Pulse STT, and Lightning TTS',
-      image: '',
+      image: '/smallest.jpeg',
     },
   ]
 

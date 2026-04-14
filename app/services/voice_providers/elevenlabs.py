@@ -180,6 +180,7 @@ class ElevenLabsVoiceProvider(BaseVoiceProvider):
                 "data_collection": el_analysis.get("data_collection_results"),
                 "latency_stats": {},
                 "interruption_count": 0,
+                "cost": metadata.get("cost"),
             }
 
             # --- Audio URLs --------------------------------------------------
@@ -188,6 +189,7 @@ class ElevenLabsVoiceProvider(BaseVoiceProvider):
                 recording_urls["conversation_audio"] = (
                     f"{self.api_url}/convai/conversations/{call_id}/audio"
                 )
+            recording_url = recording_urls.get("conversation_audio")
 
             return {
                 "call_id": data.get("conversation_id") or call_id,
@@ -199,6 +201,8 @@ class ElevenLabsVoiceProvider(BaseVoiceProvider):
                 "transcript_object": speaker_segments,
                 "analysis": analysis,
                 "cost": metadata.get("cost"),
+                "ended_reason": metadata.get("termination_reason"),
+                "recording_url": recording_url,
                 "recording_urls": recording_urls,
                 "agent_id": data.get("agent_id"),
                 "raw_data": data,

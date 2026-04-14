@@ -51,15 +51,32 @@ class SmallestVoiceProvider(BaseVoiceProvider):
         timeout: float = 30.0,
     ) -> Dict[str, Any]:
         url = f"{self.api_url}{path}"
+        request_kwargs = {
+            "method": method,
+            "url": url,
+            "headers": self._headers(),
+            "params": params,
+            "json": json,
+            "timeout": timeout,
+        }
         try:
-            response = requests.request(
-                method=method,
-                url=url,
-                headers=self._headers(),
-                params=params,
-                json=json,
-                timeout=timeout,
+            response = requests.request(**request_kwargs)
+        except requests.exceptions.ProxyError as proxy_exc:
+            # Some local dev setups export HTTPS_PROXY that blocks Smallest.
+            # Retry once with env proxies disabled before surfacing an error.
+            logger.warning(
+                "Smallest request hit proxy error; retrying direct connection: {}",
+                proxy_exc,
             )
+            try:
+                with requests.Session() as session:
+                    session.trust_env = False
+                    response = session.request(**request_kwargs)
+            except requests.exceptions.RequestException as exc:
+                raise ValueError(
+                    "Smallest API request failed after direct retry: "
+                    f"{exc}. If needed, set NO_PROXY=api.smallest.ai"
+                ) from exc
         except requests.exceptions.RequestException as exc:
             raise ValueError(f"Smallest API request failed: {exc}") from exc
 
@@ -146,10 +163,37 @@ class SmallestVoiceProvider(BaseVoiceProvider):
     ) -> Dict[str, Any]:
         phone_number = kwargs.get("phone_number") or kwargs.get("to_number") or kwargs.get("to")
         if not phone_number:
-            raise ValueError(
-                "Smallest Atoms currently supports outbound call creation only. "
-                "Provide 'phone_number' to initiate a call."
-            )
+            payload: Dict[str, Any] = {
+                "agentId": agent_id,
+            }
+            if metadata:
+                payload["metadata"] = metadata
+            if kwargs.get("variables"):
+                payload["variables"] = kwargs["variables"]
+
+            data = self._request("POST", "/conversation/webcall", json=payload, timeout=45.0)
+
+            call_id = data.get("callId") or data.get("conversationId") or data.get("id")
+            access_token = data.get("token") or data.get("accessToken")
+            host = data.get("host")
+            room_name = data.get("roomName")
+            conversation_id = data.get("conversationId")
+
+            if not call_id:
+                raise ValueError("Smallest webcall response missing call ID")
+            if not access_token or not host:
+                raise ValueError("Smallest webcall response missing token or host")
+
+            return {
+                "call_id": call_id,
+                "call_type": "webcall",
+                "agent_id": agent_id,
+                "access_token": access_token,
+                "host": host,
+                "room_name": room_name,
+                "conversation_id": conversation_id,
+                "raw_response": data,
+            }
 
         payload: Dict[str, Any] = {
             "agentId": agent_id,

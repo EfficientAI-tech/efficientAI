@@ -13,6 +13,8 @@ import ConfirmModal from '../../components/ConfirmModal'
 import { apiClient } from '../../lib/api'
 import RetellCallDetails from '../../components/call-recordings/RetellCallDetails'
 import VapiCallDetails from '../../components/call-recordings/VapiCallDetails'
+import { getIntegrationPlatformLabel, getIntegrationPlatformLogo } from '../../config/providers'
+import { IntegrationPlatform } from '../../types/api'
 
 export default function ObservabilityCallDetail() {
   const navigate = useNavigate()
@@ -645,20 +647,14 @@ function EndReasonBadge({ reason }: { reason: string }) {
 
 function PlatformBadge({ platform }: { platform?: string }) {
   if (!platform) return <span className="text-gray-400">N/A</span>
-  const normalized = platform.toLowerCase()
-
-  const logos: Record<string, string> = {
-    retell: '/retellai.png',
-    vapi: '/vapi.png',
-  }
-
-  const label = normalized.charAt(0).toUpperCase() + normalized.slice(1)
-  const logo = logos[normalized]
+  const normalized = platform.toLowerCase() as IntegrationPlatform
+  const label = getIntegrationPlatformLabel(normalized)
+  const logo = getIntegrationPlatformLogo(normalized)
 
   return (
     <span className="inline-flex items-center gap-2 text-sm text-gray-700">
       {logo && <img src={logo} alt={label} className="h-5 w-5 object-contain" />}
-      <span className="capitalize">{label}</span>
+      <span>{label}</span>
     </span>
   )
 }
