@@ -5,10 +5,10 @@ import {
   WalkthroughSectionId,
   WalkthroughSectionStateMap,
   getWalkthroughDefinition,
+  getWalkthroughEnterpriseFeature,
   getWalkthroughSectionId,
 } from '../components/walkthrough/walkthroughRegistry'
-
-const WALKTHROUGH_COLLAPSED_KEY = 'efficientai.walkthrough.collapsed'
+import { useLicenseStore } from '../store/licenseStore'
 
 interface WalkthroughContextValue {
   isCollapsed: boolean
@@ -28,26 +28,20 @@ const WalkthroughContext = createContext<WalkthroughContextValue | null>(null)
 
 export function WalkthroughProvider({ children }: { children: React.ReactNode }) {
   const location = useLocation()
+  const { enabledFeatures, isLoaded } = useLicenseStore((state) => ({
+    enabledFeatures: state.enabledFeatures,
+    isLoaded: state.isLoaded,
+  }))
   const [isCollapsed, setIsCollapsed] = useState(false)
   const [sectionState, setSectionStateMap] = useState<WalkthroughSectionStateMap>({})
 
-  useEffect(() => {
-    const stored = localStorage.getItem(WALKTHROUGH_COLLAPSED_KEY)
-    if (stored === 'true') {
-      setIsCollapsed(true)
-    }
-  }, [])
-
   const setCollapsed = useCallback((collapsed: boolean) => {
     setIsCollapsed(collapsed)
-    localStorage.setItem(WALKTHROUGH_COLLAPSED_KEY, String(collapsed))
   }, [])
 
   const toggleCollapsed = useCallback(() => {
     setIsCollapsed((prev) => {
-      const next = !prev
-      localStorage.setItem(WALKTHROUGH_COLLAPSED_KEY, String(next))
-      return next
+      return !prev
     })
   }, [])
 
@@ -83,8 +77,14 @@ export function WalkthroughProvider({ children }: { children: React.ReactNode })
     if (!activeSectionId) {
       return null
     }
+
+    const requiredEnterpriseFeature = getWalkthroughEnterpriseFeature(activeSectionId)
+    if (requiredEnterpriseFeature && (!isLoaded || !enabledFeatures.includes(requiredEnterpriseFeature))) {
+      return null
+    }
+
     return getWalkthroughDefinition(activeSectionId, sectionState)
-  }, [activeSectionId, sectionState])
+  }, [activeSectionId, sectionState, isLoaded, enabledFeatures])
 
   const value = useMemo<WalkthroughContextValue>(
     () => ({

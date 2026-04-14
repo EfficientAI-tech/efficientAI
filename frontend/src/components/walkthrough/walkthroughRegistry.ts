@@ -56,6 +56,11 @@ export type WalkthroughSectionStateMap = Partial<{
   'prompt-optimization': PromptOptimizationWalkthroughState
 }>
 
+const walkthroughEnterpriseFeatures: Partial<Record<WalkthroughSectionId, string>> = {
+  'voice-playground': 'voice_playground',
+  'prompt-optimization': 'gepa_optimization',
+}
+
 const simpleWalkthroughs: Record<
   Exclude<WalkthroughSectionId, 'scenarios' | 'evaluators' | 'voice-playground' | 'prompt-optimization'>,
   WalkthroughDefinition
@@ -572,4 +577,8 @@ export function getWalkthroughDefinition(
     default:
       return simpleWalkthroughs[sectionId]
   }
+}
+
+export function getWalkthroughEnterpriseFeature(sectionId: WalkthroughSectionId): string | null {
+  return walkthroughEnterpriseFeatures[sectionId] ?? null
 }

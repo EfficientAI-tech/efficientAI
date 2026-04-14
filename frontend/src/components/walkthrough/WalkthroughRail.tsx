@@ -1,6 +1,19 @@
+import type { ComponentType } from 'react'
 import { Link } from 'react-router-dom'
-import { MapPinned } from 'lucide-react'
+import { Bot, FileText, Mic, Plug, Sparkles, Users, Volume2 } from 'lucide-react'
 import { useWalkthrough } from '../../context/WalkthroughContext'
+import type { WalkthroughSectionId } from './walkthroughRegistry'
+
+const sectionIcons: Record<WalkthroughSectionId, ComponentType<{ className?: string }>> = {
+  integrations: Plug,
+  voicebundles: Mic,
+  agents: Bot,
+  personas: Users,
+  scenarios: FileText,
+  evaluators: Mic,
+  'voice-playground': Volume2,
+  'prompt-optimization': Sparkles,
+}
 
 export default function WalkthroughRail() {
   const { activeDefinition, isCollapsed, toggleCollapsed } = useWalkthrough()
@@ -9,9 +22,11 @@ export default function WalkthroughRail() {
     return null
   }
 
+  const SectionIcon = sectionIcons[activeDefinition.id]
+
   return (
     <aside
-      className={`hidden lg:flex shrink-0 transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none ${
+      className={`hidden lg:flex shrink-0 relative z-[10050] transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none ${
         isCollapsed ? 'w-14' : 'w-[340px]'
       }`}
       aria-label="Section walkthrough"
@@ -21,17 +36,19 @@ export default function WalkthroughRail() {
           <button
             type="button"
             onClick={toggleCollapsed}
-            className="group inline-flex h-10 w-10 items-center justify-center rounded-xl border border-gray-200/90 bg-white text-primary-700 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-primary-300 hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-300"
+            className="group inline-flex h-10 w-10 items-center justify-center rounded-xl border border-amber-500 bg-amber-500 text-white shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:bg-amber-600 hover:border-amber-600 hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-300"
             aria-label="Expand walkthrough"
           >
-            <MapPinned className="h-4 w-4 transition-transform duration-200 group-hover:scale-105" />
+            <SectionIcon className="h-4 w-4 transition-transform duration-200 group-hover:scale-105" />
           </button>
         </div>
       ) : (
-        <div className="h-full w-full rounded-xl border border-gray-200/90 bg-white/95 shadow-sm backdrop-blur-sm flex flex-col min-h-0 overflow-hidden">
+        <div className="h-full w-full rounded-xl border border-gray-200/90 bg-white/95 shadow-sm flex flex-col min-h-0 overflow-hidden">
           <div className="flex items-center justify-between gap-2 border-b border-gray-200 p-3">
             <div className="flex items-center gap-2 min-w-0">
-              <MapPinned className="h-4 w-4 text-primary-600 shrink-0" />
+              <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-amber-500 text-white shrink-0 shadow-sm">
+                <SectionIcon className="h-3.5 w-3.5" />
+              </span>
               <h2 className="text-sm font-semibold text-gray-900 truncate">
                 {activeDefinition.title}
               </h2>
@@ -39,10 +56,10 @@ export default function WalkthroughRail() {
             <button
               type="button"
               onClick={toggleCollapsed}
-              className="rounded-md border border-gray-200 bg-white p-1 text-gray-500 transition-colors hover:text-primary-700 hover:bg-gray-50"
+              className="rounded-md border border-amber-500 bg-amber-500 p-1 text-white transition-colors hover:bg-amber-600 hover:border-amber-600"
               aria-label="Collapse walkthrough"
             >
-              <MapPinned className="h-4 w-4" />
+              <SectionIcon className="h-4 w-4" />
             </button>
           </div>
           <div className="flex-1 overflow-y-auto p-3">
