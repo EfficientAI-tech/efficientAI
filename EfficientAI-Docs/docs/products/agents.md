@@ -6,44 +6,76 @@ sidebar_position: 1
 
 # Agents
 
-## What is an Agent?
+An Agent is the voice system you are evaluating in EfficientAI.
 
-In EfficientAI, the **Agent** is simply **Your Voice AI**. It's the robot or system you are building and want to test.
+## Agent paths in practice
 
-Think of it as the "Employee" you are training. You want to see how good this employee is at talking to customers.
+An agent can be configured for one or both execution paths:
 
-## Setting up an Agent
+- **Test Agent path (internal)**: uses an EfficientAI voice bundle to run STT -> LLM -> TTS behavior.
+- **Voice AI Agent path (external)**: links to an external voice provider agent, such as Retell, Vapi, or ElevenLabs etc.
 
-To test your AI, you need to tell EfficientAI where to find it. You can do this in the "Agents" section of the dashboard.
+If both are configured, you can test both paths from the Agent Playground.
 
-You generally need to tell us:
-*   **Name**: What do you call your bot? (e.g., "Support Bot V1")
-*   **Call Type**: Does your bot take calls (Inbound) or make calls (Outbound)?
-*   **Connection**: How do we talk to it? (Using a phone number, or a direct software header).
-
----
-
-## Technical Details
-
-For developers, an **Agent** represents the system under test (SUT). This is your Voice AI application, whether hosted on an external platform (retell AI, Vapi) or a custom internal solution.
-
-### Configuration
-
-Agents are registered in the system with the following properties:
+## Core configuration
 
 | Property | Type | Description |
 |---|---|---|
-| `name` | String | Name of the agent. |
-| `agent_id` | String | A unique 6-digit identifier used within EfficientAI. |
-| `phone_number` | String | (Optional) The PSTN number to dial if testing via phone network. |
-| `language` | Enum | The primary language the agent is expected to speak (`en`, `es`, etc.). |
-| `call_type` | Enum | `inbound` (Agent receives calls) or `outbound` (Agent places calls). |
-| `call_medium` | Enum | `phone_call` (PSTN) or `web_call` (VoIP/WebRTC). |
+| `name` | String | Human-readable agent name. |
+| `language` | Enum | Primary language context for evaluation. |
+| `call_type` | Enum | `inbound` or `outbound` behavior context. |
+| `call_medium` | Enum | `phone_call` or `web_call`. |
+| `phone_number` | String | Required when `call_medium = phone_call`. |
+| `voice_bundle_id` | UUID | Internal test stack for voice-bundle testing. |
+| `voice_ai_integration_id` | UUID | External provider integration reference. |
+| `voice_ai_agent_id` | String | External provider agent identifier. |
 
-### Integration Types
+## Inbound vs outbound calls
 
-Agents connect to the evaluation platform through one of three mutually exclusive methods:
+Use `call_type` to model the call direction your production agent is designed for:
 
-1.  **Voice Bundle**: A comprehensive stack defining STT, LLM, and TTS providers.
-2.  **AI Provider**: Direct reference to a generic AI provider configuration.
-3.  **External Integration**: For third-party platforms like Retell or Vapi.
+- **Inbound**: user initiates call to the agent.
+- **Outbound**: agent initiates call to the user.
+
+This setting should match your real deployment pattern so evaluation conditions are realistic.
+
+## Prompt management
+
+Agents can carry two prompt surfaces:
+
+- **EfficientAI Test Agent Description (`description`)**  
+  Internal prompt used for test-agent behavior and evaluation context.
+- **Provider Prompt (`provider_prompt`)**  
+  Prompt fetched from the linked external voice provider.
+
+### Provider prompt sync
+
+When an agent is linked to an external provider, EfficientAI can fetch and store the current provider prompt.
+
+Sync can happen:
+
+- automatically on relevant create/update operations, and
+- manually through "Sync Now" in the agent view.
+
+This keeps local review and optimization aligned with what is currently running on the provider.
+
+## Voice bundles
+
+Voice bundles define how internal test-agent conversations are generated.
+
+Supported bundle types:
+
+- **STT + LLM + TTS**
+- **S2S** (speech-to-speech)
+
+For STT + LLM + TTS bundles, model/provider settings are configured per stage, including optional LLM temperature and max token controls.
+
+## External voice integrations
+
+For live external testing, configure:
+
+1. `voice_ai_integration_id`
+2. `voice_ai_agent_id`
+3. `call_medium = web_call` for Agent Playground web calls
+
+This enables real-time provider calls and evaluation flow from provider call data into EfficientAI results.

@@ -71,6 +71,7 @@ import PromptOptimization from './pages/promptOptimization/PromptOptimization'
 
 // Enterprise
 import EnterpriseUpgrade from './pages/enterprise/EnterpriseUpgrade'
+import { WalkthroughProvider } from './context/WalkthroughContext'
 
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -110,7 +111,9 @@ function App() {
           path="/"
           element={
             <PrivateRoute>
-              <Layout />
+              <WalkthroughProvider>
+                <Layout />
+              </WalkthroughProvider>
             </PrivateRoute>
           }
         >

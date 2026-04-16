@@ -37,6 +37,7 @@ import {
 } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import Logo from './Logo'
+import WalkthroughRail from './walkthrough/WalkthroughRail'
 
 interface NavItem {
   name: string
@@ -315,7 +316,12 @@ export default function Layout() {
 
         {/* Page content */}
         <main className="flex-1 p-6">
-          <Outlet />
+          <div className="flex min-h-[calc(100vh-7rem)] items-start gap-4">
+            <div className="min-w-0 flex-1">
+              <Outlet />
+            </div>
+            <WalkthroughRail />
+          </div>
         </main>
       </div>
     </div>

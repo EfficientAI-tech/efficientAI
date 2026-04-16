@@ -9,6 +9,7 @@ import ProviderLogo from '../../../components/shared/ProviderLogo'
 import { Plus, Trash2, Play, X, CheckSquare, Square, Sparkles, Brain, ChevronDown, AlertTriangle, Info } from 'lucide-react'
 import { useToast } from '../../../hooks/useToast'
 import { getProviderLabel, getProviderLogo } from '../../../config/providers'
+import { useWalkthroughSectionState } from '../../../context/WalkthroughContext'
 
 const DEFAULT_PERSONA_NAMES = [
   "Grumpy Old Man",
@@ -66,6 +67,12 @@ export default function EvaluateTestAgents() {
   const [selectedLlmModel, setSelectedLlmModel] = useState<string>('')
   const [showLlmDropdown, setShowLlmDropdown] = useState(false)
   const llmDropdownRef = useRef<HTMLDivElement>(null)
+
+  useWalkthroughSectionState(
+    'evaluators',
+    { createMode, showCreateModal, showRunModal },
+    [createMode, showCreateModal, showRunModal]
+  )
 
   const { data: agents = [] } = useQuery({
     queryKey: ['agents'],

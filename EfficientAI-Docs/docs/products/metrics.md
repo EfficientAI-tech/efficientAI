@@ -6,76 +6,74 @@ sidebar_position: 5
 
 # Metrics
 
-## What are Metrics?
+Metrics are the explicit scoring rules used to evaluate each call.
 
-**Metrics** are the "Grades" or "Scorecards" for your AI.
+## Metric selection is explicit
 
-After a test call finishes, you want to know how well it went. EfficientAI answers this with data.
+Only metrics that are **enabled** for your organization are evaluated.
 
-We give you two types of grades:
-1.  **Quantitative Metrics**: Hard numbers like latency, speaking rate, and voice quality measurements.
-2.  **Qualitative Metrics**: Subjective scores like how human the AI sounds or emotional accuracy.
+This means run scoring always reflects your currently enabled metric set, not a hidden global default.
 
----
+## Metric groups
 
-## Quantitative Metrics
+EfficientAI evaluates three practical metric groups:
 
-These are calculated automatically from the audio and conversation data:
+### 1) LLM-evaluated conversation metrics
 
-| Metric | Description |
-|--------|-------------|
-| **E2E Latency** | End-to-end response time — how fast the AI responds |
-| **Pitch Variance** | Voice pitch variation analysis |
-| **Jitter & Shimmer** | Voice quality fluctuations — stability of the voice |
-| **Speaking Rate (WPM)** | Words per minute — conversation pacing |
-| **Interruption Gap** | Time between speaker turns |
-| **HNR** | Harmonics-to-Noise Ratio — voice clarity measurement |
-| **Turn Taking** | Speaker transition patterns and timing |
-| **Barge-In Interruption** | Detection of when speakers talk over each other |
-| **Silence Duration** | Length and frequency of pauses |
+Examples:
 
-### How They Work
+- Follow Instructions
+- Professionalism
+- Problem Resolution
 
-Quantitative metrics are computed by analyzing:
-- Audio waveforms (for pitch, jitter, shimmer, HNR)
-- Timestamps (for latency, turn taking, gaps)
-- Transcriptions (for speaking rate)
+Method:
 
----
+- Evaluates transcript and context against metric definitions.
 
-## Qualitative Metrics
+### 2) Acoustic metrics (signal-based)
 
-These are evaluated using LLM analysis of the conversation:
+Examples:
 
-| Metric | Description |
-|--------|-------------|
-| **Human Likeness (HPDR-5)** | How natural and human the AI sounds |
-| **MOS** | Mean Opinion Score — overall quality rating |
-| **Emotional Match Accuracy** | How well the AI matches appropriate emotions |
-| **Valence/Arousal** | Emotional intensity and positivity analysis |
-| **Prosody Expressiveness** | Speech rhythm, intonation, and expression quality |
-| **Speaker Consistency** | Voice consistency across the conversation |
+- Pitch Variance
+- Jitter
+- Shimmer
+- HNR
 
-### How They Work
+Method:
 
-Qualitative metrics use an LLM to analyze the conversation transcript and audio characteristics, providing subjective assessments that would normally require human evaluation.
+- Computed from recorded audio signal characteristics.
 
----
+### 3) AI voice quality metrics (model-based audio quality)
 
-## Custom Metrics
+Examples:
 
-You can define your own custom metrics for specific use cases:
+- MOS Score
+- Emotion Category
+- Emotion Confidence
+- Valence
+- Arousal
+- Speaker Consistency
+- Prosody Score
 
-- **Rating Type**: Score on a scale (e.g., 1-5)
-- **Boolean Type**: Pass/fail assessment
+Method:
 
-### Examples
-- "Resolution Success" — Did the AI solve the customer's problem?
-- "Empathy Score" — Was the AI appropriately empathetic?
-- "Upsell Attempted" — Did the AI try to upsell?
+- Uses audio-based ML evaluation for quality, emotion, and consistency.
 
----
+## Default behavior notes
 
-## Storage
+By default:
 
-Metric results are stored in the `metric_scores` JSON column of the `EvaluatorResult` database table and can be viewed in the Results Dashboard.
+- `Pitch Variance` starts enabled.
+- `Jitter`, `Shimmer`, and `HNR` start disabled.
+
+You can enable or disable metrics from the Metrics page at any time.
+
+## How metrics are applied during processing
+
+1. Call audio and transcript are collected.
+2. Enabled metrics are split by evaluation method.
+3. Audio-required metrics run only when audio is available.
+4. LLM metrics run on transcript and context.
+5. Scores are written to evaluator results for reporting and comparison.
+
+If audio is missing, audio-dependent metrics are skipped instead of being fabricated.

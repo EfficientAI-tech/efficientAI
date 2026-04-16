@@ -2,6 +2,7 @@ import { Mic, History, Headphones, RotateCcw, X } from 'lucide-react'
 import Button from '../../../components/Button'
 import { VoicePlaygroundProvider, useVoicePlayground } from './context'
 import { PlaygroundTab, VoicesTab, SimulationsTab } from './components'
+import { useWalkthroughSectionState } from '../../../context/WalkthroughContext'
 
 function VoicePlaygroundContent() {
   const {
@@ -15,6 +16,12 @@ function VoicePlaygroundContent() {
     deleteConfirm,
     setDeleteConfirm,
   } = useVoicePlayground()
+
+  useWalkthroughSectionState(
+    'voice-playground',
+    { activeTab, step },
+    [activeTab, step]
+  )
 
   return (
     <div className="space-y-6">
