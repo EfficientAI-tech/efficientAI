@@ -6,46 +6,39 @@ sidebar_position: 1
 
 # Introduction
 
-## What is EfficientAI?
+EfficientAI is a voice AI evaluation platform for testing, measuring, and improving conversational agents before they reach production.
 
-Think of **EfficientAI** as a high-tech training gym for your Voice AI.
+It helps teams run realistic simulations, analyze outcomes with explicit metrics, and iterate quickly on agent behavior, prompts, and voice quality.
 
-Building a Voice AI (like a customer service bot) is hard. You don't want to test it on real customers until you are sure it works perfectly. EfficientAI lets you practice by having **simulated customers** (robots pretending to be people) call your AI and test it out.
+## What the platform does
 
-We help you answer questions like:
-*   "Can my AI understand a thick accent?"
-*   "Does my AI stay calm when the customer is angry?"
-*   "Is my AI fast enough?"
+EfficientAI gives you an end-to-end loop for voice AI quality:
 
-## How does it work?
+1. Configure the **Agent** you want to test.
+2. Configure **Personas** with mapped voices for caller simulation.
+3. Define **Scenarios** that represent conversation goals.
+4. Run tests in the **Agent Playground** or evaluator workflows.
+5. Score calls using enabled **Metrics**.
+6. Improve prompts and re-test to track quality over time.
 
-Imagine you are hiring a new customer support agent. Before letting them answer real calls, you would role-play with them. You might pretend to be an angry customer with a broken product to see how they handle it.
+## Core capabilities
 
-EfficientAI automates this role-play:
+- **Agent testing across call setups**: supports inbound/outbound context and phone/web call mediums.
+- **Prompt management**: maintain an internal test-agent prompt and sync provider prompts from external voice platforms.
+- **Voice bundle composition**: configure STT, LLM, and TTS stacks (or S2S where configured) for test-agent behavior.
+- **Persona voice mapping**: personas are tied to concrete provider and voice identities.
+- **Scenario generation and curation**: generate from agent prompts, derive from call transcripts/call data, or create manually.
+- **Metric-driven evaluation**: enable the exact metrics you want and apply them consistently across runs.
+- **Prompt optimization workflows**: run optimization loops, compare candidates, accept winners, and push selected prompts to providers.
 
-1.  **The Employee (Agent)**: This is your Voice AI that you are building.
-2.  **The Actor (Persona)**: We have a robot caller that pretends to differnt people—like "Bob from Texas" or "Alice from London".
-3.  **The Script (Scenario)**: You give the Actor a secret mission, like "Call and try to return a pair of shoes without a receipt."
-4.  **The Scorecard (Evaluator)**: After the call, we grade your AI. Did it solve the problem? Was it polite? Did it understand what the Actor said?
+## Platform model
 
-## Why use it?
+At a high level:
 
-*   **Save Money**: Don't waste your team's time manually calling your bot 100 times.
-*   **Find Bugs**: Catch problems before your real customers do.
-*   **Improve Quality**: See exactly where your AI is struggling so you can fix it.
+- **Agents** are the systems under test.
+- **Personas** represent simulated callers with specific voice identities.
+- **Scenarios** define goals and test context.
+- **Metrics** evaluate objective completion and voice quality.
+- **Results** provide run-level evidence for iteration decisions.
 
----
-
-## Technical Overview
-
-For developers and engineers, EfficientAI is a comprehensive platform designed to evaluate and improve Voice AI agents. It effectively closes the feedback loop by simulating real-world conversations using AI-driven test agents (Personas) and Scenarios, and then rigorously evaluating the performance using a suite of quantitative and qualitative metrics.
-
-### High-Level Architecture
-
-The platform consists of several core components that work together to automate the testing and evaluation process:
-
-1.  **Voice AI Integration**: Connects to external Voice AI providers (e.g., Retell, Vapi) or manages internal models.
-2.  **Test Agents (Personas)**: Simulated users with specific attributes (accent, gender, background noise) that interact with the Voice AI.
-3.  **Scenarios**: Defined conversation paths and objectives that the Test Agent attempts to follow or achieve.
-4.  **Orchestrator**: Manages the live conversation between the Voice AI and the Test Agent, handling audio streaming, transcription, and response generation.
-5.  **Evaluators**: Post-conversation analysis metrics that assess the Voice AI's performance based on the specific scenario benchmarks.
+This structure keeps testing reproducible while still reflecting real-world voice interactions.
