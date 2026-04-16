@@ -1,6 +1,25 @@
 """API tests for evaluator results routes."""
 
 
+def test_derive_speaker_segments_supports_smallest_payload():
+    from app.api.v1.routes.evaluator_results import _derive_speaker_segments_from_call_data
+
+    segments = _derive_speaker_segments_from_call_data(
+        {
+            "transcript_object": [
+                {"speaker": "User", "text": "hello", "start": 0.0, "end": 0.5},
+                {"speaker": "Agent", "text": "hi there", "start": 0.6, "end": 1.2},
+            ]
+        },
+        "smallest",
+    )
+
+    assert segments is not None
+    assert len(segments) == 2
+    assert segments[0]["speaker"] == "Speaker 1"
+    assert segments[1]["speaker"] == "Speaker 2"
+
+
 def test_list_and_get_evaluator_results(authenticated_client, make_evaluator_result):
     result = make_evaluator_result(result_id="778899", status="completed")
 

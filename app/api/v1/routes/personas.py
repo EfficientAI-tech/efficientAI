@@ -111,6 +111,9 @@ TTS_VOICES: Dict[str, List[Dict[str, str]]] = {
         {"id": "ai3-Keiko", "name": "Keiko", "gender": "Female"},
         {"id": "ai3-Liang", "name": "Liang", "gender": "Male"},
     ],
+    "smallest": [
+        {"id": "daniel", "name": "Daniel", "gender": "Male"},
+    ],
     "murf": [],
 }
 
@@ -122,6 +125,7 @@ PROVIDER_DISPLAY_NAMES: Dict[str, str] = {
     "google": "Google",
     "sarvam": "Sarvam",
     "voicemaker": "VoiceMaker",
+    "smallest": "Smallest.ai",
     "murf": "Murf",
     "azure": "Azure",
     "aws": "AWS Polly",

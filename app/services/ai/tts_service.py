@@ -15,6 +15,7 @@ from efficientai.services.google.http_tts import synthesize_google_bytes
 from efficientai.services.murf.tts import synthesize_murf_stream_bytes
 from efficientai.services.openai.http_tts import synthesize_openai_bytes
 from efficientai.services.sarvam.http_tts import synthesize_sarvam_bytes
+from efficientai.services.smallest.http_tts import synthesize_smallest_bytes
 from efficientai.services.voicemaker.http_tts import synthesize_voicemaker_bytes
 from sqlalchemy.orm import Session
 
@@ -31,6 +32,7 @@ PROVIDER_SUPPORTED_SAMPLE_RATES: Dict[str, list] = {
     "elevenlabs": [8000, 16000, 22050, 24000, 44100],
     "cartesia": [8000, 16000, 22050, 24000, 44100],
     "deepgram": [8000, 16000, 24000, 48000],
+    "smallest": [8000, 16000, 24000],
     "voicemaker": [8000, 16000, 22050, 24000, 44100, 48000],
 }
 
@@ -39,6 +41,8 @@ def get_audio_file_extension(provider: str, sample_rate_hz: Optional[int] = None
     """Determine audio file extension based on provider and requested sample rate."""
     if provider == "sarvam":
         # Sarvam HTTP TTS returns base64 WAV audio.
+        return "wav"
+    if provider == "smallest":
         return "wav"
     if provider == "elevenlabs" and sample_rate_hz:
         fmt = ELEVENLABS_HZ_TO_OUTPUT_FORMAT.get(sample_rate_hz, "")
@@ -166,6 +170,16 @@ class TTSService:
         voice: Optional[str] = None, config: Optional[Dict[str, Any]] = None
     ) -> Tuple[bytes, float]:
         return synthesize_voicemaker_bytes(text=text, model=model, api_key=api_key, voice=voice, config=config)
+
+    # ------------------------------------------------------------------
+    # Smallest.ai
+    # ------------------------------------------------------------------
+
+    def _synthesize_with_smallest(
+        self, text: str, model: str, api_key: str,
+        voice: Optional[str] = None, config: Optional[Dict[str, Any]] = None
+    ) -> Tuple[bytes, float]:
+        return synthesize_smallest_bytes(text=text, model=model, api_key=api_key, voice=voice, config=config)
 
     # ------------------------------------------------------------------
     # Main synthesis entry point

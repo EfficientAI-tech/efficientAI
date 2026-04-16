@@ -4,8 +4,8 @@ import { Sparkles, Loader2, Bot, Eye, Code, Trash2, Save, PhoneOutgoing, PhoneIn
 import ReactMarkdown from 'react-markdown'
 import Button from '../../../components/Button'
 import { apiClient } from '../../../lib/api'
-import { VoiceBundle, Integration, AIProvider, ModelProvider } from '../../../types/api'
-import { getProviderLabel } from '../../../config/providers'
+import { VoiceBundle, Integration, AIProvider, IntegrationPlatform, ModelProvider } from '../../../types/api'
+import { getProviderLabel, getIntegrationPlatformLabel, getIntegrationPlatformLogo } from '../../../config/providers'
 
 interface FormData {
   name: string
@@ -31,6 +31,13 @@ interface AgentEditFormProps {
   updatedAt?: string
   onSaveSystemPrompt: () => void
 }
+
+const SUPPORTED_VOICE_AI_PLATFORMS: IntegrationPlatform[] = [
+  IntegrationPlatform.RETELL,
+  IntegrationPlatform.VAPI,
+  IntegrationPlatform.ELEVENLABS,
+  IntegrationPlatform.SMALLEST,
+]
 
 export default function AgentEditForm({
   formData,
@@ -83,6 +90,16 @@ export default function AgentEditForm({
       showToast(err?.response?.data?.detail || 'Failed to generate description with AI', 'error')
     },
   })
+
+  const voiceAgentIntegrations = integrations.filter(
+    (integration) =>
+      integration.is_active &&
+      SUPPORTED_VOICE_AI_PLATFORMS.includes(integration.platform as IntegrationPlatform),
+  )
+
+  const selectedVoiceIntegration = voiceAgentIntegrations.find(
+    (integration) => integration.id === formData.voice_ai_integration_id,
+  )
 
   return (
     <form onSubmit={onSubmit}>
@@ -219,7 +236,7 @@ export default function AgentEditForm({
               <div className="border border-gray-200 rounded-lg p-4 bg-gray-50 flex flex-col h-full">
                 <h3 className="text-lg font-semibold text-gray-900 mb-3">2. Voice AI Agent</h3>
                 <p className="text-sm text-gray-600 mb-4 flex-grow">
-                  Configure agents using external Voice AI integrations (Retell, Vapi, ElevenLabs)
+                  Configure agents using external Voice AI integrations (Retell, Vapi, ElevenLabs, Smallest)
                 </p>
                 <div className="space-y-4">
                   <div>
@@ -233,55 +250,33 @@ export default function AgentEditForm({
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
                       >
                         <option value="">Select an Integration</option>
-                        {integrations
-                          .filter(
-                            (i) =>
-                              i.is_active &&
-                              ['retell', 'vapi', 'elevenlabs'].includes(i.platform)
+                        {voiceAgentIntegrations.map((integration) => {
+                          const platformLabel = getIntegrationPlatformLabel(
+                            integration.platform as IntegrationPlatform,
                           )
-                          .map((integration) => (
+                          return (
                             <option key={integration.id} value={integration.id}>
-                              {integration.name || integration.platform} (
-                              {integration.platform === 'retell'
-                                ? 'Retell'
-                                : integration.platform === 'vapi'
-                                ? 'Vapi'
-                                : 'ElevenLabs'}
-                              )
+                              {integration.name || platformLabel} ({platformLabel})
                             </option>
-                          ))}
+                          )
+                        })}
                       </select>
-                      {formData.voice_ai_integration_id && (
+                      {selectedVoiceIntegration && (
                         <div className="flex-shrink-0">
                           {(() => {
-                            const selected = integrations.find(
-                              (i) => i.id === formData.voice_ai_integration_id
+                            const logo = getIntegrationPlatformLogo(
+                              selectedVoiceIntegration.platform as IntegrationPlatform,
                             )
-                            if (selected?.platform === 'retell')
-                              return (
-                                <img
-                                  src="/retellai.png"
-                                  alt="Retell AI"
-                                  className="h-8 w-8 object-contain"
-                                />
-                              )
-                            if (selected?.platform === 'vapi')
-                              return (
-                                <img
-                                  src="/vapiai.jpg"
-                                  alt="Vapi AI"
-                                  className="h-8 w-8 rounded-full object-contain"
-                                />
-                              )
-                            if (selected?.platform === 'elevenlabs')
-                              return (
-                                <img
-                                  src="/elevenlabs.jpg"
-                                  alt="ElevenLabs"
-                                  className="h-8 w-8 rounded-full object-contain"
-                                />
-                              )
-                            return null
+                            const label = getIntegrationPlatformLabel(
+                              selectedVoiceIntegration.platform as IntegrationPlatform,
+                            )
+                            return logo ? (
+                              <img
+                                src={logo}
+                                alt={label}
+                                className="h-8 w-8 rounded-full object-contain"
+                              />
+                            ) : null
                           })()}
                         </div>
                       )}
@@ -294,10 +289,10 @@ export default function AgentEditForm({
                       value={formData.voice_ai_agent_id}
                       onChange={(e) => onChange({ ...formData, voice_ai_agent_id: e.target.value })}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
-                      placeholder="Enter agent ID from Retell/Vapi/ElevenLabs"
+                      placeholder="Enter agent ID from Retell/Vapi/ElevenLabs/Smallest"
                     />
                     <p className="mt-1 text-xs text-gray-500">
-                      Enter the agent ID you received from your Retell, Vapi, or ElevenLabs provider
+                      Enter the agent ID you received from your voice AI provider
                     </p>
                   </div>
                 </div>

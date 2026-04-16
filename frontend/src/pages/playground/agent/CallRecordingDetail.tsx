@@ -9,6 +9,7 @@ import { useToast } from '../../../hooks/useToast'
 import RetellCallDetails from '../../../components/call-recordings/RetellCallDetails'
 import VapiCallDetails from '../../../components/call-recordings/VapiCallDetails'
 import ElevenLabsCallDetails from '../../../components/call-recordings/ElevenLabsCallDetails'
+import SmallestCallDetails from '../../../components/call-recordings/SmallestCallDetails'
 
 // Comprehensive metric information with descriptions and ideal values
 const METRIC_INFO: Record<string, { 
@@ -736,6 +737,8 @@ export default function CallRecordingDetail() {
                 <VapiCallDetails callData={callRecording.call_data} />
               ) : callRecording.provider_platform === 'elevenlabs' ? (
                 <ElevenLabsCallDetails callData={callRecording.call_data} callShortId={callShortId} />
+              ) : callRecording.provider_platform === 'smallest' ? (
+                <SmallestCallDetails callData={callRecording.call_data} />
               ) : (
                 <>
                   <h2 className="text-lg font-semibold text-gray-900 mb-4">Call Data (JSON)</h2>

@@ -37,3 +37,48 @@ def test_get_integration_api_key(authenticated_client, monkeypatch, make_integra
 
     assert response.status_code == 200
     assert response.json()["api_key"] == "decrypted-key"
+
+
+def test_create_smallest_integration_validates_key_and_sets_default_name(authenticated_client, monkeypatch):
+    from app.api.v1.routes import integrations as integrations_route
+
+    calls = {"count": 0}
+
+    def _validate(api_key: str):
+        calls["count"] += 1
+        assert api_key == "smallest-secret"
+        return {"email": "owner@smallest.ai"}
+
+    monkeypatch.setattr(integrations_route, "_validate_smallest_connection", _validate)
+
+    response = authenticated_client.post(
+        "/api/v1/integrations",
+        json={"platform": "smallest", "api_key": "smallest-secret"},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["platform"] == "smallest"
+    assert response.json()["name"] == "Smallest (owner@smallest.ai)"
+    assert calls["count"] == 1
+
+
+def test_update_smallest_integration_validates_updated_key(authenticated_client, monkeypatch, make_integration):
+    from app.api.v1.routes import integrations as integrations_route
+
+    integration = make_integration(platform="smallest", api_key="encrypted")
+    calls = {"count": 0}
+
+    def _validate(api_key: str):
+        calls["count"] += 1
+        assert api_key == "next-smallest-key"
+        return {"email": "owner@smallest.ai"}
+
+    monkeypatch.setattr(integrations_route, "_validate_smallest_connection", _validate)
+
+    response = authenticated_client.put(
+        f"/api/v1/integrations/{integration.id}",
+        json={"api_key": "next-smallest-key"},
+    )
+
+    assert response.status_code == 200
+    assert calls["count"] == 1

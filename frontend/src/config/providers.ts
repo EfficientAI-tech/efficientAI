@@ -72,6 +72,11 @@ export const MODEL_PROVIDER_CONFIG: Record<ModelProvider, ProviderMetadata> = {
     logo: '/voiceMaker.png',
     description: 'VoiceMaker TTS',
   },
+  [ModelProvider.SMALLEST]: {
+    label: 'Smallest.ai',
+    logo: '/smallest.jpeg',
+    description: 'Smallest Pulse STT, Lightning TTS, and Atoms agents',
+  },
 }
 
 export interface IntegrationPlatformMetadata {
@@ -130,6 +135,12 @@ export const INTEGRATION_PLATFORM_CONFIG: Record<IntegrationPlatform, Integratio
     logo: '/voiceMaker.png',
     description: 'VoiceMaker TTS for voice synthesis',
     modelProvider: ModelProvider.VOICEMAKER,
+  },
+  [IntegrationPlatform.SMALLEST]: {
+    label: 'Smallest.ai',
+    logo: '/smallest.jpeg',
+    description: 'Smallest Atoms agents with Pulse STT and Lightning TTS',
+    modelProvider: ModelProvider.SMALLEST,
   },
 }
 

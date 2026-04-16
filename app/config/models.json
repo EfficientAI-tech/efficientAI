@@ -210,6 +210,11 @@
     "model_type": "stt",
     "description": "Available for languages not yet supported by Nova-3"
   },
+  "pulse-v4": {
+    "provider": "smallest",
+    "model_type": "stt",
+    "description": "Smallest Pulse v4 speech-to-text (batch and realtime)"
+  },
   "cartesia-sonic-3": {
     "provider": "cartesia",
     "model_type": "tts",
@@ -348,6 +353,11 @@
     "description": "VoiceMaker ProPlus expressive multilingual voices",
     "languages": "multi-lang + regional accents",
     "voices_source_file": "voicemaker_voices.json"
+  },
+  "lightning-v3.1": {
+    "provider": "smallest",
+    "model_type": "tts",
+    "description": "Smallest Lightning v3.1 low-latency neural TTS"
   },
   "saarika:v2.5": {
     "provider": "sarvam",
