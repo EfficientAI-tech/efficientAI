@@ -13,7 +13,7 @@ An Agent is the voice system you are evaluating in EfficientAI.
 An agent can be configured for one or both execution paths:
 
 - **Test Agent path (internal)**: uses an EfficientAI voice bundle to run STT -> LLM -> TTS behavior.
-- **Voice AI Agent path (external)**: links to an external voice provider agent, such as Retell, Vapi, or ElevenLabs.
+- **Voice AI Agent path (external)**: links to an external voice provider agent, such as Retell, Vapi, or ElevenLabs etc.
 
 If both are configured, you can test both paths from the Agent Playground.
 
