@@ -432,6 +432,7 @@ const ALL_STT_OPTIONS: Array<{ provider: string; model: string; label: string }>
   { provider: 'deepgram', model: 'nova-2', label: 'Deepgram / nova-2' },
   { provider: 'deepgram', model: 'nova-3', label: 'Deepgram / nova-3' },
   { provider: 'elevenlabs', model: 'scribe_v2', label: 'ElevenLabs / Scribe v2' },
+  { provider: 'smallest', model: 'pulse-v4', label: 'Smallest.ai / Pulse v4' },
 ]
 
 const INTEGRATION_TO_PROVIDER: Record<string, string> = {
@@ -439,6 +440,7 @@ const INTEGRATION_TO_PROVIDER: Record<string, string> = {
   elevenlabs: 'elevenlabs',
   cartesia: 'cartesia',
   sarvam: 'sarvam',
+  smallest: 'smallest',
 }
 
 function EvalSttPanel({
@@ -545,7 +547,7 @@ function EvalSttPanel({
           </select>
           {availableSttOptions.length === 0 && !bundleWithStt && (
             <p className="mt-2 text-xs text-amber-600">
-              No STT-capable providers (OpenAI, Deepgram) are configured in Integrations. Add one or configure a Voice Bundle with STT to enable WER/CER evaluation.
+              No STT-capable providers (OpenAI, Deepgram, ElevenLabs, Smallest.ai) are configured in Integrations. Add one or configure a Voice Bundle with STT to enable WER/CER evaluation.
             </p>
           )}
           {availableSttOptions.length === 0 && bundleWithStt && (

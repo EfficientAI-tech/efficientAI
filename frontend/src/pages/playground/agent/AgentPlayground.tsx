@@ -10,6 +10,8 @@ import { RetellWebClient } from 'retell-client-js-sdk'
 import Vapi from '@vapi-ai/web'
 import { Conversation } from '@elevenlabs/client'
 import VoiceAgent from '../../../components/VoiceAgent'
+import { getIntegrationPlatformLogo } from '../../../config/providers'
+import { IntegrationPlatform } from '../../../types/api'
 
 // Type for RetellWebClient - using the actual SDK methods
 type RetellWebClientWithMethods = RetellWebClient & {
@@ -40,6 +42,7 @@ export default function AgentPlayground() {
   const retellClientRef = useRef<RetellWebClientWithMethods | null>(null)
   const vapiClientRef = useRef<any>(null)
   const elevenLabsConversationRef = useRef<any>(null)
+  const smallestClientRef = useRef<any>(null)
   const currentCallShortIdRef = useRef<string | null>(null)
 
   const userInitiatedDisconnectRef = useRef(false)
@@ -107,13 +110,14 @@ export default function AgentPlayground() {
   const isRetellAgent = agentIntegration?.platform === 'retell'
   const isVapiAgent = agentIntegration?.platform === 'vapi'
   const isElevenLabsAgent = agentIntegration?.platform === 'elevenlabs'
+  const isSmallestAgent = agentIntegration?.platform === 'smallest'
   const hasWebCallEnabled = fullAgent?.call_medium === 'web_call'
 
-  const canMakeCall = (isRetellAgent || isVapiAgent || isElevenLabsAgent) && hasWebCallEnabled && fullAgent?.voice_ai_agent_id
+  const canMakeCall = (isRetellAgent || isVapiAgent || isElevenLabsAgent || isSmallestAgent) && hasWebCallEnabled && fullAgent?.voice_ai_agent_id
 
   // Check if agent has Test Agent capabilities (voice bundle with STT/TTS/LLM)
   const hasTestAgent = fullAgent?.voice_bundle_id != null
-  // Check if agent has Voice AI Agent capabilities (Retell/Vapi integration)
+  // Check if agent has Voice AI Agent capabilities (Retell/Vapi/ElevenLabs/Smallest integration)
   const hasVoiceAIAgent = canMakeCall
 
   // Initialize Clients when modal opens
@@ -132,21 +136,21 @@ export default function AgentPlayground() {
     }
 
     return () => {
-      if (retellClientRef.current && isConnected) {
+      if (retellClientRef.current) {
         try {
           retellClientRef.current.stopCall()
         } catch (e) {
           console.error('Error stopping Retell call on cleanup:', e)
         }
       }
-      if (vapiClientRef.current && isConnected) {
+      if (vapiClientRef.current) {
         try {
           vapiClientRef.current.stop()
         } catch (e) {
           console.error('Error stopping Vapi call on cleanup:', e)
         }
       }
-      if (elevenLabsConversationRef.current && isConnected) {
+      if (elevenLabsConversationRef.current) {
         try {
           elevenLabsConversationRef.current.endSession()
         } catch (e) {
@@ -154,8 +158,16 @@ export default function AgentPlayground() {
         }
         elevenLabsConversationRef.current = null
       }
+      if (smallestClientRef.current) {
+        try {
+          smallestClientRef.current.stopSession()
+        } catch (e) {
+          console.error('Error stopping Smallest session on cleanup:', e)
+        }
+        smallestClientRef.current = null
+      }
     }
-  }, [showModal, canMakeCall, isConnected, isRetellAgent, isVapiAgent, isElevenLabsAgent, agentIntegration])
+  }, [showModal, canMakeCall, isRetellAgent, isVapiAgent, isElevenLabsAgent, isSmallestAgent, agentIntegration?.public_key])
 
   const handleConnect = async () => {
     if (!canMakeCall || !fullAgent?.id) {
@@ -479,6 +491,93 @@ export default function AgentPlayground() {
           || (typeof error === 'string' ? error : error?.message || JSON.stringify(error))
         showToast(`Failed to connect: ${detail}`, 'error')
       }
+    } else if (isSmallestAgent) {
+      try {
+        const { AtomsClient } = await import('atoms-client-sdk')
+
+        // Request microphone permission first
+        try {
+          const testStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+          testStream.getTracks().forEach(track => track.stop())
+        } catch (micError: any) {
+          console.error('Microphone permission denied:', micError)
+          setIsConnecting(false)
+          showToast('Microphone permission is required for voice calls', 'error')
+          return
+        }
+
+        const webCallResponse = await apiClient.createWebCall({
+          agent_id: fullAgent.id,
+          metadata: {},
+        })
+
+        if (webCallResponse.call_short_id) {
+          currentCallShortIdRef.current = webCallResponse.call_short_id
+        }
+
+        if (!webCallResponse.access_token || !webCallResponse.host) {
+          throw new Error('Smallest webcall response missing access token or host')
+        }
+
+        const client = new AtomsClient()
+        smallestClientRef.current = client
+
+        client.on('session_started', () => {
+          console.log('Smallest webcall connected')
+          setIsConnected(true)
+          setIsConnecting(false)
+          showToast('Connected to agent', 'success')
+        })
+        client.on('session_ended', () => {
+          console.log('Smallest webcall disconnected')
+          setIsConnected(false)
+          setIsConnecting(false)
+          if (!userInitiatedDisconnectRef.current) {
+            showToast('Call ended')
+          }
+          userInitiatedDisconnectRef.current = false
+
+          if (currentCallShortIdRef.current) {
+            const callShortId = currentCallShortIdRef.current
+            setTimeout(() => {
+              apiClient.refreshCallRecording(callShortId)
+                .then(() => refetchCallRecordings())
+                .catch(err => console.error('Failed to refresh metrics', err))
+            }, 3000)
+          }
+        })
+        client.on('transcript', (data: any) => {
+          const content = data?.text
+          if (content && typeof content === 'string') {
+            setTranscripts(prev => [...prev, { role: 'agent', content }])
+          }
+        })
+        client.on('error', (errorMessage: string) => {
+          console.error('Smallest SDK error:', errorMessage)
+        })
+
+        await client.startSession({
+          accessToken: webCallResponse.access_token,
+          host: webCallResponse.host,
+          mode: 'webcall',
+        })
+        await client.startAudioPlayback()
+      } catch (error: any) {
+        console.error('Failed to connect Smallest:', error)
+        if (smallestClientRef.current) {
+          try {
+            smallestClientRef.current.stopSession()
+          } catch {
+            // ignore cleanup errors
+          }
+          smallestClientRef.current = null
+        }
+        setIsConnecting(false)
+        setIsConnected(false)
+        const detail = error?.response?.data?.detail
+          || (typeof error === 'string' ? error : error?.message || JSON.stringify(error))
+        showToast(`Failed to connect: ${detail}`, 'error')
+      }
     }
   }
 
@@ -503,6 +602,13 @@ export default function AgentPlayground() {
         elevenLabsConversationRef.current = null
       } catch (error: any) {
         console.error('Failed to disconnect ElevenLabs:', error)
+      }
+    } else if (isSmallestAgent && smallestClientRef.current) {
+      try {
+        smallestClientRef.current.stopSession()
+        smallestClientRef.current = null
+      } catch (error: any) {
+        console.error('Failed to disconnect Smallest:', error)
       }
     }
 
@@ -976,27 +1082,18 @@ export default function AgentPlayground() {
                               </td>
                               <td className="px-4 py-3 whitespace-nowrap">
                                 <div className="flex items-center gap-2">
-                                  {recording.provider_platform === 'retell' && (
-                                    <img
-                                      src="/retellai.png"
-                                      alt="Retell"
-                                      className="h-5 w-5 object-contain"
-                                    />
-                                  )}
-                                  {recording.provider_platform === 'vapi' && (
-                                    <img
-                                      src="/vapiai.jpg"
-                                      alt="Vapi"
-                                      className="h-5 w-5 object-contain"
-                                    />
-                                  )}
-                                  {recording.provider_platform === 'elevenlabs' && (
-                                    <img
-                                      src="/elevenlabs.jpg"
-                                      alt="ElevenLabs"
-                                      className="h-5 w-5 rounded-full object-contain"
-                                    />
-                                  )}
+                                  {recording.provider_platform ? (() => {
+                                    const logo = getIntegrationPlatformLogo(
+                                      recording.provider_platform as IntegrationPlatform,
+                                    )
+                                    return logo ? (
+                                      <img
+                                        src={logo}
+                                        alt={recording.provider_platform}
+                                        className="h-5 w-5 object-contain"
+                                      />
+                                    ) : null
+                                  })() : null}
                                   <span className="text-sm text-gray-500 capitalize">
                                     {recording.provider_platform || 'N/A'}
                                   </span>
@@ -1093,7 +1190,7 @@ export default function AgentPlayground() {
                       </div>
                       <div>
                         <h4 className="font-semibold text-gray-900">Voice AI Agent</h4>
-                        <p className="text-sm text-gray-600">Test with Voice AI Integration (Retell, etc.)</p>
+                        <p className="text-sm text-gray-600">Test with Voice AI Integration (Retell, Vapi, ElevenLabs, Smallest)</p>
                       </div>
                     </div>
                   </button>

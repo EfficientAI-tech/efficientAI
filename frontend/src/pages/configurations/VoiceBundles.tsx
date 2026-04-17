@@ -6,7 +6,7 @@ import { VoiceBundle, VoiceBundleCreate, ModelProvider, AIProvider, VoiceBundleT
 import { Mic, Plus, Edit, Trash2, X, Loader, Volume2, Brain, MessageSquare, AlertCircle, ChevronDown } from 'lucide-react'
 import Button from '../../components/Button'
 import { useToast } from '../../hooks/useToast'
-import { getProviderLabel, getProviderLogo } from '../../config/providers'
+import { getProviderLabel, getProviderLogo, mapIntegrationToModelProvider } from '../../config/providers'
 
 export default function VoiceBundles() {
   const queryClient = useQueryClient()
@@ -81,27 +81,8 @@ export default function VoiceBundles() {
     staleTime: 5 * 60 * 1000, // Cache for 5 minutes
   })
 
-  const mapIntegrationToProvider = (platform: IntegrationPlatform | string): ModelProvider | null => {
-    // Normalize to lowercase string for comparison (handles both enum and string values from API)
-    const platformLower = (typeof platform === 'string' ? platform : String(platform)).toLowerCase()
-
-    switch (platformLower) {
-      case 'deepgram':
-        return ModelProvider.DEEPGRAM
-      case 'cartesia':
-        return ModelProvider.CARTESIA
-      case 'elevenlabs':
-        return ModelProvider.ELEVENLABS
-      case 'murf':
-        return ModelProvider.MURF
-      case 'sarvam':
-        return ModelProvider.SARVAM
-      case 'voicemaker':
-        return ModelProvider.VOICEMAKER
-      default:
-        return null
-    }
-  }
+  const mapIntegrationToProvider = (platform: IntegrationPlatform | string): ModelProvider | null =>
+    mapIntegrationToModelProvider(platform as IntegrationPlatform)
 
   // Get configured providers (union of active AI providers and integrations)
   const configuredProviders = Array.from(

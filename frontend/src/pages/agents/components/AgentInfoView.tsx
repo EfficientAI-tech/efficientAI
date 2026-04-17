@@ -1,7 +1,8 @@
 import ReactMarkdown from 'react-markdown'
 import { format } from 'date-fns'
 import { RefreshCw, Globe } from 'lucide-react'
-import { VoiceBundle, Integration } from '../../../types/api'
+import { VoiceBundle, Integration, IntegrationPlatform } from '../../../types/api'
+import { getIntegrationPlatformLabel, getIntegrationPlatformLogo } from '../../../config/providers'
 
 function stripCodeFences(text: string): string {
   const trimmed = text.trim()
@@ -48,12 +49,6 @@ const LANGUAGE_LABELS: Record<string, string> = {
   hi: 'Hindi',
 }
 
-const PLATFORM_LABELS: Record<string, string> = {
-  vapi: 'Vapi',
-  retell: 'Retell',
-  elevenlabs: 'ElevenLabs',
-}
-
 export default function AgentInfoView({
   agent,
   voiceBundles,
@@ -65,7 +60,7 @@ export default function AgentInfoView({
 
   const providerLabel = (() => {
     const integration = integrations.find((i) => i.id === agent.voice_ai_integration_id)
-    if (integration?.platform) return PLATFORM_LABELS[integration.platform] || integration.platform
+    if (integration?.platform) return getIntegrationPlatformLabel(integration.platform as IntegrationPlatform)
     return 'Provider'
   })()
 
@@ -135,14 +130,18 @@ export default function AgentInfoView({
                 <div className="flex items-center gap-2 mb-1.5">
                   {(() => {
                     const integration = integrations.find((i) => i.id === agent.voice_ai_integration_id)
-                    if (integration?.platform === 'retell') {
-                      return (<><img src="/retellai.png" alt="Retell" className="h-5 w-5 object-contain" /><span className="text-sm font-medium text-gray-900">Retell AI</span></>)
-                    } else if (integration?.platform === 'vapi') {
-                      return (<><img src="/vapiai.jpg" alt="Vapi" className="h-5 w-5 rounded-full object-contain" /><span className="text-sm font-medium text-gray-900">Vapi AI</span></>)
-                    } else if (integration?.platform === 'elevenlabs') {
-                      return (<><img src="/elevenlabs.jpg" alt="ElevenLabs" className="h-5 w-5 rounded-full object-contain" /><span className="text-sm font-medium text-gray-900">ElevenLabs</span></>)
+                    if (!integration?.platform) {
+                      return <span className="text-sm text-gray-900">{integration?.name || 'Unknown'}</span>
                     }
-                    return <span className="text-sm text-gray-900">{integration?.name || 'Unknown'}</span>
+                    const platform = integration.platform as IntegrationPlatform
+                    const label = getIntegrationPlatformLabel(platform)
+                    const logo = getIntegrationPlatformLogo(platform)
+                    return (
+                      <>
+                        {logo ? <img src={logo} alt={label} className="h-5 w-5 object-contain" /> : null}
+                        <span className="text-sm font-medium text-gray-900">{label}</span>
+                      </>
+                    )
                   })()}
                 </div>
                 <div className="text-xs font-mono font-semibold text-primary-600 select-all break-all bg-white/60 px-2.5 py-1.5 rounded border border-gray-200 inline-block">

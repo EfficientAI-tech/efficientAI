@@ -516,7 +516,12 @@ class TranscriptionService:
             )
             return None
 
-        from app.services.ai.stt_clients import transcribe_openai, transcribe_deepgram, transcribe_elevenlabs
+        from app.services.ai.stt_clients import (
+            transcribe_openai,
+            transcribe_deepgram,
+            transcribe_elevenlabs,
+            transcribe_smallest,
+        )
 
         try:
             if stt_provider == ModelProvider.OPENAI:
@@ -525,6 +530,8 @@ class TranscriptionService:
                 result = transcribe_deepgram(audio_file_path, stt_model, api_key)
             elif stt_provider == ModelProvider.ELEVENLABS:
                 result = transcribe_elevenlabs(audio_file_path, stt_model, api_key)
+            elif stt_provider == ModelProvider.SMALLEST:
+                result = transcribe_smallest(audio_file_path, stt_model, api_key)
             else:
                 logger.warning(f"[TranscriptionService] Unsupported STT provider for text-only: {stt_provider}")
                 return None
@@ -562,7 +569,12 @@ class TranscriptionService:
                     f"Please configure the provider in Settings."
                 )
 
-            from app.services.ai.stt_clients import transcribe_openai, transcribe_deepgram, transcribe_elevenlabs
+            from app.services.ai.stt_clients import (
+                transcribe_openai,
+                transcribe_deepgram,
+                transcribe_elevenlabs,
+                transcribe_smallest,
+            )
 
             if stt_provider == ModelProvider.OPENAI:
                 if stt_model.startswith("whisper-"):
@@ -574,6 +586,8 @@ class TranscriptionService:
                 result = transcribe_deepgram(temp_file_path, stt_model, api_key, language)
             elif stt_provider == ModelProvider.ELEVENLABS:
                 result = transcribe_elevenlabs(temp_file_path, stt_model, api_key, language)
+            elif stt_provider == ModelProvider.SMALLEST:
+                result = transcribe_smallest(temp_file_path, stt_model, api_key, language)
             elif stt_provider == ModelProvider.GOOGLE:
                 raise NotImplementedError("Google Speech-to-Text not yet implemented")
             elif stt_provider == ModelProvider.AZURE:
