@@ -18,6 +18,21 @@ This means run scoring always reflects your currently enabled metric set, not a 
 
 EfficientAI supports practical metrics across conversation quality, latency, signal quality, and cost.
 
+```mermaid
+flowchart LR
+    A[Call Audio and Transcript] --> B{Metric Enabled?}
+    B -->|No| X[Skip Metric]
+    B -->|Yes| C{Evaluation Type}
+    C --> LLM[LLM Conversation Metrics]
+    C --> AC[Acoustic Signal Metrics]
+    C --> AI[AI Voice Quality Metrics]
+    AC --> D{Audio Available?}
+    AI --> D
+    D -->|No| Y[Skip Audio-Dependent Metric]
+    D -->|Yes| Z[Compute and Store Score]
+    LLM --> Z
+```
+
 ## Default metric behavior (seeded defaults)
 
 By default:
@@ -203,8 +218,8 @@ This section defines the full metric set often used for deeper benchmarking and 
 
 - **Definition**: Continuous emotional coordinates instead of discrete labels.
 - **Axes**:
-  - **Valence**: negative <-> positive
-  - **Arousal**: low energy <-> high energy
+  - **Valence**: negative to positive
+  - **Arousal**: low energy to high energy
 - **Interpretation**: Enables emotion mapping and consistency tracking across voices.
 
 ### F) Speaker Consistency

@@ -21,6 +21,16 @@ EfficientAI gives you an end-to-end loop for voice AI quality:
 5. Score calls using enabled **Metrics**.
 6. Improve prompts and re-test to track quality over time.
 
+```mermaid
+flowchart LR
+    A[Configure Agent] --> B[Configure Personas]
+    B --> C[Define Scenarios]
+    C --> D[Run Playground or Evaluators]
+    D --> E[Score with Enabled Metrics]
+    E --> F[Improve Prompts and Voice Setup]
+    F --> A
+```
+
 ## Core capabilities
 
 - **Agent testing across call setups**: supports inbound/outbound context and phone/web call mediums.
