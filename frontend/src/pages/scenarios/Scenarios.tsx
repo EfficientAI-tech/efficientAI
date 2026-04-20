@@ -7,7 +7,7 @@ import Button from '../../components/Button'
 import { useToast } from '../../hooks/useToast'
 import { AIProvider, ModelProvider } from '../../types/api'
 import { getProviderLabel, getProviderLogo } from '../../config/providers'
-import { useWalkthroughSectionState } from '../../context/WalkthroughContext'
+import { useWalkthrough, useWalkthroughSectionState } from '../../context/WalkthroughContext'
 
 interface Scenario {
   id: string
@@ -39,6 +39,7 @@ type CreateMode = 'agent_prompt' | 'call' | 'custom' | null
 export default function Scenarios() {
   const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
+  const { isCollapsed } = useWalkthrough()
   const [showMainModal, setShowMainModal] = useState(false)
   const [createMode, setCreateMode] = useState<CreateMode>(null)
   const [showDetailsModal, setShowDetailsModal] = useState(false)
@@ -73,6 +74,7 @@ export default function Scenarios() {
   const [isGeneratingEditDescription, setIsGeneratingEditDescription] = useState(false)
 
   useWalkthroughSectionState('scenarios', { createMode }, [createMode])
+  const walkthroughOffsetClass = isCollapsed ? 'lg:pr-0' : 'lg:pr-[360px]'
 
   // For Generate from Call
   const [callData, setCallData] = useState('')
@@ -656,8 +658,8 @@ export default function Scenarios() {
 
       {/* Main Create Scenario Modal */}
       {showMainModal && renderModal(
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]">
-          <div className="bg-white rounded-lg shadow-xl w-full mx-4 max-w-5xl max-h-[90vh] overflow-hidden flex flex-col">
+        <div className={`fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999] ${walkthroughOffsetClass}`}>
+          <div className="bg-white rounded-lg shadow-xl w-full mx-4 max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
             <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
               <h3 className="text-lg font-semibold">Create Scenario</h3>
               <button
@@ -671,18 +673,19 @@ export default function Scenarios() {
             {!createMode ? (
               // Mode Selection
               <div className="p-6">
+                <div className="mx-auto max-w-2xl">
                 <div className="mb-5 rounded-lg border border-blue-100 bg-blue-50 px-4 py-3">
                   <p className="text-sm font-medium text-blue-900">Choose how you want to create this scenario</p>
                   <p className="mt-1 text-xs text-blue-700">
-                    Fastest option: <span className="font-medium">Generate from Agent Prompt</span>. Most control:
+                    Fastest option: <span className="font-medium">Generate from Agent Prompt</span>. Most flexibility:
                     <span className="font-medium"> Create Custom Prompt</span>.
                   </p>
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="space-y-4">
                   {/* Generate from Agent Prompt */}
                   <button
                     onClick={() => setCreateMode('agent_prompt')}
-                    className="group relative p-5 bg-gradient-to-br from-blue-50 to-indigo-50 border-2 border-blue-200 rounded-xl hover:border-blue-400 hover:shadow-lg transition-all text-left focus:outline-none focus:ring-2 focus:ring-blue-400"
+                    className="group relative w-full p-5 bg-gradient-to-br from-blue-50 to-indigo-50 border-2 border-blue-200 rounded-xl hover:border-blue-400 hover:shadow-lg transition-all text-left focus:outline-none focus:ring-2 focus:ring-blue-400"
                   >
                     <div className="flex items-start gap-4">
                       <div className="flex-shrink-0">
@@ -708,7 +711,7 @@ export default function Scenarios() {
                   {/* Generate from Call */}
                   <button
                     onClick={() => setCreateMode('call')}
-                    className="group relative p-5 bg-gradient-to-br from-green-50 to-emerald-50 border-2 border-green-200 rounded-xl hover:border-green-400 hover:shadow-lg transition-all text-left focus:outline-none focus:ring-2 focus:ring-green-400"
+                    className="group relative w-full p-5 bg-gradient-to-br from-green-50 to-emerald-50 border-2 border-green-200 rounded-xl hover:border-green-400 hover:shadow-lg transition-all text-left focus:outline-none focus:ring-2 focus:ring-green-400"
                   >
                     <div className="flex items-start gap-4">
                       <div className="flex-shrink-0">
@@ -729,7 +732,7 @@ export default function Scenarios() {
                   {/* Create Custom Prompt */}
                   <button
                     onClick={() => setCreateMode('custom')}
-                    className="group relative p-5 bg-gradient-to-br from-orange-50 to-amber-50 border-2 border-orange-200 rounded-xl hover:border-orange-400 hover:shadow-lg transition-all text-left focus:outline-none focus:ring-2 focus:ring-orange-400"
+                    className="group relative w-full p-5 bg-gradient-to-br from-orange-50 to-amber-50 border-2 border-orange-200 rounded-xl hover:border-orange-400 hover:shadow-lg transition-all text-left focus:outline-none focus:ring-2 focus:ring-orange-400"
                   >
                     <div className="flex items-start gap-4">
                       <div className="flex-shrink-0">
@@ -742,7 +745,7 @@ export default function Scenarios() {
                         <p className="text-sm text-gray-600 leading-relaxed">
                           Manually create a custom scenario with specific requirements and conversation flow.
                         </p>
-                        <p className="mt-2 text-xs text-orange-700">Best for: full control over scenario details</p>
+                        <p className="mt-2 text-xs text-orange-700">Best for: manual control over scenario details</p>
                       </div>
                     </div>
                   </button>
@@ -751,6 +754,7 @@ export default function Scenarios() {
                   <Button type="button" variant="outline" onClick={handleCloseMainModal}>
                     Cancel
                   </Button>
+                </div>
                 </div>
               </div>
             ) : createMode === 'agent_prompt' ? (
@@ -1075,7 +1079,7 @@ export default function Scenarios() {
 
       {/* Scenario Details Modal */}
       {showDetailsModal && selectedScenario && renderModal(
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]" onClick={() => setShowDetailsModal(false)}>
+        <div className={`fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999] ${walkthroughOffsetClass}`} onClick={() => setShowDetailsModal(false)}>
           <div className="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4" onClick={(e) => e.stopPropagation()}>
             <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
               <h3 className="text-lg font-semibold">Scenario Details</h3>
@@ -1143,7 +1147,7 @@ export default function Scenarios() {
 
       {/* Edit Modal */}
       {showEditModal && selectedScenario && renderModal(
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]">
+        <div className={`fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999] ${walkthroughOffsetClass}`}>
           <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-hidden flex flex-col">
             <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
               <h3 className="text-lg font-semibold">Edit Scenario</h3>
@@ -1319,7 +1323,7 @@ export default function Scenarios() {
 
       {/* Delete Confirmation Modal */}
       {showDeleteModal && selectedScenario && renderModal(
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]" onClick={() => {
+        <div className={`fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999] ${walkthroughOffsetClass}`} onClick={() => {
           setShowDeleteModal(false)
           setSelectedScenario(null)
           setDeleteDependencies(null)

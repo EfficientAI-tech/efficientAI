@@ -176,12 +176,8 @@ export default function AgentInfoView({
         </div>
 
         {/* RIGHT: Provider Prompt */}
-        <div className={`border rounded-lg overflow-hidden flex flex-col ${
-          agent.voice_ai_integration_id && agent.voice_ai_agent_id
-            ? 'border-blue-200 bg-blue-50/20'
-            : 'border-gray-200 bg-gray-50/50'
-        }`}>
-          <div className="flex items-center justify-between px-5 py-3 border-b border-blue-200 bg-blue-50/50 flex-shrink-0">
+        <div className="border border-gray-200 rounded-lg overflow-hidden flex flex-col bg-gray-50">
+          <div className="flex items-center justify-between px-5 py-3 border-b border-gray-200 bg-gray-100/50 flex-shrink-0">
             <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
               <Globe className="h-4 w-4 text-blue-500" />
               {providerLabel} Prompt
@@ -195,7 +191,7 @@ export default function AgentInfoView({
               <button
                 onClick={onSyncProviderPrompt}
                 disabled={isSyncingPrompt}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-blue-700 bg-blue-100 rounded-md hover:bg-blue-200 border border-blue-300 transition-colors disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-blue-700 bg-blue-100 rounded-md hover:bg-blue-200 border border-blue-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <RefreshCw className={`h-3 w-3 ${isSyncingPrompt ? 'animate-spin' : ''}`} />
                 {isSyncingPrompt ? 'Syncing...' : 'Sync Now'}

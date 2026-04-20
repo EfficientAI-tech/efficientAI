@@ -193,9 +193,9 @@ export default function Layout() {
       </div>
 
       {/* Main content */}
-      <div className="lg:pl-64 flex flex-col flex-1">
+      <div className="lg:pl-64 pt-16 flex flex-col flex-1">
         {/* Top bar */}
-        <div className="sticky top-0 z-10 flex-shrink-0 flex h-16 bg-white shadow-sm border-b border-gray-200">
+        <div className="fixed top-0 left-0 right-0 lg:left-64 z-30 flex-shrink-0 flex h-16 bg-white shadow-sm border-b border-gray-200">
           <button
             type="button"
             className="px-4 text-gray-500 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-gray-500 lg:hidden"

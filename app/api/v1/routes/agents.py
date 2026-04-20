@@ -478,7 +478,14 @@ async def sync_agent_provider_prompt(
         raise HTTPException(status_code=502, detail=f"Failed to fetch prompt from provider: {str(e)}")
 
     db.refresh(db_agent)
+    synced = isinstance(prompt, str) and bool(prompt.strip())
+    if not synced:
+        raise HTTPException(
+            status_code=422,
+            detail="Provider returned no prompt. Verify the external agent has a system prompt configured.",
+        )
     return {
+        "synced": synced,
         "provider_prompt": db_agent.provider_prompt,
         "provider_prompt_synced_at": db_agent.provider_prompt_synced_at.isoformat() if db_agent.provider_prompt_synced_at else None,
     }

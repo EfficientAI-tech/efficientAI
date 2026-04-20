@@ -126,10 +126,19 @@ export default function AgentDetail() {
 
   const syncPromptMutation = useMutation({
     mutationFn: () => apiClient.syncProviderPrompt(id!),
-    onSuccess: () => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['agent', id] })
       queryClient.invalidateQueries({ queryKey: ['agents'] })
-      showToast('Provider prompt synced successfully!', 'success')
+
+      if (data.synced) {
+        showToast('Provider prompt synced successfully!', 'success')
+        return
+      }
+
+      showToast(
+        'No prompt returned from provider. Verify the provider agent has a system prompt configured.',
+        'error'
+      )
     },
     onError: (error: any) => {
       showToast(

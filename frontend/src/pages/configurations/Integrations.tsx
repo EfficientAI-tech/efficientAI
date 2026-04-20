@@ -14,6 +14,21 @@ import {
 
 type IntegrationType = 'voice_platform' | 'ai_provider' | null
 
+const AI_INTEGRATION_PROVIDERS: ModelProvider[] = [
+  ModelProvider.OPENAI,
+  ModelProvider.ANTHROPIC,
+  ModelProvider.GOOGLE,
+  ModelProvider.XAI,
+  ModelProvider.COHERE,
+  ModelProvider.MISTRAL,
+  ModelProvider.META,
+  ModelProvider.TOGETHER,
+  ModelProvider.PERPLEXITY,
+  ModelProvider.AZURE,
+  ModelProvider.AWS,
+  ModelProvider.CUSTOM,
+]
+
 export default function Integrations() {
   const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
@@ -345,9 +360,12 @@ export default function Integrations() {
   const configuredPlatforms = new Set(integrations.map((i: Integration) => i.platform))
   const availablePlatforms = platforms.filter(p => !configuredPlatforms.has(p.id))
 
-  // Get configured AI providers
-  const configuredProviders = new Set(aiproviders.map((p: AIProvider) => p.provider))
-  const availableProviders = Object.values(ModelProvider).filter(p => !configuredProviders.has(p))
+  // AI Integration section should only show LLM providers.
+  // Voice vendors belong under Voice Platform integrations.
+  const availableProviders = AI_INTEGRATION_PROVIDERS
+  const aiIntegrationProviders = (aiproviders as AIProvider[]).filter((p) =>
+    AI_INTEGRATION_PROVIDERS.includes(p.provider as ModelProvider)
+  )
 
   const getPlatformInfo = (platformId: IntegrationPlatform) => {
     return platforms.find(p => p.id === platformId)
@@ -374,7 +392,7 @@ export default function Integrations() {
       </div>
 
       {/* Configured Integrations */}
-      {(integrations.length > 0 || aiproviders.length > 0) && (
+      {(integrations.length > 0 || aiIntegrationProviders.length > 0) && (
         <div className="bg-white shadow rounded-lg overflow-hidden">
           <div className="px-6 py-4 border-b border-gray-200">
             <h2 className="text-lg font-semibold text-gray-900">Configured Integrations</h2>
@@ -468,19 +486,19 @@ export default function Integrations() {
             )}
 
             {/* AI Provider Integrations */}
-            {aiproviders.length > 0 && (
+            {aiIntegrationProviders.length > 0 && (
               <div>
                 <div className="px-6 py-3 bg-purple-50 border-b border-purple-100">
                   <div className="flex items-center gap-2">
                     <Brain className="h-4 w-4 text-purple-600" />
                     <h3 className="text-sm font-semibold text-purple-900">AI Providers</h3>
                     <span className="px-2 py-0.5 text-xs font-medium bg-purple-100 text-purple-700 rounded-full">
-                      {aiproviders.length}
+                      {aiIntegrationProviders.length}
                     </span>
                   </div>
                 </div>
                 <div className="divide-y divide-gray-200">
-                  {aiproviders.map((provider: AIProvider) => (
+                  {aiIntegrationProviders.map((provider: AIProvider) => (
                     <div
                       key={provider.id}
                       className="px-6 py-4 hover:bg-gray-50 transition-colors"
@@ -553,7 +571,7 @@ export default function Integrations() {
         </div>
       )}
 
-      {integrations.length === 0 && aiproviders.length === 0 && (
+      {integrations.length === 0 && aiIntegrationProviders.length === 0 && (
         <div className="bg-white rounded-lg shadow p-12 text-center">
           <Plug className="w-12 h-12 text-gray-400 mx-auto mb-4" />
           <h3 className="text-lg font-medium text-gray-900 mb-2">All integrations configured</h3>
@@ -620,7 +638,7 @@ export default function Integrations() {
                         <Brain className="h-5 w-5 text-primary-600" />
                         <span className="font-medium text-gray-900">AI Provider</span>
                       </div>
-                      <p className="text-xs text-gray-600 mt-1">OpenAI, Anthropic, etc.</p>
+                      <p className="text-xs text-gray-600 mt-1">OpenAI, Claude, Gemini, etc.</p>
                     </button>
                   </div>
                 </div>

@@ -91,6 +91,29 @@ def test_extract_agent_prompt_prefers_global_prompt(monkeypatch):
     assert provider.extract_agent_prompt("agent-1") == "System instructions"
 
 
+def test_extract_agent_prompt_reads_nested_response_engine_prompt(monkeypatch):
+    provider = SmallestVoiceProvider(api_key="key")
+    monkeypatch.setattr(
+        provider,
+        "get_agent",
+        lambda _agent_id: {"responseEngine": {"systemPrompt": "Nested prompt"}},
+    )
+
+    assert provider.extract_agent_prompt("agent-1") == "Nested prompt"
+
+
+def test_extract_agent_prompt_falls_back_to_workflow_prompt(monkeypatch):
+    provider = SmallestVoiceProvider(api_key="key")
+    monkeypatch.setattr(provider, "get_agent", lambda _agent_id: {"workflowType": "single_prompt"})
+    monkeypatch.setattr(
+        provider,
+        "get_agent_workflow",
+        lambda _agent_id: {"type": "single_prompt", "data": {"prompt": "Workflow prompt"}},
+    )
+
+    assert provider.extract_agent_prompt("agent-1") == "Workflow prompt"
+
+
 def test_request_retries_without_proxy_on_proxy_error(monkeypatch):
     provider = SmallestVoiceProvider(api_key="key")
     calls = {"request": 0, "session_request": 0, "trust_env_values": []}
