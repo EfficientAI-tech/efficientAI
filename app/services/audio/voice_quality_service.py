@@ -80,6 +80,13 @@ def get_recording_url(call_data: Optional[Dict[str, Any]], provider_platform: Op
     elif provider_platform == "retell":
         # Retell stores recording URL directly
         return call_data.get("recording_url")
+    elif provider_platform == "smallest":
+        return (
+            call_data.get("recording_url")
+            or call_data.get("recordingUrl")
+            or call_data.get("recording_urls", {}).get("combined_url")
+            or call_data.get("recording_urls", {}).get("conversation_audio")
+        )
     else:
         # Try common patterns for unknown providers
         return call_data.get("recording_url") or call_data.get("recordingUrl") or call_data.get("recording_urls", {}).get("combined_url")

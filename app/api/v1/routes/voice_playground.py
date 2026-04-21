@@ -137,6 +137,9 @@ TTS_VOICES: Dict[str, List[Dict[str, str]]] = {
         {"id": "ai3-Keiko", "name": "Keiko", "gender": "Female", "accent": "Japanese", "language_code": "ja-JP"},
         {"id": "ai3-Liang", "name": "Liang", "gender": "Male", "accent": "Chinese", "language_code": "zh-CN"},
     ],
+    "smallest": [
+        {"id": "daniel", "name": "Daniel", "gender": "Male", "accent": "American"},
+    ],
 }
 
 def _get_tts_models_by_provider() -> Dict[str, List[str]]:
@@ -158,6 +161,7 @@ PROVIDER_SAMPLE_RATES: Dict[str, List[int]] = {
     # Murf stream API valid sample rates.
     "murf": [8000, 16000, 24000, 44100, 48000],
     "voicemaker": [8000, 16000, 22050, 24000, 44100, 48000],
+    "smallest": [8000, 16000, 24000],
 }
 
 # ======================================================================

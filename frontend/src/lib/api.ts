@@ -864,17 +864,20 @@ class ApiClient {
     custom_sip_headers?: Record<string, string>
   }): Promise<{
     call_type: string
-    access_token: string
+    access_token?: string
     call_id: string
     agent_id: string
     agent_version?: number
-    call_status: string
+    call_status?: string
     agent_name?: string
     metadata?: Record<string, any>
     retell_llm_dynamic_variables?: Record<string, any>
     sample_rate?: number
     call_short_id?: string
     signed_url?: string
+    host?: string
+    room_name?: string
+    conversation_id?: string
   }> {
     const response = await this.client.post('/api/v1/playground/web-call', data)
     return response.data

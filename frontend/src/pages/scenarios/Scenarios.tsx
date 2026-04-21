@@ -7,6 +7,7 @@ import Button from '../../components/Button'
 import { useToast } from '../../hooks/useToast'
 import { AIProvider, ModelProvider } from '../../types/api'
 import { getProviderLabel, getProviderLogo } from '../../config/providers'
+import { useWalkthroughSectionState } from '../../context/WalkthroughContext'
 
 interface Scenario {
   id: string
@@ -70,6 +71,8 @@ export default function Scenarios() {
   const [savingDraftIds, setSavingDraftIds] = useState<Set<string>>(new Set())
   const [editGeneratePrompt, setEditGeneratePrompt] = useState('')
   const [isGeneratingEditDescription, setIsGeneratingEditDescription] = useState(false)
+
+  useWalkthroughSectionState('scenarios', { createMode }, [createMode])
 
   // For Generate from Call
   const [callData, setCallData] = useState('')

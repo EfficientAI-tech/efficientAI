@@ -459,6 +459,7 @@ class TestAgentBridgeService:
                     ModelProvider.DEEPGRAM: IntegrationPlatform.DEEPGRAM,
                     ModelProvider.CARTESIA: IntegrationPlatform.CARTESIA,
                     ModelProvider.ELEVENLABS: IntegrationPlatform.ELEVENLABS,
+                    ModelProvider.SMALLEST: IntegrationPlatform.SMALLEST,
                 }
                 plat = platform_map.get(provider)
                 if plat:

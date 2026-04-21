@@ -43,6 +43,8 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.api
+      args:
+        INSTALL_EXTRAS: "reports"
     container_name: efficientai_api
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-efficientai}

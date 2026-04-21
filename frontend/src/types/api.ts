@@ -176,6 +176,7 @@ export enum IntegrationPlatform {
   MURF = 'murf',
   SARVAM = 'sarvam',
   VOICEMAKER = 'voicemaker',
+  SMALLEST = 'smallest',
 }
 
 export interface Integration {
@@ -211,6 +212,7 @@ export enum ModelProvider {
   CUSTOM = 'custom',
   SARVAM = 'sarvam',
   VOICEMAKER = 'voicemaker',
+  SMALLEST = 'smallest',
 }
 
 // AI Provider Types

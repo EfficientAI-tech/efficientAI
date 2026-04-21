@@ -31,6 +31,7 @@ import {
   Globe,
 } from 'lucide-react'
 import { format } from 'date-fns'
+import { useWalkthroughSectionState } from '../../context/WalkthroughContext'
 
 interface OptimizationRun {
   id: string
@@ -131,6 +132,16 @@ export default function PromptOptimization() {
 
   const selectedRun = runs.find(r => r.id === selectedRunId)
   const compareCandidate = candidates.find(c => c.id === compareCandidateId)
+
+  useWalkthroughSectionState(
+    'prompt-optimization',
+    {
+      hasSelectedRun: Boolean(selectedRunId),
+      hasCompareCandidate: Boolean(compareCandidateId),
+      showNewRunDialog,
+    },
+    [selectedRunId, compareCandidateId, showNewRunDialog]
+  )
 
   const createRunMutation = useMutation({
     mutationFn: (data: { agent_id: string; evaluator_id?: string; config?: Record<string, any> }) =>
