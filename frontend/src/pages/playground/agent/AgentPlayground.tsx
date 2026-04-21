@@ -3,13 +3,15 @@ import { useNavigate } from 'react-router-dom'
 import { useAgentStore } from '../../../store/agentStore'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../../lib/api'
-import { Play, X, Phone, PhoneOff, RefreshCw, Mic, Bot, PhoneCall, Trash2, AlertTriangle, CheckSquare, Square } from 'lucide-react'
+import { Play, X, Phone, PhoneOff, RefreshCw, Mic, Bot, PhoneCall, Trash2, AlertTriangle, CheckSquare, Square, Bookmark, BookmarkCheck } from 'lucide-react'
 import Button from '../../../components/Button'
 import { useToast } from '../../../hooks/useToast'
 import { RetellWebClient } from 'retell-client-js-sdk'
 import Vapi from '@vapi-ai/web'
 import { Conversation } from '@elevenlabs/client'
 import VoiceAgent from '../../../components/VoiceAgent'
+import GenericVoiceWSClient from '../../../components/GenericVoiceWSClient'
+import { getProtocolById } from '../../../lib/wsProtocols'
 
 // Type for RetellWebClient - using the actual SDK methods
 type RetellWebClientWithMethods = RetellWebClient & {
@@ -92,7 +94,36 @@ export default function AgentPlayground() {
     staleTime: 60_000,
   })
 
-  const [activeTab, setActiveTab] = useState<'test_agents' | 'voice_ai_agents'>('voice_ai_agents')
+  const [activeTab, setActiveTab] = useState<'test_agents' | 'voice_ai_agents' | 'custom_websocket'>('voice_ai_agents')
+  const [customWebsocketUrl, setCustomWebsocketUrl] = useState('')
+
+  // Saved WebSocket URLs (persisted in localStorage)
+  type SavedWsUrl = { id: string; label: string; url: string; createdAt: string }
+  const SAVED_WS_KEY = 'efficientai-saved-ws-urls'
+  const loadSavedUrls = (): SavedWsUrl[] => {
+    try { return JSON.parse(localStorage.getItem(SAVED_WS_KEY) || '[]') } catch { return [] }
+  }
+  const [savedWsUrls, setSavedWsUrls] = useState<SavedWsUrl[]>(loadSavedUrls)
+  const [showSaveForm, setShowSaveForm] = useState(false)
+  const [saveLabel, setSaveLabel] = useState('')
+
+  const persistSavedUrls = (urls: SavedWsUrl[]) => {
+    setSavedWsUrls(urls)
+    localStorage.setItem(SAVED_WS_KEY, JSON.stringify(urls))
+  }
+  const handleSaveUrl = () => {
+    const url = customWebsocketUrl.trim()
+    if (!url) return
+    const label = saveLabel.trim() || url
+    const entry: SavedWsUrl = { id: crypto.randomUUID(), label, url, createdAt: new Date().toISOString() }
+    persistSavedUrls([entry, ...savedWsUrls])
+    setSaveLabel('')
+    setShowSaveForm(false)
+  }
+  const handleDeleteSavedUrl = (id: string) => {
+    persistSavedUrls(savedWsUrls.filter((s) => s.id !== id))
+  }
+  const isCurrentUrlSaved = savedWsUrls.some((s) => s.url === customWebsocketUrl.trim())
   const [selectedCallIds, setSelectedCallIds] = useState<Set<string>>(new Set())
   const [isDeletingSelected, setIsDeletingSelected] = useState(false)
   const [selectedTestResultIds, setSelectedTestResultIds] = useState<Set<string>>(new Set())
@@ -588,6 +619,21 @@ export default function AgentPlayground() {
     navigate(`/playground/call-recordings/${callShortId}`)
   }
 
+  const handleEvaluateCustomSession = async (callShortId: string) => {
+    try {
+      await apiClient.evaluateCustomWebsocketSession(callShortId)
+      showToast('Evaluation queued for custom websocket session', 'success')
+      queryClient.invalidateQueries({ queryKey: ['call-recordings'] })
+      queryClient.invalidateQueries({ queryKey: ['test-voice-agent-results'] })
+    } catch (error: any) {
+      const detail = error?.response?.data?.detail || error?.message || 'Failed to queue evaluation'
+      showToast(detail, 'error')
+    }
+  }
+
+  const voiceAICallRecordings = callRecordings.filter((recording: any) => recording.provider_platform !== 'custom_websocket')
+  const customWebsocketSessions = callRecordings.filter((recording: any) => recording.provider_platform === 'custom_websocket')
+
 
   const toggleCallSelection = (callShortId: string) => {
     setSelectedCallIds(prev => {
@@ -602,7 +648,7 @@ export default function AgentPlayground() {
   }
 
   const toggleSelectAllCalls = () => {
-    const allIds = callRecordings.map((r: any) => r.call_short_id)
+    const allIds = voiceAICallRecordings.map((r: any) => r.call_short_id)
     const allSelected = allIds.length > 0 && allIds.every((id: string) => selectedCallIds.has(id))
     setSelectedCallIds(allSelected ? new Set() : new Set(allIds))
   }
@@ -743,6 +789,20 @@ export default function AgentPlayground() {
                   <Bot className="h-4 w-4" />
                   Test Agents
                 </button>
+                <button
+                  onClick={() => setActiveTab('custom_websocket')}
+                  className={`
+                    flex items-center gap-2 py-4 px-1 border-b-2 font-medium text-sm
+                    ${
+                      activeTab === 'custom_websocket'
+                        ? 'border-blue-500 text-blue-600'
+                        : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                    }
+                  `}
+                >
+                  <Mic className="h-4 w-4" />
+                  Custom WebSocket Testing
+                </button>
               </nav>
             </div>
             {/* Test Agents Tab Content */}
@@ -874,7 +934,7 @@ export default function AgentPlayground() {
                     </Button>
                   </div>
                 )}
-                {callRecordings.length === 0 ? (
+                {voiceAICallRecordings.length === 0 ? (
                   <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
                     <p className="text-sm text-gray-600">No call recordings found</p>
                   </div>
@@ -890,7 +950,7 @@ export default function AgentPlayground() {
                               className="flex-shrink-0"
                               aria-label="Select all call recordings"
                             >
-                              {callRecordings.length > 0 && callRecordings.every((r: any) => selectedCallIds.has(r.call_short_id)) ? (
+                              {voiceAICallRecordings.length > 0 && voiceAICallRecordings.every((r: any) => selectedCallIds.has(r.call_short_id)) ? (
                                 <CheckSquare className="w-5 h-5 text-primary-600" />
                               ) : (
                                 <Square className="w-5 h-5 text-gray-400" />
@@ -915,7 +975,7 @@ export default function AgentPlayground() {
                         </tr>
                       </thead>
                       <tbody className="bg-white divide-y divide-gray-200">
-                        {callRecordings.map((recording: any) => {
+                        {voiceAICallRecordings.map((recording: any) => {
                           const isSelected = selectedCallIds.has(recording.call_short_id)
                           return (
                             <tr
@@ -1014,6 +1074,186 @@ export default function AgentPlayground() {
                     </table>
                   </div>
                 )}
+              </div>
+            )}
+
+            {activeTab === 'custom_websocket' && (
+              <div className="mt-4 space-y-4">
+                <div className="rounded-lg border border-gray-200 p-4">
+                  <h3 className="text-sm font-semibold text-gray-900">Test a Custom WebSocket Voice Agent</h3>
+                  <p className="mt-1 text-xs text-gray-600">
+                    Paste or pick a saved WebSocket endpoint and start a live call. After disconnect you can save the transcript and evaluate.
+                  </p>
+
+                  {/* URL input + save button */}
+                  <div className="mt-3 flex gap-2">
+                    <input
+                      value={customWebsocketUrl}
+                      onChange={(e) => setCustomWebsocketUrl(e.target.value)}
+                      placeholder="wss://your-voice-agent.example.com/ws"
+                      className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-200"
+                    />
+                    {customWebsocketUrl.trim() && (
+                      isCurrentUrlSaved ? (
+                        <button
+                          className="flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-medium text-primary-600 bg-primary-50 border border-primary-200"
+                          title="Already saved"
+                          disabled
+                        >
+                          <BookmarkCheck className="h-4 w-4" />
+                          Saved
+                        </button>
+                      ) : (
+                        <button
+                          className="flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-medium text-gray-700 bg-white border border-gray-300 hover:bg-gray-50 transition-colors"
+                          onClick={() => setShowSaveForm((v) => !v)}
+                          title="Save this URL for later"
+                        >
+                          <Bookmark className="h-4 w-4" />
+                          Save
+                        </button>
+                      )
+                    )}
+                  </div>
+
+                  {/* Inline save form */}
+                  {showSaveForm && (
+                    <div className="mt-2 flex gap-2 items-center">
+                      <input
+                        value={saveLabel}
+                        onChange={(e) => setSaveLabel(e.target.value)}
+                        placeholder="Label (e.g. My Voice Bot)"
+                        className="flex-1 rounded-lg border border-gray-300 px-3 py-1.5 text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-200"
+                        onKeyDown={(e) => { if (e.key === 'Enter') handleSaveUrl() }}
+                        autoFocus
+                      />
+                      <Button size="sm" onClick={handleSaveUrl}>Save</Button>
+                      <button className="text-gray-400 hover:text-gray-600" onClick={() => setShowSaveForm(false)}>
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Saved URLs list */}
+                  {savedWsUrls.length > 0 && (
+                    <div className="mt-3">
+                      <p className="text-[10px] font-medium text-gray-400 uppercase tracking-wider mb-1.5">Saved Endpoints</p>
+                      <div className="flex flex-wrap gap-2">
+                        {savedWsUrls.map((s) => (
+                          <button
+                            key={s.id}
+                            className={`group flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs transition-colors ${
+                              customWebsocketUrl.trim() === s.url
+                                ? 'border-primary-400 bg-primary-50 text-primary-700 font-medium'
+                                : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50 hover:border-gray-300'
+                            }`}
+                            onClick={() => setCustomWebsocketUrl(s.url)}
+                            title={s.url}
+                          >
+                            <Bookmark className="h-3 w-3 flex-shrink-0" />
+                            <span className="truncate max-w-[200px]">{s.label}</span>
+                            <span
+                              className="hidden group-hover:inline-flex ml-1 text-gray-400 hover:text-red-500"
+                              onClick={(e) => { e.stopPropagation(); handleDeleteSavedUrl(s.id) }}
+                              title="Remove"
+                            >
+                              <X className="h-3 w-3" />
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {customWebsocketUrl.trim().startsWith('ws://') || customWebsocketUrl.trim().startsWith('wss://') ? (
+                  <GenericVoiceWSClient
+                    websocketUrl={customWebsocketUrl.trim()}
+                    protocol={getProtocolById('generic')}
+                    agentId={selectedAgent?.id}
+                    onSessionSaved={() => {
+                      queryClient.invalidateQueries({ queryKey: ['call-recordings'] })
+                      queryClient.invalidateQueries({ queryKey: ['test-voice-agent-results'] })
+                    }}
+                  />
+                ) : (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                    Enter a valid WebSocket URL (<code className="bg-amber-100 px-1 rounded">ws://</code> or <code className="bg-amber-100 px-1 rounded">wss://</code>) to start testing.
+                  </div>
+                )}
+
+                <div className="rounded-lg border border-gray-200">
+                  <div className="border-b border-gray-200 px-4 py-3">
+                    <h4 className="text-sm font-semibold text-gray-900">Saved Custom Sessions</h4>
+                  </div>
+                  <div className="p-4">
+                    {customWebsocketSessions.length === 0 ? (
+                      <p className="text-sm text-gray-600">No saved custom websocket sessions yet.</p>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="min-w-full divide-y divide-gray-200">
+                          <thead className="bg-gray-50">
+                            <tr>
+                              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Call ID</th>
+                              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Evaluation</th>
+                              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Created</th>
+                              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-gray-200 bg-white">
+                            {customWebsocketSessions.map((session: any) => (
+                              <tr
+                                key={session.id}
+                                className="hover:bg-gray-50 cursor-pointer transition-colors"
+                                onClick={() => handleViewCallRecording(session.call_short_id)}
+                              >
+                                <td className="px-4 py-3 text-sm font-mono font-semibold text-primary-600">
+                                  {session.call_short_id}
+                                </td>
+                                <td className="px-4 py-3 text-sm text-gray-600">{session.status}</td>
+                                <td className="px-4 py-3">
+                                  {session.evaluator_result_id ? (
+                                    <span className="inline-flex rounded-full bg-blue-100 px-2 py-1 text-xs font-semibold text-blue-800">
+                                      {session.evaluation_status || 'queued'}
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex rounded-full bg-gray-100 px-2 py-1 text-xs font-semibold text-gray-700">
+                                      pending
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="px-4 py-3 text-sm text-gray-600">
+                                  {session.created_at ? new Date(session.created_at).toLocaleString() : 'N/A'}
+                                </td>
+                                <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                                  <div className="flex flex-wrap gap-2">
+                                    {!session.evaluator_result_id && (
+                                      <Button
+                                        variant="outline"
+                                        onClick={() => handleEvaluateCustomSession(session.call_short_id)}
+                                      >
+                                        Run Evaluation
+                                      </Button>
+                                    )}
+                                    {session.evaluator_result_id && (
+                                      <Button
+                                        variant="outline"
+                                        onClick={() => handleViewTestResult(session.evaluator_result_id)}
+                                      >
+                                        Open Result
+                                      </Button>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
             )}
           </div>
@@ -1161,20 +1401,22 @@ export default function AgentPlayground() {
                   </div>
 
                   {isConnected && (
-                    <div className="h-48 overflow-y-auto bg-gray-50 rounded p-3 mb-4 space-y-2 border border-gray-200">
+                    <div className="h-48 overflow-y-auto bg-gray-50 rounded p-4 mb-4 space-y-3 border border-gray-200">
                       {transcripts.length === 0 ? (
                         <p className="text-gray-400 text-xs text-center italic">Waiting for connection...</p>
                       ) : (
                         transcripts.map((msg, idx) => (
                           <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                            <div className={`max-w-[80%] rounded-lg px-3 py-2 text-sm ${msg.role === 'user'
-                              ? 'bg-blue-100 text-blue-900'
-                              : 'bg-white border border-gray-200 text-gray-800'
+                            <div className={`max-w-[80%] rounded-2xl px-4 py-2.5 ${msg.role === 'user'
+                              ? 'bg-indigo-600 text-white rounded-br-none'
+                              : 'bg-white border border-gray-200 text-gray-800 rounded-bl-none'
                               }`}>
-                              <p className="text-xs font-semibold mb-0.5 opacity-70">
+                              <p className={`text-[10px] font-semibold uppercase tracking-wider mb-0.5 ${
+                                msg.role === 'user' ? 'opacity-70' : 'text-gray-400'
+                              }`}>
                                 {msg.role === 'user' ? 'You' : 'Agent'}
                               </p>
-                              {msg.content}
+                              <p className="text-sm leading-relaxed">{msg.content}</p>
                             </div>
                           </div>
                         ))

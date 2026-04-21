@@ -2,7 +2,7 @@
 Playground API Routes
 API endpoints for testing voice agents in the playground
 """
-from fastapi import APIRouter, Depends, HTTPException, status, Body, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, Body, BackgroundTasks, Form, File, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from typing import Dict, Any, Optional, List
@@ -10,6 +10,9 @@ from uuid import UUID
 from pydantic import BaseModel
 from loguru import logger
 import random
+import json
+import uuid as _uuid
+from datetime import datetime
 
 from app.dependencies import get_db, get_organization_id, get_api_key
 from app.models.database import (
@@ -21,6 +24,9 @@ from app.models.database import (
     CallRecordingSource,
     EvaluatorResult,
     EvaluatorResultStatus,
+    VoiceBundle,
+    AIProvider,
+    ModelProvider,
 )
 from app.core.encryption import decrypt_api_key
 from app.services.voice_providers import get_voice_provider
@@ -711,6 +717,231 @@ async def list_call_recordings(
     ]
 
 
+@router.post("/custom-websocket-sessions", response_model=Dict[str, Any])
+async def create_custom_websocket_session(
+    agent_id: str = Form(...),
+    websocket_url: str = Form(...),
+    transcript_entries: str = Form("[]"),
+    started_at: Optional[str] = Form(None),
+    ended_at: Optional[str] = Form(None),
+    audio_file: Optional[UploadFile] = File(None),
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """
+    Save a custom websocket test session for later evaluation.
+    Stores transcript in call_data and uploads optional audio recording to S3.
+    """
+    try:
+        agent_uuid = UUID(agent_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid agent_id")
+
+    agent = db.query(Agent).filter(
+        Agent.id == agent_uuid,
+        Agent.organization_id == organization_id,
+    ).first()
+    if not agent:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+
+    try:
+        parsed_entries = json.loads(transcript_entries or "[]")
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid transcript_entries payload")
+
+    normalized_entries = []
+    for entry in parsed_entries:
+        if not isinstance(entry, dict):
+            continue
+        role = entry.get("role")
+        content = (entry.get("content") or "").strip()
+        if role not in {"user", "agent"} or not content:
+            continue
+        normalized_entries.append(
+            {
+                "role": role,
+                "content": content,
+                "timestamp": entry.get("timestamp") or ended_at or started_at,
+            }
+        )
+
+    if not normalized_entries:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No transcript entries provided")
+
+    transcript_text = "\n".join(
+        [f"{'User' if item['role'] == 'user' else 'Agent'}: {item['content']}" for item in normalized_entries]
+    )
+
+    call_short_id = generate_unique_call_short_id(db)
+    audio_s3_key = None
+    if audio_file:
+        from app.services.storage.s3_service import s3_service
+
+        audio_bytes = await audio_file.read()
+        if audio_bytes:
+            if not s3_service.is_enabled():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="S3 storage is not configured. Save without recording or enable storage.",
+                )
+
+            filename = audio_file.filename or "session.webm"
+            extension = filename.split(".")[-1].lower() if "." in filename else "webm"
+            content_type = audio_file.content_type or "audio/webm"
+            audio_s3_key = (
+                f"audio/organizations/{organization_id}/agentPlayground/customWebsocket/"
+                f"{call_short_id}/{_uuid.uuid4()}.{extension}"
+            )
+            s3_service.upload_file_by_key(audio_bytes, audio_s3_key, content_type=content_type)
+
+    duration_seconds = 0
+    if started_at and ended_at:
+        try:
+            from datetime import datetime as _dt
+            t_start = _dt.fromisoformat(started_at.replace("Z", "+00:00"))
+            t_end = _dt.fromisoformat(ended_at.replace("Z", "+00:00"))
+            duration_seconds = max(0, (t_end - t_start).total_seconds())
+        except Exception:
+            duration_seconds = 0
+
+    speaker_segments = []
+    for entry in normalized_entries:
+        speaker = "user" if entry.get("role") == "user" else "assistant"
+        speaker_segments.append({
+            "speaker": speaker,
+            "text": entry.get("content", ""),
+            "start": 0,
+            "end": 0,
+        })
+
+    call_data = {
+        "source": "custom_websocket",
+        "websocket_url": websocket_url,
+        "messages": normalized_entries,
+        "transcript": transcript_text,
+        "speaker_segments": speaker_segments,
+        "recording_s3_key": audio_s3_key,
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "duration_seconds": duration_seconds,
+    }
+
+    call_recording = CallRecording(
+        organization_id=organization_id,
+        call_short_id=call_short_id,
+        status=CallRecordingStatus.UPDATED,
+        source=CallRecordingSource.PLAYGROUND,
+        call_data=call_data,
+        provider_call_id=f"custom_{call_short_id}",
+        provider_platform="custom_websocket",
+        agent_id=agent.id,
+    )
+    db.add(call_recording)
+    db.commit()
+    db.refresh(call_recording)
+
+    return {
+        "message": "Custom websocket session saved",
+        "call_short_id": call_short_id,
+        "audio_s3_key": audio_s3_key,
+        "evaluator_result_id": None,
+    }
+
+
+@router.post("/custom-websocket-sessions/{call_short_id}/evaluate", response_model=Dict[str, Any])
+async def evaluate_custom_websocket_session(
+    call_short_id: str,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """
+    Queue evaluation for a saved custom websocket test session.
+    """
+    call_recording = db.query(CallRecording).filter(
+        CallRecording.call_short_id == call_short_id,
+        CallRecording.organization_id == organization_id,
+        CallRecording.source == CallRecordingSource.PLAYGROUND,
+        CallRecording.provider_platform == "custom_websocket",
+    ).first()
+
+    if not call_recording:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Custom websocket session not found")
+
+    call_data = call_recording.call_data if isinstance(call_recording.call_data, dict) else {}
+    transcript_text = (call_data.get("transcript") or "").strip()
+    if not transcript_text:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No transcript found for evaluation")
+
+    existing_result = None
+    if call_recording.evaluator_result_id:
+        existing_result = db.query(EvaluatorResult).filter(
+            EvaluatorResult.id == call_recording.evaluator_result_id,
+            EvaluatorResult.organization_id == organization_id,
+        ).first()
+
+    speaker_segments = call_data.get("speaker_segments") or []
+
+    if existing_result:
+        evaluator_result = existing_result
+        evaluator_result.status = EvaluatorResultStatus.QUEUED.value
+        evaluator_result.error_message = None
+        evaluator_result.metric_scores = None
+        evaluator_result.celery_task_id = None
+        evaluator_result.transcription = transcript_text
+        evaluator_result.speaker_segments = speaker_segments
+        evaluator_result.audio_s3_key = call_data.get("recording_s3_key")
+        evaluator_result.call_data = call_data
+        evaluator_result.duration_seconds = call_data.get("duration_seconds", 0)
+        db.commit()
+        db.refresh(evaluator_result)
+    else:
+        agent = db.query(Agent).filter(Agent.id == call_recording.agent_id).first()
+        result_id = generate_unique_result_id(db)
+        result_name = f"Custom WebSocket Test - {agent.name}" if agent else "Custom WebSocket Test"
+
+        evaluator_result = EvaluatorResult(
+            result_id=result_id,
+            organization_id=organization_id,
+            evaluator_id=None,
+            agent_id=call_recording.agent_id,
+            persona_id=None,
+            scenario_id=None,
+            name=result_name,
+            duration_seconds=call_data.get("duration_seconds", 0),
+            status=EvaluatorResultStatus.QUEUED.value,
+            audio_s3_key=call_data.get("recording_s3_key"),
+            transcription=transcript_text,
+            speaker_segments=speaker_segments,
+            provider_call_id=call_recording.provider_call_id,
+            provider_platform="custom_websocket",
+            call_data=call_data,
+        )
+        db.add(evaluator_result)
+        db.commit()
+        db.refresh(evaluator_result)
+
+        call_recording.evaluator_result_id = evaluator_result.id
+        db.commit()
+
+    try:
+        from app.workers.celery_app import process_evaluator_result_task
+        task = process_evaluator_result_task.delay(str(evaluator_result.id))
+        evaluator_result.celery_task_id = task.id
+        db.commit()
+    except Exception as e:
+        logger.error(f"[Custom WebSocket] Failed to trigger evaluation worker: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to trigger evaluation worker")
+
+    return {
+        "message": "Evaluation queued",
+        "evaluator_result_id": str(evaluator_result.id),
+        "result_id": evaluator_result.result_id,
+        "task_id": task.id,
+    }
+
+
 @router.get("/call-recordings/{call_short_id}", response_model=Dict[str, Any])
 async def get_call_recording(
     call_short_id: str,
@@ -1151,5 +1382,513 @@ async def stream_call_audio(
             },
         )
 
+    # Custom WebSocket sessions store audio in S3
+    if platform == "custom_websocket":
+        s3_key = call_data.get("recording_s3_key")
+        if not s3_key:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No recording available for this session")
+
+        from app.services.storage.s3_service import s3_service
+        if not s3_service.is_enabled():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="S3 storage is not configured")
+
+        try:
+            audio_bytes = s3_service.download_file_by_key(s3_key)
+        except Exception:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Audio file not found in storage")
+        if not audio_bytes:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Audio file not found in storage")
+
+        extension = s3_key.rsplit(".", 1)[-1].lower() if "." in s3_key else "webm"
+        content_type_map = {"webm": "audio/webm", "mp3": "audio/mpeg", "wav": "audio/wav", "ogg": "audio/ogg"}
+        content_type = content_type_map.get(extension, "audio/webm")
+
+        from io import BytesIO
+        return StreamingResponse(
+            BytesIO(audio_bytes),
+            media_type=content_type,
+            headers={
+                "Content-Disposition": f'inline; filename="call_{call_short_id}.{extension}"',
+            },
+        )
+
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Audio not supported for platform: {platform}")
+
+
+# ---------------------------------------------------------------------------
+#  STT config resolution helper
+# ---------------------------------------------------------------------------
+
+_STT_ENV_KEYS = {
+    "deepgram": "DEEPGRAM_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "elevenlabs": "ELEVENLABS_API_KEY",
+    "sarvam": "SARVAM_API_KEY",
+}
+
+_STT_DEFAULT_MODELS = {
+    "deepgram": "nova-2",
+    "openai": "whisper-1",
+    "elevenlabs": "scribe_v2",
+    "sarvam": "saarika:v2.5",
+}
+
+
+def _resolve_agent_stt_config(
+    agent_id: str, organization_id: UUID, db: Session
+) -> tuple:
+    """Resolve STT provider, model, and API key for an agent.
+
+    Lookup chain: Agent -> VoiceBundle -> stt_provider/stt_model
+                  -> AIProvider (by org + provider name) or Integration or env var fallback.
+
+    Returns (stt_provider, stt_model, api_key).  Any element may be None.
+    """
+    import os
+    from sqlalchemy import func
+
+    agent = db.query(Agent).filter(
+        Agent.id == agent_id,
+        Agent.organization_id == organization_id,
+    ).first()
+    if not agent or not agent.voice_bundle_id:
+        return None, None, None
+
+    voice_bundle = db.query(VoiceBundle).filter(
+        VoiceBundle.id == agent.voice_bundle_id,
+        VoiceBundle.organization_id == organization_id,
+    ).first()
+    if not voice_bundle or not voice_bundle.stt_provider:
+        return None, None, None
+
+    stt_provider = (
+        voice_bundle.stt_provider.value
+        if hasattr(voice_bundle.stt_provider, "value")
+        else str(voice_bundle.stt_provider)
+    ).lower()
+    stt_model = (
+        getattr(voice_bundle, "stt_model", None)
+        or _STT_DEFAULT_MODELS.get(stt_provider)
+    )
+
+    # 1) AIProvider
+    api_key = None
+    ai_prov = db.query(AIProvider).filter(
+        AIProvider.organization_id == organization_id,
+        AIProvider.provider == stt_provider,
+        AIProvider.is_active == True,
+    ).first()
+    if not ai_prov:
+        ai_prov = db.query(AIProvider).filter(
+            AIProvider.organization_id == organization_id,
+            func.lower(AIProvider.provider) == stt_provider,
+            AIProvider.is_active == True,
+        ).first()
+    if ai_prov:
+        try:
+            api_key = decrypt_api_key(ai_prov.api_key)
+        except Exception:
+            pass
+
+    # 2) Integration fallback
+    if not api_key:
+        _platform_map = {
+            "deepgram": "deepgram",
+            "elevenlabs": "elevenlabs",
+            "sarvam": "sarvam",
+        }
+        plat_value = _platform_map.get(stt_provider)
+        if plat_value:
+            integ = db.query(Integration).filter(
+                Integration.organization_id == organization_id,
+                func.lower(Integration.platform) == plat_value,
+                Integration.is_active == True,
+            ).first()
+            if integ:
+                try:
+                    api_key = decrypt_api_key(integ.api_key)
+                except Exception:
+                    pass
+
+    # 3) Env var fallback
+    if not api_key:
+        env_key = _STT_ENV_KEYS.get(stt_provider)
+        if env_key:
+            api_key = os.getenv(env_key)
+
+    return stt_provider, stt_model, api_key
+
+
+# ---------------------------------------------------------------------------
+#  GET /playground/agents/{agent_id}/stt-config
+# ---------------------------------------------------------------------------
+
+@router.get("/agents/{agent_id}/stt-config", response_model=Dict[str, Any])
+async def get_agent_stt_config(
+    agent_id: str,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """Check whether an agent has STT configured via its voice bundle."""
+    stt_provider, stt_model, stt_api_key = _resolve_agent_stt_config(
+        agent_id, organization_id, db
+    )
+    if stt_provider and stt_api_key:
+        return {"available": True, "provider": stt_provider, "model": stt_model}
+    if stt_provider and not stt_api_key:
+        return {
+            "available": False,
+            "reason": f"STT provider '{stt_provider}' is configured but no API key was found",
+        }
+    return {"available": False, "reason": "No voice bundle with STT configured for this agent"}
+
+
+# ---------------------------------------------------------------------------
+#  POST /playground/transcribe-turn
+# ---------------------------------------------------------------------------
+
+@router.post("/transcribe-turn", response_model=Dict[str, Any])
+async def transcribe_turn(
+    agent_id: str = Form(...),
+    channel: str = Form(...),
+    audio_file: UploadFile = File(...),
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """Transcribe a single conversation turn (user or agent audio)."""
+    import tempfile
+    import os
+
+    if channel not in ("user", "agent"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="channel must be 'user' or 'agent'",
+        )
+
+    stt_provider, stt_model, stt_api_key = _resolve_agent_stt_config(
+        agent_id, organization_id, db
+    )
+    if not stt_provider or not stt_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="STT is not configured for this agent (missing provider or API key)",
+        )
+
+    audio_bytes = await audio_file.read()
+    if not audio_bytes or len(audio_bytes) < 100:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Audio file is empty or too small",
+        )
+
+    tmp_path = None
+    try:
+        suffix = ".wav"
+        if audio_file.filename and "." in audio_file.filename:
+            suffix = "." + audio_file.filename.rsplit(".", 1)[-1].lower()
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(audio_bytes)
+            tmp_path = tmp.name
+
+        from app.services.ai.stt_clients import (
+            transcribe_openai,
+            transcribe_deepgram,
+            transcribe_elevenlabs,
+            transcribe_sarvam,
+        )
+
+        if stt_provider == "deepgram":
+            result = transcribe_deepgram(tmp_path, stt_model, stt_api_key)
+        elif stt_provider == "openai":
+            result = transcribe_openai(tmp_path, stt_model, stt_api_key)
+        elif stt_provider == "elevenlabs":
+            result = transcribe_elevenlabs(tmp_path, stt_model, stt_api_key)
+        elif stt_provider == "sarvam":
+            result = transcribe_sarvam(tmp_path, stt_model, stt_api_key)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported STT provider: {stt_provider}",
+            )
+
+        transcript_text = (result.get("text") or "").strip()
+        return {"transcript": transcript_text, "channel": channel}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[transcribe-turn] STT failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Transcription failed: {str(e)}",
+        )
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+#  POST /playground/summarize-transcript
+# ---------------------------------------------------------------------------
+
+# Fallback defaults if the caller provides no agent context AND the voice
+# bundle doesn't specify a model. The providers referenced here must exist in
+# ``ModelProvider`` and be reachable via LiteLLM.
+_SUMMARY_LLM_FALLBACK: List[tuple] = [
+    (ModelProvider.OPENAI, "gpt-4o-mini"),
+    (ModelProvider.GOOGLE, "gemini-2.0-flash"),
+    (ModelProvider.ANTHROPIC, "claude-3-5-haiku-latest"),
+]
+
+
+class SummarizeTranscriptRequest(BaseModel):
+    transcript: Optional[str] = None
+    entries: Optional[List[Dict[str, Any]]] = None
+    call_short_id: Optional[str] = None
+    agent_id: Optional[str] = None
+    # When true, ignore any cached summary on the CallRecording and regenerate.
+    force: Optional[bool] = False
+
+
+def _coerce_model_provider(provider_str: str) -> Optional[ModelProvider]:
+    """Safely convert a string like ``"openai"`` to the matching enum."""
+    if not provider_str:
+        return None
+    want = provider_str.strip().lower()
+    for m in ModelProvider:
+        if m.value.lower() == want:
+            return m
+    return None
+
+
+def _resolve_agent_llm_config(
+    agent_id: Optional[UUID], organization_id: UUID, db: Session
+) -> tuple:
+    """Resolve the LLM provider + model for an agent via its VoiceBundle.
+
+    Returns ``(ModelProvider | None, model_name | None)``.
+    """
+    if not agent_id:
+        return None, None
+
+    agent = db.query(Agent).filter(
+        Agent.id == agent_id,
+        Agent.organization_id == organization_id,
+    ).first()
+    if not agent or not agent.voice_bundle_id:
+        return None, None
+
+    voice_bundle = db.query(VoiceBundle).filter(
+        VoiceBundle.id == agent.voice_bundle_id,
+        VoiceBundle.organization_id == organization_id,
+    ).first()
+    if not voice_bundle or not voice_bundle.llm_provider:
+        return None, None
+
+    provider_enum = _coerce_model_provider(voice_bundle.llm_provider)
+    if not provider_enum:
+        return None, None
+
+    return provider_enum, (voice_bundle.llm_model or None)
+
+
+def _pick_fallback_llm(organization_id: UUID, db: Session) -> Optional[tuple]:
+    """Pick any (ModelProvider, default_model) that has an active AIProvider
+    row for the organization. Used only when the agent / voice bundle doesn't
+    specify an LLM.
+    """
+    from sqlalchemy import func
+
+    for provider_enum, default_model in _SUMMARY_LLM_FALLBACK:
+        provider_value = provider_enum.value
+        ai_prov = db.query(AIProvider).filter(
+            AIProvider.organization_id == organization_id,
+            func.lower(AIProvider.provider) == provider_value.lower(),
+            AIProvider.is_active == True,
+        ).first()
+        if ai_prov:
+            return provider_enum, default_model
+    return None
+
+
+def _format_entries_as_transcript(entries: List[Dict[str, Any]]) -> str:
+    """Turn a list of {role, content} entries into a plain-text transcript."""
+    lines = []
+    for e in entries or []:
+        if not isinstance(e, dict):
+            continue
+        role = (e.get("role") or "").strip().lower()
+        text = (e.get("content") or e.get("text") or "").strip()
+        if not text:
+            continue
+        label = "User" if role in ("user", "caller", "speaker 1") else "Agent"
+        lines.append(f"{label}: {text}")
+    return "\n".join(lines)
+
+
+@router.post("/summarize-transcript", response_model=Dict[str, Any])
+async def summarize_transcript(
+    payload: SummarizeTranscriptRequest = Body(...),
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """Generate a short natural-language summary of a transcript using an LLM.
+
+    Provider selection order:
+      1. The voice bundle of ``agent_id`` (or the agent on ``call_short_id``).
+      2. Any configured AIProvider matching the fallback preference list.
+    """
+    from app.services.ai.llm_service import llm_service
+
+    transcript_text = (payload.transcript or "").strip()
+    if not transcript_text and payload.entries:
+        transcript_text = _format_entries_as_transcript(payload.entries)
+
+    if not transcript_text:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Provide either `transcript` text or non-empty `entries`.",
+        )
+
+    # Defensive cap on transcript size to protect token budgets. Keep the tail
+    # so the most recent exchange wins.
+    MAX_CHARS = 16000
+    if len(transcript_text) > MAX_CHARS:
+        transcript_text = transcript_text[-MAX_CHARS:]
+
+    # --- Resolve CallRecording (for caching) and agent context -------------
+    call_rec: Optional[CallRecording] = None
+    if payload.call_short_id:
+        call_rec = db.query(CallRecording).filter(
+            CallRecording.call_short_id == payload.call_short_id,
+            CallRecording.organization_id == organization_id,
+        ).first()
+
+    # Cache hit: serve the previously generated summary without re-calling the LLM.
+    if call_rec and not payload.force and isinstance(call_rec.call_data, dict):
+        cached = call_rec.call_data.get("ai_summary")
+        if isinstance(cached, dict) and (cached.get("text") or "").strip():
+            return {
+                "summary": cached.get("text", ""),
+                "provider": cached.get("provider", ""),
+                "model": cached.get("model", ""),
+                "source": cached.get("source", "voice_bundle"),
+                "cached": True,
+                "generated_at": cached.get("generated_at"),
+                "usage": {},
+            }
+
+    agent_uuid: Optional[UUID] = None
+    if payload.agent_id:
+        try:
+            agent_uuid = UUID(payload.agent_id)
+        except ValueError:
+            agent_uuid = None
+
+    if not agent_uuid and call_rec and call_rec.agent_id:
+        agent_uuid = call_rec.agent_id
+
+    # --- Pick LLM: prefer voice-bundle config, else fall back --------------
+    llm_provider, llm_model = _resolve_agent_llm_config(
+        agent_uuid, organization_id, db
+    )
+    source = "voice_bundle"
+
+    if not llm_provider:
+        picked = _pick_fallback_llm(organization_id, db)
+        if not picked:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "No LLM is configured. Either set an LLM on the agent's voice bundle, "
+                    "or add an active AIProvider (OpenAI / Google / Anthropic) for this organization."
+                ),
+            )
+        llm_provider, llm_model = picked
+        source = "org_fallback"
+
+    if not llm_model:
+        # Voice bundle had a provider but no model; fill in a safe default.
+        defaults = {
+            ModelProvider.OPENAI: "gpt-4o-mini",
+            ModelProvider.GOOGLE: "gemini-2.0-flash",
+            ModelProvider.ANTHROPIC: "claude-3-5-haiku-latest",
+        }
+        llm_model = defaults.get(llm_provider) or "gpt-4o-mini"
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are an expert call analyst. Read the conversation transcript "
+                "the user provides and write a concise, neutral summary of what happened. "
+                "Focus on the caller's intent, what the agent did, any outcomes or "
+                "action items, and the overall tone. Respond in 2-4 plain-text "
+                "sentences only — no bullet points, no markdown, no preamble."
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"Conversation transcript:\n\n{transcript_text}",
+        },
+    ]
+
+    try:
+        result = llm_service.generate_response(
+            messages=messages,
+            llm_provider=llm_provider,
+            llm_model=llm_model,
+            organization_id=organization_id,
+            db=db,
+            temperature=0.3,
+            max_tokens=400,
+        )
+    except Exception as e:
+        logger.error(f"[summarize-transcript] LLM call failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Summary generation failed: {str(e)}",
+        )
+
+    summary = (result.get("text") or "").strip()
+    if not summary:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="LLM returned an empty summary.",
+        )
+
+    generated_at = datetime.utcnow().isoformat() + "Z"
+
+    # Persist on the CallRecording so subsequent loads don't re-invoke the LLM.
+    if call_rec is not None:
+        try:
+            # Reassign the dict so SQLAlchemy notices the JSON column changed.
+            existing = call_rec.call_data if isinstance(call_rec.call_data, dict) else {}
+            new_call_data = dict(existing)
+            new_call_data["ai_summary"] = {
+                "text": summary,
+                "provider": llm_provider.value,
+                "model": llm_model,
+                "source": source,
+                "generated_at": generated_at,
+            }
+            call_rec.call_data = new_call_data
+            db.commit()
+        except Exception as e:
+            # Non-fatal: return the generated summary even if persistence fails.
+            logger.warning(f"[summarize-transcript] Failed to cache summary: {e}")
+            db.rollback()
+
+    return {
+        "summary": summary,
+        "provider": llm_provider.value,
+        "model": llm_model,
+        "source": source,
+        "cached": False,
+        "generated_at": generated_at,
+        "usage": result.get("usage", {}),
+    }
 

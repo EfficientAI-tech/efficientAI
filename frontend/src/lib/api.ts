@@ -928,6 +928,101 @@ class ApiClient {
     return URL.createObjectURL(response.data)
   }
 
+  async createCustomWebsocketSession(data: {
+    agent_id: string
+    websocket_url: string
+    transcript_entries: Array<{ role: 'user' | 'agent'; content: string; timestamp: string }>
+    started_at?: string
+    ended_at?: string
+    audio_file?: File
+  }): Promise<{
+    message: string
+    call_short_id: string
+    audio_s3_key?: string | null
+    evaluator_result_id?: string | null
+  }> {
+    const formData = new FormData()
+    formData.append('agent_id', data.agent_id)
+    formData.append('websocket_url', data.websocket_url)
+    formData.append('transcript_entries', JSON.stringify(data.transcript_entries))
+    if (data.started_at) {
+      formData.append('started_at', data.started_at)
+    }
+    if (data.ended_at) {
+      formData.append('ended_at', data.ended_at)
+    }
+    if (data.audio_file) {
+      formData.append('audio_file', data.audio_file)
+    }
+
+    const response = await this.client.post('/api/v1/playground/custom-websocket-sessions', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    })
+    return response.data
+  }
+
+  async evaluateCustomWebsocketSession(callShortId: string): Promise<{
+    message: string
+    evaluator_result_id: string
+    result_id: string
+    task_id: string
+  }> {
+    const response = await this.client.post(`/api/v1/playground/custom-websocket-sessions/${callShortId}/evaluate`)
+    return response.data
+  }
+
+  async getAgentSttConfig(agentId: string): Promise<{
+    available: boolean
+    provider?: string
+    model?: string
+    reason?: string
+  }> {
+    const response = await this.client.get(`/api/v1/playground/agents/${agentId}/stt-config`)
+    return response.data
+  }
+
+  async transcribeTurn(
+    agentId: string,
+    channel: 'user' | 'agent',
+    audioBlob: Blob,
+  ): Promise<{ transcript: string; channel: string }> {
+    const formData = new FormData()
+    formData.append('agent_id', agentId)
+    formData.append('channel', channel)
+    formData.append('audio_file', audioBlob, `turn_${channel}_${Date.now()}.wav`)
+    const response = await this.client.post('/api/v1/playground/transcribe-turn', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    return response.data
+  }
+
+  async summarizeTranscript(params: {
+    transcript?: string
+    entries?: Array<{ role: string; content: string; timestamp?: string }>
+    callShortId?: string
+    agentId?: string
+    force?: boolean
+  }): Promise<{
+    summary: string
+    provider: string
+    model: string
+    source?: 'voice_bundle' | 'org_fallback'
+    cached?: boolean
+    generated_at?: string
+    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }
+  }> {
+    const body: Record<string, any> = {}
+    if (params.transcript) body.transcript = params.transcript
+    if (params.entries && params.entries.length > 0) body.entries = params.entries
+    if (params.callShortId) body.call_short_id = params.callShortId
+    if (params.agentId) body.agent_id = params.agentId
+    if (params.force) body.force = true
+    const response = await this.client.post('/api/v1/playground/summarize-transcript', body)
+    return response.data
+  }
+
   // Observability endpoints
   async listObservabilityCalls(skip = 0, limit = 100): Promise<any[]> {
     const response = await this.client.get('/api/v1/observability/calls', {
