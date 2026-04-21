@@ -76,6 +76,9 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+# Windows/WSL file-download metadata (created when saving files from a browser on Windows)
+*:Zone.Identifier
+*Zone.Identifier
 
 # Node.js / Frontend
 node_modules/

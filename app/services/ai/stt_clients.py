@@ -149,6 +149,39 @@ def transcribe_deepgram(
     return {"text": transcript, "language": language or "en", "segments": []}
 
 
+def transcribe_sarvam(
+    audio_file_path: str,
+    model: str,
+    api_key: str,
+    language: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Transcribe an audio file via the Sarvam AI Speech-to-Text REST API."""
+    import httpx
+
+    url = "https://api.sarvam.ai/speech-to-text"
+    headers = {"api-subscription-key": api_key}
+
+    with open(audio_file_path, "rb") as f:
+        audio_bytes = f.read()
+
+    files = {"file": ("audio.wav", audio_bytes, "audio/wav")}
+    data: Dict[str, str] = {"model": model or "saarika:v2.5"}
+    if language:
+        data["language_code"] = language
+    else:
+        data["language_code"] = "unknown"
+
+    resp = httpx.post(url, headers=headers, files=files, data=data, timeout=60.0)
+    resp.raise_for_status()
+    result = resp.json()
+
+    return {
+        "text": result.get("transcript", ""),
+        "language": result.get("language_code", language or "unknown"),
+        "segments": [],
+    }
+
+
 def transcribe_elevenlabs(
     audio_file_path: str,
     model: str,
