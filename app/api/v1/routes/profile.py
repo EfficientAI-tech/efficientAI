@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pydantic import BaseModel, ConfigDict
 
 from app.dependencies import get_db, get_api_key, get_organization_id
+from app.core.auth import Principal, get_principal
 from app.models.database import (
     User, OrganizationMember, Invitation, Organization, Agent,
     InvitationStatus, RoleEnum
@@ -38,85 +39,93 @@ class UserPreferencesUpdate(BaseModel):
 
 
 def get_current_user(
-    api_key: str = Depends(get_api_key),
-    db: Session = Depends(get_db)
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
 ) -> User:
     """
-    Get current user from API key.
-    Creates user if doesn't exist and adds them to the organization as ADMIN.
+    Return the authenticated User.
+
+    - Bearer auth (local password / SSO): the provider has already produced a
+      principal with a concrete user_id. Just load that user.
+    - API-key auth: the key may or may not be bound to a user. If not, we
+      lazily provision a synthetic "api_user_*" record so legacy workflows
+      keep working, then bind the key to it.
     """
+    # Bearer-style auth always carries a user_id from the provider.
+    if principal.user_id is not None and not principal.is_machine:
+        user = db.query(User).filter(User.id == principal.user_id).first()
+        if not user:
+            raise HTTPException(status_code=401, detail="User no longer exists")
+        # Make sure membership still exists (org rename, manual DB edits, etc.)
+        existing_member = db.query(OrganizationMember).filter(
+            OrganizationMember.organization_id == principal.organization_id,
+            OrganizationMember.user_id == user.id,
+        ).first()
+        if not existing_member:
+            db.add(OrganizationMember(
+                organization_id=principal.organization_id,
+                user_id=user.id,
+                role=RoleEnum.ADMIN.value,
+            ))
+            db.commit()
+        return user
+
+    # API-key path — preserve the historical "create a synthetic user" behaviour
+    # so that scripts using a raw API key still get a full profile.
     from app.models.database import APIKey
-    
-    db_key = db.query(APIKey).filter(APIKey.key == api_key).first()
+
+    db_key = db.query(APIKey).filter(APIKey.id == principal.api_key_id).first() if principal.api_key_id else None
     if not db_key:
         raise HTTPException(status_code=401, detail="Invalid API key")
-    
-    # If API key has user, return it
+
     if db_key.user_id:
         user = db.query(User).filter(User.id == db_key.user_id).first()
         if user:
-            # Ensure user is a member of the organization
             existing_member = db.query(OrganizationMember).filter(
                 OrganizationMember.organization_id == db_key.organization_id,
-                OrganizationMember.user_id == user.id
+                OrganizationMember.user_id == user.id,
             ).first()
-            
             if not existing_member:
-                # Add user to organization as ADMIN (they created the API key)
-                member = OrganizationMember(
+                db.add(OrganizationMember(
                     organization_id=db_key.organization_id,
                     user_id=user.id,
-                    role=RoleEnum.ADMIN
-                )
-                db.add(member)
+                    role=RoleEnum.ADMIN.value,
+                ))
                 db.commit()
-            
             return user
-    
-    # Otherwise, create a user for this API key
+
     email = f"api_user_{db_key.id}@efficientai.local"
     user = db.query(User).filter(User.email == email).first()
     if not user:
         user = User(
             email=email,
             name=db_key.name or "API User",
-            password_hash=None
+            password_hash=None,
         )
         db.add(user)
         db.flush()
-        
-        # Link API key to user
         db_key.user_id = user.id
-        
-        # Add user to organization as ADMIN (they created the API key)
-        member = OrganizationMember(
+        db.add(OrganizationMember(
             organization_id=db_key.organization_id,
             user_id=user.id,
-            role=RoleEnum.ADMIN
-        )
-        db.add(member)
+            role=RoleEnum.ADMIN.value,
+        ))
         db.commit()
     else:
-        # User exists but might not be in organization
         existing_member = db.query(OrganizationMember).filter(
             OrganizationMember.organization_id == db_key.organization_id,
-            OrganizationMember.user_id == user.id
+            OrganizationMember.user_id == user.id,
         ).first()
-        
         if not existing_member:
-            # Link API key to user if not already linked
             if not db_key.user_id:
                 db_key.user_id = user.id
-            
-            # Add user to organization as ADMIN
-            member = OrganizationMember(
+            db.add(OrganizationMember(
                 organization_id=db_key.organization_id,
                 user_id=user.id,
-                role=RoleEnum.ADMIN
-            )
-            db.add(member)
+                role=RoleEnum.ADMIN.value,
+            ))
             db.commit()
-    
+
     return user
 
 

@@ -73,9 +73,20 @@ There are two ways to run the application:
 
    **Version note:** `EFFICIENTAI_VERSION` must match a published Docker image tag (for example `1.0.0`). If a tag is not available yet, use `latest`.
 
-3. **Create an API key**
+3. **Create an account**
+
+   Option A — sign up in the browser (recommended):
+
    ```bash
-   docker compose exec api python scripts/create_api_key.py "My API Key"
+   # Open the app and hit "Create account" on the login screen.
+   open http://localhost:8000/
+   ```
+
+   Option B — create an API key from the CLI:
+
+   ```bash
+   docker compose exec api python -m scripts.create_api_key \
+     --new-org "My Organization" --name "My API Key"
    ```
 
 4. **Access the application**
@@ -424,6 +435,107 @@ POSTGRES_PASSWORD=password
 POSTGRES_DB=efficientai
 SECRET_KEY=your-secret-key-here
 ```
+
+---
+
+## 🔐 Authentication & Deployment Recipes
+
+EfficientAI ships with a pluggable authentication system that scales from a
+solo OSS install to a multi-tenant Cloud SaaS. Configure it via
+`auth.providers` in `config.yml` (or `AUTH_PROVIDERS` in `.env`).
+
+| Deployment model          | Providers                          | License needed                               |
+| ------------------------- | ---------------------------------- | -------------------------------------------- |
+| OSS self-hosted (default) | `api_key`, `local_password`        | None                                         |
+| Enterprise self-hosted    | `api_key`, `keycloak`              | `keycloak_sso`                               |
+| BYO IdP (Okta, Azure AD…) | `api_key`, `external_oidc`         | `oidc_sso`                                   |
+| Cloud SaaS                | `api_key`, `keycloak`              | `keycloak_sso` + `mfa_enforce` (recommended) |
+
+### Recipe 1 — OSS self-hosted
+
+Humans sign up with email + password, machines keep using API keys. No
+license required.
+
+```yaml
+# config.yml
+auth:
+  providers: [api_key, local_password]
+  local_password:
+    token_ttl_minutes: 720
+    allow_signup: true
+```
+
+### Recipe 2 — Enterprise self-hosted with Keycloak
+
+Spin up Keycloak alongside the app and force humans through SSO.
+
+```bash
+# Drop a license file into .env
+echo "EFFICIENTAI_LICENSE=eyJ..." >> .env
+
+# Start the main stack + Keycloak
+docker compose -f docker-compose.yml -f docker-compose.keycloak.yml up -d
+```
+
+```yaml
+# config.yml
+auth:
+  providers: [api_key, keycloak]   # drop local_password to enforce SSO
+  keycloak:
+    base_url: "http://localhost:8080"
+    realm: "efficientai"
+    client_id: "efficientai-frontend"
+    default_org_name: "My Company"
+    org_claim_path: ["org", "name"]
+```
+
+The bundled [`docker/keycloak/efficientai-realm.json`](docker/keycloak/efficientai-realm.json)
+pre-seeds a realm, a public `efficientai-frontend` client, and a demo admin
+(`admin@efficientai.local` / `changeme`). Replace it before going live.
+
+### Recipe 3 — BYO IdP (Okta / Azure AD / Google Workspace)
+
+No Keycloak; point the app at your existing OIDC-compliant IdP.
+
+```yaml
+auth:
+  providers: [api_key, external_oidc]
+  oidc:
+    issuer: "https://example.okta.com"
+    audience: "efficientai"
+    client_id: "0oa..."
+    default_org_name: "Example Inc"
+    org_claim_path: ["https://efficientai.com/org"]
+```
+
+### How it works under the hood
+
+```mermaid
+flowchart LR
+    Client["Request<br/>(Bearer or X-API-Key)"]
+    Registry[ProviderRegistry]
+    ApiKey[ApiKeyProvider]
+    Local[LocalPasswordProvider]
+    Keycloak["KeycloakProvider<br/>(license-gated)"]
+    OIDC["ExternalOIDCProvider<br/>(license-gated)"]
+    Principal["Principal<br/>(org_id, user_id, auth_method)"]
+    Route[Protected route]
+
+    Client --> Registry
+    Registry -->|api_key header| ApiKey
+    Registry -->|"bearer iss=efficientai-local"| Local
+    Registry -->|"bearer any"| Keycloak
+    Registry -->|"bearer any"| OIDC
+    ApiKey --> Principal
+    Local --> Principal
+    Keycloak --> Principal
+    OIDC --> Principal
+    Principal --> Route
+```
+
+Every route depends on `get_principal` (via `get_organization_id`), so the
+same endpoint serves all four credential types without any per-route code.
+See [`app/core/auth/`](app/core/auth/) for the implementation.
 
 ---
 

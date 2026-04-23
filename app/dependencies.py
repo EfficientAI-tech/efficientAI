@@ -1,13 +1,23 @@
-"""Common dependencies for FastAPI routes."""
+"""Common dependencies for FastAPI routes.
 
-from fastapi import Header, HTTPException, Depends
+The codebase historically exposed `get_api_key` and `get_organization_id` as
+per-route dependencies. Both now sit on top of the pluggable auth system in
+`app.core.auth`, so any route that used them transparently accepts Bearer
+tokens from local password or SSO logins in addition to API keys.
+
+New code should prefer `get_principal` directly: it returns a `Principal`
+which carries user_id, organization_id, and auth_method in one place.
+"""
+
 from typing import Optional
-from sqlalchemy.orm import Session
 from uuid import UUID
-from app.database import get_db
-from app.core.security import verify_api_key, get_api_key_organization_id
-from app.core.exceptions import InvalidAPIKeyError
+
+from fastapi import Depends, Header, HTTPException
+from sqlalchemy.orm import Session
+
+from app.core.auth import Principal, get_principal  # noqa: F401 - re-exported
 from app.core.license import is_feature_enabled
+from app.database import get_db
 
 
 def get_api_key(
@@ -15,56 +25,31 @@ def get_api_key(
     x_efficientai_api_key: Optional[str] = Header(
         None, alias="X-EFFICIENTAI-API-KEY"
     ),
+    principal: Principal = Depends(get_principal),
 ) -> str:
     """
-    Extract and validate API key from request headers.
+    Backward-compatible API key dependency.
 
-    Args:
-        x_api_key: API key from X-API-Key header (legacy/SDK usage)
-        x_efficientai_api_key: API key from X-EFFICIENTAI-API-KEY header (webhooks)
+    Authentication is fully delegated to `get_principal`, so this dep no longer
+    rejects Bearer tokens. It returns the raw API key string when the caller
+    used one (most routes don't read the value - they only depend on this to
+    gate auth), or an empty string when the caller authenticated via Bearer.
 
-    Returns:
-        Validated API key
-
-    Raises:
-        HTTPException: If API key is missing or invalid
+    Prefer `get_principal` in new code.
     """
-    api_key = x_api_key or x_efficientai_api_key
-
-    if not api_key:
-        raise HTTPException(status_code=401, detail="API key is required")
-
-    db = next(get_db())
-    try:
-        verify_api_key(api_key, db)
-        return api_key
-    except InvalidAPIKeyError as e:
-        raise HTTPException(status_code=401, detail=str(e))
-    finally:
-        db.close()
+    return x_api_key or x_efficientai_api_key or ""
 
 
 def get_organization_id(
-    api_key: str = Depends(get_api_key),
-    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
 ) -> UUID:
     """
-    Get organization ID from validated API key.
+    Return the organization id of the authenticated caller.
 
-    Args:
-        api_key: Validated API key from get_api_key dependency
-        db: Database session
-
-    Returns:
-        Organization ID
-
-    Raises:
-        HTTPException: If organization not found
+    Works uniformly for API key and Bearer (local password / SSO) authentication
+    because both paths produce a `Principal`.
     """
-    organization_id = get_api_key_organization_id(api_key, db)
-    if not organization_id:
-        raise HTTPException(status_code=500, detail="Organization not found for API key")
-    return organization_id
+    return principal.organization_id
 
 
 def get_db_session() -> Session:
@@ -108,4 +93,3 @@ def require_enterprise_feature(feature: str):
             )
 
     return _check
-

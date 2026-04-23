@@ -1,0 +1,84 @@
+{
+  "realm": "efficientai",
+  "enabled": true,
+  "registrationAllowed": false,
+  "resetPasswordAllowed": true,
+  "rememberMe": true,
+  "verifyEmail": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "sslRequired": "external",
+  "accessTokenLifespan": 3600,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "clients": [
+    {
+      "clientId": "efficientai-frontend",
+      "name": "EfficientAI SPA",
+      "description": "Public OIDC client used by the EfficientAI web app.",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "http://localhost:3000/login/callback",
+        "http://localhost:8000/login/callback"
+      ],
+      "webOrigins": [
+        "http://localhost:3000",
+        "http://localhost:8000",
+        "+"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:3000/*##http://localhost:8000/*"
+      },
+      "protocolMappers": [
+        {
+          "name": "org-name-mapper",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "organization",
+            "claim.name": "org.name",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "roles": {
+    "realm": [
+      {"name": "efficientai-admin", "description": "EfficientAI organization admin"},
+      {"name": "efficientai-member", "description": "EfficientAI organization member"}
+    ]
+  },
+  "defaultRoles": ["efficientai-member"],
+  "users": [
+    {
+      "username": "admin@efficientai.local",
+      "email": "admin@efficientai.local",
+      "firstName": "Demo",
+      "lastName": "Admin",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "changeme",
+          "temporary": true
+        }
+      ],
+      "attributes": {
+        "organization": ["Demo Org"]
+      },
+      "realmRoles": ["efficientai-admin", "efficientai-member"]
+    }
+  ]
+}

@@ -69,6 +69,44 @@ type TTSReportOptionsPayload = {
 const API_BASE_URL = import.meta.env.VITE_API_URL ||
   (import.meta.env.PROD ? '' : 'http://localhost:8000')
 
+// -------------------------------------------------------------------------
+// New pluggable-auth types. Mirror app/api/v1/routes/auth.py.
+// -------------------------------------------------------------------------
+
+export interface AuthProviderConfig {
+  name: 'api_key' | 'local_password' | 'keycloak' | 'external_oidc'
+  enabled: boolean
+  display_name: string
+  description?: string | null
+  supports_password?: boolean
+  supports_signup?: boolean
+  oidc_issuer?: string | null
+  oidc_client_id?: string | null
+  oidc_authorize_url?: string | null
+}
+
+export interface AuthConfigResponse {
+  providers: AuthProviderConfig[]
+  tier: 'oss' | 'enterprise'
+}
+
+export interface AuthUserSummary {
+  id: string
+  email: string
+  name?: string | null
+  first_name?: string | null
+  last_name?: string | null
+  organization_id: string
+  role?: string | null
+}
+
+export interface TokenResponse {
+  access_token: string
+  token_type: string
+  expires_in: number
+  user: AuthUserSummary
+}
+
 class ApiClient {
   private client: AxiosInstance
 
@@ -80,24 +118,28 @@ class ApiClient {
       },
     })
 
-    // Add request interceptor to add API key to headers
+    // Prefer Bearer token when present; fall back to API key. This order
+    // matches the backend provider registry so a user with both (e.g. signed
+    // in interactively but also pasted a machine API key) stays on the
+    // interactive identity.
     this.client.interceptors.request.use((config) => {
+      const accessToken = localStorage.getItem('accessToken')
       const apiKey = localStorage.getItem('apiKey')
-      if (apiKey) {
+      if (accessToken) {
+        config.headers['Authorization'] = `Bearer ${accessToken}`
+      } else if (apiKey) {
         config.headers['X-API-Key'] = apiKey
       }
       return config
     })
 
-    // Add response interceptor for error handling
     this.client.interceptors.response.use(
       (response) => response,
       (error) => {
-        // Only log out on 401 (authentication failure)
-        // 403 errors are authorization failures that should be handled by the calling code
         if (error.response?.status === 401) {
-          // API key invalid, clear it
           localStorage.removeItem('apiKey')
+          localStorage.removeItem('accessToken')
+          localStorage.removeItem('authUser')
           window.location.href = '/login'
         }
         return Promise.reject(error)
@@ -113,7 +155,51 @@ class ApiClient {
     localStorage.removeItem('apiKey')
   }
 
-  // Auth endpoints
+  setAccessToken(token: string) {
+    localStorage.setItem('accessToken', token)
+  }
+
+  clearAccessToken() {
+    localStorage.removeItem('accessToken')
+    localStorage.removeItem('authUser')
+  }
+
+  // -----------------------------------------------------------------------
+  // Pluggable auth endpoints
+  // -----------------------------------------------------------------------
+  async getAuthConfig(): Promise<AuthConfigResponse> {
+    const response = await this.client.get('/api/v1/auth/config')
+    return response.data
+  }
+
+  async signup(data: {
+    email: string
+    password: string
+    organization_name?: string
+    first_name?: string
+    last_name?: string
+  }): Promise<TokenResponse> {
+    const response = await this.client.post('/api/v1/auth/signup', data)
+    return response.data
+  }
+
+  async loginWithPassword(email: string, password: string): Promise<TokenResponse> {
+    const response = await this.client.post('/api/v1/auth/login', { email, password })
+    return response.data
+  }
+
+  async getMe(): Promise<AuthUserSummary> {
+    const response = await this.client.get('/api/v1/auth/me')
+    return response.data
+  }
+
+  async logout(): Promise<{ success: boolean; auth_method: string }> {
+    const response = await this.client.post('/api/v1/auth/logout')
+    return response.data
+  }
+
+  // Legacy: kept for callers that still need to mint an API key. The backend
+  // endpoint now requires an already-authenticated caller.
   async generateApiKey(name?: string): Promise<APIKey> {
     const response = await this.client.post('/api/v1/auth/generate-key', { name })
     return response.data
