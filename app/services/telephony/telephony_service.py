@@ -21,6 +21,7 @@ from app.models.database import (
     TelephonyVerifySession,
 )
 from app.models.enums import CallRecordingStatus
+from app.services.telephony.exotel_client import ExotelClient
 from app.services.telephony.plivo_client import PlivoClient, normalize_e164
 from app.services.telephony.plivo_xml import dial_number, reject_call, speak_and_hangup
 
@@ -44,11 +45,24 @@ class TelephonyService:
             raise ValueError(f"Active {provider} telephony integration not found for organization")
         return integration
 
-    def get_plivo_client(self, org_id: UUID, db: Session) -> PlivoClient:
-        integration = self.get_org_integration(org_id, db, provider="plivo")
+    def get_provider_client(self, org_id: UUID, db: Session, provider: str):
+        integration = self.get_org_integration(org_id, db, provider=provider)
         auth_id = decrypt_api_key(integration.auth_id)
         auth_token = decrypt_api_key(integration.auth_token)
-        return PlivoClient(auth_id=auth_id, auth_token=auth_token)
+        provider_key = provider.lower()
+        if provider_key == "plivo":
+            return PlivoClient(auth_id=auth_id, auth_token=auth_token)
+        if provider_key == "exotel":
+            account_sid = (integration.voice_app_id or "").strip()
+            if not account_sid:
+                raise ValueError("voice_app_id (Exotel Account SID) is required for Exotel")
+            return ExotelClient(
+                auth_id=auth_id,
+                auth_token=auth_token,
+                account_sid=account_sid,
+                subdomain=integration.sip_domain or None,
+            )
+        raise ValueError(f"Unsupported telephony provider: {provider}")
 
     def save_integration(
         self, org_id: UUID, data: Dict[str, Any], db: Session
@@ -64,6 +78,13 @@ class TelephonyService:
         )
         encrypted_auth_id = encrypt_api_key(data["auth_id"]) if data.get("auth_id") else None
         encrypted_auth_token = encrypt_api_key(data["auth_token"]) if data.get("auth_token") else None
+        effective_voice_app_id = (
+            data.get("voice_app_id")
+            if "voice_app_id" in data
+            else (integration.voice_app_id if integration else None)
+        )
+        if provider.lower() == "exotel" and not effective_voice_app_id:
+            raise ValueError("voice_app_id (Exotel Account SID) is required for Exotel")
 
         if integration:
             if encrypted_auth_id:
@@ -101,19 +122,16 @@ class TelephonyService:
         return integration
 
     def test_connection(self, org_id: UUID, db: Session, provider: str = "plivo") -> bool:
-        if provider == "plivo":
-            client = self.get_plivo_client(org_id, db)
-            ok = client.test_connection()
-        else:
-            raise ValueError(f"Connection test not implemented for provider: {provider}")
+        client = self.get_provider_client(org_id, db, provider=provider)
+        ok = client.test_connection()
         integration = self.get_org_integration(org_id, db, provider=provider)
         integration.last_tested_at = datetime.now(timezone.utc)
         db.commit()
         return ok
 
-    def sync_numbers(self, org_id: UUID, db: Session) -> List[TelephonyPhoneNumber]:
-        client = self.get_plivo_client(org_id, db)
-        integration = self.get_org_integration(org_id, db, provider="plivo")
+    def sync_numbers(self, org_id: UUID, db: Session, provider: str = "plivo") -> List[TelephonyPhoneNumber]:
+        client = self.get_provider_client(org_id, db, provider=provider)
+        integration = self.get_org_integration(org_id, db, provider=provider)
         numbers = client.list_numbers()
         synced: List[TelephonyPhoneNumber] = []
 
@@ -156,18 +174,18 @@ class TelephonyService:
         db.commit()
         return synced
 
-    def list_numbers(self, org_id: UUID, db: Session) -> List[TelephonyPhoneNumber]:
-        return (
-            db.query(TelephonyPhoneNumber)
-            .filter(TelephonyPhoneNumber.organization_id == org_id)
-            .order_by(TelephonyPhoneNumber.created_at.desc())
-            .all()
-        )
+    def list_numbers(self, org_id: UUID, db: Session, provider: Optional[str] = None) -> List[TelephonyPhoneNumber]:
+        query = db.query(TelephonyPhoneNumber).filter(TelephonyPhoneNumber.organization_id == org_id)
+        if provider:
+            query = query.join(
+                TelephonyIntegration,
+                TelephonyIntegration.id == TelephonyPhoneNumber.telephony_integration_id,
+            ).filter(TelephonyIntegration.provider == provider)
+        return query.order_by(TelephonyPhoneNumber.created_at.desc()).all()
 
     def initiate_outbound_call(
         self, org_id: UUID, from_number: str, to_number: str, agent_id: Optional[UUID], db: Session
     ) -> Dict[str, Any]:
-        client = self.get_plivo_client(org_id, db)
         from_number = normalize_e164(from_number)
         to_number = normalize_e164(to_number)
 
@@ -182,6 +200,18 @@ class TelephonyService:
         )
         if not number_row:
             raise ValueError("from_number is not registered to this organization")
+
+        integration = (
+            db.query(TelephonyIntegration)
+            .filter(
+                TelephonyIntegration.id == number_row.telephony_integration_id,
+                TelephonyIntegration.organization_id == org_id,
+            )
+            .first()
+        )
+        if not integration:
+            raise ValueError("No active telephony integration found for from_number")
+        client = self.get_provider_client(org_id, db, provider=integration.provider)
 
         base = settings.PLIVO_WEBHOOK_BASE_URL.rstrip("/")
         answer_url = f"{base}{settings.API_V1_PREFIX}/telephony/webhooks/answer"
@@ -201,7 +231,7 @@ class TelephonyService:
                 call_event="outbound_initiated",
                 call_data=response,
                 provider_call_id=call_uuid,
-                provider_platform="plivo",
+                provider_platform=integration.provider,
                 agent_id=agent_id,
             )
         )
@@ -209,10 +239,10 @@ class TelephonyService:
         return response
 
     def start_voice_otp(
-        self, org_id: UUID, phone_number: str, api_key: str, db: Session
+        self, org_id: UUID, phone_number: str, api_key: str, db: Session, provider: str = "plivo"
     ) -> TelephonyVerifySession:
         del api_key
-        integration = self.get_org_integration(org_id, db, provider="plivo")
+        integration = self.get_org_integration(org_id, db, provider=provider)
         app_uuid = integration.verify_app_uuid or settings.PLIVO_VERIFY_APP_UUID
         if not app_uuid:
             raise ValueError("verify_app_uuid is not configured for voice OTP")
@@ -223,7 +253,7 @@ class TelephonyService:
             base = settings.PLIVO_WEBHOOK_BASE_URL.rstrip("/")
             callback_url = f"{base}{settings.API_V1_PREFIX}/telephony/webhooks/events"
 
-        response = self.get_plivo_client(org_id, db).start_voice_verification(
+        response = self.get_provider_client(org_id, db, provider=provider).start_voice_verification(
             recipient=recipient, app_uuid=app_uuid, callback_url=callback_url
         )
 
@@ -246,7 +276,7 @@ class TelephonyService:
         return session
 
     def check_voice_otp(
-        self, org_id: UUID, session_id: UUID, otp_code: str, db: Session
+        self, org_id: UUID, session_id: UUID, otp_code: str, db: Session, provider: str = "plivo"
     ) -> Tuple[bool, str]:
         session = (
             db.query(TelephonyVerifySession)
@@ -259,7 +289,7 @@ class TelephonyService:
         if not session:
             raise ValueError("Verification session not found")
 
-        result = self.get_plivo_client(org_id, db).check_verification(
+        result = self.get_provider_client(org_id, db, provider=provider).check_verification(
             session_uuid=session.provider_session_uuid,
             otp_code=otp_code.strip(),
         )
@@ -280,8 +310,9 @@ class TelephonyService:
         expires_in_minutes: int,
         metadata: Optional[Dict[str, Any]],
         db: Session,
+        provider: str = "plivo",
     ) -> TelephonyMaskedSession:
-        integration = self.get_org_integration(org_id, db, provider="plivo")
+        integration = self.get_org_integration(org_id, db, provider=provider)
         party_a = normalize_e164(party_a)
         party_b = normalize_e164(party_b)
 
@@ -336,9 +367,14 @@ class TelephonyService:
         db.commit()
 
     def handle_answer_webhook(self, params: Dict[str, Any], db: Session) -> str:
-        to_number = params.get("To")
-        from_number = params.get("From")
-        call_uuid = params.get("CallUUID")
+        to_number = params.get("To") or params.get("to")
+        from_number = params.get("From") or params.get("from")
+        call_uuid = (
+            params.get("CallUUID")
+            or params.get("CallSid")
+            or params.get("call_sid")
+            or params.get("Sid")
+        )
         logger.info("Telephony answer webhook call_uuid={} to={} from={}", call_uuid, to_number, from_number)
 
         if not to_number:
@@ -360,8 +396,14 @@ class TelephonyService:
         return speak_and_hangup("No active routing found for this number.")
 
     def handle_event_webhook(self, params: Dict[str, Any], db: Session) -> None:
-        call_uuid = params.get("CallUUID") or params.get("RequestUUID")
-        call_status = params.get("CallStatus") or params.get("Event")
+        call_uuid = (
+            params.get("CallUUID")
+            or params.get("RequestUUID")
+            or params.get("CallSid")
+            or params.get("call_sid")
+            or params.get("Sid")
+        )
+        call_status = params.get("CallStatus") or params.get("Event") or params.get("Status")
         if not call_uuid:
             return
 

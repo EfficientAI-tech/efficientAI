@@ -85,7 +85,7 @@ export default function Observability() {
 
   const { data: metrics = [] } = useQuery({
     queryKey: ['metrics'],
-    queryFn: () => apiClient.listMetrics(),
+    queryFn: () => apiClient.listMetrics('agent'),
   })
 
   const filteredResults = useMemo(() => {

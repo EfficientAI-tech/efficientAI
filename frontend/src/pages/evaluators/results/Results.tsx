@@ -75,7 +75,7 @@ export default function Results() {
 
   const { data: metrics = [] } = useQuery({
     queryKey: ['metrics'],
-    queryFn: () => apiClient.listMetrics(),
+    queryFn: () => apiClient.listMetrics('agent'),
   })
 
   const { data: audioFiles } = useQuery({

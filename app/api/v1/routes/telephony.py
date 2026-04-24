@@ -99,25 +99,27 @@ async def test_telephony_config(
 
 @router.post("/numbers/sync", response_model=List[TelephonyPhoneNumberResponse])
 async def sync_telephony_numbers(
+    provider: str = "plivo",
     organization_id: UUID = Depends(get_organization_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
     del api_key
     try:
-        return telephony_service.sync_numbers(organization_id, db)
+        return telephony_service.sync_numbers(organization_id, db, provider=provider)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/numbers", response_model=List[TelephonyPhoneNumberResponse])
 async def list_telephony_numbers(
+    provider: Optional[str] = None,
     organization_id: UUID = Depends(get_organization_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
     del api_key
-    return telephony_service.list_numbers(organization_id, db)
+    return telephony_service.list_numbers(organization_id, db, provider=provider)
 
 
 @router.patch("/numbers/{number_id}", response_model=TelephonyPhoneNumberResponse)
@@ -182,7 +184,13 @@ async def start_verify_session(
     db: Session = Depends(get_db),
 ):
     try:
-        session = telephony_service.start_voice_otp(organization_id, payload.phone_number, api_key, db)
+        session = telephony_service.start_voice_otp(
+            organization_id,
+            payload.phone_number,
+            api_key,
+            db,
+            provider=payload.provider,
+        )
         return TelephonyVerifyStartResponse(
             session_id=session.id,
             provider_session_uuid=session.provider_session_uuid,
@@ -203,7 +211,11 @@ async def check_verify_session(
     del api_key
     try:
         verified, message = telephony_service.check_voice_otp(
-            organization_id, payload.session_id, payload.otp_code, db
+            organization_id,
+            payload.session_id,
+            payload.otp_code,
+            db,
+            provider=payload.provider,
         )
         return TelephonyVerifyCheckResponse(
             verified=verified,
@@ -230,6 +242,7 @@ async def create_masking_session(
             expires_in_minutes=payload.expires_in_minutes or 60,
             metadata=payload.metadata,
             db=db,
+            provider=payload.provider,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

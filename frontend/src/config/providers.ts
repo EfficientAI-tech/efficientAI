@@ -185,6 +185,18 @@ export const TELEPHONY_PROVIDER_CONFIG: Record<TelephonyProvider, TelephonyProvi
       { key: 'sip_domain', label: 'SIP Domain', required: false, type: 'text' },
     ],
   },
+  [TelephonyProvider.EXOTEL]: {
+    label: 'Exotel',
+    logo: null,
+    description: 'Voice telephony, applet routing, voice OTP, and masking workflows',
+    fields: [
+      { key: 'auth_id', label: 'API Key', required: true, type: 'password' },
+      { key: 'auth_token', label: 'API Token', required: true, type: 'password' },
+      { key: 'voice_app_id', label: 'Account SID', required: true, type: 'text' },
+      { key: 'verify_app_uuid', label: 'Verification App ID', required: false, type: 'text' },
+      { key: 'sip_domain', label: 'API Host (optional)', required: false, type: 'text' },
+    ],
+  },
 }
 
 export const getTelephonyProviderLabel = (provider: TelephonyProvider): string =>

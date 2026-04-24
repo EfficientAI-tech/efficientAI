@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from uuid import UUID
-from typing import List
+from typing import List, Optional
 
 from app.database import get_db
 from app.dependencies import get_organization_id, get_api_key
@@ -39,14 +39,25 @@ def create_metric(
             detail="A metric with this name already exists"
         )
 
+    enabled_surfaces = (
+        metric_data.enabled_surfaces
+        if metric_data.enabled_surfaces is not None
+        else ((metric_data.supported_surfaces or ["agent"]) if metric_data.enabled else [])
+    )
     metric = Metric(
         organization_id=organization_id,
         name=metric_data.name,
         description=metric_data.description,
         metric_type=metric_data.metric_type,
         trigger=metric_data.trigger,
-        enabled=metric_data.enabled,
+        enabled=len(enabled_surfaces) > 0,
         is_default=False,
+        metric_origin=metric_data.metric_origin or "custom",
+        supported_surfaces=metric_data.supported_surfaces or ["agent"],
+        enabled_surfaces=enabled_surfaces,
+        custom_data_type=metric_data.custom_data_type,
+        custom_config=metric_data.custom_config,
+        tags=metric_data.tags,
     )
     db.add(metric)
     db.commit()
@@ -57,14 +68,22 @@ def create_metric(
 
 @router.get("", response_model=List[MetricResponse])
 def list_metrics(
+    surface: Optional[str] = None,
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ):
     """List all metrics for the organization."""
-    metrics = db.query(Metric).filter(
+    query = db.query(Metric).filter(
         Metric.organization_id == organization_id,
         ~Metric.name.in_(REMOVED_DEFAULT_METRICS),
-    ).order_by(Metric.is_default.desc(), Metric.created_at.desc()).all()
+    )
+    metrics = query.order_by(Metric.is_default.desc(), Metric.created_at.desc()).all()
+    if surface:
+        normalized_surface = surface.strip().lower()
+        metrics = [
+            m for m in metrics
+            if normalized_surface in (m.supported_surfaces or [])
+        ]
     return metrics
 
 
@@ -147,6 +166,31 @@ def update_metric(
 
     if metric_data.enabled is not None:
         metric.enabled = metric_data.enabled
+        if metric_data.enabled and not metric.enabled_surfaces:
+            metric.enabled_surfaces = metric.supported_surfaces or ["agent"]
+        elif not metric_data.enabled:
+            metric.enabled_surfaces = []
+
+    if metric_data.metric_origin is not None:
+        metric.metric_origin = metric_data.metric_origin
+
+    if metric_data.supported_surfaces is not None:
+        metric.supported_surfaces = metric_data.supported_surfaces
+        if metric.enabled and not metric_data.enabled_surfaces:
+            metric.enabled_surfaces = metric_data.supported_surfaces
+
+    if metric_data.enabled_surfaces is not None:
+        metric.enabled_surfaces = metric_data.enabled_surfaces
+        metric.enabled = len(metric_data.enabled_surfaces) > 0
+
+    if metric_data.custom_data_type is not None:
+        metric.custom_data_type = metric_data.custom_data_type
+
+    if metric_data.custom_config is not None:
+        metric.custom_config = metric_data.custom_config
+
+    if metric_data.tags is not None:
+        metric.tags = metric_data.tags
 
     db.commit()
     db.refresh(metric)
@@ -206,6 +250,9 @@ def seed_default_metrics(
             "metric_type": MetricType.RATING,
             "trigger": MetricTrigger.ALWAYS,
             "enabled": True,
+            "metric_origin": "default",
+            "supported_surfaces": ["agent", "voice_playground"],
+            "enabled_surfaces": ["agent", "voice_playground"],
         },
         {
             "name": "Professionalism",
@@ -213,6 +260,9 @@ def seed_default_metrics(
             "metric_type": MetricType.RATING,
             "trigger": MetricTrigger.ALWAYS,
             "enabled": True,
+            "metric_origin": "default",
+            "supported_surfaces": ["agent"],
+            "enabled_surfaces": ["agent"],
         },
         {
             "name": "Problem Resolution",
@@ -220,6 +270,9 @@ def seed_default_metrics(
             "metric_type": MetricType.BOOLEAN,
             "trigger": MetricTrigger.ALWAYS,
             "enabled": True,
+            "metric_origin": "default",
+            "supported_surfaces": ["agent"],
+            "enabled_surfaces": ["agent"],
         },
         # =========================================================================
         # Acoustic Metrics (Parselmouth - traditional voice analysis)
@@ -230,6 +283,9 @@ def seed_default_metrics(
             "metric_type": MetricType.NUMBER,
             "trigger": MetricTrigger.ALWAYS,
             "enabled": True,
+            "metric_origin": "default",
+            "supported_surfaces": ["voice_playground"],
+            "enabled_surfaces": ["voice_playground"],
         },
         {
             "name": "Jitter",
@@ -237,6 +293,9 @@ def seed_default_metrics(
             "metric_type": MetricType.NUMBER,
             "trigger": MetricTrigger.ALWAYS,
             "enabled": False,
+            "metric_origin": "default",
+            "supported_surfaces": ["voice_playground"],
+            "enabled_surfaces": [],
         },
         {
             "name": "Shimmer",
@@ -244,6 +303,9 @@ def seed_default_metrics(
             "metric_type": MetricType.NUMBER,
             "trigger": MetricTrigger.ALWAYS,
             "enabled": False,
+            "metric_origin": "default",
+            "supported_surfaces": ["voice_playground"],
+            "enabled_surfaces": [],
         },
         {
             "name": "HNR",
@@ -251,6 +313,9 @@ def seed_default_metrics(
             "metric_type": MetricType.NUMBER,
             "trigger": MetricTrigger.ALWAYS,
             "enabled": False,
+            "metric_origin": "default",
+            "supported_surfaces": ["voice_playground"],
+            "enabled_surfaces": [],
         },
         # =========================================================================
         # AI Voice Metrics (ML models - human-likeness, emotion, consistency)
@@ -261,6 +326,9 @@ def seed_default_metrics(
             "metric_type": MetricType.NUMBER,
             "trigger": MetricTrigger.ALWAYS,
             "enabled": True,
+            "metric_origin": "default",
+            "supported_surfaces": ["voice_playground"],
+            "enabled_surfaces": ["voice_playground"],
         },
         {
             "name": "Emotion Category",
@@ -268,6 +336,9 @@ def seed_default_metrics(
             "metric_type": MetricType.RATING,  # Stored as text category
             "trigger": MetricTrigger.ALWAYS,
             "enabled": True,
+            "metric_origin": "default",
+            "supported_surfaces": ["voice_playground"],
+            "enabled_surfaces": ["voice_playground"],
         },
         {
             "name": "Emotion Confidence",
@@ -275,6 +346,9 @@ def seed_default_metrics(
             "metric_type": MetricType.NUMBER,
             "trigger": MetricTrigger.ALWAYS,
             "enabled": True,
+            "metric_origin": "default",
+            "supported_surfaces": ["voice_playground"],
+            "enabled_surfaces": ["voice_playground"],
         },
         {
             "name": "Valence",
@@ -282,6 +356,9 @@ def seed_default_metrics(
             "metric_type": MetricType.NUMBER,
             "trigger": MetricTrigger.ALWAYS,
             "enabled": True,
+            "metric_origin": "default",
+            "supported_surfaces": ["voice_playground"],
+            "enabled_surfaces": ["voice_playground"],
         },
         {
             "name": "Arousal",
@@ -289,6 +366,9 @@ def seed_default_metrics(
             "metric_type": MetricType.NUMBER,
             "trigger": MetricTrigger.ALWAYS,
             "enabled": True,
+            "metric_origin": "default",
+            "supported_surfaces": ["voice_playground"],
+            "enabled_surfaces": ["voice_playground"],
         },
         {
             "name": "Speaker Consistency",
@@ -296,6 +376,9 @@ def seed_default_metrics(
             "metric_type": MetricType.NUMBER,
             "trigger": MetricTrigger.ALWAYS,
             "enabled": True,
+            "metric_origin": "default",
+            "supported_surfaces": ["voice_playground"],
+            "enabled_surfaces": ["voice_playground"],
         },
         {
             "name": "Prosody Score",
@@ -325,6 +408,9 @@ def seed_default_metrics(
                 trigger=metric_data["trigger"],
                 enabled=metric_data["enabled"],
                 is_default=True,
+                metric_origin=metric_data.get("metric_origin", "default"),
+                supported_surfaces=metric_data.get("supported_surfaces", ["agent"]),
+                enabled_surfaces=metric_data.get("enabled_surfaces", ["agent"]),
             )
             db.add(metric)
             created_metrics.append(metric)

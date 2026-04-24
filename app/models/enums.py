@@ -106,6 +106,7 @@ class IntegrationPlatform(str, enum.Enum):
 class TelephonyProvider(str, enum.Enum):
     """Telephony provider enumeration - extensible for future providers."""
     PLIVO = "plivo"
+    EXOTEL = "exotel"
 
 class ModelProvider(str, enum.Enum):
     """Model provider enumeration for extensibility."""

@@ -1,4 +1,4 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient, useQueries } from '@tanstack/react-query'
 import { apiClient } from '../../lib/api'
 import type { TelephonyPhoneNumberResponse } from '../../lib/api'
 import { useState, useEffect, useRef, useMemo, type ReactNode } from 'react'
@@ -46,8 +46,10 @@ export default function Integrations() {
   const [telephonyAuthId, setTelephonyAuthId] = useState('')
   const [telephonyAuthToken, setTelephonyAuthToken] = useState('')
   const [telephonyVerifyAppUuid, setTelephonyVerifyAppUuid] = useState('')
+  const [telephonyVoiceAppId, setTelephonyVoiceAppId] = useState('')
   const [telephonySipDomain, setTelephonySipDomain] = useState('')
   const [expandedTelephony, setExpandedTelephony] = useState<string | null>(null)
+  const [telephonyProviderFilter, setTelephonyProviderFilter] = useState<TelephonyProvider>(TelephonyProvider.PLIVO)
 
   const renderModal = (content: ReactNode) => {
     if (typeof document === 'undefined') return null
@@ -64,16 +66,37 @@ export default function Integrations() {
     queryFn: () => apiClient.listAIProviders(),
   })
 
-  const { data: telephonyConfig } = useQuery({
-    queryKey: ['telephony-config'],
-    queryFn: () => apiClient.getTelephonyConfig('plivo'),
-    retry: false,
+  const telephonyConfigQueries = useQueries({
+    queries: Object.values(TelephonyProvider).map((provider) => ({
+      queryKey: ['telephony-config', provider],
+      queryFn: () => apiClient.getTelephonyConfig(provider),
+      retry: false,
+    })),
   })
 
+  const telephonyConfigs = telephonyConfigQueries
+    .map((query, index) => ({
+      provider: Object.values(TelephonyProvider)[index],
+      config: query.data,
+    }))
+    .filter((entry): entry is { provider: TelephonyProvider; config: NonNullable<typeof entry.config> } => Boolean(entry.config))
+
+  const telephonyConfig = telephonyConfigs.find((entry) => entry.provider === telephonyProviderFilter)?.config
+    || telephonyConfigs[0]?.config
+
+  const activeTelephonyProvider = (telephonyConfig?.provider as TelephonyProvider | undefined) || telephonyProviderFilter
+
+  useEffect(() => {
+    if (!telephonyConfig && telephonyConfigs.length > 0) {
+      setTelephonyProviderFilter(telephonyConfigs[0].provider)
+    }
+  }, [telephonyConfig, telephonyConfigs])
+
   const { data: telephonyNumbers = [], isLoading: telephonyNumbersLoading } = useQuery({
-    queryKey: ['telephony-numbers'],
-    queryFn: () => apiClient.listTelephonyNumbers(),
+    queryKey: ['telephony-numbers', activeTelephonyProvider],
+    queryFn: () => apiClient.listTelephonyNumbers(activeTelephonyProvider),
     retry: false,
+    enabled: !!telephonyConfig,
   })
 
   const createIntegrationMutation = useMutation({
@@ -122,9 +145,13 @@ export default function Integrations() {
       if (telephonyAuthId.trim()) payload.auth_id = telephonyAuthId.trim()
       if (telephonyAuthToken.trim()) payload.auth_token = telephonyAuthToken.trim()
       if (telephonyVerifyAppUuid.trim()) payload.verify_app_uuid = telephonyVerifyAppUuid.trim()
+      if (telephonyVoiceAppId.trim()) payload.voice_app_id = telephonyVoiceAppId.trim()
       if (telephonySipDomain.trim()) payload.sip_domain = telephonySipDomain.trim()
       if (telephonyConfig) return apiClient.updateTelephonyConfig(payload)
       if (!payload.auth_id || !payload.auth_token) throw new Error('Auth ID and Auth Token are required for first-time setup')
+      if (payload.provider === 'exotel' && !payload.voice_app_id) {
+        throw new Error('Account SID is required for first-time Exotel setup')
+      }
       return apiClient.createTelephonyConfig(payload as any)
     },
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['telephony-config'] }); showToast('Telephony configuration saved successfully!', 'success'); resetForm() },
@@ -132,13 +159,17 @@ export default function Integrations() {
   })
 
   const testTelephonyMutation = useMutation({
-    mutationFn: () => apiClient.testTelephonyConfig('plivo'),
+    mutationFn: () => apiClient.testTelephonyConfig(
+      (selectedTelephonyProvider || activeTelephonyProvider || 'plivo') as string,
+    ),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['telephony-config'] }); showToast('Telephony connection test succeeded!', 'success') },
     onError: (error: any) => { showToast(error?.response?.data?.detail || error?.message || 'Connection test failed', 'error') },
   })
 
   const syncNumbersMutation = useMutation({
-    mutationFn: () => apiClient.syncTelephonyNumbers(),
+    mutationFn: () => apiClient.syncTelephonyNumbers(
+      (selectedTelephonyProvider || activeTelephonyProvider || 'plivo') as string,
+    ),
     onSuccess: (synced) => { queryClient.invalidateQueries({ queryKey: ['telephony-numbers'] }); showToast(`Synced ${synced.length} number(s) from provider.`, 'success') },
     onError: (error: any) => { showToast(error?.response?.data?.detail || error?.message || 'Failed to sync numbers', 'error') },
   })
@@ -162,7 +193,7 @@ export default function Integrations() {
     setShowModal(false); setIsEditMode(false); setIntegrationType(null); setSelectedIntegration(null); setSelectedAIProvider(null)
     setSelectedPlatform(null); setSelectedProvider(null); setShowProviderDropdown(false); setShowPlatformDropdown(false)
     setApiKey(''); setPublicKey(''); setName('')
-    setSelectedTelephonyProvider(null); setTelephonyAuthId(''); setTelephonyAuthToken(''); setTelephonyVerifyAppUuid(''); setTelephonySipDomain('')
+    setSelectedTelephonyProvider(null); setTelephonyAuthId(''); setTelephonyAuthToken(''); setTelephonyVerifyAppUuid(''); setTelephonyVoiceAppId(''); setTelephonySipDomain('')
   }
 
   const handleEdit = (integration: Integration) => {
@@ -182,8 +213,11 @@ export default function Integrations() {
   }
 
   const handleEditTelephony = () => {
-    setIntegrationType('telephony_provider'); setSelectedTelephonyProvider(TelephonyProvider.PLIVO)
-    setTelephonyVerifyAppUuid(telephonyConfig?.verify_app_uuid || ''); setTelephonySipDomain(telephonyConfig?.sip_domain || '')
+    setIntegrationType('telephony_provider')
+    setSelectedTelephonyProvider((telephonyConfig?.provider as TelephonyProvider) || telephonyProviderFilter)
+    setTelephonyVerifyAppUuid(telephonyConfig?.verify_app_uuid || '')
+    setTelephonyVoiceAppId(telephonyConfig?.voice_app_id || '')
+    setTelephonySipDomain(telephonyConfig?.sip_domain || '')
     setTelephonyAuthId(''); setTelephonyAuthToken(''); setIsEditMode(true); setShowModal(true)
   }
 
@@ -282,8 +316,8 @@ export default function Integrations() {
   const availableProviders = Object.values(ModelProvider).filter(p => !configuredProviders.has(p))
   const telephonyStatus = useMemo(() => { if (!telephonyConfig) return 'Not configured'; if (!telephonyConfig.is_active) return 'Configured (inactive)'; return 'Configured (active)' }, [telephonyConfig])
   const getPlatformInfo = (platformId: IntegrationPlatform) => platforms.find(p => p.id === platformId)
-  const hasTelephony = !!telephonyConfig
-  const totalConfigured = integrations.length + aiproviders.length + (hasTelephony ? 1 : 0)
+  const hasTelephony = telephonyConfigs.length > 0
+  const totalConfigured = integrations.length + aiproviders.length + telephonyConfigs.length
 
   return (
     <div className="space-y-6">
@@ -396,7 +430,18 @@ export default function Integrations() {
                   <div className="flex items-center gap-2">
                     <Phone className="h-4 w-4 text-green-600" />
                     <h3 className="text-sm font-semibold text-green-900">Telephony Providers</h3>
-                    <span className="px-2 py-0.5 text-xs font-medium bg-green-100 text-green-700 rounded-full">1</span>
+                    <span className="px-2 py-0.5 text-xs font-medium bg-green-100 text-green-700 rounded-full">{telephonyConfigs.length}</span>
+                    <div className="ml-auto">
+                      <select
+                        value={telephonyProviderFilter}
+                        onChange={(e) => setTelephonyProviderFilter(e.target.value as TelephonyProvider)}
+                        className="text-xs border border-gray-300 rounded px-2 py-1 bg-white"
+                      >
+                        {Object.values(TelephonyProvider).map((tp) => (
+                          <option key={tp} value={tp}>{getTelephonyProviderLabel(tp)}</option>
+                        ))}
+                      </select>
+                    </div>
                   </div>
                 </div>
                 <div>
@@ -413,6 +458,16 @@ export default function Integrations() {
                             <span className={`px-2 py-0.5 text-xs font-medium rounded ${telephonyConfig!.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>{telephonyStatus}</span>
                           </div>
                           <p className="text-sm text-gray-600 mt-1">{getTelephonyProviderDescription(telephonyConfig!.provider as TelephonyProvider)}</p>
+                          {((telephonyConfig!.provider as TelephonyProvider) === TelephonyProvider.EXOTEL) && (
+                            <div className="mt-2 flex flex-wrap gap-2 text-xs text-gray-600">
+                              {telephonyConfig!.voice_app_id && (
+                                <span className="rounded bg-gray-100 px-2 py-1">Account SID: {telephonyConfig!.voice_app_id}</span>
+                              )}
+                              {telephonyConfig!.sip_domain && (
+                                <span className="rounded bg-gray-100 px-2 py-1">API Host: {telephonyConfig!.sip_domain}</span>
+                              )}
+                            </div>
+                          )}
                           {telephonyConfig!.last_tested_at && (
                             <div className="flex items-center gap-1 mt-1 text-xs text-green-700"><CheckCircle2 className="h-3 w-3" />Last tested: {new Date(telephonyConfig!.last_tested_at).toLocaleString()}</div>
                           )}
@@ -621,24 +676,37 @@ export default function Integrations() {
                     <>
                       <div className="grid grid-cols-1 gap-4">
                         <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-1">Auth ID {isEditMode && <span className="text-gray-500 font-normal">(leave blank to keep current)</span>}</label>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">
+                            {selectedTelephonyProvider === TelephonyProvider.EXOTEL ? 'API Key' : 'Auth ID'} {isEditMode && <span className="text-gray-500 font-normal">(leave blank to keep current)</span>}
+                          </label>
                           <input type="password" value={telephonyAuthId} onChange={(e) => setTelephonyAuthId(e.target.value)} required={!isEditMode}
-                            placeholder={isEditMode ? 'Leave blank to keep current' : 'Enter Auth ID'} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500" />
+                            placeholder={isEditMode ? 'Leave blank to keep current' : selectedTelephonyProvider === TelephonyProvider.EXOTEL ? 'Enter API Key' : 'Enter Auth ID'} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500" />
                         </div>
                         <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-1">Auth Token {isEditMode && <span className="text-gray-500 font-normal">(leave blank to keep current)</span>}</label>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">
+                            {selectedTelephonyProvider === TelephonyProvider.EXOTEL ? 'API Token' : 'Auth Token'} {isEditMode && <span className="text-gray-500 font-normal">(leave blank to keep current)</span>}
+                          </label>
                           <input type="password" value={telephonyAuthToken} onChange={(e) => setTelephonyAuthToken(e.target.value)} required={!isEditMode}
-                            placeholder={isEditMode ? 'Leave blank to keep current' : 'Enter Auth Token'} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500" />
+                            placeholder={isEditMode ? 'Leave blank to keep current' : selectedTelephonyProvider === TelephonyProvider.EXOTEL ? 'Enter API Token' : 'Enter Auth Token'} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500" />
                         </div>
+                        {selectedTelephonyProvider === TelephonyProvider.EXOTEL && (
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">Account SID <span className="text-red-500">*</span></label>
+                            <input type="text" value={telephonyVoiceAppId} onChange={(e) => setTelephonyVoiceAppId(e.target.value)}
+                              required placeholder="Enter Exotel Account SID" className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500" />
+                          </div>
+                        )}
                         <div>
                           <label className="block text-sm font-medium text-gray-700 mb-1">Verify App UUID <span className="text-gray-400 font-normal">(optional)</span></label>
                           <input type="text" value={telephonyVerifyAppUuid} onChange={(e) => setTelephonyVerifyAppUuid(e.target.value)}
                             placeholder="Optional: Verify App UUID" className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500" />
                         </div>
                         <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-1">SIP Domain <span className="text-gray-400 font-normal">(optional)</span></label>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">
+                            {selectedTelephonyProvider === TelephonyProvider.EXOTEL ? 'API Host' : 'SIP Domain'} <span className="text-gray-400 font-normal">(optional)</span>
+                          </label>
                           <input type="text" value={telephonySipDomain} onChange={(e) => setTelephonySipDomain(e.target.value)}
-                            placeholder="Optional: SIP domain" className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500" />
+                            placeholder={selectedTelephonyProvider === TelephonyProvider.EXOTEL ? 'Optional: api.exotel.com' : 'Optional: SIP domain'} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500" />
                         </div>
                       </div>
                       <p className="text-xs text-gray-500">Credentials are encrypted and stored securely. Your browser never displays stored secrets.</p>

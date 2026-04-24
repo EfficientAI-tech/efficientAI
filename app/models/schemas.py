@@ -1,6 +1,6 @@
 """Pydantic schemas for request/response validation."""
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from uuid import UUID
@@ -269,7 +269,7 @@ class AgentResponse(BaseModel):
     description: Optional[str]
     call_type: CallTypeEnum
     call_medium: CallMediumEnum
-    telephony_phone_number_id: Optional[UUID]
+    telephony_phone_number_id: Optional[UUID] = None
     voice_bundle_id: Optional[UUID]
     ai_provider_id: Optional[UUID]
     voice_ai_integration_id: Optional[UUID]
@@ -1061,6 +1061,12 @@ class MetricCreate(BaseModel):
     metric_type: MetricType = MetricType.RATING
     trigger: MetricTrigger = MetricTrigger.ALWAYS
     enabled: bool = True
+    metric_origin: str = "custom"
+    supported_surfaces: List[str] = ["agent"]
+    enabled_surfaces: Optional[List[str]] = None
+    custom_data_type: Optional[str] = None
+    custom_config: Optional[Dict[str, Any]] = None
+    tags: Optional[List[str]] = None
     
     model_config = ConfigDict(json_schema_extra={
             "example": {
@@ -1080,6 +1086,12 @@ class MetricUpdate(BaseModel):
     metric_type: Optional[MetricType] = None
     trigger: Optional[MetricTrigger] = None
     enabled: Optional[bool] = None
+    metric_origin: Optional[str] = None
+    supported_surfaces: Optional[List[str]] = None
+    enabled_surfaces: Optional[List[str]] = None
+    custom_data_type: Optional[str] = None
+    custom_config: Optional[Dict[str, Any]] = None
+    tags: Optional[List[str]] = None
 
 
 class MetricResponse(BaseModel):
@@ -1092,6 +1104,12 @@ class MetricResponse(BaseModel):
     trigger: MetricTrigger
     enabled: bool
     is_default: bool
+    metric_origin: str
+    supported_surfaces: List[str]
+    enabled_surfaces: List[str]
+    custom_data_type: Optional[str]
+    custom_config: Optional[Dict[str, Any]]
+    tags: Optional[List[str]]
     created_at: datetime
     updated_at: datetime
     created_by: Optional[str]
@@ -1129,6 +1147,22 @@ class MetricResponse(BaseModel):
                         return enum_member
                 raise ValueError(f"Invalid MetricTrigger value: {v}")
         return v
+
+    @validator('supported_surfaces', 'enabled_surfaces', pre=True)
+    def normalize_surfaces(cls, v):
+        if v is None:
+            return []
+        if isinstance(v, str):
+            return [v]
+        if isinstance(v, (list, tuple)):
+            return [str(item).lower() for item in v if item]
+        return []
+
+    @validator('metric_origin', pre=True)
+    def normalize_metric_origin(cls, v):
+        if v is None:
+            return "custom"
+        return str(v).lower()
     
     model_config = ConfigDict(from_attributes=True)
 
@@ -1703,6 +1737,7 @@ class TelephonyMaskingSessionCreate(BaseModel):
 
     party_a_number: str
     party_b_number: str
+    provider: str = "plivo"
     expires_in_minutes: Optional[int] = 60
     metadata: Optional[Dict[str, Any]] = None
     provider: str = "plivo"

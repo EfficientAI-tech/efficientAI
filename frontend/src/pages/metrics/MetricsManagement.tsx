@@ -10,12 +10,21 @@ interface Metric {
   name: string
   description?: string
   metric_type: 'number' | 'boolean' | 'rating'
+  metric_origin: 'default' | 'custom'
+  supported_surfaces: Array<'agent' | 'voice_playground' | 'blind_test'>
+  enabled_surfaces: Array<'agent' | 'voice_playground' | 'blind_test'>
+  custom_data_type?: 'boolean' | 'enum' | 'number_range' | null
+  custom_config?: Record<string, any> | null
+  tags?: string[] | null
   trigger: 'always'
   enabled: boolean
   is_default: boolean
   created_at: string
   updated_at: string
 }
+
+type MetricSurface = 'agent' | 'voice_playground' | 'blind_test'
+type CustomDataType = 'boolean' | 'enum' | 'number_range'
 
 // Quantitative: Raw acoustic measurements (Parselmouth - signal processing)
 // These are pure physical/mathematical measurements of the audio signal
@@ -51,7 +60,9 @@ export default function MetricsManagement() {
   const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
   const [showCreateModal, setShowCreateModal] = useState(false)
+  const [isCustomMetricMode, setIsCustomMetricMode] = useState(false)
   const [showEnableModal, setShowEnableModal] = useState(false)
+  const [surfaceFilter, setSurfaceFilter] = useState<'all' | MetricSurface>('all')
   const [editingMetric, setEditingMetric] = useState<Metric | null>(null)
   const [sortField, setSortField] = useState<'type' | 'method'>('type')
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc')
@@ -60,13 +71,22 @@ export default function MetricsManagement() {
     name: '',
     description: '',
     metric_type: 'rating' as 'number' | 'boolean' | 'rating',
+    metric_origin: 'custom' as 'default' | 'custom',
+    supported_surfaces: ['agent'] as MetricSurface[],
+    enabled_surfaces: ['agent'] as MetricSurface[],
+    custom_data_type: 'boolean' as CustomDataType,
+    enum_options_csv: '',
+    number_min: 0,
+    number_max: 10,
+    number_step: 1,
+    tags_csv: '',
     trigger: 'always' as 'always',
     enabled: true,
   })
 
   const { data: metrics = [], isLoading } = useQuery({
-    queryKey: ['metrics'],
-    queryFn: () => apiClient.listMetrics(),
+    queryKey: ['metrics', surfaceFilter],
+    queryFn: () => apiClient.listMetrics(surfaceFilter === 'all' ? undefined : surfaceFilter),
   })
 
   // Seed default metrics on first load if none exist
@@ -145,9 +165,56 @@ export default function MetricsManagement() {
       name: '',
       description: '',
       metric_type: 'rating',
+      metric_origin: 'custom',
+      supported_surfaces: ['agent'],
+      enabled_surfaces: ['agent'],
+      custom_data_type: 'boolean',
+      enum_options_csv: '',
+      number_min: 0,
+      number_max: 10,
+      number_step: 1,
+      tags_csv: '',
       trigger: 'always',
       enabled: true,
     })
+  }
+
+  const getCustomConfigFromForm = () => {
+    if (formData.custom_data_type === 'enum') {
+      const options = formData.enum_options_csv
+        .split(',')
+        .map((opt) => opt.trim())
+        .filter(Boolean)
+      return { options }
+    }
+    if (formData.custom_data_type === 'number_range') {
+      return {
+        min: Number(formData.number_min),
+        max: Number(formData.number_max),
+        step: Number(formData.number_step),
+      }
+    }
+    return {}
+  }
+
+  const buildPayload = () => {
+    const tags = formData.tags_csv
+      .split(',')
+      .map((tag) => tag.trim())
+      .filter(Boolean)
+    return {
+      name: formData.name,
+      description: formData.description,
+      metric_type: formData.metric_type,
+      trigger: formData.trigger,
+      enabled: formData.enabled,
+      metric_origin: formData.metric_origin,
+      supported_surfaces: formData.supported_surfaces,
+      enabled_surfaces: formData.enabled ? formData.enabled_surfaces : [],
+      custom_data_type: formData.metric_origin === 'custom' ? formData.custom_data_type : undefined,
+      custom_config: formData.metric_origin === 'custom' ? getCustomConfigFromForm() : undefined,
+      tags: tags.length > 0 ? tags : undefined,
+    }
   }
 
   const handleCreate = () => {
@@ -155,7 +222,7 @@ export default function MetricsManagement() {
       alert('Please enter a metric name')
       return
     }
-    createMutation.mutate(formData)
+    createMutation.mutate(buildPayload() as any)
   }
 
   const handleEdit = (metric: Metric) => {
@@ -164,9 +231,19 @@ export default function MetricsManagement() {
       name: metric.name,
       description: metric.description || '',
       metric_type: metric.metric_type,
+      metric_origin: metric.metric_origin || 'custom',
+      supported_surfaces: (metric.supported_surfaces?.length ? metric.supported_surfaces : ['agent']) as MetricSurface[],
+      enabled_surfaces: (metric.enabled_surfaces?.length ? metric.enabled_surfaces : ['agent']) as MetricSurface[],
+      custom_data_type: (metric.custom_data_type || 'boolean') as CustomDataType,
+      enum_options_csv: Array.isArray(metric.custom_config?.options) ? metric.custom_config.options.join(', ') : '',
+      number_min: Number(metric.custom_config?.min ?? 0),
+      number_max: Number(metric.custom_config?.max ?? 10),
+      number_step: Number(metric.custom_config?.step ?? 1),
+      tags_csv: metric.tags?.join(', ') || '',
       trigger: metric.trigger,
       enabled: metric.enabled,
     })
+    setIsCustomMetricMode(metric.metric_origin === 'custom')
     setShowCreateModal(true)
   }
 
@@ -176,7 +253,7 @@ export default function MetricsManagement() {
       alert('Please enter a metric name')
       return
     }
-    updateMutation.mutate({ id: editingMetric.id, data: formData })
+    updateMutation.mutate({ id: editingMetric.id, data: buildPayload() as any })
   }
 
   const handleToggleEnabled = (metric: Metric) => {
@@ -198,6 +275,7 @@ export default function MetricsManagement() {
 
   const closeModal = () => {
     setShowCreateModal(false)
+    setIsCustomMetricMode(false)
     setEditingMetric(null)
     resetForm()
   }
@@ -279,6 +357,33 @@ export default function MetricsManagement() {
             Add Metric
           </Button>
           <Button
+            variant="secondary"
+            onClick={() => {
+              setIsCustomMetricMode(true)
+              setEditingMetric(null)
+              setFormData({
+                name: '',
+                description: '',
+                metric_origin: 'custom',
+                metric_type: 'number',
+                custom_data_type: 'number_range',
+                enum_options_csv: '',
+                number_min: 0,
+                number_max: 10,
+                number_step: 1,
+                tags_csv: '',
+                supported_surfaces: ['blind_test'],
+                enabled_surfaces: ['blind_test'],
+                trigger: 'always',
+                enabled: true,
+              })
+              setShowCreateModal(true)
+            }}
+            leftIcon={<Plus className="w-4 h-4" />}
+          >
+            Create Custom Metric
+          </Button>
+          <Button
             variant="outline"
             onClick={() => seedMutation.mutate()}
             isLoading={seedMutation.isPending}
@@ -292,7 +397,22 @@ export default function MetricsManagement() {
       {/* Metrics Table */}
       <div className="bg-white shadow rounded-lg overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-200">
-          <h2 className="text-lg font-semibold text-gray-900">Metrics</h2>
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-lg font-semibold text-gray-900">Metrics</h2>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-500">Surface:</span>
+              <select
+                value={surfaceFilter}
+                onChange={(e) => setSurfaceFilter(e.target.value as 'all' | MetricSurface)}
+                className="text-sm border border-gray-300 rounded-md px-2 py-1"
+              >
+                <option value="all">All</option>
+                <option value="agent">Agent</option>
+                <option value="voice_playground">Voice Playground</option>
+                <option value="blind_test">Blind Test</option>
+              </select>
+            </div>
+          </div>
         </div>
         {isLoading ? (
           <div className="p-6 text-center text-gray-500">Loading...</div>
@@ -328,6 +448,9 @@ export default function MetricsManagement() {
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Data Type
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Surface
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     <button
@@ -383,8 +506,17 @@ export default function MetricsManagement() {
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <span className="px-2 py-1 text-xs font-medium bg-gray-100 text-gray-800 rounded capitalize">
-                          {metric.metric_type}
+                          {metric.metric_origin === 'custom' ? metric.custom_data_type || metric.metric_type : metric.metric_type}
                         </span>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="flex flex-wrap gap-1">
+                          {(metric.supported_surfaces || []).map((surface) => (
+                            <span key={surface} className="px-2 py-0.5 text-[11px] bg-slate-100 text-slate-700 rounded-full">
+                              {surface}
+                            </span>
+                          ))}
+                        </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         {isAIVoiceMetric(metric.name) ? (
@@ -459,7 +591,7 @@ export default function MetricsManagement() {
             <div className="relative bg-white rounded-lg shadow-xl max-w-2xl w-full p-6 max-h-[90vh] overflow-y-auto">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-2xl font-bold text-gray-900">
-                  {editingMetric ? 'Edit Metric' : 'Create Metric'}
+                  {editingMetric ? 'Edit Metric' : (isCustomMetricMode ? 'Create Custom Metric' : 'Create Metric')}
                 </h2>
                 <button
                   onClick={closeModal}
@@ -504,13 +636,125 @@ export default function MetricsManagement() {
                   <select
                     value={formData.metric_type}
                     onChange={(e) => setFormData({ ...formData, metric_type: e.target.value as any })}
-                    disabled={editingMetric?.is_default}
+                    disabled={editingMetric?.is_default || isCustomMetricMode}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
                   >
                     <option value="number">Number</option>
                     <option value="boolean">Boolean</option>
                     <option value="rating">Rating</option>
                   </select>
+                </div>
+
+                {isCustomMetricMode && (
+                  <>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Custom Data Type *
+                      </label>
+                      <select
+                        value={formData.custom_data_type}
+                        onChange={(e) => {
+                          const next = e.target.value as CustomDataType
+                          setFormData({
+                            ...formData,
+                            custom_data_type: next,
+                            metric_type: next === 'boolean' ? 'boolean' : next === 'number_range' ? 'number' : 'rating',
+                          })
+                        }}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
+                      >
+                        <option value="boolean">Boolean</option>
+                        <option value="enum">Enum</option>
+                        <option value="number_range">Number Range</option>
+                      </select>
+                    </div>
+
+                    {formData.custom_data_type === 'enum' && (
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          Enum Options (comma separated) *
+                        </label>
+                        <input
+                          type="text"
+                          value={formData.enum_options_csv}
+                          onChange={(e) => setFormData({ ...formData, enum_options_csv: e.target.value })}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
+                          placeholder="Excellent, Good, Neutral, Poor"
+                        />
+                      </div>
+                    )}
+
+                    {formData.custom_data_type === 'number_range' && (
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Min</label>
+                          <input
+                            type="number"
+                            value={formData.number_min}
+                            onChange={(e) => setFormData({ ...formData, number_min: Number(e.target.value) })}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Max</label>
+                          <input
+                            type="number"
+                            value={formData.number_max}
+                            onChange={(e) => setFormData({ ...formData, number_max: Number(e.target.value) })}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Step</label>
+                          <input
+                            type="number"
+                            value={formData.number_step}
+                            onChange={(e) => setFormData({ ...formData, number_step: Number(e.target.value) })}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Supported Surfaces
+                  </label>
+                  <div className="flex flex-wrap gap-4">
+                    {(['agent', 'voice_playground', 'blind_test'] as MetricSurface[]).map((surface) => (
+                      <label key={surface} className="inline-flex items-center gap-2 text-sm text-gray-700">
+                        <input
+                          type="checkbox"
+                          checked={formData.supported_surfaces.includes(surface)}
+                          disabled={isCustomMetricMode && surface !== 'blind_test'}
+                          onChange={(e) => {
+                            const supported = e.target.checked
+                              ? [...new Set([...formData.supported_surfaces, surface])]
+                              : formData.supported_surfaces.filter((s) => s !== surface)
+                            const enabledSurfaces = formData.enabled_surfaces.filter((s) => supported.includes(s))
+                            setFormData({ ...formData, supported_surfaces: supported, enabled_surfaces: enabledSurfaces })
+                          }}
+                          className="h-4 w-4 text-primary-600 border-gray-300 rounded"
+                        />
+                        {surface}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Tags (comma separated)
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.tags_csv}
+                    onChange={(e) => setFormData({ ...formData, tags_csv: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
+                    placeholder="quality, compliance, friendliness"
+                  />
                 </div>
 
                 <div>

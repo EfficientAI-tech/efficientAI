@@ -58,11 +58,13 @@ export interface TelephonyIntegrationCreatePayload {
   auth_id: string
   auth_token: string
   verify_app_uuid?: string
+  voice_app_id?: string
   sip_domain?: string
   masking_config?: Record<string, any>
 }
 
 export interface TelephonyIntegrationUpdatePayload {
+  provider?: string
   auth_id?: string
   auth_token?: string
   verify_app_uuid?: string
@@ -705,13 +707,17 @@ class ApiClient {
     return response.data
   }
 
-  async syncTelephonyNumbers(): Promise<TelephonyPhoneNumberResponse[]> {
-    const response = await this.client.post('/api/v1/telephony/numbers/sync')
+  async syncTelephonyNumbers(provider: string = 'plivo'): Promise<TelephonyPhoneNumberResponse[]> {
+    const response = await this.client.post('/api/v1/telephony/numbers/sync', null, {
+      params: { provider },
+    })
     return response.data
   }
 
-  async listTelephonyNumbers(): Promise<TelephonyPhoneNumberResponse[]> {
-    const response = await this.client.get('/api/v1/telephony/numbers')
+  async listTelephonyNumbers(provider?: string): Promise<TelephonyPhoneNumberResponse[]> {
+    const response = await this.client.get('/api/v1/telephony/numbers', {
+      params: provider ? { provider } : undefined,
+    })
     return response.data
   }
 
@@ -1214,13 +1220,21 @@ class ApiClient {
     metric_type: 'number' | 'boolean' | 'rating'
     trigger?: 'always'
     enabled?: boolean
+    metric_origin?: 'default' | 'custom'
+    supported_surfaces?: string[]
+    enabled_surfaces?: string[]
+    custom_data_type?: 'boolean' | 'enum' | 'number_range'
+    custom_config?: Record<string, any>
+    tags?: string[]
   }): Promise<any> {
     const response = await this.client.post('/api/v1/metrics', data)
     return response.data
   }
 
-  async listMetrics(): Promise<any[]> {
-    const response = await this.client.get('/api/v1/metrics')
+  async listMetrics(surface?: string): Promise<any[]> {
+    const response = await this.client.get('/api/v1/metrics', {
+      params: surface ? { surface } : undefined,
+    })
     return response.data
   }
 
@@ -1288,6 +1302,12 @@ class ApiClient {
     metric_type?: 'number' | 'boolean' | 'rating'
     trigger?: 'always'
     enabled?: boolean
+    metric_origin?: 'default' | 'custom'
+    supported_surfaces?: string[]
+    enabled_surfaces?: string[]
+    custom_data_type?: 'boolean' | 'enum' | 'number_range'
+    custom_config?: Record<string, any>
+    tags?: string[]
   }): Promise<any> {
     const response = await this.client.put(`/api/v1/metrics/${metricId}`, data)
     return response.data

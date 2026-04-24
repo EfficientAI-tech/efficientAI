@@ -181,6 +181,7 @@ export enum IntegrationPlatform {
 
 export enum TelephonyProvider {
   PLIVO = 'plivo',
+  EXOTEL = 'exotel',
 }
 
 export interface Integration {
