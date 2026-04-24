@@ -26,39 +26,60 @@ async def websocket_endpoint(
 ):
     """
     WebSocket endpoint for voice agent connection.
-    Requires API key authentication via query parameter.
+
+    Authentication precedence (since browsers can't set custom headers on
+    WebSockets reliably, everything goes on query params):
+
+        1. ?token=<bearer>      -> local-password / SSO session token
+        2. ?X-API-Key=<key>     -> API key (legacy header name)
+        3. ?api_key=<key>       -> API key
+
+    Under the hood we reuse the same pluggable auth registry used by the
+    HTTP routes so the authorization rules stay consistent.
     """
-    # Get API key from query parameters
-    api_key = websocket.query_params.get("X-API-Key") or websocket.query_params.get("api_key")
-    
-    if not api_key:
-        print("WebSocket connection rejected: No API key provided")
-        await websocket.close(code=1008, reason="API key required")
+    from app.core.auth.providers import AuthError, RawCredential, get_provider_registry
+
+    bearer_token = (
+        websocket.query_params.get("token")
+        or websocket.query_params.get("access_token")
+    )
+    api_key = (
+        websocket.query_params.get("X-API-Key")
+        or websocket.query_params.get("api_key")
+    )
+
+    if not bearer_token and not api_key:
+        print("WebSocket connection rejected: No credentials provided")
+        await websocket.close(code=1008, reason="Authentication required")
         return
-    
-    print(f"WebSocket connection attempt with API key: {api_key[:10]}...")
+
     await websocket.accept()
     print("WebSocket connection accepted")
-    
+
     try:
-        # Get database session
         db = next(get_db())
-        
-        # Get organization ID from API key
-        from app.core.security import get_api_key_organization_id, verify_api_key
-        
-        # Verify API key
-        if not verify_api_key(api_key, db):
-            print("WebSocket connection rejected: Invalid API key")
-            await websocket.close(code=1008, reason="Invalid API key")
+
+        cred = RawCredential(bearer_token=bearer_token, api_key=api_key)
+        registry = get_provider_registry()
+        provider = registry.find(cred)
+        if provider is None:
+            print("WebSocket connection rejected: No provider accepts the credential")
+            await websocket.close(code=1008, reason="Invalid credentials")
             db.close()
             return
-        
-        organization_id = get_api_key_organization_id(api_key, db)
-        
+
+        try:
+            principal = provider.authenticate(cred, db)
+        except AuthError as e:
+            print(f"WebSocket connection rejected: {e}")
+            await websocket.close(code=1008, reason=str(e))
+            db.close()
+            return
+
+        organization_id = principal.organization_id
         if not organization_id:
-            print("WebSocket connection rejected: Could not get organization ID")
-            await websocket.close(code=1008, reason="Invalid API key")
+            print("WebSocket connection rejected: Principal has no organization")
+            await websocket.close(code=1008, reason="Invalid credentials")
             db.close()
             return
         

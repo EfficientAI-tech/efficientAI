@@ -64,3 +64,34 @@ api:
   prefix: "/api/v1"
   key_header: "X-API-Key"
   rate_limit_per_minute: 60
+
+auth:
+  providers:
+    - api_key
+    - local_password
+    # - external_oidc     # requires EFFICIENTAI_LICENSE feature: oidc_sso
+
+  local_password:
+    # Lifetime of the Bearer tokens minted at POST /auth/login (in minutes).
+    # Keep this short; clients re-authenticate silently.
+    token_ttl_minutes: 720  # 12 hours
+    # Turn this off in Cloud SaaS to block self-serve signup.
+    allow_signup: true
+
+  # External OIDC (enterprise): bring your own IdP. Works with any
+  # OIDC-compliant provider. See README.md > Authentication & Deployment
+  # Recipes for copy-paste recipes for Okta, Azure AD, Google Workspace
+  # and AWS Cognito.
+  #
+  # oidc:
+  #   issuer: "https://example.okta.com"                    # REQUIRED
+  #   audience: "efficientai"                               # expected `aud` claim
+  #   client_id: "0oa..."                                   # SPA client id
+  #   jwks_uri: "https://example.okta.com/oauth2/v1/keys"   # optional, derived from issuer
+  #   default_org_name: "Example Inc"                       # used when no org claim is present
+  #   org_claim_path: ["https://efficientai.com/org"]       # dotted path into the JWT to find the org name
+
+# Enterprise License (JWT signed with RS256). Unlocks gated features like
+# oidc_sso, mfa_enforce, audit_export, voice_playground, gepa_optimization.
+# license:
+#   key: "eyJhbGciOi..."
