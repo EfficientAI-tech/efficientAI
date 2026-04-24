@@ -512,7 +512,12 @@ class Metric(Base):
     # Configuration
     metric_type = Column(String, nullable=False, default=MetricType.RATING.value)
     trigger = Column(String, nullable=False, default=MetricTrigger.ALWAYS.value)
-
+    metric_origin = Column(String(30), nullable=False, default="default")
+    supported_surfaces = Column(JSON, nullable=False, default=list)  # ["agent", "voice_playground", "blind_test"]
+    enabled_surfaces = Column(JSON, nullable=False, default=list)  # subset of supported_surfaces
+    custom_data_type = Column(String(30), nullable=True)  # "boolean" | "enum" | "number_range"
+    custom_config = Column(JSON, nullable=True)  # enum options / number range config
+    tags = Column(JSON, nullable=True)  # ["tone", "latency", ...]
 
 
     enabled = Column(Boolean, nullable=False, default=True)
@@ -986,7 +991,15 @@ class TelephonyPhoneNumber(Base):
 
     is_masking_pool = Column(Boolean, default=False, nullable=False)
     agent_id = Column(
-        UUID(as_uuid=True), ForeignKey("agents.id", ondelete="SET NULL"), nullable=True, index=True
+        UUID(as_uuid=True),
+        ForeignKey(
+            "agents.id",
+            ondelete="SET NULL",
+            use_alter=True,
+            name="fk_telephony_phone_numbers_agent_id",
+        ),
+        nullable=True,
+        index=True,
     )
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
