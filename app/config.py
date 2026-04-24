@@ -80,6 +80,28 @@ class Settings(BaseSettings):
     # Enterprise License (JWT signed with RS256)
     EFFICIENTAI_LICENSE: Optional[str] = None
 
+    # -------------------------------------------------------------------------
+    # Authentication providers
+    # -------------------------------------------------------------------------
+    # Ordered list of enabled providers. Always includes "api_key" implicitly
+    # if left empty. Known values: api_key, local_password, external_oidc.
+    AUTH_PROVIDERS: List[str] = ["api_key"]
+
+    # Local password (OSS). App-signed HS256 JWT using SECRET_KEY.
+    AUTH_LOCAL_TOKEN_TTL_MINUTES: int = 60 * 12  # 12h
+    # Allow self-service signup via POST /api/v1/auth/signup? Off in Cloud SaaS.
+    AUTH_LOCAL_ALLOW_SIGNUP: bool = True
+
+    # External OIDC (enterprise license feature: oidc_sso).
+    # Works with any OIDC-compliant IdP: Okta, Azure AD, Google Workspace,
+    # AWS Cognito, Auth0, Ping, OneLogin, JumpCloud, etc.
+    AUTH_OIDC_ISSUER: Optional[str] = None
+    AUTH_OIDC_AUDIENCE: Optional[str] = None
+    AUTH_OIDC_CLIENT_ID: Optional[str] = None
+    AUTH_OIDC_JWKS_URI: Optional[str] = None              # optional, derived from issuer
+    AUTH_OIDC_DEFAULT_ORG_NAME: Optional[str] = None
+    AUTH_OIDC_ORG_CLAIM_PATH: Optional[List[str]] = None
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -122,6 +144,50 @@ class Settings(BaseSettings):
         
         return ["wav", "mp3", "flac", "m4a"]  # Default
     
+    @field_validator("AUTH_PROVIDERS", mode="before")
+    @classmethod
+    def parse_auth_providers(cls, v: Union[str, List[str], None]) -> List[str]:
+        """Parse AUTH_PROVIDERS from JSON, CSV, or a native list."""
+        if v is None:
+            return ["api_key"]
+        if isinstance(v, list):
+            return [str(x).strip() for x in v if str(x).strip()] or ["api_key"]
+        if isinstance(v, str):
+            v = v.strip()
+            if not v:
+                return ["api_key"]
+            if v.startswith("["):
+                try:
+                    parsed = json.loads(v)
+                    if isinstance(parsed, list):
+                        return [str(x).strip() for x in parsed if str(x).strip()] or ["api_key"]
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            return [x.strip() for x in v.split(",") if x.strip()] or ["api_key"]
+        return ["api_key"]
+
+    @field_validator("AUTH_OIDC_ORG_CLAIM_PATH", mode="before")
+    @classmethod
+    def parse_claim_path(cls, v):
+        """Parse a dotted claim path from JSON, CSV, or a native list."""
+        if v is None or v == "":
+            return None
+        if isinstance(v, list):
+            return [str(x) for x in v]
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return None
+            if s.startswith("["):
+                try:
+                    parsed = json.loads(s)
+                    if isinstance(parsed, list):
+                        return [str(x) for x in parsed]
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            return [x.strip() for x in s.split(",") if x.strip()] or None
+        return None
+
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def parse_cors_origins(cls, v: Union[str, List[str], None]) -> List[str]:
@@ -315,6 +381,38 @@ def load_config_from_file(config_path: str) -> None:
         license_config = config_data["license"]
         if "key" in license_config:
             settings.EFFICIENTAI_LICENSE = license_config["key"]
+
+    if "auth" in config_data:
+        auth_config = config_data["auth"] or {}
+
+        providers = auth_config.get("providers")
+        if isinstance(providers, list):
+            settings.AUTH_PROVIDERS = [str(p).strip() for p in providers if str(p).strip()]
+        elif isinstance(providers, str) and providers.strip():
+            settings.AUTH_PROVIDERS = [p.strip() for p in providers.split(",") if p.strip()]
+
+        local_cfg = auth_config.get("local_password") or {}
+        if "token_ttl_minutes" in local_cfg:
+            try:
+                settings.AUTH_LOCAL_TOKEN_TTL_MINUTES = int(local_cfg["token_ttl_minutes"])
+            except (TypeError, ValueError):
+                pass
+        if "allow_signup" in local_cfg:
+            settings.AUTH_LOCAL_ALLOW_SIGNUP = bool(local_cfg["allow_signup"])
+
+        oidc_cfg = auth_config.get("oidc") or auth_config.get("external_oidc") or {}
+        if "issuer" in oidc_cfg:
+            settings.AUTH_OIDC_ISSUER = oidc_cfg["issuer"]
+        if "audience" in oidc_cfg:
+            settings.AUTH_OIDC_AUDIENCE = oidc_cfg["audience"]
+        if "client_id" in oidc_cfg:
+            settings.AUTH_OIDC_CLIENT_ID = oidc_cfg["client_id"]
+        if "jwks_uri" in oidc_cfg:
+            settings.AUTH_OIDC_JWKS_URI = oidc_cfg["jwks_uri"]
+        if "default_org_name" in oidc_cfg:
+            settings.AUTH_OIDC_DEFAULT_ORG_NAME = oidc_cfg["default_org_name"]
+        if "org_claim_path" in oidc_cfg and isinstance(oidc_cfg["org_claim_path"], list):
+            settings.AUTH_OIDC_ORG_CLAIM_PATH = [str(x) for x in oidc_cfg["org_claim_path"]]
 
     # Update Celery URLs if they weren't explicitly set
     if not settings.CELERY_BROKER_URL:

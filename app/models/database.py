@@ -54,6 +54,17 @@ class User(Base):
     last_name = Column(String(255), nullable=True)
     password_hash = Column(String(255), nullable=True)  # Nullable for users created via invitation
     is_active = Column(Boolean, default=True, nullable=False)
+
+    # Auth-provider bookkeeping (populated by the pluggable auth system).
+    # - external_id: stable subject from the upstream IdP, e.g. "okta:<sub>".
+    # - auth_provider: name of the provider that first created this user.
+    # - mfa_enabled: has the user completed an MFA enrolment (enforced by the IdP).
+    # - last_login_at: most recent successful interactive (non-API-key) sign-in.
+    external_id = Column(String(255), unique=True, nullable=True, index=True)
+    auth_provider = Column(String(50), nullable=True)
+    mfa_enabled = Column(Boolean, default=False, nullable=False)
+    last_login_at = Column(DateTime(timezone=True), nullable=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

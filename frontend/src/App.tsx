@@ -75,12 +75,15 @@ import { WalkthroughProvider } from './context/WalkthroughContext'
 
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
-  const { apiKey } = useAuthStore()
-  
-  if (!apiKey) {
+  // Either credential type counts as "signed in". The backend enforces the
+  // actual authentication on every request; this guard just keeps the SPA
+  // from flashing protected pages when the user clearly has no session.
+  const { apiKey, accessToken } = useAuthStore()
+
+  if (!apiKey && !accessToken) {
     return <Navigate to="/login" replace />
   }
-  
+
   return <>{children}</>
 }
 
