@@ -60,6 +60,17 @@ class Settings(BaseSettings):
     # API Settings
     API_KEY_HEADER: str = "X-API-Key"
     RATE_LIMIT_PER_MINUTE: int = 60
+
+    # Authentication
+    AUTH_PROVIDERS: List[str] = ["api_key"]
+    AUTH_LOCAL_ALLOW_SIGNUP: bool = True
+    AUTH_LOCAL_TOKEN_TTL_MINUTES: int = 720
+    AUTH_OIDC_ISSUER: Optional[str] = None
+    AUTH_OIDC_CLIENT_ID: Optional[str] = None
+    AUTH_OIDC_AUDIENCE: Optional[str] = None
+    AUTH_OIDC_JWKS_URI: Optional[str] = None
+    AUTH_OIDC_ORG_CLAIM_PATH: List[str] = []
+    AUTH_OIDC_DEFAULT_ORG_NAME: Optional[str] = None
     
     # Frontend
     FRONTEND_DIR: str = "./frontend/dist"
@@ -159,6 +170,63 @@ class Settings(BaseSettings):
             return origins if origins else ["http://localhost:3000", "http://localhost:8000"]
         
         return ["http://localhost:3000", "http://localhost:8000"]  # Default
+
+    @field_validator("AUTH_PROVIDERS", mode="before")
+    @classmethod
+    def parse_auth_providers(cls, v: Union[str, List[str], None]) -> List[str]:
+        """Parse AUTH_PROVIDERS from JSON arrays or CSV strings."""
+        if v is None:
+            return ["api_key"]
+
+        if isinstance(v, list):
+            providers = [str(provider).strip().lower() for provider in v if str(provider).strip()]
+            return providers or ["api_key"]
+
+        if isinstance(v, str):
+            raw = v.strip()
+            if not raw:
+                return ["api_key"]
+            if raw.startswith("["):
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, list):
+                        providers = [
+                            str(provider).strip().lower()
+                            for provider in parsed
+                            if str(provider).strip()
+                        ]
+                        return providers or ["api_key"]
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            providers = [provider.strip().lower() for provider in raw.split(",") if provider.strip()]
+            return providers or ["api_key"]
+
+        return ["api_key"]
+
+    @field_validator("AUTH_OIDC_ORG_CLAIM_PATH", mode="before")
+    @classmethod
+    def parse_auth_oidc_org_claim_path(cls, v: Union[str, List[str], None]) -> List[str]:
+        """Parse AUTH_OIDC_ORG_CLAIM_PATH from JSON arrays or dot notation."""
+        if v is None:
+            return []
+
+        if isinstance(v, list):
+            return [str(item).strip() for item in v if str(item).strip()]
+
+        if isinstance(v, str):
+            raw = v.strip()
+            if not raw:
+                return []
+            if raw.startswith("["):
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, list):
+                        return [str(item).strip() for item in parsed if str(item).strip()]
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            return [part.strip() for part in raw.split(".") if part.strip()]
+
+        return []
     
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -316,6 +384,33 @@ def load_config_from_file(config_path: str) -> None:
             settings.API_KEY_HEADER = api_config["key_header"]
         if "rate_limit_per_minute" in api_config:
             settings.RATE_LIMIT_PER_MINUTE = api_config["rate_limit_per_minute"]
+
+    if "auth" in config_data:
+        auth_config = config_data["auth"]
+        if "providers" in auth_config:
+            settings.AUTH_PROVIDERS = auth_config["providers"]
+
+        local_config = auth_config.get("local_password", {})
+        if isinstance(local_config, dict):
+            if "allow_signup" in local_config:
+                settings.AUTH_LOCAL_ALLOW_SIGNUP = bool(local_config["allow_signup"])
+            if "token_ttl_minutes" in local_config:
+                settings.AUTH_LOCAL_TOKEN_TTL_MINUTES = int(local_config["token_ttl_minutes"])
+
+        oidc_config = auth_config.get("oidc", {})
+        if isinstance(oidc_config, dict):
+            if "issuer" in oidc_config:
+                settings.AUTH_OIDC_ISSUER = oidc_config["issuer"]
+            if "client_id" in oidc_config:
+                settings.AUTH_OIDC_CLIENT_ID = oidc_config["client_id"]
+            if "audience" in oidc_config:
+                settings.AUTH_OIDC_AUDIENCE = oidc_config["audience"]
+            if "jwks_uri" in oidc_config:
+                settings.AUTH_OIDC_JWKS_URI = oidc_config["jwks_uri"]
+            if "org_claim_path" in oidc_config:
+                settings.AUTH_OIDC_ORG_CLAIM_PATH = oidc_config["org_claim_path"]
+            if "default_org_name" in oidc_config:
+                settings.AUTH_OIDC_DEFAULT_ORG_NAME = oidc_config["default_org_name"]
 
     if "license" in config_data:
         license_config = config_data["license"]

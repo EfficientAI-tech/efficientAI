@@ -53,6 +53,10 @@ class User(Base):
     first_name = Column(String(255), nullable=True)
     last_name = Column(String(255), nullable=True)
     password_hash = Column(String(255), nullable=True)  # Nullable for users created via invitation
+    external_id = Column(String(255), unique=True, nullable=True, index=True)
+    auth_provider = Column(String(50), nullable=True)
+    mfa_enabled = Column(Boolean, default=False, nullable=False)
+    last_login_at = Column(DateTime(timezone=True), nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

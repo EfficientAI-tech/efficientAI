@@ -88,6 +88,7 @@ class ProviderRegistry:
 
 
 _registry_singleton: Optional[ProviderRegistry] = None
+_registry_signature: Optional[tuple[str, ...]] = None
 
 
 def get_provider_registry() -> ProviderRegistry:
@@ -98,10 +99,7 @@ def get_provider_registry() -> ProviderRegistry:
     import time) so that config.yml values loaded by `load_config_from_file`
     at startup are visible.
     """
-    global _registry_singleton
-    if _registry_singleton is not None:
-        return _registry_singleton
-
+    global _registry_singleton, _registry_signature
     from app.config import settings
     from app.core.auth.api_key import ApiKeyProvider
     from app.core.auth.local import LocalPasswordProvider
@@ -110,6 +108,11 @@ def get_provider_registry() -> ProviderRegistry:
     enabled = {p.strip().lower() for p in (settings.AUTH_PROVIDERS or []) if p}
     if not enabled:
         enabled = {"api_key"}
+    enabled_signature = tuple(sorted(enabled))
+
+    # Rebuild when the configured providers change (e.g. monkeypatched tests).
+    if _registry_singleton is not None and _registry_signature == enabled_signature:
+        return _registry_singleton
 
     # Fixed priority order: API keys first (deterministic machine path), then
     # the local-password bearer (which self-identifies by its `iss` claim),
@@ -126,10 +129,12 @@ def get_provider_registry() -> ProviderRegistry:
             providers.append(builder())
 
     _registry_singleton = ProviderRegistry(providers)
+    _registry_signature = enabled_signature
     return _registry_singleton
 
 
 def reset_provider_registry() -> None:
     """Drop the cached registry. Useful for tests and hot reload."""
-    global _registry_singleton
+    global _registry_singleton, _registry_signature
     _registry_singleton = None
+    _registry_signature = None
