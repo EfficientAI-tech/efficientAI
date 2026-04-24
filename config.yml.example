@@ -87,22 +87,23 @@ api:
 #      -> Users sign up with email + password. API keys are minted from the
 #         UI or via scripts/create_api_key.py for programmatic access.
 #
-#   2. Enterprise self-hosted (requires an EFFICIENTAI_LICENSE with keycloak_sso):
-#        providers: [api_key, keycloak]
-#      -> Humans sign in via your Keycloak realm (OIDC). Machines still use
-#         API keys. Turn off local_password to force SSO.
+#   2. Enterprise self-hosted (requires an EFFICIENTAI_LICENSE with oidc_sso):
+#        providers: [api_key, external_oidc]
+#      -> Humans sign in via your existing identity provider over OIDC:
+#         Okta, Azure AD / Entra ID, Google Workspace, AWS Cognito, Auth0,
+#         Ping, JumpCloud, OneLogin, etc. Machines still use API keys.
+#         Drop local_password from the list to force SSO.
 #
-#   3. Cloud SaaS (requires keycloak_sso + mfa_enforce, allow_signup: false):
-#        providers: [api_key, keycloak]
+#   3. Cloud SaaS (requires oidc_sso + mfa_enforce, allow_signup: false):
+#        providers: [api_key, external_oidc]
 #      -> Signups happen through the billing flow, not the API.
 #
-# Providers listed here but not licensed (keycloak / external_oidc) will return
-# a 403 with a pointer to the license feature that unlocks them.
+# Providers listed here but not licensed (external_oidc) will return a 403
+# with a pointer to the license feature that unlocks them.
 auth:
   providers:
     - api_key
     - local_password
-    # - keycloak          # requires EFFICIENTAI_LICENSE feature: keycloak_sso
     # - external_oidc     # requires EFFICIENTAI_LICENSE feature: oidc_sso
 
   local_password:
@@ -112,27 +113,21 @@ auth:
     # Turn this off in Cloud SaaS to block self-serve signup.
     allow_signup: true
 
-  # Keycloak (enterprise): human SSO via your Keycloak realm.
-  # keycloak:
-  #   base_url: "https://id.example.com"
-  #   realm: "efficientai"
-  #   client_id: "efficientai-frontend"
-  #   audience: "efficientai-api"
-  #   default_org_name: "Example Inc"
-  #   # Dotted path into the JWT to find the org name. Omit to rely on default_org_name.
-  #   org_claim_path: ["org", "name"]
-
-  # External OIDC (enterprise): BYO IdP (Okta, Azure AD, Google Workspace, Auth0).
+  # External OIDC (enterprise): bring your own IdP. Works with any
+  # OIDC-compliant provider. See README.md > Authentication & Deployment
+  # Recipes for copy-paste recipes for Okta, Azure AD, Google Workspace
+  # and AWS Cognito.
+  #
   # oidc:
-  #   issuer: "https://example.okta.com"
-  #   audience: "efficientai"
-  #   client_id: "0oa..."
-  #   jwks_uri: "https://example.okta.com/oauth2/v1/keys"  # optional, derived from issuer
-  #   default_org_name: "Example Inc"
-  #   org_claim_path: ["https://efficientai.com/org"]
+  #   issuer: "https://example.okta.com"                    # REQUIRED
+  #   audience: "efficientai"                               # expected `aud` claim
+  #   client_id: "0oa..."                                   # SPA client id
+  #   jwks_uri: "https://example.okta.com/oauth2/v1/keys"   # optional, derived from issuer
+  #   default_org_name: "Example Inc"                       # used when no org claim is present
+  #   org_claim_path: ["https://efficientai.com/org"]       # dotted path into the JWT to find the org name
 
 # Enterprise License (JWT signed with RS256). Unlocks gated features like
-# keycloak_sso, oidc_sso, voice_playground, gepa_optimization.
+# oidc_sso, mfa_enforce, audit_export, voice_playground, gepa_optimization.
 # license:
 #   key: "eyJhbGciOi..."
 

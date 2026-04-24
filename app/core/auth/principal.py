@@ -19,7 +19,6 @@ class AuthMethod(str, Enum):
 
     API_KEY = "api_key"
     LOCAL_PASSWORD = "local_password"
-    KEYCLOAK = "keycloak"
     EXTERNAL_OIDC = "external_oidc"
 
 

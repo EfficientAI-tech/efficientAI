@@ -1,9 +1,9 @@
 """
 Shared helpers for OIDC-based auth providers.
 
-Keycloak and external OIDC both verify a Bearer JWT against an issuer's JWKS
-endpoint and then upsert the (user, org, membership) triple so that downstream
-routes can treat them the same as a local user. This module centralises the
+The external OIDC provider verifies a Bearer JWT against the issuer's JWKS
+endpoint and then upserts the (user, org, membership) triple so that downstream
+routes can treat it the same as a local user. This module centralises the
 fetching, caching, and mapping.
 """
 

@@ -74,7 +74,7 @@ const API_BASE_URL = import.meta.env.VITE_API_URL ||
 // -------------------------------------------------------------------------
 
 export interface AuthProviderConfig {
-  name: 'api_key' | 'local_password' | 'keycloak' | 'external_oidc'
+  name: 'api_key' | 'local_password' | 'external_oidc'
   enabled: boolean
   display_name: string
   description?: string | null
@@ -98,6 +98,8 @@ export interface AuthUserSummary {
   last_name?: string | null
   organization_id: string
   role?: string | null
+  has_password?: boolean
+  email_is_placeholder?: boolean
 }
 
 export interface TokenResponse {
@@ -195,6 +197,22 @@ class ApiClient {
 
   async logout(): Promise<{ success: boolean; auth_method: string }> {
     const response = await this.client.post('/api/v1/auth/logout')
+    return response.data
+  }
+
+  async setPassword(data: {
+    new_password: string
+    current_password?: string
+    email?: string
+  }): Promise<AuthUserSummary> {
+    const response = await this.client.post('/api/v1/auth/password', data)
+    return response.data
+  }
+
+  async switchOrganization(organization_id: string): Promise<TokenResponse> {
+    const response = await this.client.post('/api/v1/auth/switch-org', {
+      organization_id,
+    })
     return response.data
   }
 

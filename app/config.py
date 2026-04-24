@@ -84,7 +84,7 @@ class Settings(BaseSettings):
     # Authentication providers
     # -------------------------------------------------------------------------
     # Ordered list of enabled providers. Always includes "api_key" implicitly
-    # if left empty. Known values: api_key, local_password, keycloak, external_oidc.
+    # if left empty. Known values: api_key, local_password, external_oidc.
     AUTH_PROVIDERS: List[str] = ["api_key"]
 
     # Local password (OSS). App-signed HS256 JWT using SECRET_KEY.
@@ -92,17 +92,9 @@ class Settings(BaseSettings):
     # Allow self-service signup via POST /api/v1/auth/signup? Off in Cloud SaaS.
     AUTH_LOCAL_ALLOW_SIGNUP: bool = True
 
-    # Keycloak (enterprise license feature: keycloak_sso)
-    AUTH_KEYCLOAK_BASE_URL: Optional[str] = None          # e.g. https://id.example.com
-    AUTH_KEYCLOAK_REALM: Optional[str] = None             # e.g. efficientai
-    AUTH_KEYCLOAK_CLIENT_ID: Optional[str] = None         # public client used by the SPA
-    AUTH_KEYCLOAK_AUDIENCE: Optional[str] = None          # expected aud claim; often = client_id
-    AUTH_KEYCLOAK_DEFAULT_ORG_NAME: Optional[str] = None  # used when no org claim is present
-    # Dotted path into the JWT claims to find the organization name.
-    # Example: ["org", "name"] => claims["org"]["name"]. None disables.
-    AUTH_KEYCLOAK_ORG_CLAIM_PATH: Optional[List[str]] = None
-
-    # External OIDC (enterprise license feature: oidc_sso)
+    # External OIDC (enterprise license feature: oidc_sso).
+    # Works with any OIDC-compliant IdP: Okta, Azure AD, Google Workspace,
+    # AWS Cognito, Auth0, Ping, OneLogin, JumpCloud, etc.
     AUTH_OIDC_ISSUER: Optional[str] = None
     AUTH_OIDC_AUDIENCE: Optional[str] = None
     AUTH_OIDC_CLIENT_ID: Optional[str] = None
@@ -174,7 +166,7 @@ class Settings(BaseSettings):
             return [x.strip() for x in v.split(",") if x.strip()] or ["api_key"]
         return ["api_key"]
 
-    @field_validator("AUTH_KEYCLOAK_ORG_CLAIM_PATH", "AUTH_OIDC_ORG_CLAIM_PATH", mode="before")
+    @field_validator("AUTH_OIDC_ORG_CLAIM_PATH", mode="before")
     @classmethod
     def parse_claim_path(cls, v):
         """Parse a dotted claim path from JSON, CSV, or a native list."""
@@ -407,20 +399,6 @@ def load_config_from_file(config_path: str) -> None:
                 pass
         if "allow_signup" in local_cfg:
             settings.AUTH_LOCAL_ALLOW_SIGNUP = bool(local_cfg["allow_signup"])
-
-        kc_cfg = auth_config.get("keycloak") or {}
-        if "base_url" in kc_cfg:
-            settings.AUTH_KEYCLOAK_BASE_URL = kc_cfg["base_url"]
-        if "realm" in kc_cfg:
-            settings.AUTH_KEYCLOAK_REALM = kc_cfg["realm"]
-        if "client_id" in kc_cfg:
-            settings.AUTH_KEYCLOAK_CLIENT_ID = kc_cfg["client_id"]
-        if "audience" in kc_cfg:
-            settings.AUTH_KEYCLOAK_AUDIENCE = kc_cfg["audience"]
-        if "default_org_name" in kc_cfg:
-            settings.AUTH_KEYCLOAK_DEFAULT_ORG_NAME = kc_cfg["default_org_name"]
-        if "org_claim_path" in kc_cfg and isinstance(kc_cfg["org_claim_path"], list):
-            settings.AUTH_KEYCLOAK_ORG_CLAIM_PATH = [str(x) for x in kc_cfg["org_claim_path"]]
 
         oidc_cfg = auth_config.get("oidc") or auth_config.get("external_oidc") or {}
         if "issuer" in oidc_cfg:

@@ -3,26 +3,31 @@ import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../../store/authStore'
 import { apiClient } from '../../lib/api'
 import type { AuthConfigResponse, AuthProviderConfig } from '../../lib/api'
-import { AlertCircle, ArrowLeft } from 'lucide-react'
+import { AlertCircle } from 'lucide-react'
 import Logo from '../../components/Logo'
 import { Card, CardBody, Button, Divider, Chip, Tabs, Tab } from '@heroui/react'
 
 /**
  * Provider-aware sign-in screen.
  *
- * The backend at /api/v1/auth/config tells us which login methods are enabled:
- * API key, local password, Keycloak SSO, external OIDC. We render a tab for
- * each one and pick a sensible default (password > SSO > API key).
+ * The backend at /api/v1/auth/config tells us which interactive login methods
+ * are enabled: local password (email + password) and enterprise OIDC SSO
+ * (Okta, Azure AD, Google Workspace, AWS Cognito, Auth0, ...). API keys are
+ * still a fully supported auth method for scripts / SDKs / CI, but they are
+ * intentionally not exposed as a login option on the UI - interactive users
+ * sign in with an email/password or via SSO and mint API keys from Settings
+ * afterwards.
  */
 
-type Mode = 'password' | 'signup' | 'apikey' | 'sso'
+type Mode = 'password' | 'signup' | 'sso'
 
 export default function Login() {
   const navigate = useNavigate()
-  const { setApiKey, setSession } = useAuthStore()
+  const { setSession } = useAuthStore()
 
   const [authConfig, setAuthConfig] = useState<AuthConfigResponse | null>(null)
   const [loadingConfig, setLoadingConfig] = useState(true)
+  const [configError, setConfigError] = useState(false)
 
   const [mode, setMode] = useState<Mode>('password')
   const [email, setEmail] = useState('')
@@ -30,7 +35,6 @@ export default function Login() {
   const [orgName, setOrgName] = useState('')
   const [firstName, setFirstName] = useState('')
   const [lastName, setLastName] = useState('')
-  const [apiKey, setApiKeyValue] = useState('')
   const [error, setError] = useState('')
   const [isLoading, setIsLoading] = useState(false)
 
@@ -44,25 +48,14 @@ export default function Login() {
         // Pick a sensible default tab based on what's enabled server-side.
         const byName = (n: string) => cfg.providers.find((p) => p.name === n && p.enabled)
         if (byName('local_password')) setMode('password')
-        else if (byName('keycloak') || byName('external_oidc')) setMode('sso')
-        else if (byName('api_key')) setMode('apikey')
+        else if (byName('external_oidc')) setMode('sso')
       })
       .catch(() => {
         if (!active) return
-        // If the config endpoint is unreachable (old backend, network issue),
-        // fall back to the API-key-only UX so OSS users aren't locked out.
-        setAuthConfig({
-          providers: [
-            {
-              name: 'api_key',
-              enabled: true,
-              display_name: 'API Key',
-              description: 'Sign in with an EfficientAI API key.',
-            },
-          ],
-          tier: 'oss',
-        })
-        setMode('apikey')
+        // Config endpoint unreachable - we can't know which providers are on,
+        // so surface a clear error instead of guessing. The user's best next
+        // step is to check that the backend is running.
+        setConfigError(true)
       })
       .finally(() => active && setLoadingConfig(false))
     return () => {
@@ -73,9 +66,7 @@ export default function Login() {
   const providerByName = (n: AuthProviderConfig['name']) =>
     authConfig?.providers.find((p) => p.name === n && p.enabled)
   const localPwd = providerByName('local_password')
-  const keycloak = providerByName('keycloak')
   const oidc = providerByName('external_oidc')
-  const apikeyProv = providerByName('api_key')
 
   const handlePasswordLogin = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -113,39 +104,40 @@ export default function Login() {
     }
   }
 
-  const handleApiKeyLogin = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setError('')
-    setIsLoading(true)
-    try {
-      apiClient.setApiKey(apiKey)
-      const res = await apiClient.validateApiKey()
-      if (res.valid) {
-        setApiKey(apiKey)
-        navigate('/')
-      } else {
-        setError('Invalid API key')
-      }
-    } catch (err: any) {
-      apiClient.clearApiKey()
-      setError(err?.response?.data?.detail || 'Failed to validate API key')
-    } finally {
-      setIsLoading(false)
-    }
-  }
-
-  const handleSsoRedirect = (provider: AuthProviderConfig) => {
-    // For Keycloak we have a full authorize URL. We kick off the standard
-    // OIDC authorization-code flow with the SPA as the redirect target.
-    // The callback page exchanges the code for tokens (not included here -
-    // enterprise deployments typically fork this for custom UX).
-    const authorizeUrl = provider.oidc_authorize_url
-    if (!authorizeUrl || !provider.oidc_client_id) {
+  const handleSsoRedirect = async (provider: AuthProviderConfig) => {
+    // We kick off the standard OIDC authorization-code flow with the SPA as
+    // the redirect target. Every OIDC-compliant IdP advertises its authorize
+    // endpoint at /.well-known/openid-configuration, which means we don't
+    // need to hardcode IdP-specific paths: Okta, Azure AD, Google Workspace,
+    // Cognito, Auth0 all work with the same discovery lookup.
+    if (!provider.oidc_client_id) {
       setError(
-        `${provider.display_name} is enabled but not fully configured. Ask your admin to set the base URL, realm, and client_id.`
+        `${provider.display_name} is enabled but not fully configured. Ask your admin to set the issuer and client_id.`
       )
       return
     }
+
+    let authorizeUrl = provider.oidc_authorize_url ?? null
+    if (!authorizeUrl && provider.oidc_issuer) {
+      try {
+        const discoveryUrl = `${provider.oidc_issuer.replace(/\/$/, '')}/.well-known/openid-configuration`
+        const res = await fetch(discoveryUrl)
+        if (res.ok) {
+          const doc = (await res.json()) as { authorization_endpoint?: string }
+          authorizeUrl = doc.authorization_endpoint ?? null
+        }
+      } catch {
+        // ignore; handled below
+      }
+    }
+
+    if (!authorizeUrl) {
+      setError(
+        `Could not discover the authorize endpoint for ${provider.display_name}. Verify the issuer URL is reachable from your browser.`
+      )
+      return
+    }
+
     const redirect = `${window.location.origin}/login/callback`
     const params = new URLSearchParams({
       client_id: provider.oidc_client_id,
@@ -165,12 +157,13 @@ export default function Login() {
     )
   }
 
-  const tabs: Array<{ key: Mode; label: string; show: boolean }> = [
-    { key: 'password', label: 'Sign in', show: !!localPwd },
-    { key: 'signup', label: 'Create account', show: !!localPwd?.supports_signup },
-    { key: 'sso', label: 'SSO', show: !!(keycloak || oidc) },
-    { key: 'apikey', label: 'API key', show: !!apikeyProv },
-  ].filter((t) => t.show)
+  const tabs: Array<{ key: Mode; label: string; show: boolean }> = (
+    [
+      { key: 'password', label: 'Sign in', show: !!localPwd },
+      { key: 'signup', label: 'Create account', show: !!localPwd?.supports_signup },
+      { key: 'sso', label: 'SSO', show: !!oidc },
+    ] satisfies Array<{ key: Mode; label: string; show: boolean }>
+  ).filter((t) => t.show)
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-amber-50 via-yellow-50 to-orange-50 py-12 px-4 sm:px-6 lg:px-8">
@@ -199,7 +192,18 @@ export default function Login() {
                   setMode(k as Mode)
                   setError('')
                 }}
-                className="mb-4"
+                variant="solid"
+                radius="full"
+                fullWidth
+                classNames={{
+                  base: 'mb-4',
+                  tabList: 'w-full bg-gray-100 p-1 rounded-full',
+                  tab: 'flex-1 h-10 px-3 data-[hover=true]:opacity-100',
+                  cursor:
+                    'bg-[#fef08a] border border-[#facc15] shadow-sm rounded-full',
+                  tabContent:
+                    'text-sm font-medium text-gray-500 group-data-[selected=true]:text-[#854d0e]',
+                }}
               >
                 {tabs.map((t) => (
                   <Tab key={t.key} title={t.label} />
@@ -261,18 +265,11 @@ export default function Login() {
               </form>
             )}
 
-            {mode === 'sso' && (keycloak || oidc) && (
+            {mode === 'sso' && oidc && (
               <div className="space-y-3">
-                {keycloak && (
-                  <Button onPress={() => handleSsoRedirect(keycloak)} className="w-full font-semibold" size="lg" radius="full" color="primary" variant="bordered">
-                    Continue with {keycloak.display_name}
-                  </Button>
-                )}
-                {oidc && (
-                  <Button onPress={() => handleSsoRedirect(oidc)} className="w-full font-semibold" size="lg" radius="full" color="primary" variant="bordered">
-                    Continue with {oidc.display_name}
-                  </Button>
-                )}
+                <Button onPress={() => handleSsoRedirect(oidc)} className="w-full font-semibold" size="lg" radius="full" color="primary" variant="bordered">
+                  Continue with {oidc.display_name}
+                </Button>
                 {error && (
                   <Chip color="danger" variant="flat" startContent={<AlertCircle className="w-4 h-4" />} className="w-full max-w-full h-auto py-2">
                     {error}
@@ -284,44 +281,53 @@ export default function Login() {
               </div>
             )}
 
-            {mode === 'apikey' && apikeyProv && (
-              <form onSubmit={handleApiKeyLogin} className="space-y-4">
-                <input type="text" placeholder="Enter your API key" value={apiKey} onChange={(e) => setApiKeyValue(e.target.value)} required className="w-full px-4 py-3 bg-gray-50 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-[#ca8a04] focus:bg-white" />
-                {error && (
-                  <Chip color="danger" variant="flat" startContent={<AlertCircle className="w-4 h-4" />} className="w-full max-w-full h-auto py-2">
-                    {error}
-                  </Chip>
-                )}
-                <Button type="submit" color="primary" isLoading={isLoading} className="w-full font-semibold bg-[#fef9c3] hover:bg-[#fef08a] text-[#a16207]" size="lg" radius="full">
-                  Sign in with API key
-                </Button>
-                <p className="text-xs text-gray-500 text-center">
-                  New keys are created from Settings &rarr; API Keys after you sign in.
-                </p>
-              </form>
-            )}
-
-            {tabs.length === 0 && (
+            {configError && (
               <div className="space-y-3 text-center">
                 <AlertCircle className="w-8 h-8 mx-auto text-red-500" />
                 <p className="text-sm text-gray-700">
-                  No authentication providers are enabled on this deployment. Ask your administrator to set{' '}
-                  <code className="px-1 bg-gray-100 rounded">auth.providers</code> in <code className="px-1 bg-gray-100 rounded">config.yml</code>.
+                  Could not reach the authentication service. Make sure the
+                  backend is running and try again.
+                </p>
+              </div>
+            )}
+
+            {!configError && tabs.length === 0 && (
+              <div className="space-y-3 text-center">
+                <AlertCircle className="w-8 h-8 mx-auto text-red-500" />
+                <p className="text-sm text-gray-700">
+                  No interactive sign-in methods are enabled. Ask your
+                  administrator to add{' '}
+                  <code className="px-1 bg-gray-100 rounded">local_password</code>{' '}
+                  or <code className="px-1 bg-gray-100 rounded">external_oidc</code>{' '}
+                  to <code className="px-1 bg-gray-100 rounded">auth.providers</code>{' '}
+                  in <code className="px-1 bg-gray-100 rounded">config.yml</code>.
+                </p>
+                <p className="text-xs text-gray-500">
+                  API keys remain available for programmatic access — mint one
+                  with <code className="px-1 bg-gray-100 rounded">scripts/create_api_key.py</code>.
                 </p>
               </div>
             )}
           </CardBody>
         </Card>
 
-        {authConfig && authConfig.providers.length > 1 && (
-          <div className="text-center text-xs text-gray-500">
-            <Divider className="my-3" />
-            <p>
-              Enabled providers:{' '}
-              {authConfig.providers.filter((p) => p.enabled).map((p) => p.display_name).join(' · ')}
-            </p>
-          </div>
-        )}
+        {authConfig && (() => {
+          // Only list interactive providers here - API keys are a programmatic
+          // auth method and aren't a sign-in option on this screen.
+          const interactive = authConfig.providers.filter(
+            (p) => p.enabled && p.name !== 'api_key'
+          )
+          if (interactive.length <= 1) return null
+          return (
+            <div className="text-center text-xs text-gray-500">
+              <Divider className="my-3" />
+              <p>
+                Enabled sign-in methods:{' '}
+                {interactive.map((p) => p.display_name).join(' · ')}
+              </p>
+            </div>
+          )
+        })()}
       </div>
     </div>
   )

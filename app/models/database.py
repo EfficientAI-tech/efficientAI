@@ -56,7 +56,7 @@ class User(Base):
     is_active = Column(Boolean, default=True, nullable=False)
 
     # Auth-provider bookkeeping (populated by the pluggable auth system).
-    # - external_id: stable subject from the upstream IdP, e.g. "keycloak:<sub>".
+    # - external_id: stable subject from the upstream IdP, e.g. "okta:<sub>".
     # - auth_provider: name of the provider that first created this user.
     # - mfa_enabled: has the user completed an MFA enrolment (enforced by the IdP).
     # - last_login_at: most recent successful interactive (non-API-key) sign-in.

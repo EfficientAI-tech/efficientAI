@@ -21,6 +21,19 @@ from app.models.schemas import (
 )
 from app.core.password import hash_password
 
+
+def _to_aware_utc(dt: datetime) -> datetime:
+    """Normalize a datetime to timezone-aware UTC.
+
+    SQLite loses tz info on round-trip, so `invitation.expires_at` can come
+    back naive even though we wrote it aware. Normalizing here keeps the
+    comparison with ``datetime.now(timezone.utc)`` safe across SQLite (dev,
+    tests) and Postgres (prod).
+    """
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
 router = APIRouter(prefix="/profile", tags=["Profile"])
 
 
@@ -246,9 +259,12 @@ async def get_my_invitations(
     ).order_by(Invitation.created_at.desc()).all()
     
     result = []
+    now_utc = datetime.now(timezone.utc)
     for invitation in invitations:
-        # Check if expired
-        if invitation.status == InvitationStatus.PENDING and invitation.expires_at < datetime.now(timezone.utc):
+        # Check if expired. Normalize expires_at to tz-aware UTC so the
+        # comparison works on SQLite (which drops tz info) as well as
+        # Postgres.
+        if invitation.status == InvitationStatus.PENDING and _to_aware_utc(invitation.expires_at) < now_utc:
             invitation.status = InvitationStatus.EXPIRED
             db.commit()
         
@@ -288,12 +304,15 @@ async def accept_invitation(
         raise HTTPException(status_code=404, detail="Invitation not found")
     
     if invitation.status != InvitationStatus.PENDING:
+        # `status` is a plain String column on the model, so it comes back
+        # as a str here - don't assume it has an `.value` attribute.
+        current_status = getattr(invitation.status, "value", invitation.status)
         raise HTTPException(
             status_code=400,
-            detail=f"Cannot accept invitation with status: {invitation.status.value}"
+            detail=f"Cannot accept invitation with status: {current_status}"
         )
     
-    if invitation.expires_at < datetime.now(timezone.utc):
+    if _to_aware_utc(invitation.expires_at) < datetime.now(timezone.utc):
         invitation.status = InvitationStatus.EXPIRED
         db.commit()
         raise HTTPException(status_code=400, detail="Invitation has expired")
@@ -346,9 +365,10 @@ async def decline_invitation(
         raise HTTPException(status_code=404, detail="Invitation not found")
     
     if invitation.status != InvitationStatus.PENDING:
+        current_status = getattr(invitation.status, "value", invitation.status)
         raise HTTPException(
             status_code=400,
-            detail=f"Cannot decline invitation with status: {invitation.status.value}"
+            detail=f"Cannot decline invitation with status: {current_status}"
         )
     
     invitation.status = InvitationStatus.DECLINED

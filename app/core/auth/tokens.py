@@ -5,8 +5,8 @@ Used by the local-password provider to issue Bearer tokens after a successful
 email/password login. Tokens are symmetrically signed with `settings.SECRET_KEY`
 so they can be verified by any API/worker process that shares the secret.
 
-Not used for Keycloak or external OIDC - those providers verify upstream JWTs
-against the IdP's JWKS directly.
+Not used for external OIDC - that provider verifies upstream JWTs against
+the IdP's JWKS directly.
 """
 
 from __future__ import annotations

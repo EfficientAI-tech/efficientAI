@@ -30,6 +30,7 @@ interface AuthState {
 
   setApiKey: (key: string) => void
   setSession: (token: string, user: AuthUser) => void
+  switchOrg: (organizationId: string) => Promise<AuthUser>
   logout: () => void
   validate: () => Promise<boolean>
 }
@@ -75,6 +76,18 @@ export const useAuthStore = create<AuthState>((set) => {
       localStorage.setItem(STORAGE_ACCESS_TOKEN, token)
       localStorage.setItem(STORAGE_USER, JSON.stringify(user))
       set({ accessToken: token, user })
+    },
+
+    // Exchange the current Bearer token for one pinned to a different
+    // organization. Requires an existing Bearer session - API keys are
+    // single-tenant and will be rejected by the backend.
+    switchOrg: async (organizationId: string) => {
+      const { access_token, user } = await apiClient.switchOrganization(organizationId)
+      apiClient.setAccessToken(access_token)
+      localStorage.setItem(STORAGE_ACCESS_TOKEN, access_token)
+      localStorage.setItem(STORAGE_USER, JSON.stringify(user))
+      set({ accessToken: access_token, user })
+      return user
     },
 
     logout: () => {

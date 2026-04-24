@@ -105,7 +105,6 @@ def get_provider_registry() -> ProviderRegistry:
     from app.config import settings
     from app.core.auth.api_key import ApiKeyProvider
     from app.core.auth.local import LocalPasswordProvider
-    from app.core.auth.keycloak import KeycloakProvider
     from app.core.auth.external_oidc import ExternalOIDCProvider
 
     enabled = {p.strip().lower() for p in (settings.AUTH_PROVIDERS or []) if p}
@@ -114,11 +113,10 @@ def get_provider_registry() -> ProviderRegistry:
 
     # Fixed priority order: API keys first (deterministic machine path), then
     # the local-password bearer (which self-identifies by its `iss` claim),
-    # then SSO providers which consume any remaining bearer token.
+    # then external OIDC which consumes any remaining bearer token.
     ordered = [
         ("api_key", ApiKeyProvider),
         ("local_password", LocalPasswordProvider),
-        ("keycloak", KeycloakProvider),
         ("external_oidc", ExternalOIDCProvider),
     ]
 

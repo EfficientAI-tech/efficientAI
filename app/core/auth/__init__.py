@@ -6,8 +6,8 @@ FastAPI dependency that accepts credentials from any of the enabled providers:
 
     - api_key         (always available, backward compatible)
     - local_password  (email+password, app-signed JWT, OSS default human login)
-    - keycloak        (license-gated: OIDC against a self-hosted Keycloak)
-    - external_oidc   (license-gated: BYO IdP such as Okta / Azure AD / Workspace)
+    - external_oidc   (license-gated: BYO IdP such as Okta, Azure AD,
+                      Google Workspace, AWS Cognito, Auth0, Ping, etc.)
 
 Configured via `auth.providers` in `config.yml`. Providers not listed there are
 disabled - even if a license would otherwise enable them. Providers that ARE

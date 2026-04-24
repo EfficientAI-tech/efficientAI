@@ -7,7 +7,7 @@ endpoint itself lives in `app.api.v1.routes.auth` and uses
 
 Enabled by listing `local_password` in `auth.providers` in config.yml. No
 license check - this is available in OSS to give self-hosters a way to log in
-without Keycloak.
+without an external IdP.
 """
 
 from __future__ import annotations

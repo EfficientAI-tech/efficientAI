@@ -441,15 +441,20 @@ SECRET_KEY=your-secret-key-here
 ## 🔐 Authentication & Deployment Recipes
 
 EfficientAI ships with a pluggable authentication system that scales from a
-solo OSS install to a multi-tenant Cloud SaaS. Configure it via
-`auth.providers` in `config.yml` (or `AUTH_PROVIDERS` in `.env`).
+solo OSS install to an enterprise deployment behind your existing IdP.
+Configure it via `auth.providers` in `config.yml` (or `AUTH_PROVIDERS` in
+`.env`).
 
-| Deployment model          | Providers                          | License needed                               |
-| ------------------------- | ---------------------------------- | -------------------------------------------- |
-| OSS self-hosted (default) | `api_key`, `local_password`        | None                                         |
-| Enterprise self-hosted    | `api_key`, `keycloak`              | `keycloak_sso`                               |
-| BYO IdP (Okta, Azure AD…) | `api_key`, `external_oidc`         | `oidc_sso`                                   |
-| Cloud SaaS                | `api_key`, `keycloak`              | `keycloak_sso` + `mfa_enforce` (recommended) |
+| Deployment model          | Providers                     | License needed |
+| ------------------------- | ----------------------------- | -------------- |
+| OSS self-hosted (default) | `api_key`, `local_password`   | None           |
+| Enterprise SSO (BYO IdP)  | `api_key`, `external_oidc`    | `oidc_sso`     |
+
+> **Why no bundled IdP?** In practice every enterprise already runs one —
+> Okta, Azure AD / Entra ID, Google Workspace, AWS Cognito, Auth0, Ping,
+> JumpCloud. Shipping our own Keycloak alongside the app just added another
+> thing for you to operate and lock down. `external_oidc` talks to whatever
+> you already have.
 
 ### Recipe 1 — OSS self-hosted
 
@@ -465,48 +470,126 @@ auth:
     allow_signup: true
 ```
 
-### Recipe 2 — Enterprise self-hosted with Keycloak
+### Recipe 2 — Enterprise SSO via your existing IdP
 
-Spin up Keycloak alongside the app and force humans through SSO.
-
-```bash
-# Drop a license file into .env
-echo "EFFICIENTAI_LICENSE=eyJ..." >> .env
-
-# Start the main stack + Keycloak
-docker compose -f docker-compose.yml -f docker-compose.keycloak.yml up -d
-```
+Point the app at any OIDC-compliant identity provider. Drop
+`local_password` from `providers` to force humans through SSO while still
+allowing machines to authenticate with API keys.
 
 ```yaml
 # config.yml
 auth:
-  providers: [api_key, keycloak]   # drop local_password to enforce SSO
-  keycloak:
-    base_url: "http://localhost:8080"
-    realm: "efficientai"
-    client_id: "efficientai-frontend"
+  providers: [api_key, external_oidc]
+  oidc:
+    issuer: "<see recipes below>"
+    audience: "efficientai"
+    client_id: "<SPA client id>"
     default_org_name: "My Company"
-    org_claim_path: ["org", "name"]
+    # Optional: if your IdP emits an org claim, map it here so a single
+    # tenant can route users into different EfficientAI orgs.
+    # org_claim_path: ["https://efficientai.com/org"]
 ```
 
-The bundled [`docker/keycloak/efficientai-realm.json`](docker/keycloak/efficientai-realm.json)
-pre-seeds a realm, a public `efficientai-frontend` client, and a demo admin
-(`admin@efficientai.local` / `changeme`). Replace it before going live.
+```bash
+echo "EFFICIENTAI_LICENSE=eyJ..." >> .env   # must include feature: oidc_sso
+```
 
-### Recipe 3 — BYO IdP (Okta / Azure AD / Google Workspace)
+Register the SPA in your IdP as a **public OIDC client** with:
 
-No Keycloak; point the app at your existing OIDC-compliant IdP.
+- Redirect URI: `https://<your-app>/login/callback`
+- Grant type: `authorization_code` (+ PKCE if your IdP requires it)
+- Scopes: `openid profile email`
+
+The backend verifies incoming bearer tokens against the IdP's JWKS (auto-
+discovered from `<issuer>/.well-known/openid-configuration`), so you never
+need to copy public keys by hand.
+
+<details>
+<summary><b>Okta</b></summary>
 
 ```yaml
 auth:
-  providers: [api_key, external_oidc]
   oidc:
-    issuer: "https://example.okta.com"
-    audience: "efficientai"
-    client_id: "0oa..."
-    default_org_name: "Example Inc"
-    org_claim_path: ["https://efficientai.com/org"]
+    issuer: "https://<your-tenant>.okta.com"
+    audience: "api://efficientai"        # or the Okta API "audience" value
+    client_id: "0oa..."                  # SPA application client id
 ```
+
+Okta → *Applications* → *Create App Integration* → *OIDC · Single-Page App*,
+then add the redirect URI and assign the app to the users/groups that
+should be allowed in.
+
+</details>
+
+<details>
+<summary><b>Azure AD / Entra ID</b></summary>
+
+```yaml
+auth:
+  oidc:
+    issuer: "https://login.microsoftonline.com/<TENANT_ID>/v2.0"
+    audience: "<APP_CLIENT_ID>"
+    client_id: "<APP_CLIENT_ID>"
+```
+
+*Entra ID* → *App registrations* → *New registration* → SPA platform, add
+the redirect URI. Under *Token configuration* add the `email` optional
+claim. If you need multi-tenant access, use the `organizations` or
+`common` endpoint in the issuer URL.
+
+</details>
+
+<details>
+<summary><b>Google Workspace</b></summary>
+
+```yaml
+auth:
+  oidc:
+    issuer: "https://accounts.google.com"
+    audience: "<CLIENT_ID>.apps.googleusercontent.com"
+    client_id: "<CLIENT_ID>.apps.googleusercontent.com"
+    default_org_name: "Example Inc"
+```
+
+Google Cloud Console → *APIs & Services* → *Credentials* → *Create OAuth
+client ID* → *Web application*. Restrict the Workspace domain via the
+consent screen so only your employees can sign in.
+
+</details>
+
+<details>
+<summary><b>AWS Cognito</b></summary>
+
+```yaml
+auth:
+  oidc:
+    issuer: "https://cognito-idp.<REGION>.amazonaws.com/<USER_POOL_ID>"
+    audience: "<APP_CLIENT_ID>"
+    client_id: "<APP_CLIENT_ID>"
+```
+
+Cognito User Pool → *App integration* → *App client* (public, no secret),
+enable the Authorization code grant and `openid profile email` scopes, and
+register the callback URL.
+
+</details>
+
+<details>
+<summary><b>Auth0</b></summary>
+
+```yaml
+auth:
+  oidc:
+    issuer: "https://<your-tenant>.auth0.com/"
+    audience: "https://api.efficientai.local"
+    client_id: "<APP_CLIENT_ID>"
+```
+
+Auth0 *Applications* → *Single Page Application*. Define the API audience
+in *APIs* and reference it here — Auth0 issues access tokens for that
+audience which the backend then validates.
+
+</details>
 
 ### How it works under the hood
 
@@ -516,25 +599,24 @@ flowchart LR
     Registry[ProviderRegistry]
     ApiKey[ApiKeyProvider]
     Local[LocalPasswordProvider]
-    Keycloak["KeycloakProvider<br/>(license-gated)"]
     OIDC["ExternalOIDCProvider<br/>(license-gated)"]
+    IdP["Your IdP<br/>(Okta / AAD / Google / Cognito / …)"]
     Principal["Principal<br/>(org_id, user_id, auth_method)"]
     Route[Protected route]
 
     Client --> Registry
-    Registry -->|api_key header| ApiKey
+    Registry -->|X-API-Key header| ApiKey
     Registry -->|"bearer iss=efficientai-local"| Local
-    Registry -->|"bearer any"| Keycloak
-    Registry -->|"bearer any"| OIDC
+    Registry -->|"bearer (any other issuer)"| OIDC
+    OIDC -.verify signature via JWKS.-> IdP
     ApiKey --> Principal
     Local --> Principal
-    Keycloak --> Principal
     OIDC --> Principal
     Principal --> Route
 ```
 
 Every route depends on `get_principal` (via `get_organization_id`), so the
-same endpoint serves all four credential types without any per-route code.
+same endpoint serves all three credential types without any per-route code.
 See [`app/core/auth/`](app/core/auth/) for the implementation.
 
 ---

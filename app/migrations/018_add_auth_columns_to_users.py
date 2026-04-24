@@ -2,8 +2,8 @@
 Migration: add auth-related columns to users.
 
 Introduces:
-  - external_id   - stable subject from the upstream IdP (e.g. "keycloak:<sub>")
-  - auth_provider - which provider first created this user ("local", "keycloak", ...)
+  - external_id   - stable subject from the upstream IdP (e.g. "okta:<sub>")
+  - auth_provider - which provider first created this user ("local", "external_oidc", ...)
   - mfa_enabled   - has the user completed MFA enrolment?
   - last_login_at - wall-clock of the most recent successful interactive sign-in
 

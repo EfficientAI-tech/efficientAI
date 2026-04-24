@@ -39,14 +39,9 @@ FEATURE_CATALOG: Dict[str, Dict[str, str]] = {
         "category": "optimization",
     },
     # --- Authentication features (gate pluggable auth providers) ---
-    "keycloak_sso": {
-        "title": "Keycloak SSO",
-        "description": "Sign in via a self-hosted Keycloak realm (OIDC, OAuth, social login).",
-        "category": "auth",
-    },
     "oidc_sso": {
-        "title": "External OIDC / SSO",
-        "description": "Bring your own identity provider (Okta, Azure AD, Google Workspace, Auth0).",
+        "title": "Enterprise SSO (OIDC)",
+        "description": "Bring your own identity provider: Okta, Azure AD, Google Workspace, AWS Cognito, Auth0, Ping, etc.",
         "category": "auth",
     },
     "saml_sso": {
@@ -74,7 +69,6 @@ FEATURE_CATALOG: Dict[str, Dict[str, str]] = {
 # Auth-category features (kept in sync with FEATURE_CATALOG). Used by the
 # pluggable auth providers to short-circuit with a helpful error message.
 AUTH_FEATURES: List[str] = [
-    "keycloak_sso",
     "oidc_sso",
     "saml_sso",
     "scim_provisioning",
