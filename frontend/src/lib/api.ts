@@ -39,6 +39,42 @@ export interface LicenseInfoResponse {
   organization?: string
 }
 
+export interface AuthProviderConfig {
+  name: 'api_key' | 'local_password' | 'external_oidc'
+  enabled: boolean
+  display_name: string
+  description?: string
+  supports_password?: boolean
+  supports_signup?: boolean
+  oidc_issuer?: string | null
+  oidc_client_id?: string | null
+  oidc_authorize_url?: string | null
+}
+
+export interface AuthConfigResponse {
+  providers: AuthProviderConfig[]
+  tier: 'oss' | 'enterprise'
+}
+
+export interface AuthUserSummary {
+  id: string
+  email: string
+  name?: string | null
+  first_name?: string | null
+  last_name?: string | null
+  organization_id: string
+  role?: string | null
+  has_password?: boolean
+  email_is_placeholder?: boolean
+}
+
+export interface TokenResponse {
+  access_token: string
+  token_type: string
+  expires_in: number
+  user: AuthUserSummary
+}
+
 export interface TelephonyIntegrationResponse {
   id: string
   organization_id: string
@@ -130,9 +166,17 @@ class ApiClient {
 
     // Add request interceptor to add API key to headers
     this.client.interceptors.request.use((config) => {
+      const accessToken = localStorage.getItem('accessToken')
       const apiKey = localStorage.getItem('apiKey')
+      if (accessToken) {
+        config.headers.Authorization = `Bearer ${accessToken}`
+      } else if (config.headers.Authorization) {
+        delete config.headers.Authorization
+      }
       if (apiKey) {
         config.headers['X-API-Key'] = apiKey
+      } else if (config.headers['X-API-Key']) {
+        delete config.headers['X-API-Key']
       }
       return config
     })
@@ -161,7 +205,62 @@ class ApiClient {
     localStorage.removeItem('apiKey')
   }
 
+  setAccessToken(accessToken: string) {
+    localStorage.setItem('accessToken', accessToken)
+  }
+
+  clearAccessToken() {
+    localStorage.removeItem('accessToken')
+  }
+
   // Auth endpoints
+  async getAuthConfig(): Promise<AuthConfigResponse> {
+    const response = await this.client.get('/api/v1/auth/config')
+    return response.data
+  }
+
+  async signup(data: {
+    email: string
+    password: string
+    organization_name?: string
+    first_name?: string
+    last_name?: string
+  }): Promise<TokenResponse> {
+    const response = await this.client.post('/api/v1/auth/signup', data)
+    return response.data
+  }
+
+  async loginWithPassword(email: string, password: string): Promise<TokenResponse> {
+    const response = await this.client.post('/api/v1/auth/login', { email, password })
+    return response.data
+  }
+
+  async logout(): Promise<{ success: boolean; auth_method: string }> {
+    const response = await this.client.post('/api/v1/auth/logout')
+    return response.data
+  }
+
+  async getMe(): Promise<AuthUserSummary> {
+    const response = await this.client.get('/api/v1/auth/me')
+    return response.data
+  }
+
+  async switchOrganization(organizationId: string): Promise<TokenResponse> {
+    const response = await this.client.post('/api/v1/auth/switch-org', {
+      organization_id: organizationId,
+    })
+    return response.data
+  }
+
+  async setPassword(data: {
+    new_password: string
+    current_password?: string
+    email?: string
+  }): Promise<AuthUserSummary> {
+    const response = await this.client.post('/api/v1/auth/password', data)
+    return response.data
+  }
+
   async generateApiKey(name?: string): Promise<APIKey> {
     const response = await this.client.post('/api/v1/auth/generate-key', { name })
     return response.data
