@@ -21,7 +21,6 @@ from app.models.database import (
     TelephonyVerifySession,
 )
 from app.models.enums import CallRecordingStatus
-from app.services.telephony.exotel_client import ExotelClient
 from app.services.telephony.plivo_client import PlivoClient, normalize_e164
 from app.services.telephony.plivo_xml import dial_number, reject_call, speak_and_hangup
 
@@ -52,16 +51,9 @@ class TelephonyService:
         provider_key = provider.lower()
         if provider_key == "plivo":
             return PlivoClient(auth_id=auth_id, auth_token=auth_token)
-        if provider_key == "exotel":
-            account_sid = (integration.voice_app_id or "").strip()
-            if not account_sid:
-                raise ValueError("voice_app_id (Exotel Account SID) is required for Exotel")
-            return ExotelClient(
-                auth_id=auth_id,
-                auth_token=auth_token,
-                account_sid=account_sid,
-                subdomain=integration.sip_domain or None,
-            )
+        # Other providers (e.g. Exotel) are not yet implemented on the backend.
+        # The DB schema, enums, and UI accept them so credentials can be stored,
+        # but live operations will fail until a client wrapper lands.
         raise ValueError(f"Unsupported telephony provider: {provider}")
 
     def save_integration(
