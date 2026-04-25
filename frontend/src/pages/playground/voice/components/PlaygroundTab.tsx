@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Loader2, Hash, Play, RotateCcw, ArrowRight, Volume2, Plus, CheckCircle2, Pause, ChevronDown, ChevronRight, Mic } from 'lucide-react'
 import { apiClient } from '../../../../lib/api'
@@ -63,6 +63,52 @@ export default function PlaygroundTab() {
     createReportJob,
     openAsyncReport,
   } = useVoicePlayground()
+  const [playbackProfile, setPlaybackProfile] = useState<'default' | 'telephony_narrowband' | 'telephony_wideband'>('default')
+
+  const getTelephonyRateForProvider = (
+    provider: string,
+    preferredRate: number,
+  ): number | null => {
+    const providerData = providers.find((p) => p.provider === provider)
+    const supportedRates = providerData?.supported_sample_rates || []
+    if (supportedRates.length === 0) {
+      return null
+    }
+    if (supportedRates.includes(preferredRate)) {
+      return preferredRate
+    }
+    const fallbackRate = preferredRate === 8000 ? 16000 : 8000
+    if (supportedRates.includes(fallbackRate)) {
+      return fallbackRate
+    }
+    return supportedRates[0]
+  }
+
+  useEffect(() => {
+    if (playbackProfile === 'default') {
+      setSampleRateA(null)
+      if (enableComparison) {
+        setSampleRateB(null)
+      }
+      return
+    }
+
+    const preferredRate = playbackProfile === 'telephony_narrowband' ? 8000 : 16000
+    if (providerA) {
+      setSampleRateA(getTelephonyRateForProvider(providerA, preferredRate))
+    }
+    if (enableComparison && providerB) {
+      setSampleRateB(getTelephonyRateForProvider(providerB, preferredRate))
+    }
+  }, [
+    playbackProfile,
+    providerA,
+    providerB,
+    enableComparison,
+    providers,
+    setSampleRateA,
+    setSampleRateB,
+  ])
 
   // Configuration step
   if (step === 'configure') {
@@ -113,6 +159,29 @@ export default function PlaygroundTab() {
               +
             </button>
           </div>
+        </div>
+
+        {/* Playback Profile */}
+        <div className="bg-white rounded-xl shadow-sm p-3 border border-gray-100 flex items-center justify-between gap-4">
+          <div>
+            <p className="font-medium text-gray-900 text-sm">Playback Profile</p>
+            <p className="text-xs text-gray-500">
+              Simulate how TTS sounds over telephony by forcing lower sample rates.
+            </p>
+          </div>
+          <select
+            value={playbackProfile}
+            onChange={(e) =>
+              setPlaybackProfile(
+                e.target.value as 'default' | 'telephony_narrowband' | 'telephony_wideband',
+              )
+            }
+            className="w-60 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
+          >
+            <option value="default">Studio / Default</option>
+            <option value="telephony_narrowband">Telephony (Narrowband 8k)</option>
+            <option value="telephony_wideband">Telephony (Wideband 16k)</option>
+          </select>
         </div>
 
         {/* Evaluation STT Settings */}

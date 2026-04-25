@@ -37,6 +37,7 @@ import {
 } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import Logo from './Logo'
+import OrgSwitcher from './OrgSwitcher'
 import WalkthroughRail from './walkthrough/WalkthroughRail'
 
 interface NavItem {
@@ -300,6 +301,7 @@ export default function Layout() {
             </div>
 
             <div className="flex items-center gap-4">
+              <OrgSwitcher />
               <a
                 href="https://github.com/EfficientAI-tech/efficientAI"
                 target="_blank"
