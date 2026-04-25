@@ -8,6 +8,7 @@ import { useToast } from '../../hooks/useToast'
 import { AIProvider, ModelProvider } from '../../types/api'
 import { getProviderLabel, getProviderLogo } from '../../config/providers'
 import { useWalkthrough, useWalkthroughSectionState } from '../../context/WalkthroughContext'
+import WalkthroughToggleButton from '../../components/walkthrough/WalkthroughToggleButton'
 
 interface Scenario {
   id: string
@@ -541,18 +542,21 @@ export default function Scenarios() {
       <ToastContainer />
 
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
           <h1 className="text-3xl font-bold text-gray-900">Test Scenarios</h1>
           <p className="text-gray-600 mt-1">Create and manage conversation scenarios for testing</p>
         </div>
-        <Button
-          variant="primary"
-          onClick={() => setShowMainModal(true)}
-          leftIcon={<Plus className="h-5 w-5" />}
-        >
-          Create Scenario
-        </Button>
+        <div className="flex flex-wrap items-center justify-end gap-2 pr-2">
+          <Button
+            variant="primary"
+            onClick={() => setShowMainModal(true)}
+            leftIcon={<Plus className="h-5 w-5" />}
+          >
+            Create Scenario
+          </Button>
+          <WalkthroughToggleButton />
+        </div>
       </div>
 
       {/* User-Created Scenarios Section */}

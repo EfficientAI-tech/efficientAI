@@ -32,6 +32,7 @@ import {
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { useWalkthroughSectionState } from '../../context/WalkthroughContext'
+import WalkthroughToggleButton from '../../components/walkthrough/WalkthroughToggleButton'
 
 interface OptimizationRun {
   id: string
@@ -217,13 +218,16 @@ export default function PromptOptimization() {
               <Sparkles className="h-3.5 w-3.5 text-purple-500" />
               Runs
             </h2>
-            <button
-              onClick={() => setShowNewRunDialog(true)}
-              className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-purple-600 text-white text-[10px] font-medium hover:bg-purple-700 transition-colors"
-            >
-              <Play className="h-2.5 w-2.5" />
-              New
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowNewRunDialog(true)}
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-purple-600 text-white text-[10px] font-medium hover:bg-purple-700 transition-colors"
+              >
+                <Play className="h-2.5 w-2.5" />
+                New
+              </button>
+              <WalkthroughToggleButton compact />
+            </div>
           </div>
           <div className="flex-1 overflow-y-auto">
             {runsLoading ? (

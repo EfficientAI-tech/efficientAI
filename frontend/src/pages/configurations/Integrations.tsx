@@ -15,6 +15,7 @@ import {
   getTelephonyProviderLabel,
   getTelephonyProviderDescription,
 } from '../../config/providers'
+import WalkthroughToggleButton from '../../components/walkthrough/WalkthroughToggleButton'
 
 type IntegrationType = 'voice_platform' | 'ai_provider' | 'telephony_provider' | null
 
@@ -342,12 +343,15 @@ export default function Integrations() {
   return (
     <div className="space-y-6">
       <ToastContainer />
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
           <h1 className="text-3xl font-bold text-gray-900">Integrations</h1>
           <p className="text-gray-600 mt-1">Connect with voice AI platforms, AI providers, and telephony providers</p>
         </div>
-        <Button variant="primary" onClick={() => setShowModal(true)} leftIcon={<Plus className="h-5 w-5" />}>Add Integration</Button>
+        <div className="flex flex-wrap items-center justify-end gap-2 pr-2">
+          <Button variant="primary" onClick={() => setShowModal(true)} leftIcon={<Plus className="h-5 w-5" />}>Add Integration</Button>
+          <WalkthroughToggleButton />
+        </div>
       </div>
 
       {/* Configured Integrations */}

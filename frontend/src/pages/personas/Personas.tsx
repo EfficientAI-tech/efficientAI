@@ -18,6 +18,7 @@ import { apiClient } from '../../lib/api'
 import { useToast } from '../../hooks/useToast'
 import Button from '../../components/Button'
 import ProviderLogo, { getProviderInfo } from '../../components/shared/ProviderLogo'
+import WalkthroughToggleButton from '../../components/walkthrough/WalkthroughToggleButton'
 
 interface Persona {
   id: string
@@ -506,30 +507,33 @@ export default function Personas() {
       <ToastContainer />
       <div className="space-y-6">
         {/* Header */}
-        <div className="flex items-center justify-between">
-          <div>
+        <div className="flex items-center justify-between gap-4">
+          <div className="min-w-0">
             <h1 className="text-3xl font-bold text-gray-900">Test Personas</h1>
             <p className="text-gray-600 mt-1">
               Create and manage voice personas for testing voice AI agents
             </p>
           </div>
-          {activeTab === 'personas' ? (
-            <Button
-              variant="primary"
-              onClick={openCreateModal}
-              leftIcon={<Plus className="h-5 w-5" />}
-            >
-              Create Persona
-            </Button>
-          ) : (
-            <Button
-              variant="primary"
-              onClick={() => setShowCustomVoiceModal(true)}
-              leftIcon={<PlusCircle className="h-5 w-5" />}
-            >
-              Add Custom Voice
-            </Button>
-          )}
+          <div className="flex flex-wrap items-center justify-end gap-2 pr-2">
+            {activeTab === 'personas' ? (
+              <Button
+                variant="primary"
+                onClick={openCreateModal}
+                leftIcon={<Plus className="h-5 w-5" />}
+              >
+                Create Persona
+              </Button>
+            ) : (
+              <Button
+                variant="primary"
+                onClick={() => setShowCustomVoiceModal(true)}
+                leftIcon={<PlusCircle className="h-5 w-5" />}
+              >
+                Add Custom Voice
+              </Button>
+            )}
+            <WalkthroughToggleButton />
+          </div>
         </div>
 
         {/* Tab Nav */}

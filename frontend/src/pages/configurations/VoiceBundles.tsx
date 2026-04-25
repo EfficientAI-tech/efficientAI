@@ -7,6 +7,7 @@ import { Mic, Plus, Edit, Trash2, X, Loader, Volume2, Brain, MessageSquare, Aler
 import Button from '../../components/Button'
 import { useToast } from '../../hooks/useToast'
 import { getProviderLabel, getProviderLogo, mapIntegrationToModelProvider } from '../../config/providers'
+import WalkthroughToggleButton from '../../components/walkthrough/WalkthroughToggleButton'
 
 export default function VoiceBundles() {
   const queryClient = useQueryClient()
@@ -102,10 +103,17 @@ export default function VoiceBundles() {
     return modelConfigs[provider] || { stt: [], llm: [], tts: [], s2s: [], tts_voices: {} }
   }
 
-  // Default to first configured provider if current selection is not configured
-  const getDefaultProvider = (current: ModelProvider) => {
-    if (configuredProviders.includes(current)) return current
-    return configuredProviders[0] || ModelProvider.OPENAI
+  const getConfiguredProvidersForType = (type: 'stt' | 'llm' | 'tts' | 's2s'): ModelProvider[] =>
+    configuredProviders.filter((provider) => getModelOptions(provider)[type].length > 0)
+
+  // Keep provider defaults constrained to providers that support each modality.
+  const getDefaultProvider = (
+    current: ModelProvider | null | undefined,
+    type: 'stt' | 'llm' | 'tts' | 's2s'
+  ): ModelProvider | null => {
+    const eligibleProviders = getConfiguredProvidersForType(type)
+    if (current && eligibleProviders.includes(current)) return current
+    return eligibleProviders[0] || null
   }
 
   const createMutation = useMutation({
@@ -162,23 +170,25 @@ export default function VoiceBundles() {
   })
 
   const resetForm = () => {
-    const defaultProvider = configuredProviders[0] || ModelProvider.OPENAI
-    const options = getModelOptions(defaultProvider)
-    const defaultSttModel = options.stt[0] || ''
-    const defaultLlmModel = options.llm[0] || ''
-    const defaultTtsModel = options.tts[0] || ''
+    const defaultSttProvider = getDefaultProvider(null, 'stt')
+    const defaultLlmProvider = getDefaultProvider(null, 'llm')
+    const defaultTtsProvider = getDefaultProvider(null, 'tts')
+
+    const defaultSttModel = defaultSttProvider ? (getModelOptions(defaultSttProvider).stt[0] || '') : ''
+    const defaultLlmModel = defaultLlmProvider ? (getModelOptions(defaultLlmProvider).llm[0] || '') : ''
+    const defaultTtsModel = defaultTtsProvider ? (getModelOptions(defaultTtsProvider).tts[0] || '') : ''
 
     setFormData({
       name: '',
       description: '',
       bundle_type: VoiceBundleType.STT_LLM_TTS,
-      stt_provider: defaultProvider,
+      stt_provider: defaultSttProvider,
       stt_model: defaultSttModel,
-      llm_provider: defaultProvider,
+      llm_provider: defaultLlmProvider,
       llm_model: defaultLlmModel,
       llm_temperature: 0.7,
       llm_max_tokens: null,
-      tts_provider: defaultProvider,
+      tts_provider: defaultTtsProvider,
       tts_model: defaultTtsModel,
       tts_voice: '',
       s2s_provider: null,
@@ -197,16 +207,16 @@ export default function VoiceBundles() {
       name: bundle.name,
       description: bundle.description || '',
       bundle_type: bundle.bundle_type || VoiceBundleType.STT_LLM_TTS,
-      stt_provider: bundle.stt_provider ? getDefaultProvider(bundle.stt_provider as ModelProvider) : null,
+      stt_provider: bundle.stt_provider ? getDefaultProvider(bundle.stt_provider as ModelProvider, 'stt') : null,
       stt_model: bundle.stt_model || null,
-      llm_provider: bundle.llm_provider ? getDefaultProvider(bundle.llm_provider as ModelProvider) : null,
+      llm_provider: bundle.llm_provider ? getDefaultProvider(bundle.llm_provider as ModelProvider, 'llm') : null,
       llm_model: bundle.llm_model || null,
       llm_temperature: bundle.llm_temperature || 0.7,
       llm_max_tokens: bundle.llm_max_tokens || null,
-      tts_provider: bundle.tts_provider ? getDefaultProvider(bundle.tts_provider as ModelProvider) : null,
+      tts_provider: bundle.tts_provider ? getDefaultProvider(bundle.tts_provider as ModelProvider, 'tts') : null,
       tts_model: bundle.tts_model || null,
       tts_voice: bundle.tts_voice || '',
-      s2s_provider: bundle.s2s_provider ? getDefaultProvider(bundle.s2s_provider as ModelProvider) : null,
+      s2s_provider: bundle.s2s_provider ? getDefaultProvider(bundle.s2s_provider as ModelProvider, 's2s') : null,
       s2s_model: bundle.s2s_model || null,
     })
     setShowEditModal(true)
@@ -302,16 +312,19 @@ export default function VoiceBundles() {
       <ToastContainer />
 
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
           <h1 className="text-3xl font-bold text-gray-900">VoiceBundles</h1>
           <p className="text-gray-600 mt-1">
             Composable units combining STT, LLM, and TTS for voice AI testing, or Speech-to-Speech models
           </p>
         </div>
-        <Button variant="primary" onClick={openCreateModal} leftIcon={<Plus className="h-5 w-5" />}>
-          Create VoiceBundle
-        </Button>
+        <div className="flex flex-wrap items-center justify-end gap-2 pr-2">
+          <Button variant="primary" onClick={openCreateModal} leftIcon={<Plus className="h-5 w-5" />}>
+            Create VoiceBundle
+          </Button>
+          <WalkthroughToggleButton />
+        </div>
       </div>
 
       {/* VoiceBundles List */}
@@ -666,6 +679,10 @@ function VoiceBundleModal({
   const llmDropdownRef = useRef<HTMLDivElement>(null)
   const ttsDropdownRef = useRef<HTMLDivElement>(null)
   const s2sDropdownRef = useRef<HTMLDivElement>(null)
+  const sttProviders = configuredProviders.filter((provider) => getModelOptions(provider).stt.length > 0)
+  const llmProviders = configuredProviders.filter((provider) => getModelOptions(provider).llm.length > 0)
+  const ttsProviders = configuredProviders.filter((provider) => getModelOptions(provider).tts.length > 0)
+  const s2sProviders = configuredProviders.filter((provider) => getModelOptions(provider).s2s.length > 0)
 
   useEffect(() => {
     const handleSttClickOutside = (event: MouseEvent) => {
@@ -760,17 +777,18 @@ function VoiceBundleModal({
                 <button
                   type="button"
                   onClick={() => {
-                    const defaultProvider = configuredProviders[0] || ModelProvider.OPENAI
-                    const options = getModelOptions(defaultProvider)
+                    const defaultSttProvider = sttProviders[0] || null
+                    const defaultLlmProvider = llmProviders[0] || null
+                    const defaultTtsProvider = ttsProviders[0] || null
                     setFormData({
                       ...formData,
                       bundle_type: VoiceBundleType.STT_LLM_TTS,
-                      stt_provider: defaultProvider,
-                      stt_model: options.stt[0] || '',
-                      llm_provider: defaultProvider,
-                      llm_model: options.llm[0] || '',
-                      tts_provider: defaultProvider,
-                      tts_model: options.tts[0] || '',
+                      stt_provider: defaultSttProvider,
+                      stt_model: defaultSttProvider ? (getModelOptions(defaultSttProvider).stt[0] || '') : '',
+                      llm_provider: defaultLlmProvider,
+                      llm_model: defaultLlmProvider ? (getModelOptions(defaultLlmProvider).llm[0] || '') : '',
+                      tts_provider: defaultTtsProvider,
+                      tts_model: defaultTtsProvider ? (getModelOptions(defaultTtsProvider).tts[0] || '') : '',
                       s2s_provider: null,
                       s2s_model: null,
                     })
@@ -789,13 +807,12 @@ function VoiceBundleModal({
                 <button
                   type="button"
                   onClick={() => {
-                    const defaultProvider = configuredProviders[0] || ModelProvider.OPENAI
-                    const options = getModelOptions(defaultProvider)
+                    const defaultProvider = s2sProviders[0] || null
                     setFormData({
                       ...formData,
                       bundle_type: VoiceBundleType.S2S,
                       s2s_provider: defaultProvider,
-                      s2s_model: options.s2s[0] || '',
+                      s2s_model: defaultProvider ? (getModelOptions(defaultProvider).s2s[0] || '') : '',
                       stt_provider: null,
                       stt_model: null,
                       llm_provider: null,
@@ -853,7 +870,7 @@ function VoiceBundleModal({
                     </button>
                     {showSttDropdown && (
                       <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-auto">
-                        {configuredProviders.map((provider: ModelProvider) => (
+                        {sttProviders.map((provider: ModelProvider) => (
                           <button
                             key={provider}
                             type="button"
@@ -875,6 +892,9 @@ function VoiceBundleModal({
                             <span>{getProviderLabel(provider)}</span>
                           </button>
                         ))}
+                        {sttProviders.length === 0 && (
+                          <div className="px-3 py-2 text-sm text-gray-500">No STT-capable providers configured</div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -940,7 +960,7 @@ function VoiceBundleModal({
                     </button>
                     {showLlmDropdown && (
                       <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-auto">
-                        {configuredProviders.map((provider: ModelProvider) => (
+                        {llmProviders.map((provider: ModelProvider) => (
                           <button
                             key={provider}
                             type="button"
@@ -962,6 +982,9 @@ function VoiceBundleModal({
                             <span>{getProviderLabel(provider)}</span>
                           </button>
                         ))}
+                        {llmProviders.length === 0 && (
+                          <div className="px-3 py-2 text-sm text-gray-500">No LLM-capable providers configured</div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -1056,7 +1079,7 @@ function VoiceBundleModal({
                     </button>
                     {showTtsDropdown && (
                       <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-auto">
-                        {configuredProviders.map((provider: ModelProvider) => (
+                        {ttsProviders.map((provider: ModelProvider) => (
                           <button
                             key={provider}
                             type="button"
@@ -1078,6 +1101,9 @@ function VoiceBundleModal({
                             <span>{getProviderLabel(provider)}</span>
                           </button>
                         ))}
+                        {ttsProviders.length === 0 && (
+                          <div className="px-3 py-2 text-sm text-gray-500">No TTS-capable providers configured</div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -1196,7 +1222,7 @@ function VoiceBundleModal({
                     </button>
                     {showS2sDropdown && (
                       <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-auto">
-                        {configuredProviders.map((provider: ModelProvider) => (
+                        {s2sProviders.map((provider: ModelProvider) => (
                           <button
                             key={provider}
                             type="button"
@@ -1218,6 +1244,9 @@ function VoiceBundleModal({
                             <span>{getProviderLabel(provider)}</span>
                           </button>
                         ))}
+                        {s2sProviders.length === 0 && (
+                          <div className="px-3 py-2 text-sm text-gray-500">No S2S-capable providers configured</div>
+                        )}
                       </div>
                     )}
                   </div>
