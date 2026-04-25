@@ -73,6 +73,9 @@ import PromptOptimization from './pages/promptOptimization/PromptOptimization'
 import EnterpriseUpgrade from './pages/enterprise/EnterpriseUpgrade'
 import { WalkthroughProvider } from './context/WalkthroughContext'
 
+// Public (no-auth) blind test form
+import BlindTestForm from './pages/public/BlindTestForm'
+
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   // Either credential type counts as "signed in". The backend enforces the
@@ -110,6 +113,9 @@ function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<Login />} />
+        {/* Public blind test form - intentionally outside PrivateRoute and EnterpriseGate.
+            Auth comes from the unguessable share token in the URL. */}
+        <Route path="/blind-test/:token" element={<BlindTestForm />} />
         <Route
           path="/"
           element={

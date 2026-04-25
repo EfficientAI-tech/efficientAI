@@ -26,6 +26,9 @@ from app.models.database import (
     TTSSampleStatus,
     TTSReportJob,
     TTSReportJobStatus,
+    TTSBlindTestShare,
+    TTSBlindTestShareStatus,
+    TTSBlindTestResponse,
     ModelProvider,
     VoiceBundle,
 )
@@ -186,6 +189,31 @@ class TTSComparisonCreate(BaseModel):
 class BlindTestSubmit(BaseModel):
     results: List[Dict[str, Any]]
     # Each entry: {"sample_index": 0, "preferred": "A" | "B", "voice_a_id": "...", "voice_b_id": "..."}
+
+
+class BlindTestCustomMetric(BaseModel):
+    """A single metric raters can fill in for both A and B per sample.
+
+    type='rating' → numeric scale (1..scale), recorded per A and per B.
+    type='comment' → free-text per sample (not per side).
+    """
+    key: str
+    label: str
+    type: str  # 'rating' | 'comment'
+    scale: Optional[int] = None  # required for rating; default 5
+
+
+class BlindTestShareCreate(BaseModel):
+    title: str
+    description: Optional[str] = None
+    custom_metrics: List[BlindTestCustomMetric] = []
+
+
+class BlindTestSharePatch(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    custom_metrics: Optional[List[BlindTestCustomMetric]] = None
+    status: Optional[str] = None  # 'open' | 'closed'
 
 
 class GenerateSamplesRequest(BaseModel):
@@ -799,6 +827,182 @@ async def submit_blind_test(
     return {"message": "Blind test results saved"}
 
 
+# ----------------------------------------------------------------------
+# Blind Test Sharing (owner-side; gated by enterprise feature)
+# ----------------------------------------------------------------------
+
+
+@router.post("/comparisons/{comparison_id}/share", operation_id="createBlindTestShare")
+async def create_blind_test_share(
+    comparison_id: UUID,
+    data: BlindTestShareCreate,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """Create (or replace) a public blind test share for a comparison."""
+    import secrets
+
+    comparison = _get_comparison_or_404(comparison_id, organization_id, db)
+
+    # Audio generation must be done; evaluation can still be running in the background.
+    audio_ready_states = {
+        TTSComparisonStatus.EVALUATING.value,
+        TTSComparisonStatus.COMPLETED.value,
+    }
+    if comparison.status not in audio_ready_states:
+        raise HTTPException(400, "Audio must finish generating before creating a blind test")
+    if not comparison.provider_b:
+        raise HTTPException(400, "Blind tests require an A/B comparison (provider B is missing)")
+
+    metrics = _validate_custom_metrics([m.model_dump() for m in data.custom_metrics])
+    title = (data.title or "").strip()
+    if not title:
+        raise HTTPException(400, "Share title is required")
+
+    existing = db.query(TTSBlindTestShare).filter(
+        TTSBlindTestShare.comparison_id == comparison.id,
+    ).first()
+
+    if existing:
+        existing.title = title
+        existing.description = data.description
+        existing.custom_metrics = metrics
+        existing.status = TTSBlindTestShareStatus.OPEN.value
+        existing.closed_at = None
+        share = existing
+    else:
+        share = TTSBlindTestShare(
+            comparison_id=comparison.id,
+            organization_id=organization_id,
+            share_token=secrets.token_urlsafe(16),
+            title=title,
+            description=data.description,
+            custom_metrics=metrics,
+            status=TTSBlindTestShareStatus.OPEN.value,
+            created_by=api_key or None,
+        )
+        db.add(share)
+
+    db.commit()
+    db.refresh(share)
+
+    _recompute_summary(comparison, db)
+    return _serialize_share(share, db, include_aggregates=True)
+
+
+@router.get("/comparisons/{comparison_id}/share", operation_id="getBlindTestShare")
+async def get_blind_test_share(
+    comparison_id: UUID,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """Fetch the share for a comparison (or 404 if none yet)."""
+    comparison = _get_comparison_or_404(comparison_id, organization_id, db)
+    share = db.query(TTSBlindTestShare).filter(
+        TTSBlindTestShare.comparison_id == comparison.id,
+    ).first()
+    if not share:
+        raise HTTPException(404, "No blind test share for this comparison")
+    return _serialize_share(share, db, include_aggregates=True)
+
+
+@router.patch("/shares/{share_id}", operation_id="updateBlindTestShare")
+async def update_blind_test_share(
+    share_id: UUID,
+    data: BlindTestSharePatch,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    share = _get_share_or_404(share_id, organization_id, db)
+
+    if data.title is not None:
+        title = data.title.strip()
+        if not title:
+            raise HTTPException(400, "Title cannot be empty")
+        share.title = title
+
+    if data.description is not None:
+        share.description = data.description
+
+    if data.custom_metrics is not None:
+        existing_keys = {m.get("key") for m in (share.custom_metrics or []) if isinstance(m, dict)}
+        new_metrics = _validate_custom_metrics([m.model_dump() for m in data.custom_metrics])
+        new_keys = {m["key"] for m in new_metrics}
+        # Allow adding/relabelling, but require all previously-used keys remain
+        # so already-recorded responses remain interpretable.
+        response_count = (
+            db.query(TTSBlindTestResponse)
+            .filter(TTSBlindTestResponse.share_id == share.id)
+            .count()
+        )
+        if response_count > 0 and not existing_keys.issubset(new_keys):
+            removed = sorted(existing_keys - new_keys)
+            raise HTTPException(
+                400,
+                f"Cannot remove metrics with existing responses: {removed}",
+            )
+        share.custom_metrics = new_metrics
+
+    if data.status is not None:
+        if data.status not in (TTSBlindTestShareStatus.OPEN.value, TTSBlindTestShareStatus.CLOSED.value):
+            raise HTTPException(400, "status must be 'open' or 'closed'")
+        share.status = data.status
+        if data.status == TTSBlindTestShareStatus.CLOSED.value:
+            from datetime import datetime, timezone
+            share.closed_at = datetime.now(timezone.utc)
+        else:
+            share.closed_at = None
+
+    db.commit()
+    db.refresh(share)
+    return _serialize_share(share, db, include_aggregates=True)
+
+
+@router.delete("/shares/{share_id}", operation_id="deleteBlindTestShare")
+async def delete_blind_test_share(
+    share_id: UUID,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    share = _get_share_or_404(share_id, organization_id, db)
+    comparison_id = share.comparison_id
+    db.delete(share)
+    db.commit()
+
+    comparison = db.query(TTSComparison).filter(TTSComparison.id == comparison_id).first()
+    if comparison:
+        _recompute_summary(comparison, db)
+    return {"message": "Blind test share deleted"}
+
+
+@router.get("/shares/{share_id}/responses", operation_id="listBlindTestResponses")
+async def list_blind_test_responses(
+    share_id: UUID,
+    skip: int = 0,
+    limit: int = 100,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    share = _get_share_or_404(share_id, organization_id, db)
+    rows = (
+        db.query(TTSBlindTestResponse)
+        .filter(TTSBlindTestResponse.share_id == share.id)
+        .order_by(TTSBlindTestResponse.submitted_at.desc())
+        .offset(skip)
+        .limit(min(limit, 500))
+        .all()
+    )
+    return {
+        "items": [_serialize_response(r) for r in rows],
+        "total": db.query(TTSBlindTestResponse).filter(TTSBlindTestResponse.share_id == share.id).count(),
+    }
+
+
 @router.get("/comparisons/{comparison_id}/samples/{sample_id}", operation_id="getTTSSample")
 async def get_sample(
     comparison_id: UUID,
@@ -1187,6 +1391,177 @@ def _get_comparison_or_404(comparison_id: UUID, organization_id: UUID, db: Sessi
     return c
 
 
+def _get_share_or_404(share_id: UUID, organization_id: UUID, db: Session) -> TTSBlindTestShare:
+    s = db.query(TTSBlindTestShare).filter(
+        TTSBlindTestShare.id == share_id,
+        TTSBlindTestShare.organization_id == organization_id,
+    ).first()
+    if not s:
+        raise HTTPException(404, "Blind test share not found")
+    return s
+
+
+def _validate_custom_metrics(raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Sanitize and validate custom blind-test metrics. Returns canonical list."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise HTTPException(400, "custom_metrics must be a list")
+    if len(raw) > 20:
+        raise HTTPException(400, "custom_metrics is limited to 20 entries")
+
+    seen_keys: set = set()
+    out: List[Dict[str, Any]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise HTTPException(400, "Each metric must be an object")
+        key = str(entry.get("key", "")).strip()
+        label = str(entry.get("label", "")).strip()
+        mtype = str(entry.get("type", "")).strip().lower()
+        if not key or not label:
+            raise HTTPException(400, "Each metric needs a key and label")
+        if not key.replace("_", "").isalnum():
+            raise HTTPException(400, f"Metric key '{key}' must be alphanumeric/underscore")
+        if key in seen_keys:
+            raise HTTPException(400, f"Duplicate metric key '{key}'")
+        seen_keys.add(key)
+        if mtype not in ("rating", "comment"):
+            raise HTTPException(400, f"Metric '{key}' has invalid type '{mtype}'")
+
+        clean: Dict[str, Any] = {"key": key, "label": label, "type": mtype}
+        if mtype == "rating":
+            try:
+                scale = int(entry.get("scale") or 5)
+            except (TypeError, ValueError):
+                raise HTTPException(400, f"Metric '{key}' has invalid scale")
+            if scale < 2 or scale > 10:
+                raise HTTPException(400, f"Metric '{key}' scale must be between 2 and 10")
+            clean["scale"] = scale
+        out.append(clean)
+    return out
+
+
+def _serialize_share(
+    share: TTSBlindTestShare, db: Session, *, include_aggregates: bool = False
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "id": str(share.id),
+        "comparison_id": str(share.comparison_id),
+        "share_token": share.share_token,
+        "public_path": f"/blind-test/{share.share_token}",
+        "title": share.title,
+        "description": share.description,
+        "custom_metrics": share.custom_metrics or [],
+        "status": share.status,
+        "created_at": share.created_at.isoformat() if share.created_at else None,
+        "updated_at": share.updated_at.isoformat() if share.updated_at else None,
+        "closed_at": share.closed_at.isoformat() if share.closed_at else None,
+    }
+    if include_aggregates:
+        payload["response_count"] = (
+            db.query(TTSBlindTestResponse)
+            .filter(TTSBlindTestResponse.share_id == share.id)
+            .count()
+        )
+        payload["aggregates"] = _aggregate_external_responses(share, db)
+    return payload
+
+
+def _serialize_response(r: TTSBlindTestResponse) -> Dict[str, Any]:
+    return {
+        "id": str(r.id),
+        "share_id": str(r.share_id),
+        "rater_name": r.rater_name,
+        "rater_email": r.rater_email,
+        "responses": r.responses,
+        "submitted_at": r.submitted_at.isoformat() if r.submitted_at else None,
+    }
+
+
+def _aggregate_external_responses(
+    share: TTSBlindTestShare, db: Session
+) -> Dict[str, Any]:
+    """Aggregate all external rater responses for a share.
+
+    Output shape:
+    {
+      "response_count": int,
+      "a_wins": int, "b_wins": int, "a_pct": float, "b_pct": float,
+      "metrics": {
+        "<metric_key>": {
+          "label": str, "scale": int|None,
+          "avg_a": float|None, "avg_b": float|None, "samples": int
+        }, ...
+      }
+    }
+    """
+    rows = (
+        db.query(TTSBlindTestResponse)
+        .filter(TTSBlindTestResponse.share_id == share.id)
+        .all()
+    )
+
+    a_wins = 0
+    b_wins = 0
+    rating_metrics: List[Dict[str, Any]] = [
+        m for m in (share.custom_metrics or []) if isinstance(m, dict) and m.get("type") == "rating"
+    ]
+    sums_a = {m["key"]: 0.0 for m in rating_metrics}
+    counts_a = {m["key"]: 0 for m in rating_metrics}
+    sums_b = {m["key"]: 0.0 for m in rating_metrics}
+    counts_b = {m["key"]: 0 for m in rating_metrics}
+
+    for r in rows:
+        entries = r.responses or []
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            preferred = str(entry.get("preferred", "")).upper()
+            if preferred == "A":
+                a_wins += 1
+            elif preferred == "B":
+                b_wins += 1
+
+            ratings_a = entry.get("ratings_a") or {}
+            ratings_b = entry.get("ratings_b") or {}
+            for m in rating_metrics:
+                key = m["key"]
+                va = ratings_a.get(key)
+                vb = ratings_b.get(key)
+                if isinstance(va, (int, float)):
+                    sums_a[key] += float(va)
+                    counts_a[key] += 1
+                if isinstance(vb, (int, float)):
+                    sums_b[key] += float(vb)
+                    counts_b[key] += 1
+
+    total = a_wins + b_wins
+    metrics_out: Dict[str, Any] = {}
+    for m in rating_metrics:
+        key = m["key"]
+        avg_a = round(sums_a[key] / counts_a[key], 3) if counts_a[key] else None
+        avg_b = round(sums_b[key] / counts_b[key], 3) if counts_b[key] else None
+        metrics_out[key] = {
+            "label": m.get("label"),
+            "scale": m.get("scale"),
+            "avg_a": avg_a,
+            "avg_b": avg_b,
+            "samples_a": counts_a[key],
+            "samples_b": counts_b[key],
+        }
+
+    return {
+        "response_count": len(rows),
+        "a_wins": a_wins,
+        "b_wins": b_wins,
+        "a_pct": round(a_wins / total * 100, 1) if total else 0,
+        "b_pct": round(b_wins / total * 100, 1) if total else 0,
+        "metrics": metrics_out,
+    }
+
+
 def _serialize_comparison_summary(c: TTSComparison) -> Dict[str, Any]:
     return {
         "id": str(c.id),
@@ -1241,6 +1616,19 @@ def _serialize_comparison(c: TTSComparison, db: Session) -> Dict[str, Any]:
             "error_message": s.error_message,
         })
 
+    share = db.query(TTSBlindTestShare).filter(TTSBlindTestShare.comparison_id == c.id).first()
+    share_info = (
+        {
+            "id": str(share.id),
+            "share_token": share.share_token,
+            "public_path": f"/blind-test/{share.share_token}",
+            "title": share.title,
+            "status": share.status,
+        }
+        if share
+        else None
+    )
+
     return {
         "id": str(c.id),
         "simulation_id": c.simulation_id,
@@ -1256,6 +1644,7 @@ def _serialize_comparison(c: TTSComparison, db: Session) -> Dict[str, Any]:
         "num_runs": c.num_runs or 1,
         "blind_test_results": c.blind_test_results,
         "evaluation_summary": c.evaluation_summary,
+        "blind_test_share": share_info,
         "eval_stt_provider": getattr(c, "eval_stt_provider", None),
         "eval_stt_model": getattr(c, "eval_stt_model", None),
         "error_message": c.error_message,
@@ -1293,10 +1682,32 @@ def _recompute_summary(comparison: TTSComparison, db: Session):
         if ttfbs:
             summary[side]["avg_ttfb_ms"] = round(sum(ttfbs) / len(ttfbs), 1)
 
-    # Blind test tallying
+    # Blind test tallying (owner's in-app + external sharable form, merged)
+    a_wins = 0
+    b_wins = 0
+
     if comparison.blind_test_results:
-        a_wins = sum(1 for r in comparison.blind_test_results if r.get("preferred") == "A")
-        b_wins = sum(1 for r in comparison.blind_test_results if r.get("preferred") == "B")
+        a_wins += sum(1 for r in comparison.blind_test_results if r.get("preferred") == "A")
+        b_wins += sum(1 for r in comparison.blind_test_results if r.get("preferred") == "B")
+
+    share = (
+        db.query(TTSBlindTestShare)
+        .filter(TTSBlindTestShare.comparison_id == comparison.id)
+        .first()
+    )
+    external_block: Optional[Dict[str, Any]] = None
+    if share is not None:
+        ext = _aggregate_external_responses(share, db)
+        a_wins += ext["a_wins"]
+        b_wins += ext["b_wins"]
+        external_block = {
+            "share_id": str(share.id),
+            "share_token": share.share_token,
+            "status": share.status,
+            **ext,
+        }
+
+    if comparison.blind_test_results or external_block:
         total = a_wins + b_wins
         summary["blind_test"] = {
             "a_wins": a_wins,
@@ -1304,6 +1715,8 @@ def _recompute_summary(comparison: TTSComparison, db: Session):
             "a_pct": round(a_wins / total * 100, 1) if total else 0,
             "b_pct": round(b_wins / total * 100, 1) if total else 0,
         }
+        if external_block is not None:
+            summary["blind_test"]["external"] = external_block
 
     comparison.evaluation_summary = summary
     db.commit()

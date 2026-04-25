@@ -1676,6 +1676,54 @@ class ApiClient {
     await this.client.delete(`/api/v1/voice-playground/comparisons/${comparisonId}`)
   }
 
+  // Blind Test Sharing (owner side)
+  async createBlindTestShare(comparisonId: string, payload: {
+    title: string
+    description?: string
+    custom_metrics: Array<{ key: string; label: string; type: 'rating' | 'comment'; scale?: number }>
+  }): Promise<any> {
+    const response = await this.client.post(
+      `/api/v1/voice-playground/comparisons/${comparisonId}/share`,
+      payload
+    )
+    return response.data
+  }
+
+  async getBlindTestShare(comparisonId: string): Promise<any> {
+    const response = await this.client.get(
+      `/api/v1/voice-playground/comparisons/${comparisonId}/share`
+    )
+    return response.data
+  }
+
+  async updateBlindTestShare(shareId: string, payload: {
+    title?: string
+    description?: string
+    custom_metrics?: Array<{ key: string; label: string; type: 'rating' | 'comment'; scale?: number }>
+    status?: 'open' | 'closed'
+  }): Promise<any> {
+    const response = await this.client.patch(
+      `/api/v1/voice-playground/shares/${shareId}`,
+      payload
+    )
+    return response.data
+  }
+
+  async deleteBlindTestShare(shareId: string): Promise<void> {
+    await this.client.delete(`/api/v1/voice-playground/shares/${shareId}`)
+  }
+
+  async listBlindTestResponses(shareId: string, skip = 0, limit = 100): Promise<{
+    items: any[]
+    total: number
+  }> {
+    const response = await this.client.get(
+      `/api/v1/voice-playground/shares/${shareId}/responses`,
+      { params: { skip, limit } }
+    )
+    return response.data
+  }
+
   async generateSampleTexts(params: {
     voice_bundle_id?: string
     provider?: string
@@ -1936,4 +1984,43 @@ export const apiClient: ApiClient = apiClientInstance
 
 // Re-export the type for explicit typing if needed
 export type { ApiClient }
+
+
+// ----------------------------------------------------------------------
+// Public (unauthenticated) blind-test API.
+// Uses a bare axios instance so no Authorization / X-API-Key headers are
+// attached. Anyone with the share_token in the URL can call these.
+// ----------------------------------------------------------------------
+
+const publicClient = axios.create({
+  baseURL: API_BASE_URL,
+  headers: { 'Content-Type': 'application/json' },
+})
+
+export interface PublicBlindTestEntrySubmit {
+  sample_index: number
+  preferred: 'X' | 'Y'
+  ratings_x?: Record<string, number>
+  ratings_y?: Record<string, number>
+  comment?: string
+}
+
+export const publicBlindTestApi = {
+  async getForm(shareToken: string): Promise<any> {
+    const res = await publicClient.get(`/api/v1/public/blind-tests/${shareToken}`)
+    return res.data
+  },
+  async submit(shareToken: string, payload: {
+    rater_name: string
+    rater_email: string
+    client_token: string
+    responses: PublicBlindTestEntrySubmit[]
+  }): Promise<any> {
+    const res = await publicClient.post(
+      `/api/v1/public/blind-tests/${shareToken}/responses`,
+      payload
+    )
+    return res.data
+  },
+}
 

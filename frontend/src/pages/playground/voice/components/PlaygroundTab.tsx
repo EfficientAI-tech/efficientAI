@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Loader2, Hash, Play, RotateCcw, ArrowRight, Volume2, Plus, CheckCircle2, Pause, ChevronDown, ChevronRight, Mic } from 'lucide-react'
+import { Loader2, Hash, Play, RotateCcw, Volume2, Plus, ChevronDown, ChevronRight, Mic } from 'lucide-react'
 import { apiClient } from '../../../../lib/api'
 import Button from '../../../../components/Button'
 import ProviderLogo, { getProviderInfo } from '../../../../components/shared/ProviderLogo'
@@ -47,14 +47,8 @@ export default function PlaygroundTab() {
     progressPct,
     totalSamples,
     completedSamples,
-    blindPairs,
-    blindChoices,
-    setBlindChoices,
     playingId,
     play,
-    submitBlindTest,
-    isSubmittingBlindTest,
-    setStep,
     resetPlayground,
     activeReportJob,
     isDownloading,
@@ -363,101 +357,6 @@ export default function PlaygroundTab() {
             <p className="text-sm text-red-700">{comparison.error_message || 'Comparison failed'}</p>
           </div>
         )}
-      </div>
-    )
-  }
-
-  // Blind test step
-  if (step === 'blind-test' && comparison && blindPairs.length > 0) {
-    return (
-      <div className="space-y-6">
-        <div className="bg-gradient-to-r from-amber-50 to-orange-50 rounded-xl p-5 border border-amber-200">
-          <div className="flex items-center gap-3 mb-2">
-            <Volume2 className="w-6 h-6 text-amber-600" />
-            <h2 className="text-lg font-semibold text-amber-900">Blind Listening Test</h2>
-          </div>
-          <p className="text-sm text-amber-800">
-            Listen to Voice X and Voice Y for each sample. Choose which one sounds better.
-            The provider labels are hidden so the test is unbiased.
-          </p>
-        </div>
-
-        {blindPairs.map((pair, pairIdx) => (
-          <div key={pairIdx} className="bg-white rounded-xl shadow-sm p-5 border border-gray-100">
-            <p className="text-sm text-gray-500 mb-1 font-medium">Sample {pair.sampleIdx + 1}</p>
-            <p className="text-sm text-gray-700 italic mb-4">&ldquo;{pair.sampleA.text}&rdquo;</p>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* Voice X */}
-              <button
-                onClick={() => setBlindChoices({ ...blindChoices, [pair.sampleIdx]: 'A' })}
-                className={`p-4 rounded-xl border-2 transition-all ${blindChoices[pair.sampleIdx] === 'A' ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-gray-300'}`}
-              >
-                <div className="flex items-center gap-3 mb-2">
-                  <span className="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center text-sm font-bold">X</span>
-                  <span className="font-medium text-gray-900">Voice X</span>
-                  {blindChoices[pair.sampleIdx] === 'A' && <CheckCircle2 className="w-5 h-5 text-blue-600 ml-auto" />}
-                </div>
-                {pair.sampleA.audio_url && (
-                  <div
-                    className="flex items-center gap-2 mt-2 p-2 bg-white rounded-lg border"
-                    onClick={e => { e.stopPropagation(); play(`blind-${pairIdx}-X`, pair.sampleA.audio_url!) }}
-                  >
-                    {playingId === `blind-${pairIdx}-X`
-                      ? <Pause className="w-4 h-4 text-blue-600" />
-                      : <Play className="w-4 h-4 text-blue-600" />}
-                    <span className="text-xs text-gray-600">Play sample</span>
-                  </div>
-                )}
-              </button>
-
-              {/* Voice Y */}
-              <button
-                onClick={() => setBlindChoices({ ...blindChoices, [pair.sampleIdx]: 'B' })}
-                className={`p-4 rounded-xl border-2 transition-all ${blindChoices[pair.sampleIdx] === 'B' ? 'border-purple-500 bg-purple-50' : 'border-gray-200 hover:border-gray-300'}`}
-              >
-                <div className="flex items-center gap-3 mb-2">
-                  <span className="w-8 h-8 rounded-full bg-purple-600 text-white flex items-center justify-center text-sm font-bold">Y</span>
-                  <span className="font-medium text-gray-900">Voice Y</span>
-                  {blindChoices[pair.sampleIdx] === 'B' && <CheckCircle2 className="w-5 h-5 text-purple-600 ml-auto" />}
-                </div>
-                {pair.sampleB.audio_url && (
-                  <div
-                    className="flex items-center gap-2 mt-2 p-2 bg-white rounded-lg border"
-                    onClick={e => { e.stopPropagation(); play(`blind-${pairIdx}-Y`, pair.sampleB.audio_url!) }}
-                  >
-                    {playingId === `blind-${pairIdx}-Y`
-                      ? <Pause className="w-4 h-4 text-purple-600" />
-                      : <Play className="w-4 h-4 text-purple-600" />}
-                    <span className="text-xs text-gray-600">Play sample</span>
-                  </div>
-                )}
-              </button>
-            </div>
-          </div>
-        ))}
-
-        <div className="flex justify-center gap-4">
-          <Button variant="ghost" onClick={() => setStep('results')}>
-            Skip Blind Test
-          </Button>
-          <Button
-            variant="primary"
-            size="lg"
-            onClick={submitBlindTest}
-            disabled={Object.keys(blindChoices).length === 0 || isSubmittingBlindTest}
-            leftIcon={
-              isSubmittingBlindTest ? (
-                <Loader2 className="w-5 h-5 animate-spin" />
-              ) : (
-                <ArrowRight className="w-5 h-5" />
-              )
-            }
-            className="px-10"
-          >
-            Submit &amp; View Results
-          </Button>
-        </div>
       </div>
     )
   }

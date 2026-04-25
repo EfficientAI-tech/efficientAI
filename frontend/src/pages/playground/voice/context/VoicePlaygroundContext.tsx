@@ -5,7 +5,6 @@ import { VoiceBundle } from '../../../../types/api'
 import {
   TTSVoice,
   TTSProvider,
-  TTSSample,
   TTSComparison,
   TTSComparisonSummary,
   TTSAnalyticsRow,
@@ -17,7 +16,7 @@ import {
   DEFAULT_SAMPLE_TEXTS,
 } from '../types'
 
-type PlaygroundStep = 'configure' | 'progress' | 'blind-test' | 'results'
+type PlaygroundStep = 'configure' | 'progress' | 'results'
 type ActiveTab = 'playground' | 'voices' | 'past-simulations'
 type PastSubView = 'simulations' | 'analytics'
 
@@ -121,11 +120,6 @@ interface VoicePlaygroundContextType {
   viewedComparison: TTSComparison | undefined
   viewedLoading: boolean
 
-  // Blind test
-  blindChoices: Record<number, 'A' | 'B'>
-  setBlindChoices: (choices: Record<number, 'A' | 'B'>) => void
-  blindPairs: Array<{ sampleIdx: number; sampleA: TTSSample; sampleB: TTSSample; flipped: boolean }>
-
   // Progress stats
   progressPct: number
   totalSamples: number
@@ -135,8 +129,6 @@ interface VoicePlaygroundContextType {
   // Mutations
   createComparison: () => void
   isCreating: boolean
-  submitBlindTest: () => void
-  isSubmittingBlindTest: boolean
   downloadReport: (comparisonId: string, options?: TTSReportOptions) => void
   isDownloading: boolean
   createReportJob: (comparisonId: string, options?: TTSReportOptions) => void
@@ -351,14 +343,19 @@ export function VoicePlaygroundProvider({ children }: { children: ReactNode }) {
   // Active comparison
   const [activeComparisonId, setActiveComparisonId] = useState<string | null>(null)
   const [step, setStep] = useState<PlaygroundStep>('configure')
-  const [blindChoices, setBlindChoices] = useState<Record<number, 'A' | 'B'>>({})
-  const [blindPairs, setBlindPairs] = useState<Array<{ sampleIdx: number; sampleA: TTSSample; sampleB: TTSSample; flipped: boolean }>>([])
 
-  const { data: comparison, refetch: refetchComparison } = useQuery<TTSComparison>({
+  const { data: comparison } = useQuery<TTSComparison>({
     queryKey: ['tts-comparison', activeComparisonId],
     queryFn: () => apiClient.getTTSComparison(activeComparisonId!),
     enabled: !!activeComparisonId,
-    refetchInterval: activeComparisonId && step === 'progress' ? 3000 : false,
+    refetchInterval: (query) => {
+      const c = query.state.data
+      if (!activeComparisonId) return false
+      if (step === 'progress') return 3000
+      // Keep polling while evaluation is still finishing in the background.
+      if (step === 'results' && c?.status === 'evaluating') return 5000
+      return false
+    },
   })
 
   const { data: viewedComparison, isLoading: viewedLoading } = useQuery<TTSComparison>({
@@ -386,44 +383,19 @@ export function VoicePlaygroundProvider({ children }: { children: ReactNode }) {
     refetchInterval: 4000,
   })
 
-  // Build blind pairs
-  const buildBlindPairs = useCallback((comp: TTSComparison) => {
-    const pairs: typeof blindPairs = []
-    const textCount = comp.sample_texts?.length || 0
-    for (let i = 0; i < textCount; i++) {
-      const samplesForIdx = comp.samples.filter(s => s.sample_index === i && s.status === 'completed' && s.audio_url)
-      const hasSide = samplesForIdx.some(s => s.side)
-      const aSamples = samplesForIdx.filter(s => hasSide ? s.side === 'A' : s.provider === comp.provider_a)
-      const bSamples = samplesForIdx.filter(s => hasSide ? s.side === 'B' : s.provider === comp.provider_b)
-      if (aSamples.length > 0 && bSamples.length > 0) {
-        const flipped = Math.random() > 0.5
-        pairs.push({
-          sampleIdx: i,
-          sampleA: flipped ? bSamples[0] : aSamples[0],
-          sampleB: flipped ? aSamples[0] : bSamples[0],
-          flipped,
-        })
-      }
-    }
-    setBlindPairs(pairs)
-    setBlindChoices({})
-    return pairs
-  }, [])
-
-  // Transition from progress to blind-test or results
+  // Transition from progress -> results as soon as audio is ready.
+  // Evaluation may still be running in the background; the results view
+  // surfaces a "create blind test" affordance immediately so the user can
+  // start collecting external responses without waiting for metrics.
   useEffect(() => {
     if (!comparison) return
-    if (step === 'progress') {
-      if (comparison.status === 'completed') {
-        const pairs = buildBlindPairs(comparison)
-        if (pairs.length > 0) {
-          setStep('blind-test')
-        } else {
-          setStep('results')
-        }
-      }
+    if (step !== 'progress') return
+    const audioReady =
+      comparison.status === 'evaluating' || comparison.status === 'completed'
+    if (audioReady) {
+      setStep('results')
     }
-  }, [comparison, step, buildBlindPairs])
+  }, [comparison, step])
 
   // Progress stats
   const totalSamples = comparison?.samples?.length || 0
@@ -464,23 +436,6 @@ export function VoicePlaygroundProvider({ children }: { children: ReactNode }) {
       setActiveComparisonId(comp.id)
       setStep('progress')
       refetchPast()
-    },
-  })
-
-  const blindTestMutation = useMutation({
-    mutationFn: async () => {
-      if (!activeComparisonId) return
-      const results = blindPairs.map(pair => ({
-        sample_index: pair.sampleIdx,
-        preferred: blindChoices[pair.sampleIdx] || 'A',
-        voice_a_id: pair.sampleA.voice_id,
-        voice_b_id: pair.sampleB.voice_id,
-      }))
-      await apiClient.submitBlindTest(activeComparisonId, results as any)
-      await refetchComparison()
-    },
-    onSuccess: () => {
-      setStep('results')
     },
   })
 
@@ -633,8 +588,6 @@ export function VoicePlaygroundProvider({ children }: { children: ReactNode }) {
     setEvalSttModel('')
     setActiveComparisonId(null)
     setStep('configure')
-    setBlindChoices({})
-    setBlindPairs([])
   }, [stop])
 
   const customVoiceError = useMemo(() => {
@@ -720,17 +673,12 @@ export function VoicePlaygroundProvider({ children }: { children: ReactNode }) {
     comparison,
     viewedComparison,
     viewedLoading,
-    blindChoices,
-    setBlindChoices,
-    blindPairs,
     progressPct,
     totalSamples,
     completedSamples,
     failedSamples,
     createComparison: () => createMutation.mutate(),
     isCreating: createMutation.isPending,
-    submitBlindTest: () => blindTestMutation.mutate(),
-    isSubmittingBlindTest: blindTestMutation.isPending,
     downloadReport: (id: string, options?: TTSReportOptions) =>
       downloadReportMutation.mutate({ comparisonId: id, options }),
     isDownloading: downloadReportMutation.isPending,

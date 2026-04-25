@@ -1,4 +1,4 @@
-import { Trophy, Download, FileText, Loader2, Headphones } from 'lucide-react'
+import { Trophy, Download, FileText, Loader2, Share2 } from 'lucide-react'
 import { useState } from 'react'
 import Button from '../../../../components/Button'
 import ProviderLogo, { getProviderInfo } from '../../../../components/shared/ProviderLogo'
@@ -7,6 +7,8 @@ import MetricCard from './MetricCard'
 import SampleGroup from './SampleGroup'
 import StatusBadge from './StatusBadge'
 import ReportConfigModal from './ReportConfigModal'
+import ShareBlindTestModal from './ShareBlindTestModal'
+import ExternalResponsesPanel from './ExternalResponsesPanel'
 
 function hasSecondProvider(comp: {
   provider_b?: string | null
@@ -55,7 +57,14 @@ export default function ComparisonResultsView({
 }: ComparisonResultsViewProps) {
   const hzMaps = buildVoiceHzMaps(comparison)
   const [showReportConfig, setShowReportConfig] = useState(false)
+  const [showShareModal, setShowShareModal] = useState(false)
   const [lastOptions, setLastOptions] = useState<TTSReportOptions>(DEFAULT_TTS_REPORT_OPTIONS)
+  // Audio is ready when generation has finished. Evaluation can still be
+  // running in the background, but the user should be able to create and
+  // share a blind test as soon as audio clips exist.
+  const canShareBlindTest =
+    hasSecondProvider(comparison) &&
+    (comparison.status === 'evaluating' || comparison.status === 'completed')
 
   const handleDownload = (options: TTSReportOptions) => {
     setLastOptions(options)
@@ -92,6 +101,16 @@ export default function ComparisonResultsView({
           <div className="flex flex-col items-end gap-2">
             <StatusBadge status={comparison.status} />
             <div className="flex items-center gap-2">
+              {canShareBlindTest && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  leftIcon={<Share2 className="w-4 h-4" />}
+                  onClick={() => setShowShareModal(true)}
+                >
+                  {comparison.blind_test_share ? 'Manage Blind Test' : 'Create Blind Test'}
+                </Button>
+              )}
               <Button
                 variant="secondary"
                 size="sm"
@@ -152,9 +171,7 @@ export default function ComparisonResultsView({
             const sumB = comparison.evaluation_summary.provider_b || {}
             const mosA = sumA['MOS Score'] ?? 0
             const mosB = sumB['MOS Score'] ?? 0
-            const bt = comparison.evaluation_summary.blind_test
-            const btScore = bt ? bt.a_wins - bt.b_wins : 0
-            const winner = mosA + btScore * 0.1 >= mosB ? 'A' : 'B'
+            const winner = mosA >= mosB ? 'A' : 'B'
             const winnerName =
               winner === 'A'
                 ? getProviderInfo(comparison.provider_a).label
@@ -232,39 +249,6 @@ export default function ComparisonResultsView({
             )
           })()}
 
-        {/* Blind Test Results */}
-        {comparison.evaluation_summary?.blind_test &&
-          (() => {
-            const bt = comparison.evaluation_summary.blind_test
-            return (
-              <div className="p-4 bg-gradient-to-r from-amber-50 to-orange-50 rounded-xl border border-amber-200 mb-6">
-                <h4 className="font-semibold text-amber-900 mb-3 flex items-center gap-2">
-                  <Headphones className="w-5 h-5" />
-                  Blind Test Results
-                </h4>
-                <div className="flex items-center gap-6">
-                  <div className="text-center flex flex-col items-center gap-1">
-                    <ProviderLogo provider={comparison.provider_a} size="sm" />
-                    <p className="text-xs text-gray-500">
-                      {getProviderInfo(comparison.provider_a).label}
-                    </p>
-                    <p className="text-2xl font-bold text-blue-600">{bt.a_pct}%</p>
-                    <p className="text-xs text-gray-400">{bt.a_wins} wins</p>
-                  </div>
-                  <span className="text-gray-300 text-xl">vs</span>
-                  <div className="text-center flex flex-col items-center gap-1">
-                    <ProviderLogo provider={comparison.provider_b || ''} size="sm" />
-                    <p className="text-xs text-gray-500">
-                      {getProviderInfo(comparison.provider_b || '').label}
-                    </p>
-                    <p className="text-2xl font-bold text-purple-600">{bt.b_pct}%</p>
-                    <p className="text-xs text-gray-400">{bt.b_wins} wins</p>
-                  </div>
-                </div>
-              </div>
-            )
-          })()}
-
         {/* Provider Labels */}
         <div className="flex items-center justify-center gap-6 mb-4">
           <div className="flex items-center gap-2">
@@ -315,6 +299,8 @@ export default function ComparisonResultsView({
         </div>
       </div>
 
+      {canShareBlindTest && <ExternalResponsesPanel comparison={comparison} />}
+
       <ReportConfigModal
         isOpen={showReportConfig}
         initialOptions={lastOptions}
@@ -324,6 +310,18 @@ export default function ComparisonResultsView({
         onDownloadPdf={handleDownload}
         onGenerateAsync={handleGenerateAsync}
       />
+
+      {canShareBlindTest && (
+        <ShareBlindTestModal
+          isOpen={showShareModal}
+          comparisonId={comparison.id}
+          defaultTitle={
+            comparison.name ||
+            `Voice Blind Test${comparison.simulation_id ? ` #${comparison.simulation_id}` : ''}`
+          }
+          onClose={() => setShowShareModal(false)}
+        />
+      )}
     </div>
   )
 }

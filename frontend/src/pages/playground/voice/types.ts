@@ -51,12 +51,94 @@ export interface TTSComparison {
   num_runs: number
   blind_test_results: Array<{ sample_index: number; preferred: string }> | null
   evaluation_summary: Record<string, any> | null
+  blind_test_share?: BlindTestShareSummary | null
   eval_stt_provider?: string | null
   eval_stt_model?: string | null
   error_message: string | null
   samples: TTSSample[]
   created_at: string
   updated_at: string
+}
+
+export type BlindTestMetricType = 'rating' | 'comment'
+
+export interface BlindTestCustomMetric {
+  key: string
+  label: string
+  type: BlindTestMetricType
+  scale?: number
+}
+
+export interface BlindTestShareSummary {
+  id: string
+  share_token: string
+  public_path: string
+  title: string
+  status: 'open' | 'closed' | string
+}
+
+export interface BlindTestShareAggregateMetric {
+  label: string
+  scale: number | null
+  avg_a: number | null
+  avg_b: number | null
+  samples_a: number
+  samples_b: number
+}
+
+export interface BlindTestShareAggregates {
+  response_count: number
+  a_wins: number
+  b_wins: number
+  a_pct: number
+  b_pct: number
+  metrics: Record<string, BlindTestShareAggregateMetric>
+}
+
+export interface BlindTestShareDetail {
+  id: string
+  comparison_id: string
+  share_token: string
+  public_path: string
+  title: string
+  description: string | null
+  custom_metrics: BlindTestCustomMetric[]
+  status: 'open' | 'closed' | string
+  created_at: string | null
+  updated_at: string | null
+  closed_at: string | null
+  response_count?: number
+  aggregates?: BlindTestShareAggregates
+}
+
+export interface BlindTestResponseRow {
+  id: string
+  share_id: string
+  rater_name: string
+  rater_email: string
+  responses: Array<{
+    sample_index: number
+    preferred: 'A' | 'B'
+    ratings_a: Record<string, number>
+    ratings_b: Record<string, number>
+    comment?: string | null
+    flipped?: boolean
+  }>
+  submitted_at: string | null
+}
+
+export interface PublicBlindTestForm {
+  title: string
+  description: string | null
+  custom_metrics: BlindTestCustomMetric[]
+  samples: Array<{
+    sample_index: number
+    text: string
+    voice_x_url: string | null
+    voice_y_url: string | null
+  }>
+  client_token: string
+  status: string
 }
 
 export interface TTSComparisonSummary {

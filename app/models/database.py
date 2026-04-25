@@ -834,6 +834,91 @@ class TTSReportJob(Base):
     comparison = relationship("TTSComparison")
 
 
+class TTSBlindTestShareStatus(str, enum.Enum):
+    OPEN = "open"
+    CLOSED = "closed"
+
+
+class TTSBlindTestShare(Base):
+    """A publicly sharable blind test for a TTSComparison.
+
+    The share_token is the capability: anyone holding it can open the public
+    form and submit a response. Each comparison has at most one share row.
+    """
+    __tablename__ = "tts_blind_test_shares"
+    __table_args__ = (
+        UniqueConstraint("comparison_id", name="uq_blind_test_shares_comparison"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    comparison_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("tts_comparisons.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+
+    share_token = Column(String(64), unique=True, nullable=False, index=True)
+
+    title = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+
+    # JSON list: [{ "key": str, "label": str, "type": "rating"|"comment", "scale": int? }]
+    custom_metrics = Column(JSON, nullable=False)
+
+    status = Column(String(20), nullable=False, default=TTSBlindTestShareStatus.OPEN.value)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    closed_at = Column(DateTime(timezone=True), nullable=True)
+    created_by = Column(String, nullable=True)
+
+    comparison = relationship("TTSComparison")
+    responses = relationship(
+        "TTSBlindTestResponse",
+        back_populates="share",
+        cascade="all, delete-orphan",
+    )
+
+
+class TTSBlindTestResponse(Base):
+    """A single rater's submission against a TTSBlindTestShare."""
+    __tablename__ = "tts_blind_test_responses"
+    __table_args__ = (
+        UniqueConstraint("share_id", "rater_email", name="uq_blind_test_response_share_email"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    share_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("tts_blind_test_shares.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    rater_name = Column(String(255), nullable=False)
+    rater_email = Column(String(320), nullable=False, index=True)
+
+    # JSON list keyed by sample_index. Server stores in TRUE A/B orientation
+    # (already de-flipped from whatever the rater's UI showed):
+    # [{
+    #   "sample_index": int,
+    #   "preferred": "A" | "B",
+    #   "ratings_a": { metric_key: number },
+    #   "ratings_b": { metric_key: number },
+    #   "comment": str?
+    # }]
+    responses = Column(JSON, nullable=False)
+
+    ip = Column(String(64), nullable=True)
+    user_agent = Column(String(512), nullable=True)
+
+    submitted_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    share = relationship("TTSBlindTestShare", back_populates="responses")
+
+
 class PromptPartial(Base):
     """Prompt Partial - Reusable prompt templates with version history."""
     __tablename__ = "prompt_partials"
