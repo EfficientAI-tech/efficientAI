@@ -39,45 +39,11 @@ export interface LicenseInfoResponse {
   organization?: string
 }
 
-type TTSReportOptionsPayload = {
-  show_runs?: boolean
-  min_runs_to_show?: number
-  include_latency?: boolean
-  include_ttfb?: boolean
-  include_endpoint?: boolean
-  include_naturalness?: boolean
-  include_hallucination?: boolean
-  include_prosody?: boolean
-  include_arousal?: boolean
-  include_valence?: boolean
-  include_cer?: boolean
-  include_wer?: boolean
-  include_hallucination_examples?: boolean
-  hallucination_examples_limit?: number
-  include_disclaimer_sections?: boolean
-  include_methodology_sections?: boolean
-  zone_threshold_overrides?: Record<string, {
-    good_min?: number
-    neutral_min?: number
-    good_max?: number
-    neutral_max?: number
-  }>
-}
-
-// When running in production (served from same origin), use relative path
-// Otherwise use environment variable or default
-const API_BASE_URL = import.meta.env.VITE_API_URL ||
-  (import.meta.env.PROD ? '' : 'http://localhost:8000')
-
-// -------------------------------------------------------------------------
-// New pluggable-auth types. Mirror app/api/v1/routes/auth.py.
-// -------------------------------------------------------------------------
-
 export interface AuthProviderConfig {
   name: 'api_key' | 'local_password' | 'external_oidc'
   enabled: boolean
   display_name: string
-  description?: string | null
+  description?: string
   supports_password?: boolean
   supports_signup?: boolean
   oidc_issuer?: string | null
@@ -109,6 +75,84 @@ export interface TokenResponse {
   user: AuthUserSummary
 }
 
+export interface TelephonyIntegrationResponse {
+  id: string
+  organization_id: string
+  provider: string
+  verify_app_uuid?: string | null
+  voice_app_id?: string | null
+  sip_domain?: string | null
+  masking_config?: Record<string, any> | null
+  is_active: boolean
+  last_tested_at?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface TelephonyIntegrationCreatePayload {
+  provider?: string
+  auth_id: string
+  auth_token: string
+  verify_app_uuid?: string
+  voice_app_id?: string
+  sip_domain?: string
+  masking_config?: Record<string, any>
+}
+
+export interface TelephonyIntegrationUpdatePayload {
+  provider?: string
+  auth_id?: string
+  auth_token?: string
+  verify_app_uuid?: string
+  voice_app_id?: string
+  sip_domain?: string
+  masking_config?: Record<string, any>
+  is_active?: boolean
+}
+
+export interface TelephonyPhoneNumberResponse {
+  id: string
+  phone_number: string
+  country_iso2?: string | null
+  region?: string | null
+  number_type?: string | null
+  capabilities?: Record<string, any> | null
+  is_masking_pool: boolean
+  agent_id?: string | null
+  is_active: boolean
+  created_at: string
+}
+
+type TTSReportOptionsPayload = {
+  show_runs?: boolean
+  min_runs_to_show?: number
+  include_latency?: boolean
+  include_ttfb?: boolean
+  include_endpoint?: boolean
+  include_naturalness?: boolean
+  include_hallucination?: boolean
+  include_prosody?: boolean
+  include_arousal?: boolean
+  include_valence?: boolean
+  include_cer?: boolean
+  include_wer?: boolean
+  include_hallucination_examples?: boolean
+  hallucination_examples_limit?: number
+  include_disclaimer_sections?: boolean
+  include_methodology_sections?: boolean
+  zone_threshold_overrides?: Record<string, {
+    good_min?: number
+    neutral_min?: number
+    good_max?: number
+    neutral_max?: number
+  }>
+}
+
+// When running in production (served from same origin), use relative path
+// Otherwise use environment variable or default
+const API_BASE_URL = import.meta.env.VITE_API_URL ||
+  (import.meta.env.PROD ? '' : 'http://localhost:8000')
+
 class ApiClient {
   private client: AxiosInstance
 
@@ -120,28 +164,32 @@ class ApiClient {
       },
     })
 
-    // Prefer Bearer token when present; fall back to API key. This order
-    // matches the backend provider registry so a user with both (e.g. signed
-    // in interactively but also pasted a machine API key) stays on the
-    // interactive identity.
+    // Add request interceptor to add API key to headers
     this.client.interceptors.request.use((config) => {
       const accessToken = localStorage.getItem('accessToken')
       const apiKey = localStorage.getItem('apiKey')
       if (accessToken) {
-        config.headers['Authorization'] = `Bearer ${accessToken}`
-      } else if (apiKey) {
+        config.headers.Authorization = `Bearer ${accessToken}`
+      } else if (config.headers.Authorization) {
+        delete config.headers.Authorization
+      }
+      if (apiKey) {
         config.headers['X-API-Key'] = apiKey
+      } else if (config.headers['X-API-Key']) {
+        delete config.headers['X-API-Key']
       }
       return config
     })
 
+    // Add response interceptor for error handling
     this.client.interceptors.response.use(
       (response) => response,
       (error) => {
+        // Only log out on 401 (authentication failure)
+        // 403 errors are authorization failures that should be handled by the calling code
         if (error.response?.status === 401) {
+          // API key invalid, clear it
           localStorage.removeItem('apiKey')
-          localStorage.removeItem('accessToken')
-          localStorage.removeItem('authUser')
           window.location.href = '/login'
         }
         return Promise.reject(error)
@@ -157,18 +205,15 @@ class ApiClient {
     localStorage.removeItem('apiKey')
   }
 
-  setAccessToken(token: string) {
-    localStorage.setItem('accessToken', token)
+  setAccessToken(accessToken: string) {
+    localStorage.setItem('accessToken', accessToken)
   }
 
   clearAccessToken() {
     localStorage.removeItem('accessToken')
-    localStorage.removeItem('authUser')
   }
 
-  // -----------------------------------------------------------------------
-  // Pluggable auth endpoints
-  // -----------------------------------------------------------------------
+  // Auth endpoints
   async getAuthConfig(): Promise<AuthConfigResponse> {
     const response = await this.client.get('/api/v1/auth/config')
     return response.data
@@ -190,13 +235,20 @@ class ApiClient {
     return response.data
   }
 
+  async logout(): Promise<{ success: boolean; auth_method: string }> {
+    const response = await this.client.post('/api/v1/auth/logout')
+    return response.data
+  }
+
   async getMe(): Promise<AuthUserSummary> {
     const response = await this.client.get('/api/v1/auth/me')
     return response.data
   }
 
-  async logout(): Promise<{ success: boolean; auth_method: string }> {
-    const response = await this.client.post('/api/v1/auth/logout')
+  async switchOrganization(organizationId: string): Promise<TokenResponse> {
+    const response = await this.client.post('/api/v1/auth/switch-org', {
+      organization_id: organizationId,
+    })
     return response.data
   }
 
@@ -209,15 +261,6 @@ class ApiClient {
     return response.data
   }
 
-  async switchOrganization(organization_id: string): Promise<TokenResponse> {
-    const response = await this.client.post('/api/v1/auth/switch-org', {
-      organization_id,
-    })
-    return response.data
-  }
-
-  // Legacy: kept for callers that still need to mint an API key. The backend
-  // endpoint now requires an already-authenticated caller.
   async generateApiKey(name?: string): Promise<APIKey> {
     const response = await this.client.post('/api/v1/auth/generate-key', { name })
     return response.data
@@ -353,6 +396,7 @@ class ApiClient {
   async createAgent(data: {
     name: string
     phone_number?: string
+    telephony_phone_number_id?: string
     language: string
     description?: string | null
     call_type: string
@@ -381,12 +425,15 @@ class ApiClient {
   async updateAgent(agentId: string, data: {
     name?: string
     phone_number?: string
+    telephony_phone_number_id?: string | null
     language?: string
     description?: string | null
     call_type?: string
     call_medium?: string
     voice_bundle_id?: string
     ai_provider_id?: string
+    voice_ai_integration_id?: string
+    voice_ai_agent_id?: string
   }): Promise<any> {
     const response = await this.client.put(`/api/v1/agents/${agentId}`, data)
     return response.data
@@ -735,6 +782,49 @@ class ApiClient {
 
   async getIntegrationApiKey(integrationId: string): Promise<{ api_key: string; public_key?: string | null }> {
     const response = await this.client.get(`/api/v1/integrations/${integrationId}/api-key`)
+    return response.data
+  }
+
+  // Telephony endpoints (provider-agnostic)
+  async createTelephonyConfig(data: TelephonyIntegrationCreatePayload): Promise<TelephonyIntegrationResponse> {
+    const response = await this.client.post('/api/v1/telephony/config', data)
+    return response.data
+  }
+
+  async getTelephonyConfig(provider: string = 'plivo'): Promise<TelephonyIntegrationResponse> {
+    const response = await this.client.get('/api/v1/telephony/config', { params: { provider } })
+    return response.data
+  }
+
+  async updateTelephonyConfig(data: TelephonyIntegrationUpdatePayload): Promise<TelephonyIntegrationResponse> {
+    const response = await this.client.put('/api/v1/telephony/config', data)
+    return response.data
+  }
+
+  async testTelephonyConfig(provider: string = 'plivo'): Promise<{ success: boolean }> {
+    const response = await this.client.post('/api/v1/telephony/config/test', null, { params: { provider } })
+    return response.data
+  }
+
+  async syncTelephonyNumbers(provider: string = 'plivo'): Promise<TelephonyPhoneNumberResponse[]> {
+    const response = await this.client.post('/api/v1/telephony/numbers/sync', null, {
+      params: { provider },
+    })
+    return response.data
+  }
+
+  async listTelephonyNumbers(provider?: string): Promise<TelephonyPhoneNumberResponse[]> {
+    const response = await this.client.get('/api/v1/telephony/numbers', {
+      params: provider ? { provider } : undefined,
+    })
+    return response.data
+  }
+
+  async updateTelephonyNumber(
+    numberId: string,
+    data: { is_masking_pool?: boolean; agent_id?: string | null; is_active?: boolean }
+  ): Promise<TelephonyPhoneNumberResponse> {
+    const response = await this.client.patch(`/api/v1/telephony/numbers/${numberId}`, data)
     return response.data
   }
 
@@ -1229,13 +1319,21 @@ class ApiClient {
     metric_type: 'number' | 'boolean' | 'rating'
     trigger?: 'always'
     enabled?: boolean
+    metric_origin?: 'default' | 'custom'
+    supported_surfaces?: string[]
+    enabled_surfaces?: string[]
+    custom_data_type?: 'boolean' | 'enum' | 'number_range'
+    custom_config?: Record<string, any>
+    tags?: string[]
   }): Promise<any> {
     const response = await this.client.post('/api/v1/metrics', data)
     return response.data
   }
 
-  async listMetrics(): Promise<any[]> {
-    const response = await this.client.get('/api/v1/metrics')
+  async listMetrics(surface?: string): Promise<any[]> {
+    const response = await this.client.get('/api/v1/metrics', {
+      params: surface ? { surface } : undefined,
+    })
     return response.data
   }
 
@@ -1303,6 +1401,12 @@ class ApiClient {
     metric_type?: 'number' | 'boolean' | 'rating'
     trigger?: 'always'
     enabled?: boolean
+    metric_origin?: 'default' | 'custom'
+    supported_surfaces?: string[]
+    enabled_surfaces?: string[]
+    custom_data_type?: 'boolean' | 'enum' | 'number_range'
+    custom_config?: Record<string, any>
+    tags?: string[]
   }): Promise<any> {
     const response = await this.client.put(`/api/v1/metrics/${metricId}`, data)
     return response.data

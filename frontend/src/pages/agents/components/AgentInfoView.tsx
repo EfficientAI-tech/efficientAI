@@ -19,6 +19,7 @@ interface Agent {
   id: string
   name: string
   phone_number?: string | null
+  telephony_phone_number_id?: string | null
   language: string
   description?: string | null
   provider_prompt?: string | null
@@ -95,7 +96,20 @@ export default function AgentInfoView({
           {agent.phone_number && (
             <div>
               <dt className="text-xs font-medium text-gray-500 uppercase tracking-wide">Phone Number</dt>
-              <dd className="mt-1 text-sm text-gray-900">{agent.phone_number}</dd>
+              <dd className="mt-1 text-sm text-gray-900 flex flex-wrap items-center gap-2">
+                <span>{agent.phone_number}</span>
+                {agent.call_medium === 'phone_call' && (
+                  <span
+                    className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                      agent.telephony_phone_number_id
+                        ? 'bg-emerald-100 text-emerald-800'
+                        : 'bg-amber-100 text-amber-800'
+                    }`}
+                  >
+                    {agent.telephony_phone_number_id ? 'Provider-linked' : 'Custom'}
+                  </span>
+                )}
+              </dd>
             </div>
           )}
           <div>

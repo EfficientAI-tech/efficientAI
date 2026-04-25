@@ -3,7 +3,7 @@
  * Single source of truth for all provider metadata in the frontend
  */
 
-import { ModelProvider, IntegrationPlatform } from '../types/api'
+import { ModelProvider, IntegrationPlatform, TelephonyProvider } from '../types/api'
 
 export interface ProviderMetadata {
   label: string
@@ -162,3 +162,45 @@ export const getIntegrationPlatformLogo = (platform: IntegrationPlatform): strin
 
 export const mapIntegrationToModelProvider = (platform: IntegrationPlatform): ModelProvider | null =>
   INTEGRATION_PLATFORM_CONFIG[platform]?.modelProvider ?? null
+
+
+// --- Telephony provider configuration ---
+
+export interface TelephonyProviderMetadata {
+  label: string
+  logo: string | null
+  description: string
+  fields: { key: string; label: string; required: boolean; type: 'text' | 'password' }[]
+}
+
+export const TELEPHONY_PROVIDER_CONFIG: Record<TelephonyProvider, TelephonyProviderMetadata> = {
+  [TelephonyProvider.PLIVO]: {
+    label: 'Plivo',
+    logo: null,
+    description: 'Voice telephony, SIP routing, voice OTP, and number masking',
+    fields: [
+      { key: 'auth_id', label: 'Auth ID', required: true, type: 'password' },
+      { key: 'auth_token', label: 'Auth Token', required: true, type: 'password' },
+      { key: 'verify_app_uuid', label: 'Verify App UUID', required: false, type: 'text' },
+      { key: 'sip_domain', label: 'SIP Domain', required: false, type: 'text' },
+    ],
+  },
+  [TelephonyProvider.EXOTEL]: {
+    label: 'Exotel',
+    logo: null,
+    description: 'Voice telephony, applet routing, voice OTP, and masking workflows',
+    fields: [
+      { key: 'auth_id', label: 'API Key', required: true, type: 'password' },
+      { key: 'auth_token', label: 'API Token', required: true, type: 'password' },
+      { key: 'voice_app_id', label: 'Account SID', required: true, type: 'text' },
+      { key: 'verify_app_uuid', label: 'Verification App ID', required: false, type: 'text' },
+      { key: 'sip_domain', label: 'API Host (optional)', required: false, type: 'text' },
+    ],
+  },
+}
+
+export const getTelephonyProviderLabel = (provider: TelephonyProvider): string =>
+  TELEPHONY_PROVIDER_CONFIG[provider]?.label ?? provider
+
+export const getTelephonyProviderDescription = (provider: TelephonyProvider): string =>
+  TELEPHONY_PROVIDER_CONFIG[provider]?.description ?? ''

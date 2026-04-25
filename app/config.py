@@ -60,6 +60,17 @@ class Settings(BaseSettings):
     # API Settings
     API_KEY_HEADER: str = "X-API-Key"
     RATE_LIMIT_PER_MINUTE: int = 60
+
+    # Authentication
+    AUTH_PROVIDERS: List[str] = ["api_key"]
+    AUTH_LOCAL_ALLOW_SIGNUP: bool = True
+    AUTH_LOCAL_TOKEN_TTL_MINUTES: int = 720
+    AUTH_OIDC_ISSUER: Optional[str] = None
+    AUTH_OIDC_CLIENT_ID: Optional[str] = None
+    AUTH_OIDC_AUDIENCE: Optional[str] = None
+    AUTH_OIDC_JWKS_URI: Optional[str] = None
+    AUTH_OIDC_ORG_CLAIM_PATH: List[str] = []
+    AUTH_OIDC_DEFAULT_ORG_NAME: Optional[str] = None
     
     # Frontend
     FRONTEND_DIR: str = "./frontend/dist"
@@ -80,27 +91,11 @@ class Settings(BaseSettings):
     # Enterprise License (JWT signed with RS256)
     EFFICIENTAI_LICENSE: Optional[str] = None
 
-    # -------------------------------------------------------------------------
-    # Authentication providers
-    # -------------------------------------------------------------------------
-    # Ordered list of enabled providers. Always includes "api_key" implicitly
-    # if left empty. Known values: api_key, local_password, external_oidc.
-    AUTH_PROVIDERS: List[str] = ["api_key"]
-
-    # Local password (OSS). App-signed HS256 JWT using SECRET_KEY.
-    AUTH_LOCAL_TOKEN_TTL_MINUTES: int = 60 * 12  # 12h
-    # Allow self-service signup via POST /api/v1/auth/signup? Off in Cloud SaaS.
-    AUTH_LOCAL_ALLOW_SIGNUP: bool = True
-
-    # External OIDC (enterprise license feature: oidc_sso).
-    # Works with any OIDC-compliant IdP: Okta, Azure AD, Google Workspace,
-    # AWS Cognito, Auth0, Ping, OneLogin, JumpCloud, etc.
-    AUTH_OIDC_ISSUER: Optional[str] = None
-    AUTH_OIDC_AUDIENCE: Optional[str] = None
-    AUTH_OIDC_CLIENT_ID: Optional[str] = None
-    AUTH_OIDC_JWKS_URI: Optional[str] = None              # optional, derived from issuer
-    AUTH_OIDC_DEFAULT_ORG_NAME: Optional[str] = None
-    AUTH_OIDC_ORG_CLAIM_PATH: Optional[List[str]] = None
+    # Plivo Telephony (optional)
+    PLIVO_AUTH_ID: str = ""
+    PLIVO_AUTH_TOKEN: str = ""
+    PLIVO_VERIFY_APP_UUID: str = ""
+    PLIVO_WEBHOOK_BASE_URL: str = ""
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -144,50 +139,6 @@ class Settings(BaseSettings):
         
         return ["wav", "mp3", "flac", "m4a"]  # Default
     
-    @field_validator("AUTH_PROVIDERS", mode="before")
-    @classmethod
-    def parse_auth_providers(cls, v: Union[str, List[str], None]) -> List[str]:
-        """Parse AUTH_PROVIDERS from JSON, CSV, or a native list."""
-        if v is None:
-            return ["api_key"]
-        if isinstance(v, list):
-            return [str(x).strip() for x in v if str(x).strip()] or ["api_key"]
-        if isinstance(v, str):
-            v = v.strip()
-            if not v:
-                return ["api_key"]
-            if v.startswith("["):
-                try:
-                    parsed = json.loads(v)
-                    if isinstance(parsed, list):
-                        return [str(x).strip() for x in parsed if str(x).strip()] or ["api_key"]
-                except (json.JSONDecodeError, ValueError):
-                    pass
-            return [x.strip() for x in v.split(",") if x.strip()] or ["api_key"]
-        return ["api_key"]
-
-    @field_validator("AUTH_OIDC_ORG_CLAIM_PATH", mode="before")
-    @classmethod
-    def parse_claim_path(cls, v):
-        """Parse a dotted claim path from JSON, CSV, or a native list."""
-        if v is None or v == "":
-            return None
-        if isinstance(v, list):
-            return [str(x) for x in v]
-        if isinstance(v, str):
-            s = v.strip()
-            if not s:
-                return None
-            if s.startswith("["):
-                try:
-                    parsed = json.loads(s)
-                    if isinstance(parsed, list):
-                        return [str(x) for x in parsed]
-                except (json.JSONDecodeError, ValueError):
-                    pass
-            return [x.strip() for x in s.split(",") if x.strip()] or None
-        return None
-
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def parse_cors_origins(cls, v: Union[str, List[str], None]) -> List[str]:
@@ -219,6 +170,63 @@ class Settings(BaseSettings):
             return origins if origins else ["http://localhost:3000", "http://localhost:8000"]
         
         return ["http://localhost:3000", "http://localhost:8000"]  # Default
+
+    @field_validator("AUTH_PROVIDERS", mode="before")
+    @classmethod
+    def parse_auth_providers(cls, v: Union[str, List[str], None]) -> List[str]:
+        """Parse AUTH_PROVIDERS from JSON arrays or CSV strings."""
+        if v is None:
+            return ["api_key"]
+
+        if isinstance(v, list):
+            providers = [str(provider).strip().lower() for provider in v if str(provider).strip()]
+            return providers or ["api_key"]
+
+        if isinstance(v, str):
+            raw = v.strip()
+            if not raw:
+                return ["api_key"]
+            if raw.startswith("["):
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, list):
+                        providers = [
+                            str(provider).strip().lower()
+                            for provider in parsed
+                            if str(provider).strip()
+                        ]
+                        return providers or ["api_key"]
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            providers = [provider.strip().lower() for provider in raw.split(",") if provider.strip()]
+            return providers or ["api_key"]
+
+        return ["api_key"]
+
+    @field_validator("AUTH_OIDC_ORG_CLAIM_PATH", mode="before")
+    @classmethod
+    def parse_auth_oidc_org_claim_path(cls, v: Union[str, List[str], None]) -> List[str]:
+        """Parse AUTH_OIDC_ORG_CLAIM_PATH from JSON arrays or dot notation."""
+        if v is None:
+            return []
+
+        if isinstance(v, list):
+            return [str(item).strip() for item in v if str(item).strip()]
+
+        if isinstance(v, str):
+            raw = v.strip()
+            if not raw:
+                return []
+            if raw.startswith("["):
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, list):
+                        return [str(item).strip() for item in parsed if str(item).strip()]
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            return [part.strip() for part in raw.split(".") if part.strip()]
+
+        return []
     
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -377,42 +385,48 @@ def load_config_from_file(config_path: str) -> None:
         if "rate_limit_per_minute" in api_config:
             settings.RATE_LIMIT_PER_MINUTE = api_config["rate_limit_per_minute"]
 
+    if "auth" in config_data:
+        auth_config = config_data["auth"]
+        if "providers" in auth_config:
+            settings.AUTH_PROVIDERS = auth_config["providers"]
+
+        local_config = auth_config.get("local_password", {})
+        if isinstance(local_config, dict):
+            if "allow_signup" in local_config:
+                settings.AUTH_LOCAL_ALLOW_SIGNUP = bool(local_config["allow_signup"])
+            if "token_ttl_minutes" in local_config:
+                settings.AUTH_LOCAL_TOKEN_TTL_MINUTES = int(local_config["token_ttl_minutes"])
+
+        oidc_config = auth_config.get("oidc", {})
+        if isinstance(oidc_config, dict):
+            if "issuer" in oidc_config:
+                settings.AUTH_OIDC_ISSUER = oidc_config["issuer"]
+            if "client_id" in oidc_config:
+                settings.AUTH_OIDC_CLIENT_ID = oidc_config["client_id"]
+            if "audience" in oidc_config:
+                settings.AUTH_OIDC_AUDIENCE = oidc_config["audience"]
+            if "jwks_uri" in oidc_config:
+                settings.AUTH_OIDC_JWKS_URI = oidc_config["jwks_uri"]
+            if "org_claim_path" in oidc_config:
+                settings.AUTH_OIDC_ORG_CLAIM_PATH = oidc_config["org_claim_path"]
+            if "default_org_name" in oidc_config:
+                settings.AUTH_OIDC_DEFAULT_ORG_NAME = oidc_config["default_org_name"]
+
     if "license" in config_data:
         license_config = config_data["license"]
         if "key" in license_config:
             settings.EFFICIENTAI_LICENSE = license_config["key"]
 
-    if "auth" in config_data:
-        auth_config = config_data["auth"] or {}
-
-        providers = auth_config.get("providers")
-        if isinstance(providers, list):
-            settings.AUTH_PROVIDERS = [str(p).strip() for p in providers if str(p).strip()]
-        elif isinstance(providers, str) and providers.strip():
-            settings.AUTH_PROVIDERS = [p.strip() for p in providers.split(",") if p.strip()]
-
-        local_cfg = auth_config.get("local_password") or {}
-        if "token_ttl_minutes" in local_cfg:
-            try:
-                settings.AUTH_LOCAL_TOKEN_TTL_MINUTES = int(local_cfg["token_ttl_minutes"])
-            except (TypeError, ValueError):
-                pass
-        if "allow_signup" in local_cfg:
-            settings.AUTH_LOCAL_ALLOW_SIGNUP = bool(local_cfg["allow_signup"])
-
-        oidc_cfg = auth_config.get("oidc") or auth_config.get("external_oidc") or {}
-        if "issuer" in oidc_cfg:
-            settings.AUTH_OIDC_ISSUER = oidc_cfg["issuer"]
-        if "audience" in oidc_cfg:
-            settings.AUTH_OIDC_AUDIENCE = oidc_cfg["audience"]
-        if "client_id" in oidc_cfg:
-            settings.AUTH_OIDC_CLIENT_ID = oidc_cfg["client_id"]
-        if "jwks_uri" in oidc_cfg:
-            settings.AUTH_OIDC_JWKS_URI = oidc_cfg["jwks_uri"]
-        if "default_org_name" in oidc_cfg:
-            settings.AUTH_OIDC_DEFAULT_ORG_NAME = oidc_cfg["default_org_name"]
-        if "org_claim_path" in oidc_cfg and isinstance(oidc_cfg["org_claim_path"], list):
-            settings.AUTH_OIDC_ORG_CLAIM_PATH = [str(x) for x in oidc_cfg["org_claim_path"]]
+    if "plivo" in config_data:
+        plivo_cfg = config_data["plivo"]
+        if plivo_cfg.get("auth_id"):
+            settings.PLIVO_AUTH_ID = plivo_cfg["auth_id"]
+        if plivo_cfg.get("auth_token"):
+            settings.PLIVO_AUTH_TOKEN = plivo_cfg["auth_token"]
+        if plivo_cfg.get("verify_app_uuid"):
+            settings.PLIVO_VERIFY_APP_UUID = plivo_cfg["verify_app_uuid"]
+        if plivo_cfg.get("webhook_base_url"):
+            settings.PLIVO_WEBHOOK_BASE_URL = plivo_cfg["webhook_base_url"]
 
     # Update Celery URLs if they weren't explicitly set
     if not settings.CELERY_BROKER_URL:

@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from datetime import datetime, timezone
 from typing import List
 from uuid import UUID
+from loguru import logger
 
 from app.dependencies import get_db, get_organization_id, get_api_key
 from app.models.database import Integration, IntegrationPlatform, Agent
@@ -114,8 +115,25 @@ async def list_integrations(
     integrations = db.query(Integration).filter(
         Integration.organization_id == organization_id
     ).order_by(Integration.created_at.desc()).all()
-    
-    return integrations
+
+    valid_platforms = {p.value for p in IntegrationPlatform}
+    filtered_integrations: List[Integration] = []
+    for integration in integrations:
+        raw_platform = (
+            integration.platform.value
+            if hasattr(integration.platform, "value")
+            else str(integration.platform).lower()
+        )
+        if raw_platform in valid_platforms:
+            filtered_integrations.append(integration)
+        else:
+            logger.warning(
+                "Skipping integration {} with invalid platform '{}'",
+                integration.id,
+                integration.platform,
+            )
+
+    return filtered_integrations
 
 
 @router.get("/{integration_id}", response_model=IntegrationResponse)
@@ -135,6 +153,14 @@ async def get_integration(
     ).first()
     
     if not integration:
+        raise HTTPException(status_code=404, detail="Integration not found")
+
+    raw_platform = (
+        integration.platform.value
+        if hasattr(integration.platform, "value")
+        else str(integration.platform).lower()
+    )
+    if raw_platform not in {p.value for p in IntegrationPlatform}:
         raise HTTPException(status_code=404, detail="Integration not found")
     
     return integration
