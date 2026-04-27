@@ -330,7 +330,23 @@ def start(config: str, host: Optional[str], port: Optional[int], build_frontend:
     type=click.Choice(["debug", "info", "warning", "error", "critical"], case_sensitive=False),
     help="Log level for Celery worker",
 )
-def worker(config: str, loglevel: str):
+@click.option(
+    "--queues",
+    "-Q",
+    "queues",
+    default=None,
+    help=(
+        "Comma-separated list of Celery queues this worker should consume "
+        "(forwarded to celery's -Q flag). Defaults to the default queue."
+    ),
+)
+@click.option(
+    "--concurrency",
+    default=None,
+    type=int,
+    help="Number of concurrent worker processes/threads (Celery --concurrency).",
+)
+def worker(config: str, loglevel: str, queues: Optional[str], concurrency: Optional[int]):
     """Start the Celery worker for background task processing."""
     from app.config import load_config_from_file
     
@@ -350,14 +366,20 @@ def worker(config: str, loglevel: str):
     
     click.echo(f"🚀 Starting Celery worker...")
     click.echo(f"   Log level: {loglevel}")
+    if queues:
+        click.echo(f"   Queues: {queues}")
+    if concurrency is not None:
+        click.echo(f"   Concurrency: {concurrency}")
     
     # Start Celery worker
     try:
         import subprocess
-        subprocess.run(
-            ["celery", "-A", "app.workers.celery_app", "worker", f"--loglevel={loglevel}"],
-            check=True,
-        )
+        cmd = ["celery", "-A", "app.workers.celery_app", "worker", f"--loglevel={loglevel}"]
+        if queues:
+            cmd.append(f"--queues={queues}")
+        if concurrency is not None:
+            cmd.append(f"--concurrency={concurrency}")
+        subprocess.run(cmd, check=True)
     except KeyboardInterrupt:
         click.echo("\n👋 Celery worker stopped")
     except subprocess.CalledProcessError as e:
@@ -421,14 +443,53 @@ def worker(config: str, loglevel: str):
     type=click.Choice(["debug", "info", "warning", "error", "critical"], case_sensitive=False),
     help="Log level for Celery worker",
 )
-def start_all(config: str, host: Optional[str], port: Optional[int], build_frontend: bool, reload: bool, watch_frontend: bool, force_rebuild: bool, skip_migrations: bool, worker_loglevel: str):
-    """Start both the application server and Celery worker together."""
+@click.option(
+    "--imports-worker/--no-imports-worker",
+    default=True,
+    help=(
+        "Also start a dedicated worker for the `imports` queue used by call "
+        "import CSV processing (default: True). Disable to keep the previous "
+        "single-worker behavior."
+    ),
+)
+@click.option(
+    "--imports-worker-concurrency",
+    default=4,
+    type=int,
+    help="Concurrency for the imports-queue worker (default: 4)",
+)
+def start_all(
+    config: str,
+    host: Optional[str],
+    port: Optional[int],
+    build_frontend: bool,
+    reload: bool,
+    watch_frontend: bool,
+    force_rebuild: bool,
+    skip_migrations: bool,
+    worker_loglevel: str,
+    imports_worker: bool,
+    imports_worker_concurrency: int,
+):
+    """Start the application server and Celery worker(s) together.
+
+    By default this also spawns a second Celery worker that consumes the
+    `imports` queue (call-import CSV fan-out) so CSV processing does not
+    starve synthetic-calling, audio generation, and evaluation jobs on the
+    default queue. Use --no-imports-worker to skip it.
+    """
     import signal
     import atexit
-    
+
     click.echo("🚀 Starting EfficientAI (App + Worker)...")
-    click.echo("   This will start both the API server and Celery worker")
-    click.echo("   Press Ctrl+C to stop both services\n")
+    if imports_worker:
+        click.echo(
+            "   This will start the API server, the default Celery worker, "
+            "and a dedicated worker for the `imports` queue."
+        )
+    else:
+        click.echo("   This will start both the API server and Celery worker")
+    click.echo("   Press Ctrl+C to stop all services\n")
     
     # Load configuration
     config_path = Path(config)
@@ -445,23 +506,32 @@ def start_all(config: str, host: Optional[str], port: Optional[int], build_front
         click.echo(f"❌ Error loading config: {e}", err=True)
         sys.exit(1)
     
-    # Store worker process for cleanup
+    # Store worker processes for cleanup. We may spawn one or two:
+    #   - worker_process: the default-queue worker (existing behavior)
+    #   - worker_imports_process: dedicated worker for the `imports` queue
     worker_process = None
-    
+    worker_imports_process = None
+
+    def _terminate(proc, label: str):
+        """Best-effort terminate -> wait -> kill for a worker subprocess."""
+        if proc is None or proc.poll() is not None:
+            return
+        try:
+            click.echo(f"\n👋 Stopping {label}...")
+            proc.terminate()
+            proc.wait(timeout=5)
+            click.echo(f"✅ {label} stopped")
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        except Exception:
+            pass
+
     def cleanup_processes():
         """Clean up spawned processes."""
-        nonlocal worker_process
-        if worker_process and worker_process.poll() is None:  # Process is still running
-            try:
-                click.echo("\n👋 Stopping Celery worker...")
-                worker_process.terminate()
-                worker_process.wait(timeout=5)
-                click.echo("✅ Celery worker stopped")
-            except subprocess.TimeoutExpired:
-                worker_process.kill()
-                worker_process.wait()
-            except Exception:
-                pass
+        nonlocal worker_process, worker_imports_process
+        _terminate(worker_process, "Celery worker (default)")
+        _terminate(worker_imports_process, "Celery worker (imports)")
     
     # Register cleanup on exit
     atexit.register(cleanup_processes)
@@ -511,29 +581,57 @@ def start_all(config: str, host: Optional[str], port: Optional[int], build_front
         frontend_dir = Path(__file__).parent.parent / "frontend"
         frontend_watcher = start_frontend_watcher(frontend_dir)
     
-    # Start Celery worker as a subprocess with output streaming
-    try:
-        worker_process = subprocess.Popen(
-            ["celery", "-A", "app.workers.celery_app", "worker", f"--loglevel={worker_loglevel}"],
+    def _spawn_worker(args: list[str], label: str, prefix: str) -> subprocess.Popen:
+        """Spawn a Celery worker subprocess and stream its stdout with a prefix."""
+        proc = subprocess.Popen(
+            args,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            bufsize=1
+            bufsize=1,
         )
-        click.echo("✅ Celery worker started")
-        
-        # Start a thread to stream worker output to terminal
-        def stream_worker_output():
-            """Stream worker output to terminal with prefix."""
-            if worker_process.stdout:
-                for line in iter(worker_process.stdout.readline, ''):
+        click.echo(f"✅ {label} started")
+
+        def _stream():
+            if proc.stdout:
+                for line in iter(proc.stdout.readline, ""):
                     if line:
-                        # Prefix worker logs with [WORKER] for clarity
-                        click.echo(f"[WORKER] {line.rstrip()}", err=False)
-                worker_process.stdout.close()
-        
-        worker_output_thread = threading.Thread(target=stream_worker_output, daemon=True)
-        worker_output_thread.start()
+                        click.echo(f"{prefix} {line.rstrip()}", err=False)
+                proc.stdout.close()
+
+        threading.Thread(target=_stream, daemon=True).start()
+        return proc
+
+    # Start Celery workers as subprocess(es) with output streaming
+    try:
+        worker_process = _spawn_worker(
+            [
+                "celery",
+                "-A",
+                "app.workers.celery_app",
+                "worker",
+                f"--loglevel={worker_loglevel}",
+            ],
+            label="Celery worker (default queue)",
+            prefix="[WORKER]",
+        )
+
+        if imports_worker:
+            worker_imports_process = _spawn_worker(
+                [
+                    "celery",
+                    "-A",
+                    "app.workers.celery_app",
+                    "worker",
+                    f"--loglevel={worker_loglevel}",
+                    "-Q",
+                    "imports",
+                    "-c",
+                    str(imports_worker_concurrency),
+                ],
+                label=f"Celery worker (imports queue, concurrency={imports_worker_concurrency})",
+                prefix="[WORKER-IMPORTS]",
+            )
     except FileNotFoundError:
         click.echo("❌ Celery not found. Please install it: pip install celery", err=True)
         sys.exit(1)
@@ -564,7 +662,14 @@ def start_all(config: str, host: Optional[str], port: Optional[int], build_front
         click.echo(f"   Docs: http://{settings.HOST}:{settings.PORT}/docs")
         if watch_frontend:
             click.echo(f"   Frontend watcher: Active (rebuilding on file changes)")
-        click.echo("\n📝 Both services are running. Press Ctrl+C to stop.\n")
+        if imports_worker:
+            click.echo(
+                "   Workers: default queue + imports queue "
+                f"(concurrency={imports_worker_concurrency})"
+            )
+        else:
+            click.echo("   Workers: default queue only (--no-imports-worker)")
+        click.echo("\n📝 All services are running. Press Ctrl+C to stop.\n")
         
         # Run uvicorn in the main process (allows reload to work)
         uvicorn.run(

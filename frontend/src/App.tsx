@@ -76,6 +76,10 @@ import { WalkthroughProvider } from './context/WalkthroughContext'
 // Public (no-auth) blind test form
 import BlindTestForm from './pages/public/BlindTestForm'
 
+// Call Imports
+import CallImports from './pages/callImports/CallImports'
+import CallImportDetail from './pages/callImports/CallImportDetail'
+
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   // Either credential type counts as "signed in". The backend enforces the
@@ -156,6 +160,8 @@ function App() {
           <Route path="voice-playground" element={<EnterpriseGate feature="voice_playground"><VoicePlayground /></EnterpriseGate>} />
           <Route path="cron-jobs" element={<CronJobs />} />
           <Route path="prompt-partials" element={<PromptPartials />} />
+          <Route path="call-imports" element={<CallImports />} />
+          <Route path="call-imports/:id" element={<CallImportDetail />} />
           <Route path="prompt-optimization" element={<EnterpriseGate feature="gepa_optimization"><PromptOptimization /></EnterpriseGate>} />
         </Route>
       </Routes>

@@ -21,6 +21,10 @@ import type {
   S3ListFilesResponse,
   S3BrowseResponse,
   S3Status,
+  CallImportDetail,
+  CallImportListResponse,
+  CallImportStatus,
+  CallImportUploadResponse,
 } from '../types/api'
 
 export interface EnterpriseFeatureMeta {
@@ -892,6 +896,39 @@ class ApiClient {
   async deleteFromS3(fileKey: string): Promise<MessageResponse> {
     const response = await this.client.delete(`/api/v1/data-sources/s3/files/${encodeURIComponent(fileKey)}`)
     return response.data
+  }
+
+  // Call Imports endpoints
+  async uploadCallImport(file: File): Promise<CallImportUploadResponse> {
+    const formData = new FormData()
+    formData.append('file', file)
+    const response = await this.client.post('/api/v1/call-imports/upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    return response.data
+  }
+
+  async listCallImports(
+    params: { page?: number; page_size?: number; status?: CallImportStatus } = {}
+  ): Promise<CallImportListResponse> {
+    const response = await this.client.get('/api/v1/call-imports', { params })
+    return response.data
+  }
+
+  async getCallImport(
+    id: string,
+    params: { row_limit?: number; row_offset?: number } = {}
+  ): Promise<CallImportDetail> {
+    const response = await this.client.get(`/api/v1/call-imports/${id}`, { params })
+    return response.data
+  }
+
+  async deleteCallImport(id: string): Promise<void> {
+    await this.client.delete(`/api/v1/call-imports/${id}`)
+  }
+
+  async deleteCallImportRow(id: string, rowId: string): Promise<void> {
+    await this.client.delete(`/api/v1/call-imports/${id}/rows/${rowId}`)
   }
 
   // Model Config endpoints

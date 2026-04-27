@@ -12,7 +12,7 @@ from app.models.enums import (
     IntegrationPlatform, ModelProvider, VoiceBundleType, TestAgentConversationStatus,
     MetricType, MetricTrigger, CallRecordingStatus, AlertMetricType, AlertAggregation,
     AlertOperator, AlertNotifyFrequency, AlertStatus, AlertHistoryStatus, CronJobStatus,
-    PromptOptimizationStatus,
+    PromptOptimizationStatus, CallImportStatus, CallImportRowStatus,
 )
 
 def get_enum_values(enum_class):
@@ -1134,3 +1134,83 @@ class TelephonyMaskedSession(Base):
     session_metadata = Column("metadata", JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class CallImport(Base):
+    """Batch record for a CSV-driven call import job."""
+
+    __tablename__ = "call_imports"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    created_by_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+
+    provider = Column(String(50), nullable=False, default="exotel")
+    original_filename = Column(String(512), nullable=True)
+
+    total_rows = Column(Integer, nullable=False, default=0)
+    completed_rows = Column(Integer, nullable=False, default=0)
+    failed_rows = Column(Integer, nullable=False, default=0)
+
+    status = Column(
+        Enum(CallImportStatus, values_callable=get_enum_values),
+        nullable=False,
+        default=CallImportStatus.PENDING,
+        index=True,
+    )
+    error_message = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    rows = relationship(
+        "CallImportRow",
+        back_populates="call_import",
+        cascade="all, delete-orphan",
+        order_by="CallImportRow.row_index",
+    )
+
+
+class CallImportRow(Base):
+    """A single row within a CallImport batch (one CSV line / one external call)."""
+
+    __tablename__ = "call_import_rows"
+    __table_args__ = (
+        UniqueConstraint("call_import_id", "row_index", name="uq_call_import_row_index"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    call_import_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_imports.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+
+    row_index = Column(Integer, nullable=False)
+    external_call_id = Column(String(255), nullable=False, index=True)
+    # Optional at upload time; the worker resolves it via Exotel's Calls API when
+    # absent and writes the resolved URL back here so retries are cheap.
+    recording_url = Column(Text, nullable=True)
+    transcript = Column(Text, nullable=True)
+
+    status = Column(
+        Enum(CallImportRowStatus, values_callable=get_enum_values),
+        nullable=False,
+        default=CallImportRowStatus.PENDING,
+        index=True,
+    )
+
+    recording_s3_key = Column(String(1024), nullable=True)
+    recording_content_type = Column(String(128), nullable=True)
+    recording_size_bytes = Column(Integer, nullable=True)
+
+    error_message = Column(Text, nullable=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    celery_task_id = Column(String(255), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    call_import = relationship("CallImport", back_populates="rows")

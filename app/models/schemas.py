@@ -9,7 +9,8 @@ from app.models.enums import (
     LanguageEnum, CallTypeEnum, CallMediumEnum, GenderEnum, AccentEnum, BackgroundNoiseEnum,
     IntegrationPlatform, ModelProvider, VoiceBundleType, TestAgentConversationStatus,
     MetricType, MetricTrigger, CallRecordingStatus, AlertMetricType, AlertAggregation,
-    AlertOperator, AlertNotifyFrequency, AlertStatus, AlertHistoryStatus, CronJobStatus
+    AlertOperator, AlertNotifyFrequency, AlertStatus, AlertHistoryStatus, CronJobStatus,
+    CallImportStatus, CallImportRowStatus,
 )
 
 
@@ -1774,4 +1775,68 @@ class TelephonyOutboundCallResponse(BaseModel):
     call_status: str
     from_number: str
     to_number: str
+    message: str
+
+
+# --- Call Import Schemas ---
+
+class CallImportRowResponse(BaseModel):
+    """Single row within a call-import batch."""
+
+    id: UUID
+    row_index: int
+    external_call_id: str
+    recording_url: Optional[str] = None
+    transcript: Optional[str] = None
+    status: CallImportRowStatus
+    recording_s3_key: Optional[str] = None
+    recording_content_type: Optional[str] = None
+    recording_size_bytes: Optional[int] = None
+    error_message: Optional[str] = None
+    attempts: int
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CallImportResponse(BaseModel):
+    """Summary of a call-import batch."""
+
+    id: UUID
+    organization_id: UUID
+    provider: str
+    original_filename: Optional[str] = None
+    total_rows: int
+    completed_rows: int
+    failed_rows: int
+    status: CallImportStatus
+    error_message: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CallImportDetailResponse(CallImportResponse):
+    """A call-import batch with its rows expanded."""
+
+    rows: List[CallImportRowResponse] = Field(default_factory=list)
+
+
+class CallImportListResponse(BaseModel):
+    """Paginated list of call-import batches."""
+
+    items: List[CallImportResponse]
+    total: int
+    page: int
+    page_size: int
+
+
+class CallImportUploadResponse(BaseModel):
+    """Response returned right after a CSV is accepted."""
+
+    id: UUID
+    total_rows: int
+    status: CallImportStatus
     message: str
