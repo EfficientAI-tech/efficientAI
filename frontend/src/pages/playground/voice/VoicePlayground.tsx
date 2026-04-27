@@ -3,6 +3,7 @@ import Button from '../../../components/Button'
 import { VoicePlaygroundProvider, useVoicePlayground } from './context'
 import { PlaygroundTab, VoicesTab, SimulationsTab } from './components'
 import { useWalkthroughSectionState } from '../../../context/WalkthroughContext'
+import WalkthroughToggleButton from '../../../components/walkthrough/WalkthroughToggleButton'
 
 function VoicePlaygroundContent() {
   const {
@@ -26,8 +27,8 @@ function VoicePlaygroundContent() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
           <h1 className="text-3xl font-bold text-gray-900 flex items-center gap-3">
             <Mic className="w-8 h-8 text-primary-600" />
             Voice Playground
@@ -37,15 +38,18 @@ function VoicePlaygroundContent() {
             and automated evaluation
           </p>
         </div>
-        {step !== 'configure' && activeTab === 'playground' && (
-          <Button
-            variant="ghost"
-            onClick={resetPlayground}
-            leftIcon={<RotateCcw className="w-4 h-4" />}
-          >
-            New Comparison
-          </Button>
-        )}
+        <div className="flex flex-wrap items-center justify-end gap-2 pr-2">
+          {step !== 'configure' && activeTab === 'playground' && (
+            <Button
+              variant="ghost"
+              onClick={resetPlayground}
+              leftIcon={<RotateCcw className="w-4 h-4" />}
+            >
+              New Comparison
+            </Button>
+          )}
+          <WalkthroughToggleButton />
+        </div>
       </div>
 
       {/* Tabs */}

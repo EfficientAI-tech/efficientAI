@@ -27,6 +27,36 @@ export const MODEL_PROVIDER_CONFIG: Record<ModelProvider, ProviderMetadata> = {
     logo: '/geminiai.png',
     description: 'Gemini, Google Speech, Google TTS',
   },
+  [ModelProvider.XAI]: {
+    label: 'xAI (Grok)',
+    logo: '/xai.svg',
+    description: 'Grok models via xAI',
+  },
+  [ModelProvider.COHERE]: {
+    label: 'Cohere',
+    logo: '/cohere.svg',
+    description: 'Cohere command and embedding models',
+  },
+  [ModelProvider.MISTRAL]: {
+    label: 'Mistral',
+    logo: '/mistral.svg',
+    description: 'Mistral and Mixtral models',
+  },
+  [ModelProvider.META]: {
+    label: 'Meta',
+    logo: '/metaai.png',
+    description: 'Llama-family models',
+  },
+  [ModelProvider.TOGETHER]: {
+    label: 'Together',
+    logo: '/togetherai.svg',
+    description: 'Hosted open-source models via Together',
+  },
+  [ModelProvider.PERPLEXITY]: {
+    label: 'Perplexity',
+    logo: '/perplexity-ai.svg',
+    description: 'Perplexity online LLM models',
+  },
   [ModelProvider.AZURE]: {
     label: 'Azure',
     logo: '/azureai.png',

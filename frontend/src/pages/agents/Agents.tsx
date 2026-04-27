@@ -7,6 +7,7 @@ import { useAgentStore } from '../../store/agentStore'
 import { useToast } from '../../hooks/useToast'
 import { TestAgentConversation, TestAgent } from '../../types/api'
 import { AgentsTable, CreateAgentModal, DeleteAgentModal } from './components'
+import WalkthroughToggleButton from '../../components/walkthrough/WalkthroughToggleButton'
 
 export default function Agents() {
   type BulkImpactItem = {
@@ -233,12 +234,12 @@ export default function Agents() {
 
   return (
     <div>
-      <div className="mb-6 flex items-center justify-between">
-        <div>
+      <div className="mb-6 flex items-center justify-between gap-4">
+        <div className="min-w-0">
           <h1 className="text-2xl font-bold text-gray-900">Test Agents</h1>
           <p className="text-gray-600 mt-1">Manage your voice AI test agents</p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center justify-end gap-2 pr-2">
           {selectedAgents.size > 0 && (
             <Button
               variant="outline"
@@ -256,6 +257,7 @@ export default function Agents() {
           >
             Create Agent
           </Button>
+          <WalkthroughToggleButton />
         </div>
       </div>
 

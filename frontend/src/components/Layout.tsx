@@ -39,6 +39,7 @@ import { useState, useEffect } from 'react'
 import Logo from './Logo'
 import OrgSwitcher from './OrgSwitcher'
 import WalkthroughRail from './walkthrough/WalkthroughRail'
+import { useWalkthrough } from '../context/WalkthroughContext'
 
 interface NavItem {
   name: string
@@ -130,8 +131,10 @@ export default function Layout() {
   const { logout } = useAuthStore()
   const { selectedAgent, setSelectedAgent, loadPreferences, isInitialized } = useAgentStore()
   const { fetchLicense } = useLicenseStore()
+  const { activeDefinition, isCollapsed } = useWalkthrough()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [showAgentDropdown, setShowAgentDropdown] = useState(false)
+  const walkthroughOffsetClass = activeDefinition && !isCollapsed ? 'lg:pr-[360px]' : 'lg:pr-0'
 
   // Fetch agents
   const { data: agents = [], isSuccess: agentsLoaded } = useQuery({
@@ -194,9 +197,9 @@ export default function Layout() {
       </div>
 
       {/* Main content */}
-      <div className="lg:pl-64 flex flex-col flex-1">
+      <div className="lg:pl-64 pt-16 flex flex-col flex-1">
         {/* Top bar */}
-        <div className="sticky top-0 z-10 flex-shrink-0 flex h-16 bg-white shadow-sm border-b border-gray-200">
+        <div className="fixed top-0 left-0 right-0 lg:left-64 z-30 flex-shrink-0 flex h-16 bg-white shadow-sm border-b border-gray-200">
           <button
             type="button"
             className="px-4 text-gray-500 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-gray-500 lg:hidden"
@@ -317,14 +320,12 @@ export default function Layout() {
         </div>
 
         {/* Page content */}
-        <main className="flex-1 p-6">
-          <div className="flex min-h-[calc(100vh-7rem)] items-start gap-4">
-            <div className="min-w-0 flex-1">
-              <Outlet />
-            </div>
-            <WalkthroughRail />
+        <main className={`flex-1 p-6 transition-all duration-300 ${walkthroughOffsetClass}`}>
+          <div className="min-h-[calc(100vh-7rem)] min-w-0">
+            <Outlet />
           </div>
         </main>
+        <WalkthroughRail />
       </div>
     </div>
   )

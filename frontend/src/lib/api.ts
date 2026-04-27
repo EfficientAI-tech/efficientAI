@@ -1913,6 +1913,7 @@ class ApiClient {
   }
 
   async syncProviderPrompt(agentId: string): Promise<{
+    synced: boolean
     provider_prompt: string | null
     provider_prompt_synced_at: string | null
   }> {

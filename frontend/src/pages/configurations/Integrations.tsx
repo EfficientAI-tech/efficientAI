@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient, useQueries } from '@tanstack/react-query'
 import { apiClient } from '../../lib/api'
 import type { TelephonyPhoneNumberResponse } from '../../lib/api'
-import { useState, useEffect, useRef, useMemo, type ReactNode } from 'react'
+import { useState, useEffect, useRef, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Plus, Trash2, X, AlertCircle, Plug, Edit, Brain, ChevronDown, Phone, RefreshCw, ShieldCheck, CheckCircle2 } from 'lucide-react'
 import { IntegrationCreate, IntegrationPlatform, Integration, AIProvider, AIProviderCreate, ModelProvider, TelephonyProvider } from '../../types/api'
@@ -15,8 +15,24 @@ import {
   getTelephonyProviderLabel,
   getTelephonyProviderDescription,
 } from '../../config/providers'
+import WalkthroughToggleButton from '../../components/walkthrough/WalkthroughToggleButton'
 
 type IntegrationType = 'voice_platform' | 'ai_provider' | 'telephony_provider' | null
+
+const AI_INTEGRATION_PROVIDERS: ModelProvider[] = [
+  ModelProvider.OPENAI,
+  ModelProvider.ANTHROPIC,
+  ModelProvider.GOOGLE,
+  ModelProvider.XAI,
+  ModelProvider.COHERE,
+  ModelProvider.MISTRAL,
+  ModelProvider.META,
+  ModelProvider.TOGETHER,
+  ModelProvider.PERPLEXITY,
+  ModelProvider.AZURE,
+  ModelProvider.AWS,
+  ModelProvider.CUSTOM,
+]
 
 export default function Integrations() {
   const queryClient = useQueryClient()
@@ -85,6 +101,8 @@ export default function Integrations() {
     || telephonyConfigs[0]?.config
 
   const activeTelephonyProvider = (telephonyConfig?.provider as TelephonyProvider | undefined) || telephonyProviderFilter
+  const hasTelephony = telephonyConfigs.length > 0 && Boolean(telephonyConfig)
+  const telephonyStatus = telephonyConfig?.is_active ? 'Active' : 'Inactive'
 
   useEffect(() => {
     if (!telephonyConfig && telephonyConfigs.length > 0) {
@@ -312,25 +330,34 @@ export default function Integrations() {
 
   const configuredPlatforms = new Set(integrations.map((i: Integration) => i.platform))
   const availablePlatforms = platforms.filter(p => !configuredPlatforms.has(p.id))
-  const configuredProviders = new Set(aiproviders.map((p: AIProvider) => p.provider))
-  const availableProviders = Object.values(ModelProvider).filter(p => !configuredProviders.has(p))
-  const telephonyStatus = useMemo(() => { if (!telephonyConfig) return 'Not configured'; if (!telephonyConfig.is_active) return 'Configured (inactive)'; return 'Configured (active)' }, [telephonyConfig])
-  const getPlatformInfo = (platformId: IntegrationPlatform) => platforms.find(p => p.id === platformId)
-  const hasTelephony = telephonyConfigs.length > 0
-  const totalConfigured = integrations.length + aiproviders.length + telephonyConfigs.length
+
+  // AI Integration section should only show LLM providers.
+  // Voice vendors belong under Voice Platform integrations.
+  const availableProviders = AI_INTEGRATION_PROVIDERS
+  const aiIntegrationProviders = (aiproviders as AIProvider[]).filter((p) =>
+    AI_INTEGRATION_PROVIDERS.includes(p.provider as ModelProvider)
+  )
+
+  const getPlatformInfo = (platformId: IntegrationPlatform) => {
+    return platforms.find(p => p.id === platformId)
+  }
 
   return (
     <div className="space-y-6">
       <ToastContainer />
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
           <h1 className="text-3xl font-bold text-gray-900">Integrations</h1>
           <p className="text-gray-600 mt-1">Connect with voice AI platforms, AI providers, and telephony providers</p>
         </div>
-        <Button variant="primary" onClick={() => setShowModal(true)} leftIcon={<Plus className="h-5 w-5" />}>Add Integration</Button>
+        <div className="flex flex-wrap items-center justify-end gap-2 pr-2">
+          <Button variant="primary" onClick={() => setShowModal(true)} leftIcon={<Plus className="h-5 w-5" />}>Add Integration</Button>
+          <WalkthroughToggleButton />
+        </div>
       </div>
 
-      {totalConfigured > 0 && (
+      {/* Configured Integrations */}
+      {(integrations.length > 0 || aiIntegrationProviders.length > 0) && (
         <div className="bg-white shadow rounded-lg overflow-hidden">
           <div className="px-6 py-4 border-b border-gray-200">
             <h2 className="text-lg font-semibold text-gray-900">Configured Integrations</h2>
@@ -382,18 +409,24 @@ export default function Integrations() {
               </div>
             )}
 
-            {aiproviders.length > 0 && (
-              <div className="border-b border-gray-200">
+            {/* AI Provider Integrations */}
+            {aiIntegrationProviders.length > 0 && (
+              <div>
                 <div className="px-6 py-3 bg-purple-50 border-b border-purple-100">
                   <div className="flex items-center gap-2">
                     <Brain className="h-4 w-4 text-purple-600" />
                     <h3 className="text-sm font-semibold text-purple-900">AI Providers</h3>
-                    <span className="px-2 py-0.5 text-xs font-medium bg-purple-100 text-purple-700 rounded-full">{aiproviders.length}</span>
+                    <span className="px-2 py-0.5 text-xs font-medium bg-purple-100 text-purple-700 rounded-full">
+                      {aiIntegrationProviders.length}
+                    </span>
                   </div>
                 </div>
                 <div className="divide-y divide-gray-200">
-                  {aiproviders.map((provider: AIProvider) => (
-                    <div key={provider.id} className="px-6 py-4 hover:bg-gray-50 transition-colors">
+                  {aiIntegrationProviders.map((provider: AIProvider) => (
+                    <div
+                      key={provider.id}
+                      className="px-6 py-4 hover:bg-gray-50 transition-colors"
+                    >
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-4 flex-1">
                           <div className="flex-shrink-0">
@@ -515,7 +548,7 @@ export default function Integrations() {
         </div>
       )}
 
-      {totalConfigured === 0 && (
+      {integrations.length === 0 && aiIntegrationProviders.length === 0 && (
         <div className="bg-white rounded-lg shadow p-12 text-center">
           <Plug className="w-12 h-12 text-gray-400 mx-auto mb-4" />
           <h3 className="text-lg font-medium text-gray-900 mb-2">No integrations configured</h3>
@@ -540,10 +573,23 @@ export default function Integrations() {
                       <div className="flex items-center gap-2"><Plug className="h-5 w-5 text-primary-600" /><span className="font-medium text-gray-900 text-sm">Voice Platform</span></div>
                       <p className="text-xs text-gray-600 mt-1">Retell, Vapi, etc.</p>
                     </button>
-                    <button type="button" onClick={() => { setIntegrationType('ai_provider'); setSelectedPlatform(null); setSelectedProvider(null); setSelectedTelephonyProvider(null) }}
-                      className={`p-3 border-2 rounded-lg text-left transition-all ${integrationType === 'ai_provider' ? 'border-primary-500 bg-primary-50' : 'border-gray-200 hover:border-gray-300'}`}>
-                      <div className="flex items-center gap-2"><Brain className="h-5 w-5 text-primary-600" /><span className="font-medium text-gray-900 text-sm">AI Provider</span></div>
-                      <p className="text-xs text-gray-600 mt-1">OpenAI, Anthropic, etc.</p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIntegrationType('ai_provider')
+                        setSelectedPlatform(null)
+                        setSelectedProvider(null)
+                      }}
+                      className={`p-3 border-2 rounded-lg text-left transition-all ${integrationType === 'ai_provider'
+                        ? 'border-primary-500 bg-primary-50'
+                        : 'border-gray-200 hover:border-gray-300'
+                        }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <Brain className="h-5 w-5 text-primary-600" />
+                        <span className="font-medium text-gray-900">AI Provider</span>
+                      </div>
+                      <p className="text-xs text-gray-600 mt-1">OpenAI, Claude, Gemini, etc.</p>
                     </button>
                     <button type="button" onClick={() => { setIntegrationType('telephony_provider'); setSelectedPlatform(null); setSelectedProvider(null); setSelectedTelephonyProvider(null) }}
                       className={`p-3 border-2 rounded-lg text-left transition-all ${integrationType === 'telephony_provider' ? 'border-green-500 bg-green-50' : 'border-gray-200 hover:border-gray-300'}`}>

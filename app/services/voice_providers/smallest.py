@@ -258,6 +258,9 @@ class SmallestVoiceProvider(BaseVoiceProvider):
     def get_agent(self, agent_id: str) -> Dict[str, Any]:
         return self._request("GET", f"/agent/{agent_id}", timeout=30.0)
 
+    def get_agent_workflow(self, agent_id: str) -> Dict[str, Any]:
+        return self._request("GET", f"/agent/{agent_id}/workflow", timeout=30.0)
+
     def retrieve_call_metrics(self, call_id: str) -> Dict[str, Any]:
         data = self._get_conversation(call_id)
 
@@ -357,9 +360,89 @@ class SmallestVoiceProvider(BaseVoiceProvider):
         }
 
     def extract_agent_prompt(self, agent_id: str) -> Optional[str]:
+        def _extract_from_paths(payload: Dict[str, Any], paths: List[tuple[str, ...]]) -> Optional[str]:
+            for path in paths:
+                node: Any = payload
+                for key in path:
+                    if not isinstance(node, dict):
+                        node = None
+                        break
+                    node = node.get(key)
+                if isinstance(node, str) and node.strip():
+                    return node
+            return None
+
+        def _extract_from_workflow(workflow_payload: Dict[str, Any]) -> Optional[str]:
+            if not isinstance(workflow_payload, dict):
+                return None
+
+            # single_prompt workflow shape:
+            # {"type": "single_prompt", "data": {"prompt": "..."}}
+            prompt = _extract_from_paths(
+                workflow_payload,
+                [
+                    ("data", "prompt"),
+                    ("prompt",),
+                    ("data", "systemPrompt"),
+                    ("systemPrompt",),
+                ],
+            )
+            if prompt:
+                return prompt
+
+            # workflow_graph fallback: scan node configs for prompt-like keys.
+            nodes = workflow_payload.get("data", {}).get("nodes")
+            if isinstance(nodes, list):
+                for node in nodes:
+                    if not isinstance(node, dict):
+                        continue
+                    node_data = node.get("data")
+                    if not isinstance(node_data, dict):
+                        continue
+                    prompt = _extract_from_paths(
+                        node_data,
+                        [
+                            ("prompt",),
+                            ("systemPrompt",),
+                            ("globalPrompt",),
+                            ("instructions",),
+                        ],
+                    )
+                    if prompt:
+                        return prompt
+            return None
+
         try:
             data = self.get_agent(agent_id)
-            return data.get("globalPrompt") or data.get("prompt")
+            if not isinstance(data, dict):
+                return None
+
+            candidate_paths = [
+                ("globalPrompt",),
+                ("prompt",),
+                ("systemPrompt",),
+                ("instructions",),
+                ("responseEngine", "globalPrompt"),
+                ("responseEngine", "prompt"),
+                ("responseEngine", "systemPrompt"),
+                ("response_engine", "global_prompt"),
+                ("response_engine", "prompt"),
+                ("agent", "globalPrompt"),
+                ("agent", "prompt"),
+            ]
+
+            prompt = _extract_from_paths(data, candidate_paths)
+            if prompt:
+                return prompt
+
+            # For newer Smallest "single_prompt"/workflow-based agents, prompt
+            # lives under the workflow payload rather than the agent payload.
+            workflow = self.get_agent_workflow(agent_id)
+            prompt = _extract_from_workflow(workflow)
+            if prompt:
+                return prompt
+
+            return None
         except Exception as exc:
             logger.warning(f"[SmallestProvider] Failed to extract agent prompt: {exc}")
             return None
