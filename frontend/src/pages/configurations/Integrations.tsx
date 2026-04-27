@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient, useQueries } from '@tanstack/react-query'
 import { apiClient } from '../../lib/api'
 import type { TelephonyPhoneNumberResponse } from '../../lib/api'
-import { useState, useEffect, useRef, useMemo, type ReactNode } from 'react'
+import { useState, useEffect, useRef, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Plus, Trash2, X, AlertCircle, Plug, Edit, Brain, ChevronDown, Phone, RefreshCw, ShieldCheck, CheckCircle2 } from 'lucide-react'
 import { IntegrationCreate, IntegrationPlatform, Integration, AIProvider, AIProviderCreate, ModelProvider, TelephonyProvider } from '../../types/api'
@@ -101,6 +101,8 @@ export default function Integrations() {
     || telephonyConfigs[0]?.config
 
   const activeTelephonyProvider = (telephonyConfig?.provider as TelephonyProvider | undefined) || telephonyProviderFilter
+  const hasTelephony = telephonyConfigs.length > 0 && Boolean(telephonyConfig)
+  const telephonyStatus = telephonyConfig?.is_active ? 'Active' : 'Inactive'
 
   useEffect(() => {
     if (!telephonyConfig && telephonyConfigs.length > 0) {
