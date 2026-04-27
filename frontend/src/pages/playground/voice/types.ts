@@ -16,12 +16,14 @@ export interface TTSProvider {
   supported_sample_rates?: number[]
 }
 
+export type TTSSampleSourceType = 'tts' | 'recording' | 'upload'
+
 export interface TTSSample {
   id: string
-  provider: string
-  model: string
-  voice_id: string
-  voice_name: string
+  provider: string | null
+  model: string | null
+  voice_id: string | null
+  voice_name: string | null
   side?: string | null
   sample_index: number
   run_index: number
@@ -34,15 +36,20 @@ export interface TTSSample {
   evaluation_metrics: Record<string, number | string | null> | null
   status: string
   error_message: string | null
+  source_type?: TTSSampleSourceType
+  source_ref_id?: string | null
 }
+
+export type TTSComparisonMode = 'benchmark' | 'blind_test_only'
 
 export interface TTSComparison {
   id: string
   simulation_id: string | null
   name: string
   status: string
-  provider_a: string
-  model_a: string
+  mode?: TTSComparisonMode
+  provider_a: string | null
+  model_a: string | null
   voices_a: Array<{ id: string; name: string; sample_rate_hz?: number }>
   provider_b?: string | null
   model_b?: string | null
@@ -146,13 +153,19 @@ export interface TTSComparisonSummary {
   simulation_id: string | null
   name: string
   status: string
-  provider_a: string
-  model_a: string
+  mode?: TTSComparisonMode
+  provider_a: string | null
+  model_a: string | null
   provider_b?: string | null
   model_b?: string | null
   sample_count: number
   num_runs: number
   created_at: string
+  has_share?: boolean
+  share_token?: string | null
+  share_status?: string | null
+  share_title?: string | null
+  response_count?: number
 }
 
 export interface TTSAnalyticsRow {

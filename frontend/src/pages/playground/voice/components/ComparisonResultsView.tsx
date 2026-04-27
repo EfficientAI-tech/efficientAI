@@ -13,8 +13,12 @@ import ExternalResponsesPanel from './ExternalResponsesPanel'
 function hasSecondProvider(comp: {
   provider_b?: string | null
   model_b?: string | null
+  samples?: Array<{ side?: string | null; audio_s3_key?: string | null; audio_url?: string | null }>
 }): boolean {
-  return !!(comp.provider_b && comp.model_b)
+  if (comp.provider_b && comp.model_b) return true
+  return !!(comp.samples || []).some(
+    (s) => s.side === 'B' && (s.audio_s3_key || s.audio_url),
+  )
 }
 
 function buildVoiceHzMaps(comp: TTSComparison): {
@@ -65,6 +69,8 @@ export default function ComparisonResultsView({
   const canShareBlindTest =
     hasSecondProvider(comparison) &&
     (comparison.status === 'evaluating' || comparison.status === 'completed')
+  const isBlindTestOnly = (comparison.mode || 'benchmark') === 'blind_test_only'
+  const showAutomatedMetrics = !isBlindTestOnly
 
   const handleDownload = (options: TTSReportOptions) => {
     setLastOptions(options)
@@ -93,9 +99,19 @@ export default function ComparisonResultsView({
               {comparison.name}
             </h2>
             <p className="text-sm text-gray-500">
-              {comparison.sample_texts?.length || 0} samples &middot;{' '}
-              {comparison.samples?.length || 0} audio files
-              {comparison.num_runs > 1 && <> &middot; {comparison.num_runs} runs</>}
+              {isBlindTestOnly ? (
+                <>
+                  Standalone blind test &middot;{' '}
+                  {comparison.sample_texts?.length || 0} pairs &middot;{' '}
+                  {comparison.samples?.length || 0} audio files
+                </>
+              ) : (
+                <>
+                  {comparison.sample_texts?.length || 0} samples &middot;{' '}
+                  {comparison.samples?.length || 0} audio files
+                  {comparison.num_runs > 1 && <> &middot; {comparison.num_runs} runs</>}
+                </>
+              )}
             </p>
           </div>
           <div className="flex flex-col items-end gap-2">
@@ -111,45 +127,49 @@ export default function ComparisonResultsView({
                   {comparison.blind_test_share ? 'Manage Blind Test' : 'Create Blind Test'}
                 </Button>
               )}
-              <Button
-                variant="secondary"
-                size="sm"
-                leftIcon={
-                  isDownloading ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <Download className="w-4 h-4" />
-                  )
-                }
-                onClick={() => setShowReportConfig(true)}
-                disabled={comparison.status !== 'completed' || isDownloading}
-              >
-                Download PDF
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                leftIcon={
-                  isCreatingReport ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <FileText className="w-4 h-4" />
-                  )
-                }
-                onClick={() => setShowReportConfig(true)}
-                disabled={isCreatingReport}
-              >
-                Generate Async
-              </Button>
-              {reportJob?.status === 'completed' && reportJob.download_url && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  leftIcon={<Download className="w-4 h-4" />}
-                  onClick={onOpenAsyncReport}
-                >
-                  Open Async PDF
-                </Button>
+              {showAutomatedMetrics && (
+                <>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    leftIcon={
+                      isDownloading ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Download className="w-4 h-4" />
+                      )
+                    }
+                    onClick={() => setShowReportConfig(true)}
+                    disabled={comparison.status !== 'completed' || isDownloading}
+                  >
+                    Download PDF
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    leftIcon={
+                      isCreatingReport ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <FileText className="w-4 h-4" />
+                      )
+                    }
+                    onClick={() => setShowReportConfig(true)}
+                    disabled={isCreatingReport}
+                  >
+                    Generate Async
+                  </Button>
+                  {reportJob?.status === 'completed' && reportJob.download_url && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      leftIcon={<Download className="w-4 h-4" />}
+                      onClick={onOpenAsyncReport}
+                    >
+                      Open Async PDF
+                    </Button>
+                  )}
+                </>
               )}
             </div>
             {reportJob && reportJob.status !== 'completed' && reportJob.status !== 'failed' && (
@@ -164,7 +184,8 @@ export default function ComparisonResultsView({
         </div>
 
         {/* Winner Banner */}
-        {hasSecondProvider(comparison) &&
+        {showAutomatedMetrics &&
+          hasSecondProvider(comparison) &&
           comparison.evaluation_summary &&
           (() => {
             const sumA = comparison.evaluation_summary.provider_a || {}
@@ -174,7 +195,7 @@ export default function ComparisonResultsView({
             const winner = mosA >= mosB ? 'A' : 'B'
             const winnerName =
               winner === 'A'
-                ? getProviderInfo(comparison.provider_a).label
+                ? getProviderInfo(comparison.provider_a || '').label
                 : getProviderInfo(comparison.provider_b || '').label
 
             return (
@@ -188,7 +209,8 @@ export default function ComparisonResultsView({
           })()}
 
         {/* Metrics Table */}
-        {comparison.evaluation_summary &&
+        {showAutomatedMetrics &&
+          comparison.evaluation_summary &&
           (() => {
             const sumA = comparison.evaluation_summary.provider_a || {}
             const sumB = comparison.evaluation_summary.provider_b || {}
@@ -255,9 +277,10 @@ export default function ComparisonResultsView({
             <span className="w-6 h-6 rounded-full bg-blue-600 text-white flex items-center justify-center text-xs font-bold">
               A
             </span>
-            <ProviderLogo provider={comparison.provider_a} size="sm" />
+            <ProviderLogo provider={comparison.provider_a || ''} size="sm" />
             <span className="text-sm font-medium text-gray-700">
-              {getProviderInfo(comparison.provider_a).label} ({comparison.model_a})
+              {getProviderInfo(comparison.provider_a || '').label}
+              {comparison.model_a ? ` (${comparison.model_a})` : ''}
             </span>
           </div>
           {hasSecondProvider(comparison) && (
@@ -267,7 +290,8 @@ export default function ComparisonResultsView({
               </span>
               <ProviderLogo provider={comparison.provider_b || ''} size="sm" />
               <span className="text-sm font-medium text-gray-700">
-                {getProviderInfo(comparison.provider_b || '').label} ({comparison.model_b})
+                {getProviderInfo(comparison.provider_b || '').label}
+                {comparison.model_b ? ` (${comparison.model_b})` : ''}
               </span>
             </div>
           )}
@@ -287,7 +311,7 @@ export default function ComparisonResultsView({
               sampleIndex={idx}
               text={text}
               samples={comparison.samples.filter((s) => s.sample_index === idx)}
-              providerA={comparison.provider_a}
+              providerA={comparison.provider_a || ''}
               providerB={comparison.provider_b || undefined}
               playingId={playingId}
               onPlay={onPlay}

@@ -6,17 +6,21 @@ TTS A/B comparison: generate audio, blind test, and quality evaluation.
 import json
 import random
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+import uuid as _uuid
+
+from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile, File, status
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Literal, Optional
 from uuid import UUID
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from loguru import logger
 
 from app.dependencies import get_db, get_organization_id, get_api_key, require_enterprise_feature
 from app.models.database import (
     AIProvider,
+    CallImport,
+    CallImportRow,
     CustomTTSVoice,
     Integration,
     Organization,
@@ -172,18 +176,74 @@ PROVIDER_SAMPLE_RATES: Dict[str, List[int]] = {
 # ======================================================================
 
 
+class BenchmarkSideConfig(BaseModel):
+    """Per-side configuration for the benchmark flow.
+
+    A side can be a TTS provider (default), a set of recordings pulled from
+    call_import_rows, or a set of uploaded audio files. For non-tts sources
+    the audio is reused as-is and the worker skips synthesis.
+    """
+    source_type: Literal["tts", "recording", "upload"] = "tts"
+    # TTS-only fields:
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    voices: Optional[List[Dict[str, Any]]] = None
+    # Recording / upload fields (one entry per "voice slot" / per sample_index
+    # depending on the side; the API picks the first per sample_index):
+    call_import_row_ids: Optional[List[UUID]] = None
+    upload_s3_keys: Optional[List[str]] = None
+
+
+class BlindTestPairAudioRef(BaseModel):
+    """Audio reference for one side of a blind-test pair."""
+    type: Literal["recording", "upload", "tts_sample"]
+    call_import_row_id: Optional[UUID] = None
+    upload_s3_key: Optional[str] = None
+    tts_sample_id: Optional[UUID] = None
+    label: Optional[str] = None
+
+
+class BlindTestPair(BaseModel):
+    text: Optional[str] = None
+    x: BlindTestPairAudioRef
+    y: BlindTestPairAudioRef
+
+
 class TTSComparisonCreate(BaseModel):
+    """Create a Voice Playground comparison.
+
+    Supports two modes:
+      * mode="benchmark" (default): traditional A/B benchmark. Each side may
+        be a TTS provider, recordings from CallImports, or uploaded audio.
+        Backwards-compatible with the legacy top-level provider_a/voices_a
+        fields when side_a/side_b are omitted.
+      * mode="blind_test_only": no TTS generation. The caller provides a list
+        of blind-test pairs whose audio comes from existing recordings,
+        uploads, or past TTS samples.
+    """
     name: Optional[str] = None
-    provider_a: str
-    model_a: str
-    voices_a: List[Dict[str, Any]]  # [{"id": "...", "name": "...", "sample_rate_hz": 44100}]
+    mode: Literal["benchmark", "blind_test_only"] = "benchmark"
+
+    # ---- Legacy / top-level benchmark fields (kept for backwards compat) --
+    provider_a: Optional[str] = None
+    model_a: Optional[str] = None
+    voices_a: Optional[List[Dict[str, Any]]] = None
     provider_b: Optional[str] = None
     model_b: Optional[str] = None
     voices_b: Optional[List[Dict[str, Any]]] = None
-    sample_texts: List[str]
+
+    # ---- New per-side benchmark config (preferred when present) ----------
+    side_a: Optional[BenchmarkSideConfig] = None
+    side_b: Optional[BenchmarkSideConfig] = None
+
+    # ---- Common ----------------------------------------------------------
+    sample_texts: Optional[List[str]] = None
     num_runs: int = 1
     eval_stt_provider: Optional[str] = None
     eval_stt_model: Optional[str] = None
+
+    # ---- blind_test_only fields ------------------------------------------
+    pairs: Optional[List[BlindTestPair]] = None
 
 
 class BlindTestSubmit(BaseModel):
@@ -654,6 +714,375 @@ async def list_tts_providers(
     return result
 
 
+def _normalize_benchmark_side(
+    side_cfg: Optional[BenchmarkSideConfig],
+    legacy_provider: Optional[str],
+    legacy_model: Optional[str],
+    legacy_voices: Optional[List[Dict[str, Any]]],
+) -> Optional[BenchmarkSideConfig]:
+    """Merge new-style side_x and legacy provider_x/voices_x payloads.
+
+    Returns None when the side is entirely empty (allowed for side_b).
+    """
+    if side_cfg is not None:
+        return side_cfg
+    if (legacy_provider or "").strip() or legacy_voices:
+        return BenchmarkSideConfig(
+            source_type="tts",
+            provider=(legacy_provider or "").strip() or None,
+            model=(legacy_model or "").strip() or None,
+            voices=legacy_voices or [],
+        )
+    return None
+
+
+def _load_call_import_row(
+    row_id: UUID, organization_id: UUID, db: Session
+) -> CallImportRow:
+    row = (
+        db.query(CallImportRow)
+        .filter(
+            CallImportRow.id == row_id,
+            CallImportRow.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not row:
+        raise HTTPException(404, f"Call import row {row_id} not found")
+    if not row.recording_s3_key:
+        raise HTTPException(
+            400, f"Call import row {row_id} has no recording stored in S3 yet"
+        )
+    return row
+
+
+def _validate_upload_key(key: str, organization_id: UUID) -> str:
+    """Ensure an upload S3 key belongs to this org's voicePlayground/uploads/ prefix."""
+    expected_prefix = (
+        f"{s3_service.prefix}organizations/{organization_id}/voicePlayground/uploads/"
+    )
+    if not key.startswith(expected_prefix):
+        raise HTTPException(
+            400,
+            f"Upload key '{key}' must be under the org's voice playground uploads prefix",
+        )
+    return key
+
+
+def _resolve_audio_ref(
+    ref: BlindTestPairAudioRef, organization_id: UUID, db: Session
+) -> Dict[str, Any]:
+    """Resolve a blind-test audio ref to a dict with audio_s3_key / metadata.
+
+    Returned shape: {
+        audio_s3_key, source_type, source_ref_id, voice_id, voice_name,
+        provider, model, label, duration_seconds (optional)
+    }
+    """
+    if ref.type == "recording":
+        if not ref.call_import_row_id:
+            raise HTTPException(400, "call_import_row_id is required for recording refs")
+        row = _load_call_import_row(ref.call_import_row_id, organization_id, db)
+        return {
+            "audio_s3_key": row.recording_s3_key,
+            "source_type": "recording",
+            "source_ref_id": row.id,
+            "voice_id": f"call:{row.external_call_id}",
+            "voice_name": ref.label or row.external_call_id,
+            "provider": None,
+            "model": None,
+            "label": ref.label or row.external_call_id,
+        }
+
+    if ref.type == "upload":
+        if not ref.upload_s3_key:
+            raise HTTPException(400, "upload_s3_key is required for upload refs")
+        key = _validate_upload_key(ref.upload_s3_key, organization_id)
+        return {
+            "audio_s3_key": key,
+            "source_type": "upload",
+            "source_ref_id": None,
+            "voice_id": "upload",
+            "voice_name": ref.label or "Uploaded audio",
+            "provider": None,
+            "model": None,
+            "label": ref.label or "Uploaded audio",
+        }
+
+    if ref.type == "tts_sample":
+        if not ref.tts_sample_id:
+            raise HTTPException(400, "tts_sample_id is required for tts_sample refs")
+        sample = (
+            db.query(TTSSample)
+            .filter(
+                TTSSample.id == ref.tts_sample_id,
+                TTSSample.organization_id == organization_id,
+            )
+            .first()
+        )
+        if not sample:
+            raise HTTPException(404, f"TTS sample {ref.tts_sample_id} not found")
+        if not sample.audio_s3_key:
+            raise HTTPException(
+                400, f"TTS sample {ref.tts_sample_id} has no audio yet"
+            )
+        return {
+            "audio_s3_key": sample.audio_s3_key,
+            "source_type": "tts",
+            "source_ref_id": sample.id,
+            "voice_id": sample.voice_id,
+            "voice_name": sample.voice_name or sample.voice_id,
+            "provider": sample.provider,
+            "model": sample.model,
+            "label": ref.label
+            or f"{sample.provider}/{sample.voice_name or sample.voice_id}",
+        }
+
+    raise HTTPException(400, f"Unsupported audio ref type: {ref.type}")
+
+
+def _build_benchmark_side_samples(
+    *,
+    comparison: TTSComparison,
+    side_label: str,
+    cfg: BenchmarkSideConfig,
+    sample_texts: List[str],
+    num_runs: int,
+    organization_id: UUID,
+    db: Session,
+) -> None:
+    """Create TTSSample rows for one benchmark side.
+
+    For source_type='tts': one sample per voice/text/run with status PENDING
+    (worker will synthesize). For source_type='recording'/'upload': samples
+    are pre-resolved with audio_s3_key and marked COMPLETED.
+    """
+    if cfg.source_type == "tts":
+        provider = (cfg.provider or "").strip()
+        model = (cfg.model or "").strip()
+        voices = cfg.voices or []
+        if not provider or not model:
+            raise HTTPException(
+                400, f"Side {side_label}: provider and model are required for TTS source"
+            )
+        if not voices:
+            raise HTTPException(
+                400, f"Side {side_label}: at least one voice is required for TTS source"
+            )
+        for run in range(num_runs):
+            for idx, txt in enumerate(sample_texts):
+                for voice in voices:
+                    vid = voice["id"] if isinstance(voice, dict) else voice
+                    vname = (
+                        voice.get("name", vid) if isinstance(voice, dict) else vid
+                    )
+                    db.add(
+                        TTSSample(
+                            comparison_id=comparison.id,
+                            organization_id=organization_id,
+                            provider=provider,
+                            model=model,
+                            voice_id=vid,
+                            voice_name=vname,
+                            side=side_label,
+                            sample_index=idx,
+                            run_index=run,
+                            text=txt,
+                            status=TTSSampleStatus.PENDING.value,
+                            source_type="tts",
+                        )
+                    )
+        return
+
+    # Non-tts side: resolve a flat list of audio refs and pair them with
+    # sample_texts by index. The caller is expected to provide one audio
+    # source per sample_text (extras are ignored, missing ones produce an
+    # error so the user notices the mismatch).
+    if cfg.source_type == "recording":
+        row_ids = cfg.call_import_row_ids or []
+        if len(row_ids) < len(sample_texts):
+            raise HTTPException(
+                400,
+                f"Side {side_label}: need at least {len(sample_texts)} call_import_row_ids "
+                f"to match sample_texts (got {len(row_ids)})",
+            )
+        resolved = [
+            _load_call_import_row(rid, organization_id, db) for rid in row_ids[: len(sample_texts)]
+        ]
+        for run in range(num_runs):
+            for idx, txt in enumerate(sample_texts):
+                row = resolved[idx]
+                db.add(
+                    TTSSample(
+                        comparison_id=comparison.id,
+                        organization_id=organization_id,
+                        provider=None,
+                        model=None,
+                        voice_id=f"call:{row.external_call_id}",
+                        voice_name=row.external_call_id,
+                        side=side_label,
+                        sample_index=idx,
+                        run_index=run,
+                        text=txt,
+                        audio_s3_key=row.recording_s3_key,
+                        status=TTSSampleStatus.COMPLETED.value,
+                        source_type="recording",
+                        source_ref_id=row.id,
+                    )
+                )
+        return
+
+    if cfg.source_type == "upload":
+        keys = cfg.upload_s3_keys or []
+        if len(keys) < len(sample_texts):
+            raise HTTPException(
+                400,
+                f"Side {side_label}: need at least {len(sample_texts)} upload_s3_keys "
+                f"to match sample_texts (got {len(keys)})",
+            )
+        validated = [_validate_upload_key(k, organization_id) for k in keys[: len(sample_texts)]]
+        for run in range(num_runs):
+            for idx, txt in enumerate(sample_texts):
+                key = validated[idx]
+                db.add(
+                    TTSSample(
+                        comparison_id=comparison.id,
+                        organization_id=organization_id,
+                        provider=None,
+                        model=None,
+                        voice_id="upload",
+                        voice_name="Uploaded audio",
+                        side=side_label,
+                        sample_index=idx,
+                        run_index=run,
+                        text=txt,
+                        audio_s3_key=key,
+                        status=TTSSampleStatus.COMPLETED.value,
+                        source_type="upload",
+                    )
+                )
+        return
+
+    raise HTTPException(400, f"Unsupported source_type for side {side_label}: {cfg.source_type}")
+
+
+@router.get("/call-import-rows", operation_id="listVoicePlaygroundCallImportRows")
+async def list_voice_playground_call_import_rows(
+    call_import_id: Optional[UUID] = None,
+    with_recording: bool = True,
+    skip: int = 0,
+    limit: int = 100,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """List call_import_rows for use as Voice Playground audio sources."""
+    query = (
+        db.query(CallImportRow, CallImport.original_filename)
+        .join(CallImport, CallImportRow.call_import_id == CallImport.id)
+        .filter(CallImportRow.organization_id == organization_id)
+    )
+    if call_import_id is not None:
+        query = query.filter(CallImportRow.call_import_id == call_import_id)
+    if with_recording:
+        query = query.filter(CallImportRow.recording_s3_key.isnot(None))
+
+    total = query.count()
+    rows = (
+        query.order_by(CallImportRow.created_at.desc())
+        .offset(max(0, skip))
+        .limit(min(max(1, limit), 500))
+        .all()
+    )
+
+    items = []
+    for row, original_filename in rows:
+        items.append(
+            {
+                "id": str(row.id),
+                "call_import_id": str(row.call_import_id),
+                "call_import_filename": original_filename,
+                "external_call_id": row.external_call_id,
+                "transcript": row.transcript,
+                "recording_s3_key": row.recording_s3_key,
+                "has_recording": bool(row.recording_s3_key),
+                "status": row.status.value if hasattr(row.status, "value") else row.status,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+            }
+        )
+
+    return {"items": items, "total": total, "skip": skip, "limit": limit}
+
+
+@router.post("/uploads", operation_id="uploadVoicePlaygroundAudio")
+async def upload_voice_playground_audio(
+    file: UploadFile = File(...),
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """Upload an audio file (mp3/wav/etc.) for use in a comparison.
+
+    Stores the file under the org's voicePlayground/uploads/ prefix and
+    returns the S3 key + a presigned URL for immediate playback. The S3 key
+    can later be passed in `upload_s3_keys` (benchmark) or `upload_s3_key`
+    (blind_test_only pair refs).
+    """
+    if not file.filename:
+        raise HTTPException(400, "Filename is required")
+
+    allowed_exts = {"mp3", "wav", "flac", "ogg", "m4a", "aac", "webm"}
+    ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "mp3"
+    if ext not in allowed_exts:
+        raise HTTPException(400, f"Unsupported audio format '{ext}'. Allowed: {sorted(allowed_exts)}")
+
+    content_type_map = {
+        "wav": "audio/wav",
+        "mp3": "audio/mpeg",
+        "flac": "audio/flac",
+        "m4a": "audio/mp4",
+        "aac": "audio/aac",
+        "ogg": "audio/ogg",
+        "webm": "audio/webm",
+    }
+    content_type = content_type_map.get(ext, file.content_type or "application/octet-stream")
+
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(400, "Uploaded file is empty")
+
+    max_bytes = 25 * 1024 * 1024
+    if len(contents) > max_bytes:
+        raise HTTPException(413, f"File too large (max {max_bytes // (1024 * 1024)} MB)")
+
+    upload_id = _uuid.uuid4()
+    key = (
+        f"{s3_service.prefix}organizations/{organization_id}/voicePlayground/uploads/"
+        f"{upload_id}.{ext}"
+    )
+
+    try:
+        s3_service.upload_file_by_key(
+            file_content=contents, key=key, content_type=content_type
+        )
+    except Exception as e:
+        logger.error(f"[VoicePlayground] Upload failed: {e}")
+        raise HTTPException(500, f"Failed to store uploaded audio: {e}")
+
+    try:
+        presigned = s3_service.generate_presigned_url_by_key(key, expiration=3600)
+    except Exception:
+        presigned = None
+
+    return {
+        "s3_key": key,
+        "presigned_url": presigned,
+        "filename": file.filename,
+        "size_bytes": len(contents),
+        "content_type": content_type,
+    }
+
+
 @router.post("/comparisons", operation_id="createTTSComparison")
 async def create_comparison(
     data: TTSComparisonCreate,
@@ -661,40 +1090,123 @@ async def create_comparison(
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
-    """Create a new TTS comparison session and its sample records."""
+    """Create a Voice Playground comparison (benchmark or blind_test_only)."""
+    num_runs = max(1, min(data.num_runs, 10))
+    simulation_id = _generate_unique_simulation_id(db)
+
+    if data.mode == "blind_test_only":
+        if not data.pairs:
+            raise HTTPException(400, "At least one pair is required for blind_test_only")
+
+        sample_texts: List[str] = [
+            (p.text or "").strip() or f"Pair {idx + 1}" for idx, p in enumerate(data.pairs)
+        ]
+
+        comparison = TTSComparison(
+            organization_id=organization_id,
+            simulation_id=simulation_id,
+            name=data.name or "Blind test",
+            status=TTSComparisonStatus.PENDING.value,
+            mode="blind_test_only",
+            provider_a=None,
+            model_a=None,
+            voices_a=[],
+            provider_b=None,
+            model_b=None,
+            voices_b=[],
+            sample_texts=sample_texts,
+            num_runs=1,
+            eval_stt_provider=data.eval_stt_provider,
+            eval_stt_model=data.eval_stt_model,
+        )
+        db.add(comparison)
+        db.flush()
+
+        # Resolve all refs first so we can populate provider/voices summary.
+        for idx, pair in enumerate(data.pairs):
+            x = _resolve_audio_ref(pair.x, organization_id, db)
+            y = _resolve_audio_ref(pair.y, organization_id, db)
+
+            for letter, info in [("A", x), ("B", y)]:
+                db.add(
+                    TTSSample(
+                        comparison_id=comparison.id,
+                        organization_id=organization_id,
+                        provider=info["provider"],
+                        model=info["model"],
+                        voice_id=info["voice_id"],
+                        voice_name=info["voice_name"],
+                        side=letter,
+                        sample_index=idx,
+                        run_index=0,
+                        text=sample_texts[idx],
+                        audio_s3_key=info["audio_s3_key"],
+                        status=TTSSampleStatus.COMPLETED.value,
+                        source_type=info["source_type"],
+                        source_ref_id=info["source_ref_id"],
+                    )
+                )
+
+        # Populate the legacy provider_a/voices_a summary from the first pair
+        # so the share modal / results view show meaningful labels.
+        first_x = _resolve_audio_ref(data.pairs[0].x, organization_id, db)
+        first_y = _resolve_audio_ref(data.pairs[0].y, organization_id, db)
+        comparison.provider_a = first_x["provider"] or first_x["source_type"]
+        comparison.model_a = first_x["model"]
+        comparison.voices_a = [
+            {"id": first_x["voice_id"], "name": first_x["voice_name"]}
+        ]
+        comparison.provider_b = first_y["provider"] or first_y["source_type"]
+        comparison.model_b = first_y["model"]
+        comparison.voices_b = [
+            {"id": first_y["voice_id"], "name": first_y["voice_name"]}
+        ]
+        comparison.status = TTSComparisonStatus.COMPLETED.value
+
+        db.commit()
+        db.refresh(comparison)
+        return _serialize_comparison(comparison, db)
+
+    # ---------- benchmark mode ----------
     if not data.sample_texts:
         raise HTTPException(400, "At least one sample text is required")
-    if not data.voices_a:
-        raise HTTPException(400, "At least one voice for provider A is required")
 
-    has_provider_b = bool((data.provider_b or "").strip())
-    has_model_b = bool((data.model_b or "").strip())
-    has_voices_b = bool(data.voices_b)
-    if has_provider_b or has_model_b or has_voices_b:
-        if not (has_provider_b and has_model_b and has_voices_b):
-            raise HTTPException(400, "provider_b, model_b, and voices_b are all required when comparing A vs B")
+    side_a_cfg = _normalize_benchmark_side(
+        data.side_a, data.provider_a, data.model_a, data.voices_a
+    )
+    side_b_cfg = _normalize_benchmark_side(
+        data.side_b, data.provider_b, data.model_b, data.voices_b
+    )
 
-    provider_b = data.provider_b.strip() if data.provider_b else None
-    model_b = data.model_b.strip() if data.model_b else None
-    voices_b = data.voices_b or []
+    if side_a_cfg is None:
+        raise HTTPException(400, "Side A configuration is required for benchmark mode")
 
-    num_runs = max(1, min(data.num_runs, 10))
-
-    simulation_id = _generate_unique_simulation_id(db)
+    name = data.name or _build_benchmark_name(side_a_cfg, side_b_cfg)
 
     comparison = TTSComparison(
         organization_id=organization_id,
         simulation_id=simulation_id,
-        name=data.name or (
-            f"{data.provider_a} vs {provider_b}" if provider_b else f"{data.provider_a} benchmark"
-        ),
+        name=name,
         status=TTSComparisonStatus.PENDING.value,
-        provider_a=data.provider_a,
-        model_a=data.model_a,
-        voices_a=[v if isinstance(v, dict) else {"id": v} for v in data.voices_a],
-        provider_b=provider_b,
-        model_b=model_b,
-        voices_b=[v if isinstance(v, dict) else {"id": v} for v in voices_b] if voices_b else [],
+        mode="benchmark",
+        provider_a=(side_a_cfg.provider or "").strip() or None if side_a_cfg.source_type == "tts" else None,
+        model_a=(side_a_cfg.model or "").strip() or None if side_a_cfg.source_type == "tts" else None,
+        voices_a=(side_a_cfg.voices or []) if side_a_cfg.source_type == "tts" else [],
+        provider_b=(
+            (side_b_cfg.provider or "").strip() or None
+            if side_b_cfg and side_b_cfg.source_type == "tts"
+            else None
+        ),
+        model_b=(
+            (side_b_cfg.model or "").strip() or None
+            if side_b_cfg and side_b_cfg.source_type == "tts"
+            else None
+        ),
+        voices_b=(
+            (side_b_cfg.voices or [])
+            if (side_b_cfg and side_b_cfg.source_type == "tts")
+            else []
+        ),
         sample_texts=data.sample_texts,
         num_runs=num_runs,
         eval_stt_provider=data.eval_stt_provider,
@@ -703,46 +1215,43 @@ async def create_comparison(
     db.add(comparison)
     db.flush()
 
-    for run in range(num_runs):
-        for idx, text in enumerate(data.sample_texts):
-            for voice in data.voices_a:
-                vid = voice["id"] if isinstance(voice, dict) else voice
-                vname = voice.get("name", vid) if isinstance(voice, dict) else vid
-                db.add(TTSSample(
-                    comparison_id=comparison.id,
-                    organization_id=organization_id,
-                    provider=data.provider_a,
-                    model=data.model_a,
-                    voice_id=vid,
-                    voice_name=vname,
-                    side="A",
-                    sample_index=idx,
-                    run_index=run,
-                    text=text,
-                    status=TTSSampleStatus.PENDING.value,
-                ))
-
-            if provider_b and model_b:
-                for voice in voices_b:
-                    vid = voice["id"] if isinstance(voice, dict) else voice
-                    vname = voice.get("name", vid) if isinstance(voice, dict) else vid
-                    db.add(TTSSample(
-                        comparison_id=comparison.id,
-                        organization_id=organization_id,
-                        provider=provider_b,
-                        model=model_b,
-                        voice_id=vid,
-                        voice_name=vname,
-                        side="B",
-                        sample_index=idx,
-                        run_index=run,
-                        text=text,
-                        status=TTSSampleStatus.PENDING.value,
-                    ))
+    _build_benchmark_side_samples(
+        comparison=comparison,
+        side_label="A",
+        cfg=side_a_cfg,
+        sample_texts=data.sample_texts,
+        num_runs=num_runs,
+        organization_id=organization_id,
+        db=db,
+    )
+    if side_b_cfg is not None:
+        _build_benchmark_side_samples(
+            comparison=comparison,
+            side_label="B",
+            cfg=side_b_cfg,
+            sample_texts=data.sample_texts,
+            num_runs=num_runs,
+            organization_id=organization_id,
+            db=db,
+        )
 
     db.commit()
     db.refresh(comparison)
     return _serialize_comparison(comparison, db)
+
+
+def _build_benchmark_name(
+    side_a: BenchmarkSideConfig, side_b: Optional[BenchmarkSideConfig]
+) -> str:
+    def _label(side: BenchmarkSideConfig) -> str:
+        if side.source_type == "tts":
+            return (side.provider or "tts").strip() or "tts"
+        return side.source_type.capitalize()
+
+    a = _label(side_a)
+    if side_b is None:
+        return f"{a} benchmark"
+    return f"{a} vs {_label(side_b)}"
 
 
 @router.get("/comparisons", operation_id="listTTSComparisons")
@@ -761,7 +1270,40 @@ async def list_comparisons(
         .limit(limit)
         .all()
     )
-    return [_serialize_comparison_summary(c) for c in comparisons]
+
+    comparison_ids = [c.id for c in comparisons]
+    shares_by_comparison: Dict[Any, TTSBlindTestShare] = {}
+    response_counts_by_share: Dict[Any, int] = {}
+    if comparison_ids:
+        shares = (
+            db.query(TTSBlindTestShare)
+            .filter(TTSBlindTestShare.comparison_id.in_(comparison_ids))
+            .all()
+        )
+        shares_by_comparison = {s.comparison_id: s for s in shares}
+        if shares:
+            from sqlalchemy import func as _func
+            counts = (
+                db.query(
+                    TTSBlindTestResponse.share_id,
+                    _func.count(TTSBlindTestResponse.id),
+                )
+                .filter(TTSBlindTestResponse.share_id.in_([s.id for s in shares]))
+                .group_by(TTSBlindTestResponse.share_id)
+                .all()
+            )
+            response_counts_by_share = {sid: int(cnt) for sid, cnt in counts}
+
+    return [
+        _serialize_comparison_summary(
+            c,
+            share=shares_by_comparison.get(c.id),
+            response_count=response_counts_by_share.get(
+                shares_by_comparison.get(c.id).id, 0
+            ) if shares_by_comparison.get(c.id) else 0,
+        )
+        for c in comparisons
+    ]
 
 
 @router.get("/comparisons/{comparison_id}", operation_id="getTTSComparison")
@@ -782,8 +1324,45 @@ async def generate_comparison(
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
-    """Dispatch Celery task to generate TTS audio for all samples."""
+    """Dispatch Celery task to generate TTS audio for all samples.
+
+    For blind_test_only comparisons there's nothing to synthesize: all samples
+    are pre-resolved to existing recordings/uploads/past TTS samples and were
+    marked COMPLETED at create time, so we no-op here.
+    """
     comparison = _get_comparison_or_404(comparison_id, organization_id, db)
+
+    if (comparison.mode or "benchmark") == "blind_test_only":
+        if comparison.status not in (
+            TTSComparisonStatus.COMPLETED.value,
+            TTSComparisonStatus.EVALUATING.value,
+        ):
+            comparison.status = TTSComparisonStatus.COMPLETED.value
+            db.commit()
+        return {"message": "Blind-test-only comparison is ready", "task_id": None}
+
+    # If every sample is non-tts (e.g. recording vs recording benchmark) there
+    # is nothing for the worker to do – mark completed and return.
+    pending_tts_samples = (
+        db.query(TTSSample)
+        .filter(
+            TTSSample.comparison_id == comparison.id,
+            TTSSample.source_type == "tts",
+            TTSSample.status == TTSSampleStatus.PENDING.value,
+        )
+        .count()
+    )
+    if pending_tts_samples == 0:
+        comparison.status = TTSComparisonStatus.EVALUATING.value
+        db.commit()
+        try:
+            from app.workers.celery_app import evaluate_tts_comparison_task
+            evaluate_tts_comparison_task.delay(str(comparison.id))
+        except Exception as e:
+            logger.warning(
+                f"[VoicePlayground] Failed to dispatch evaluation for non-TTS comparison: {e}"
+            )
+        return {"message": "No TTS samples to generate", "task_id": None}
 
     if comparison.status not in (
         TTSComparisonStatus.PENDING.value,
@@ -852,8 +1431,21 @@ async def create_blind_test_share(
     }
     if comparison.status not in audio_ready_states:
         raise HTTPException(400, "Audio must finish generating before creating a blind test")
-    if not comparison.provider_b:
-        raise HTTPException(400, "Blind tests require an A/B comparison (provider B is missing)")
+
+    # Blind tests need two playable sides. For benchmark mode that means
+    # provider_b must be set (or side B contains non-tts samples). For
+    # blind_test_only mode the create endpoint has already enforced this.
+    has_b_samples = (
+        db.query(TTSSample)
+        .filter(
+            TTSSample.comparison_id == comparison.id,
+            TTSSample.side == "B",
+            TTSSample.audio_s3_key.isnot(None),
+        )
+        .count()
+    ) > 0
+    if not has_b_samples:
+        raise HTTPException(400, "Blind tests require a second side (B) with playable audio")
 
     metrics = _validate_custom_metrics([m.model_dump() for m in data.custom_metrics])
     title = (data.title or "").strip()
@@ -1562,12 +2154,17 @@ def _aggregate_external_responses(
     }
 
 
-def _serialize_comparison_summary(c: TTSComparison) -> Dict[str, Any]:
+def _serialize_comparison_summary(
+    c: TTSComparison,
+    share: Optional[TTSBlindTestShare] = None,
+    response_count: int = 0,
+) -> Dict[str, Any]:
     return {
         "id": str(c.id),
         "simulation_id": c.simulation_id,
         "name": c.name,
         "status": c.status,
+        "mode": getattr(c, "mode", "benchmark") or "benchmark",
         "provider_a": c.provider_a,
         "model_a": c.model_a,
         "provider_b": c.provider_b,
@@ -1575,6 +2172,11 @@ def _serialize_comparison_summary(c: TTSComparison) -> Dict[str, Any]:
         "sample_count": len(c.sample_texts) if c.sample_texts else 0,
         "num_runs": c.num_runs or 1,
         "created_at": c.created_at.isoformat() if c.created_at else None,
+        "has_share": share is not None,
+        "share_token": share.share_token if share else None,
+        "share_status": share.status if share else None,
+        "share_title": share.title if share else None,
+        "response_count": response_count,
     }
 
 
@@ -1614,6 +2216,8 @@ def _serialize_comparison(c: TTSComparison, db: Session) -> Dict[str, Any]:
             "evaluation_metrics": s.evaluation_metrics,
             "status": s.status,
             "error_message": s.error_message,
+            "source_type": getattr(s, "source_type", "tts") or "tts",
+            "source_ref_id": str(s.source_ref_id) if getattr(s, "source_ref_id", None) else None,
         })
 
     share = db.query(TTSBlindTestShare).filter(TTSBlindTestShare.comparison_id == c.id).first()
@@ -1634,6 +2238,7 @@ def _serialize_comparison(c: TTSComparison, db: Session) -> Dict[str, Any]:
         "simulation_id": c.simulation_id,
         "name": c.name,
         "status": c.status,
+        "mode": getattr(c, "mode", "benchmark") or "benchmark",
         "provider_a": c.provider_a,
         "model_a": c.model_a,
         "voices_a": c.voices_a,

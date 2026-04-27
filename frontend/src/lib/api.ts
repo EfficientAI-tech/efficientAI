@@ -35,6 +35,33 @@ export interface EnterpriseFeatureMeta {
 
 export type EnterpriseFeatureCatalog = Record<string, EnterpriseFeatureMeta>
 
+export type VoicePlaygroundSourceType = 'tts' | 'recording' | 'upload'
+
+export interface VoicePlaygroundSideConfig {
+  source_type: VoicePlaygroundSourceType
+  provider?: string
+  model?: string
+  voices?: Array<{ id: string; name: string; sample_rate_hz?: number }>
+  call_import_row_ids?: string[]
+  upload_s3_keys?: string[]
+}
+
+export type VoicePlaygroundBlindTestRefType = 'recording' | 'upload' | 'tts_sample'
+
+export interface VoicePlaygroundBlindTestAudioRef {
+  type: VoicePlaygroundBlindTestRefType
+  call_import_row_id?: string
+  upload_s3_key?: string
+  tts_sample_id?: string
+  label?: string
+}
+
+export interface VoicePlaygroundBlindTestPair {
+  text?: string
+  x: VoicePlaygroundBlindTestAudioRef
+  y: VoicePlaygroundBlindTestAudioRef
+}
+
 export interface LicenseInfoResponse {
   is_enterprise: boolean
   enabled_features: string[]
@@ -1666,16 +1693,66 @@ class ApiClient {
 
   async createTTSComparison(data: {
     name?: string
-    provider_a: string
-    model_a: string
-    voices_a: Array<{ id: string; name: string; sample_rate_hz?: number }>
+    mode?: 'benchmark' | 'blind_test_only'
+    // Legacy benchmark fields
+    provider_a?: string
+    model_a?: string
+    voices_a?: Array<{ id: string; name: string; sample_rate_hz?: number }>
     provider_b?: string
     model_b?: string
     voices_b?: Array<{ id: string; name: string; sample_rate_hz?: number }>
-    sample_texts: string[]
+    // New per-side benchmark config
+    side_a?: VoicePlaygroundSideConfig
+    side_b?: VoicePlaygroundSideConfig
+    // Common
+    sample_texts?: string[]
     num_runs?: number
+    eval_stt_provider?: string
+    eval_stt_model?: string
+    // blind_test_only
+    pairs?: Array<VoicePlaygroundBlindTestPair>
   }): Promise<any> {
     const response = await this.client.post('/api/v1/voice-playground/comparisons', data)
+    return response.data
+  }
+
+  async listVoicePlaygroundCallImportRows(params: {
+    call_import_id?: string
+    with_recording?: boolean
+    skip?: number
+    limit?: number
+  } = {}): Promise<{
+    items: Array<{
+      id: string
+      call_import_id: string
+      call_import_filename: string | null
+      external_call_id: string
+      transcript: string | null
+      recording_s3_key: string | null
+      has_recording: boolean
+      status: string
+      created_at: string | null
+    }>
+    total: number
+    skip: number
+    limit: number
+  }> {
+    const response = await this.client.get('/api/v1/voice-playground/call-import-rows', { params })
+    return response.data
+  }
+
+  async uploadVoicePlaygroundAudio(file: File): Promise<{
+    s3_key: string
+    presigned_url: string | null
+    filename: string
+    size_bytes: number
+    content_type: string
+  }> {
+    const form = new FormData()
+    form.append('file', file)
+    const response = await this.client.post('/api/v1/voice-playground/uploads', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
     return response.data
   }
 

@@ -70,7 +70,7 @@ export default function ExternalResponsesPanel({ comparison }: ExternalResponses
     )
   }
 
-  const providerALabel = getProviderInfo(comparison.provider_a).label
+  const providerALabel = getProviderInfo(comparison.provider_a || '').label
   const providerBLabel = getProviderInfo(comparison.provider_b || '').label
 
   return (
@@ -96,7 +96,7 @@ export default function ExternalResponsesPanel({ comparison }: ExternalResponses
         <div className="p-4 bg-gradient-to-r from-amber-50 to-orange-50 rounded-xl border border-amber-200">
           <div className="flex items-center justify-around">
             <div className="text-center flex flex-col items-center gap-1">
-              <ProviderLogo provider={comparison.provider_a} size="sm" />
+              <ProviderLogo provider={comparison.provider_a || ''} size="sm" />
               <p className="text-xs text-gray-500">{providerALabel}</p>
               <p className="text-2xl font-bold text-blue-600">{aggregates.a_pct}%</p>
               <p className="text-xs text-gray-400">{aggregates.a_wins} preferred</p>

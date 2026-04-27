@@ -11,7 +11,7 @@ export type WalkthroughSectionId =
 export type ScenarioCreateMode = 'agent_prompt' | 'call' | 'custom' | null
 export type EvaluatorCreateMode = 'standard' | 'custom'
 export type VoicePlaygroundStep = 'configure' | 'progress' | 'results'
-export type VoicePlaygroundTab = 'playground' | 'voices' | 'past-simulations'
+export type VoicePlaygroundTab = 'playground' | 'voices' | 'past-simulations' | 'blind-tests'
 
 export interface WalkthroughStep {
   title: string

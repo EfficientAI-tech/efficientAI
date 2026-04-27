@@ -1,12 +1,18 @@
 import { createContext, useContext, useState, useCallback, ReactNode, useMemo, useRef, useEffect } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { apiClient } from '../../../../lib/api'
+import type {
+  VoicePlaygroundSideConfig,
+  VoicePlaygroundSourceType,
+  VoicePlaygroundBlindTestPair,
+} from '../../../../lib/api'
 import { VoiceBundle } from '../../../../types/api'
 import {
   TTSVoice,
   TTSProvider,
   TTSComparison,
   TTSComparisonSummary,
+  TTSComparisonMode,
   TTSAnalyticsRow,
   CustomTTSVoice,
   TTSReportJob,
@@ -17,8 +23,22 @@ import {
 } from '../types'
 
 type PlaygroundStep = 'configure' | 'progress' | 'results'
-type ActiveTab = 'playground' | 'voices' | 'past-simulations'
+type ActiveTab = 'playground' | 'voices' | 'past-simulations' | 'blind-tests'
 type PastSubView = 'simulations' | 'analytics'
+
+export interface BenchmarkSideState {
+  sourceType: VoicePlaygroundSourceType
+  // TTS
+  callImportRowIds: string[]
+  uploadKeys: string[]
+}
+
+export interface BlindTestPairDraft {
+  id: string
+  text: string
+  x: VoicePlaygroundBlindTestPair['x'] | null
+  y: VoicePlaygroundBlindTestPair['y'] | null
+}
 
 interface VoicePlaygroundContextType {
   // Audio player
@@ -65,6 +85,31 @@ interface VoicePlaygroundContextType {
   setSelectedBenchmarkMetric: (metric: BenchmarkMetricKey) => void
   benchmarkTopN: number
   setBenchmarkTopN: (n: number) => void
+
+  // Mode chooser
+  mode: TTSComparisonMode
+  setMode: (m: TTSComparisonMode) => void
+
+  // Per-side source type (benchmark mode)
+  sourceTypeA: VoicePlaygroundSourceType
+  setSourceTypeA: (t: VoicePlaygroundSourceType) => void
+  sourceTypeB: VoicePlaygroundSourceType
+  setSourceTypeB: (t: VoicePlaygroundSourceType) => void
+  callImportRowIdsA: string[]
+  setCallImportRowIdsA: (ids: string[]) => void
+  callImportRowIdsB: string[]
+  setCallImportRowIdsB: (ids: string[]) => void
+  uploadKeysA: string[]
+  setUploadKeysA: (keys: string[]) => void
+  uploadKeysB: string[]
+  setUploadKeysB: (keys: string[]) => void
+
+  // Blind test only mode
+  blindTestPairs: BlindTestPairDraft[]
+  setBlindTestPairs: (pairs: BlindTestPairDraft[]) => void
+  addBlindTestPair: () => void
+  removeBlindTestPair: (id: string) => void
+  updateBlindTestPair: (id: string, updates: Partial<BlindTestPairDraft>) => void
 
   // Configuration state
   providerA: string
@@ -292,6 +337,35 @@ export function VoicePlaygroundProvider({ children }: { children: ReactNode }) {
     }
   }, [analyticsSortKey, analyticsSortAsc])
 
+  // Mode + per-side source state
+  const [mode, setMode] = useState<TTSComparisonMode>('benchmark')
+  const [sourceTypeA, setSourceTypeA] = useState<VoicePlaygroundSourceType>('tts')
+  const [sourceTypeB, setSourceTypeB] = useState<VoicePlaygroundSourceType>('tts')
+  const [callImportRowIdsA, setCallImportRowIdsA] = useState<string[]>([])
+  const [callImportRowIdsB, setCallImportRowIdsB] = useState<string[]>([])
+  const [uploadKeysA, setUploadKeysA] = useState<string[]>([])
+  const [uploadKeysB, setUploadKeysB] = useState<string[]>([])
+
+  // Blind-test-only pair drafts
+  const [blindTestPairs, setBlindTestPairs] = useState<BlindTestPairDraft[]>([
+    { id: 'pair-1', text: '', x: null, y: null },
+  ])
+
+  const addBlindTestPair = useCallback(() => {
+    setBlindTestPairs((prev) => [
+      ...prev,
+      { id: `pair-${Date.now()}-${prev.length + 1}`, text: '', x: null, y: null },
+    ])
+  }, [])
+
+  const removeBlindTestPair = useCallback((id: string) => {
+    setBlindTestPairs((prev) => prev.filter((p) => p.id !== id))
+  }, [])
+
+  const updateBlindTestPair = useCallback((id: string, updates: Partial<BlindTestPairDraft>) => {
+    setBlindTestPairs((prev) => prev.map((p) => (p.id === id ? { ...p, ...updates } : p)))
+  }, [])
+
   // Configuration state
   const [providerA, setProviderA] = useState('')
   const [modelA, setModelA] = useState('')
@@ -404,25 +478,83 @@ export function VoicePlaygroundProvider({ children }: { children: ReactNode }) {
   const progressPct = totalSamples > 0 ? Math.round(((completedSamples + failedSamples) / totalSamples) * 100) : 0
 
   // Mutations
+  const buildSidePayload = useCallback(
+    (
+      sourceType: VoicePlaygroundSourceType,
+      provider: string,
+      model: string,
+      voices: TTSVoice[],
+      sampleRate: number | null,
+      callImportRowIds: string[],
+      uploadKeys: string[],
+    ): VoicePlaygroundSideConfig => {
+      if (sourceType === 'tts') {
+        return {
+          source_type: 'tts',
+          provider,
+          model,
+          voices: voices.map((v) => ({
+            id: v.id,
+            name: v.name,
+            ...(sampleRate ? { sample_rate_hz: sampleRate } : {}),
+          })),
+        }
+      }
+      if (sourceType === 'recording') {
+        return { source_type: 'recording', call_import_row_ids: callImportRowIds }
+      }
+      return { source_type: 'upload', upload_s3_keys: uploadKeys }
+    },
+    [],
+  )
+
   const createMutation = useMutation({
     mutationFn: async () => {
+      if (mode === 'blind_test_only') {
+        const pairs: VoicePlaygroundBlindTestPair[] = blindTestPairs
+          .filter((p) => p.x && p.y)
+          .map((p) => ({
+            text: p.text || undefined,
+            x: p.x as VoicePlaygroundBlindTestPair['x'],
+            y: p.y as VoicePlaygroundBlindTestPair['y'],
+          }))
+        if (pairs.length === 0) {
+          throw new Error('Add at least one blind-test pair with X and Y audio selected')
+        }
+        const payload: any = { mode: 'blind_test_only', pairs }
+        if (evalSttProvider && evalSttModel) {
+          payload.eval_stt_provider = evalSttProvider
+          payload.eval_stt_model = evalSttModel
+        }
+        const comp = await apiClient.createTTSComparison(payload)
+        await apiClient.generateTTSComparison(comp.id)
+        return comp
+      }
+
       const payload: any = {
-        provider_a: providerA,
-        model_a: modelA,
-        voices_a: selectedVoicesA.map(v => ({
-          id: v.id, name: v.name,
-          ...(sampleRateA ? { sample_rate_hz: sampleRateA } : {}),
-        })),
+        mode: 'benchmark',
         sample_texts: sampleTexts,
         num_runs: numRuns,
+        side_a: buildSidePayload(
+          sourceTypeA,
+          providerA,
+          modelA,
+          selectedVoicesA,
+          sampleRateA,
+          callImportRowIdsA,
+          uploadKeysA,
+        ),
       }
       if (enableComparison) {
-        payload.provider_b = providerB
-        payload.model_b = modelB
-        payload.voices_b = selectedVoicesB.map(v => ({
-          id: v.id, name: v.name,
-          ...(sampleRateB ? { sample_rate_hz: sampleRateB } : {}),
-        }))
+        payload.side_b = buildSidePayload(
+          sourceTypeB,
+          providerB,
+          modelB,
+          selectedVoicesB,
+          sampleRateB,
+          callImportRowIdsB,
+          uploadKeysB,
+        )
       }
       if (evalSttProvider && evalSttModel) {
         payload.eval_stt_provider = evalSttProvider
@@ -434,7 +566,7 @@ export function VoicePlaygroundProvider({ children }: { children: ReactNode }) {
     },
     onSuccess: (comp) => {
       setActiveComparisonId(comp.id)
-      setStep('progress')
+      setStep(mode === 'blind_test_only' ? 'results' : 'progress')
       refetchPast()
     },
   })
@@ -568,13 +700,47 @@ export function VoicePlaygroundProvider({ children }: { children: ReactNode }) {
   })
 
   // Helpers
-  const canRun = !!(
-    providerA && modelA && selectedVoicesA.length > 0 && sampleTexts.length > 0 &&
-    (!enableComparison || (providerB && modelB && selectedVoicesB.length > 0))
-  )
+  const sideAReady = useMemo(() => {
+    if (sourceTypeA === 'tts') {
+      return !!(providerA && modelA && selectedVoicesA.length > 0)
+    }
+    if (sourceTypeA === 'recording') {
+      return callImportRowIdsA.length >= sampleTexts.length && sampleTexts.length > 0
+    }
+    return uploadKeysA.length >= sampleTexts.length && sampleTexts.length > 0
+  }, [sourceTypeA, providerA, modelA, selectedVoicesA, callImportRowIdsA, uploadKeysA, sampleTexts.length])
+
+  const sideBReady = useMemo(() => {
+    if (!enableComparison) return true
+    if (sourceTypeB === 'tts') {
+      return !!(providerB && modelB && selectedVoicesB.length > 0)
+    }
+    if (sourceTypeB === 'recording') {
+      return callImportRowIdsB.length >= sampleTexts.length && sampleTexts.length > 0
+    }
+    return uploadKeysB.length >= sampleTexts.length && sampleTexts.length > 0
+  }, [enableComparison, sourceTypeB, providerB, modelB, selectedVoicesB, callImportRowIdsB, uploadKeysB, sampleTexts.length])
+
+  const blindTestPairsReady = useMemo(() => {
+    if (mode !== 'blind_test_only') return true
+    return blindTestPairs.length > 0 && blindTestPairs.every((p) => !!p.x && !!p.y)
+  }, [mode, blindTestPairs])
+
+  const canRun =
+    mode === 'blind_test_only'
+      ? blindTestPairsReady
+      : sampleTexts.length > 0 && sideAReady && sideBReady
 
   const resetPlayground = useCallback(() => {
     stop()
+    setMode('benchmark')
+    setSourceTypeA('tts')
+    setSourceTypeB('tts')
+    setCallImportRowIdsA([])
+    setCallImportRowIdsB([])
+    setUploadKeysA([])
+    setUploadKeysB([])
+    setBlindTestPairs([{ id: 'pair-1', text: '', x: null, y: null }])
     setProviderA('')
     setProviderB('')
     setModelA('')
@@ -628,6 +794,25 @@ export function VoicePlaygroundProvider({ children }: { children: ReactNode }) {
     setSelectedBenchmarkMetric,
     benchmarkTopN,
     setBenchmarkTopN,
+    mode,
+    setMode,
+    sourceTypeA,
+    setSourceTypeA,
+    sourceTypeB,
+    setSourceTypeB,
+    callImportRowIdsA,
+    setCallImportRowIdsA,
+    callImportRowIdsB,
+    setCallImportRowIdsB,
+    uploadKeysA,
+    setUploadKeysA,
+    uploadKeysB,
+    setUploadKeysB,
+    blindTestPairs,
+    setBlindTestPairs,
+    addBlindTestPair,
+    removeBlindTestPair,
+    updateBlindTestPair,
     providerA,
     setProviderA,
     modelA,

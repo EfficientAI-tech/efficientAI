@@ -6,9 +6,11 @@ import Button from '../../../../components/Button'
 import ProviderLogo, { getProviderInfo } from '../../../../components/shared/ProviderLogo'
 import { useVoicePlayground } from '../context'
 import SampleTextsPanel from './SampleTextsPanel'
-import ProviderPanel from './ProviderPanel'
+import SourcePanel from './SourcePanel'
 import ComparisonResultsView from './ComparisonResultsView'
 import StatusBadge from './StatusBadge'
+import BlindTestOnlyConfig from './BlindTestOnlyConfig'
+import ModeChooser from './ModeChooser'
 
 export default function PlaygroundTab() {
   const {
@@ -40,6 +42,19 @@ export default function PlaygroundTab() {
     evalSttModel,
     setEvalSttModel,
     voiceBundles,
+    mode,
+    sourceTypeA,
+    setSourceTypeA,
+    sourceTypeB,
+    setSourceTypeB,
+    callImportRowIdsA,
+    setCallImportRowIdsA,
+    callImportRowIdsB,
+    setCallImportRowIdsB,
+    uploadKeysA,
+    setUploadKeysA,
+    uploadKeysB,
+    setUploadKeysB,
     canRun,
     createComparison,
     isCreating,
@@ -106,8 +121,17 @@ export default function PlaygroundTab() {
 
   // Configuration step
   if (step === 'configure') {
+    if (mode === 'blind_test_only') {
+      return (
+        <>
+          <ModeChooser />
+          <BlindTestOnlyConfig />
+        </>
+      )
+    }
     return (
       <>
+        <ModeChooser />
         <SampleTextsPanel />
 
         {/* Number of Runs */}
@@ -229,10 +253,12 @@ export default function PlaygroundTab() {
               </div>
 
               <div className={`grid grid-cols-1 ${enableComparison ? 'lg:grid-cols-2' : ''} gap-6 mb-6 relative`}>
-                <ProviderPanel
+                <SourcePanel
                   label="A"
                   color="blue"
                   providers={providers}
+                  sourceType={sourceTypeA}
+                  onSourceTypeChange={setSourceTypeA}
                   selectedProvider={providerA}
                   selectedModel={modelA}
                   selectedVoices={selectedVoicesA}
@@ -246,6 +272,10 @@ export default function PlaygroundTab() {
                   onModelChange={setModelA}
                   onVoicesChange={setSelectedVoicesA}
                   onSampleRateChange={setSampleRateA}
+                  callImportRowIds={callImportRowIdsA}
+                  onCallImportRowIdsChange={setCallImportRowIdsA}
+                  uploadKeys={uploadKeysA}
+                  onUploadKeysChange={setUploadKeysA}
                 />
 
                 {enableComparison && (
@@ -255,10 +285,12 @@ export default function PlaygroundTab() {
                       <span className="px-4 py-2 bg-gray-900 text-white rounded-full text-sm font-bold shadow-xl">VS</span>
                     </div>
 
-                    <ProviderPanel
+                    <SourcePanel
                       label="B"
                       color="purple"
                       providers={providers}
+                      sourceType={sourceTypeB}
+                      onSourceTypeChange={setSourceTypeB}
                       selectedProvider={providerB}
                       selectedModel={modelB}
                       selectedVoices={selectedVoicesB}
@@ -272,6 +304,10 @@ export default function PlaygroundTab() {
                       onModelChange={setModelB}
                       onVoicesChange={setSelectedVoicesB}
                       onSampleRateChange={setSampleRateB}
+                      callImportRowIds={callImportRowIdsB}
+                      onCallImportRowIdsChange={setCallImportRowIdsB}
+                      uploadKeys={uploadKeysB}
+                      onUploadKeysChange={setUploadKeysB}
                     />
                   </>
                 )}
@@ -319,8 +355,8 @@ export default function PlaygroundTab() {
               {comparison.name}
             </h2>
             <div className="flex items-center gap-2 mt-1">
-              <ProviderLogo provider={comparison.provider_a} size="sm" />
-              <span className="text-sm text-gray-500">{getProviderInfo(comparison.provider_a).label}</span>
+              <ProviderLogo provider={comparison.provider_a || ''} size="sm" />
+              <span className="text-sm text-gray-500">{getProviderInfo(comparison.provider_a || '').label}</span>
               {hasSecond && (
                 <>
                   <span className="text-xs text-gray-400">vs</span>

@@ -753,9 +753,14 @@ class TTSComparison(Base):
     name = Column(String(255), nullable=True)
     status = Column(String(50), nullable=False, default=TTSComparisonStatus.PENDING.value)
 
-    provider_a = Column(String(100), nullable=False)
-    model_a = Column(String(100), nullable=False)
-    voices_a = Column(JSON, nullable=False)
+    # 'benchmark' = traditional TTS A/B benchmark (provider-generated audio).
+    # 'blind_test_only' = standalone blind test built from existing recordings
+    # / uploads / past TTS samples; no TTS generation happens.
+    mode = Column(String(32), nullable=False, default="benchmark")
+
+    provider_a = Column(String(100), nullable=True)
+    model_a = Column(String(100), nullable=True)
+    voices_a = Column(JSON, nullable=True)
 
     provider_b = Column(String(100), nullable=True)
     model_b = Column(String(100), nullable=True)
@@ -788,13 +793,23 @@ class TTSSample(Base):
     comparison_id = Column(UUID(as_uuid=True), ForeignKey("tts_comparisons.id", ondelete="CASCADE"), nullable=False, index=True)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
 
-    provider = Column(String(100), nullable=False)
-    model = Column(String(100), nullable=False)
-    voice_id = Column(String(255), nullable=False)
+    provider = Column(String(100), nullable=True)
+    model = Column(String(100), nullable=True)
+    voice_id = Column(String(255), nullable=True)
     voice_name = Column(String(255), nullable=True)
     side = Column(String(1), nullable=True)  # "A" or "B"
     sample_index = Column(Integer, nullable=False)
     run_index = Column(Integer, nullable=False, default=0)
+
+    # 'tts' (default, audio is synthesized by a provider), 'recording' (audio
+    # is reused from a CallImportRow recording), or 'upload' (audio was
+    # uploaded by the user). Non-tts samples are marked completed up-front
+    # by the API and skipped by the generation worker.
+    source_type = Column(String(32), nullable=False, default="tts")
+    # When source_type == 'recording', references CallImportRow.id (no FK
+    # constraint to keep cascading deletes simple if a call import is later
+    # removed; the audio_s3_key is what's actually used).
+    source_ref_id = Column(UUID(as_uuid=True), nullable=True)
 
     text = Column(String, nullable=False)
     audio_s3_key = Column(String(512), nullable=True)
