@@ -10,6 +10,7 @@ import {
   Check,
   Users,
   Search,
+  Lock,
 } from 'lucide-react'
 import Button from '../../../../components/Button'
 import ProviderLogo, { getProviderInfo } from '../../../../components/shared/ProviderLogo'
@@ -305,6 +306,14 @@ function BlindTestRow({
           <span className="text-gray-300">•</span>
           <span>{format(new Date(bt.created_at), 'MMM d, yyyy HH:mm')}</span>
         </div>
+        {bt.share_creator_notes && (
+          <div className="mt-2 flex items-start gap-1.5 text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5">
+            <Lock className="w-3 h-3 text-amber-600 mt-0.5 flex-shrink-0" />
+            <span className="whitespace-pre-line line-clamp-2 break-words">
+              {bt.share_creator_notes}
+            </span>
+          </div>
+        )}
       </div>
       <div className="flex items-center gap-1">
         {bt.share_token && (

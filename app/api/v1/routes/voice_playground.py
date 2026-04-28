@@ -266,12 +266,14 @@ class BlindTestCustomMetric(BaseModel):
 class BlindTestShareCreate(BaseModel):
     title: str
     description: Optional[str] = None
+    creator_notes: Optional[str] = None
     custom_metrics: List[BlindTestCustomMetric] = []
 
 
 class BlindTestSharePatch(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
+    creator_notes: Optional[str] = None
     custom_metrics: Optional[List[BlindTestCustomMetric]] = None
     status: Optional[str] = None  # 'open' | 'closed'
 
@@ -1456,9 +1458,14 @@ async def create_blind_test_share(
         TTSBlindTestShare.comparison_id == comparison.id,
     ).first()
 
+    creator_notes = (data.creator_notes or "").strip() or None
+    if creator_notes and len(creator_notes) > 8000:
+        creator_notes = creator_notes[:8000]
+
     if existing:
         existing.title = title
         existing.description = data.description
+        existing.creator_notes = creator_notes
         existing.custom_metrics = metrics
         existing.status = TTSBlindTestShareStatus.OPEN.value
         existing.closed_at = None
@@ -1470,6 +1477,7 @@ async def create_blind_test_share(
             share_token=secrets.token_urlsafe(16),
             title=title,
             description=data.description,
+            creator_notes=creator_notes,
             custom_metrics=metrics,
             status=TTSBlindTestShareStatus.OPEN.value,
             created_by=api_key or None,
@@ -1518,6 +1526,12 @@ async def update_blind_test_share(
 
     if data.description is not None:
         share.description = data.description
+
+    if data.creator_notes is not None:
+        notes = data.creator_notes.strip() or None
+        if notes and len(notes) > 8000:
+            notes = notes[:8000]
+        share.creator_notes = notes
 
     if data.custom_metrics is not None:
         existing_keys = {m.get("key") for m in (share.custom_metrics or []) if isinstance(m, dict)}
@@ -2043,6 +2057,7 @@ def _serialize_share(
         "public_path": f"/blind-test/{share.share_token}",
         "title": share.title,
         "description": share.description,
+        "creator_notes": share.creator_notes,
         "custom_metrics": share.custom_metrics or [],
         "status": share.status,
         "created_at": share.created_at.isoformat() if share.created_at else None,
@@ -2176,6 +2191,7 @@ def _serialize_comparison_summary(
         "share_token": share.share_token if share else None,
         "share_status": share.status if share else None,
         "share_title": share.title if share else None,
+        "share_creator_notes": share.creator_notes if share else None,
         "response_count": response_count,
     }
 
@@ -2228,6 +2244,7 @@ def _serialize_comparison(c: TTSComparison, db: Session) -> Dict[str, Any]:
             "public_path": f"/blind-test/{share.share_token}",
             "title": share.title,
             "status": share.status,
+            "creator_notes": share.creator_notes,
         }
         if share
         else None

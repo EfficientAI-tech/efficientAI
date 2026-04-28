@@ -82,6 +82,7 @@ export interface BlindTestShareSummary {
   public_path: string
   title: string
   status: 'open' | 'closed' | string
+  creator_notes?: string | null
 }
 
 export interface BlindTestShareAggregateMetric {
@@ -109,6 +110,7 @@ export interface BlindTestShareDetail {
   public_path: string
   title: string
   description: string | null
+  creator_notes: string | null
   custom_metrics: BlindTestCustomMetric[]
   status: 'open' | 'closed' | string
   created_at: string | null
@@ -165,6 +167,7 @@ export interface TTSComparisonSummary {
   share_token?: string | null
   share_status?: string | null
   share_title?: string | null
+  share_creator_notes?: string | null
   response_count?: number
 }
 

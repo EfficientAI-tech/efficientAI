@@ -746,6 +746,25 @@ class ApiClient {
     await this.client.delete(`/api/v1/iam/invitations/${invitationId}`)
   }
 
+  /**
+   * Admin-initiated password reset for another organization member.
+   *
+   * The caller must be an ADMIN of the same organization as `userId`. The
+   * backend ignores any current-password concept here (that's for the
+   * self-service `/auth/password` endpoint). Communicate the new password
+   * to the user out-of-band.
+   */
+  async adminResetUserPassword(
+    userId: string,
+    newPassword: string,
+  ): Promise<{ user_id: string; email: string; message: string }> {
+    const response = await this.client.post(
+      `/api/v1/iam/users/${userId}/reset-password`,
+      { new_password: newPassword },
+    )
+    return response.data
+  }
+
   // Profile endpoints
   async getProfile(): Promise<Profile> {
     const response = await this.client.get('/api/v1/profile')
@@ -1794,6 +1813,7 @@ class ApiClient {
   async createBlindTestShare(comparisonId: string, payload: {
     title: string
     description?: string
+    creator_notes?: string
     custom_metrics: Array<{ key: string; label: string; type: 'rating' | 'comment'; scale?: number }>
   }): Promise<any> {
     const response = await this.client.post(
@@ -1813,6 +1833,7 @@ class ApiClient {
   async updateBlindTestShare(shareId: string, payload: {
     title?: string
     description?: string
+    creator_notes?: string
     custom_metrics?: Array<{ key: string; label: string; type: 'rating' | 'comment'; scale?: number }>
     status?: 'open' | 'closed'
   }): Promise<any> {

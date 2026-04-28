@@ -1,7 +1,17 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Copy, Loader2, Plus, Trash2, X, ExternalLink, Power, RefreshCw } from 'lucide-react'
+import {
+  Copy,
+  Loader2,
+  Plus,
+  Trash2,
+  X,
+  ExternalLink,
+  Power,
+  RefreshCw,
+  Lock,
+} from 'lucide-react'
 import Button from '../../../../components/Button'
 import { apiClient } from '../../../../lib/api'
 import {
@@ -62,6 +72,7 @@ export default function ShareBlindTestModal({
 
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
+  const [creatorNotes, setCreatorNotes] = useState('')
   const [metrics, setMetrics] = useState<MetricDraft[]>([])
   const [copied, setCopied] = useState(false)
 
@@ -70,12 +81,14 @@ export default function ShareBlindTestModal({
     if (existing) {
       setTitle(existing.title || defaultTitle || 'Voice Blind Test')
       setDescription(existing.description || '')
+      setCreatorNotes(existing.creator_notes || '')
       setMetrics(
         (existing.custom_metrics || []).map(m => ({ ...m, _localId: makeLocalId() }))
       )
     } else if (!existingLoading) {
       setTitle(defaultTitle || 'Voice Blind Test')
       setDescription('Listen to each pair and tell us which voice you prefer.')
+      setCreatorNotes('')
       setMetrics(DEFAULT_METRICS.map(m => ({ ...m, _localId: makeLocalId() })))
     }
   }, [existing, existingLoading, isOpen, defaultTitle])
@@ -90,6 +103,7 @@ export default function ShareBlindTestModal({
       const payload = {
         title: title.trim(),
         description: description.trim() || undefined,
+        creator_notes: creatorNotes.trim() || undefined,
         custom_metrics: metrics.map(({ _localId, ...rest }) => ({
           ...rest,
           key: rest.key.trim() || slugify(rest.label),
@@ -255,6 +269,28 @@ export default function ShareBlindTestModal({
               rows={3}
               className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
               placeholder="Shown to raters above the form"
+            />
+          </div>
+
+          <div className="rounded-lg border border-amber-200 bg-amber-50/50 p-4">
+            <div className="flex items-center gap-2 mb-1">
+              <Lock className="w-4 h-4 text-amber-600" />
+              <label className="block text-sm font-semibold text-amber-900">
+                Internal notes (only visible to you)
+              </label>
+            </div>
+            <p className="text-xs text-amber-800 mb-2">
+              Track which voice / provider / source corresponds to each side. This is never
+              shown to raters and never included in the public form, so the test stays blind.
+            </p>
+            <textarea
+              value={creatorNotes}
+              onChange={e => setCreatorNotes(e.target.value)}
+              rows={4}
+              className="w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
+              placeholder={
+                'e.g.\nA = Sarvam (Maitreyi, fast model)\nB = Original recording from call 0921\nGoal: pick the more natural Hindi voice'
+              }
             />
           </div>
 

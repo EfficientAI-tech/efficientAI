@@ -8,9 +8,41 @@ import {
   Loader2,
   Pause,
   Play,
+  Shield,
+  Sparkles,
 } from 'lucide-react'
+import Logo from '../../components/Logo'
 import { publicBlindTestApi, PublicBlindTestEntrySubmit } from '../../lib/api'
 import { BlindTestCustomMetric, PublicBlindTestForm } from '../playground/voice/types'
+
+function BrandedShell({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="min-h-screen flex flex-col bg-gradient-to-br from-slate-50 via-white to-amber-50/40">
+      <header className="border-b border-gray-200/70 bg-white/80 backdrop-blur supports-[backdrop-filter]:bg-white/60 sticky top-0 z-30">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between">
+          <Logo textSize="md" />
+          <div className="hidden sm:flex items-center gap-2 text-xs text-gray-500">
+            <Shield className="w-3.5 h-3.5 text-emerald-500" />
+            Anonymous &amp; secure blind test
+          </div>
+        </div>
+      </header>
+      <main className="flex-1 w-full">{children}</main>
+      <footer className="border-t border-gray-200/70 bg-white/60 backdrop-blur">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 py-4 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-gray-500">
+          <div className="flex items-center gap-1.5">
+            <Sparkles className="w-3.5 h-3.5 text-primary-500" />
+            Powered by <span className="font-semibold text-gray-700">EfficientAI</span> · Voice
+            Playground
+          </div>
+          <div>
+            Provider and voice identities are intentionally hidden until you submit.
+          </div>
+        </div>
+      </footer>
+    </div>
+  )
+}
 
 interface SampleAnswer {
   preferred?: 'X' | 'Y'
@@ -179,9 +211,11 @@ export default function BlindTestForm() {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
-        <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
-      </div>
+      <BrandedShell>
+        <div className="flex items-center justify-center py-24">
+          <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
+        </div>
+      </BrandedShell>
     )
   }
 
@@ -195,13 +229,15 @@ export default function BlindTestForm() {
           ? 'This blind test is no longer accepting responses.'
           : 'Could not load this blind test.')
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50 p-6">
-        <div className="max-w-md w-full bg-white rounded-xl shadow-lg p-8 text-center space-y-3">
-          <AlertCircle className="w-10 h-10 mx-auto text-amber-500" />
-          <h1 className="text-xl font-semibold text-gray-900">Unavailable</h1>
-          <p className="text-sm text-gray-600">{String(message)}</p>
+      <BrandedShell>
+        <div className="flex items-center justify-center p-6 py-16">
+          <div className="max-w-md w-full bg-white rounded-xl shadow-lg p-8 text-center space-y-3 border border-gray-100">
+            <AlertCircle className="w-10 h-10 mx-auto text-amber-500" />
+            <h1 className="text-xl font-semibold text-gray-900">Unavailable</h1>
+            <p className="text-sm text-gray-600">{String(message)}</p>
+          </div>
         </div>
-      </div>
+      </BrandedShell>
     )
   }
 
@@ -209,15 +245,17 @@ export default function BlindTestForm() {
 
   if (submitted) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50 p-6">
-        <div className="max-w-md w-full bg-white rounded-xl shadow-lg p-8 text-center space-y-3">
-          <CheckCircle2 className="w-10 h-10 mx-auto text-green-500" />
-          <h1 className="text-xl font-semibold text-gray-900">Thanks for your response!</h1>
-          <p className="text-sm text-gray-600">
-            Your ratings have been recorded. You can close this tab now.
-          </p>
+      <BrandedShell>
+        <div className="flex items-center justify-center p-6 py-16">
+          <div className="max-w-md w-full bg-white rounded-xl shadow-lg p-8 text-center space-y-3 border border-gray-100">
+            <CheckCircle2 className="w-10 h-10 mx-auto text-green-500" />
+            <h1 className="text-xl font-semibold text-gray-900">Thanks for your response!</h1>
+            <p className="text-sm text-gray-600">
+              Your ratings have been recorded. You can close this tab now.
+            </p>
+          </div>
         </div>
-      </div>
+      </BrandedShell>
     )
   }
 
@@ -226,16 +264,18 @@ export default function BlindTestForm() {
 
   if (alreadySubmitted) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50 p-6">
-        <div className="max-w-md w-full bg-white rounded-xl shadow-lg p-8 text-center space-y-3">
-          <CheckCircle2 className="w-10 h-10 mx-auto text-amber-500" />
-          <h1 className="text-xl font-semibold text-gray-900">You&apos;ve already responded</h1>
-          <p className="text-sm text-gray-600">
-            We&rsquo;ve recorded an earlier submission from <span className="font-medium">{email.trim()}</span> for this blind test.
-            Only one response per email is accepted.
-          </p>
+      <BrandedShell>
+        <div className="flex items-center justify-center p-6 py-16">
+          <div className="max-w-md w-full bg-white rounded-xl shadow-lg p-8 text-center space-y-3 border border-gray-100">
+            <CheckCircle2 className="w-10 h-10 mx-auto text-amber-500" />
+            <h1 className="text-xl font-semibold text-gray-900">You&apos;ve already responded</h1>
+            <p className="text-sm text-gray-600">
+              We&rsquo;ve recorded an earlier submission from <span className="font-medium">{email.trim()}</span> for this blind test.
+              Only one response per email is accepted.
+            </p>
+          </div>
         </div>
-      </div>
+      </BrandedShell>
     )
   }
 
@@ -249,17 +289,33 @@ export default function BlindTestForm() {
     : null
 
   return (
-    <div className="min-h-screen bg-gray-50 py-10 px-4">
-      <div className="max-w-3xl mx-auto space-y-6">
-        <header className="bg-white rounded-xl shadow-lg p-6">
-          <div className="flex items-center gap-3 mb-2">
-            <Headphones className="w-6 h-6 text-amber-500" />
-            <h1 className="text-2xl font-bold text-gray-900">{data.title}</h1>
-          </div>
-          {data.description && (
-            <p className="text-sm text-gray-600 whitespace-pre-line">{data.description}</p>
-          )}
-        </header>
+    <BrandedShell>
+      <div className="py-8 px-4">
+        <div className="max-w-3xl mx-auto space-y-6">
+          <header className="rounded-xl shadow-lg overflow-hidden border border-amber-100 bg-white">
+            <div className="bg-gradient-to-r from-amber-400 via-amber-500 to-orange-500 px-6 py-3 flex items-center gap-2 text-white">
+              <Headphones className="w-4 h-4" />
+              <span className="text-xs font-semibold uppercase tracking-wider">
+                Voice Blind Test
+              </span>
+              <span className="ml-auto text-[10px] uppercase tracking-wider bg-white/20 px-2 py-0.5 rounded-full">
+                {data.samples.length} sample{data.samples.length === 1 ? '' : 's'}
+              </span>
+            </div>
+            <div className="p-6">
+              <h1 className="text-2xl font-bold text-gray-900 mb-2">{data.title}</h1>
+              {data.description ? (
+                <p className="text-sm text-gray-600 whitespace-pre-line leading-relaxed">
+                  {data.description}
+                </p>
+              ) : (
+                <p className="text-sm text-gray-500">
+                  Listen to each pair below, pick the voice you prefer, and rate it on the
+                  metrics provided.
+                </p>
+              )}
+            </div>
+          </header>
 
         <section className="bg-white rounded-xl shadow-lg p-6">
           <h2 className="text-sm font-semibold text-gray-700 mb-3">Tell us who you are</h2>
@@ -400,7 +456,8 @@ export default function BlindTestForm() {
             </button>
           </div>
         </section>
+        </div>
       </div>
-    </div>
+    </BrandedShell>
   )
 }

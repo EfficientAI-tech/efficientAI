@@ -3,13 +3,16 @@ IAM (Identity and Access Management) API Routes
 Manage users, invitations, and roles within organizations
 """
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 from uuid import UUID
 from datetime import datetime, timedelta, timezone
 import secrets
 
 from app.dependencies import get_db, get_organization_id, get_api_key
+from app.core.auth import Principal, get_principal
+from app.core.auth.rbac import require_admin
 from app.models.database import (
     User, OrganizationMember, Invitation, Organization,
     RoleEnum, InvitationStatus
@@ -112,26 +115,36 @@ def get_user_from_api_key(api_key: str, db: Session) -> User:
 
 
 def require_admin_role(
-    organization_id: UUID = Depends(get_organization_id),
-    api_key: str = Depends(get_api_key),
-    db: Session = Depends(get_db)
-):
+    principal: Principal = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> User:
     """
-    Dependency to ensure user has ADMIN role in organization.
+    Resolve the authenticated admin caller to a `User` row.
+
+    Authentication + role check live in `require_admin` (the shared RBAC
+    dependency), which understands every auth provider - API key, Bearer
+    (local password), and SSO. This wrapper only exists so existing IAM
+    handlers can continue to use `current_user: User = Depends(require_admin_role)`
+    and read `current_user.id` / `current_user.email` directly.
     """
-    user = get_user_from_api_key(api_key, db)
-    
-    member = db.query(OrganizationMember).filter(
-        OrganizationMember.organization_id == organization_id,
-        OrganizationMember.user_id == user.id
-    ).first()
-    
-    if not member or member.role != RoleEnum.ADMIN:
+    user: Optional[User] = None
+    if principal.user_id is not None:
+        user = db.query(User).filter(User.id == principal.user_id).first()
+
+    # API keys can be unbound to a user. Fall back to the legacy provisioning
+    # path so behavior matches what callers used to get.
+    if user is None:
+        from app.models.database import APIKey
+        if principal.api_key_id is not None:
+            db_key = db.query(APIKey).filter(APIKey.id == principal.api_key_id).first()
+            if db_key is not None:
+                user = get_user_from_api_key(db_key.key, db)
+
+    if user is None:
         raise HTTPException(
-            status_code=403,
-            detail="Admin role required for this operation"
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authenticated credential is not bound to a user.",
         )
-    
     return user
 
 
@@ -424,4 +437,101 @@ async def cancel_invitation(
     invitation.status = InvitationStatus.DECLINED
     db.commit()
     return None
+
+
+# ---------------------------------------------------------------------------
+# Admin-initiated password reset
+# ---------------------------------------------------------------------------
+#
+# The self-service password change endpoint at `POST /auth/password` requires
+# the user to know their current password. When a member loses access (forgot
+# password, no email recovery configured, etc.) an org admin needs a way to
+# set a new password for them so they can log back in.
+#
+# Rules:
+#   - Caller must be an ADMIN of the same organization as the target user.
+#   - Target user must be an active member of the same organization (so an
+#     admin from Org A can never reset a password belonging to Org B).
+#   - Admins cannot reset their own password through this endpoint - they
+#     must use `POST /auth/password` so the current-password check runs.
+#     This avoids accidentally bypassing the rotation flow on yourself.
+
+
+class AdminPasswordReset(BaseModel):
+    """Payload for an admin resetting another member's password."""
+
+    new_password: str = Field(min_length=8, max_length=256)
+
+
+class AdminPasswordResetResponse(BaseModel):
+    """Confirmation response for a successful admin password reset."""
+
+    user_id: UUID
+    email: str
+    message: str = "Password reset successfully"
+
+
+@router.post(
+    "/users/{user_id}/reset-password",
+    response_model=AdminPasswordResetResponse,
+    operation_id="adminResetUserPassword",
+)
+async def admin_reset_user_password(
+    user_id: UUID,
+    payload: AdminPasswordReset,
+    organization_id: UUID = Depends(get_organization_id),
+    current_user: User = Depends(require_admin_role),
+    db: Session = Depends(get_db),
+) -> AdminPasswordResetResponse:
+    """
+    Reset another organization member's password.
+
+    Requires the caller to be an ADMIN of the organization. The new password
+    is set immediately; existing Bearer tokens for that user remain valid
+    until their natural expiry (the app does not maintain a server-side
+    token revocation list yet). Communicate the new password to the user
+    out-of-band.
+    """
+    if user_id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "You cannot reset your own password via this endpoint. "
+                "Use POST /auth/password to change your password."
+            ),
+        )
+
+    # Target must be a member of the same org. This is the security boundary
+    # that prevents an admin in Org A from resetting passwords in Org B.
+    member = (
+        db.query(OrganizationMember)
+        .filter(
+            OrganizationMember.organization_id == organization_id,
+            OrganizationMember.user_id == user_id,
+        )
+        .first()
+    )
+    if not member:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User is not a member of this organization",
+        )
+
+    target = db.query(User).filter(User.id == user_id).first()
+    if not target:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    target.password_hash = hash_password(payload.new_password)
+    if not target.auth_provider:
+        target.auth_provider = "local"
+    db.commit()
+    db.refresh(target)
+
+    return AdminPasswordResetResponse(
+        user_id=target.id,
+        email=target.email,
+    )
 

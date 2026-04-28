@@ -879,6 +879,11 @@ class TTSBlindTestShare(Base):
     title = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
 
+    # Internal notes visible only to the share creator (e.g. which voice
+    # corresponds to which side, source notes for standalone blind tests).
+    # Never exposed via the public blind test payload.
+    creator_notes = Column(Text, nullable=True)
+
     # JSON list: [{ "key": str, "label": str, "type": "rating"|"comment", "scale": int? }]
     custom_metrics = Column(JSON, nullable=False)
 

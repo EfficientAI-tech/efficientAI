@@ -1,4 +1,4 @@
-import { Trophy, Download, FileText, Loader2, Share2 } from 'lucide-react'
+import { Trophy, Download, FileText, Loader2, Share2, Lock } from 'lucide-react'
 import { useState } from 'react'
 import Button from '../../../../components/Button'
 import ProviderLogo, { getProviderInfo } from '../../../../components/shared/ProviderLogo'
@@ -182,6 +182,25 @@ export default function ComparisonResultsView({
             )}
           </div>
         </div>
+
+        {comparison.blind_test_share?.creator_notes && (
+          <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 p-4">
+            <div className="flex items-start gap-2">
+              <Lock className="w-4 h-4 text-amber-600 mt-0.5 flex-shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-semibold text-amber-900 uppercase tracking-wide mb-1">
+                  Internal notes
+                  <span className="ml-2 normal-case text-[10px] font-medium text-amber-700">
+                    (not shown to raters)
+                  </span>
+                </p>
+                <p className="text-sm text-amber-900 whitespace-pre-line break-words">
+                  {comparison.blind_test_share.creator_notes}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Winner Banner */}
         {showAutomatedMetrics &&

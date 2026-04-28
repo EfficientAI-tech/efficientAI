@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Loader2, Upload, FileAudio, Mic, X, Volume2 } from 'lucide-react'
 import { apiClient } from '../../../../lib/api'
 import type { VoicePlaygroundSourceType } from '../../../../lib/api'
+import ProviderLogo, { getProviderInfo } from '../../../../components/shared/ProviderLogo'
 import ProviderPanel from './ProviderPanel'
 import { TTSVoice, TTSProvider } from '../types'
 
@@ -63,15 +64,39 @@ export default function SourcePanel(props: SourcePanelProps) {
   const accentText = color === 'blue' ? 'text-blue-900' : 'text-purple-900'
   const badgeBg = color === 'blue' ? 'bg-blue-600' : 'bg-purple-600'
 
+  const showTTSBadge = sourceType === 'tts' && selectedProvider
+  const sourceTypeLabel =
+    sourceType === 'tts'
+      ? 'TTS Provider'
+      : sourceType === 'recording'
+        ? 'Call Recording'
+        : 'Uploaded Audio'
+
   return (
     <div className={`p-5 rounded-xl border-2 ${wrapperBg}`}>
-      <div className="flex items-center gap-2 mb-3">
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
         <span
           className={`w-8 h-8 rounded-full ${badgeBg} text-white flex items-center justify-center text-sm font-bold`}
         >
           {label}
         </span>
-        <span className={`font-semibold ${accentText}`}>Side {label} source</span>
+        {showTTSBadge ? (
+          <>
+            <ProviderLogo provider={selectedProvider} size="md" />
+            <span className={`font-semibold ${accentText}`}>
+              {getProviderInfo(selectedProvider).label}
+            </span>
+            {selectedModel && (
+              <span className="text-xs text-gray-600 bg-white/70 px-2 py-0.5 rounded-full border border-gray-200">
+                {selectedModel}
+              </span>
+            )}
+          </>
+        ) : (
+          <span className={`font-semibold ${accentText}`}>
+            Side {label} · {sourceTypeLabel}
+          </span>
+        )}
       </div>
       <div className="flex gap-1.5 mb-4">
         {TAB_OPTIONS.map((opt) => {
