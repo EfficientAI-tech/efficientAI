@@ -5,8 +5,10 @@ Manage integrations with external voice AI platforms (Retell, Vapi, etc.)
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
+from datetime import datetime, timezone
 from typing import List
 from uuid import UUID
+from loguru import logger
 
 from app.dependencies import get_db, get_organization_id, get_api_key
 from app.models.database import Integration, IntegrationPlatform, Agent
@@ -14,8 +16,25 @@ from app.models.schemas import (
     IntegrationCreate, IntegrationUpdate, IntegrationResponse
 )
 from app.core.encryption import encrypt_api_key, decrypt_api_key
+from app.services.voice_providers import get_voice_provider
 
 router = APIRouter(prefix="/integrations", tags=["Integrations"])
+
+
+def _validate_smallest_connection(raw_api_key: str):
+    """Validate a Smallest key via GET /atoms/v1/user."""
+    try:
+        provider_class = get_voice_provider(IntegrationPlatform.SMALLEST.value)
+        provider = provider_class(api_key=raw_api_key)
+        provider.test_connection()
+        if hasattr(provider, "get_user_details"):
+            return provider.get_user_details()
+        return None
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Smallest API key validation failed: {str(e)}"
+        )
 
 
 @router.post("", response_model=IntegrationResponse, status_code=status.HTTP_201_CREATED, operation_id="createIntegration")
@@ -29,9 +48,6 @@ async def create_integration(
     Create a new integration with an external platform.
     Requires at least WRITER role.
     """
-    # Encrypt the API key before storing
-    encrypted_api_key = encrypt_api_key(integration_data.api_key)
-    
     # Check if integration already exists for this platform
     # Handle both string and enum comparisons for platform
     from sqlalchemy import func
@@ -56,14 +72,27 @@ async def create_integration(
             status_code=400,
             detail=f"An active integration for {platform_value} already exists"
         )
+
+    user_details = None
+    if platform_value.lower() == IntegrationPlatform.SMALLEST.value:
+        user_details = _validate_smallest_connection(integration_data.api_key)
+
+    # Encrypt the API key before storing
+    encrypted_api_key = encrypt_api_key(integration_data.api_key)
+    integration_name = integration_data.name
+    if not integration_name and isinstance(user_details, dict):
+        email = user_details.get("email") or user_details.get("userEmail")
+        if email:
+            integration_name = f"Smallest ({email})"
     
     integration = Integration(
         organization_id=organization_id,
-        platform=integration_data.platform,
-        name=integration_data.name,
+        platform=platform_value,
+        name=integration_name,
         api_key=encrypted_api_key,
         public_key=integration_data.public_key,
-        is_active=True
+        is_active=True,
+        last_tested_at=datetime.now(timezone.utc) if user_details is not None else None,
     )
     
     db.add(integration)
@@ -86,8 +115,25 @@ async def list_integrations(
     integrations = db.query(Integration).filter(
         Integration.organization_id == organization_id
     ).order_by(Integration.created_at.desc()).all()
-    
-    return integrations
+
+    valid_platforms = {p.value for p in IntegrationPlatform}
+    filtered_integrations: List[Integration] = []
+    for integration in integrations:
+        raw_platform = (
+            integration.platform.value
+            if hasattr(integration.platform, "value")
+            else str(integration.platform).lower()
+        )
+        if raw_platform in valid_platforms:
+            filtered_integrations.append(integration)
+        else:
+            logger.warning(
+                "Skipping integration {} with invalid platform '{}'",
+                integration.id,
+                integration.platform,
+            )
+
+    return filtered_integrations
 
 
 @router.get("/{integration_id}", response_model=IntegrationResponse)
@@ -107,6 +153,14 @@ async def get_integration(
     ).first()
     
     if not integration:
+        raise HTTPException(status_code=404, detail="Integration not found")
+
+    raw_platform = (
+        integration.platform.value
+        if hasattr(integration.platform, "value")
+        else str(integration.platform).lower()
+    )
+    if raw_platform not in {p.value for p in IntegrationPlatform}:
         raise HTTPException(status_code=404, detail="Integration not found")
     
     return integration
@@ -136,6 +190,10 @@ async def update_integration(
         integration.name = integration_update.name
     
     if integration_update.api_key is not None:
+        platform_value = integration.platform.value if hasattr(integration.platform, 'value') else integration.platform
+        if platform_value.lower() == IntegrationPlatform.SMALLEST.value:
+            _validate_smallest_connection(integration_update.api_key)
+            integration.last_tested_at = datetime.now(timezone.utc)
         integration.api_key = encrypt_api_key(integration_update.api_key)
     
     if integration_update.public_key is not None:

@@ -9,6 +9,8 @@ import { useToast } from '../../../hooks/useToast'
 import RetellCallDetails from '../../../components/call-recordings/RetellCallDetails'
 import VapiCallDetails from '../../../components/call-recordings/VapiCallDetails'
 import ElevenLabsCallDetails from '../../../components/call-recordings/ElevenLabsCallDetails'
+import CustomWebSocketCallDetails from '../../../components/call-recordings/CustomWebSocketCallDetails'
+import SmallestCallDetails from '../../../components/call-recordings/SmallestCallDetails'
 
 // Comprehensive metric information with descriptions and ideal values
 const METRIC_INFO: Record<string, { 
@@ -550,7 +552,11 @@ export default function CallRecordingDetail() {
               </div>
               <div>
                 <p className="text-xs text-gray-500 font-medium mb-1">Platform</p>
-                <p className="text-sm text-gray-900">{callRecording.provider_platform || 'N/A'}</p>
+                <p className="text-sm text-gray-900">
+                  {callRecording.provider_platform === 'custom_websocket'
+                    ? 'Custom WebSocket'
+                    : callRecording.provider_platform || 'N/A'}
+                </p>
               </div>
               <div>
                 <p className="text-xs text-gray-500 font-medium mb-1">Provider Call ID</p>
@@ -736,6 +742,10 @@ export default function CallRecordingDetail() {
                 <VapiCallDetails callData={callRecording.call_data} />
               ) : callRecording.provider_platform === 'elevenlabs' ? (
                 <ElevenLabsCallDetails callData={callRecording.call_data} callShortId={callShortId} />
+              ) : callRecording.provider_platform === 'custom_websocket' ? (
+                <CustomWebSocketCallDetails callData={callRecording.call_data} callShortId={callShortId} />
+              ) : callRecording.provider_platform === 'smallest' ? (
+                <SmallestCallDetails callData={callRecording.call_data} />
               ) : (
                 <>
                   <h2 className="text-lg font-semibold text-gray-900 mb-4">Call Data (JSON)</h2>

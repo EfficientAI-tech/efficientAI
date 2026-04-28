@@ -2,13 +2,15 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../lib/api'
 import { useState } from 'react'
 import { Role, Invitation, OrganizationMember, InvitationCreate } from '../../types/api'
-import { Users, Mail, UserPlus, Shield, ShieldCheck, ShieldAlert, X, Trash2 } from 'lucide-react'
+import { Users, Mail, UserPlus, Shield, ShieldCheck, ShieldAlert, X, Trash2, KeyRound, Eye, EyeOff } from 'lucide-react'
 import Button from '../../components/Button'
 import { useToast } from '../../hooks/useToast'
+import { useIsAdmin } from '../../hooks/useRole'
 
 export default function IAM() {
   const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
+  const isAdmin = useIsAdmin()
   const [showInviteModal, setShowInviteModal] = useState(false)
   const [inviteEmail, setInviteEmail] = useState('')
   const [inviteRole, setInviteRole] = useState<Role>(Role.READER)
@@ -16,6 +18,13 @@ export default function IAM() {
   const [memberToRemove, setMemberToRemove] = useState<OrganizationMember | null>(null)
   const [showCancelModal, setShowCancelModal] = useState(false)
   const [invitationToCancel, setInvitationToCancel] = useState<Invitation | null>(null)
+  // Admin-initiated password reset
+  const [showResetPasswordModal, setShowResetPasswordModal] = useState(false)
+  const [memberToResetPassword, setMemberToResetPassword] = useState<OrganizationMember | null>(null)
+  const [resetPassword, setResetPassword] = useState('')
+  const [resetPasswordConfirm, setResetPasswordConfirm] = useState('')
+  const [showResetPasswordPlain, setShowResetPasswordPlain] = useState(false)
+  const [resetPasswordError, setResetPasswordError] = useState<string | null>(null)
 
   const { data: users, isLoading: usersLoading } = useQuery({
     queryKey: ['iam', 'users'],
@@ -106,6 +115,72 @@ export default function IAM() {
     inviteMutation.mutate({ email: inviteEmail, role: inviteRole })
   }
 
+  const closeResetPasswordModal = () => {
+    setShowResetPasswordModal(false)
+    setMemberToResetPassword(null)
+    setResetPassword('')
+    setResetPasswordConfirm('')
+    setShowResetPasswordPlain(false)
+    setResetPasswordError(null)
+  }
+
+  const resetPasswordMutation = useMutation({
+    mutationFn: ({ userId, newPassword }: { userId: string; newPassword: string }) =>
+      apiClient.adminResetUserPassword(userId, newPassword),
+    onSuccess: () => {
+      showToast('Password reset successfully', 'success')
+      closeResetPasswordModal()
+    },
+    onError: (error: any) => {
+      const errorMessage = error.response?.data?.detail || error.message || 'Failed to reset password'
+      setResetPasswordError(errorMessage)
+    },
+  })
+
+  const handleResetPasswordClick = (member: OrganizationMember) => {
+    setMemberToResetPassword(member)
+    setResetPassword('')
+    setResetPasswordConfirm('')
+    setShowResetPasswordPlain(false)
+    setResetPasswordError(null)
+    setShowResetPasswordModal(true)
+  }
+
+  const handleGenerateResetPassword = () => {
+    // 16-char URL-safe-ish password from the browser's CSPRNG. Avoids a
+    // dependency just for password generation.
+    const buf = new Uint8Array(16)
+    crypto.getRandomValues(buf)
+    const alphabet =
+      'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%^&*'
+    let pwd = ''
+    for (let i = 0; i < buf.length; i++) {
+      pwd += alphabet[buf[i] % alphabet.length]
+    }
+    setResetPassword(pwd)
+    setResetPasswordConfirm(pwd)
+    setShowResetPasswordPlain(true)
+    setResetPasswordError(null)
+  }
+
+  const handleResetPasswordSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    setResetPasswordError(null)
+    if (!memberToResetPassword) return
+    if (resetPassword.length < 8) {
+      setResetPasswordError('Password must be at least 8 characters long')
+      return
+    }
+    if (resetPassword !== resetPasswordConfirm) {
+      setResetPasswordError('Passwords do not match')
+      return
+    }
+    resetPasswordMutation.mutate({
+      userId: memberToResetPassword.user_id,
+      newPassword: resetPassword,
+    })
+  }
+
   const getRoleIcon = (role: Role) => {
     switch (role) {
       case Role.ADMIN:
@@ -138,16 +213,20 @@ export default function IAM() {
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Identity & Access Management</h1>
           <p className="mt-2 text-sm text-gray-600">
-            Manage users and their permissions in your organization
+            {isAdmin
+              ? 'Manage users and their permissions in your organization'
+              : 'View users and pending invitations in your organization'}
           </p>
         </div>
-        <Button
-          variant="primary"
-          onClick={() => setShowInviteModal(true)}
-          leftIcon={<UserPlus className="h-5 w-5" />}
-        >
-          Invite User
-        </Button>
+        {isAdmin && (
+          <Button
+            variant="primary"
+            onClick={() => setShowInviteModal(true)}
+            leftIcon={<UserPlus className="h-5 w-5" />}
+          >
+            Invite User
+          </Button>
+        )}
       </div>
 
       {/* Users Section */}
@@ -178,9 +257,11 @@ export default function IAM() {
                     <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Joined
                     </th>
-                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Actions
-                    </th>
+                    {isAdmin && (
+                      <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Actions
+                      </th>
+                    )}
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
@@ -200,37 +281,57 @@ export default function IAM() {
                         <div className="text-sm text-gray-900">{member.user.email}</div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
-                        <select
-                          value={member.role}
-                          onChange={(e) =>
-                            updateRoleMutation.mutate({
-                              userId: member.user_id,
-                              role: e.target.value as Role,
-                            })
-                          }
-                          className="px-3 py-1.5 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                          disabled={updateRoleMutation.isPending}
-                        >
-                          <option value={Role.READER}>Reader</option>
-                          <option value={Role.WRITER}>Writer</option>
-                          <option value={Role.ADMIN}>Admin</option>
-                        </select>
+                        {isAdmin ? (
+                          <select
+                            value={member.role}
+                            onChange={(e) =>
+                              updateRoleMutation.mutate({
+                                userId: member.user_id,
+                                role: e.target.value as Role,
+                              })
+                            }
+                            className="px-3 py-1.5 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                            disabled={updateRoleMutation.isPending}
+                          >
+                            <option value={Role.READER}>Reader</option>
+                            <option value={Role.WRITER}>Writer</option>
+                            <option value={Role.ADMIN}>Admin</option>
+                          </select>
+                        ) : (
+                          <span className="text-sm text-gray-700 capitalize">
+                            {member.role}
+                          </span>
+                        )}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                         {new Date(member.joined_at).toLocaleDateString()}
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleRemoveClick(member)}
-                          leftIcon={<Trash2 className="h-4 w-4" />}
-                          title="Remove user"
-                          className="text-red-600 hover:bg-red-50 hover:text-red-700"
-                        >
-                          Remove
-                        </Button>
-                      </td>
+                      {isAdmin && (
+                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                          <div className="flex items-center gap-2">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleResetPasswordClick(member)}
+                              leftIcon={<KeyRound className="h-4 w-4" />}
+                              title="Reset password"
+                              className="text-gray-700 hover:bg-gray-50"
+                            >
+                              Reset Password
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleRemoveClick(member)}
+                              leftIcon={<Trash2 className="h-4 w-4" />}
+                              title="Remove user"
+                              className="text-red-600 hover:bg-red-50 hover:text-red-700"
+                            >
+                              Remove
+                            </Button>
+                          </div>
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
@@ -268,7 +369,7 @@ export default function IAM() {
                   </div>
                   <div className="flex items-center gap-3">
                     {getInvitationStatusBadge(invitation.status)}
-                    {invitation.status === 'pending' && (
+                    {isAdmin && invitation.status === 'pending' && (
                       <Button
                         variant="ghost"
                         size="sm"
@@ -411,6 +512,147 @@ export default function IAM() {
                 </Button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Admin Reset Password Modal */}
+      {showResetPasswordModal && memberToResetPassword && (
+        <div
+          className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+          onClick={closeResetPasswordModal}
+        >
+          <div
+            className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+              <h3 className="text-lg font-semibold text-gray-900">Reset User Password</h3>
+              <button
+                onClick={closeResetPasswordModal}
+                className="text-gray-400 hover:text-gray-600"
+                type="button"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <form onSubmit={handleResetPasswordSubmit} className="p-6 space-y-4">
+              <div className="flex items-start gap-4">
+                <div className="flex-shrink-0">
+                  <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center">
+                    <KeyRound className="h-6 w-6 text-blue-600" />
+                  </div>
+                </div>
+                <div className="flex-1">
+                  <p className="text-sm text-gray-700 mb-1">
+                    Set a new password for{' '}
+                    <span className="font-semibold text-gray-900">
+                      {memberToResetPassword.user.name || memberToResetPassword.user.email}
+                    </span>
+                    .
+                  </p>
+                  <p className="text-xs text-gray-500">
+                    The user will need this password to sign in. Send it to them
+                    over a secure channel - it will not be displayed again after
+                    you close this dialog.
+                  </p>
+                </div>
+              </div>
+
+              <div>
+                <div className="flex justify-between items-center mb-1">
+                  <label
+                    htmlFor="new-password"
+                    className="block text-sm font-medium text-gray-700"
+                  >
+                    New password
+                  </label>
+                  <button
+                    type="button"
+                    onClick={handleGenerateResetPassword}
+                    className="text-xs text-primary-600 hover:text-primary-700 font-medium"
+                  >
+                    Generate strong password
+                  </button>
+                </div>
+                <div className="relative">
+                  <input
+                    id="new-password"
+                    type={showResetPasswordPlain ? 'text' : 'password'}
+                    required
+                    minLength={8}
+                    value={resetPassword}
+                    onChange={(e) => setResetPassword(e.target.value)}
+                    className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    placeholder="At least 8 characters"
+                    autoComplete="new-password"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowResetPasswordPlain((v) => !v)}
+                    className="absolute inset-y-0 right-0 px-3 flex items-center text-gray-400 hover:text-gray-600"
+                    title={showResetPasswordPlain ? 'Hide password' : 'Show password'}
+                  >
+                    {showResetPasswordPlain ? (
+                      <EyeOff className="h-4 w-4" />
+                    ) : (
+                      <Eye className="h-4 w-4" />
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="confirm-password"
+                  className="block text-sm font-medium text-gray-700 mb-1"
+                >
+                  Confirm new password
+                </label>
+                <input
+                  id="confirm-password"
+                  type={showResetPasswordPlain ? 'text' : 'password'}
+                  required
+                  minLength={8}
+                  value={resetPasswordConfirm}
+                  onChange={(e) => setResetPasswordConfirm(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  placeholder="Re-enter new password"
+                  autoComplete="new-password"
+                />
+              </div>
+
+              {resetPasswordError && (
+                <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2">
+                  {resetPasswordError}
+                </div>
+              )}
+
+              <div className="flex gap-3 pt-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={closeResetPasswordModal}
+                  disabled={resetPasswordMutation.isPending}
+                  className="flex-1"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  variant="primary"
+                  isLoading={resetPasswordMutation.isPending}
+                  leftIcon={
+                    !resetPasswordMutation.isPending ? (
+                      <KeyRound className="h-4 w-4" />
+                    ) : undefined
+                  }
+                  className="flex-1"
+                >
+                  Reset Password
+                </Button>
+              </div>
+            </form>
           </div>
         </div>
       )}

@@ -16,12 +16,14 @@ export interface TTSProvider {
   supported_sample_rates?: number[]
 }
 
+export type TTSSampleSourceType = 'tts' | 'recording' | 'upload'
+
 export interface TTSSample {
   id: string
-  provider: string
-  model: string
-  voice_id: string
-  voice_name: string
+  provider: string | null
+  model: string | null
+  voice_id: string | null
+  voice_name: string | null
   side?: string | null
   sample_index: number
   run_index: number
@@ -34,15 +36,20 @@ export interface TTSSample {
   evaluation_metrics: Record<string, number | string | null> | null
   status: string
   error_message: string | null
+  source_type?: TTSSampleSourceType
+  source_ref_id?: string | null
 }
+
+export type TTSComparisonMode = 'benchmark' | 'blind_test_only'
 
 export interface TTSComparison {
   id: string
   simulation_id: string | null
   name: string
   status: string
-  provider_a: string
-  model_a: string
+  mode?: TTSComparisonMode
+  provider_a: string | null
+  model_a: string | null
   voices_a: Array<{ id: string; name: string; sample_rate_hz?: number }>
   provider_b?: string | null
   model_b?: string | null
@@ -51,6 +58,7 @@ export interface TTSComparison {
   num_runs: number
   blind_test_results: Array<{ sample_index: number; preferred: string }> | null
   evaluation_summary: Record<string, any> | null
+  blind_test_share?: BlindTestShareSummary | null
   eval_stt_provider?: string | null
   eval_stt_model?: string | null
   error_message: string | null
@@ -59,18 +67,108 @@ export interface TTSComparison {
   updated_at: string
 }
 
+export type BlindTestMetricType = 'rating' | 'comment'
+
+export interface BlindTestCustomMetric {
+  key: string
+  label: string
+  type: BlindTestMetricType
+  scale?: number
+}
+
+export interface BlindTestShareSummary {
+  id: string
+  share_token: string
+  public_path: string
+  title: string
+  status: 'open' | 'closed' | string
+  creator_notes?: string | null
+}
+
+export interface BlindTestShareAggregateMetric {
+  label: string
+  scale: number | null
+  avg_a: number | null
+  avg_b: number | null
+  samples_a: number
+  samples_b: number
+}
+
+export interface BlindTestShareAggregates {
+  response_count: number
+  a_wins: number
+  b_wins: number
+  a_pct: number
+  b_pct: number
+  metrics: Record<string, BlindTestShareAggregateMetric>
+}
+
+export interface BlindTestShareDetail {
+  id: string
+  comparison_id: string
+  share_token: string
+  public_path: string
+  title: string
+  description: string | null
+  creator_notes: string | null
+  custom_metrics: BlindTestCustomMetric[]
+  status: 'open' | 'closed' | string
+  created_at: string | null
+  updated_at: string | null
+  closed_at: string | null
+  response_count?: number
+  aggregates?: BlindTestShareAggregates
+}
+
+export interface BlindTestResponseRow {
+  id: string
+  share_id: string
+  rater_name: string
+  rater_email: string
+  responses: Array<{
+    sample_index: number
+    preferred: 'A' | 'B'
+    ratings_a: Record<string, number>
+    ratings_b: Record<string, number>
+    comment?: string | null
+    flipped?: boolean
+  }>
+  submitted_at: string | null
+}
+
+export interface PublicBlindTestForm {
+  title: string
+  description: string | null
+  custom_metrics: BlindTestCustomMetric[]
+  samples: Array<{
+    sample_index: number
+    text: string
+    voice_x_url: string | null
+    voice_y_url: string | null
+  }>
+  client_token: string
+  status: string
+}
+
 export interface TTSComparisonSummary {
   id: string
   simulation_id: string | null
   name: string
   status: string
-  provider_a: string
-  model_a: string
+  mode?: TTSComparisonMode
+  provider_a: string | null
+  model_a: string | null
   provider_b?: string | null
   model_b?: string | null
   sample_count: number
   num_runs: number
   created_at: string
+  has_share?: boolean
+  share_token?: string | null
+  share_status?: string | null
+  share_title?: string | null
+  share_creator_notes?: string | null
+  response_count?: number
 }
 
 export interface TTSAnalyticsRow {

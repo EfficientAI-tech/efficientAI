@@ -17,6 +17,7 @@ interface FormData {
   description: string
   call_type: string
   call_medium: 'phone_call' | 'web_call'
+  telephony_phone_number_id: string
   voice_bundle_id: string
   voice_ai_integration_id: string
   voice_ai_agent_id: string
@@ -43,6 +44,7 @@ export default function AgentDetail() {
     description: '',
     call_type: 'outbound',
     call_medium: 'phone_call',
+    telephony_phone_number_id: '',
     voice_bundle_id: '',
     voice_ai_integration_id: '',
     voice_ai_agent_id: ''
@@ -78,6 +80,7 @@ export default function AgentDetail() {
         description: agent.description || '',
         call_type: agent.call_type,
         call_medium: agent.call_medium || 'phone_call',
+        telephony_phone_number_id: agent.telephony_phone_number_id || '',
         voice_bundle_id: agent.voice_bundle_id || '',
         voice_ai_integration_id: agent.voice_ai_integration_id || '',
         voice_ai_agent_id: agent.voice_ai_agent_id || ''
@@ -98,8 +101,10 @@ export default function AgentDetail() {
 
       if (data.call_medium === 'phone_call') {
         payload.phone_number = data.phone_number?.trim() || null
+        payload.telephony_phone_number_id = data.telephony_phone_number_id?.trim() || null
       } else {
         payload.phone_number = null
+        payload.telephony_phone_number_id = null
       }
 
       const voiceBundleId = data.voice_bundle_id?.trim()
@@ -126,10 +131,19 @@ export default function AgentDetail() {
 
   const syncPromptMutation = useMutation({
     mutationFn: () => apiClient.syncProviderPrompt(id!),
-    onSuccess: () => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['agent', id] })
       queryClient.invalidateQueries({ queryKey: ['agents'] })
-      showToast('Provider prompt synced successfully!', 'success')
+
+      if (data.synced) {
+        showToast('Provider prompt synced successfully!', 'success')
+        return
+      }
+
+      showToast(
+        'No prompt returned from provider. Verify the provider agent has a system prompt configured.',
+        'error'
+      )
     },
     onError: (error: any) => {
       showToast(
@@ -213,6 +227,7 @@ export default function AgentDetail() {
         description: agent.description || '',
         call_type: agent.call_type,
         call_medium: agent.call_medium || 'phone_call',
+        telephony_phone_number_id: agent.telephony_phone_number_id || '',
         voice_bundle_id: agent.voice_bundle_id || '',
         voice_ai_integration_id: agent.voice_ai_integration_id || '',
         voice_ai_agent_id: agent.voice_ai_agent_id || ''

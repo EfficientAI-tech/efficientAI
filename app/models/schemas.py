@@ -1,6 +1,6 @@
 """Pydantic schemas for request/response validation."""
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, validator
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from uuid import UUID
@@ -9,7 +9,8 @@ from app.models.enums import (
     LanguageEnum, CallTypeEnum, CallMediumEnum, GenderEnum, AccentEnum, BackgroundNoiseEnum,
     IntegrationPlatform, ModelProvider, VoiceBundleType, TestAgentConversationStatus,
     MetricType, MetricTrigger, CallRecordingStatus, AlertMetricType, AlertAggregation,
-    AlertOperator, AlertNotifyFrequency, AlertStatus, AlertHistoryStatus, CronJobStatus
+    AlertOperator, AlertNotifyFrequency, AlertStatus, AlertHistoryStatus, CronJobStatus,
+    CallImportStatus, CallImportRowStatus,
 )
 
 
@@ -180,6 +181,7 @@ class AgentCreate(BaseModel):
     description: str = Field(..., min_length=1)
     call_type: CallTypeEnum = CallTypeEnum.OUTBOUND
     call_medium: CallMediumEnum = CallMediumEnum.PHONE_CALL
+    telephony_phone_number_id: Optional[UUID] = None
     voice_bundle_id: Optional[UUID] = None
     ai_provider_id: Optional[UUID] = None
     voice_ai_integration_id: UUID = Field(..., description="Voice AI integration is required")
@@ -230,6 +232,7 @@ class AgentUpdate(BaseModel):
     description: Optional[str] = None
     call_type: Optional[CallTypeEnum] = None
     call_medium: Optional[CallMediumEnum] = None
+    telephony_phone_number_id: Optional[UUID] = None
     voice_bundle_id: Optional[UUID] = None
     voice_ai_integration_id: Optional[UUID] = None
     voice_ai_agent_id: Optional[str] = None
@@ -267,6 +270,7 @@ class AgentResponse(BaseModel):
     description: Optional[str]
     call_type: CallTypeEnum
     call_medium: CallMediumEnum
+    telephony_phone_number_id: Optional[UUID] = None
     voice_bundle_id: Optional[UUID]
     ai_provider_id: Optional[UUID]
     voice_ai_integration_id: Optional[UUID]
@@ -1058,6 +1062,12 @@ class MetricCreate(BaseModel):
     metric_type: MetricType = MetricType.RATING
     trigger: MetricTrigger = MetricTrigger.ALWAYS
     enabled: bool = True
+    metric_origin: str = "custom"
+    supported_surfaces: List[str] = ["agent"]
+    enabled_surfaces: Optional[List[str]] = None
+    custom_data_type: Optional[str] = None
+    custom_config: Optional[Dict[str, Any]] = None
+    tags: Optional[List[str]] = None
     
     model_config = ConfigDict(json_schema_extra={
             "example": {
@@ -1077,6 +1087,12 @@ class MetricUpdate(BaseModel):
     metric_type: Optional[MetricType] = None
     trigger: Optional[MetricTrigger] = None
     enabled: Optional[bool] = None
+    metric_origin: Optional[str] = None
+    supported_surfaces: Optional[List[str]] = None
+    enabled_surfaces: Optional[List[str]] = None
+    custom_data_type: Optional[str] = None
+    custom_config: Optional[Dict[str, Any]] = None
+    tags: Optional[List[str]] = None
 
 
 class MetricResponse(BaseModel):
@@ -1089,6 +1105,12 @@ class MetricResponse(BaseModel):
     trigger: MetricTrigger
     enabled: bool
     is_default: bool
+    metric_origin: str
+    supported_surfaces: List[str]
+    enabled_surfaces: List[str]
+    custom_data_type: Optional[str]
+    custom_config: Optional[Dict[str, Any]]
+    tags: Optional[List[str]]
     created_at: datetime
     updated_at: datetime
     created_by: Optional[str]
@@ -1126,6 +1148,22 @@ class MetricResponse(BaseModel):
                         return enum_member
                 raise ValueError(f"Invalid MetricTrigger value: {v}")
         return v
+
+    @validator('supported_surfaces', 'enabled_surfaces', pre=True)
+    def normalize_surfaces(cls, v):
+        if v is None:
+            return []
+        if isinstance(v, str):
+            return [v]
+        if isinstance(v, (list, tuple)):
+            return [str(item).lower() for item in v if item]
+        return []
+
+    @validator('metric_origin', pre=True)
+    def normalize_metric_origin(cls, v):
+        if v is None:
+            return "custom"
+        return str(v).lower()
     
     model_config = ConfigDict(from_attributes=True)
 
@@ -1594,3 +1632,211 @@ class PromptPartialDetailResponse(PromptPartialResponse):
     versions: List[PromptPartialVersionResponse] = []
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# ============================================
+# TELEPHONY SCHEMAS (provider-agnostic)
+# ============================================
+
+
+class TelephonyIntegrationCreate(BaseModel):
+    """Schema for creating a telephony provider integration."""
+
+    provider: str = "plivo"
+    auth_id: str
+    auth_token: str
+    verify_app_uuid: Optional[str] = None
+    voice_app_id: Optional[str] = None
+    sip_domain: Optional[str] = None
+    masking_config: Optional[Dict[str, Any]] = None
+
+
+class TelephonyIntegrationUpdate(BaseModel):
+    """Schema for partial updates to a telephony provider integration."""
+
+    provider: Optional[str] = None
+    auth_id: Optional[str] = None
+    auth_token: Optional[str] = None
+    verify_app_uuid: Optional[str] = None
+    voice_app_id: Optional[str] = None
+    sip_domain: Optional[str] = None
+    masking_config: Optional[Dict[str, Any]] = None
+    is_active: Optional[bool] = None
+
+
+class TelephonyIntegrationResponse(BaseModel):
+    """Safe response model for telephony integration without secrets."""
+
+    id: UUID
+    organization_id: UUID
+    provider: str
+    verify_app_uuid: Optional[str]
+    voice_app_id: Optional[str]
+    sip_domain: Optional[str]
+    masking_config: Optional[Dict[str, Any]]
+    is_active: bool
+    last_tested_at: Optional[datetime]
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class TelephonyPhoneNumberResponse(BaseModel):
+    """Telephony phone number inventory response schema."""
+
+    id: UUID
+    phone_number: str
+    country_iso2: Optional[str]
+    region: Optional[str]
+    number_type: Optional[str]
+    capabilities: Optional[Dict[str, Any]]
+    is_masking_pool: bool
+    agent_id: Optional[UUID]
+    is_active: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class TelephonyVerifyStartRequest(BaseModel):
+    """Request schema for starting voice OTP verification."""
+
+    phone_number: str
+    provider: str = "plivo"
+
+
+class TelephonyVerifyStartResponse(BaseModel):
+    """Response schema for started voice OTP verification."""
+
+    session_id: UUID
+    provider_session_uuid: str
+    status: str
+    message: str
+
+
+class TelephonyVerifyCheckRequest(BaseModel):
+    """Request schema for checking a submitted OTP code."""
+
+    session_id: UUID
+    otp_code: str
+    provider: str = "plivo"
+
+
+class TelephonyVerifyCheckResponse(BaseModel):
+    """Response schema for OTP check status."""
+
+    verified: bool
+    status: str
+    message: str
+
+
+class TelephonyMaskingSessionCreate(BaseModel):
+    """Request schema for creating a number masking session."""
+
+    party_a_number: str
+    party_b_number: str
+    provider: str = "plivo"
+    expires_in_minutes: Optional[int] = 60
+    metadata: Optional[Dict[str, Any]] = None
+    provider: str = "plivo"
+
+
+class TelephonyMaskingSessionResponse(BaseModel):
+    """Response schema for masking sessions."""
+
+    id: UUID
+    masked_number: str
+    party_a_number: str
+    party_b_number: str
+    status: str
+    expires_at: Optional[datetime]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class TelephonyOutboundCallRequest(BaseModel):
+    """Request schema for outbound call initiation."""
+
+    from_number: str
+    to_number: str
+    answer_url: Optional[str] = None
+    agent_id: Optional[UUID] = None
+
+
+class TelephonyOutboundCallResponse(BaseModel):
+    """Response schema for outbound call initiation."""
+
+    provider_request_uuid: str
+    call_status: str
+    from_number: str
+    to_number: str
+    message: str
+
+
+# --- Call Import Schemas ---
+
+class CallImportRowResponse(BaseModel):
+    """Single row within a call-import batch."""
+
+    id: UUID
+    row_index: int
+    external_call_id: str
+    recording_url: Optional[str] = None
+    transcript: Optional[str] = None
+    status: CallImportRowStatus
+    recording_s3_key: Optional[str] = None
+    recording_content_type: Optional[str] = None
+    recording_size_bytes: Optional[int] = None
+    error_message: Optional[str] = None
+    attempts: int
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CallImportResponse(BaseModel):
+    """Summary of a call-import batch."""
+
+    id: UUID
+    organization_id: UUID
+    provider: str
+    original_filename: Optional[str] = None
+    total_rows: int
+    completed_rows: int
+    failed_rows: int
+    status: CallImportStatus
+    error_message: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CallImportDetailResponse(CallImportResponse):
+    """A call-import batch with its rows expanded."""
+
+    rows: List[CallImportRowResponse] = Field(default_factory=list)
+
+
+class CallImportListResponse(BaseModel):
+    """Paginated list of call-import batches."""
+
+    items: List[CallImportResponse]
+    total: int
+    page: int
+    page_size: int
+
+
+class CallImportUploadResponse(BaseModel):
+    """Response returned right after a CSV is accepted."""
+
+    id: UUID
+    total_rows: int
+    status: CallImportStatus
+    message: str

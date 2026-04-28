@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom'
 import { Phone } from 'lucide-react'
-import { TestAgent, Integration } from '../../../types/api'
+import { TestAgent, Integration, IntegrationPlatform } from '../../../types/api'
+import { getIntegrationPlatformLabel, getIntegrationPlatformLogo } from '../../../config/providers'
 
 interface AgentsTableProps {
   agents: TestAgent[]
@@ -21,12 +22,12 @@ export default function AgentsTable({
 
   const getIntegrationLogo = (agent: TestAgent) => {
     const integration = integrations.find((i) => i.id === agent.voice_ai_integration_id)
-    if (integration?.platform === 'retell') {
-      return <img src="/retellai.png" alt="Retell" className="h-5 w-5 object-contain" title="Retell AI" />
-    } else if (integration?.platform === 'vapi') {
-      return <img src="/vapiai.jpg" alt="Vapi" className="h-5 w-5 rounded-full object-contain" title="Vapi AI" />
-    } else if (integration?.platform === 'elevenlabs') {
-      return <img src="/elevenlabs.jpg" alt="ElevenLabs" className="h-5 w-5 rounded-full object-contain" title="ElevenLabs" />
+    if (!integration?.platform) return null
+    const platform = integration.platform as IntegrationPlatform
+    const logo = getIntegrationPlatformLogo(platform)
+    const label = getIntegrationPlatformLabel(platform)
+    if (logo) {
+      return <img src={logo} alt={label} className="h-5 w-5 object-contain" title={label} />
     }
     return null
   }

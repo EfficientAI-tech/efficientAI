@@ -21,6 +21,10 @@ import type {
   S3ListFilesResponse,
   S3BrowseResponse,
   S3Status,
+  CallImportDetail,
+  CallImportListResponse,
+  CallImportStatus,
+  CallImportUploadResponse,
 } from '../types/api'
 
 export interface EnterpriseFeatureMeta {
@@ -31,12 +35,123 @@ export interface EnterpriseFeatureMeta {
 
 export type EnterpriseFeatureCatalog = Record<string, EnterpriseFeatureMeta>
 
+export type VoicePlaygroundSourceType = 'tts' | 'recording' | 'upload'
+
+export interface VoicePlaygroundSideConfig {
+  source_type: VoicePlaygroundSourceType
+  provider?: string
+  model?: string
+  voices?: Array<{ id: string; name: string; sample_rate_hz?: number }>
+  call_import_row_ids?: string[]
+  upload_s3_keys?: string[]
+}
+
+export type VoicePlaygroundBlindTestRefType = 'recording' | 'upload' | 'tts_sample'
+
+export interface VoicePlaygroundBlindTestAudioRef {
+  type: VoicePlaygroundBlindTestRefType
+  call_import_row_id?: string
+  upload_s3_key?: string
+  tts_sample_id?: string
+  label?: string
+}
+
+export interface VoicePlaygroundBlindTestPair {
+  text?: string
+  x: VoicePlaygroundBlindTestAudioRef
+  y: VoicePlaygroundBlindTestAudioRef
+}
+
 export interface LicenseInfoResponse {
   is_enterprise: boolean
   enabled_features: string[]
   all_enterprise_features: string[]
   feature_catalog?: EnterpriseFeatureCatalog
   organization?: string
+}
+
+export interface AuthProviderConfig {
+  name: 'api_key' | 'local_password' | 'external_oidc'
+  enabled: boolean
+  display_name: string
+  description?: string
+  supports_password?: boolean
+  supports_signup?: boolean
+  oidc_issuer?: string | null
+  oidc_client_id?: string | null
+  oidc_authorize_url?: string | null
+}
+
+export interface AuthConfigResponse {
+  providers: AuthProviderConfig[]
+  tier: 'oss' | 'enterprise'
+}
+
+export interface AuthUserSummary {
+  id: string
+  email: string
+  name?: string | null
+  first_name?: string | null
+  last_name?: string | null
+  organization_id: string
+  role?: string | null
+  has_password?: boolean
+  email_is_placeholder?: boolean
+}
+
+export interface TokenResponse {
+  access_token: string
+  token_type: string
+  expires_in: number
+  user: AuthUserSummary
+}
+
+export interface TelephonyIntegrationResponse {
+  id: string
+  organization_id: string
+  provider: string
+  verify_app_uuid?: string | null
+  voice_app_id?: string | null
+  sip_domain?: string | null
+  masking_config?: Record<string, any> | null
+  is_active: boolean
+  last_tested_at?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface TelephonyIntegrationCreatePayload {
+  provider?: string
+  auth_id: string
+  auth_token: string
+  verify_app_uuid?: string
+  voice_app_id?: string
+  sip_domain?: string
+  masking_config?: Record<string, any>
+}
+
+export interface TelephonyIntegrationUpdatePayload {
+  provider?: string
+  auth_id?: string
+  auth_token?: string
+  verify_app_uuid?: string
+  voice_app_id?: string
+  sip_domain?: string
+  masking_config?: Record<string, any>
+  is_active?: boolean
+}
+
+export interface TelephonyPhoneNumberResponse {
+  id: string
+  phone_number: string
+  country_iso2?: string | null
+  region?: string | null
+  number_type?: string | null
+  capabilities?: Record<string, any> | null
+  is_masking_pool: boolean
+  agent_id?: string | null
+  is_active: boolean
+  created_at: string
 }
 
 type TTSReportOptionsPayload = {
@@ -82,9 +197,17 @@ class ApiClient {
 
     // Add request interceptor to add API key to headers
     this.client.interceptors.request.use((config) => {
+      const accessToken = localStorage.getItem('accessToken')
       const apiKey = localStorage.getItem('apiKey')
+      if (accessToken) {
+        config.headers.Authorization = `Bearer ${accessToken}`
+      } else if (config.headers.Authorization) {
+        delete config.headers.Authorization
+      }
       if (apiKey) {
         config.headers['X-API-Key'] = apiKey
+      } else if (config.headers['X-API-Key']) {
+        delete config.headers['X-API-Key']
       }
       return config
     })
@@ -113,7 +236,62 @@ class ApiClient {
     localStorage.removeItem('apiKey')
   }
 
+  setAccessToken(accessToken: string) {
+    localStorage.setItem('accessToken', accessToken)
+  }
+
+  clearAccessToken() {
+    localStorage.removeItem('accessToken')
+  }
+
   // Auth endpoints
+  async getAuthConfig(): Promise<AuthConfigResponse> {
+    const response = await this.client.get('/api/v1/auth/config')
+    return response.data
+  }
+
+  async signup(data: {
+    email: string
+    password: string
+    organization_name?: string
+    first_name?: string
+    last_name?: string
+  }): Promise<TokenResponse> {
+    const response = await this.client.post('/api/v1/auth/signup', data)
+    return response.data
+  }
+
+  async loginWithPassword(email: string, password: string): Promise<TokenResponse> {
+    const response = await this.client.post('/api/v1/auth/login', { email, password })
+    return response.data
+  }
+
+  async logout(): Promise<{ success: boolean; auth_method: string }> {
+    const response = await this.client.post('/api/v1/auth/logout')
+    return response.data
+  }
+
+  async getMe(): Promise<AuthUserSummary> {
+    const response = await this.client.get('/api/v1/auth/me')
+    return response.data
+  }
+
+  async switchOrganization(organizationId: string): Promise<TokenResponse> {
+    const response = await this.client.post('/api/v1/auth/switch-org', {
+      organization_id: organizationId,
+    })
+    return response.data
+  }
+
+  async setPassword(data: {
+    new_password: string
+    current_password?: string
+    email?: string
+  }): Promise<AuthUserSummary> {
+    const response = await this.client.post('/api/v1/auth/password', data)
+    return response.data
+  }
+
   async generateApiKey(name?: string): Promise<APIKey> {
     const response = await this.client.post('/api/v1/auth/generate-key', { name })
     return response.data
@@ -249,6 +427,7 @@ class ApiClient {
   async createAgent(data: {
     name: string
     phone_number?: string
+    telephony_phone_number_id?: string
     language: string
     description?: string | null
     call_type: string
@@ -277,12 +456,15 @@ class ApiClient {
   async updateAgent(agentId: string, data: {
     name?: string
     phone_number?: string
+    telephony_phone_number_id?: string | null
     language?: string
     description?: string | null
     call_type?: string
     call_medium?: string
     voice_bundle_id?: string
     ai_provider_id?: string
+    voice_ai_integration_id?: string
+    voice_ai_agent_id?: string
   }): Promise<any> {
     const response = await this.client.put(`/api/v1/agents/${agentId}`, data)
     return response.data
@@ -564,6 +746,25 @@ class ApiClient {
     await this.client.delete(`/api/v1/iam/invitations/${invitationId}`)
   }
 
+  /**
+   * Admin-initiated password reset for another organization member.
+   *
+   * The caller must be an ADMIN of the same organization as `userId`. The
+   * backend ignores any current-password concept here (that's for the
+   * self-service `/auth/password` endpoint). Communicate the new password
+   * to the user out-of-band.
+   */
+  async adminResetUserPassword(
+    userId: string,
+    newPassword: string,
+  ): Promise<{ user_id: string; email: string; message: string }> {
+    const response = await this.client.post(
+      `/api/v1/iam/users/${userId}/reset-password`,
+      { new_password: newPassword },
+    )
+    return response.data
+  }
+
   // Profile endpoints
   async getProfile(): Promise<Profile> {
     const response = await this.client.get('/api/v1/profile')
@@ -634,6 +835,49 @@ class ApiClient {
     return response.data
   }
 
+  // Telephony endpoints (provider-agnostic)
+  async createTelephonyConfig(data: TelephonyIntegrationCreatePayload): Promise<TelephonyIntegrationResponse> {
+    const response = await this.client.post('/api/v1/telephony/config', data)
+    return response.data
+  }
+
+  async getTelephonyConfig(provider: string = 'plivo'): Promise<TelephonyIntegrationResponse> {
+    const response = await this.client.get('/api/v1/telephony/config', { params: { provider } })
+    return response.data
+  }
+
+  async updateTelephonyConfig(data: TelephonyIntegrationUpdatePayload): Promise<TelephonyIntegrationResponse> {
+    const response = await this.client.put('/api/v1/telephony/config', data)
+    return response.data
+  }
+
+  async testTelephonyConfig(provider: string = 'plivo'): Promise<{ success: boolean }> {
+    const response = await this.client.post('/api/v1/telephony/config/test', null, { params: { provider } })
+    return response.data
+  }
+
+  async syncTelephonyNumbers(provider: string = 'plivo'): Promise<TelephonyPhoneNumberResponse[]> {
+    const response = await this.client.post('/api/v1/telephony/numbers/sync', null, {
+      params: { provider },
+    })
+    return response.data
+  }
+
+  async listTelephonyNumbers(provider?: string): Promise<TelephonyPhoneNumberResponse[]> {
+    const response = await this.client.get('/api/v1/telephony/numbers', {
+      params: provider ? { provider } : undefined,
+    })
+    return response.data
+  }
+
+  async updateTelephonyNumber(
+    numberId: string,
+    data: { is_masking_pool?: boolean; agent_id?: string | null; is_active?: boolean }
+  ): Promise<TelephonyPhoneNumberResponse> {
+    const response = await this.client.patch(`/api/v1/telephony/numbers/${numberId}`, data)
+    return response.data
+  }
+
   // Data Sources endpoints
   async testS3Connection(): Promise<S3ConnectionTestResponse> {
     const response = await this.client.post('/api/v1/data-sources/s3/test')
@@ -698,6 +942,39 @@ class ApiClient {
   async deleteFromS3(fileKey: string): Promise<MessageResponse> {
     const response = await this.client.delete(`/api/v1/data-sources/s3/files/${encodeURIComponent(fileKey)}`)
     return response.data
+  }
+
+  // Call Imports endpoints
+  async uploadCallImport(file: File): Promise<CallImportUploadResponse> {
+    const formData = new FormData()
+    formData.append('file', file)
+    const response = await this.client.post('/api/v1/call-imports/upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    return response.data
+  }
+
+  async listCallImports(
+    params: { page?: number; page_size?: number; status?: CallImportStatus } = {}
+  ): Promise<CallImportListResponse> {
+    const response = await this.client.get('/api/v1/call-imports', { params })
+    return response.data
+  }
+
+  async getCallImport(
+    id: string,
+    params: { row_limit?: number; row_offset?: number } = {}
+  ): Promise<CallImportDetail> {
+    const response = await this.client.get(`/api/v1/call-imports/${id}`, { params })
+    return response.data
+  }
+
+  async deleteCallImport(id: string): Promise<void> {
+    await this.client.delete(`/api/v1/call-imports/${id}`)
+  }
+
+  async deleteCallImportRow(id: string, rowId: string): Promise<void> {
+    await this.client.delete(`/api/v1/call-imports/${id}/rows/${rowId}`)
   }
 
   // Model Config endpoints
@@ -864,17 +1141,20 @@ class ApiClient {
     custom_sip_headers?: Record<string, string>
   }): Promise<{
     call_type: string
-    access_token: string
+    access_token?: string
     call_id: string
     agent_id: string
     agent_version?: number
-    call_status: string
+    call_status?: string
     agent_name?: string
     metadata?: Record<string, any>
     retell_llm_dynamic_variables?: Record<string, any>
     sample_rate?: number
     call_short_id?: string
     signed_url?: string
+    host?: string
+    room_name?: string
+    conversation_id?: string
   }> {
     const response = await this.client.post('/api/v1/playground/web-call', data)
     return response.data
@@ -926,6 +1206,101 @@ class ApiClient {
       { responseType: 'blob' }
     )
     return URL.createObjectURL(response.data)
+  }
+
+  async createCustomWebsocketSession(data: {
+    agent_id: string
+    websocket_url: string
+    transcript_entries: Array<{ role: 'user' | 'agent'; content: string; timestamp: string }>
+    started_at?: string
+    ended_at?: string
+    audio_file?: File
+  }): Promise<{
+    message: string
+    call_short_id: string
+    audio_s3_key?: string | null
+    evaluator_result_id?: string | null
+  }> {
+    const formData = new FormData()
+    formData.append('agent_id', data.agent_id)
+    formData.append('websocket_url', data.websocket_url)
+    formData.append('transcript_entries', JSON.stringify(data.transcript_entries))
+    if (data.started_at) {
+      formData.append('started_at', data.started_at)
+    }
+    if (data.ended_at) {
+      formData.append('ended_at', data.ended_at)
+    }
+    if (data.audio_file) {
+      formData.append('audio_file', data.audio_file)
+    }
+
+    const response = await this.client.post('/api/v1/playground/custom-websocket-sessions', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    })
+    return response.data
+  }
+
+  async evaluateCustomWebsocketSession(callShortId: string): Promise<{
+    message: string
+    evaluator_result_id: string
+    result_id: string
+    task_id: string
+  }> {
+    const response = await this.client.post(`/api/v1/playground/custom-websocket-sessions/${callShortId}/evaluate`)
+    return response.data
+  }
+
+  async getAgentSttConfig(agentId: string): Promise<{
+    available: boolean
+    provider?: string
+    model?: string
+    reason?: string
+  }> {
+    const response = await this.client.get(`/api/v1/playground/agents/${agentId}/stt-config`)
+    return response.data
+  }
+
+  async transcribeTurn(
+    agentId: string,
+    channel: 'user' | 'agent',
+    audioBlob: Blob,
+  ): Promise<{ transcript: string; channel: string }> {
+    const formData = new FormData()
+    formData.append('agent_id', agentId)
+    formData.append('channel', channel)
+    formData.append('audio_file', audioBlob, `turn_${channel}_${Date.now()}.wav`)
+    const response = await this.client.post('/api/v1/playground/transcribe-turn', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    return response.data
+  }
+
+  async summarizeTranscript(params: {
+    transcript?: string
+    entries?: Array<{ role: string; content: string; timestamp?: string }>
+    callShortId?: string
+    agentId?: string
+    force?: boolean
+  }): Promise<{
+    summary: string
+    provider: string
+    model: string
+    source?: 'voice_bundle' | 'org_fallback'
+    cached?: boolean
+    generated_at?: string
+    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }
+  }> {
+    const body: Record<string, any> = {}
+    if (params.transcript) body.transcript = params.transcript
+    if (params.entries && params.entries.length > 0) body.entries = params.entries
+    if (params.callShortId) body.call_short_id = params.callShortId
+    if (params.agentId) body.agent_id = params.agentId
+    if (params.force) body.force = true
+    const response = await this.client.post('/api/v1/playground/summarize-transcript', body)
+    return response.data
   }
 
   // Observability endpoints
@@ -1027,13 +1402,21 @@ class ApiClient {
     metric_type: 'number' | 'boolean' | 'rating'
     trigger?: 'always'
     enabled?: boolean
+    metric_origin?: 'default' | 'custom'
+    supported_surfaces?: string[]
+    enabled_surfaces?: string[]
+    custom_data_type?: 'boolean' | 'enum' | 'number_range'
+    custom_config?: Record<string, any>
+    tags?: string[]
   }): Promise<any> {
     const response = await this.client.post('/api/v1/metrics', data)
     return response.data
   }
 
-  async listMetrics(): Promise<any[]> {
-    const response = await this.client.get('/api/v1/metrics')
+  async listMetrics(surface?: string): Promise<any[]> {
+    const response = await this.client.get('/api/v1/metrics', {
+      params: surface ? { surface } : undefined,
+    })
     return response.data
   }
 
@@ -1101,6 +1484,12 @@ class ApiClient {
     metric_type?: 'number' | 'boolean' | 'rating'
     trigger?: 'always'
     enabled?: boolean
+    metric_origin?: 'default' | 'custom'
+    supported_surfaces?: string[]
+    enabled_surfaces?: string[]
+    custom_data_type?: 'boolean' | 'enum' | 'number_range'
+    custom_config?: Record<string, any>
+    tags?: string[]
   }): Promise<any> {
     const response = await this.client.put(`/api/v1/metrics/${metricId}`, data)
     return response.data
@@ -1323,16 +1712,66 @@ class ApiClient {
 
   async createTTSComparison(data: {
     name?: string
-    provider_a: string
-    model_a: string
-    voices_a: Array<{ id: string; name: string; sample_rate_hz?: number }>
+    mode?: 'benchmark' | 'blind_test_only'
+    // Legacy benchmark fields
+    provider_a?: string
+    model_a?: string
+    voices_a?: Array<{ id: string; name: string; sample_rate_hz?: number }>
     provider_b?: string
     model_b?: string
     voices_b?: Array<{ id: string; name: string; sample_rate_hz?: number }>
-    sample_texts: string[]
+    // New per-side benchmark config
+    side_a?: VoicePlaygroundSideConfig
+    side_b?: VoicePlaygroundSideConfig
+    // Common
+    sample_texts?: string[]
     num_runs?: number
+    eval_stt_provider?: string
+    eval_stt_model?: string
+    // blind_test_only
+    pairs?: Array<VoicePlaygroundBlindTestPair>
   }): Promise<any> {
     const response = await this.client.post('/api/v1/voice-playground/comparisons', data)
+    return response.data
+  }
+
+  async listVoicePlaygroundCallImportRows(params: {
+    call_import_id?: string
+    with_recording?: boolean
+    skip?: number
+    limit?: number
+  } = {}): Promise<{
+    items: Array<{
+      id: string
+      call_import_id: string
+      call_import_filename: string | null
+      external_call_id: string
+      transcript: string | null
+      recording_s3_key: string | null
+      has_recording: boolean
+      status: string
+      created_at: string | null
+    }>
+    total: number
+    skip: number
+    limit: number
+  }> {
+    const response = await this.client.get('/api/v1/voice-playground/call-import-rows', { params })
+    return response.data
+  }
+
+  async uploadVoicePlaygroundAudio(file: File): Promise<{
+    s3_key: string
+    presigned_url: string | null
+    filename: string
+    size_bytes: number
+    content_type: string
+  }> {
+    const form = new FormData()
+    form.append('file', file)
+    const response = await this.client.post('/api/v1/voice-playground/uploads', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
     return response.data
   }
 
@@ -1368,6 +1807,56 @@ class ApiClient {
 
   async deleteTTSComparison(comparisonId: string): Promise<void> {
     await this.client.delete(`/api/v1/voice-playground/comparisons/${comparisonId}`)
+  }
+
+  // Blind Test Sharing (owner side)
+  async createBlindTestShare(comparisonId: string, payload: {
+    title: string
+    description?: string
+    creator_notes?: string
+    custom_metrics: Array<{ key: string; label: string; type: 'rating' | 'comment'; scale?: number }>
+  }): Promise<any> {
+    const response = await this.client.post(
+      `/api/v1/voice-playground/comparisons/${comparisonId}/share`,
+      payload
+    )
+    return response.data
+  }
+
+  async getBlindTestShare(comparisonId: string): Promise<any> {
+    const response = await this.client.get(
+      `/api/v1/voice-playground/comparisons/${comparisonId}/share`
+    )
+    return response.data
+  }
+
+  async updateBlindTestShare(shareId: string, payload: {
+    title?: string
+    description?: string
+    creator_notes?: string
+    custom_metrics?: Array<{ key: string; label: string; type: 'rating' | 'comment'; scale?: number }>
+    status?: 'open' | 'closed'
+  }): Promise<any> {
+    const response = await this.client.patch(
+      `/api/v1/voice-playground/shares/${shareId}`,
+      payload
+    )
+    return response.data
+  }
+
+  async deleteBlindTestShare(shareId: string): Promise<void> {
+    await this.client.delete(`/api/v1/voice-playground/shares/${shareId}`)
+  }
+
+  async listBlindTestResponses(shareId: string, skip = 0, limit = 100): Promise<{
+    items: any[]
+    total: number
+  }> {
+    const response = await this.client.get(
+      `/api/v1/voice-playground/shares/${shareId}/responses`,
+      { params: { skip, limit } }
+    )
+    return response.data
   }
 
   async generateSampleTexts(params: {
@@ -1607,6 +2096,7 @@ class ApiClient {
   }
 
   async syncProviderPrompt(agentId: string): Promise<{
+    synced: boolean
     provider_prompt: string | null
     provider_prompt_synced_at: string | null
   }> {
@@ -1630,4 +2120,43 @@ export const apiClient: ApiClient = apiClientInstance
 
 // Re-export the type for explicit typing if needed
 export type { ApiClient }
+
+
+// ----------------------------------------------------------------------
+// Public (unauthenticated) blind-test API.
+// Uses a bare axios instance so no Authorization / X-API-Key headers are
+// attached. Anyone with the share_token in the URL can call these.
+// ----------------------------------------------------------------------
+
+const publicClient = axios.create({
+  baseURL: API_BASE_URL,
+  headers: { 'Content-Type': 'application/json' },
+})
+
+export interface PublicBlindTestEntrySubmit {
+  sample_index: number
+  preferred: 'X' | 'Y'
+  ratings_x?: Record<string, number>
+  ratings_y?: Record<string, number>
+  comment?: string
+}
+
+export const publicBlindTestApi = {
+  async getForm(shareToken: string): Promise<any> {
+    const res = await publicClient.get(`/api/v1/public/blind-tests/${shareToken}`)
+    return res.data
+  },
+  async submit(shareToken: string, payload: {
+    rater_name: string
+    rater_email: string
+    client_token: string
+    responses: PublicBlindTestEntrySubmit[]
+  }): Promise<any> {
+    const res = await publicClient.post(
+      `/api/v1/public/blind-tests/${shareToken}/responses`,
+      payload
+    )
+    return res.data
+  },
+}
 

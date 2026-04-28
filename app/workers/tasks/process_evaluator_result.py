@@ -25,6 +25,33 @@ from app.workers.tasks.helpers.llm_evaluation import (
 )
 
 
+def _make_json_serializable(obj):
+    """Recursively convert non-JSON-native values (e.g., NumPy types)."""
+    try:
+        import numpy as np
+    except Exception:
+        np = None
+
+    if isinstance(obj, dict):
+        return {k: _make_json_serializable(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_make_json_serializable(item) for item in obj]
+    if isinstance(obj, tuple):
+        return tuple(_make_json_serializable(item) for item in obj)
+
+    if np is not None:
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+
+    return obj
+
+
 def _load_related_entities(db, result):
     """Load evaluator, agent, persona, scenario from database."""
     from app.models.database import Evaluator, Agent, Persona, Scenario
@@ -228,6 +255,13 @@ def _extract_audio_url(call_data: dict, platform: str) -> str | None:
             or provider_payload.get("recordingUrl")
             or provider_payload.get("stereoRecordingUrl")
         )
+    if platform == "smallest":
+        return (
+            call_data.get("recording_url")
+            or call_data.get("recordingUrl")
+            or recording_urls.get("combined_url")
+            or recording_urls.get("conversation_audio")
+        )
     return None
 
 
@@ -245,7 +279,7 @@ def _recover_missing_audio_for_result(result, db, refresh_call_data: bool = True
     from app.services.voice_providers import get_voice_provider
 
     platform = _normalize_platform(result.provider_platform)
-    if platform not in {"retell", "vapi", "elevenlabs"}:
+    if platform not in {"retell", "vapi", "elevenlabs", "smallest"}:
         return False
     if not result.provider_call_id:
         return False
@@ -527,7 +561,9 @@ def process_evaluator_result_task(self, result_id: str):
                     )
 
             # Step 6: Complete
-            result.metric_scores = metric_scores
+            result.metric_scores = _make_json_serializable(metric_scores)
+            if isinstance(result.call_data, (dict, list)):
+                result.call_data = _make_json_serializable(result.call_data)
             result.status = EvaluatorResultStatus.COMPLETED.value
             db.commit()
 
@@ -548,10 +584,20 @@ def process_evaluator_result_task(self, result_id: str):
             }
 
         except Exception as e:
-            logger.error(f"[EvaluatorResult {result.result_id}] Processing failed: {e}", exc_info=True)
-            result.status = EvaluatorResultStatus.FAILED.value
-            result.error_message = str(e)
-            db.commit()
+            db.rollback()
+            logger.error(f"[EvaluatorResult {result_id}] Processing failed: {e}", exc_info=True)
+            try:
+                failed_result = db.query(EvaluatorResult).filter(EvaluatorResult.id == result_uuid).first()
+                if failed_result:
+                    failed_result.status = EvaluatorResultStatus.FAILED.value
+                    failed_result.error_message = str(e)
+                    db.commit()
+            except Exception as persist_err:
+                db.rollback()
+                logger.error(
+                    f"[EvaluatorResult {result_id}] Failed to persist FAILED status: {persist_err}",
+                    exc_info=True,
+                )
             raise
 
     except Exception as exc:

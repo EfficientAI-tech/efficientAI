@@ -1,7 +1,8 @@
 import ReactMarkdown from 'react-markdown'
 import { format } from 'date-fns'
 import { RefreshCw, Globe } from 'lucide-react'
-import { VoiceBundle, Integration } from '../../../types/api'
+import { VoiceBundle, Integration, IntegrationPlatform } from '../../../types/api'
+import { getIntegrationPlatformLabel, getIntegrationPlatformLogo } from '../../../config/providers'
 
 function stripCodeFences(text: string): string {
   const trimmed = text.trim()
@@ -48,12 +49,6 @@ const LANGUAGE_LABELS: Record<string, string> = {
   hi: 'Hindi',
 }
 
-const PLATFORM_LABELS: Record<string, string> = {
-  vapi: 'Vapi',
-  retell: 'Retell',
-  elevenlabs: 'ElevenLabs',
-}
-
 export default function AgentInfoView({
   agent,
   voiceBundles,
@@ -65,7 +60,7 @@ export default function AgentInfoView({
 
   const providerLabel = (() => {
     const integration = integrations.find((i) => i.id === agent.voice_ai_integration_id)
-    if (integration?.platform) return PLATFORM_LABELS[integration.platform] || integration.platform
+    if (integration?.platform) return getIntegrationPlatformLabel(integration.platform as IntegrationPlatform)
     return 'Provider'
   })()
 
@@ -135,14 +130,18 @@ export default function AgentInfoView({
                 <div className="flex items-center gap-2 mb-1.5">
                   {(() => {
                     const integration = integrations.find((i) => i.id === agent.voice_ai_integration_id)
-                    if (integration?.platform === 'retell') {
-                      return (<><img src="/retellai.png" alt="Retell" className="h-5 w-5 object-contain" /><span className="text-sm font-medium text-gray-900">Retell AI</span></>)
-                    } else if (integration?.platform === 'vapi') {
-                      return (<><img src="/vapiai.jpg" alt="Vapi" className="h-5 w-5 rounded-full object-contain" /><span className="text-sm font-medium text-gray-900">Vapi AI</span></>)
-                    } else if (integration?.platform === 'elevenlabs') {
-                      return (<><img src="/elevenlabs.jpg" alt="ElevenLabs" className="h-5 w-5 rounded-full object-contain" /><span className="text-sm font-medium text-gray-900">ElevenLabs</span></>)
+                    if (!integration?.platform) {
+                      return <span className="text-sm text-gray-900">{integration?.name || 'Unknown'}</span>
                     }
-                    return <span className="text-sm text-gray-900">{integration?.name || 'Unknown'}</span>
+                    const platform = integration.platform as IntegrationPlatform
+                    const label = getIntegrationPlatformLabel(platform)
+                    const logo = getIntegrationPlatformLogo(platform)
+                    return (
+                      <>
+                        {logo ? <img src={logo} alt={label} className="h-5 w-5 object-contain" /> : null}
+                        <span className="text-sm font-medium text-gray-900">{label}</span>
+                      </>
+                    )
                   })()}
                 </div>
                 <div className="text-xs font-mono font-semibold text-primary-600 select-all break-all bg-white/60 px-2.5 py-1.5 rounded border border-gray-200 inline-block">
@@ -177,12 +176,8 @@ export default function AgentInfoView({
         </div>
 
         {/* RIGHT: Provider Prompt */}
-        <div className={`border rounded-lg overflow-hidden flex flex-col ${
-          agent.voice_ai_integration_id && agent.voice_ai_agent_id
-            ? 'border-blue-200 bg-blue-50/20'
-            : 'border-gray-200 bg-gray-50/50'
-        }`}>
-          <div className="flex items-center justify-between px-5 py-3 border-b border-blue-200 bg-blue-50/50 flex-shrink-0">
+        <div className="border border-gray-200 rounded-lg overflow-hidden flex flex-col bg-gray-50">
+          <div className="flex items-center justify-between px-5 py-3 border-b border-gray-200 bg-gray-100/50 flex-shrink-0">
             <h3 className="text-sm font-semibold text-gray-900 flex items-center gap-2">
               <Globe className="h-4 w-4 text-blue-500" />
               {providerLabel} Prompt
@@ -196,7 +191,7 @@ export default function AgentInfoView({
               <button
                 onClick={onSyncProviderPrompt}
                 disabled={isSyncingPrompt}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-blue-700 bg-blue-100 rounded-md hover:bg-blue-200 border border-blue-300 transition-colors disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-blue-700 bg-blue-100 rounded-md hover:bg-blue-200 border border-blue-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <RefreshCw className={`h-3 w-3 ${isSyncingPrompt ? 'animate-spin' : ''}`} />
                 {isSyncingPrompt ? 'Syncing...' : 'Sync Now'}

@@ -71,15 +71,26 @@ import PromptOptimization from './pages/promptOptimization/PromptOptimization'
 
 // Enterprise
 import EnterpriseUpgrade from './pages/enterprise/EnterpriseUpgrade'
+import { WalkthroughProvider } from './context/WalkthroughContext'
+
+// Public (no-auth) blind test form
+import BlindTestForm from './pages/public/BlindTestForm'
+
+// Call Imports
+import CallImports from './pages/callImports/CallImports'
+import CallImportDetail from './pages/callImports/CallImportDetail'
 
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
-  const { apiKey } = useAuthStore()
-  
-  if (!apiKey) {
+  // Either credential type counts as "signed in". The backend enforces the
+  // actual authentication on every request; this guard just keeps the SPA
+  // from flashing protected pages when the user clearly has no session.
+  const { apiKey, accessToken } = useAuthStore()
+
+  if (!apiKey && !accessToken) {
     return <Navigate to="/login" replace />
   }
-  
+
   return <>{children}</>
 }
 
@@ -106,11 +117,16 @@ function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<Login />} />
+        {/* Public blind test form - intentionally outside PrivateRoute and EnterpriseGate.
+            Auth comes from the unguessable share token in the URL. */}
+        <Route path="/blind-test/:token" element={<BlindTestForm />} />
         <Route
           path="/"
           element={
             <PrivateRoute>
-              <Layout />
+              <WalkthroughProvider>
+                <Layout />
+              </WalkthroughProvider>
             </PrivateRoute>
           }
         >
@@ -144,6 +160,8 @@ function App() {
           <Route path="voice-playground" element={<EnterpriseGate feature="voice_playground"><VoicePlayground /></EnterpriseGate>} />
           <Route path="cron-jobs" element={<CronJobs />} />
           <Route path="prompt-partials" element={<PromptPartials />} />
+          <Route path="call-imports" element={<CallImports />} />
+          <Route path="call-imports/:id" element={<CallImportDetail />} />
           <Route path="prompt-optimization" element={<EnterpriseGate feature="gepa_optimization"><PromptOptimization /></EnterpriseGate>} />
         </Route>
       </Routes>

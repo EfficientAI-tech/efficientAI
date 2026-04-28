@@ -10,12 +10,14 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from typing import List, Optional, Dict, Any
 from uuid import UUID
 from pydantic import BaseModel
+from loguru import logger
 
 from app.dependencies import get_db, get_organization_id
 from app.models.database import (
     Persona, Evaluator, EvaluatorResult, TestAgentConversation, CustomTTSVoice,
     PromptOptimizationRun, CallRecording,
 )
+from app.models.enums import LanguageEnum, AccentEnum, GenderEnum, BackgroundNoiseEnum
 from app.models.schemas import (
     PersonaCreate, PersonaUpdate, PersonaResponse, PersonaCloneRequest
 )
@@ -23,8 +25,6 @@ from app.models.enums import ModelProvider
 from app.services.ai.model_config_service import model_config_service
 
 router = APIRouter(prefix="/personas", tags=["personas"])
-
-
 # ---------------------------------------------------------------------------
 # Built-in voice catalog (same data used in voice_playground)
 # ---------------------------------------------------------------------------
@@ -111,6 +111,9 @@ TTS_VOICES: Dict[str, List[Dict[str, str]]] = {
         {"id": "ai3-Keiko", "name": "Keiko", "gender": "Female"},
         {"id": "ai3-Liang", "name": "Liang", "gender": "Male"},
     ],
+    "smallest": [
+        {"id": "daniel", "name": "Daniel", "gender": "Male"},
+    ],
     "murf": [],
 }
 
@@ -122,6 +125,7 @@ PROVIDER_DISPLAY_NAMES: Dict[str, str] = {
     "google": "Google",
     "sarvam": "Sarvam",
     "voicemaker": "VoiceMaker",
+    "smallest": "Smallest.ai",
     "murf": "Murf",
     "azure": "Azure",
     "aws": "AWS Polly",
@@ -144,6 +148,22 @@ class CustomVoiceUpdateRequest(BaseModel):
     name: Optional[str] = None
     gender: Optional[str] = None
     description: Optional[str] = None
+
+
+def _is_valid_persona_row(persona: Persona) -> bool:
+    try:
+        # Backward compatibility: legacy persona rows may not have these attrs.
+        language_value = str(getattr(persona, "language", "en") or "en").lower()
+        accent_value = str(getattr(persona, "accent", "neutral") or "neutral").lower()
+        gender_value = str(getattr(persona, "gender", "neutral") or "neutral").lower()
+        noise_value = str(getattr(persona, "background_noise", "none") or "none").lower()
+        LanguageEnum(language_value)
+        AccentEnum(accent_value)
+        GenderEnum(gender_value)
+        BackgroundNoiseEnum(noise_value)
+        return True
+    except Exception:
+        return False
 
 
 @router.post("", response_model=PersonaResponse, status_code=status.HTTP_201_CREATED)
@@ -209,7 +229,20 @@ async def list_personas(
         personas = db.query(Persona).filter(
             Persona.organization_id == organization_id
         ).offset(skip).limit(limit).all()
-        return personas
+        valid_personas: List[Persona] = []
+        for persona in personas:
+            if _is_valid_persona_row(persona):
+                valid_personas.append(persona)
+            else:
+                logger.warning(
+                    "Skipping persona {} with invalid enum values: language={}, accent={}, gender={}, noise={}",
+                    persona.id,
+                    persona.language,
+                    persona.accent,
+                    persona.gender,
+                    persona.background_noise,
+                )
+        return valid_personas
     except SQLAlchemyError as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -447,6 +480,8 @@ async def get_persona(
             Persona.organization_id == organization_id
         ).first()
         if not persona:
+            raise HTTPException(status_code=404, detail=f"Persona {persona_id} not found")
+        if not _is_valid_persona_row(persona):
             raise HTTPException(status_code=404, detail=f"Persona {persona_id} not found")
         return persona
     except HTTPException:

@@ -1,4 +1,4 @@
-import { Clock, Loader2, CheckCircle2, XCircle } from 'lucide-react'
+import { Clock, Loader2, CheckCircle2, XCircle, AlertCircle } from 'lucide-react'
 
 interface StatusBadgeProps {
   status: string
@@ -12,6 +12,7 @@ const STATUS_STYLES: Record<string, string> = {
   evaluating: 'bg-blue-100 text-blue-800',
   processing: 'bg-blue-100 text-blue-800',
   completed: 'bg-green-100 text-green-800',
+  partial: 'bg-amber-100 text-amber-800',
   failed: 'bg-red-100 text-red-700',
   call_initiating: 'bg-yellow-100 text-yellow-800',
   call_connecting: 'bg-yellow-100 text-yellow-800',
@@ -37,6 +38,9 @@ export default function StatusBadge({ status, size = 'md' }: StatusBadgeProps) {
     }
     if (normalizedStatus === 'failed') {
       return <XCircle className={iconClass} />
+    }
+    if (normalizedStatus === 'partial') {
+      return <AlertCircle className={iconClass} />
     }
     return <Clock className={iconClass} />
   }

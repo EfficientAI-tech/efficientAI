@@ -1,7 +1,9 @@
-import { Mic, History, Headphones, RotateCcw, X } from 'lucide-react'
+import { Mic, History, Headphones, RotateCcw, X, Share2 } from 'lucide-react'
 import Button from '../../../components/Button'
 import { VoicePlaygroundProvider, useVoicePlayground } from './context'
-import { PlaygroundTab, VoicesTab, SimulationsTab } from './components'
+import { PlaygroundTab, VoicesTab, SimulationsTab, BlindTestsTab } from './components'
+import { useWalkthroughSectionState } from '../../../context/WalkthroughContext'
+import WalkthroughToggleButton from '../../../components/walkthrough/WalkthroughToggleButton'
 
 function VoicePlaygroundContent() {
   const {
@@ -16,11 +18,22 @@ function VoicePlaygroundContent() {
     setDeleteConfirm,
   } = useVoicePlayground()
 
+  useWalkthroughSectionState(
+    'voice-playground',
+    { activeTab, step },
+    [activeTab, step]
+  )
+
+  const simulationCount = pastComparisons.filter(
+    (c) => (c.mode || 'benchmark') === 'benchmark',
+  ).length
+  const blindTestCount = pastComparisons.filter((c) => c.has_share).length
+
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
           <h1 className="text-3xl font-bold text-gray-900 flex items-center gap-3">
             <Mic className="w-8 h-8 text-primary-600" />
             Voice Playground
@@ -30,15 +43,18 @@ function VoicePlaygroundContent() {
             and automated evaluation
           </p>
         </div>
-        {step !== 'configure' && activeTab === 'playground' && (
-          <Button
-            variant="ghost"
-            onClick={resetPlayground}
-            leftIcon={<RotateCcw className="w-4 h-4" />}
-          >
-            New Comparison
-          </Button>
-        )}
+        <div className="flex flex-wrap items-center justify-end gap-2 pr-2">
+          {step !== 'configure' && activeTab === 'playground' && (
+            <Button
+              variant="ghost"
+              onClick={resetPlayground}
+              leftIcon={<RotateCcw className="w-4 h-4" />}
+            >
+              New Comparison
+            </Button>
+          )}
+          <WalkthroughToggleButton />
+        </div>
       </div>
 
       {/* Tabs */}
@@ -90,9 +106,28 @@ function VoicePlaygroundContent() {
           >
             <History className="w-4 h-4" />
             Past Simulations
-            {pastComparisons.length > 0 && (
+            {simulationCount > 0 && (
               <span className="ml-1 px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600">
-                {pastComparisons.length}
+                {simulationCount}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={() => {
+              setActiveTab('blind-tests')
+              setViewingPastId(null)
+            }}
+            className={`flex items-center gap-2 py-3 px-1 border-b-2 font-medium text-sm transition-colors ${
+              activeTab === 'blind-tests'
+                ? 'border-primary-600 text-primary-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            }`}
+          >
+            <Share2 className="w-4 h-4" />
+            Blind Tests
+            {blindTestCount > 0 && (
+              <span className="ml-1 px-2 py-0.5 text-xs rounded-full bg-gray-100 text-gray-600">
+                {blindTestCount}
               </span>
             )}
           </button>
@@ -103,6 +138,7 @@ function VoicePlaygroundContent() {
       {activeTab === 'playground' && <PlaygroundTab />}
       {activeTab === 'voices' && <VoicesTab />}
       {activeTab === 'past-simulations' && <SimulationsTab />}
+      {activeTab === 'blind-tests' && <BlindTestsTab />}
 
       {/* Delete Confirmation Modal */}
       {deleteConfirm && (

@@ -120,3 +120,131 @@ def test_browse_folder_returns_folders_and_files(configured_s3):
     assert result["organization_id"] == "org-1"
     assert len(result["folders"]) == 1
     assert len(result["files"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# delete_keys / delete_keys_by_prefix
+# ---------------------------------------------------------------------------
+
+
+class _RecordingDeleteClient(_FakeS3Client):
+    """Variant that captures delete_objects payloads and lets tests inject errors/listings."""
+
+    def __init__(self, list_pages=None, delete_errors=None):
+        super().__init__()
+        self.delete_object_calls = []
+        self.delete_objects_calls = []
+        self._list_pages = list_pages or []
+        self._delete_errors = delete_errors or {}
+
+    def delete_object(self, **kwargs):
+        self.delete_object_calls.append(kwargs)
+        return {}
+
+    def delete_objects(self, Bucket, Delete):
+        self.delete_objects_calls.append({"Bucket": Bucket, "Delete": Delete})
+        keys = [obj["Key"] for obj in Delete.get("Objects", [])]
+        errs = [
+            {"Key": k, "Code": "AccessDenied", "Message": "nope"}
+            for k in keys
+            if k in self._delete_errors
+        ]
+        return {"Errors": errs} if errs else {}
+
+    def get_paginator(self, _operation):
+        client = self
+
+        class _Paginator:
+            def paginate(self, **_kwargs):
+                return iter(client._list_pages)
+
+        return _Paginator()
+
+
+def _configure_with(monkeypatch, fake_client):
+    monkeypatch.setattr(s3_module.settings, "S3_ENABLED", True, raising=False)
+    monkeypatch.setattr(s3_module.settings, "S3_BUCKET_NAME", "bucket-a", raising=False)
+    monkeypatch.setattr(s3_module.settings, "S3_REGION", "us-east-1", raising=False)
+    monkeypatch.setattr(s3_module.settings, "S3_PREFIX", "", raising=False)
+    monkeypatch.setattr(s3_module.settings, "S3_ACCESS_KEY_ID", "key", raising=False)
+    monkeypatch.setattr(s3_module.settings, "S3_SECRET_ACCESS_KEY", "secret", raising=False)
+    monkeypatch.setattr(s3_module.settings, "S3_ENDPOINT_URL", None, raising=False)
+    monkeypatch.setattr(s3_module.boto3, "client", lambda *_a, **_kw: fake_client)
+    service = S3Service()
+    service._ensure_initialized()
+    return service
+
+
+def test_delete_keys_chunks_payloads_to_1000(monkeypatch):
+    fake = _RecordingDeleteClient()
+    service = _configure_with(monkeypatch, fake)
+
+    keys = [f"k{i}" for i in range(2500)]
+    deleted, errors = service.delete_keys(keys)
+
+    assert deleted == 2500
+    assert errors == []
+    chunk_sizes = [len(c["Delete"]["Objects"]) for c in fake.delete_objects_calls]
+    assert chunk_sizes == [1000, 1000, 500]
+
+
+def test_delete_keys_dedupes_and_skips_falsy(monkeypatch):
+    fake = _RecordingDeleteClient()
+    service = _configure_with(monkeypatch, fake)
+
+    deleted, errors = service.delete_keys(["a", "a", "b", "", None])
+
+    assert deleted == 2
+    assert errors == []
+    payloads = fake.delete_objects_calls[0]["Delete"]["Objects"]
+    assert sorted(o["Key"] for o in payloads) == ["a", "b"]
+
+
+def test_delete_keys_returns_per_key_errors_without_raising(monkeypatch):
+    fake = _RecordingDeleteClient(delete_errors={"bad-key"})
+    service = _configure_with(monkeypatch, fake)
+
+    deleted, errors = service.delete_keys(["good-1", "bad-key", "good-2"])
+
+    assert deleted == 2
+    assert len(errors) == 1
+    assert errors[0]["Key"] == "bad-key"
+
+
+def test_delete_keys_noop_for_empty_input(monkeypatch):
+    fake = _RecordingDeleteClient()
+    service = _configure_with(monkeypatch, fake)
+
+    deleted, errors = service.delete_keys([])
+
+    assert (deleted, errors) == (0, [])
+    assert fake.delete_objects_calls == []
+
+
+def test_delete_keys_by_prefix_lists_then_bulk_deletes(monkeypatch):
+    pages = [
+        {"Contents": [{"Key": "p/1"}, {"Key": "p/2"}]},
+        {"Contents": [{"Key": "p/3"}]},
+        {},  # empty page is OK
+    ]
+    fake = _RecordingDeleteClient(list_pages=pages)
+    service = _configure_with(monkeypatch, fake)
+
+    deleted, errors = service.delete_keys_by_prefix("p/")
+
+    assert deleted == 3
+    assert errors == []
+    payload_keys = sorted(
+        o["Key"] for o in fake.delete_objects_calls[0]["Delete"]["Objects"]
+    )
+    assert payload_keys == ["p/1", "p/2", "p/3"]
+
+
+def test_delete_keys_by_prefix_returns_zero_when_no_matches(monkeypatch):
+    fake = _RecordingDeleteClient(list_pages=[{"Contents": []}])
+    service = _configure_with(monkeypatch, fake)
+
+    deleted, errors = service.delete_keys_by_prefix("nothing-here/")
+
+    assert (deleted, errors) == (0, [])
+    assert fake.delete_objects_calls == []

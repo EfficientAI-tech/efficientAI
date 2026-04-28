@@ -111,3 +111,40 @@ def test_transcribe_deepgram_extracts_transcript(monkeypatch, tmp_path):
 
     result = stt_clients.transcribe_deepgram(str(audio), "nova-2", "key-1")
     assert result["text"] == "hello from deepgram"
+
+
+def test_transcribe_smallest_maps_words_and_segments(monkeypatch, tmp_path):
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"fake")
+
+    class _Resp:
+        status_code = 200
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+        @staticmethod
+        def json():
+            return {
+                "transcription": "hello from smallest",
+                "language": "en",
+                "words": [
+                    {"word": "hello", "start": 0.0, "end": 0.3},
+                    {"word": "smallest", "start": 0.4, "end": 0.9},
+                ],
+                "utterances": [
+                    {"text": "hello from smallest", "start": 0.0, "end": 1.0, "speaker": "user"}
+                ],
+            }
+
+    fake_httpx = types.ModuleType("httpx")
+    fake_httpx.post = lambda *args, **kwargs: _Resp()
+    monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+
+    result = stt_clients.transcribe_smallest(str(audio), "pulse-v4", "key-1", "en")
+
+    assert result["text"] == "hello from smallest"
+    assert result["language"] == "en"
+    assert len(result["segments"]) == 1
+    assert len(result["words"]) == 2

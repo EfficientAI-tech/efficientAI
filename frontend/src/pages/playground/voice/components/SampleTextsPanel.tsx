@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { FileText, Sparkles, Bot, Loader2, X, Pencil, Check, Save } from 'lucide-react'
+import { FileText, Sparkles, Bot, Loader2, X, Pencil, Check, Save, Mic } from 'lucide-react'
 import { createPortal } from 'react-dom'
 import { getProviderInfo } from '../../../../components/shared/ProviderLogo'
 import { apiClient } from '../../../../lib/api'
@@ -51,6 +51,10 @@ export default function SampleTextsPanel() {
   const [savedPromptSearch, setSavedPromptSearch] = useState('')
   const [selectedSavedPromptIds, setSelectedSavedPromptIds] = useState<Set<string>>(new Set())
   const [aiGeneratedSamples, setAiGeneratedSamples] = useState<Set<string>>(new Set())
+  const [showCallImportsModal, setShowCallImportsModal] = useState(false)
+  const [callImportFilter, setCallImportFilter] = useState<string>('')
+  const [callImportSearch, setCallImportSearch] = useState('')
+  const [selectedCallImportRowIds, setSelectedCallImportRowIds] = useState<Set<string>>(new Set())
 
   const [selectedLlmProvider, setSelectedLlmProvider] = useState('')
   const [selectedLlmModel, setSelectedLlmModel] = useState('')
@@ -71,6 +75,75 @@ export default function SampleTextsPanel() {
     queryFn: () => apiClient.listPromptPartials(0, 100, savedPromptSearch.trim() || undefined),
     enabled: showUseSavedModal,
   })
+
+  const { data: callImportRowsData, isLoading: isLoadingCallImportRows } = useQuery({
+    queryKey: ['sample-texts-call-import-rows', callImportFilter],
+    queryFn: () =>
+      apiClient.listVoicePlaygroundCallImportRows({
+        with_recording: false,
+        limit: 200,
+        ...(callImportFilter ? { call_import_id: callImportFilter } : {}),
+      }),
+    enabled: showCallImportsModal,
+  })
+
+  const { data: callImportsList } = useQuery({
+    queryKey: ['sample-texts-call-imports-list'],
+    queryFn: () => apiClient.listCallImports({ page: 1, page_size: 50 }),
+    enabled: showCallImportsModal,
+  })
+
+  const callImportRows = callImportRowsData?.items || []
+  const filteredCallImportRows = (() => {
+    if (!callImportSearch.trim()) return callImportRows
+    const q = callImportSearch.toLowerCase()
+    return callImportRows.filter(
+      (r: any) =>
+        r.external_call_id?.toLowerCase().includes(q) ||
+        (r.transcript || '').toLowerCase().includes(q) ||
+        (r.call_import_filename || '').toLowerCase().includes(q),
+    )
+  })()
+
+  const toggleCallImportRowSelection = (id: string) => {
+    setSelectedCallImportRowIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const resetCallImportsModal = () => {
+    setShowCallImportsModal(false)
+    setCallImportFilter('')
+    setCallImportSearch('')
+    setSelectedCallImportRowIds(new Set())
+  }
+
+  const handleAddCallImportTranscripts = () => {
+    if (selectedCallImportRowIds.size === 0) {
+      showToast('Select at least one recording', 'error')
+      return
+    }
+    const existing = new Set(sampleTexts.map((t) => t.trim()).filter(Boolean))
+    const toAdd: string[] = []
+    callImportRows.forEach((r: any) => {
+      if (!selectedCallImportRowIds.has(r.id)) return
+      const transcript = (r.transcript || '').trim()
+      if (!transcript) return
+      if (existing.has(transcript)) return
+      toAdd.push(transcript)
+      existing.add(transcript)
+    })
+    if (toAdd.length === 0) {
+      showToast('Selected rows have no new transcripts', 'error')
+      return
+    }
+    setSampleTexts([...sampleTexts, ...toAdd])
+    showToast(`Added ${toAdd.length} transcript${toAdd.length > 1 ? 's' : ''}`, 'success')
+    resetCallImportsModal()
+  }
 
   const llmModels = modelOptions?.llm || []
 
@@ -346,6 +419,13 @@ export default function SampleTextsPanel() {
           >
             <FileText className="w-3.5 h-3.5" />
             Use Saved
+          </button>
+          <button
+            onClick={() => setShowCallImportsModal(true)}
+            className="px-4 py-2 text-sm rounded-lg flex items-center gap-1.5 bg-white text-indigo-700 hover:bg-indigo-50 border border-indigo-300 transition-all"
+          >
+            <Mic className="w-3.5 h-3.5" />
+            Pull from Call Imports
           </button>
         </div>
 
@@ -849,6 +929,120 @@ export default function SampleTextsPanel() {
                   ) : (
                     'Add Selected'
                   )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showCallImportsModal && renderModal(
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999] p-4">
+          <div className="w-full max-w-3xl rounded-xl bg-white shadow-xl max-h-[90vh] overflow-hidden flex flex-col">
+            <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4">
+              <h3 className="text-lg font-semibold text-gray-900">Pull Transcripts from Call Imports</h3>
+              <button
+                onClick={resetCallImportsModal}
+                className="text-gray-400 hover:text-gray-600"
+                aria-label="Close call imports modal"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="space-y-4 px-5 py-4 overflow-y-auto flex-1">
+              <p className="text-sm text-gray-600">
+                Pick rows whose transcripts you want to use as sample texts.
+              </p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                <select
+                  value={callImportFilter}
+                  onChange={(e) => setCallImportFilter(e.target.value)}
+                  className="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white"
+                >
+                  <option value="">All call imports</option>
+                  {(callImportsList?.items || []).map((ci: any) => (
+                    <option key={ci.id} value={ci.id}>
+                      {ci.original_filename || ci.id} ({ci.total_rows} rows)
+                    </option>
+                  ))}
+                </select>
+                <input
+                  type="text"
+                  value={callImportSearch}
+                  onChange={(e) => setCallImportSearch(e.target.value)}
+                  placeholder="Search call ID or transcript..."
+                  className="px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white"
+                />
+              </div>
+              {isLoadingCallImportRows ? (
+                <div className="flex items-center justify-center py-8 text-sm text-gray-500">
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Loading call import rows...
+                </div>
+              ) : filteredCallImportRows.length === 0 ? (
+                <div className="rounded-lg border border-gray-200 p-8 text-center text-sm text-gray-500">
+                  No rows found. Import a CSV in Call Imports first.
+                </div>
+              ) : (
+                <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
+                  {filteredCallImportRows.map((row: any) => {
+                    const isSelected = selectedCallImportRowIds.has(row.id)
+                    const hasTranscript = !!(row.transcript && row.transcript.trim())
+                    return (
+                      <label
+                        key={row.id}
+                        className={`block rounded-lg border p-3 transition-colors ${
+                          !hasTranscript
+                            ? 'border-gray-200 opacity-60'
+                            : isSelected
+                            ? 'border-primary-300 bg-primary-50 cursor-pointer'
+                            : 'border-gray-200 hover:bg-gray-50 cursor-pointer'
+                        }`}
+                      >
+                        <div className="flex items-start gap-3">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            disabled={!hasTranscript}
+                            onChange={() => toggleCallImportRowSelection(row.id)}
+                            className="mt-1 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-semibold text-gray-900">
+                              {row.external_call_id || row.id}
+                            </p>
+                            {hasTranscript ? (
+                              <p className="mt-1 line-clamp-2 text-xs text-gray-600">
+                                {row.transcript}
+                              </p>
+                            ) : (
+                              <p className="mt-1 text-xs text-gray-400 italic">No transcript on this row</p>
+                            )}
+                          </div>
+                        </div>
+                      </label>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+            <div className="flex items-center justify-between border-t border-gray-200 px-5 py-4">
+              <p className="text-xs text-gray-500">
+                Selected: {selectedCallImportRowIds.size}
+              </p>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={resetCallImportsModal}
+                  className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleAddCallImportTranscripts}
+                  disabled={selectedCallImportRowIds.size === 0}
+                  className="inline-flex items-center gap-2 rounded-lg bg-primary-600 px-4 py-2 text-sm font-medium text-white hover:bg-primary-700 disabled:opacity-60"
+                >
+                  Add Transcripts
                 </button>
               </div>
             </div>

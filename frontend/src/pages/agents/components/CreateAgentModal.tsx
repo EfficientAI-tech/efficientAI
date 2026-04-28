@@ -4,8 +4,9 @@ import { X, Sparkles, Loader2, Bot, Eye, Code, FileText, PhoneOutgoing, PhoneInc
 import ReactMarkdown from 'react-markdown'
 import Button from '../../../components/Button'
 import { apiClient } from '../../../lib/api'
-import { AIProvider, VoiceBundle, Integration, ModelProvider } from '../../../types/api'
-import { getProviderLabel } from '../../../config/providers'
+import type { TelephonyIntegrationResponse, TelephonyPhoneNumberResponse } from '../../../lib/api'
+import { AIProvider, VoiceBundle, Integration, IntegrationPlatform, ModelProvider } from '../../../types/api'
+import { getProviderLabel, getIntegrationPlatformLabel, getIntegrationPlatformLogo } from '../../../config/providers'
 
 interface FormData {
   name: string
@@ -14,6 +15,7 @@ interface FormData {
   description: string
   call_type: string
   call_medium: 'phone_call' | 'web_call'
+  telephony_phone_number_id: string
   voice_bundle_id: string
   voice_ai_integration_id: string
   voice_ai_agent_id: string
@@ -32,6 +34,13 @@ interface PromptPartial {
   description?: string | null
 }
 
+const SUPPORTED_VOICE_AI_PLATFORMS: IntegrationPlatform[] = [
+  IntegrationPlatform.RETELL,
+  IntegrationPlatform.VAPI,
+  IntegrationPlatform.ELEVENLABS,
+  IntegrationPlatform.SMALLEST,
+]
+
 export default function CreateAgentModal({
   isOpen,
   onClose,
@@ -48,6 +57,7 @@ export default function CreateAgentModal({
   const [showUseSavedModal, setShowUseSavedModal] = useState(false)
   const [savedPromptSearch, setSavedPromptSearch] = useState('')
   const [selectedSavedPromptId, setSelectedSavedPromptId] = useState('')
+  const [phoneNumberInputMode, setPhoneNumberInputMode] = useState<'provider' | 'custom'>('provider')
   
   const [formData, setFormData] = useState<FormData>({
     name: '',
@@ -56,6 +66,7 @@ export default function CreateAgentModal({
     description: '',
     call_type: 'outbound',
     call_medium: 'phone_call',
+    telephony_phone_number_id: '',
     voice_bundle_id: '',
     voice_ai_integration_id: '',
     voice_ai_agent_id: ''
@@ -74,6 +85,17 @@ export default function CreateAgentModal({
   const { data: aiProviders = [] } = useQuery<AIProvider[]>({
     queryKey: ['ai-providers'],
     queryFn: () => apiClient.listAIProviders(),
+  })
+  const { data: telephonyConfig, isError: isTelephonyConfigError } = useQuery<TelephonyIntegrationResponse>({
+    queryKey: ['telephony-config', 'plivo'],
+    queryFn: () => apiClient.getTelephonyConfig('plivo'),
+    enabled: isOpen && formData.call_medium === 'phone_call',
+    retry: false,
+  })
+  const { data: telephonyNumbers = [] } = useQuery<TelephonyPhoneNumberResponse[]>({
+    queryKey: ['telephony-numbers'],
+    queryFn: () => apiClient.listTelephonyNumbers(),
+    enabled: isOpen && formData.call_medium === 'phone_call',
   })
 
   const { data: modelOptions } = useQuery({
@@ -94,6 +116,30 @@ export default function CreateAgentModal({
       setAiModel(llmModels[0])
     }
   }, [aiProvider, llmModels, aiModel])
+
+  useEffect(() => {
+    if (formData.call_medium !== 'phone_call') {
+      return
+    }
+    const hasProviderNumbers = !!telephonyConfig && telephonyNumbers.length > 0
+    if (!hasProviderNumbers && phoneNumberInputMode !== 'custom') {
+      setPhoneNumberInputMode('custom')
+      setFormData((prev) => ({ ...prev, telephony_phone_number_id: '' }))
+    }
+    if (
+      phoneNumberInputMode === 'provider' &&
+      formData.telephony_phone_number_id &&
+      !telephonyNumbers.some((n) => n.id === formData.telephony_phone_number_id && !n.agent_id)
+    ) {
+      setFormData((prev) => ({ ...prev, telephony_phone_number_id: '', phone_number: '' }))
+    }
+  }, [
+    formData.call_medium,
+    formData.telephony_phone_number_id,
+    phoneNumberInputMode,
+    telephonyConfig,
+    telephonyNumbers,
+  ])
 
   const generateDescriptionMutation = useMutation({
     mutationFn: (data: { description: string; tone?: string; format_style?: string; provider?: string; model?: string }) =>
@@ -143,6 +189,9 @@ export default function CreateAgentModal({
       if (data.call_medium === 'phone_call' && data.phone_number) {
         payload.phone_number = data.phone_number
       }
+      if (data.call_medium === 'phone_call' && data.telephony_phone_number_id) {
+        payload.telephony_phone_number_id = data.telephony_phone_number_id
+      }
 
       if (data.voice_bundle_id && data.voice_bundle_id.trim() !== '') {
         payload.voice_bundle_id = data.voice_bundle_id.trim()
@@ -175,6 +224,7 @@ export default function CreateAgentModal({
       description: '',
       call_type: 'outbound',
       call_medium: 'phone_call',
+      telephony_phone_number_id: '',
       voice_bundle_id: '',
       voice_ai_integration_id: '',
       voice_ai_agent_id: ''
@@ -186,6 +236,7 @@ export default function CreateAgentModal({
     setAiFormat('structured')
     setAiProvider('')
     setAiModel('')
+    setPhoneNumberInputMode('provider')
     setShowUseSavedModal(false)
     setSavedPromptSearch('')
     setSelectedSavedPromptId('')
@@ -201,13 +252,20 @@ export default function CreateAgentModal({
     }
 
     if (formData.call_medium === 'phone_call') {
-      if (!formData.phone_number || formData.phone_number.trim() === '') {
-        showToast('Phone number is required for phone calls.', 'error')
-        return
-      }
-      if (!/^[\d+]+$/.test(formData.phone_number)) {
-        showToast('Phone number must contain only digits and the + character.', 'error')
-        return
+      if (phoneNumberInputMode === 'provider') {
+        if (!formData.telephony_phone_number_id) {
+          showToast('Please select a telephony number from your provider.', 'error')
+          return
+        }
+      } else {
+        if (!formData.phone_number || formData.phone_number.trim() === '') {
+          showToast('Phone number is required for phone calls.', 'error')
+          return
+        }
+        if (!/^[\d+]+$/.test(formData.phone_number)) {
+          showToast('Phone number must contain only digits and the + character.', 'error')
+          return
+        }
       }
     }
 
@@ -222,6 +280,16 @@ export default function CreateAgentModal({
 
     createMutation.mutate(formData)
   }
+
+  const voiceAgentIntegrations = integrations.filter(
+    (integration) =>
+      integration.is_active &&
+      SUPPORTED_VOICE_AI_PLATFORMS.includes(integration.platform as IntegrationPlatform),
+  )
+
+  const selectedVoiceIntegration = voiceAgentIntegrations.find(
+    (integration) => integration.id === formData.voice_ai_integration_id,
+  )
 
   if (!isOpen) return null
 
@@ -260,7 +328,8 @@ export default function CreateAgentModal({
                   onClick={() => setFormData({
                     ...formData,
                     call_medium: medium,
-                    phone_number: medium === 'web_call' ? '' : formData.phone_number
+                    phone_number: medium === 'web_call' ? '' : formData.phone_number,
+                    telephony_phone_number_id: medium === 'web_call' ? '' : formData.telephony_phone_number_id,
                   })}
                   className={`px-4 py-2 text-sm font-medium transition-colors focus:outline-none ${
                     formData.call_medium === medium
@@ -276,16 +345,89 @@ export default function CreateAgentModal({
 
           {/* Phone Number */}
           {formData.call_medium === 'phone_call' && (
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Phone Number *</label>
-              <input
-                type="text"
-                required
-                value={formData.phone_number}
-                onChange={(e) => setFormData({ ...formData, phone_number: e.target.value.replace(/[^\d+]/g, '') })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                placeholder="+1234567890"
-              />
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <label className="block text-sm font-medium text-gray-700">Phone Number *</label>
+                <div className="inline-flex rounded-lg border border-gray-300 overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPhoneNumberInputMode('provider')
+                      setFormData((prev) => ({ ...prev, phone_number: '' }))
+                    }}
+                    disabled={!telephonyConfig || telephonyNumbers.length === 0}
+                    className={`px-3 py-1 text-xs font-medium ${
+                      phoneNumberInputMode === 'provider'
+                        ? 'bg-primary-600 text-white'
+                        : 'bg-white text-gray-700 hover:bg-gray-50'
+                    } disabled:bg-gray-100 disabled:text-gray-400`}
+                  >
+                    Select from provider
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPhoneNumberInputMode('custom')
+                      setFormData((prev) => ({ ...prev, telephony_phone_number_id: '' }))
+                    }}
+                    className={`px-3 py-1 text-xs font-medium border-l border-gray-300 ${
+                      phoneNumberInputMode === 'custom'
+                        ? 'bg-primary-600 text-white'
+                        : 'bg-white text-gray-700 hover:bg-gray-50'
+                    }`}
+                  >
+                    Enter custom
+                  </button>
+                </div>
+              </div>
+
+              {(!telephonyConfig || isTelephonyConfigError) && (
+                <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                  No telephony provider is configured yet. You can still enter a custom number, or configure
+                  telephony in Integrations.
+                </p>
+              )}
+
+              {phoneNumberInputMode === 'provider' ? (
+                <select
+                  required
+                  value={formData.telephony_phone_number_id}
+                  onChange={(e) => {
+                    const selected = telephonyNumbers.find((n) => n.id === e.target.value)
+                    setFormData((prev) => ({
+                      ...prev,
+                      telephony_phone_number_id: e.target.value,
+                      phone_number: selected?.phone_number || '',
+                    }))
+                  }}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
+                  disabled={!telephonyConfig || telephonyNumbers.length === 0}
+                >
+                  <option value="">Select a synced telephony number</option>
+                  {telephonyNumbers.map((number) => (
+                    <option key={number.id} value={number.id} disabled={!!number.agent_id}>
+                      {number.phone_number}
+                      {number.region ? ` - ${number.region}` : ''}
+                      {number.country_iso2 ? ` (${number.country_iso2})` : ''}
+                      {number.agent_id ? ' [In use]' : ''}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  required
+                  value={formData.phone_number}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      phone_number: e.target.value.replace(/[^\d+]/g, ''),
+                    })
+                  }
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  placeholder="+1234567890"
+                />
+              )}
             </div>
           )}
 
@@ -554,7 +696,7 @@ export default function CreateAgentModal({
             {/* Voice AI Agent */}
             <div className="border border-blue-200 rounded-lg p-4 bg-blue-50 flex flex-col h-full">
               <h3 className="text-lg font-semibold text-gray-900 mb-3">2. Voice AI Agent *</h3>
-              <p className="text-sm text-gray-600 mb-4 flex-grow">Configure agents using external Voice AI integrations (Retell, Vapi, ElevenLabs)</p>
+              <p className="text-sm text-gray-600 mb-4 flex-grow">Configure agents using external Voice AI integrations (Retell, Vapi, ElevenLabs, Smallest)</p>
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Integration Provider *</label>
@@ -565,22 +707,27 @@ export default function CreateAgentModal({
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
                     >
                       <option value="">Select an Integration</option>
-                      {integrations
-                        .filter((i) => i.is_active && ['retell', 'vapi', 'elevenlabs'].includes(i.platform))
-                        .map((integration) => (
+                      {voiceAgentIntegrations.map((integration) => {
+                        const platformLabel = getIntegrationPlatformLabel(integration.platform as IntegrationPlatform)
+                        return (
                           <option key={integration.id} value={integration.id}>
-                            {integration.name || integration.platform} ({integration.platform === 'retell' ? 'Retell' : integration.platform === 'vapi' ? 'Vapi' : 'ElevenLabs'})
+                            {integration.name || platformLabel} ({platformLabel})
                           </option>
-                        ))}
+                        )
+                      })}
                     </select>
-                    {formData.voice_ai_integration_id && (
+                    {selectedVoiceIntegration && (
                       <div className="flex-shrink-0">
                         {(() => {
-                          const selected = integrations.find((i) => i.id === formData.voice_ai_integration_id)
-                          if (selected?.platform === 'retell') return <img src="/retellai.png" alt="Retell AI" className="h-8 w-8 object-contain" />
-                          if (selected?.platform === 'vapi') return <img src="/vapiai.jpg" alt="Vapi AI" className="h-8 w-8 rounded-full object-contain" />
-                          if (selected?.platform === 'elevenlabs') return <img src="/elevenlabs.jpg" alt="ElevenLabs" className="h-8 w-8 rounded-full object-contain" />
-                          return null
+                          const logo = getIntegrationPlatformLogo(
+                            selectedVoiceIntegration.platform as IntegrationPlatform,
+                          )
+                          const label = getIntegrationPlatformLabel(
+                            selectedVoiceIntegration.platform as IntegrationPlatform,
+                          )
+                          return logo ? (
+                            <img src={logo} alt={label} className="h-8 w-8 rounded-full object-contain" />
+                          ) : null
                         })()}
                       </div>
                     )}
@@ -593,7 +740,7 @@ export default function CreateAgentModal({
                     value={formData.voice_ai_agent_id}
                     onChange={(e) => setFormData({ ...formData, voice_ai_agent_id: e.target.value })}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
-                    placeholder="Enter agent ID from Retell/Vapi/ElevenLabs"
+                    placeholder="Enter agent ID from Retell/Vapi/ElevenLabs/Smallest"
                   />
                   <p className="mt-1 text-xs text-gray-500">Enter the agent ID from your voice AI provider</p>
                 </div>

@@ -1,61 +1,625 @@
-"""Authentication routes."""
+"""Authentication routes.
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+Covers three concerns:
+
+1. Provider discovery (`GET /auth/config`) - the frontend calls this on boot
+   so it can show API key, local login, and OIDC (Okta / Azure AD / Google /
+   Cognito / etc.) buttons depending on what the backend has enabled.
+
+2. Local email+password auth (`POST /auth/signup`, `POST /auth/login`,
+   `POST /auth/logout`, `GET /auth/me`) - issues app-signed JWTs for the OSS
+   tier when enabled in config.
+
+3. API key management (`POST /auth/generate-key`, `POST /auth/validate`).
+   `generate-key` used to be an anonymous endpoint that created a new org on
+   every call, which meant anyone on the internet could spin up an unlimited
+   number of orgs. It now requires an authenticated caller (Bearer or an
+   existing API key) and binds the new key to the caller's org.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import List, Optional
 import secrets
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, EmailStr, Field
+from sqlalchemy.orm import Session
+
+from app.config import settings
+from app.core.auth import Principal, get_principal
+from app.core.auth.tokens import create_access_token
+from app.core.license import get_enabled_features, has_auth_feature
+from app.core.password import hash_password, verify_password
 from app.database import get_db
-from app.models.database import APIKey, Organization
-from app.models.schemas import APIKeyCreate, APIKeyResponse
 from app.dependencies import get_api_key
+from app.models.database import (
+    APIKey,
+    Organization,
+    OrganizationMember,
+    RoleEnum,
+    User,
+)
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
-@router.post("/generate-key", response_model=APIKeyResponse)
-def generate_api_key(key_data: APIKeyCreate, db: Session = Depends(get_db)):
+# ---------------------------------------------------------------------------
+# Schemas
+# ---------------------------------------------------------------------------
+
+class AuthProviderConfig(BaseModel):
+    """Provider metadata returned to the frontend for login-method discovery."""
+
+    name: str
+    enabled: bool
+    display_name: str
+    description: Optional[str] = None
+    # Frontend hints - which fields should the login form render?
+    supports_password: bool = False
+    supports_signup: bool = False
+    # OIDC providers publish enough info for the SPA to do code-flow+PKCE.
+    oidc_issuer: Optional[str] = None
+    oidc_client_id: Optional[str] = None
+    oidc_authorize_url: Optional[str] = None
+
+
+class AuthConfigResponse(BaseModel):
+    providers: List[AuthProviderConfig]
+    tier: str  # "oss" | "enterprise"
+
+
+class SignupRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=256)
+    organization_name: Optional[str] = Field(default=None, max_length=255)
+    first_name: Optional[str] = Field(default=None, max_length=255)
+    last_name: Optional[str] = Field(default=None, max_length=255)
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "Bearer"
+    expires_in: int  # seconds
+    user: "UserSummary"
+
+
+class UserSummary(BaseModel):
+    id: str
+    email: str
+    name: Optional[str] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    organization_id: str
+    role: Optional[str] = None
+    # Hints the frontend uses to prompt the user to link credentials.
+    has_password: bool = False
+    email_is_placeholder: bool = False
+
+
+class APIKeyCreate(BaseModel):
+    name: Optional[str] = None
+
+
+class APIKeyResponse(BaseModel):
+    id: str
+    key: str
+    name: Optional[str] = None
+    is_active: bool
+    created_at: Optional[str] = None
+
+
+TokenResponse.model_rebuild()
+
+
+# ---------------------------------------------------------------------------
+# Provider discovery
+# ---------------------------------------------------------------------------
+
+@router.get("/config", response_model=AuthConfigResponse)
+def get_auth_config() -> AuthConfigResponse:
+    """Return which login methods the frontend should render on /login."""
+    enabled = set(p.lower() for p in (settings.AUTH_PROVIDERS or []))
+    features = get_enabled_features()
+    tier = "enterprise" if features else "oss"
+
+    providers: List[AuthProviderConfig] = [
+        AuthProviderConfig(
+            name="api_key",
+            enabled="api_key" in enabled,
+            display_name="API Key",
+            description="Sign in with an EfficientAI API key.",
+        ),
+        AuthProviderConfig(
+            name="local_password",
+            enabled="local_password" in enabled,
+            display_name="Email & Password",
+            description="Sign in with your EfficientAI email and password.",
+            supports_password=True,
+            supports_signup="local_password" in enabled and settings.AUTH_LOCAL_ALLOW_SIGNUP,
+        ),
+    ]
+
+    if "external_oidc" in enabled and has_auth_feature("oidc_sso"):
+        issuer = (settings.AUTH_OIDC_ISSUER or "").rstrip("/") or None
+        providers.append(
+            AuthProviderConfig(
+                name="external_oidc",
+                enabled=bool(issuer),
+                display_name="Single Sign-On",
+                description="Sign in through your enterprise identity provider (Okta, Azure AD, Google Workspace, Cognito, etc.).",
+                oidc_issuer=issuer,
+                oidc_client_id=settings.AUTH_OIDC_CLIENT_ID,
+                # Every OIDC-compliant IdP advertises its authorize endpoint
+                # at `/.well-known/openid-configuration`. The SPA fetches
+                # that on demand instead of us guessing a path here, which
+                # differs between Okta, Azure AD, Google, Cognito, Auth0, etc.
+                oidc_authorize_url=None,
+            )
+        )
+
+    return AuthConfigResponse(providers=providers, tier=tier)
+
+
+# ---------------------------------------------------------------------------
+# Local password auth
+# ---------------------------------------------------------------------------
+
+def _local_password_enabled() -> None:
+    if "local_password" not in {p.lower() for p in (settings.AUTH_PROVIDERS or [])}:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Local password login is not enabled on this deployment.",
+        )
+
+
+def _user_to_summary(user: User, organization_id, role: Optional[str]) -> UserSummary:
+    email_is_placeholder = bool(
+        user.email
+        and user.email.startswith("api_user_")
+        and user.email.endswith("@efficientai.local")
+    )
+    return UserSummary(
+        id=str(user.id),
+        email=user.email,
+        name=user.name,
+        first_name=user.first_name,
+        last_name=user.last_name,
+        organization_id=str(organization_id),
+        role=role,
+        has_password=bool(user.password_hash),
+        email_is_placeholder=email_is_placeholder,
+    )
+
+
+@router.post("/signup", response_model=TokenResponse)
+def signup(payload: SignupRequest, db: Session = Depends(get_db)) -> TokenResponse:
     """
-    Generate a new API key.
-    Creates a new organization for the first API key, or uses existing organization
-    if one already exists for this user (based on name or other criteria).
+    Create a new User + Organization pair and return a login token.
 
-    Args:
-        key_data: API key creation data
-        db: Database session
-
-    Returns:
-        Created API key
+    Only available in OSS/self-hosted deployments where
+    `auth.local_password.allow_signup = true` (the default). Cloud SaaS
+    turns this off and routes signup through the billing flow.
     """
-    # Generate secure random API key
-    api_key = secrets.token_urlsafe(32)
+    _local_password_enabled()
+    if not settings.AUTH_LOCAL_ALLOW_SIGNUP:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Self-service signup is disabled. Contact your administrator for access.",
+        )
 
-    # Create or get organization
-    # For now, create a new organization for each API key
-    # You can modify this logic to reuse organizations based on business rules
-    org_name = key_data.name or f"Organization-{secrets.token_urlsafe(8)}"
+    existing = db.query(User).filter(User.email == payload.email).first()
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An account with this email already exists. Try signing in instead.",
+        )
+
+    org_name = (payload.organization_name or payload.email.split("@")[0] + "'s Org").strip()
+
+    user = User(
+        email=payload.email,
+        password_hash=hash_password(payload.password),
+        first_name=payload.first_name,
+        last_name=payload.last_name,
+        name=((payload.first_name or "") + " " + (payload.last_name or "")).strip() or None,
+        is_active=True,
+        auth_provider="local",
+    )
     organization = Organization(name=org_name)
     db.add(organization)
-    db.flush()  # Flush to get the organization ID without committing
+    db.add(user)
+    db.flush()
 
-    # Create API key record with organization
-    db_key = APIKey(key=api_key, name=key_data.name, organization_id=organization.id)
+    membership = OrganizationMember(
+        organization_id=organization.id,
+        user_id=user.id,
+        role=RoleEnum.ADMIN.value,
+    )
+    db.add(membership)
+    user.last_login_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(user)
+    db.refresh(organization)
+
+    token = create_access_token(
+        user_id=user.id,
+        organization_id=organization.id,
+        email=user.email,
+    )
+    return TokenResponse(
+        access_token=token,
+        expires_in=settings.AUTH_LOCAL_TOKEN_TTL_MINUTES * 60,
+        user=_user_to_summary(user, organization.id, RoleEnum.ADMIN.value),
+    )
+
+
+@router.post("/login", response_model=TokenResponse)
+def login(payload: LoginRequest, db: Session = Depends(get_db)) -> TokenResponse:
+    """Verify email/password and return a short-lived Bearer token."""
+    _local_password_enabled()
+
+    user = db.query(User).filter(User.email == payload.email).first()
+    if (
+        user is None
+        or not user.is_active
+        or not user.password_hash
+        or not verify_password(payload.password, user.password_hash)
+    ):
+        # Same error regardless of whether the email exists - don't leak
+        # whether an email is registered.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password.",
+        )
+
+    membership = (
+        db.query(OrganizationMember)
+        .filter(OrganizationMember.user_id == user.id)
+        .first()
+    )
+    if membership is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your account is not a member of any organization. Contact your administrator.",
+        )
+
+    user.last_login_at = datetime.now(timezone.utc)
+    db.commit()
+
+    token = create_access_token(
+        user_id=user.id,
+        organization_id=membership.organization_id,
+        email=user.email,
+    )
+    role_value = membership.role.value if hasattr(membership.role, "value") else membership.role
+    return TokenResponse(
+        access_token=token,
+        expires_in=settings.AUTH_LOCAL_TOKEN_TTL_MINUTES * 60,
+        user=_user_to_summary(user, membership.organization_id, role_value),
+    )
+
+
+@router.get("/me", response_model=UserSummary)
+def me(principal: Principal = Depends(get_principal), db: Session = Depends(get_db)) -> UserSummary:
+    """Return the current authenticated user (Bearer or API key)."""
+    user: Optional[User] = None
+    if principal.user_id:
+        user = db.query(User).filter(User.id == principal.user_id).first()
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No user is attached to this credential.",
+        )
+    membership = (
+        db.query(OrganizationMember)
+        .filter(
+            OrganizationMember.user_id == user.id,
+            OrganizationMember.organization_id == principal.organization_id,
+        )
+        .first()
+    )
+    role_value = None
+    if membership:
+        role_value = membership.role.value if hasattr(membership.role, "value") else membership.role
+    return _user_to_summary(user, principal.organization_id, role_value)
+
+
+@router.post("/logout")
+def logout(principal: Principal = Depends(get_principal)) -> dict:
+    """
+    Log the current session out.
+
+    The app-signed tokens are stateless and short-lived, so logout is a
+    client-side gesture: the frontend clears the stored token. We return 200
+    so the client can call this uniformly regardless of provider, and so we
+    have a single place to plug in token-revocation lists later if needed.
+    """
+    return {"success": True, "auth_method": principal.auth_method.value}
+
+
+# ---------------------------------------------------------------------------
+# Organization switching
+# ---------------------------------------------------------------------------
+#
+# A Bearer token is pinned to a single organization at login time (org_id is
+# a JWT claim). When a user accepts an invitation to a second organization,
+# their existing token still resolves to the old org - all queries in the app
+# filter by `principal.organization_id`, which comes from the token.
+#
+# To "enter" another org, the user mints a new token scoped to that org.
+# Requirements:
+#   - Must be an interactive user (Bearer, not API key). API keys are
+#     deliberately single-tenant: an automation credential shouldn't be able
+#     to pivot between tenants.
+#   - Must currently be a member of the target organization.
+
+
+class SwitchOrgRequest(BaseModel):
+    organization_id: str
+
+
+@router.post("/switch-org", response_model=TokenResponse)
+def switch_organization(
+    payload: SwitchOrgRequest,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> TokenResponse:
+    """
+    Issue a new Bearer token bound to a different organization.
+
+    The caller must be an interactive user (not an API key) and must be an
+    active member of the target organization. Role is re-derived from the
+    new org's OrganizationMember row - switching orgs can legitimately
+    change your role.
+    """
+    # API keys are per-tenant credentials and must not be able to hop
+    # tenants - that would defeat the whole point of scoping them.
+    if principal.is_machine:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="API keys are bound to a single organization. Generate a separate key inside each organization instead.",
+        )
+
+    if principal.user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This session is not associated with a user.",
+        )
+
+    try:
+        from uuid import UUID as _UUID
+
+        target_org_id = _UUID(payload.organization_id)
+    except (ValueError, TypeError):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="organization_id must be a valid UUID.",
+        )
+
+    # No-op: just mint a fresh token so the client gets a new expiry.
+    membership = (
+        db.query(OrganizationMember)
+        .filter(
+            OrganizationMember.user_id == principal.user_id,
+            OrganizationMember.organization_id == target_org_id,
+        )
+        .first()
+    )
+    if membership is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not a member of that organization.",
+        )
+
+    user = db.query(User).filter(User.id == principal.user_id).first()
+    if user is None or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User is no longer active.",
+        )
+
+    user.last_login_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(user)
+
+    token = create_access_token(
+        user_id=user.id,
+        organization_id=membership.organization_id,
+        email=user.email,
+    )
+    role_value = (
+        membership.role.value if hasattr(membership.role, "value") else membership.role
+    )
+    return TokenResponse(
+        access_token=token,
+        expires_in=settings.AUTH_LOCAL_TOKEN_TTL_MINUTES * 60,
+        user=_user_to_summary(user, membership.organization_id, role_value),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Credential linking (set / change password on the current identity)
+# ---------------------------------------------------------------------------
+#
+# Motivation: the OSS onboarding path used to be "make an API key, use it".
+# That leaves the user without an email/password, so they can't log in
+# interactively as the same identity later. This endpoint lets an already
+# authenticated caller attach (or rotate) a password on their own User row.
+#
+# Rules:
+#   - Caller must be authenticated (any provider).
+#   - If the user already has a password, they must supply `current_password`.
+#   - If the user's email is the synthetic "api_user_<uuid>@efficientai.local"
+#     placeholder we mint for raw API keys, they may supply a real email in
+#     the same call. Otherwise `email` is ignored.
+
+
+class SetPasswordRequest(BaseModel):
+    new_password: str = Field(min_length=8, max_length=256)
+    current_password: Optional[str] = Field(default=None, max_length=256)
+    email: Optional[EmailStr] = None
+
+
+@router.post("/password", response_model=UserSummary)
+def set_password(
+    payload: SetPasswordRequest,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> UserSummary:
+    """
+    Set or change the password on the authenticated user.
+
+    Use cases:
+      1. User signed up via API key only and now wants an email/password login
+         for the same identity -> call this once to set the password (and,
+         if their email is still `api_user_*@efficientai.local`, pass a real
+         `email` to replace it).
+      2. User already has a password and wants to rotate it -> supply both
+         `current_password` and `new_password`.
+    """
+    _local_password_enabled()
+
+    if principal.user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "This credential is not bound to a user. Call GET /profile first "
+                "to provision a user for this API key, then retry."
+            ),
+        )
+
+    user = db.query(User).filter(User.id == principal.user_id).first()
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+
+    # Rotating an existing password - require the current one.
+    if user.password_hash:
+        if not payload.current_password or not verify_password(
+            payload.current_password, user.password_hash
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Current password is incorrect.",
+            )
+
+    new_email_requested = payload.email and payload.email.strip().lower() != user.email.lower()
+    if new_email_requested:
+        # Only allow the email swap when the current one is the machine-minted
+        # placeholder. Everyone else has to go through a verified email-change
+        # flow (not implemented here).
+        is_synthetic = user.email.startswith("api_user_") and user.email.endswith(
+            "@efficientai.local"
+        )
+        if not is_synthetic:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Email can only be changed via this endpoint for accounts "
+                    "created from an API key. Use profile update otherwise."
+                ),
+            )
+        conflict = (
+            db.query(User)
+            .filter(User.email == payload.email, User.id != user.id)
+            .first()
+        )
+        if conflict:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="That email is already associated with another account.",
+            )
+        user.email = payload.email
+
+    user.password_hash = hash_password(payload.new_password)
+    if not user.auth_provider:
+        user.auth_provider = "local"
+    db.commit()
+    db.refresh(user)
+
+    # Return the updated summary so the SPA can refresh its local session.
+    membership = (
+        db.query(OrganizationMember)
+        .filter(
+            OrganizationMember.user_id == user.id,
+            OrganizationMember.organization_id == principal.organization_id,
+        )
+        .first()
+    )
+    role_value = None
+    if membership:
+        role_value = (
+            membership.role.value if hasattr(membership.role, "value") else membership.role
+        )
+    return _user_to_summary(user, principal.organization_id, role_value)
+
+
+# ---------------------------------------------------------------------------
+# API key management
+# ---------------------------------------------------------------------------
+
+MAX_API_KEYS_PER_ORG = 20
+
+
+@router.post("/generate-key", response_model=APIKeyResponse, status_code=status.HTTP_201_CREATED)
+def generate_api_key(
+    key_data: APIKeyCreate,
+    principal: Principal = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> APIKeyResponse:
+    """
+    Issue a new API key bound to the caller's organization.
+
+    This used to be anonymous and created a fresh org on every call - a
+    security hole in any multi-tenant deployment. It now requires the caller
+    to already be authenticated (Bearer or an existing API key). The created
+    key inherits `principal.organization_id` and `principal.user_id`.
+    """
+    existing_count = (
+        db.query(APIKey)
+        .filter(
+            APIKey.organization_id == principal.organization_id,
+            APIKey.is_active == True,  # noqa: E712
+        )
+        .count()
+    )
+    if existing_count >= MAX_API_KEYS_PER_ORG:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Organization has reached the limit of {MAX_API_KEYS_PER_ORG} "
+                "active API keys. Delete an existing key first."
+            ),
+        )
+
+    api_key_value = secrets.token_urlsafe(32)
+    db_key = APIKey(
+        key=api_key_value,
+        name=key_data.name,
+        organization_id=principal.organization_id,
+        user_id=principal.user_id,
+        is_active=True,
+    )
     db.add(db_key)
     db.commit()
     db.refresh(db_key)
-    db.refresh(organization)
 
-    return db_key
+    return APIKeyResponse(
+        id=str(db_key.id),
+        key=db_key.key,
+        name=db_key.name,
+        is_active=db_key.is_active,
+        created_at=db_key.created_at.isoformat() if db_key.created_at else None,
+    )
 
 
 @router.post("/validate")
-def validate_api_key(api_key: str = Depends(get_api_key)):
-    """
-    Validate API key (for testing).
-
-    Args:
-        api_key: Validated API key from dependency
-
-    Returns:
-        Validation confirmation
-    """
+def validate_api_key(api_key: str = Depends(get_api_key)) -> dict:
+    """Lightweight endpoint the frontend uses to confirm the stored key still works."""
     return {"valid": True, "message": "API key is valid"}
-

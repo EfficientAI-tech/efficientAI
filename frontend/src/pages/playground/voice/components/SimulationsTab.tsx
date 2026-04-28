@@ -21,9 +21,6 @@ export default function SimulationsTab() {
     stop,
     selectedSimIds,
     toggleSimSelection,
-    toggleAllSims,
-    allSimsSelected,
-    someSimsSelected,
     bulkDelete,
     isBulkDeleting,
     deleteComparison,
@@ -36,6 +33,14 @@ export default function SimulationsTab() {
     createReportJob,
     openAsyncReport,
   } = useVoicePlayground()
+
+  const simulations = pastComparisons.filter(
+    (c) => (c.mode || 'benchmark') === 'benchmark',
+  )
+  const allVisibleSelected =
+    simulations.length > 0 && simulations.every((s) => selectedSimIds.has(s.id))
+  const someVisibleSelected = simulations.some((s) => selectedSimIds.has(s.id))
+  const visibleSelectedCount = simulations.filter((s) => selectedSimIds.has(s.id)).length
 
   // Viewing a specific comparison
   if (viewingPastId) {
@@ -126,21 +131,31 @@ export default function SimulationsTab() {
             <div className="flex items-center gap-4">
               <input
                 type="checkbox"
-                checked={allSimsSelected}
-                onChange={toggleAllSims}
+                checked={allVisibleSelected}
+                onChange={() => {
+                  if (allVisibleSelected) {
+                    simulations.forEach((s) => {
+                      if (selectedSimIds.has(s.id)) toggleSimSelection(s.id)
+                    })
+                  } else {
+                    simulations.forEach((s) => {
+                      if (!selectedSimIds.has(s.id)) toggleSimSelection(s.id)
+                    })
+                  }
+                }}
                 className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
               />
               <h3 className="font-semibold text-gray-900">Past Simulations</h3>
-              <span className="text-sm text-gray-500">({pastComparisons.length} total)</span>
+              <span className="text-sm text-gray-500">({simulations.length} total)</span>
             </div>
-            {someSimsSelected && (
+            {someVisibleSelected && (
               <Button
                 variant="ghost"
                 size="sm"
                 className="text-red-600 hover:text-red-700 hover:bg-red-50"
                 onClick={() => {
                   setDeleteConfirm({
-                    message: `Delete ${selectedSimIds.size} selected simulation(s)?`,
+                    message: `Delete ${visibleSelectedCount} selected simulation(s)?`,
                     onConfirm: bulkDelete,
                   })
                 }}
@@ -153,19 +168,19 @@ export default function SimulationsTab() {
                   )
                 }
               >
-                Delete Selected ({selectedSimIds.size})
+                Delete Selected ({visibleSelectedCount})
               </Button>
             )}
           </div>
 
           {/* List */}
-          {pastComparisons.length === 0 ? (
+          {simulations.length === 0 ? (
             <div className="px-6 py-12 text-center text-gray-500">
               <p>No past simulations yet. Run a comparison in the Playground tab.</p>
             </div>
           ) : (
             <div className="divide-y divide-gray-100">
-              {pastComparisons.map((sim) => (
+              {simulations.map((sim) => (
                 <div
                   key={sim.id}
                   className="px-6 py-4 flex items-center gap-4 hover:bg-gray-50 transition-colors"
@@ -190,10 +205,12 @@ export default function SimulationsTab() {
                       <StatusBadge status={sim.status} />
                     </div>
                     <div className="flex items-center gap-3 mt-1 text-sm text-gray-500">
-                      <span className="flex items-center gap-1.5">
-                        <ProviderLogo provider={sim.provider_a} size="sm" />
-                        {getProviderInfo(sim.provider_a).label}
-                      </span>
+                      {sim.provider_a && (
+                        <span className="flex items-center gap-1.5">
+                          <ProviderLogo provider={sim.provider_a} size="sm" />
+                          {getProviderInfo(sim.provider_a).label}
+                        </span>
+                      )}
                       {sim.provider_b && (
                         <>
                           <span className="text-gray-300">vs</span>

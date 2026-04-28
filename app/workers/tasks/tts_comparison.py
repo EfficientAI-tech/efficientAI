@@ -4,13 +4,32 @@ import os
 import re
 import string
 import tempfile
+from typing import Any, Dict
 from uuid import UUID
 
+import numpy as np
 from loguru import logger
 
 from app.database import SessionLocal
 
 from app.workers.config import celery_app
+
+
+def _sanitize_metrics(metrics: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert numpy scalars to native Python types so the dict is JSON-serializable."""
+    out: Dict[str, Any] = {}
+    for key, value in metrics.items():
+        if isinstance(value, (np.floating, np.float32, np.float64)):
+            out[key] = float(value)
+        elif isinstance(value, (np.integer, np.int32, np.int64)):
+            out[key] = int(value)
+        elif isinstance(value, np.ndarray):
+            out[key] = value.tolist()
+        elif isinstance(value, np.bool_):
+            out[key] = bool(value)
+        else:
+            out[key] = value
+    return out
 
 
 def _compute_wer_cer(ground_truth: str, predicted: str):
@@ -172,6 +191,15 @@ def generate_tts_comparison_task(self, comparison_id: str):
         comp.status = TTSComparisonStatus.GENERATING.value
         db.commit()
 
+        # blind_test_only comparisons have no TTS to synthesize – the API
+        # already pre-resolved every sample's audio_s3_key and marked them
+        # COMPLETED. Just transition to evaluation (which will also be a
+        # mostly-no-op for non-tts audio) and return.
+        if (getattr(comp, "mode", "benchmark") or "benchmark") == "blind_test_only":
+            comp.status = TTSComparisonStatus.COMPLETED.value
+            db.commit()
+            return {"skipped": "blind_test_only"}
+
         samples = (
             db.query(TTSSample)
             .filter(TTSSample.comparison_id == comp.id)
@@ -202,6 +230,15 @@ def generate_tts_comparison_task(self, comparison_id: str):
 
         failed_count = 0
         for sample in samples:
+            # Recording / upload samples were pre-resolved at create time and
+            # already have an audio_s3_key + COMPLETED status. Don't re-run
+            # synthesis on them – just leave them alone so the evaluation
+            # phase can pick them up alongside any TTS-generated audio.
+            if (getattr(sample, "source_type", "tts") or "tts") != "tts":
+                if sample.status != TTSSampleStatus.COMPLETED.value:
+                    sample.status = TTSSampleStatus.COMPLETED.value
+                    db.commit()
+                continue
             try:
                 sample.status = TTSSampleStatus.GENERATING.value
                 db.commit()
@@ -260,14 +297,17 @@ def generate_tts_comparison_task(self, comparison_id: str):
                 )
 
             except Exception as e:
-                logger.error(f"[TTS Generate] Sample {sample.id} failed: {e}")
+                logger.error("[TTS Generate] Sample {} failed: {}", sample.id, e)
                 sample.status = TTSSampleStatus.FAILED.value
                 sample.error_message = str(e)[:500]
                 db.commit()
                 failed_count += 1
 
         total = len(samples)
-        if failed_count == total:
+        tts_samples = sum(
+            1 for s in samples if (getattr(s, "source_type", "tts") or "tts") == "tts"
+        )
+        if tts_samples > 0 and failed_count == tts_samples:
             comp.status = TTSComparisonStatus.FAILED.value
             comp.error_message = "All samples failed to generate"
             db.commit()
@@ -280,7 +320,7 @@ def generate_tts_comparison_task(self, comparison_id: str):
         return {"generated": total - failed_count, "failed": failed_count}
 
     except Exception as exc:
-        logger.error(f"[TTS Generate] Task failed: {exc}", exc_info=True)
+        logger.error("[TTS Generate] Task failed: {}", exc, exc_info=True)
         try:
             comp = db.query(TTSComparison).filter(TTSComparison.id == UUID(comparison_id)).first()
             if comp:
@@ -397,14 +437,14 @@ def evaluate_tts_comparison_task(self, comparison_id: str):
                         metrics["CER Normalized"] = None
                         metrics["ASR Transcript"] = None
 
-                sample.evaluation_metrics = metrics
+                sample.evaluation_metrics = _sanitize_metrics(metrics)
                 db.commit()
                 evaluated += 1
 
                 logger.info(f"[TTS Eval] Sample {sample.id} metrics: {metrics}")
 
             except Exception as e:
-                logger.warning(f"[TTS Eval] Sample {sample.id} eval failed: {e}")
+                logger.warning("[TTS Eval] Sample {} eval failed: {}", sample.id, e)
             finally:
                 if tmp_path and os.path.exists(tmp_path):
                     try:
@@ -425,7 +465,7 @@ def evaluate_tts_comparison_task(self, comparison_id: str):
         return {"evaluated": evaluated}
 
     except Exception as exc:
-        logger.error(f"[TTS Eval] Task failed: {exc}", exc_info=True)
+        logger.error("[TTS Eval] Task failed: {}", exc, exc_info=True)
         try:
             comp = db.query(TTSComparison).filter(TTSComparison.id == UUID(comparison_id)).first()
             if comp:

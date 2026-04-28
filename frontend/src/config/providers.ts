@@ -3,7 +3,7 @@
  * Single source of truth for all provider metadata in the frontend
  */
 
-import { ModelProvider, IntegrationPlatform } from '../types/api'
+import { ModelProvider, IntegrationPlatform, TelephonyProvider } from '../types/api'
 
 export interface ProviderMetadata {
   label: string
@@ -26,6 +26,36 @@ export const MODEL_PROVIDER_CONFIG: Record<ModelProvider, ProviderMetadata> = {
     label: 'Google',
     logo: '/geminiai.png',
     description: 'Gemini, Google Speech, Google TTS',
+  },
+  [ModelProvider.XAI]: {
+    label: 'xAI (Grok)',
+    logo: '/xai.svg',
+    description: 'Grok models via xAI',
+  },
+  [ModelProvider.COHERE]: {
+    label: 'Cohere',
+    logo: '/cohere.svg',
+    description: 'Cohere command and embedding models',
+  },
+  [ModelProvider.MISTRAL]: {
+    label: 'Mistral',
+    logo: '/mistral.svg',
+    description: 'Mistral and Mixtral models',
+  },
+  [ModelProvider.META]: {
+    label: 'Meta',
+    logo: '/metaai.png',
+    description: 'Llama-family models',
+  },
+  [ModelProvider.TOGETHER]: {
+    label: 'Together',
+    logo: '/togetherai.svg',
+    description: 'Hosted open-source models via Together',
+  },
+  [ModelProvider.PERPLEXITY]: {
+    label: 'Perplexity',
+    logo: '/perplexity-ai.svg',
+    description: 'Perplexity online LLM models',
   },
   [ModelProvider.AZURE]: {
     label: 'Azure',
@@ -71,6 +101,11 @@ export const MODEL_PROVIDER_CONFIG: Record<ModelProvider, ProviderMetadata> = {
     label: 'VoiceMaker',
     logo: '/voiceMaker.png',
     description: 'VoiceMaker TTS',
+  },
+  [ModelProvider.SMALLEST]: {
+    label: 'Smallest.ai',
+    logo: '/smallest.jpeg',
+    description: 'Smallest Pulse STT, Lightning TTS, and Atoms agents',
   },
 }
 
@@ -131,6 +166,12 @@ export const INTEGRATION_PLATFORM_CONFIG: Record<IntegrationPlatform, Integratio
     description: 'VoiceMaker TTS for voice synthesis',
     modelProvider: ModelProvider.VOICEMAKER,
   },
+  [IntegrationPlatform.SMALLEST]: {
+    label: 'Smallest.ai',
+    logo: '/smallest.jpeg',
+    description: 'Smallest Atoms agents with Pulse STT and Lightning TTS',
+    modelProvider: ModelProvider.SMALLEST,
+  },
 }
 
 // Helper functions
@@ -151,3 +192,45 @@ export const getIntegrationPlatformLogo = (platform: IntegrationPlatform): strin
 
 export const mapIntegrationToModelProvider = (platform: IntegrationPlatform): ModelProvider | null =>
   INTEGRATION_PLATFORM_CONFIG[platform]?.modelProvider ?? null
+
+
+// --- Telephony provider configuration ---
+
+export interface TelephonyProviderMetadata {
+  label: string
+  logo: string | null
+  description: string
+  fields: { key: string; label: string; required: boolean; type: 'text' | 'password' }[]
+}
+
+export const TELEPHONY_PROVIDER_CONFIG: Record<TelephonyProvider, TelephonyProviderMetadata> = {
+  [TelephonyProvider.PLIVO]: {
+    label: 'Plivo',
+    logo: null,
+    description: 'Voice telephony, SIP routing, voice OTP, and number masking',
+    fields: [
+      { key: 'auth_id', label: 'Auth ID', required: true, type: 'password' },
+      { key: 'auth_token', label: 'Auth Token', required: true, type: 'password' },
+      { key: 'verify_app_uuid', label: 'Verify App UUID', required: false, type: 'text' },
+      { key: 'sip_domain', label: 'SIP Domain', required: false, type: 'text' },
+    ],
+  },
+  [TelephonyProvider.EXOTEL]: {
+    label: 'Exotel',
+    logo: null,
+    description: 'Voice telephony, applet routing, voice OTP, and masking workflows',
+    fields: [
+      { key: 'auth_id', label: 'API Key', required: true, type: 'password' },
+      { key: 'auth_token', label: 'API Token', required: true, type: 'password' },
+      { key: 'voice_app_id', label: 'Account SID', required: true, type: 'text' },
+      { key: 'verify_app_uuid', label: 'Verification App ID', required: false, type: 'text' },
+      { key: 'sip_domain', label: 'API Host (optional)', required: false, type: 'text' },
+    ],
+  },
+}
+
+export const getTelephonyProviderLabel = (provider: TelephonyProvider): string =>
+  TELEPHONY_PROVIDER_CONFIG[provider]?.label ?? provider
+
+export const getTelephonyProviderDescription = (provider: TelephonyProvider): string =>
+  TELEPHONY_PROVIDER_CONFIG[provider]?.description ?? ''

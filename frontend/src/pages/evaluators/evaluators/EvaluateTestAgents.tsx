@@ -9,6 +9,8 @@ import ProviderLogo from '../../../components/shared/ProviderLogo'
 import { Plus, Trash2, Play, X, CheckSquare, Square, Sparkles, Brain, ChevronDown, AlertTriangle, Info } from 'lucide-react'
 import { useToast } from '../../../hooks/useToast'
 import { getProviderLabel, getProviderLogo } from '../../../config/providers'
+import { useWalkthroughSectionState } from '../../../context/WalkthroughContext'
+import WalkthroughToggleButton from '../../../components/walkthrough/WalkthroughToggleButton'
 
 const DEFAULT_PERSONA_NAMES = [
   "Grumpy Old Man",
@@ -66,6 +68,12 @@ export default function EvaluateTestAgents() {
   const [selectedLlmModel, setSelectedLlmModel] = useState<string>('')
   const [showLlmDropdown, setShowLlmDropdown] = useState(false)
   const llmDropdownRef = useRef<HTMLDivElement>(null)
+
+  useWalkthroughSectionState(
+    'evaluators',
+    { createMode, showCreateModal, showRunModal },
+    [createMode, showCreateModal, showRunModal]
+  )
 
   const { data: agents = [] } = useQuery({
     queryKey: ['agents'],
@@ -399,14 +407,14 @@ export default function EvaluateTestAgents() {
     <>
       <ToastContainer />
       <div className="space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
+        <div className="flex items-center justify-between gap-4">
+          <div className="min-w-0">
             <h1 className="text-3xl font-bold text-gray-900">Evaluator</h1>
             <p className="mt-2 text-sm text-gray-600">
               Manage evaluator configurations for testing agents with personas and scenarios
             </p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center justify-end gap-2 pr-2">
             <Button
               variant="success"
               onClick={handleRunSelected}
@@ -435,6 +443,7 @@ export default function EvaluateTestAgents() {
             >
               Create Evaluator
             </Button>
+            <WalkthroughToggleButton />
           </div>
         </div>
 

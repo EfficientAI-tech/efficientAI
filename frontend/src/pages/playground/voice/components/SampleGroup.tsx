@@ -66,7 +66,7 @@ export default function SampleGroup({
                   playingId={playingId}
                   onPlay={onPlay}
                   showRun={numRuns > 1}
-                  sampleRateHz={hzMapA?.[sample.voice_id]}
+                  sampleRateHz={sample.voice_id ? hzMapA?.[sample.voice_id] : undefined}
                 />
               ))}
             </div>
@@ -81,7 +81,7 @@ export default function SampleGroup({
                     playingId={playingId}
                     onPlay={onPlay}
                     showRun={numRuns > 1}
-                    sampleRateHz={hzMapB?.[sample.voice_id]}
+                    sampleRateHz={sample.voice_id ? hzMapB?.[sample.voice_id] : undefined}
                   />
                 ))}
               </div>

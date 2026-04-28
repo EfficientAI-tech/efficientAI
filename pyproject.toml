@@ -10,7 +10,7 @@ dependencies = [
     "sqlalchemy>=2.0.0",
     "alembic>=1.12.0",
     "psycopg2-binary>=2.9.9",
-    "pydantic>=2.5.0",
+    "pydantic[email]>=2.5.0",
     "pydantic-settings>=2.1.0",
     "python-multipart>=0.0.6",
     "python-jose[cryptography]>=3.3.0",
@@ -57,6 +57,7 @@ dependencies = [
     "typing-extensions>=4.9.0",
     "onnxruntime>=1.17.0",
     "prometheus-fastapi-instrumentator>=7.0.0",
+    "plivo>=4.47.0",
 ]
 
 [project.optional-dependencies]
@@ -72,7 +73,7 @@ dev = [
     "mypy>=1.7.0",
 ]
 local-smart-turn-v3 = [
-    "transformers>=4.41.0",
+    "transformers>=5.5.0,<6.0.0",
     "onnxruntime>=1.17.0",
     "importlib-resources>=6.4.0",
 ]
@@ -95,7 +96,7 @@ reports = [
 qualitative-voice = [
     "torch>=2.0.0",
     "torchaudio>=2.1.0",
-    "transformers>=4.41.0",
+    "transformers>=5.5.0,<6.0.0",
     "librosa>=0.10.0",
     "imageio-ffmpeg>=0.5.1",
     "scipy>=1.11.0",
@@ -114,6 +115,9 @@ google = [
     "google-genai>=1.0.0",
     "google-cloud-texttospeech>=2.16.0",
     "google-cloud-speech>=2.26.0",
+]
+plivo = [
+    "plivo>=4.47.0",
 ]
 # GEPA prompt optimization (enterprise feature)
 gepa = [
@@ -167,4 +171,3 @@ filterwarnings = [
     "ignore:Error loading \\.env file, using defaults\\..*:UserWarning:app\\.database",
     "ignore:'audioop' is deprecated and slated for removal in Python 3.13:DeprecationWarning:efficientai\\.audio\\.utils",
 ]
-

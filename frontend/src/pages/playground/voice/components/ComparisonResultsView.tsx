@@ -1,4 +1,4 @@
-import { Trophy, Download, FileText, Loader2, Headphones } from 'lucide-react'
+import { Trophy, Download, FileText, Loader2, Share2, Lock } from 'lucide-react'
 import { useState } from 'react'
 import Button from '../../../../components/Button'
 import ProviderLogo, { getProviderInfo } from '../../../../components/shared/ProviderLogo'
@@ -7,12 +7,18 @@ import MetricCard from './MetricCard'
 import SampleGroup from './SampleGroup'
 import StatusBadge from './StatusBadge'
 import ReportConfigModal from './ReportConfigModal'
+import ShareBlindTestModal from './ShareBlindTestModal'
+import ExternalResponsesPanel from './ExternalResponsesPanel'
 
 function hasSecondProvider(comp: {
   provider_b?: string | null
   model_b?: string | null
+  samples?: Array<{ side?: string | null; audio_s3_key?: string | null; audio_url?: string | null }>
 }): boolean {
-  return !!(comp.provider_b && comp.model_b)
+  if (comp.provider_b && comp.model_b) return true
+  return !!(comp.samples || []).some(
+    (s) => s.side === 'B' && (s.audio_s3_key || s.audio_url),
+  )
 }
 
 function buildVoiceHzMaps(comp: TTSComparison): {
@@ -55,7 +61,16 @@ export default function ComparisonResultsView({
 }: ComparisonResultsViewProps) {
   const hzMaps = buildVoiceHzMaps(comparison)
   const [showReportConfig, setShowReportConfig] = useState(false)
+  const [showShareModal, setShowShareModal] = useState(false)
   const [lastOptions, setLastOptions] = useState<TTSReportOptions>(DEFAULT_TTS_REPORT_OPTIONS)
+  // Audio is ready when generation has finished. Evaluation can still be
+  // running in the background, but the user should be able to create and
+  // share a blind test as soon as audio clips exist.
+  const canShareBlindTest =
+    hasSecondProvider(comparison) &&
+    (comparison.status === 'evaluating' || comparison.status === 'completed')
+  const isBlindTestOnly = (comparison.mode || 'benchmark') === 'blind_test_only'
+  const showAutomatedMetrics = !isBlindTestOnly
 
   const handleDownload = (options: TTSReportOptions) => {
     setLastOptions(options)
@@ -84,53 +99,77 @@ export default function ComparisonResultsView({
               {comparison.name}
             </h2>
             <p className="text-sm text-gray-500">
-              {comparison.sample_texts?.length || 0} samples &middot;{' '}
-              {comparison.samples?.length || 0} audio files
-              {comparison.num_runs > 1 && <> &middot; {comparison.num_runs} runs</>}
+              {isBlindTestOnly ? (
+                <>
+                  Standalone blind test &middot;{' '}
+                  {comparison.sample_texts?.length || 0} pairs &middot;{' '}
+                  {comparison.samples?.length || 0} audio files
+                </>
+              ) : (
+                <>
+                  {comparison.sample_texts?.length || 0} samples &middot;{' '}
+                  {comparison.samples?.length || 0} audio files
+                  {comparison.num_runs > 1 && <> &middot; {comparison.num_runs} runs</>}
+                </>
+              )}
             </p>
           </div>
           <div className="flex flex-col items-end gap-2">
             <StatusBadge status={comparison.status} />
             <div className="flex items-center gap-2">
-              <Button
-                variant="secondary"
-                size="sm"
-                leftIcon={
-                  isDownloading ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <Download className="w-4 h-4" />
-                  )
-                }
-                onClick={() => setShowReportConfig(true)}
-                disabled={comparison.status !== 'completed' || isDownloading}
-              >
-                Download PDF
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                leftIcon={
-                  isCreatingReport ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <FileText className="w-4 h-4" />
-                  )
-                }
-                onClick={() => setShowReportConfig(true)}
-                disabled={isCreatingReport}
-              >
-                Generate Async
-              </Button>
-              {reportJob?.status === 'completed' && reportJob.download_url && (
+              {canShareBlindTest && (
                 <Button
                   variant="outline"
                   size="sm"
-                  leftIcon={<Download className="w-4 h-4" />}
-                  onClick={onOpenAsyncReport}
+                  leftIcon={<Share2 className="w-4 h-4" />}
+                  onClick={() => setShowShareModal(true)}
                 >
-                  Open Async PDF
+                  {comparison.blind_test_share ? 'Manage Blind Test' : 'Create Blind Test'}
                 </Button>
+              )}
+              {showAutomatedMetrics && (
+                <>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    leftIcon={
+                      isDownloading ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Download className="w-4 h-4" />
+                      )
+                    }
+                    onClick={() => setShowReportConfig(true)}
+                    disabled={comparison.status !== 'completed' || isDownloading}
+                  >
+                    Download PDF
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    leftIcon={
+                      isCreatingReport ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <FileText className="w-4 h-4" />
+                      )
+                    }
+                    onClick={() => setShowReportConfig(true)}
+                    disabled={isCreatingReport}
+                  >
+                    Generate Async
+                  </Button>
+                  {reportJob?.status === 'completed' && reportJob.download_url && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      leftIcon={<Download className="w-4 h-4" />}
+                      onClick={onOpenAsyncReport}
+                    >
+                      Open Async PDF
+                    </Button>
+                  )}
+                </>
               )}
             </div>
             {reportJob && reportJob.status !== 'completed' && reportJob.status !== 'failed' && (
@@ -144,20 +183,38 @@ export default function ComparisonResultsView({
           </div>
         </div>
 
+        {comparison.blind_test_share?.creator_notes && (
+          <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 p-4">
+            <div className="flex items-start gap-2">
+              <Lock className="w-4 h-4 text-amber-600 mt-0.5 flex-shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-semibold text-amber-900 uppercase tracking-wide mb-1">
+                  Internal notes
+                  <span className="ml-2 normal-case text-[10px] font-medium text-amber-700">
+                    (not shown to raters)
+                  </span>
+                </p>
+                <p className="text-sm text-amber-900 whitespace-pre-line break-words">
+                  {comparison.blind_test_share.creator_notes}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Winner Banner */}
-        {hasSecondProvider(comparison) &&
+        {showAutomatedMetrics &&
+          hasSecondProvider(comparison) &&
           comparison.evaluation_summary &&
           (() => {
             const sumA = comparison.evaluation_summary.provider_a || {}
             const sumB = comparison.evaluation_summary.provider_b || {}
             const mosA = sumA['MOS Score'] ?? 0
             const mosB = sumB['MOS Score'] ?? 0
-            const bt = comparison.evaluation_summary.blind_test
-            const btScore = bt ? bt.a_wins - bt.b_wins : 0
-            const winner = mosA + btScore * 0.1 >= mosB ? 'A' : 'B'
+            const winner = mosA >= mosB ? 'A' : 'B'
             const winnerName =
               winner === 'A'
-                ? getProviderInfo(comparison.provider_a).label
+                ? getProviderInfo(comparison.provider_a || '').label
                 : getProviderInfo(comparison.provider_b || '').label
 
             return (
@@ -171,7 +228,8 @@ export default function ComparisonResultsView({
           })()}
 
         {/* Metrics Table */}
-        {comparison.evaluation_summary &&
+        {showAutomatedMetrics &&
+          comparison.evaluation_summary &&
           (() => {
             const sumA = comparison.evaluation_summary.provider_a || {}
             const sumB = comparison.evaluation_summary.provider_b || {}
@@ -232,48 +290,16 @@ export default function ComparisonResultsView({
             )
           })()}
 
-        {/* Blind Test Results */}
-        {comparison.evaluation_summary?.blind_test &&
-          (() => {
-            const bt = comparison.evaluation_summary.blind_test
-            return (
-              <div className="p-4 bg-gradient-to-r from-amber-50 to-orange-50 rounded-xl border border-amber-200 mb-6">
-                <h4 className="font-semibold text-amber-900 mb-3 flex items-center gap-2">
-                  <Headphones className="w-5 h-5" />
-                  Blind Test Results
-                </h4>
-                <div className="flex items-center gap-6">
-                  <div className="text-center flex flex-col items-center gap-1">
-                    <ProviderLogo provider={comparison.provider_a} size="sm" />
-                    <p className="text-xs text-gray-500">
-                      {getProviderInfo(comparison.provider_a).label}
-                    </p>
-                    <p className="text-2xl font-bold text-blue-600">{bt.a_pct}%</p>
-                    <p className="text-xs text-gray-400">{bt.a_wins} wins</p>
-                  </div>
-                  <span className="text-gray-300 text-xl">vs</span>
-                  <div className="text-center flex flex-col items-center gap-1">
-                    <ProviderLogo provider={comparison.provider_b || ''} size="sm" />
-                    <p className="text-xs text-gray-500">
-                      {getProviderInfo(comparison.provider_b || '').label}
-                    </p>
-                    <p className="text-2xl font-bold text-purple-600">{bt.b_pct}%</p>
-                    <p className="text-xs text-gray-400">{bt.b_wins} wins</p>
-                  </div>
-                </div>
-              </div>
-            )
-          })()}
-
         {/* Provider Labels */}
         <div className="flex items-center justify-center gap-6 mb-4">
           <div className="flex items-center gap-2">
             <span className="w-6 h-6 rounded-full bg-blue-600 text-white flex items-center justify-center text-xs font-bold">
               A
             </span>
-            <ProviderLogo provider={comparison.provider_a} size="sm" />
+            <ProviderLogo provider={comparison.provider_a || ''} size="sm" />
             <span className="text-sm font-medium text-gray-700">
-              {getProviderInfo(comparison.provider_a).label} ({comparison.model_a})
+              {getProviderInfo(comparison.provider_a || '').label}
+              {comparison.model_a ? ` (${comparison.model_a})` : ''}
             </span>
           </div>
           {hasSecondProvider(comparison) && (
@@ -283,7 +309,8 @@ export default function ComparisonResultsView({
               </span>
               <ProviderLogo provider={comparison.provider_b || ''} size="sm" />
               <span className="text-sm font-medium text-gray-700">
-                {getProviderInfo(comparison.provider_b || '').label} ({comparison.model_b})
+                {getProviderInfo(comparison.provider_b || '').label}
+                {comparison.model_b ? ` (${comparison.model_b})` : ''}
               </span>
             </div>
           )}
@@ -303,7 +330,7 @@ export default function ComparisonResultsView({
               sampleIndex={idx}
               text={text}
               samples={comparison.samples.filter((s) => s.sample_index === idx)}
-              providerA={comparison.provider_a}
+              providerA={comparison.provider_a || ''}
               providerB={comparison.provider_b || undefined}
               playingId={playingId}
               onPlay={onPlay}
@@ -315,6 +342,8 @@ export default function ComparisonResultsView({
         </div>
       </div>
 
+      {canShareBlindTest && <ExternalResponsesPanel comparison={comparison} />}
+
       <ReportConfigModal
         isOpen={showReportConfig}
         initialOptions={lastOptions}
@@ -324,6 +353,18 @@ export default function ComparisonResultsView({
         onDownloadPdf={handleDownload}
         onGenerateAsync={handleGenerateAsync}
       />
+
+      {canShareBlindTest && (
+        <ShareBlindTestModal
+          isOpen={showShareModal}
+          comparisonId={comparison.id}
+          defaultTitle={
+            comparison.name ||
+            `Voice Blind Test${comparison.simulation_id ? ` #${comparison.simulation_id}` : ''}`
+          }
+          onClose={() => setShowShareModal(false)}
+        />
+      )}
     </div>
   )
 }

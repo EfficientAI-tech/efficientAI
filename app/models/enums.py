@@ -61,6 +61,7 @@ class CallMediumEnum(str, enum.Enum):
     """Call medium"""
     PHONE_CALL = "phone_call"
     WEB_CALL = "web_call"
+    SIP_CALL = "sip_call"
 
 class GenderEnum(str, enum.Enum):
     """Gender options for personas"""
@@ -99,12 +100,25 @@ class IntegrationPlatform(str, enum.Enum):
     MURF = "murf"
     SARVAM = "sarvam"
     VOICEMAKER = "voicemaker"
+    SMALLEST = "smallest"
+
+
+class TelephonyProvider(str, enum.Enum):
+    """Telephony provider enumeration - extensible for future providers."""
+    PLIVO = "plivo"
+    EXOTEL = "exotel"
 
 class ModelProvider(str, enum.Enum):
     """Model provider enumeration for extensibility."""
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
     GOOGLE = "google"
+    XAI = "xai"
+    COHERE = "cohere"
+    MISTRAL = "mistral"
+    META = "meta"
+    TOGETHER = "together"
+    PERPLEXITY = "perplexity"
     AZURE = "azure"
     AWS = "aws"
     DEEPGRAM = "deepgram"
@@ -114,6 +128,7 @@ class ModelProvider(str, enum.Enum):
     CUSTOM = "custom"
     SARVAM = "sarvam"
     VOICEMAKER = "voicemaker"
+    SMALLEST = "smallest"
 
 class VoiceBundleType(str, enum.Enum):
     """VoiceBundle type enumeration."""
@@ -208,5 +223,22 @@ class PromptOptimizationStatus(str, enum.Enum):
     """Prompt optimization run status."""
     PENDING = "pending"
     RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class CallImportStatus(str, enum.Enum):
+    """Status of a CSV-driven call import batch."""
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    PARTIAL = "partial"
+    FAILED = "failed"
+
+
+class CallImportRowStatus(str, enum.Enum):
+    """Status of an individual call-import row."""
+    PENDING = "pending"
+    PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"

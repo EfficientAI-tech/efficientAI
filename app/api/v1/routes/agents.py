@@ -226,10 +226,18 @@ async def create_agent(
         if not integration:
             raise HTTPException(status_code=404, detail="Integration not found or inactive")
         
-        if integration.platform not in [IntegrationPlatform.RETELL, IntegrationPlatform.VAPI, IntegrationPlatform.ELEVENLABS]:
+        if integration.platform not in [
+            IntegrationPlatform.RETELL,
+            IntegrationPlatform.VAPI,
+            IntegrationPlatform.ELEVENLABS,
+            IntegrationPlatform.SMALLEST,
+        ]:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Integration platform {integration.platform.value} is not supported for Voice AI agents. Only Retell, Vapi, and ElevenLabs are supported."
+                detail=(
+                    f"Integration platform {integration.platform.value} is not supported for Voice AI agents. "
+                    "Only Retell, Vapi, ElevenLabs, and Smallest are supported."
+                )
             )
         
         if not agent.voice_ai_agent_id:
@@ -380,10 +388,18 @@ async def update_agent(
         if not integration:
             raise HTTPException(status_code=404, detail="Integration not found or inactive")
         
-        if integration.platform not in [IntegrationPlatform.RETELL, IntegrationPlatform.VAPI, IntegrationPlatform.ELEVENLABS]:
+        if integration.platform not in [
+            IntegrationPlatform.RETELL,
+            IntegrationPlatform.VAPI,
+            IntegrationPlatform.ELEVENLABS,
+            IntegrationPlatform.SMALLEST,
+        ]:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Integration platform {integration.platform.value} is not supported for Voice AI agents. Only Retell, Vapi, and ElevenLabs are supported."
+                detail=(
+                    f"Integration platform {integration.platform.value} is not supported for Voice AI agents. "
+                    "Only Retell, Vapi, ElevenLabs, and Smallest are supported."
+                )
             )
         
         if not agent_update.voice_ai_agent_id:
@@ -462,7 +478,14 @@ async def sync_agent_provider_prompt(
         raise HTTPException(status_code=502, detail=f"Failed to fetch prompt from provider: {str(e)}")
 
     db.refresh(db_agent)
+    synced = isinstance(prompt, str) and bool(prompt.strip())
+    if not synced:
+        raise HTTPException(
+            status_code=422,
+            detail="Provider returned no prompt. Verify the external agent has a system prompt configured.",
+        )
     return {
+        "synced": synced,
         "provider_prompt": db_agent.provider_prompt,
         "provider_prompt_synced_at": db_agent.provider_prompt_synced_at.isoformat() if db_agent.provider_prompt_synced_at else None,
     }

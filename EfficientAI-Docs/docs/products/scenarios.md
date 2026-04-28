@@ -6,48 +6,34 @@ sidebar_position: 3
 
 # Scenarios
 
-## What is a Scenario?
+A Scenario defines the goal and context for a test conversation.
 
-A **Scenario** is the "Script" or "Mission" for the call.
+## How scenarios are created
 
-If the Persona is the *actor*, the Scenario tells them *what to do*. Without a scenario, the actor wouldn't know why they are calling.
+EfficientAI supports three scenario creation paths:
 
-Examples of Scenarios:
-*   **"Book an Appointment"**: The caller wants to schedule a dentist visit for next Tuesday.
-*   **"Return a Product"**: The caller is angry because their new toaster is broken and wants a refund.
-*   **"Ask a Question"**: The caller simply wants to know your business hours.
+1. **Generate from Agent Prompt (AI-assisted)**  
+   Generate scenario drafts from the selected agent's prompt/description.
+2. **Generate from Call data**  
+   Derive scenario content from call transcripts or call data.
+3. **Create Manually**  
+   Write a fully custom scenario.
 
-EfficientAI gives this script to the simulated caller, and they will try to achieve their goal while talking to your AI.
+## Scenario structure
 
----
+| Field | Description |
+|---|---|
+| `name` | Scenario title. |
+| `description` | What should happen in the conversation. |
+| `required_info` | Structured key/value expectations for the test. |
+| `agent_id` | Optional linked agent for context. |
 
-## Technical Details
+## How scenarios are used
 
-Scenarios define the objective of the conversation. They guide the Persona on what they need to achieve during the call, ensuring that the Test Agent challenges the Voice AI in specific, reproducible ways.
+Scenarios are used to:
 
-### Configuration
+- guide persona behavior during tests,
+- provide evaluation context for scoring,
+- keep testing reproducible across repeated runs.
 
-A Scenario consists of the following fields:
-
-| Field | Type | Description |
-|---|---|---|
-| `name` | String | The name of the scenario. |
-| `description` | String | A high-level description of what should happen. |
-| `required_info` | JSON | A structured list of information the Persona **must** collect or convey during the call. |
-
-### Required Info Structure
-
-The `required_info` field is a JSON object that lists data points necessary for success. This is injected into the System Prompt.
-
-**Example:**
-```json
-{
-  "appointment_date": "next Tuesday",
-  "appointment_time": "morning",
-  "reason": "routine cleaning"
-}
-```
-
-### Scenario Logic
-
-The `TestAgentService` combines the Persona definition with the Scenario details to form a complete System Prompt, instructing the LLM to role-play the specific situation.
+A good scenario is specific enough to be measurable, but open enough to preserve natural conversation flow.

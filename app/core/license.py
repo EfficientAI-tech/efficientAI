@@ -38,7 +38,43 @@ FEATURE_CATALOG: Dict[str, Dict[str, str]] = {
         "description": "Self-improving voice agents via reflective prompt evolution.",
         "category": "optimization",
     },
+    # --- Authentication features (gate pluggable auth providers) ---
+    "oidc_sso": {
+        "title": "Enterprise SSO (OIDC)",
+        "description": "Bring your own identity provider: Okta, Azure AD, Google Workspace, AWS Cognito, Auth0, Ping, etc.",
+        "category": "auth",
+    },
+    "saml_sso": {
+        "title": "SAML SSO",
+        "description": "Sign in via SAML 2.0 assertions from an enterprise IdP.",
+        "category": "auth",
+    },
+    "scim_provisioning": {
+        "title": "SCIM User Provisioning",
+        "description": "Automated user and group sync from your IdP over SCIM 2.0.",
+        "category": "auth",
+    },
+    "mfa_enforce": {
+        "title": "Enforced MFA",
+        "description": "Require multi-factor authentication for all human sign-ins.",
+        "category": "auth",
+    },
+    "audit_export": {
+        "title": "Audit Log Export",
+        "description": "Stream authentication and access events to SIEM via S3 or webhook.",
+        "category": "auth",
+    },
 }
+
+# Auth-category features (kept in sync with FEATURE_CATALOG). Used by the
+# pluggable auth providers to short-circuit with a helpful error message.
+AUTH_FEATURES: List[str] = [
+    "oidc_sso",
+    "saml_sso",
+    "scim_provisioning",
+    "mfa_enforce",
+    "audit_export",
+]
 
 # Backward-compatible export used by existing API response shape.
 ENTERPRISE_FEATURES = list(FEATURE_CATALOG.keys())
@@ -147,6 +183,20 @@ def is_feature_enabled(feature: str, organization_id: Optional[UUID] = None) -> 
         return False
 
     return str(organization_id) == str(licensed_org)
+
+
+def has_auth_feature(feature: str) -> bool:
+    """
+    Check whether an auth-category enterprise feature is enabled.
+
+    Unlike `is_feature_enabled`, this is deployment-scoped: auth features
+    apply before we know which organization the caller belongs to (we're
+    still in the middle of figuring that out!). A license scoped to a
+    specific org is therefore treated as deployment-wide for auth.
+    """
+    if feature not in AUTH_FEATURES:
+        return False
+    return feature in get_enabled_features()
 
 
 def reset_license_cache() -> None:
