@@ -73,6 +73,13 @@ import PromptOptimization from './pages/promptOptimization/PromptOptimization'
 import EnterpriseUpgrade from './pages/enterprise/EnterpriseUpgrade'
 import { WalkthroughProvider } from './context/WalkthroughContext'
 
+// Public (no-auth) blind test form
+import BlindTestForm from './pages/public/BlindTestForm'
+
+// Call Imports
+import CallImports from './pages/callImports/CallImports'
+import CallImportDetail from './pages/callImports/CallImportDetail'
+
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   // Either credential type counts as "signed in". The backend enforces the
@@ -110,6 +117,9 @@ function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<Login />} />
+        {/* Public blind test form - intentionally outside PrivateRoute and EnterpriseGate.
+            Auth comes from the unguessable share token in the URL. */}
+        <Route path="/blind-test/:token" element={<BlindTestForm />} />
         <Route
           path="/"
           element={
@@ -150,6 +160,8 @@ function App() {
           <Route path="voice-playground" element={<EnterpriseGate feature="voice_playground"><VoicePlayground /></EnterpriseGate>} />
           <Route path="cron-jobs" element={<CronJobs />} />
           <Route path="prompt-partials" element={<PromptPartials />} />
+          <Route path="call-imports" element={<CallImports />} />
+          <Route path="call-imports/:id" element={<CallImportDetail />} />
           <Route path="prompt-optimization" element={<EnterpriseGate feature="gepa_optimization"><PromptOptimization /></EnterpriseGate>} />
         </Route>
       </Routes>

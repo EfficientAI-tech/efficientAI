@@ -98,5 +98,33 @@ services:
       - ./config.docker.yml:/app/config.yml:ro
     command: eai worker --config /app/config.yml --loglevel info
 
+  # Dedicated worker for the call-import fan-out so large CSV imports
+  # don't starve synthetic-calling, audio generation, and evaluation jobs
+  # running on the default queue handled by the `worker` service above.
+  worker-imports:
+    image: ghcr.io/efficientai-tech/efficientai-worker:${EFFICIENTAI_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+      args:
+        INSTALL_EXTRAS: "qualitative-voice,reports"
+    container_name: efficientai_worker_imports
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-efficientai}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./uploads:/app/uploads
+      - ./.data:/app/.data
+      - ./config.docker.yml:/app/config.yml:ro
+    command: eai worker --config /app/config.yml --loglevel info --queues imports --concurrency 4
+
 volumes:
   postgres_data:

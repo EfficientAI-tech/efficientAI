@@ -35,3 +35,10 @@ celery_app.conf.update(
     task_time_limit=30 * 60,  # 30 minutes
     task_soft_time_limit=25 * 60,  # 25 minutes
 )
+
+# Route the CSV-driven call-import task to its own queue so a large import
+# fan-out can't starve the default queue (synthetic calling, audio gen, evals).
+# All other tasks remain on the default queue, so existing behavior is unchanged.
+celery_app.conf.task_routes = {
+    "process_call_import_row": {"queue": "imports"},
+}

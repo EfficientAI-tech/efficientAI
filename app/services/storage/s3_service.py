@@ -241,6 +241,84 @@ class S3Service:
         except Exception as e:
             raise StorageError(f"Unexpected error deleting file from S3: {str(e)}")
 
+    def delete_keys(self, keys: List[str]) -> tuple[int, List[dict]]:
+        """Bulk-delete a list of S3 keys. Returns (deleted_count, errors).
+
+        Splits the input into chunks of up to 1000 keys (the S3 DeleteObjects
+        cap) and aggregates errors per key. Never raises for a single bad
+        key — callers can inspect ``errors`` to decide what to do.
+        """
+        if not keys:
+            return 0, []
+
+        self._ensure_initialized()
+        if not self.is_enabled():
+            error_msg = self._initialization_error or "S3 is not enabled or not configured"
+            raise StorageError(error_msg)
+
+        deduped = list({k for k in keys if k})
+        deleted = 0
+        errors: List[dict] = []
+
+        for start in range(0, len(deduped), 1000):
+            chunk = deduped[start : start + 1000]
+            try:
+                resp = self.s3_client.delete_objects(
+                    Bucket=self.bucket_name,
+                    Delete={
+                        "Objects": [{"Key": k} for k in chunk],
+                        "Quiet": True,
+                    },
+                )
+            except ClientError as e:
+                # Whole-batch failure (network / auth / etc). Record one
+                # entry per key so the caller can see the impact.
+                msg = str(e)
+                for k in chunk:
+                    errors.append({"Key": k, "Code": "BatchError", "Message": msg})
+                continue
+            except Exception as e:  # noqa: BLE001 — surfaced via errors list
+                msg = str(e)
+                for k in chunk:
+                    errors.append({"Key": k, "Code": "BatchError", "Message": msg})
+                continue
+
+            chunk_errors = resp.get("Errors") or []
+            errors.extend(chunk_errors)
+            deleted += len(chunk) - len(chunk_errors)
+
+        return deleted, errors
+
+    def delete_keys_by_prefix(self, prefix: str) -> tuple[int, List[dict]]:
+        """List and bulk-delete every object whose key starts with ``prefix``.
+
+        Useful as a safety-net sweep after deleting known keys, to catch
+        orphans (e.g. uploads whose DB row failed to persist the key).
+        """
+        if not prefix:
+            return 0, []
+
+        self._ensure_initialized()
+        if not self.is_enabled():
+            error_msg = self._initialization_error or "S3 is not enabled or not configured"
+            raise StorageError(error_msg)
+
+        keys: List[str] = []
+        try:
+            paginator = self.s3_client.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=self.bucket_name, Prefix=prefix):
+                for obj in page.get("Contents") or []:
+                    k = obj.get("Key")
+                    if k:
+                        keys.append(k)
+        except ClientError as e:
+            raise StorageError(f"Failed to list S3 objects under {prefix!r}: {e}")
+
+        if not keys:
+            return 0, []
+
+        return self.delete_keys(keys)
+
     def file_exists(self, file_id: uuid.UUID, file_format: str) -> bool:
         """Check if file exists in S3."""
         self._ensure_initialized()

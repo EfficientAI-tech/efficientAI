@@ -21,6 +21,10 @@ import type {
   S3ListFilesResponse,
   S3BrowseResponse,
   S3Status,
+  CallImportDetail,
+  CallImportListResponse,
+  CallImportStatus,
+  CallImportUploadResponse,
 } from '../types/api'
 
 export interface EnterpriseFeatureMeta {
@@ -30,6 +34,33 @@ export interface EnterpriseFeatureMeta {
 }
 
 export type EnterpriseFeatureCatalog = Record<string, EnterpriseFeatureMeta>
+
+export type VoicePlaygroundSourceType = 'tts' | 'recording' | 'upload'
+
+export interface VoicePlaygroundSideConfig {
+  source_type: VoicePlaygroundSourceType
+  provider?: string
+  model?: string
+  voices?: Array<{ id: string; name: string; sample_rate_hz?: number }>
+  call_import_row_ids?: string[]
+  upload_s3_keys?: string[]
+}
+
+export type VoicePlaygroundBlindTestRefType = 'recording' | 'upload' | 'tts_sample'
+
+export interface VoicePlaygroundBlindTestAudioRef {
+  type: VoicePlaygroundBlindTestRefType
+  call_import_row_id?: string
+  upload_s3_key?: string
+  tts_sample_id?: string
+  label?: string
+}
+
+export interface VoicePlaygroundBlindTestPair {
+  text?: string
+  x: VoicePlaygroundBlindTestAudioRef
+  y: VoicePlaygroundBlindTestAudioRef
+}
 
 export interface LicenseInfoResponse {
   is_enterprise: boolean
@@ -715,6 +746,25 @@ class ApiClient {
     await this.client.delete(`/api/v1/iam/invitations/${invitationId}`)
   }
 
+  /**
+   * Admin-initiated password reset for another organization member.
+   *
+   * The caller must be an ADMIN of the same organization as `userId`. The
+   * backend ignores any current-password concept here (that's for the
+   * self-service `/auth/password` endpoint). Communicate the new password
+   * to the user out-of-band.
+   */
+  async adminResetUserPassword(
+    userId: string,
+    newPassword: string,
+  ): Promise<{ user_id: string; email: string; message: string }> {
+    const response = await this.client.post(
+      `/api/v1/iam/users/${userId}/reset-password`,
+      { new_password: newPassword },
+    )
+    return response.data
+  }
+
   // Profile endpoints
   async getProfile(): Promise<Profile> {
     const response = await this.client.get('/api/v1/profile')
@@ -892,6 +942,39 @@ class ApiClient {
   async deleteFromS3(fileKey: string): Promise<MessageResponse> {
     const response = await this.client.delete(`/api/v1/data-sources/s3/files/${encodeURIComponent(fileKey)}`)
     return response.data
+  }
+
+  // Call Imports endpoints
+  async uploadCallImport(file: File): Promise<CallImportUploadResponse> {
+    const formData = new FormData()
+    formData.append('file', file)
+    const response = await this.client.post('/api/v1/call-imports/upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    return response.data
+  }
+
+  async listCallImports(
+    params: { page?: number; page_size?: number; status?: CallImportStatus } = {}
+  ): Promise<CallImportListResponse> {
+    const response = await this.client.get('/api/v1/call-imports', { params })
+    return response.data
+  }
+
+  async getCallImport(
+    id: string,
+    params: { row_limit?: number; row_offset?: number } = {}
+  ): Promise<CallImportDetail> {
+    const response = await this.client.get(`/api/v1/call-imports/${id}`, { params })
+    return response.data
+  }
+
+  async deleteCallImport(id: string): Promise<void> {
+    await this.client.delete(`/api/v1/call-imports/${id}`)
+  }
+
+  async deleteCallImportRow(id: string, rowId: string): Promise<void> {
+    await this.client.delete(`/api/v1/call-imports/${id}/rows/${rowId}`)
   }
 
   // Model Config endpoints
@@ -1629,16 +1712,66 @@ class ApiClient {
 
   async createTTSComparison(data: {
     name?: string
-    provider_a: string
-    model_a: string
-    voices_a: Array<{ id: string; name: string; sample_rate_hz?: number }>
+    mode?: 'benchmark' | 'blind_test_only'
+    // Legacy benchmark fields
+    provider_a?: string
+    model_a?: string
+    voices_a?: Array<{ id: string; name: string; sample_rate_hz?: number }>
     provider_b?: string
     model_b?: string
     voices_b?: Array<{ id: string; name: string; sample_rate_hz?: number }>
-    sample_texts: string[]
+    // New per-side benchmark config
+    side_a?: VoicePlaygroundSideConfig
+    side_b?: VoicePlaygroundSideConfig
+    // Common
+    sample_texts?: string[]
     num_runs?: number
+    eval_stt_provider?: string
+    eval_stt_model?: string
+    // blind_test_only
+    pairs?: Array<VoicePlaygroundBlindTestPair>
   }): Promise<any> {
     const response = await this.client.post('/api/v1/voice-playground/comparisons', data)
+    return response.data
+  }
+
+  async listVoicePlaygroundCallImportRows(params: {
+    call_import_id?: string
+    with_recording?: boolean
+    skip?: number
+    limit?: number
+  } = {}): Promise<{
+    items: Array<{
+      id: string
+      call_import_id: string
+      call_import_filename: string | null
+      external_call_id: string
+      transcript: string | null
+      recording_s3_key: string | null
+      has_recording: boolean
+      status: string
+      created_at: string | null
+    }>
+    total: number
+    skip: number
+    limit: number
+  }> {
+    const response = await this.client.get('/api/v1/voice-playground/call-import-rows', { params })
+    return response.data
+  }
+
+  async uploadVoicePlaygroundAudio(file: File): Promise<{
+    s3_key: string
+    presigned_url: string | null
+    filename: string
+    size_bytes: number
+    content_type: string
+  }> {
+    const form = new FormData()
+    form.append('file', file)
+    const response = await this.client.post('/api/v1/voice-playground/uploads', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
     return response.data
   }
 
@@ -1674,6 +1807,56 @@ class ApiClient {
 
   async deleteTTSComparison(comparisonId: string): Promise<void> {
     await this.client.delete(`/api/v1/voice-playground/comparisons/${comparisonId}`)
+  }
+
+  // Blind Test Sharing (owner side)
+  async createBlindTestShare(comparisonId: string, payload: {
+    title: string
+    description?: string
+    creator_notes?: string
+    custom_metrics: Array<{ key: string; label: string; type: 'rating' | 'comment'; scale?: number }>
+  }): Promise<any> {
+    const response = await this.client.post(
+      `/api/v1/voice-playground/comparisons/${comparisonId}/share`,
+      payload
+    )
+    return response.data
+  }
+
+  async getBlindTestShare(comparisonId: string): Promise<any> {
+    const response = await this.client.get(
+      `/api/v1/voice-playground/comparisons/${comparisonId}/share`
+    )
+    return response.data
+  }
+
+  async updateBlindTestShare(shareId: string, payload: {
+    title?: string
+    description?: string
+    creator_notes?: string
+    custom_metrics?: Array<{ key: string; label: string; type: 'rating' | 'comment'; scale?: number }>
+    status?: 'open' | 'closed'
+  }): Promise<any> {
+    const response = await this.client.patch(
+      `/api/v1/voice-playground/shares/${shareId}`,
+      payload
+    )
+    return response.data
+  }
+
+  async deleteBlindTestShare(shareId: string): Promise<void> {
+    await this.client.delete(`/api/v1/voice-playground/shares/${shareId}`)
+  }
+
+  async listBlindTestResponses(shareId: string, skip = 0, limit = 100): Promise<{
+    items: any[]
+    total: number
+  }> {
+    const response = await this.client.get(
+      `/api/v1/voice-playground/shares/${shareId}/responses`,
+      { params: { skip, limit } }
+    )
+    return response.data
   }
 
   async generateSampleTexts(params: {
@@ -1937,4 +2120,43 @@ export const apiClient: ApiClient = apiClientInstance
 
 // Re-export the type for explicit typing if needed
 export type { ApiClient }
+
+
+// ----------------------------------------------------------------------
+// Public (unauthenticated) blind-test API.
+// Uses a bare axios instance so no Authorization / X-API-Key headers are
+// attached. Anyone with the share_token in the URL can call these.
+// ----------------------------------------------------------------------
+
+const publicClient = axios.create({
+  baseURL: API_BASE_URL,
+  headers: { 'Content-Type': 'application/json' },
+})
+
+export interface PublicBlindTestEntrySubmit {
+  sample_index: number
+  preferred: 'X' | 'Y'
+  ratings_x?: Record<string, number>
+  ratings_y?: Record<string, number>
+  comment?: string
+}
+
+export const publicBlindTestApi = {
+  async getForm(shareToken: string): Promise<any> {
+    const res = await publicClient.get(`/api/v1/public/blind-tests/${shareToken}`)
+    return res.data
+  },
+  async submit(shareToken: string, payload: {
+    rater_name: string
+    rater_email: string
+    client_token: string
+    responses: PublicBlindTestEntrySubmit[]
+  }): Promise<any> {
+    const res = await publicClient.post(
+      `/api/v1/public/blind-tests/${shareToken}/responses`,
+      payload
+    )
+    return res.data
+  },
+}
 

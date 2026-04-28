@@ -10,8 +10,8 @@ export type WalkthroughSectionId =
 
 export type ScenarioCreateMode = 'agent_prompt' | 'call' | 'custom' | null
 export type EvaluatorCreateMode = 'standard' | 'custom'
-export type VoicePlaygroundStep = 'configure' | 'progress' | 'blind-test' | 'results'
-export type VoicePlaygroundTab = 'playground' | 'voices' | 'past-simulations'
+export type VoicePlaygroundStep = 'configure' | 'progress' | 'results'
+export type VoicePlaygroundTab = 'playground' | 'voices' | 'past-simulations' | 'blind-tests'
 
 export interface WalkthroughStep {
   title: string
@@ -387,27 +387,9 @@ function getVoicePlaygroundWalkthrough(state?: VoicePlaygroundWalkthroughState):
           description: 'Watch progress through generating and evaluating samples.',
         },
         {
-          title: 'Step 2: Wait for completion',
-          description: 'When done, proceed to blind test or direct results.',
-        },
-      ],
-    }
-  }
-
-  if (state?.step === 'blind-test') {
-    return {
-      id: 'voice-playground',
-      title: 'Voice Playground Walkthrough',
-      subtitle: 'Run blind listening comparison.',
-      steps: [
-        {
-          title: 'Step 1: Listen to X and Y',
-          description: 'For each sample, compare hidden voice outputs.',
-        },
-        {
-          title: 'Step 2: Choose preferred voice',
-          description: 'Submit preferences to produce unbiased comparison data.',
-          bullets: ['You can skip blind test if needed'],
+          title: 'Step 2: Wait for audio',
+          description:
+            'Once audio clips are ready you jump straight to results — evaluation metrics keep computing in the background.',
         },
       ],
     }
@@ -428,7 +410,18 @@ function getVoicePlaygroundWalkthrough(state?: VoicePlaygroundWalkthroughState):
           description: 'Download or generate report artifacts for sharing.',
         },
         {
-          title: 'Step 3: Run next comparison',
+          title: 'Step 3: Create blind test',
+          description:
+            'Use "Create Blind Test" to generate a public link for raters to score voices — works as soon as audio is ready, even while evaluation is still running.',
+          bullets: [
+            'Add custom rating metrics (e.g. naturalness, clarity)',
+            'Close the form when you have enough responses',
+            'External responses merge into the same evaluation summary',
+            'Each email can only respond once per blind test',
+          ],
+        },
+        {
+          title: 'Step 4: Run next comparison',
           description: 'Reset and iterate with different providers/models/voices.',
         },
       ],

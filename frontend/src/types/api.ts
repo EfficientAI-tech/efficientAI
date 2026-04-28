@@ -583,3 +583,65 @@ export interface CronJobUpdate {
   status?: CronJobStatus
 }
 
+// --- Call Imports ---
+
+export type CallImportStatus =
+  | 'pending'
+  | 'processing'
+  | 'completed'
+  | 'partial'
+  | 'failed'
+
+export type CallImportRowStatus =
+  | 'pending'
+  | 'processing'
+  | 'completed'
+  | 'failed'
+
+export interface CallImportRow {
+  id: string
+  row_index: number
+  external_call_id: string
+  recording_url: string | null
+  transcript: string | null
+  status: CallImportRowStatus
+  recording_s3_key: string | null
+  recording_content_type: string | null
+  recording_size_bytes: number | null
+  error_message: string | null
+  attempts: number
+  created_at: string
+  updated_at: string
+}
+
+export interface CallImport {
+  id: string
+  organization_id: string
+  provider: string
+  original_filename: string | null
+  total_rows: number
+  completed_rows: number
+  failed_rows: number
+  status: CallImportStatus
+  error_message: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CallImportDetail extends CallImport {
+  rows: CallImportRow[]
+}
+
+export interface CallImportListResponse {
+  items: CallImport[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export interface CallImportUploadResponse {
+  id: string
+  total_rows: number
+  status: CallImportStatus
+  message: string
+}

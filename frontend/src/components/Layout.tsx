@@ -34,6 +34,7 @@ import {
   ScrollText,
   Github,
   Sparkles,
+  Upload,
 } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import Logo from './Logo'
@@ -120,6 +121,7 @@ const navigationSections: NavSection[] = [
 
 const otherNavigation: NavItem[] = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
+  { name: 'Call Imports', href: '/call-imports', icon: Upload },
 ]
 
 const bottomNavigation = [

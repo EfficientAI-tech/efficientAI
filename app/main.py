@@ -12,6 +12,7 @@ from app.api.v1.api import api_router
 from app.database import init_db
 from app.core.migrations import run_migrations, ensure_migrations_directory, check_migrations_status
 from app.core.migration_middleware import MigrationCheckMiddleware
+from app.core.rbac_middleware import ReaderReadOnlyMiddleware
 import logging
 
 logger = logging.getLogger(__name__)
@@ -94,6 +95,11 @@ app = FastAPI(
 # Add migration check middleware FIRST (before CORS)
 # This ensures API requests are blocked if migrations are pending
 app.add_middleware(MigrationCheckMiddleware)
+
+# Block mutating API calls from members with the `reader` role. Runs after
+# migrations are confirmed up-to-date but before any route logic, so it acts
+# as a safety net even on routes that forget to add a per-route role guard.
+app.add_middleware(ReaderReadOnlyMiddleware)
 
 # Configure CORS
 app.add_middleware(

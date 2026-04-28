@@ -19,6 +19,7 @@ interface ProviderPanelProps {
   onModelChange: (m: string) => void
   onVoicesChange: (v: TTSVoice[]) => void
   onSampleRateChange: (hz: number | null) => void
+  embedded?: boolean
 }
 
 export default function ProviderPanel({
@@ -33,6 +34,7 @@ export default function ProviderPanel({
   onModelChange,
   onVoicesChange,
   onSampleRateChange,
+  embedded = false,
 }: ProviderPanelProps) {
   const [showAdvanced, setShowAdvanced] = useState(false)
   const providerData = providers.find((p) => p.provider === selectedProvider)
@@ -59,19 +61,25 @@ export default function ProviderPanel({
   const advancedBorder = color === 'blue' ? 'border-blue-100' : 'border-purple-100'
   const advancedBg = color === 'blue' ? 'bg-blue-50/50' : 'bg-purple-50/50'
 
+  const wrapperClass = embedded
+    ? ''
+    : `p-5 ${bgGrad} rounded-xl border-2 ${borderColor}`
+
   return (
-    <div className={`p-5 ${bgGrad} rounded-xl border-2 ${borderColor}`}>
-      <div className="flex items-center gap-2 mb-4">
-        <span
-          className={`w-8 h-8 rounded-full ${badgeBg} text-white flex items-center justify-center text-sm font-bold`}
-        >
-          {label}
-        </span>
-        {selectedProvider ? <ProviderLogo provider={selectedProvider} size="md" /> : null}
-        <span className={`font-semibold ${textColor}`}>
-          {selectedProvider ? getProviderInfo(selectedProvider).label : `Provider ${label}`}
-        </span>
-      </div>
+    <div className={wrapperClass}>
+      {!embedded && (
+        <div className="flex items-center gap-2 mb-4">
+          <span
+            className={`w-8 h-8 rounded-full ${badgeBg} text-white flex items-center justify-center text-sm font-bold`}
+          >
+            {label}
+          </span>
+          {selectedProvider ? <ProviderLogo provider={selectedProvider} size="md" /> : null}
+          <span className={`font-semibold ${textColor}`}>
+            {selectedProvider ? getProviderInfo(selectedProvider).label : `Provider ${label}`}
+          </span>
+        </div>
+      )}
       <div className="space-y-4">
         {/* Provider select */}
         <div>

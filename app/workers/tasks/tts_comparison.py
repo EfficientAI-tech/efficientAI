@@ -191,6 +191,15 @@ def generate_tts_comparison_task(self, comparison_id: str):
         comp.status = TTSComparisonStatus.GENERATING.value
         db.commit()
 
+        # blind_test_only comparisons have no TTS to synthesize – the API
+        # already pre-resolved every sample's audio_s3_key and marked them
+        # COMPLETED. Just transition to evaluation (which will also be a
+        # mostly-no-op for non-tts audio) and return.
+        if (getattr(comp, "mode", "benchmark") or "benchmark") == "blind_test_only":
+            comp.status = TTSComparisonStatus.COMPLETED.value
+            db.commit()
+            return {"skipped": "blind_test_only"}
+
         samples = (
             db.query(TTSSample)
             .filter(TTSSample.comparison_id == comp.id)
@@ -221,6 +230,15 @@ def generate_tts_comparison_task(self, comparison_id: str):
 
         failed_count = 0
         for sample in samples:
+            # Recording / upload samples were pre-resolved at create time and
+            # already have an audio_s3_key + COMPLETED status. Don't re-run
+            # synthesis on them – just leave them alone so the evaluation
+            # phase can pick them up alongside any TTS-generated audio.
+            if (getattr(sample, "source_type", "tts") or "tts") != "tts":
+                if sample.status != TTSSampleStatus.COMPLETED.value:
+                    sample.status = TTSSampleStatus.COMPLETED.value
+                    db.commit()
+                continue
             try:
                 sample.status = TTSSampleStatus.GENERATING.value
                 db.commit()
@@ -286,7 +304,10 @@ def generate_tts_comparison_task(self, comparison_id: str):
                 failed_count += 1
 
         total = len(samples)
-        if failed_count == total:
+        tts_samples = sum(
+            1 for s in samples if (getattr(s, "source_type", "tts") or "tts") == "tts"
+        )
+        if tts_samples > 0 and failed_count == tts_samples:
             comp.status = TTSComparisonStatus.FAILED.value
             comp.error_message = "All samples failed to generate"
             db.commit()

@@ -12,7 +12,7 @@ from app.models.enums import (
     IntegrationPlatform, ModelProvider, VoiceBundleType, TestAgentConversationStatus,
     MetricType, MetricTrigger, CallRecordingStatus, AlertMetricType, AlertAggregation,
     AlertOperator, AlertNotifyFrequency, AlertStatus, AlertHistoryStatus, CronJobStatus,
-    PromptOptimizationStatus,
+    PromptOptimizationStatus, CallImportStatus, CallImportRowStatus,
 )
 
 def get_enum_values(enum_class):
@@ -753,9 +753,14 @@ class TTSComparison(Base):
     name = Column(String(255), nullable=True)
     status = Column(String(50), nullable=False, default=TTSComparisonStatus.PENDING.value)
 
-    provider_a = Column(String(100), nullable=False)
-    model_a = Column(String(100), nullable=False)
-    voices_a = Column(JSON, nullable=False)
+    # 'benchmark' = traditional TTS A/B benchmark (provider-generated audio).
+    # 'blind_test_only' = standalone blind test built from existing recordings
+    # / uploads / past TTS samples; no TTS generation happens.
+    mode = Column(String(32), nullable=False, default="benchmark")
+
+    provider_a = Column(String(100), nullable=True)
+    model_a = Column(String(100), nullable=True)
+    voices_a = Column(JSON, nullable=True)
 
     provider_b = Column(String(100), nullable=True)
     model_b = Column(String(100), nullable=True)
@@ -788,13 +793,23 @@ class TTSSample(Base):
     comparison_id = Column(UUID(as_uuid=True), ForeignKey("tts_comparisons.id", ondelete="CASCADE"), nullable=False, index=True)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
 
-    provider = Column(String(100), nullable=False)
-    model = Column(String(100), nullable=False)
-    voice_id = Column(String(255), nullable=False)
+    provider = Column(String(100), nullable=True)
+    model = Column(String(100), nullable=True)
+    voice_id = Column(String(255), nullable=True)
     voice_name = Column(String(255), nullable=True)
     side = Column(String(1), nullable=True)  # "A" or "B"
     sample_index = Column(Integer, nullable=False)
     run_index = Column(Integer, nullable=False, default=0)
+
+    # 'tts' (default, audio is synthesized by a provider), 'recording' (audio
+    # is reused from a CallImportRow recording), or 'upload' (audio was
+    # uploaded by the user). Non-tts samples are marked completed up-front
+    # by the API and skipped by the generation worker.
+    source_type = Column(String(32), nullable=False, default="tts")
+    # When source_type == 'recording', references CallImportRow.id (no FK
+    # constraint to keep cascading deletes simple if a call import is later
+    # removed; the audio_s3_key is what's actually used).
+    source_ref_id = Column(UUID(as_uuid=True), nullable=True)
 
     text = Column(String, nullable=False)
     audio_s3_key = Column(String(512), nullable=True)
@@ -832,6 +847,96 @@ class TTSReportJob(Base):
     created_by = Column(String, nullable=True)
 
     comparison = relationship("TTSComparison")
+
+
+class TTSBlindTestShareStatus(str, enum.Enum):
+    OPEN = "open"
+    CLOSED = "closed"
+
+
+class TTSBlindTestShare(Base):
+    """A publicly sharable blind test for a TTSComparison.
+
+    The share_token is the capability: anyone holding it can open the public
+    form and submit a response. Each comparison has at most one share row.
+    """
+    __tablename__ = "tts_blind_test_shares"
+    __table_args__ = (
+        UniqueConstraint("comparison_id", name="uq_blind_test_shares_comparison"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    comparison_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("tts_comparisons.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+
+    share_token = Column(String(64), unique=True, nullable=False, index=True)
+
+    title = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+
+    # Internal notes visible only to the share creator (e.g. which voice
+    # corresponds to which side, source notes for standalone blind tests).
+    # Never exposed via the public blind test payload.
+    creator_notes = Column(Text, nullable=True)
+
+    # JSON list: [{ "key": str, "label": str, "type": "rating"|"comment", "scale": int? }]
+    custom_metrics = Column(JSON, nullable=False)
+
+    status = Column(String(20), nullable=False, default=TTSBlindTestShareStatus.OPEN.value)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    closed_at = Column(DateTime(timezone=True), nullable=True)
+    created_by = Column(String, nullable=True)
+
+    comparison = relationship("TTSComparison")
+    responses = relationship(
+        "TTSBlindTestResponse",
+        back_populates="share",
+        cascade="all, delete-orphan",
+    )
+
+
+class TTSBlindTestResponse(Base):
+    """A single rater's submission against a TTSBlindTestShare."""
+    __tablename__ = "tts_blind_test_responses"
+    __table_args__ = (
+        UniqueConstraint("share_id", "rater_email", name="uq_blind_test_response_share_email"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    share_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("tts_blind_test_shares.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    rater_name = Column(String(255), nullable=False)
+    rater_email = Column(String(320), nullable=False, index=True)
+
+    # JSON list keyed by sample_index. Server stores in TRUE A/B orientation
+    # (already de-flipped from whatever the rater's UI showed):
+    # [{
+    #   "sample_index": int,
+    #   "preferred": "A" | "B",
+    #   "ratings_a": { metric_key: number },
+    #   "ratings_b": { metric_key: number },
+    #   "comment": str?
+    # }]
+    responses = Column(JSON, nullable=False)
+
+    ip = Column(String(64), nullable=True)
+    user_agent = Column(String(512), nullable=True)
+
+    submitted_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    share = relationship("TTSBlindTestShare", back_populates="responses")
 
 
 class PromptPartial(Base):
@@ -1049,3 +1154,83 @@ class TelephonyMaskedSession(Base):
     session_metadata = Column("metadata", JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class CallImport(Base):
+    """Batch record for a CSV-driven call import job."""
+
+    __tablename__ = "call_imports"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    created_by_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+
+    provider = Column(String(50), nullable=False, default="exotel")
+    original_filename = Column(String(512), nullable=True)
+
+    total_rows = Column(Integer, nullable=False, default=0)
+    completed_rows = Column(Integer, nullable=False, default=0)
+    failed_rows = Column(Integer, nullable=False, default=0)
+
+    status = Column(
+        Enum(CallImportStatus, values_callable=get_enum_values),
+        nullable=False,
+        default=CallImportStatus.PENDING,
+        index=True,
+    )
+    error_message = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    rows = relationship(
+        "CallImportRow",
+        back_populates="call_import",
+        cascade="all, delete-orphan",
+        order_by="CallImportRow.row_index",
+    )
+
+
+class CallImportRow(Base):
+    """A single row within a CallImport batch (one CSV line / one external call)."""
+
+    __tablename__ = "call_import_rows"
+    __table_args__ = (
+        UniqueConstraint("call_import_id", "row_index", name="uq_call_import_row_index"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    call_import_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_imports.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+
+    row_index = Column(Integer, nullable=False)
+    external_call_id = Column(String(255), nullable=False, index=True)
+    # Optional at upload time; the worker resolves it via Exotel's Calls API when
+    # absent and writes the resolved URL back here so retries are cheap.
+    recording_url = Column(Text, nullable=True)
+    transcript = Column(Text, nullable=True)
+
+    status = Column(
+        Enum(CallImportRowStatus, values_callable=get_enum_values),
+        nullable=False,
+        default=CallImportRowStatus.PENDING,
+        index=True,
+    )
+
+    recording_s3_key = Column(String(1024), nullable=True)
+    recording_content_type = Column(String(128), nullable=True)
+    recording_size_bytes = Column(Integer, nullable=True)
+
+    error_message = Column(Text, nullable=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    celery_task_id = Column(String(255), nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    call_import = relationship("CallImport", back_populates="rows")

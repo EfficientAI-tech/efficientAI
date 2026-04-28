@@ -225,3 +225,20 @@ class PromptOptimizationStatus(str, enum.Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+class CallImportStatus(str, enum.Enum):
+    """Status of a CSV-driven call import batch."""
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    PARTIAL = "partial"
+    FAILED = "failed"
+
+
+class CallImportRowStatus(str, enum.Enum):
+    """Status of an individual call-import row."""
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
