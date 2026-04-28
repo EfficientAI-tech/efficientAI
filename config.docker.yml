@@ -65,6 +65,23 @@ api:
   key_header: "X-API-Key"
   rate_limit_per_minute: 60
 
+# Observability (Loki log aggregation)
+# storage: "filesystem" (default, local Docker volume) or "s3" (durable, for production)
+# multi_tenant: false (default, single tenant) or true (per-org log isolation)
+observability:
+  loki:
+    enabled: true
+    url: "http://loki:3100"
+    storage: filesystem
+    multi_tenant: false
+    platform_tenant: "platform"
+    # s3:
+    #   bucket_name: "my-logs-bucket"
+    #   region: "us-east-1"
+    #   access_key_id: ""
+    #   secret_access_key: ""
+    #   prefix: "logs/"
+    
 auth:
   providers:
     - api_key

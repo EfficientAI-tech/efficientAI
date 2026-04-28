@@ -23,6 +23,13 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    logging:
+      driver: loki
+      options:
+        loki-url: "http://localhost:3100/loki/api/v1/push"
+        loki-retries: "5"
+        loki-max-backoff: "800ms"
+        loki-external-labels: "service=postgres,environment=docker"
 
   redis:
     image: redis:7-alpine
@@ -34,6 +41,13 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    logging:
+      driver: loki
+      options:
+        loki-url: "http://localhost:3100/loki/api/v1/push"
+        loki-retries: "5"
+        loki-max-backoff: "800ms"
+        loki-external-labels: "service=redis,environment=docker"
 
   api:
     # Pre-built image from GitHub Container Registry
@@ -43,8 +57,6 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.api
-      args:
-        INSTALL_EXTRAS: "reports"
     container_name: efficientai_api
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-efficientai}
@@ -68,6 +80,13 @@ services:
       redis:
         condition: service_healthy
     command: eai start --config /app/config.yml --host 0.0.0.0 --port 8000 --no-build-frontend --no-reload
+    logging:
+      driver: loki
+      options:
+        loki-url: "http://localhost:3100/loki/api/v1/push"
+        loki-retries: "5"
+        loki-max-backoff: "800ms"
+        loki-external-labels: "service=api,environment=docker"
 
   worker:
     # Pre-built image from GitHub Container Registry
@@ -97,8 +116,15 @@ services:
       - ./.data:/app/.data
       - ./config.docker.yml:/app/config.yml:ro
     command: eai worker --config /app/config.yml --loglevel info
-
-  # Dedicated worker for the call-import fan-out so large CSV imports
+    logging:
+      driver: loki
+      options:
+        loki-url: "http://localhost:3100/loki/api/v1/push"
+        loki-retries: "5"
+        loki-max-backoff: "800ms"
+        loki-external-labels: "service=worker,environment=docker"
+        
+     # Dedicated worker for the call-import fan-out so large CSV imports
   # don't starve synthetic-calling, audio generation, and evaluation jobs
   # running on the default queue handled by the `worker` service above.
   worker-imports:
@@ -124,7 +150,105 @@ services:
       - ./uploads:/app/uploads
       - ./.data:/app/.data
       - ./config.docker.yml:/app/config.yml:ro
-    command: eai worker --config /app/config.yml --loglevel info --queues imports --concurrency 4
+    command: eai worker --config /app/config.yml --loglevel info --queues imports --concurrency 4     
+        
+        
+
+  # ============================================================
+  # Observability Stack
+  # ============================================================
+
+  loki:
+    image: grafana/loki:latest
+    container_name: efficientai_loki
+    environment:
+      # Set LOKI_CONFIG_FILE to switch between filesystem and S3 backends:
+      #   filesystem (default): ./observability/loki/loki-config.yml
+      #   S3:                   ./observability/loki/loki-config.s3.yml
+      LOKI_AUTH_ENABLED: ${LOKI_AUTH_ENABLED:-false}
+      LOKI_S3_BUCKET_NAME: ${LOKI_S3_BUCKET_NAME:-}
+      LOKI_S3_REGION: ${LOKI_S3_REGION:-us-east-1}
+      LOKI_S3_ACCESS_KEY_ID: ${LOKI_S3_ACCESS_KEY_ID:-}
+      LOKI_S3_SECRET_ACCESS_KEY: ${LOKI_S3_SECRET_ACCESS_KEY:-}
+      LOKI_S3_PREFIX: ${LOKI_S3_PREFIX:-logs/}
+    volumes:
+      - ./${LOKI_CONFIG_FILE:-observability/loki/loki-config.yml}:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml -config.expand-env=true
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --output-document=- http://localhost:3100/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: efficientai_prometheus
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=15d"
+    depends_on:
+      - api
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: efficientai_grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+      - loki
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    container_name: efficientai_postgres_exporter
+    environment:
+      DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-efficientai}?sslmode=disable"
+    ports:
+      - "9187:9187"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: efficientai_redis_exporter
+    environment:
+      REDIS_ADDR: "redis://redis:6379"
+    ports:
+      - "9121:9121"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  celery-exporter:
+    image: danihodovic/celery-exporter:latest
+    container_name: efficientai_celery_exporter
+    environment:
+      CE_BROKER_URL: "redis://redis:6379/0"
+    ports:
+      - "9808:9808"
+    depends_on:
+      redis:
+        condition: service_healthy
 
 volumes:
   postgres_data:
+  prometheus_data:
+  grafana_data:
+  loki_data:
