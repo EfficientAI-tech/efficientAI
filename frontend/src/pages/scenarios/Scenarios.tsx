@@ -7,7 +7,7 @@ import Button from '../../components/Button'
 import { useToast } from '../../hooks/useToast'
 import { AIProvider, ModelProvider } from '../../types/api'
 import { getProviderLabel, getProviderLogo } from '../../config/providers'
-import { useWalkthrough, useWalkthroughSectionState } from '../../context/WalkthroughContext'
+import { useWalkthroughSectionState } from '../../context/WalkthroughContext'
 import WalkthroughToggleButton from '../../components/walkthrough/WalkthroughToggleButton'
 
 interface Scenario {
@@ -40,7 +40,6 @@ type CreateMode = 'agent_prompt' | 'call' | 'custom' | null
 export default function Scenarios() {
   const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
-  const { isCollapsed } = useWalkthrough()
   const [showMainModal, setShowMainModal] = useState(false)
   const [createMode, setCreateMode] = useState<CreateMode>(null)
   const [showDetailsModal, setShowDetailsModal] = useState(false)
@@ -75,7 +74,6 @@ export default function Scenarios() {
   const [isGeneratingEditDescription, setIsGeneratingEditDescription] = useState(false)
 
   useWalkthroughSectionState('scenarios', { createMode }, [createMode])
-  const walkthroughOffsetClass = isCollapsed ? 'lg:pr-0' : 'lg:pr-[360px]'
 
   // For Generate from Call
   const [callData, setCallData] = useState('')
@@ -662,7 +660,7 @@ export default function Scenarios() {
 
       {/* Main Create Scenario Modal */}
       {showMainModal && renderModal(
-        <div className={`fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999] ${walkthroughOffsetClass}`}>
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]">
           <div className="bg-white rounded-lg shadow-xl w-full mx-4 max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
             <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
               <h3 className="text-lg font-semibold">Create Scenario</h3>
@@ -1083,7 +1081,7 @@ export default function Scenarios() {
 
       {/* Scenario Details Modal */}
       {showDetailsModal && selectedScenario && renderModal(
-        <div className={`fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999] ${walkthroughOffsetClass}`} onClick={() => setShowDetailsModal(false)}>
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]" onClick={() => setShowDetailsModal(false)}>
           <div className="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4" onClick={(e) => e.stopPropagation()}>
             <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
               <h3 className="text-lg font-semibold">Scenario Details</h3>
@@ -1151,7 +1149,7 @@ export default function Scenarios() {
 
       {/* Edit Modal */}
       {showEditModal && selectedScenario && renderModal(
-        <div className={`fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999] ${walkthroughOffsetClass}`}>
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]">
           <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-hidden flex flex-col">
             <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
               <h3 className="text-lg font-semibold">Edit Scenario</h3>
@@ -1327,7 +1325,7 @@ export default function Scenarios() {
 
       {/* Delete Confirmation Modal */}
       {showDeleteModal && selectedScenario && renderModal(
-        <div className={`fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999] ${walkthroughOffsetClass}`} onClick={() => {
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]" onClick={() => {
           setShowDeleteModal(false)
           setSelectedScenario(null)
           setDeleteDependencies(null)
