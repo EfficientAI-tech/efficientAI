@@ -226,7 +226,7 @@ export default function PromptOptimization() {
                 <Play className="h-2.5 w-2.5" />
                 New
               </button>
-              <WalkthroughToggleButton compact />
+              <WalkthroughToggleButton />
             </div>
           </div>
           <div className="flex-1 overflow-y-auto">

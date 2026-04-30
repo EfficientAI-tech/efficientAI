@@ -111,6 +111,7 @@ class TelephonyProvider(str, enum.Enum):
 class ModelProvider(str, enum.Enum):
     """Model provider enumeration for extensibility."""
     OPENAI = "openai"
+    OPENROUTER = "openrouter"
     ANTHROPIC = "anthropic"
     GOOGLE = "google"
     XAI = "xai"

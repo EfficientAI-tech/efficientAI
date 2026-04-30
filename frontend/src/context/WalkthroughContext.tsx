@@ -1,4 +1,4 @@
-import { DependencyList, createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { DependencyList, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import {
   WalkthroughDefinition,
@@ -34,6 +34,7 @@ export function WalkthroughProvider({ children }: { children: React.ReactNode })
   }))
   const [isCollapsed, setIsCollapsed] = useState(false)
   const [sectionState, setSectionStateMap] = useState<WalkthroughSectionStateMap>({})
+  const firstOpenedSectionRef = useRef<WalkthroughSectionId | null>(null)
 
   const setCollapsed = useCallback((collapsed: boolean) => {
     setIsCollapsed(collapsed)
@@ -85,6 +86,25 @@ export function WalkthroughProvider({ children }: { children: React.ReactNode })
 
     return getWalkthroughDefinition(activeSectionId, sectionState)
   }, [activeSectionId, sectionState, isLoaded, enabledFeatures])
+
+  useEffect(() => {
+    if (!activeDefinition || !activeSectionId) {
+      if (firstOpenedSectionRef.current) {
+        setIsCollapsed(true)
+      }
+      return
+    }
+
+    if (!firstOpenedSectionRef.current) {
+      firstOpenedSectionRef.current = activeSectionId
+      setIsCollapsed(false)
+      return
+    }
+
+    if (activeSectionId !== firstOpenedSectionRef.current) {
+      setIsCollapsed(true)
+    }
+  }, [activeDefinition, activeSectionId])
 
   const value = useMemo<WalkthroughContextValue>(
     () => ({

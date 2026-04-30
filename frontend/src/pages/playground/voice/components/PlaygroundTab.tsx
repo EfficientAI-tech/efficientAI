@@ -429,22 +429,20 @@ export default function PlaygroundTab() {
   return null
 }
 
-const ALL_STT_OPTIONS: Array<{ provider: string; model: string; label: string }> = [
-  { provider: 'openai', model: 'whisper-1', label: 'OpenAI / whisper-1' },
-  { provider: 'openai', model: 'gpt-4o-transcribe', label: 'OpenAI / gpt-4o-transcribe' },
-  { provider: 'openai', model: 'gpt-4o-mini-transcribe', label: 'OpenAI / gpt-4o-mini-transcribe' },
-  { provider: 'deepgram', model: 'nova-2', label: 'Deepgram / nova-2' },
-  { provider: 'deepgram', model: 'nova-3', label: 'Deepgram / nova-3' },
-  { provider: 'elevenlabs', model: 'scribe_v2', label: 'ElevenLabs / Scribe v2' },
-  { provider: 'smallest', model: 'pulse-v4', label: 'Smallest.ai / Pulse v4' },
-]
-
 const INTEGRATION_TO_PROVIDER: Record<string, string> = {
   deepgram: 'deepgram',
   elevenlabs: 'elevenlabs',
   cartesia: 'cartesia',
   sarvam: 'sarvam',
   smallest: 'smallest',
+}
+
+const PROVIDER_DISPLAY_LABELS: Record<string, string> = {
+  openai: 'OpenAI',
+  deepgram: 'Deepgram',
+  elevenlabs: 'ElevenLabs',
+  sarvam: 'Sarvam',
+  smallest: 'Smallest.ai',
 }
 
 function EvalSttPanel({
@@ -486,9 +484,39 @@ function EvalSttPanel({
     return names
   }, [aiProviders, integrations])
 
-  const availableSttOptions = useMemo(
-    () => ALL_STT_OPTIONS.filter(opt => activeProviderNames.has(opt.provider)),
+  const activeProviderList = useMemo(
+    () => Array.from(activeProviderNames).sort(),
     [activeProviderNames],
+  )
+
+  const { data: sttModelsByProvider = {} } = useQuery<Record<string, string[]>>({
+    queryKey: ['voice-playground-eval-stt-models', activeProviderList],
+    enabled: activeProviderList.length > 0,
+    queryFn: async () => {
+      const entries = await Promise.all(
+        activeProviderList.map(async (provider) => {
+          try {
+            const options = await apiClient.getModelOptions(provider)
+            return [provider, options.stt || []] as const
+          } catch {
+            return [provider, []] as const
+          }
+        }),
+      )
+      return Object.fromEntries(entries)
+    },
+  })
+
+  const availableSttOptions = useMemo(
+    () =>
+      activeProviderList.flatMap((provider) =>
+        (sttModelsByProvider[provider] || []).map((model) => ({
+          provider,
+          model,
+          label: `${PROVIDER_DISPLAY_LABELS[provider] || provider} / ${model}`,
+        })),
+      ),
+    [activeProviderList, sttModelsByProvider],
   )
 
   const bundleWithStt = voiceBundles.find(b => b.stt_provider && b.stt_model)
@@ -551,7 +579,7 @@ function EvalSttPanel({
           </select>
           {availableSttOptions.length === 0 && !bundleWithStt && (
             <p className="mt-2 text-xs text-amber-600">
-              No STT-capable providers (OpenAI, Deepgram, ElevenLabs, Smallest.ai) are configured in Integrations. Add one or configure a Voice Bundle with STT to enable WER/CER evaluation.
+              No STT-capable providers with STT models are configured. Add or activate an STT provider (for example OpenAI, Deepgram, ElevenLabs, Sarvam, Smallest.ai), or configure a Voice Bundle with STT to enable WER/CER evaluation.
             </p>
           )}
           {availableSttOptions.length === 0 && bundleWithStt && (

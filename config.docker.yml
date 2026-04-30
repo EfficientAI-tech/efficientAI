@@ -37,13 +37,12 @@ storage:
     - "m4a"
 
 # S3 Configuration (for data sources integration)
-# Copy your S3 settings from config.yml here
 s3:
-  enabled: true 
-  bucket_name: "your-bucket-name"
+  enabled: true
+  bucket_name: "voiceai-evals-test"
   region: "us-east-1"
-  access_key_id: "YOUR_ACCESS_KEY_ID"
-  secret_access_key: "YOUR_SECRET_ACCESS_KEY"
+  access_key_id: "${S3_ACCESS_KEY_ID}"
+  secret_access_key: "${S3_SECRET_ACCESS_KEY}"
   endpoint_url: null
   prefix: "audio/"
 
@@ -93,5 +92,5 @@ auth:
 
 # Enterprise License (JWT signed with RS256). Unlocks gated features like
 # oidc_sso, mfa_enforce, audit_export, voice_playground, gepa_optimization.
-# license:
-#   key: "eyJhbGciOi..."
+license:
+  key: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJvcmciOiJFZmZpY2llbnQgQUkiLCJmZWF0dXJlcyI6WyJ2b2ljZV9wbGF5Z3JvdW5kIl0sImlhdCI6MTc3MjIwMTc0NywiZXhwIjoxODAzNzM3NzQ3fQ.YhY-ntI89mjhwR_F3vvUfTmZ672rOyPaCIRXcjxrr83w7T0KEfOBrV58Txrnt6rGKOIOk4JnhU1fJMYFNmwMX7N_WJMsjfTjN37iO7YF2eEPc8ZW6mjTjHJXFcX_-qvJAZE86f9tfS7qpbPZi1TQ8p4RUt1dojMcWqIYlRjVl8f25KO3sKBj9uN4EZMqQbcxvjFBKvHloa7iNmQHnjOjqiMfuZMEcko-MJkPdVR3ovNge3qkuvszAy2Y7qe3D5f3tNFW2dh8AeZB5AVsF3R_A4XzqPXfIOvGE_Vjy-QTsRACJpjnVAsqs8y38fRskQ55vB7JtFed8p5DBZbkuZSwzQ"
