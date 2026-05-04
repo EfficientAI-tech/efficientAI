@@ -346,7 +346,7 @@ export default function AgentDetail() {
       />
 
       {showSavePromptModal && renderModal(
-        <div className="fixed inset-0 z-[9999] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-[9999] bg-gray-500 bg-opacity-75 flex items-center justify-center p-4">
           <div className="w-full max-w-2xl rounded-xl bg-white shadow-xl">
             <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4">
               <h3 className="text-lg font-semibold text-gray-900">Save System Prompt</h3>

@@ -501,6 +501,7 @@ class TranscriptionService:
         stt_model: str,
         organization_id: UUID,
         db: Session,
+        language: Optional[str] = None,
     ) -> Optional[str]:
         """Transcribe a local audio file and return just the text.
 
@@ -520,18 +521,21 @@ class TranscriptionService:
             transcribe_openai,
             transcribe_deepgram,
             transcribe_elevenlabs,
+            transcribe_sarvam,
             transcribe_smallest,
         )
 
         try:
             if stt_provider == ModelProvider.OPENAI:
-                result = transcribe_openai(audio_file_path, stt_model, api_key)
+                result = transcribe_openai(audio_file_path, stt_model, api_key, language)
             elif stt_provider == ModelProvider.DEEPGRAM:
-                result = transcribe_deepgram(audio_file_path, stt_model, api_key)
+                result = transcribe_deepgram(audio_file_path, stt_model, api_key, language)
             elif stt_provider == ModelProvider.ELEVENLABS:
-                result = transcribe_elevenlabs(audio_file_path, stt_model, api_key)
+                result = transcribe_elevenlabs(audio_file_path, stt_model, api_key, language)
+            elif stt_provider == ModelProvider.SARVAM:
+                result = transcribe_sarvam(audio_file_path, stt_model, api_key, language)
             elif stt_provider == ModelProvider.SMALLEST:
-                result = transcribe_smallest(audio_file_path, stt_model, api_key)
+                result = transcribe_smallest(audio_file_path, stt_model, api_key, language)
             else:
                 logger.warning(f"[TranscriptionService] Unsupported STT provider for text-only: {stt_provider}")
                 return None
@@ -573,6 +577,7 @@ class TranscriptionService:
                 transcribe_openai,
                 transcribe_deepgram,
                 transcribe_elevenlabs,
+                transcribe_sarvam,
                 transcribe_smallest,
             )
 
@@ -586,6 +591,8 @@ class TranscriptionService:
                 result = transcribe_deepgram(temp_file_path, stt_model, api_key, language)
             elif stt_provider == ModelProvider.ELEVENLABS:
                 result = transcribe_elevenlabs(temp_file_path, stt_model, api_key, language)
+            elif stt_provider == ModelProvider.SARVAM:
+                result = transcribe_sarvam(temp_file_path, stt_model, api_key, language)
             elif stt_provider == ModelProvider.SMALLEST:
                 result = transcribe_smallest(temp_file_path, stt_model, api_key, language)
             elif stt_provider == ModelProvider.GOOGLE:

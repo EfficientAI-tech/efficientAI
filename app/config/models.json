@@ -364,10 +364,10 @@
     "model_type": "stt",
     "description": "State-of-the-art highly accurate Indian language STT"
   },
-  "saaras:v1": {
+  "saaras:v3": {
     "provider": "sarvam",
     "model_type": "stt",
-    "description": "Highly accurate Indian language STT with Translate"
+    "description": "State-of-the-art Sarvam STT model with transcribe/translate modes"
   },
   "bulbul:v3": {
     "provider": "sarvam",

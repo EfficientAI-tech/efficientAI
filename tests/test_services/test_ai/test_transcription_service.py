@@ -80,6 +80,34 @@ def test_transcribe_text_only_smallest_success(monkeypatch):
     assert result == "smallest transcript"
 
 
+def test_transcribe_text_only_sarvam_success(monkeypatch):
+    service = TranscriptionService()
+    monkeypatch.setattr(service, "_get_api_key_for_provider", lambda *_args, **_kwargs: "key-1")
+    captured = {}
+
+    def _fake_transcribe_sarvam(_audio_path, _model, _api_key, language=None):
+        captured["language"] = language
+        return {"text": "  sarvam transcript  "}
+
+    monkeypatch.setattr(
+        stt_clients_module,
+        "transcribe_sarvam",
+        _fake_transcribe_sarvam,
+    )
+
+    result = service.transcribe_text_only(
+        audio_file_path="/tmp/a.wav",
+        stt_provider=ModelProvider.SARVAM,
+        stt_model="saaras:v3",
+        organization_id=uuid4(),
+        db=object(),
+        language="hi-IN",
+    )
+
+    assert result == "sarvam transcript"
+    assert captured["language"] == "hi-IN"
+
+
 def test_transcribe_returns_standard_shape_without_diarization(monkeypatch, tmp_path):
     service = TranscriptionService()
     temp_audio = tmp_path / "sample.wav"

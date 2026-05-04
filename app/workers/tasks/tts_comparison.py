@@ -404,12 +404,19 @@ def evaluate_tts_comparison_task(self, comparison_id: str):
                 metrics = qualitative_voice_service.calculate_all_metrics(tmp_path)
 
                 if stt_available and sample.text:
+                    selected_stt_provider = ModelProvider(stt_provider_str)
+                    selected_language = None
+                    if selected_stt_provider == ModelProvider.SARVAM:
+                        # Sarvam saarika models accept language_code; saaras models do not.
+                        if "saarika" in (stt_model or "").lower():
+                            selected_language = "hi-IN"
                     asr_transcript = transcription_service.transcribe_text_only(
                         audio_file_path=tmp_path,
-                        stt_provider=ModelProvider(stt_provider_str),
+                        stt_provider=selected_stt_provider,
                         stt_model=stt_model,
                         organization_id=comp.organization_id,
                         db=db,
+                        language=selected_language,
                     )
                     if asr_transcript:
                         score_bundle = _compute_wer_cer(sample.text, asr_transcript)

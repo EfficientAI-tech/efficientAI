@@ -29,7 +29,7 @@ export function useToast() {
   }, [])
 
   const ToastContainer = () => (
-    <div className="fixed top-16 right-4 z-[1000] flex flex-col gap-2 pointer-events-none">
+    <div className="fixed top-16 right-4 z-[10050] flex flex-col gap-2 pointer-events-none">
       {toasts.map((toast) => (
         <div
           key={toast.id}

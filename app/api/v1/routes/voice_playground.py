@@ -165,6 +165,7 @@ PROVIDER_SAMPLE_RATES: Dict[str, List[int]] = {
     "elevenlabs": [8000, 16000, 22050, 24000, 44100],
     "cartesia": [8000, 16000, 22050, 24000, 44100],
     "deepgram": [8000, 16000, 24000, 48000],
+    "sarvam": [8000, 16000, 22050],
     # Murf stream API valid sample rates.
     "murf": [8000, 16000, 24000, 44100, 48000],
     "voicemaker": [8000, 16000, 22050, 24000, 44100, 48000],

@@ -168,11 +168,16 @@ def transcribe_sarvam(
     data: Dict[str, str] = {"model": model or "saarika:v2.5"}
     if language:
         data["language_code"] = language
-    else:
-        data["language_code"] = "unknown"
 
     resp = httpx.post(url, headers=headers, files=files, data=data, timeout=60.0)
-    resp.raise_for_status()
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        body = (e.response.text or "").strip()
+        detail = f"{e}"
+        if body:
+            detail = f"{detail} | response={body[:500]}"
+        raise RuntimeError(detail) from e
     result = resp.json()
 
     return {

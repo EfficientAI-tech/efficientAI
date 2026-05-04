@@ -57,7 +57,7 @@ export default function ConfirmModal({
       <div className="flex min-h-screen items-center justify-center p-4">
         {/* Backdrop */}
         <div
-          className="fixed inset-0 bg-black/40 backdrop-blur-sm transition-opacity"
+          className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"
           onClick={onCancel}
         />
         

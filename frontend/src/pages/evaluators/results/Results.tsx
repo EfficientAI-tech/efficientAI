@@ -645,7 +645,7 @@ export default function Results() {
             exit={{ opacity: 0 }}
           >
             <div
-              className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+              className="absolute inset-0 bg-gray-500 bg-opacity-75"
               onClick={() => {
                 setShowManualModal(false)
                 setSelectedAudioFile(null)
@@ -779,7 +779,7 @@ export default function Results() {
             exit={{ opacity: 0 }}
           >
             <div
-              className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+              className="absolute inset-0 bg-gray-500 bg-opacity-75"
               onClick={() => setShowDeleteModal(false)}
             />
             <motion.div
