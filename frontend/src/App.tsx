@@ -69,6 +69,10 @@ import Profile from './pages/profile/Profile'
 // Prompt Optimization (Enterprise)
 import PromptOptimization from './pages/promptOptimization/PromptOptimization'
 
+// Judge Alignment (AlignEval-style hybrid integration)
+import JudgeAlignment from './pages/judgeAlignment/JudgeAlignment'
+import JudgeDatasetDetail from './pages/judgeAlignment/JudgeDatasetDetail'
+
 // Enterprise
 import EnterpriseUpgrade from './pages/enterprise/EnterpriseUpgrade'
 import { WalkthroughProvider } from './context/WalkthroughContext'
@@ -163,6 +167,8 @@ function App() {
           <Route path="call-imports" element={<CallImports />} />
           <Route path="call-imports/:id" element={<CallImportDetail />} />
           <Route path="prompt-optimization" element={<EnterpriseGate feature="gepa_optimization"><PromptOptimization /></EnterpriseGate>} />
+          <Route path="judge-alignment" element={<JudgeAlignment />} />
+          <Route path="judge-alignment/datasets/:datasetId" element={<JudgeDatasetDetail />} />
         </Route>
       </Routes>
     </BrowserRouter>

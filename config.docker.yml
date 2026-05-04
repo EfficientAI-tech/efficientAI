@@ -90,6 +90,13 @@ auth:
   #   default_org_name: "Example Inc"                       # used when no org claim is present
   #   org_claim_path: ["https://efficientai.com/org"]       # dotted path into the JWT to find the org name
 
+# Judge Alignment (AlignEval-style hybrid integration).
+# Per-org thresholds and judge model selection are UI-driven; only the
+# operator kill switch + CSV upload limit live here.
+judge_alignment:
+  enabled: true
+  csv_max_rows: 5000
+
 # Enterprise License (JWT signed with RS256). Unlocks gated features like
 # oidc_sso, mfa_enforce, audit_export, voice_playground, gepa_optimization.
 # license:

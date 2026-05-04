@@ -2103,6 +2103,234 @@ class ApiClient {
     const response = await this.client.post(`/api/v1/agents/${agentId}/sync-provider-prompt`)
     return response.data
   }
+
+  // -------------------------------------------------------------------
+  // Judge Alignment (AlignEval-style hybrid integration)
+  //
+  // Per-org thresholds and judge model selection are sourced from the
+  // backend (no hardcoded defaults in the frontend).
+  // -------------------------------------------------------------------
+
+  async getJudgeAlignmentSettings(): Promise<JudgeAlignmentSettings> {
+    const response = await this.client.get('/api/v1/judge-alignment/settings')
+    return response.data
+  }
+
+  async updateJudgeAlignmentSettings(
+    data: { min_labels_to_evaluate: number; min_labels_to_optimize: number }
+  ): Promise<JudgeAlignmentSettings> {
+    const response = await this.client.patch('/api/v1/judge-alignment/settings', data)
+    return response.data
+  }
+
+  async listJudgeCapableModels(): Promise<JudgeModelCatalogEntry[]> {
+    const response = await this.client.get('/api/v1/judge-alignment/available-models')
+    return response.data
+  }
+
+  async listJudgeDatasets(): Promise<JudgeDataset[]> {
+    const response = await this.client.get('/api/v1/judge-alignment/datasets')
+    return response.data
+  }
+
+  async createJudgeDataset(data: {
+    name: string
+    description?: string
+    source_type: 'transcript' | 'metric_output' | 'csv'
+    source_config?: Record<string, any>
+    input_field?: string
+    output_field?: string
+  }): Promise<JudgeDataset> {
+    const response = await this.client.post('/api/v1/judge-alignment/datasets', data)
+    return response.data
+  }
+
+  async uploadJudgeDatasetCsv(
+    file: File,
+    name: string,
+    description?: string
+  ): Promise<JudgeDataset> {
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('name', name)
+    if (description) formData.append('description', description)
+    const response = await this.client.post(
+      '/api/v1/judge-alignment/datasets/upload-csv',
+      formData,
+      { headers: { 'Content-Type': 'multipart/form-data' } }
+    )
+    return response.data
+  }
+
+  async getJudgeDataset(datasetId: string): Promise<JudgeDataset> {
+    const response = await this.client.get(`/api/v1/judge-alignment/datasets/${datasetId}`)
+    return response.data
+  }
+
+  async deleteJudgeDataset(datasetId: string): Promise<void> {
+    await this.client.delete(`/api/v1/judge-alignment/datasets/${datasetId}`)
+  }
+
+  async listJudgeSamples(
+    datasetId: string,
+    options: { only_labeled?: boolean; skip?: number; limit?: number } = {}
+  ): Promise<JudgeSample[]> {
+    const response = await this.client.get(
+      `/api/v1/judge-alignment/datasets/${datasetId}/samples`,
+      { params: options }
+    )
+    return response.data
+  }
+
+  async labelJudgeSample(
+    sampleId: string,
+    label: 'pass' | 'fail' | null
+  ): Promise<JudgeSample> {
+    const response = await this.client.patch(
+      `/api/v1/judge-alignment/samples/${sampleId}`,
+      { label }
+    )
+    return response.data
+  }
+
+  async bulkLabelJudgeSamples(
+    datasetId: string,
+    items: Array<{ sample_id: string; label: 'pass' | 'fail' | null }>
+  ): Promise<{ updated: number; requested: number }> {
+    const response = await this.client.post(
+      `/api/v1/judge-alignment/datasets/${datasetId}/samples/bulk-label`,
+      { items }
+    )
+    return response.data
+  }
+
+  async listJudgeRuns(datasetId: string): Promise<JudgeRun[]> {
+    const response = await this.client.get(
+      `/api/v1/judge-alignment/datasets/${datasetId}/runs`
+    )
+    return response.data
+  }
+
+  async triggerJudgeRun(
+    datasetId: string,
+    data: { evaluator_id: string; split?: 'all' | 'dev' | 'test'; sample_ids?: string[] }
+  ): Promise<JudgeRun> {
+    const response = await this.client.post(
+      `/api/v1/judge-alignment/datasets/${datasetId}/run`,
+      data
+    )
+    return response.data
+  }
+
+  async getJudgeRun(runId: string): Promise<JudgeRun> {
+    const response = await this.client.get(`/api/v1/judge-alignment/runs/${runId}`)
+    return response.data
+  }
+
+  async recomputeJudgeRunMetrics(runId: string): Promise<JudgeRun> {
+    const response = await this.client.post(
+      `/api/v1/judge-alignment/runs/${runId}/recompute-metrics`
+    )
+    return response.data
+  }
+
+  async optimizeJudge(
+    datasetId: string,
+    data: {
+      evaluator_id: string
+      dev_ratio?: number
+      seed?: number
+      max_metric_calls?: number
+      minibatch_size?: number
+      agent_id?: string
+    }
+  ): Promise<JudgeOptimizeResponse> {
+    const response = await this.client.post(
+      `/api/v1/judge-alignment/datasets/${datasetId}/optimize`,
+      data
+    )
+    return response.data
+  }
+}
+
+// -------------------------------------------------------------------
+// Judge Alignment shared types
+// -------------------------------------------------------------------
+
+export interface JudgeAlignmentSettings {
+  min_labels_to_evaluate: number
+  min_labels_to_optimize: number
+  defaults: { min_labels_to_evaluate: number; min_labels_to_optimize: number }
+}
+
+export interface JudgeModelCatalogEntry {
+  provider: string
+  provider_label: string
+  model: string
+  label: string
+}
+
+export interface JudgeDataset {
+  id: string
+  name: string
+  description?: string | null
+  source_type: 'transcript' | 'metric_output' | 'csv'
+  source_config: Record<string, any>
+  input_field: string
+  output_field: string
+  total_samples: number
+  labeled_samples: number
+  unlabeled_samples: number
+  created_at?: string
+  updated_at?: string
+}
+
+export interface JudgeSample {
+  id: string
+  dataset_id: string
+  external_id?: string | null
+  input_text: string
+  output_text: string
+  label?: 'pass' | 'fail' | null
+  labeled_by?: string | null
+  labeled_at?: string | null
+  extra?: Record<string, any> | null
+  created_at?: string
+}
+
+export interface JudgeRunMetrics {
+  precision: number
+  recall: number
+  f1: number
+  kappa: number
+  tp: number
+  fp: number
+  tn: number
+  fn: number
+  n: number
+}
+
+export interface JudgeRun {
+  id: string
+  dataset_id: string
+  evaluator_id?: string | null
+  split: 'all' | 'dev' | 'test'
+  llm_provider?: string | null
+  llm_model?: string | null
+  status: 'pending' | 'queued' | 'running' | 'completed' | 'failed'
+  metrics?: JudgeRunMetrics | null
+  predictions?: Record<string, { prediction: 'pass' | 'fail' | null; explanation?: string; raw?: string }> | null
+  error_message?: string | null
+  celery_task_id?: string | null
+  gepa_optimization_id?: string | null
+  created_at?: string
+  updated_at?: string
+}
+
+export interface JudgeOptimizeResponse {
+  optimization_run_id: string
+  dev_sample_count: number
+  test_sample_count: number
 }
 
 // Factory function to create ApiClient instance
