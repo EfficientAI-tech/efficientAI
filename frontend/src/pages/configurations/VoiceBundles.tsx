@@ -547,7 +547,7 @@ export default function VoiceBundles() {
 
       {/* Delete Confirmation Modal */}
       {showDeleteModal && selectedBundle && renderModal(
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]" onClick={() => {
+        <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]" onClick={() => {
           setShowDeleteModal(false)
           setSelectedBundle(null)
           setDeleteDependencies(null)
@@ -730,7 +730,7 @@ function VoiceBundleModal({
     }
   }, [showSttDropdown, showLlmDropdown, showTtsDropdown, showS2sDropdown])
   return (
-    <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999] overflow-y-auto">
+    <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999] overflow-y-auto">
       <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full mx-4 my-8">
         <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center sticky top-0 bg-white z-10">
           <h3 className="text-lg font-semibold">{title}</h3>

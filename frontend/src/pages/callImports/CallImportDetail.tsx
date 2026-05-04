@@ -536,7 +536,7 @@ export default function CallImportDetail() {
 
       {transcriptRow &&
         renderModal(
-          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]">
+          <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]">
             <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[80vh] flex flex-col">
               <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
                 <div className="min-w-0">

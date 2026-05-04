@@ -557,7 +557,7 @@ export default function Integrations() {
       )}
 
       {showModal && renderModal(
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]">
+        <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]">
           <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4 max-h-[90vh] overflow-y-auto">
             <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
               <h3 className="text-lg font-semibold">{isEditMode ? (integrationType === 'ai_provider' ? 'Edit AI Provider' : integrationType === 'telephony_provider' ? 'Edit Telephony Provider' : 'Edit Integration') : 'Add Integration'}</h3>
@@ -794,7 +794,7 @@ export default function Integrations() {
       )}
 
       {showDeleteModal && integrationToDelete && renderModal(
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]" onClick={() => { setShowDeleteModal(false); setIntegrationToDelete(null); setDeleteDependencies(null) }}>
+        <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]" onClick={() => { setShowDeleteModal(false); setIntegrationToDelete(null); setDeleteDependencies(null) }}>
           <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
             <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
               <h3 className="text-lg font-semibold text-gray-900">Confirm Delete</h3>
@@ -840,7 +840,7 @@ export default function Integrations() {
       )}
 
       {showDeleteAIProviderModal && aiProviderToDelete && renderModal(
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]" onClick={() => { setShowDeleteAIProviderModal(false); setAIProviderToDelete(null) }}>
+        <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]" onClick={() => { setShowDeleteAIProviderModal(false); setAIProviderToDelete(null) }}>
           <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
             <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
               <h3 className="text-lg font-semibold text-gray-900">Confirm Delete</h3>

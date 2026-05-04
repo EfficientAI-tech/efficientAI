@@ -756,7 +756,7 @@ export default function Personas() {
 
         {/* ===================== CREATE PERSONA MODAL ===================== */}
         {showCreateModal && renderModal(
-          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]">
+          <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]">
             <div className="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4 max-h-[90vh] overflow-hidden flex flex-col">
               <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
                 <h3 className="text-lg font-semibold">Create Persona</h3>
@@ -792,7 +792,7 @@ export default function Personas() {
 
         {/* ===================== EDIT PERSONA MODAL ===================== */}
         {showEditModal && selectedPersona && renderModal(
-          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]">
+          <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]">
             <div className="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4 max-h-[90vh] overflow-hidden flex flex-col">
               <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
                 <h3 className="text-lg font-semibold">Edit Persona</h3>
@@ -827,7 +827,7 @@ export default function Personas() {
 
         {/* ===================== DELETE MODAL ===================== */}
         {showDeleteModal && selectedPersona && renderModal(
-          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]" onClick={() => { setShowDeleteModal(false); setSelectedPersona(null); setDeleteDependencies(null) }}>
+          <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]" onClick={() => { setShowDeleteModal(false); setSelectedPersona(null); setDeleteDependencies(null) }}>
             <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
               <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
                 <h3 className="text-lg font-semibold text-gray-900">Delete Persona</h3>
@@ -886,7 +886,7 @@ export default function Personas() {
 
         {/* ===================== ADD CUSTOM VOICE MODAL ===================== */}
         {showCustomVoiceModal && renderModal(
-          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]">
+          <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]">
             <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
               <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
                 <h3 className="text-lg font-semibold">Add Custom Voice</h3>
@@ -986,7 +986,7 @@ export default function Personas() {
 
         {/* ===================== EDIT CUSTOM VOICE MODAL ===================== */}
         {showEditCustomVoiceModal && editingCustomVoice && renderModal(
-          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]">
+          <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]">
             <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
               <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
                 <div className="flex items-center gap-3">
@@ -1061,7 +1061,7 @@ export default function Personas() {
         {/* ===================== DELETE CUSTOM VOICE CONFIRMATION ===================== */}
         {deleteCustomVoiceConfirm && renderModal(
           <div
-            className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999]"
+            className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]"
             onClick={() => setDeleteCustomVoiceConfirm(null)}
           >
             <div
