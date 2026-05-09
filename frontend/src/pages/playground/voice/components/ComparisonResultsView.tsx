@@ -1,4 +1,4 @@
-import { Trophy, Download, FileText, Loader2, Share2, Lock } from 'lucide-react'
+import { Trophy, Download, FileText, Loader2, Share2, Lock, Sparkles } from 'lucide-react'
 import { useState } from 'react'
 import Button from '../../../../components/Button'
 import ProviderLogo, { getProviderInfo } from '../../../../components/shared/ProviderLogo'
@@ -34,6 +34,37 @@ function buildVoiceHzMaps(comp: TTSComparison): {
     if (v.sample_rate_hz) b[v.id] = v.sample_rate_hz
   }
   return { a, b }
+}
+
+interface CustomMetricSummaryEntry {
+  metric_id: string
+  metric_name: string
+  type?: string
+  value: number | string | null
+  sample_count?: number
+  label_counts?: Record<string, number>
+}
+
+function readCustomMetrics(side: any): CustomMetricSummaryEntry[] {
+  const list = side?.custom_metrics
+  return Array.isArray(list) ? list : []
+}
+
+function mergeCustomMetricKeys(
+  a: CustomMetricSummaryEntry[],
+  b: CustomMetricSummaryEntry[],
+): Array<{ metric_id: string; metric_name: string; type?: string }> {
+  const map = new Map<string, { metric_id: string; metric_name: string; type?: string }>()
+  for (const item of [...a, ...b]) {
+    if (!map.has(item.metric_id)) {
+      map.set(item.metric_id, {
+        metric_id: item.metric_id,
+        metric_name: item.metric_name,
+        type: item.type,
+      })
+    }
+  }
+  return Array.from(map.values())
 }
 
 interface ComparisonResultsViewProps {
@@ -234,58 +265,112 @@ export default function ComparisonResultsView({
             const sumA = comparison.evaluation_summary.provider_a || {}
             const sumB = comparison.evaluation_summary.provider_b || {}
             const hasTwoProviders = hasSecondProvider(comparison)
+
+            const cards: Array<{
+              key: string
+              label: string
+              valueA: any
+              valueB: any
+              unit?: string
+              higherIsBetter: boolean
+            }> = [
+              { key: 'MOS Score', label: 'MOS Score', valueA: sumA['MOS Score'], valueB: hasTwoProviders ? sumB['MOS Score'] : null, higherIsBetter: true },
+              { key: 'Valence', label: 'Valence', valueA: sumA['Valence'], valueB: hasTwoProviders ? sumB['Valence'] : null, higherIsBetter: true },
+              { key: 'Arousal', label: 'Arousal', valueA: sumA['Arousal'], valueB: hasTwoProviders ? sumB['Arousal'] : null, higherIsBetter: true },
+              { key: 'Prosody Score', label: 'Prosody', valueA: sumA['Prosody Score'], valueB: hasTwoProviders ? sumB['Prosody Score'] : null, higherIsBetter: true },
+              { key: 'avg_ttfb_ms', label: 'TTFB', valueA: sumA['avg_ttfb_ms'], valueB: hasTwoProviders ? sumB['avg_ttfb_ms'] : null, unit: 'ms', higherIsBetter: false },
+              { key: 'avg_latency_ms', label: 'Total Latency', valueA: sumA['avg_latency_ms'], valueB: hasTwoProviders ? sumB['avg_latency_ms'] : null, unit: 'ms', higherIsBetter: false },
+              { key: 'WER', label: 'WER', valueA: sumA['WER'], valueB: hasTwoProviders ? sumB['WER'] : null, higherIsBetter: false },
+              { key: 'CER', label: 'CER', valueA: sumA['CER'], valueB: hasTwoProviders ? sumB['CER'] : null, higherIsBetter: false },
+            ].filter((c) => c.valueA != null || c.valueB != null)
+
+            if (cards.length === 0) return null
+
             return (
               <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3 mb-6">
-                <MetricCard
-                  label="MOS Score"
-                  valueA={sumA['MOS Score']}
-                  valueB={hasTwoProviders ? sumB['MOS Score'] : null}
-                  higherIsBetter
-                />
-                <MetricCard
-                  label="Valence"
-                  valueA={sumA['Valence']}
-                  valueB={hasTwoProviders ? sumB['Valence'] : null}
-                  higherIsBetter
-                />
-                <MetricCard
-                  label="Arousal"
-                  valueA={sumA['Arousal']}
-                  valueB={hasTwoProviders ? sumB['Arousal'] : null}
-                  higherIsBetter
-                />
-                <MetricCard
-                  label="Prosody"
-                  valueA={sumA['Prosody Score']}
-                  valueB={hasTwoProviders ? sumB['Prosody Score'] : null}
-                  higherIsBetter
-                />
-                <MetricCard
-                  label="TTFB"
-                  valueA={sumA['avg_ttfb_ms']}
-                  valueB={hasTwoProviders ? sumB['avg_ttfb_ms'] : null}
-                  unit="ms"
-                  higherIsBetter={false}
-                />
-                <MetricCard
-                  label="Total Latency"
-                  valueA={sumA['avg_latency_ms']}
-                  valueB={hasTwoProviders ? sumB['avg_latency_ms'] : null}
-                  unit="ms"
-                  higherIsBetter={false}
-                />
-                <MetricCard
-                  label="WER"
-                  valueA={sumA['WER']}
-                  valueB={hasTwoProviders ? sumB['WER'] : null}
-                  higherIsBetter={false}
-                />
-                <MetricCard
-                  label="CER"
-                  valueA={sumA['CER']}
-                  valueB={hasTwoProviders ? sumB['CER'] : null}
-                  higherIsBetter={false}
-                />
+                {cards.map((c) => (
+                  <MetricCard
+                    key={c.key}
+                    label={c.label}
+                    valueA={c.valueA}
+                    valueB={c.valueB}
+                    unit={c.unit}
+                    higherIsBetter={c.higherIsBetter}
+                  />
+                ))}
+              </div>
+            )
+          })()}
+
+        {/* Custom LLM-judged metrics */}
+        {showAutomatedMetrics &&
+          comparison.evaluation_summary &&
+          (() => {
+            const sumA = comparison.evaluation_summary.provider_a || {}
+            const sumB = comparison.evaluation_summary.provider_b || {}
+            const hasTwoProviders = hasSecondProvider(comparison)
+            const customA = readCustomMetrics(sumA)
+            const customB = readCustomMetrics(sumB)
+            const merged = mergeCustomMetricKeys(customA, customB)
+            if (merged.length === 0) return null
+
+            const lookupA = new Map(customA.map((m) => [m.metric_id, m]))
+            const lookupB = new Map(customB.map((m) => [m.metric_id, m]))
+
+            return (
+              <div className="mb-6">
+                <div className="flex items-center gap-2 mb-2 text-xs font-semibold text-purple-700 uppercase tracking-wide">
+                  <Sparkles className="w-3.5 h-3.5" />
+                  Custom Metrics (LLM judge)
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-3">
+                  {merged.map((m) => {
+                    const a = lookupA.get(m.metric_id)
+                    const b = lookupB.get(m.metric_id)
+                    const valueAIsNumeric = typeof a?.value === 'number'
+                    const valueBIsNumeric = typeof b?.value === 'number'
+
+                    if (valueAIsNumeric || valueBIsNumeric) {
+                      return (
+                        <MetricCard
+                          key={m.metric_id}
+                          label={m.metric_name}
+                          valueA={valueAIsNumeric ? (a!.value as number) : null}
+                          valueB={
+                            hasTwoProviders && valueBIsNumeric ? (b!.value as number) : null
+                          }
+                          higherIsBetter
+                        />
+                      )
+                    }
+
+                    const aLabel = a?.value != null ? String(a.value) : '—'
+                    const bLabel = b?.value != null ? String(b.value) : '—'
+                    return (
+                      <div
+                        key={m.metric_id}
+                        className="min-w-0 overflow-hidden bg-white rounded-lg p-4 border border-gray-100 shadow-sm"
+                      >
+                        <p className="text-xs text-gray-500 mb-2 font-medium truncate">
+                          {m.metric_name}
+                        </p>
+                        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 min-w-0">
+                          <span className="min-w-0 truncate text-sm leading-tight font-semibold text-gray-700" title={aLabel}>
+                            {aLabel}
+                          </span>
+                          {hasTwoProviders && (
+                            <>
+                              <span className="text-xs text-gray-400">vs</span>
+                              <span className="min-w-0 truncate text-sm leading-tight font-semibold text-gray-700" title={bLabel}>
+                                {bLabel}
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
               </div>
             )
           })()}

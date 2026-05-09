@@ -3,7 +3,7 @@
 import json
 import re
 import time
-from typing import Any
+from typing import Any, Optional
 from uuid import UUID
 
 from loguru import logger
@@ -17,6 +17,65 @@ from .score_utils import (
     get_metric_type_value,
     normalize_score,
 )
+
+
+def _get_custom_data_type(metric) -> Optional[str]:
+    """Return the lowercased custom_data_type ('enum'/'number_range'/'boolean') or None."""
+    raw = getattr(metric, "custom_data_type", None)
+    if not raw:
+        return None
+    if hasattr(raw, "value"):
+        raw = raw.value
+    return str(raw).strip().lower() or None
+
+
+def _get_enum_options(metric) -> list[str]:
+    """Return the list of allowed enum option labels for an enum custom metric."""
+    cfg = getattr(metric, "custom_config", None) or {}
+    options = cfg.get("options") if isinstance(cfg, dict) else None
+    if not isinstance(options, list):
+        return []
+    return [str(o).strip() for o in options if str(o).strip()]
+
+
+def _get_number_range(metric) -> Optional[dict]:
+    """Return {min, max, step} for a number_range custom metric, if configured."""
+    cfg = getattr(metric, "custom_config", None) or {}
+    if not isinstance(cfg, dict):
+        return None
+    if "min" not in cfg and "max" not in cfg:
+        return None
+    return {
+        "min": cfg.get("min"),
+        "max": cfg.get("max"),
+        "step": cfg.get("step"),
+    }
+
+
+def _normalize_enum_value(raw: Any, options: list[str]) -> Optional[str]:
+    """Map an LLM-returned value to the canonical option string (case-insensitive).
+
+    Returns None if no match — the caller will record the metric as unscored.
+    """
+    if raw is None or not options:
+        return None
+    if isinstance(raw, dict):
+        for k in ("value", "label", "choice", "answer"):
+            if k in raw:
+                raw = raw[k]
+                break
+    text = str(raw).strip()
+    if not text:
+        return None
+    text_lower = text.lower()
+    for opt in options:
+        if opt.lower() == text_lower:
+            return opt
+    # Lenient fallback: substring containment in either direction.
+    for opt in options:
+        if opt.lower() in text_lower or text_lower in opt.lower():
+            return opt
+    return None
 
 
 def build_evaluation_prompt(
@@ -99,6 +158,28 @@ The following is the system prompt / instructions that the agent was configured 
         metric_key = metric.name.lower().replace(" ", "_")
         metric_desc = metric.description or f"Evaluate {metric.name}"
         m_type = get_metric_type_value(metric)
+        custom_type = _get_custom_data_type(metric)
+
+        if custom_type == "enum":
+            options = _get_enum_options(metric)
+            if options:
+                opts_str = ", ".join(f'"{o}"' for o in options)
+                prompt += f'\n- "{metric_key}" (one of: {opts_str}): {metric_desc}'
+                continue
+
+        if custom_type == "number_range":
+            rng = _get_number_range(metric)
+            if rng:
+                bounds = []
+                if rng.get("min") is not None:
+                    bounds.append(f"min={rng['min']}")
+                if rng.get("max") is not None:
+                    bounds.append(f"max={rng['max']}")
+                if rng.get("step") is not None:
+                    bounds.append(f"step={rng['step']}")
+                bound_str = ", ".join(bounds) if bounds else "numeric value"
+                prompt += f'\n- "{metric_key}" (numeric, {bound_str}): {metric_desc}'
+                continue
 
         if m_type == "rating":
             prompt += f'\n- "{metric_key}" (rating 0.0-1.0): {metric_desc}'
@@ -124,6 +205,13 @@ Example format:
     for metric in llm_metrics:
         metric_key = metric.name.lower().replace(" ", "_")
         m_type = get_metric_type_value(metric)
+        custom_type = _get_custom_data_type(metric)
+
+        if custom_type == "enum":
+            options = _get_enum_options(metric)
+            if options:
+                instructions += f'  "{metric_key}": "{options[0]}",\n'
+                continue
 
         if m_type == "rating":
             instructions += f'  "{metric_key}": 0.75,\n'
@@ -136,10 +224,11 @@ Example format:
 
 CRITICAL RULES:
 1. Use the EXACT metric keys shown above - copy them character-for-character
-2. Each value must be a SINGLE NUMBER (not an object with score/comments)
-3. Do NOT wrap in "metrics" or any other object
-4. Do NOT add comments or explanations
-5. Return ONLY the JSON object, nothing else"""
+2. For numeric/boolean metrics, the value must be a SINGLE NUMBER or true/false (no nested objects)
+3. For enum metrics ("one of: ..."), the value must be EXACTLY one of the listed strings (copy verbatim, including casing)
+4. Do NOT wrap in "metrics" or any other object
+5. Do NOT add comments or explanations
+6. Return ONLY the JSON object, nothing else"""
 
     return instructions
 
@@ -148,15 +237,32 @@ def _build_system_message(llm_metrics: list) -> str:
     """Build the system message for LLM evaluation."""
     exact_keys = [metric.name.lower().replace(" ", "_") for metric in llm_metrics]
 
+    enum_constraints: list[str] = []
+    for metric in llm_metrics:
+        if _get_custom_data_type(metric) == "enum":
+            options = _get_enum_options(metric)
+            if options:
+                key = metric.name.lower().replace(" ", "_")
+                enum_constraints.append(
+                    f'   - "{key}" must be EXACTLY one of: {json.dumps(options)}'
+                )
+
+    enum_block = ""
+    if enum_constraints:
+        enum_block = (
+            "\n5. Enum metrics must use a STRING value matching one of the listed options "
+            "verbatim (preserve casing, no synonyms):\n" + "\n".join(enum_constraints)
+        )
+
     return f"""You are an expert conversation evaluator. You MUST follow these rules STRICTLY:
 
 1. Return ONLY valid JSON - no markdown, no explanations, no comments
 2. Use ONLY these exact metric keys (copy-paste them exactly): {json.dumps(exact_keys)}
-3. Each value must be a single number (0.0-1.0 for ratings, 0 or 1 for boolean) - NO nested objects, NO comments
-4. Do NOT rename, abbreviate, or modify the metric keys in any way
+3. For numeric/boolean metrics, the value must be a single number (0.0-1.0 for ratings, true/false for booleans) - NO nested objects, NO comments
+4. Do NOT rename, abbreviate, or modify the metric keys in any way{enum_block}
 
 Example of CORRECT format:
-{{"follow_instructions": 0.8, "clarity_and_empathy": 0.7}}
+{{"follow_instructions": 0.8, "tone_category": "Friendly"}}
 
 Example of WRONG format (DO NOT do this):
 {{"metrics": {{"Clarity": {{"score": 7}}}}}}"""
@@ -277,13 +383,20 @@ def _map_evaluation_to_metrics(
     evaluation_data: dict,
     llm_metrics: list,
 ) -> dict[str, dict[str, Any]]:
-    """Map LLM evaluation response to metric scores."""
+    """Map LLM evaluation response to metric scores.
+
+    Enum custom metrics are kept as their canonical option string (validated
+    against the metric's custom_config.options). Number_range custom metrics
+    are clamped to the configured min/max bounds. All others fall back to the
+    existing extract+normalize numeric/boolean path.
+    """
     metric_scores: dict[str, dict[str, Any]] = {}
     response_keys = list(evaluation_data.keys())
 
     for metric in llm_metrics:
         metric_key = metric.name.lower().replace(" ", "_")
         m_type = get_metric_type_value(metric)
+        custom_type = _get_custom_data_type(metric)
 
         raw_score = evaluation_data.get(metric_key)
         if raw_score is None:
@@ -291,8 +404,34 @@ def _map_evaluation_to_metrics(
             if matched_key:
                 raw_score = evaluation_data.get(matched_key)
 
+        if custom_type == "enum":
+            options = _get_enum_options(metric)
+            value = _normalize_enum_value(raw_score, options)
+            entry: dict[str, Any] = {
+                "value": value,
+                "type": "enum",
+                "metric_name": metric.name,
+                "options": options,
+            }
+            if value is None and raw_score is not None:
+                entry["raw_value"] = str(raw_score)
+            metric_scores[str(metric.id)] = entry
+            continue
+
         score = extract_score(raw_score)
         score = normalize_score(score, m_type)
+
+        if custom_type == "number_range" and isinstance(score, (int, float)):
+            rng = _get_number_range(metric) or {}
+            min_v = rng.get("min")
+            max_v = rng.get("max")
+            try:
+                if min_v is not None:
+                    score = max(float(min_v), float(score))
+                if max_v is not None:
+                    score = min(float(max_v), float(score))
+            except (TypeError, ValueError):
+                pass
 
         metric_scores[str(metric.id)] = {
             "value": score,

@@ -33,6 +33,10 @@ class Organization(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(255), nullable=False)
     voice_playground_threshold_overrides = Column(JSON, nullable=True)
+    # AlignEval-style judge alignment thresholds.
+    # Shape: {"min_labels_to_evaluate": int, "min_labels_to_optimize": int}
+    # Falls back to system defaults (20 / 50) when null.
+    judge_alignment_settings = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -1234,3 +1238,164 @@ class CallImportRow(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     call_import = relationship("CallImport", back_populates="rows")
+
+
+# ---------------------------------------------------------------------------
+# Judge Alignment (AlignEval-style hybrid integration)
+#
+# Three tables back the "Judge Alignment" surface:
+#   - JudgeDataset:     a labeled dataset materialised from one of three sources
+#                       (voice transcripts, existing Metric/Evaluator outputs,
+#                       or a generic CSV upload). Holds the dataset's source
+#                       config + which fields play the role of input/output.
+#   - JudgeSample:      one row in a dataset (input/output pair plus an
+#                       optional binary pass/fail human label).
+#   - JudgeRun:         a single run of an LLM-judge (existing Evaluator) over
+#                       a subset of samples, with computed alignment metrics
+#                       (precision/recall/F1/Cohen's kappa) and per-sample
+#                       predictions. Optionally links to a GEPA optimization
+#                       run when the user kicks off prompt tuning from a
+#                       dataset.
+# ---------------------------------------------------------------------------
+
+
+class JudgeDataset(Base):
+    """Container for binary-labeled samples used to calibrate an LLM-judge."""
+
+    __tablename__ = "judge_datasets"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(
+        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True
+    )
+
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+
+    # One of: "transcript", "metric_output", "csv"
+    source_type = Column(String(32), nullable=False, index=True)
+    # Source-specific config. Examples:
+    #   transcript:     {"transcription_ids": [...]} or {"agent_id": "..."}
+    #   metric_output:  {"metric_id": "...", "evaluator_id": "..."}
+    #   csv:            {"s3_key": "...", "filename": "..."}
+    source_config = Column(JSON, nullable=False, default=dict)
+
+    # Field roles - which textual content is "input" vs "output" for the judge.
+    # For voice transcripts both default to the transcript text but can be
+    # tightened (e.g. agent-only turns vs full conversation).
+    input_field = Column(String(64), nullable=False, default="input")
+    output_field = Column(String(64), nullable=False, default="output")
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_by = Column(String, nullable=True)
+
+    samples = relationship(
+        "JudgeSample",
+        back_populates="dataset",
+        cascade="all, delete-orphan",
+        order_by="JudgeSample.created_at",
+    )
+    runs = relationship(
+        "JudgeRun",
+        back_populates="dataset",
+        cascade="all, delete-orphan",
+        order_by="JudgeRun.created_at.desc()",
+    )
+
+
+class JudgeSample(Base):
+    """One labelable input/output pair within a JudgeDataset."""
+
+    __tablename__ = "judge_samples"
+    __table_args__ = (
+        UniqueConstraint("dataset_id", "external_id", name="uq_judge_samples_dataset_external"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    dataset_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("judge_datasets.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # Stable identifier within the source (e.g. transcription UUID, CSV row id).
+    # Used to dedupe re-imports and link back to the originating record.
+    external_id = Column(String(128), nullable=True, index=True)
+
+    input_text = Column(Text, nullable=False)
+    output_text = Column(Text, nullable=False)
+
+    # Binary human label: "pass" | "fail" | null (unlabeled).
+    # Stored as string (rather than enum) so it stays trivially extendable.
+    label = Column(String(16), nullable=True, index=True)
+    labeled_by = Column(String(255), nullable=True)
+    labeled_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Source-specific context (e.g. agent_id, original metric value, csv row).
+    extra = Column(JSON, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    dataset = relationship("JudgeDataset", back_populates="samples")
+
+
+class JudgeRun(Base):
+    """One execution of an LLM-judge against a JudgeDataset, with alignment metrics."""
+
+    __tablename__ = "judge_runs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    dataset_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("judge_datasets.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    organization_id = Column(
+        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True
+    )
+
+    # Reuses the existing Evaluator row (its custom_prompt + llm_provider + llm_model
+    # define the judge under test). Nullable so a run may target an inline prompt
+    # in the future without inflating the Evaluator table.
+    evaluator_id = Column(
+        UUID(as_uuid=True), ForeignKey("evaluators.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+
+    # Which subset was scored: "all" | "dev" | "test"
+    split = Column(String(16), nullable=False, default="all")
+
+    # Snapshot of the model used (so a later Evaluator edit doesn't rewrite history).
+    llm_provider = Column(String(64), nullable=True)
+    llm_model = Column(String(128), nullable=True)
+
+    # Computed alignment metrics:
+    #   {"precision": float, "recall": float, "f1": float, "kappa": float,
+    #    "tp": int, "fp": int, "tn": int, "fn": int, "n": int}
+    metrics = Column(JSON, nullable=True)
+
+    # Per-sample predictions, keyed by sample_id (UUID string):
+    #   {sample_id: {"prediction": "pass"|"fail", "explanation": str, "raw": str}}
+    predictions = Column(JSON, nullable=True)
+
+    # Run lifecycle.
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    error_message = Column(Text, nullable=True)
+    celery_task_id = Column(String, nullable=True, index=True)
+
+    # Optional link to a GEPA optimization run kicked off from this dataset.
+    gepa_optimization_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("prompt_optimization_runs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_by = Column(String, nullable=True)
+
+    dataset = relationship("JudgeDataset", back_populates="runs")

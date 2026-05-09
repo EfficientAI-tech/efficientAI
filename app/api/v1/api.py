@@ -35,6 +35,7 @@ from app.api.v1.routes import (
     prompt_optimization,
     telephony,
     call_imports,
+    judge_alignment,
 )
 
 api_router = APIRouter()
@@ -73,3 +74,4 @@ api_router.include_router(prompt_partials.router)
 api_router.include_router(prompt_optimization.router)
 api_router.include_router(telephony.router)
 api_router.include_router(call_imports.router)
+api_router.include_router(judge_alignment.router)

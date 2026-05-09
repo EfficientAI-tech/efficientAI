@@ -1,14 +1,18 @@
 """Metrics routes."""
 
+import json
+import re
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from uuid import UUID
-from typing import List, Optional
+from typing import List, Optional, Dict, Any, Literal
+from pydantic import BaseModel, Field
+from loguru import logger
 
 from app.database import get_db
 from app.dependencies import get_organization_id, get_api_key
-from app.models.database import Metric, MetricType, MetricTrigger
+from app.models.database import Metric, MetricType, MetricTrigger, ModelProvider
 from app.models.schemas import (
     MetricCreate,
     MetricUpdate,
@@ -386,8 +390,21 @@ def seed_default_metrics(
             "metric_type": MetricType.NUMBER,
             "trigger": MetricTrigger.ALWAYS,
             "enabled": True,
+            "metric_origin": "default",
+            "supported_surfaces": ["voice_playground"],
+            "enabled_surfaces": ["voice_playground"],
         },
     ]
+
+    # Names of default voice metrics that must always be enabled on the
+    # voice_playground surface for existing organizations. These are the
+    # qualitative audio metrics computed by qualitative_voice_service that
+    # the voice playground relies on; the worker honors enabled_surfaces and
+    # will skip computation entirely if none are enabled.
+    voice_playground_required_defaults = {
+        "MOS Score", "Valence", "Arousal", "Prosody Score",
+        "Emotion Category", "Emotion Confidence", "Speaker Consistency",
+    }
 
     created_metrics = []
     for metric_data in default_metrics:
@@ -418,6 +435,18 @@ def seed_default_metrics(
             # Keep default acoustic metric toggles aligned with product defaults.
             if existing.enabled != metric_data["enabled"]:
                 existing.enabled = metric_data["enabled"]
+            # Re-assert voice_playground surface enrollment for the four required
+            # voice metrics so existing orgs pick up the new default behavior.
+            if metric_data["name"] in voice_playground_required_defaults:
+                supported = list(existing.supported_surfaces or [])
+                if "voice_playground" not in supported:
+                    supported.append("voice_playground")
+                    existing.supported_surfaces = supported
+                enabled_surfaces = list(existing.enabled_surfaces or [])
+                if "voice_playground" not in enabled_surfaces:
+                    enabled_surfaces.append("voice_playground")
+                    existing.enabled_surfaces = enabled_surfaces
+                    existing.enabled = True
 
     # Ensure removed defaults are disabled for existing orgs.
     removed_metrics = db.query(Metric).filter(
@@ -435,4 +464,214 @@ def seed_default_metrics(
         db.refresh(metric)
 
     return created_metrics
+
+
+# =============================================================================
+# AI metric generation
+# =============================================================================
+
+class MetricGenerateExample(BaseModel):
+    """One labeled example used to infer a metric definition."""
+    transcript: str
+    rating: Any  # number, boolean, or label (model-decided)
+    notes: Optional[str] = None
+
+
+class MetricGenerateRequest(BaseModel):
+    """Request body for AI-generated metric suggestion."""
+    mode: Literal["description", "examples"]
+    surface: Literal["agent", "voice_playground", "blind_test"] = "agent"
+    description: Optional[str] = Field(
+        default=None,
+        description="Free-form description of what the metric should measure (mode=description).",
+    )
+    examples: Optional[List[MetricGenerateExample]] = Field(
+        default=None,
+        description="Labeled examples used to infer the metric (mode=examples).",
+    )
+
+
+class MetricGenerateResponse(BaseModel):
+    """Suggested (un-persisted) metric definition returned to the client."""
+    name: str
+    description: str
+    metric_type: Literal["rating", "boolean", "number"]
+    custom_data_type: Optional[Literal["boolean", "enum", "number_range"]] = None
+    custom_config: Dict[str, Any] = {}
+    supported_surfaces: List[str]
+    enabled_surfaces: List[str]
+    suggested_tags: List[str] = []
+
+
+def _build_metric_generation_messages(req: MetricGenerateRequest) -> List[Dict[str, str]]:
+    """Build the LLM prompt for generating a metric definition."""
+    surfaces_block = (
+        f'  - "supported_surfaces": list, must include "{req.surface}". '
+        f'Other allowed values: "agent", "voice_playground", "blind_test".\n'
+        f'  - "enabled_surfaces": list, default to the same as supported_surfaces.\n'
+    )
+
+    schema_block = """
+You MUST respond with ONLY a JSON object (no markdown, no commentary) with this exact shape:
+{
+  "name": str (concise, Title Case, <= 60 chars),
+  "description": str (1-3 sentences explaining what is measured and how to score it),
+  "metric_type": "rating" | "boolean" | "number",
+  "custom_data_type": "boolean" | "enum" | "number_range",
+  "custom_config": {
+      // for "enum": {"options": ["...", "..."]}
+      // for "number_range": {"min": <number>, "max": <number>, "step": <number>}
+      // for "boolean": {}
+  },
+  "supported_surfaces": ["agent" | "voice_playground" | "blind_test", ...],
+  "enabled_surfaces": ["agent" | "voice_playground" | "blind_test", ...],
+  "suggested_tags": ["...", "..."]
+}
+
+Rules:
+  - "metric_type" must align with "custom_data_type":
+      boolean -> "boolean", enum -> "rating", number_range -> "number".
+""" + surfaces_block
+
+    system_message = (
+        "You are an expert evaluation designer. You translate a user's intent into a "
+        "well-formed evaluation metric definition that can be judged by an LLM-as-judge. "
+        "Always respond with valid JSON only."
+    )
+
+    if req.mode == "description":
+        user_message = (
+            "Generate a single evaluation metric definition based on the user's request below. "
+            f'The metric will be evaluated on the "{req.surface}" surface.\n\n'
+            f"## User intent\n{(req.description or '').strip()}\n"
+            f"{schema_block}"
+        )
+    else:
+        examples_text = "\n".join(
+            f"- Example {i + 1}:\n  transcript: {ex.transcript!r}\n  rating: {ex.rating!r}"
+            + (f"\n  notes: {ex.notes!r}" if ex.notes else "")
+            for i, ex in enumerate(req.examples or [])
+        )
+        user_message = (
+            "Infer a single evaluation metric definition that explains the rating pattern "
+            f'in the labeled examples below. The metric will be evaluated on the "{req.surface}" '
+            "surface.\n\n"
+            f"## Labeled examples\n{examples_text}\n"
+            f"{schema_block}"
+        )
+
+    return [
+        {"role": "system", "content": system_message},
+        {"role": "user", "content": user_message},
+    ]
+
+
+def _parse_metric_generation_response(text: str) -> Dict[str, Any]:
+    """Extract a JSON object from the LLM response text."""
+    cleaned = text.strip()
+    if cleaned.startswith("```json"):
+        cleaned = cleaned.replace("```json", "").replace("```", "").strip()
+    elif cleaned.startswith("```"):
+        cleaned = cleaned.replace("```", "").strip()
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        match = re.search(r"\{[\s\S]*\}", cleaned)
+        if match:
+            return json.loads(match.group())
+        raise
+
+
+@router.post("/generate", response_model=MetricGenerateResponse)
+def generate_metric(
+    req: MetricGenerateRequest,
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+):
+    """Use an LLM to suggest a metric definition. Does NOT persist anything."""
+    if req.mode == "description" and not (req.description and req.description.strip()):
+        raise HTTPException(status_code=400, detail="description is required when mode='description'")
+    if req.mode == "examples" and not (req.examples and len(req.examples) > 0):
+        raise HTTPException(status_code=400, detail="At least one example is required when mode='examples'")
+
+    from app.services.ai.llm_service import llm_service
+
+    messages = _build_metric_generation_messages(req)
+
+    try:
+        llm_result = llm_service.generate_response(
+            messages=messages,
+            llm_provider=ModelProvider.OPENAI,
+            llm_model="gpt-4o",
+            organization_id=organization_id,
+            db=db,
+            temperature=0.4,
+            max_tokens=800,
+        )
+    except Exception as e:
+        logger.error(f"[Metric Generate] LLM call failed: {e}")
+        raise HTTPException(status_code=502, detail=f"LLM call failed: {e}")
+
+    try:
+        parsed = _parse_metric_generation_response(llm_result.get("text", ""))
+    except Exception as e:
+        logger.error(f"[Metric Generate] Failed to parse LLM JSON: {e}")
+        raise HTTPException(status_code=502, detail="Could not parse LLM response as JSON")
+
+    allowed_surfaces = {"agent", "voice_playground", "blind_test"}
+    supported = [s for s in (parsed.get("supported_surfaces") or []) if s in allowed_surfaces]
+    if req.surface not in supported:
+        supported = list({*supported, req.surface})
+    enabled_surfaces = [s for s in (parsed.get("enabled_surfaces") or supported) if s in supported]
+    if not enabled_surfaces:
+        enabled_surfaces = list(supported)
+
+    metric_type = (parsed.get("metric_type") or "rating").lower()
+    if metric_type not in {"rating", "boolean", "number"}:
+        metric_type = "rating"
+
+    custom_data_type = parsed.get("custom_data_type")
+    if custom_data_type not in {"boolean", "enum", "number_range", None}:
+        custom_data_type = None
+    if custom_data_type is None:
+        custom_data_type = (
+            "boolean" if metric_type == "boolean"
+            else "number_range" if metric_type == "number"
+            else "enum"
+        )
+
+    custom_config = parsed.get("custom_config") or {}
+    if custom_data_type == "enum" and not isinstance(custom_config.get("options"), list):
+        custom_config = {"options": ["Excellent", "Good", "Neutral", "Poor"]}
+    if custom_data_type == "number_range":
+        custom_config = {
+            "min": float(custom_config.get("min", 0)),
+            "max": float(custom_config.get("max", 10)),
+            "step": float(custom_config.get("step", 1)),
+        }
+    if custom_data_type == "boolean":
+        custom_config = {}
+
+    name = (parsed.get("name") or "Custom Metric").strip()[:60]
+    existing = db.query(Metric).filter(
+        and_(Metric.name == name, Metric.organization_id == organization_id)
+    ).first()
+    if existing:
+        suffix = 2
+        while db.query(Metric).filter(
+            and_(Metric.name == f"{name} ({suffix})", Metric.organization_id == organization_id)
+        ).first():
+            suffix += 1
+        name = f"{name} ({suffix})"
+
+    return MetricGenerateResponse(
+        name=name,
+        description=(parsed.get("description") or "").strip()[:1000],
+        metric_type=metric_type,
+        custom_data_type=custom_data_type,
+        custom_config=custom_config,
+        supported_surfaces=supported,
+        enabled_surfaces=enabled_surfaces,
+        suggested_tags=[str(t) for t in (parsed.get("suggested_tags") or [])][:8],
+    )
 
