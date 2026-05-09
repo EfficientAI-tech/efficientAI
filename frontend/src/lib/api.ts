@@ -1504,6 +1504,25 @@ class ApiClient {
     return response.data
   }
 
+  async generateMetric(data: {
+    mode: 'description' | 'examples'
+    surface: 'agent' | 'voice_playground' | 'blind_test'
+    description?: string
+    examples?: Array<{ transcript: string; rating: any; notes?: string }>
+  }): Promise<{
+    name: string
+    description: string
+    metric_type: 'rating' | 'boolean' | 'number'
+    custom_data_type: 'boolean' | 'enum' | 'number_range'
+    custom_config: Record<string, any>
+    supported_surfaces: string[]
+    enabled_surfaces: string[]
+    suggested_tags: string[]
+  }> {
+    const response = await this.client.post('/api/v1/metrics/generate', data)
+    return response.data
+  }
+
   // Alert endpoints
   async listAlerts(status?: string): Promise<any[]> {
     const params: any = {}
@@ -2232,6 +2251,10 @@ class ApiClient {
       `/api/v1/judge-alignment/runs/${runId}/recompute-metrics`
     )
     return response.data
+  }
+
+  async deleteJudgeRun(runId: string): Promise<void> {
+    await this.client.delete(`/api/v1/judge-alignment/runs/${runId}`)
   }
 
   async optimizeJudge(

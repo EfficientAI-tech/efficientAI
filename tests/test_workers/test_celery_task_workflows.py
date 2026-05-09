@@ -208,6 +208,114 @@ def test_process_evaluator_result_handles_audio_and_llm_failures_with_fallback_s
     verify_session.close()
 
 
+def test_process_evaluator_result_excludes_metrics_not_enabled_for_agent_surface(
+    db_session, test_engine, monkeypatch
+):
+    """Metrics enabled only on voice_playground must be excluded from agent runs.
+
+    Three metrics are seeded:
+      - "Professionalism": enabled, enabled_surfaces=["agent"] -> included
+      - "Both Surfaces":   enabled, enabled_surfaces=["agent","voice_playground"] -> included
+      - "VP Only":         enabled, enabled_surfaces=["voice_playground"] -> EXCLUDED
+    Expectation: only the first two appear in persisted metric_scores.
+    """
+    from app.workers.tasks import process_evaluator_result as task_module
+
+    org = _seed_org(db_session)
+    # Provide an existing transcription so the task takes the text-only path
+    # (no audio download / transcription needed). The worker requires either
+    # audio_s3_key or transcription to proceed.
+    eval_result = EvaluatorResult(
+        id=uuid4(),
+        result_id="710003",
+        organization_id=org.id,
+        status="queued",
+        transcription="existing transcript",
+    )
+    db_session.add(eval_result)
+
+    agent_metric = Metric(
+        id=uuid4(),
+        organization_id=org.id,
+        name="Professionalism",
+        metric_type="rating",
+        trigger="always",
+        enabled=True,
+        is_default=False,
+        supported_surfaces=["agent"],
+        enabled_surfaces=["agent"],
+    )
+    both_metric = Metric(
+        id=uuid4(),
+        organization_id=org.id,
+        name="Both Surfaces",
+        metric_type="rating",
+        trigger="always",
+        enabled=True,
+        is_default=False,
+        supported_surfaces=["agent", "voice_playground"],
+        enabled_surfaces=["agent", "voice_playground"],
+    )
+    vp_only_metric = Metric(
+        id=uuid4(),
+        organization_id=org.id,
+        name="VP Only",
+        metric_type="rating",
+        trigger="always",
+        enabled=True,
+        is_default=False,
+        supported_surfaces=["voice_playground"],
+        enabled_surfaces=["voice_playground"],
+    )
+    db_session.add_all([agent_metric, both_metric, vp_only_metric])
+    db_session.commit()
+    # Capture IDs before the worker closes the session below; otherwise
+    # accessing metric.id after the task runs raises DetachedInstanceError.
+    agent_metric_id = str(agent_metric.id)
+    both_metric_id = str(both_metric.id)
+    vp_only_metric_id = str(vp_only_metric.id)
+
+    monkeypatch.setattr(task_module, "SessionLocal", lambda: db_session)
+    monkeypatch.setattr(task_module, "_recover_missing_audio_for_result", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        task_module,
+        "_load_related_entities",
+        lambda *_a, **_k: (types.SimpleNamespace(custom_prompt="custom"), None, None, None),
+    )
+    monkeypatch.setattr(
+        task_module,
+        "_transcribe_audio",
+        lambda *_a, **_k: ("transcript", [{"speaker": "S1", "text": "hi"}], 0.1),
+    )
+    # Stand-in LLM evaluator that returns a deterministic score for whatever
+    # metrics it receives. Any metric reaching here means it passed the gate.
+    monkeypatch.setattr(
+        task_module,
+        "evaluate_with_llm",
+        lambda transcription, llm_metrics, **_k: (
+            {str(m.id): {"value": 0.9, "type": "rating", "metric_name": m.name} for m in llm_metrics},
+            0.5,
+        ),
+    )
+    monkeypatch.setattr(task_module, "_generate_call_analysis", lambda *_a, **_k: None)
+
+    result = task_module.process_evaluator_result_task.run(str(eval_result.id))
+
+    verify_session = sessionmaker(bind=test_engine)()
+    persisted = verify_session.query(EvaluatorResult).filter(EvaluatorResult.id == eval_result.id).one()
+    try:
+        assert result["status"] == "completed"
+        assert isinstance(persisted.metric_scores, dict)
+        # Strict gate: the voice_playground-only metric must not be evaluated.
+        scored_names = {entry.get("metric_name") for entry in persisted.metric_scores.values()}
+        assert scored_names == {"Professionalism", "Both Surfaces"}
+        assert vp_only_metric_id not in persisted.metric_scores
+        assert agent_metric_id in persisted.metric_scores
+        assert both_metric_id in persisted.metric_scores
+    finally:
+        verify_session.close()
+
+
 def test_process_evaluator_result_categorizes_audio_metrics_as_skipped_without_audio(db_session):
     from app.workers.tasks import process_evaluator_result as task_module
 

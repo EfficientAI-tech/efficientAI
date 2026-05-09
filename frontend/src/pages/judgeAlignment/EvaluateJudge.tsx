@@ -1,11 +1,24 @@
 import { useState, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { Play, RefreshCw, AlertCircle, HelpCircle } from 'lucide-react'
+import {
+  Play,
+  RefreshCw,
+  AlertCircle,
+  HelpCircle,
+  Trash2,
+  ChevronDown,
+  ChevronRight,
+} from 'lucide-react'
 import { format } from 'date-fns'
 import { apiClient } from '../../lib/api'
 import type { JudgeRun } from '../../lib/api'
 import Button from '../../components/Button'
+
+/** Stable, human-readable id for a judge run (first 6 chars of the UUID, upper-cased). */
+function runShortId(id: string): string {
+  return `#${id.replace(/-/g, '').slice(0, 6).toUpperCase()}`
+}
 
 const METRIC_HELP: Record<string, { title: string; body: ReactNode }> = {
   N: {
@@ -259,12 +272,41 @@ export default function EvaluateJudge({ datasetId }: { datasetId: string }) {
 
 function RunsList({ runs, datasetId }: { runs: JudgeRun[]; datasetId: string }) {
   const queryClient = useQueryClient()
+  const [pendingDelete, setPendingDelete] = useState<JudgeRun | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+
+  const toggleExpanded = (runId: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(runId)) next.delete(runId)
+      else next.add(runId)
+      return next
+    })
+  }
 
   const recompute = useMutation({
     mutationFn: (runId: string) => apiClient.recomputeJudgeRunMetrics(runId),
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: ['judge-runs', datasetId] }),
   })
+
+  const deleteMutation = useMutation({
+    mutationFn: (runId: string) => apiClient.deleteJudgeRun(runId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['judge-runs', datasetId] })
+      setPendingDelete(null)
+      setDeleteError(null)
+    },
+    onError: (e: any) => {
+      setDeleteError(
+        e?.response?.data?.detail || e?.message || 'Failed to delete run'
+      )
+    },
+  })
+
+  const isInFlight = (status: string) =>
+    status === 'running' || status === 'queued' || status === 'pending'
 
   if (runs.length === 0) {
     return (
@@ -285,47 +327,216 @@ function RunsList({ runs, datasetId }: { runs: JudgeRun[]; datasetId: string }) 
           A/B compare alignment.
         </InfoTooltip>
       </h3>
-      {runs.map((run) => (
-        <div
-          key={run.id}
-          className="bg-white border border-gray-200 rounded-lg p-4"
-        >
-          <div className="flex items-start justify-between">
-            <div>
-              <div className="flex items-center gap-2">
-                <StatusPill status={run.status} />
-                <span className="text-sm font-mono text-gray-700">
-                  {run.llm_provider}/{run.llm_model}
+      {runs.map((run) => {
+        const isOpen = expanded.has(run.id)
+        const hasMetrics = !!run.metrics
+        return (
+          <div
+            key={run.id}
+            className="bg-white border border-gray-200 rounded-lg overflow-hidden"
+          >
+            <button
+              type="button"
+              onClick={() => toggleExpanded(run.id)}
+              className="w-full flex items-start justify-between gap-3 p-4 text-left hover:bg-gray-50 transition-colors"
+              aria-expanded={isOpen}
+            >
+              <div className="flex items-start gap-3 min-w-0">
+                <span className="mt-0.5 text-gray-400">
+                  {isOpen ? (
+                    <ChevronDown className="h-4 w-4" />
+                  ) : (
+                    <ChevronRight className="h-4 w-4" />
+                  )}
                 </span>
-                <span className="text-xs text-gray-400">split: {run.split}</span>
-              </div>
-              {run.created_at && (
-                <div className="text-xs text-gray-500 mt-1">
-                  {format(new Date(run.created_at), 'MMM d, yyyy HH:mm:ss')}
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span
+                      className="font-mono text-sm font-semibold text-gray-900 bg-gray-100 px-1.5 py-0.5 rounded"
+                      title={run.id}
+                    >
+                      {runShortId(run.id)}
+                    </span>
+                    <StatusPill status={run.status} />
+                    <span className="text-xs text-gray-400">
+                      split: {run.split}
+                    </span>
+                    {hasMetrics && (
+                      <span className="text-xs text-gray-400">
+                        N={run.metrics!.n}
+                      </span>
+                    )}
+                  </div>
+                  {run.created_at && (
+                    <div className="text-xs text-gray-500 mt-1">
+                      {format(new Date(run.created_at), 'MMM d, yyyy HH:mm:ss')}
+                    </div>
+                  )}
                 </div>
-              )}
+              </div>
+
+              <div
+                className="flex items-center gap-2 flex-shrink-0"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  leftIcon={<RefreshCw className="h-3.5 w-3.5" />}
+                  onClick={() => recompute.mutate(run.id)}
+                  disabled={
+                    !run.predictions ||
+                    Object.keys(run.predictions).length === 0
+                  }
+                  title="Recompute metrics from existing predictions (no LLM calls)"
+                >
+                  Recompute
+                </Button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDeleteError(null)
+                    setPendingDelete(run)
+                  }}
+                  disabled={isInFlight(run.status)}
+                  title={
+                    isInFlight(run.status)
+                      ? 'Cannot delete an in-flight run'
+                      : 'Delete this run'
+                  }
+                  aria-label="Delete run"
+                  className="p-1.5 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-40 disabled:hover:text-gray-400 disabled:hover:bg-transparent transition-colors"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </div>
+            </button>
+
+            {isOpen && (
+              <div className="border-t border-gray-100 px-4 pt-3 pb-4 space-y-3 bg-gray-50/40">
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-600">
+                  <span>
+                    <span className="text-gray-400">Model: </span>
+                    <span className="font-mono text-gray-800">
+                      {run.llm_provider}/{run.llm_model}
+                    </span>
+                  </span>
+                  <span>
+                    <span className="text-gray-400">Run ID: </span>
+                    <span className="font-mono text-gray-800">
+                      {runShortId(run.id)}
+                    </span>
+                  </span>
+                </div>
+
+                {run.error_message && (
+                  <div className="p-2 bg-red-50 border border-red-200 rounded text-xs text-red-700">
+                    {run.error_message}
+                  </div>
+                )}
+
+                {hasMetrics ? (
+                  <MetricsCard metrics={run.metrics!} />
+                ) : (
+                  <div className="text-xs text-gray-500 italic">
+                    {isInFlight(run.status)
+                      ? 'Metrics will appear here once the run completes.'
+                      : 'No metrics available for this run.'}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )
+      })}
+
+      {pendingDelete && (
+        <DeleteRunModal
+          run={pendingDelete}
+          isLoading={deleteMutation.isPending}
+          error={deleteError}
+          onCancel={() => {
+            if (deleteMutation.isPending) return
+            setPendingDelete(null)
+            setDeleteError(null)
+          }}
+          onConfirm={() => deleteMutation.mutate(pendingDelete.id)}
+        />
+      )}
+    </div>
+  )
+}
+
+function DeleteRunModal({
+  run,
+  isLoading,
+  error,
+  onCancel,
+  onConfirm,
+}: {
+  run: JudgeRun
+  isLoading: boolean
+  error: string | null
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  return (
+    <div className="fixed inset-0 z-50 overflow-y-auto">
+      <div className="flex min-h-screen items-center justify-center p-4">
+        <div
+          className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"
+          onClick={onCancel}
+        />
+        <div className="relative bg-white rounded-2xl shadow-xl max-w-md w-full">
+          <div className="p-6">
+            <div className="w-12 h-12 rounded-full bg-rose-100 flex items-center justify-center mx-auto mb-4">
+              <Trash2 className="w-6 h-6 text-rose-600" />
             </div>
+            <h3 className="text-lg font-semibold text-gray-900 text-center">
+              Delete run {runShortId(run.id)}?
+            </h3>
+            <p className="text-sm text-gray-500 text-center mt-2">
+              <span className="font-mono text-gray-700">
+                {run.llm_provider}/{run.llm_model}
+              </span>
+              {run.created_at && (
+                <>
+                  {' · '}
+                  {format(new Date(run.created_at), 'MMM d, yyyy HH:mm:ss')}
+                </>
+              )}
+              <br />
+              Predictions and metrics for this run will be permanently
+              removed. This action cannot be undone.
+            </p>
+            {error && (
+              <div className="mt-3 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-700">
+                {error}
+              </div>
+            )}
+          </div>
+          <div className="px-6 py-4 border-t border-gray-100 flex justify-end gap-3 rounded-b-2xl">
             <Button
               variant="ghost"
               size="sm"
-              leftIcon={<RefreshCw className="h-3.5 w-3.5" />}
-              onClick={() => recompute.mutate(run.id)}
-              disabled={!run.predictions || Object.keys(run.predictions).length === 0}
-              title="Recompute metrics from existing predictions (no LLM calls)"
+              onClick={onCancel}
+              disabled={isLoading}
             >
-              Recompute
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={onConfirm}
+              disabled={isLoading}
+              isLoading={isLoading}
+              leftIcon={!isLoading ? <Trash2 className="h-4 w-4" /> : undefined}
+            >
+              Delete
             </Button>
           </div>
-
-          {run.error_message && (
-            <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-700">
-              {run.error_message}
-            </div>
-          )}
-
-          {run.metrics && <MetricsCard metrics={run.metrics} />}
         </div>
-      ))}
+      </div>
     </div>
   )
 }

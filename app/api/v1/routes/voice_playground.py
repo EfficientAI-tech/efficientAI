@@ -2305,6 +2305,66 @@ def _recompute_summary(comparison: TTSComparison, db: Session):
         if ttfbs:
             summary[side]["avg_ttfb_ms"] = round(sum(ttfbs) / len(ttfbs), 1)
 
+        # Aggregate LLM-judged custom metrics that the worker stored under
+        # evaluation_metrics["custom_metric_scores"] keyed by metric UUID.
+        # Numeric/boolean values are averaged; enum/string values are tallied
+        # so the UI can show the most common label.
+        custom_numeric: Dict[str, Dict[str, Any]] = {}
+        custom_label_tallies: Dict[str, Dict[str, Any]] = {}
+        for s in side_samples:
+            scores = (s.evaluation_metrics or {}).get("custom_metric_scores") or {}
+            if not isinstance(scores, dict):
+                continue
+            for metric_id, payload in scores.items():
+                if not isinstance(payload, dict):
+                    continue
+                value = payload.get("value")
+                if value is None:
+                    continue
+                metric_name = payload.get("metric_name") or metric_id
+                m_type = (payload.get("type") or "").lower()
+                if isinstance(value, bool):
+                    numeric_value: Optional[float] = 1.0 if value else 0.0
+                elif isinstance(value, (int, float)):
+                    numeric_value = float(value)
+                else:
+                    bucket = custom_label_tallies.setdefault(
+                        metric_id,
+                        {"metric_id": metric_id, "metric_name": metric_name, "type": m_type or "rating", "counts": {}},
+                    )
+                    bucket["counts"][str(value)] = bucket["counts"].get(str(value), 0) + 1
+                    continue
+                bucket = custom_numeric.setdefault(
+                    metric_id,
+                    {"metric_id": metric_id, "metric_name": metric_name, "type": m_type or "number", "values": []},
+                )
+                bucket["values"].append(numeric_value)
+
+        custom_summary: List[Dict[str, Any]] = []
+        for metric_id, bucket in custom_numeric.items():
+            values = bucket["values"]
+            custom_summary.append({
+                "metric_id": metric_id,
+                "metric_name": bucket["metric_name"],
+                "type": bucket["type"],
+                "value": round(sum(values) / len(values), 3),
+                "sample_count": len(values),
+            })
+        for metric_id, bucket in custom_label_tallies.items():
+            counts = bucket["counts"]
+            top_label, top_count = max(counts.items(), key=lambda kv: kv[1])
+            total = sum(counts.values())
+            custom_summary.append({
+                "metric_id": metric_id,
+                "metric_name": bucket["metric_name"],
+                "type": bucket["type"],
+                "value": top_label,
+                "sample_count": total,
+                "label_counts": counts,
+            })
+        if custom_summary:
+            summary[side]["custom_metrics"] = custom_summary
+
     # Blind test tallying (owner's in-app + external sharable form, merged)
     a_wins = 0
     b_wins = 0

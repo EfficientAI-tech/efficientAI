@@ -1,5 +1,23 @@
-import { Play, Pause, XCircle, Loader2 } from 'lucide-react'
+import { Play, Pause, XCircle, Loader2, Sparkles } from 'lucide-react'
 import { TTSSample } from '../types'
+
+type CustomMetricScore = {
+  value: number | string | boolean | null
+  type?: string
+  metric_name?: string
+}
+
+function formatCustomMetricValue(value: CustomMetricScore['value'], type?: string): string {
+  if (value === null || value === undefined) return '—'
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No'
+  if (typeof value === 'number') {
+    if ((type || '').toLowerCase() === 'rating' && value >= 0 && value <= 1) {
+      return `${(value * 100).toFixed(0)}%`
+    }
+    return Math.abs(value) >= 10 ? value.toFixed(1) : value.toFixed(2)
+  }
+  return String(value)
+}
 
 function HzBadge({ hz }: { hz?: number | null }) {
   if (!hz) return null
@@ -134,6 +152,27 @@ export default function AudioCard({
               CER: {((sample.evaluation_metrics['CER'] as number) * 100).toFixed(1)}%
             </span>
           )}
+          {(() => {
+            const raw = sample.evaluation_metrics['custom_metric_scores'] as unknown
+            if (!raw || typeof raw !== 'object') return null
+            const entries = Object.entries(raw as Record<string, CustomMetricScore>)
+            if (entries.length === 0) return null
+            return entries.map(([metricId, payload]) => {
+              if (!payload || typeof payload !== 'object') return null
+              const label = payload.metric_name || metricId
+              const display = formatCustomMetricValue(payload.value, payload.type)
+              return (
+                <span
+                  key={metricId}
+                  className="inline-flex items-center gap-1 text-[10px] bg-purple-50 border border-purple-200 text-purple-800 px-1.5 py-0.5 rounded"
+                  title={`${label} (LLM judge)`}
+                >
+                  <Sparkles className="w-2.5 h-2.5" />
+                  {label}: {display}
+                </span>
+              )
+            })
+          })()}
         </div>
       )}
     </div>

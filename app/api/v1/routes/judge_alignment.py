@@ -688,6 +688,39 @@ def get_run(
     return run
 
 
+@router.delete("/runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_run(
+    run_id: UUID,
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+):
+    """Delete a single judge run. In-flight runs cannot be deleted."""
+    _ensure_enabled()
+    run = (
+        db.query(JudgeRun)
+        .filter(
+            JudgeRun.id == run_id,
+            JudgeRun.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not run:
+        raise HTTPException(status_code=404, detail="Judge run not found")
+
+    if run.status in {"running", "queued", "pending"}:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Cannot delete a run that is still in flight. Wait for it to "
+                "finish or fail before deleting."
+            ),
+        )
+
+    db.delete(run)
+    db.commit()
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Optimisation (GEPA bridge)
 # ---------------------------------------------------------------------------

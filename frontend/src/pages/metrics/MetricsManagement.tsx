@@ -56,12 +56,26 @@ const isAIVoiceMetric = (metricName: string): boolean => AI_VOICE_METRICS.has(me
 // Qualitative = quality assessments (human perception, emotion, LLM evaluation)
 const isQuantitativeMetric = (metricName: string): boolean => ACOUSTIC_METRICS.has(metricName)
 
+const ALL_SURFACES: MetricSurface[] = ['agent', 'voice_playground', 'blind_test']
+
+const SURFACE_LABELS: Record<MetricSurface, string> = {
+  agent: 'Agent',
+  voice_playground: 'Voice Playground',
+  blind_test: 'Blind Test',
+}
+
 export default function MetricsManagement() {
   const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [isCustomMetricMode, setIsCustomMetricMode] = useState(false)
   const [showEnableModal, setShowEnableModal] = useState(false)
+  const [showAIAssist, setShowAIAssist] = useState(false)
+  const [aiMode, setAIMode] = useState<'description' | 'examples'>('description')
+  const [aiDescription, setAIDescription] = useState('')
+  const [aiExamples, setAIExamples] = useState<Array<{ transcript: string; rating: string; notes: string }>>([
+    { transcript: '', rating: '', notes: '' },
+  ])
   const [surfaceFilter, setSurfaceFilter] = useState<'all' | MetricSurface>('all')
   const [editingMetric, setEditingMetric] = useState<Metric | null>(null)
   const [sortField, setSortField] = useState<'type' | 'method'>('type')
@@ -159,6 +173,112 @@ export default function MetricsManagement() {
       showToast('Failed to enable selected metrics', 'error')
     },
   })
+
+  const toggleSurfaceMutation = useMutation({
+    mutationFn: ({ id, enabled_surfaces }: { id: string; enabled_surfaces: MetricSurface[] }) =>
+      apiClient.updateMetric(id, { enabled_surfaces }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['metrics'] })
+    },
+    onError: () => {
+      showToast('Failed to update surface', 'error')
+    },
+  })
+
+  const generateMetricMutation = useMutation({
+    mutationFn: (payload: {
+      mode: 'description' | 'examples'
+      surface: MetricSurface
+      description?: string
+      examples?: Array<{ transcript: string; rating: any; notes?: string }>
+    }) => apiClient.generateMetric(payload),
+    onSuccess: (suggestion) => {
+      const inferredCustomDataType: CustomDataType =
+        (suggestion.custom_data_type as CustomDataType) ||
+        (suggestion.metric_type === 'boolean'
+          ? 'boolean'
+          : suggestion.metric_type === 'number'
+            ? 'number_range'
+            : 'enum')
+      const cfg = suggestion.custom_config || {}
+      const fallbackSurface: MetricSurface = formData.supported_surfaces[0] || 'agent'
+      setFormData((prev) => ({
+        ...prev,
+        name: suggestion.name,
+        description: suggestion.description,
+        metric_type: suggestion.metric_type,
+        metric_origin: 'custom',
+        supported_surfaces:
+          (suggestion.supported_surfaces as MetricSurface[]) || [fallbackSurface],
+        enabled_surfaces:
+          (suggestion.enabled_surfaces as MetricSurface[]) || [fallbackSurface],
+        custom_data_type: inferredCustomDataType,
+        enum_options_csv: Array.isArray(cfg.options) ? cfg.options.join(', ') : '',
+        number_min: Number(cfg.min ?? 0),
+        number_max: Number(cfg.max ?? 10),
+        number_step: Number(cfg.step ?? 1),
+        tags_csv: (suggestion.suggested_tags || []).join(', '),
+        trigger: 'always',
+        enabled: true,
+      }))
+      showToast('AI suggestion applied - review and save', 'success')
+    },
+    onError: () => {
+      showToast('Failed to generate metric with AI', 'error')
+    },
+  })
+
+  const handleToggleSurface = (metric: Metric, surface: MetricSurface) => {
+    const current = new Set<MetricSurface>(metric.enabled_surfaces || [])
+    if (current.has(surface)) {
+      current.delete(surface)
+    } else {
+      current.add(surface)
+    }
+    const next = Array.from(current).filter((s) =>
+      (metric.supported_surfaces || []).includes(s),
+    )
+    toggleSurfaceMutation.mutate({ id: metric.id, enabled_surfaces: next })
+  }
+
+  const resetAIForm = () => {
+    setShowAIAssist(false)
+    setAIMode('description')
+    setAIDescription('')
+    setAIExamples([{ transcript: '', rating: '', notes: '' }])
+  }
+
+  const handleGenerateAIMetric = () => {
+    const surface: MetricSurface = formData.supported_surfaces[0] || 'agent'
+    if (aiMode === 'description') {
+      if (!aiDescription.trim()) {
+        showToast('Please enter a description', 'error')
+        return
+      }
+      generateMetricMutation.mutate({
+        mode: 'description',
+        surface,
+        description: aiDescription.trim(),
+      })
+    } else {
+      const validExamples = aiExamples
+        .map((ex) => ({ transcript: ex.transcript.trim(), rating: ex.rating.trim(), notes: ex.notes.trim() }))
+        .filter((ex) => ex.transcript && ex.rating)
+      if (validExamples.length === 0) {
+        showToast('Please add at least one example with transcript and rating', 'error')
+        return
+      }
+      generateMetricMutation.mutate({
+        mode: 'examples',
+        surface,
+        examples: validExamples.map((ex) => ({
+          transcript: ex.transcript,
+          rating: ex.rating,
+          notes: ex.notes || undefined,
+        })),
+      })
+    }
+  }
 
   const resetForm = () => {
     setFormData({
@@ -278,6 +398,7 @@ export default function MetricsManagement() {
     setIsCustomMetricMode(false)
     setEditingMetric(null)
     resetForm()
+    resetAIForm()
   }
 
   const handleSort = (field: 'type' | 'method') => {
@@ -365,15 +486,15 @@ export default function MetricsManagement() {
                 name: '',
                 description: '',
                 metric_origin: 'custom',
-                metric_type: 'number',
-                custom_data_type: 'number_range',
+                metric_type: 'rating',
+                custom_data_type: 'enum',
                 enum_options_csv: '',
                 number_min: 0,
                 number_max: 10,
                 number_step: 1,
                 tags_csv: '',
-                supported_surfaces: ['blind_test'],
-                enabled_surfaces: ['blind_test'],
+                supported_surfaces: ['agent'],
+                enabled_surfaces: ['agent'],
                 trigger: 'always',
                 enabled: true,
               })
@@ -510,12 +631,27 @@ export default function MetricsManagement() {
                         </span>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="flex flex-wrap gap-1">
-                          {(metric.supported_surfaces || []).map((surface) => (
-                            <span key={surface} className="px-2 py-0.5 text-[11px] bg-slate-100 text-slate-700 rounded-full">
-                              {surface}
-                            </span>
-                          ))}
+                        <div className="flex flex-wrap gap-1.5">
+                          {(metric.supported_surfaces || []).map((surface) => {
+                            const isEnabled = (metric.enabled_surfaces || []).includes(surface)
+                            return (
+                              <button
+                                key={surface}
+                                type="button"
+                                onClick={() => handleToggleSurface(metric, surface)}
+                                disabled={toggleSurfaceMutation.isPending}
+                                title={`${isEnabled ? 'Disable' : 'Enable'} on ${SURFACE_LABELS[surface]}`}
+                                className={`px-2 py-0.5 text-[11px] rounded-full border transition-colors ${
+                                  isEnabled
+                                    ? 'bg-emerald-100 text-emerald-800 border-emerald-200 hover:bg-emerald-200'
+                                    : 'bg-gray-100 text-gray-500 border-gray-200 hover:bg-gray-200'
+                                }`}
+                              >
+                                {SURFACE_LABELS[surface]}
+                                {isEnabled ? ' ✓' : ''}
+                              </button>
+                            )
+                          })}
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
@@ -602,6 +738,145 @@ export default function MetricsManagement() {
               </div>
 
               <div className="space-y-4">
+                {isCustomMetricMode && !editingMetric && (
+                  <div className="border border-purple-200 rounded-lg bg-purple-50/40">
+                    <button
+                      type="button"
+                      onClick={() => setShowAIAssist((v) => !v)}
+                      className="w-full flex items-center justify-between px-4 py-3 text-left"
+                    >
+                      <span className="flex items-center gap-2 text-sm font-semibold text-purple-900">
+                        <Sparkles className="w-4 h-4 text-purple-600" />
+                        Generate with AI
+                      </span>
+                      <span className="text-xs text-purple-700">
+                        {showAIAssist ? 'Hide' : 'Show'}
+                      </span>
+                    </button>
+                    {showAIAssist && (
+                      <div className="px-4 pb-4 space-y-3">
+                        <p className="text-xs text-purple-800">
+                          Describe what to measure or paste labeled examples; the rest of the form will be prefilled.
+                        </p>
+
+                        <div className="border-b border-purple-200">
+                          <nav className="flex space-x-4">
+                            <button
+                              type="button"
+                              onClick={() => setAIMode('description')}
+                              className={`pb-2 px-1 text-xs font-medium border-b-2 transition-colors ${
+                                aiMode === 'description'
+                                  ? 'border-purple-600 text-purple-700'
+                                  : 'border-transparent text-purple-500 hover:text-purple-700'
+                              }`}
+                            >
+                              From description
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setAIMode('examples')}
+                              className={`pb-2 px-1 text-xs font-medium border-b-2 transition-colors ${
+                                aiMode === 'examples'
+                                  ? 'border-purple-600 text-purple-700'
+                                  : 'border-transparent text-purple-500 hover:text-purple-700'
+                              }`}
+                            >
+                              From examples
+                            </button>
+                          </nav>
+                        </div>
+
+                        {aiMode === 'description' ? (
+                          <textarea
+                            value={aiDescription}
+                            onChange={(e) => setAIDescription(e.target.value)}
+                            rows={4}
+                            placeholder="e.g. Measure whether the agent confirmed the customer's booking date and time before ending the call."
+                            className="w-full px-3 py-2 text-sm border border-purple-200 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"
+                          />
+                        ) : (
+                          <div className="space-y-2">
+                            {aiExamples.map((ex, idx) => (
+                              <div key={idx} className="border border-purple-200 rounded-md p-2 bg-white space-y-2">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[11px] font-medium text-purple-700">Example {idx + 1}</span>
+                                  {aiExamples.length > 1 && (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setAIExamples((prev) => prev.filter((_, i) => i !== idx))
+                                      }
+                                      className="text-[11px] text-red-600 hover:text-red-800"
+                                    >
+                                      Remove
+                                    </button>
+                                  )}
+                                </div>
+                                <textarea
+                                  value={ex.transcript}
+                                  onChange={(e) =>
+                                    setAIExamples((prev) =>
+                                      prev.map((row, i) => (i === idx ? { ...row, transcript: e.target.value } : row)),
+                                    )
+                                  }
+                                  rows={2}
+                                  placeholder="Transcript snippet..."
+                                  className="w-full px-2 py-1 text-xs border border-gray-300 rounded shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"
+                                />
+                                <div className="grid grid-cols-2 gap-2">
+                                  <input
+                                    type="text"
+                                    value={ex.rating}
+                                    onChange={(e) =>
+                                      setAIExamples((prev) =>
+                                        prev.map((row, i) => (i === idx ? { ...row, rating: e.target.value } : row)),
+                                      )
+                                    }
+                                    placeholder="Rating (e.g. 0.8, true, Excellent)"
+                                    className="px-2 py-1 text-xs border border-gray-300 rounded shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"
+                                  />
+                                  <input
+                                    type="text"
+                                    value={ex.notes}
+                                    onChange={(e) =>
+                                      setAIExamples((prev) =>
+                                        prev.map((row, i) => (i === idx ? { ...row, notes: e.target.value } : row)),
+                                      )
+                                    }
+                                    placeholder="Notes (optional)"
+                                    className="px-2 py-1 text-xs border border-gray-300 rounded shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"
+                                  />
+                                </div>
+                              </div>
+                            ))}
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setAIExamples((prev) => [...prev, { transcript: '', rating: '', notes: '' }])
+                              }
+                              className="text-xs text-purple-700 hover:text-purple-900 inline-flex items-center gap-1"
+                            >
+                              <Plus className="w-3 h-3" /> Add example
+                            </button>
+                          </div>
+                        )}
+
+                        <div className="flex justify-end">
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            onClick={handleGenerateAIMetric}
+                            isLoading={generateMetricMutation.isPending}
+                            leftIcon={<Sparkles className="w-3.5 h-3.5" />}
+                          >
+                            Generate
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     Name *
@@ -723,25 +998,29 @@ export default function MetricsManagement() {
                     Supported Surfaces
                   </label>
                   <div className="flex flex-wrap gap-4">
-                    {(['agent', 'voice_playground', 'blind_test'] as MetricSurface[]).map((surface) => (
+                    {ALL_SURFACES.map((surface) => (
                       <label key={surface} className="inline-flex items-center gap-2 text-sm text-gray-700">
                         <input
                           type="checkbox"
                           checked={formData.supported_surfaces.includes(surface)}
-                          disabled={isCustomMetricMode && surface !== 'blind_test'}
                           onChange={(e) => {
                             const supported = e.target.checked
                               ? [...new Set([...formData.supported_surfaces, surface])]
                               : formData.supported_surfaces.filter((s) => s !== surface)
-                            const enabledSurfaces = formData.enabled_surfaces.filter((s) => supported.includes(s))
+                            const enabledSurfaces = e.target.checked
+                              ? [...new Set([...formData.enabled_surfaces, surface])]
+                              : formData.enabled_surfaces.filter((s) => supported.includes(s))
                             setFormData({ ...formData, supported_surfaces: supported, enabled_surfaces: enabledSurfaces })
                           }}
                           className="h-4 w-4 text-primary-600 border-gray-300 rounded"
                         />
-                        {surface}
+                        {SURFACE_LABELS[surface]}
                       </label>
                     ))}
                   </div>
+                  <p className="mt-1 text-xs text-gray-500">
+                    Custom metrics on Agent / Voice Playground are evaluated by an LLM judge using the conversation transcript.
+                  </p>
                 </div>
 
                 <div>
@@ -906,6 +1185,7 @@ export default function MetricsManagement() {
           </div>
         </div>
       )}
+
     </div>
   )
 }

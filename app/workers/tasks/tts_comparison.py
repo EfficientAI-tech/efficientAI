@@ -334,6 +334,135 @@ def generate_tts_comparison_task(self, comparison_id: str):
         db.close()
 
 
+def _load_enabled_voice_metric_names(db, organization_id) -> set:
+    """Return lowercased names of metrics that are enabled on the voice_playground surface.
+
+    Used to gate which audio measurements (MOS / Valence / Arousal / Prosody / Emotion /
+    Speaker Consistency) get persisted on the sample. Metric *names* match the rows
+    seeded via `seed_default_metrics`.
+    """
+    from app.models.database import Metric
+
+    metrics = (
+        db.query(Metric)
+        .filter(
+            Metric.organization_id == organization_id,
+            Metric.enabled == True,  # noqa: E712
+        )
+        .all()
+    )
+    return {
+        (m.name or "").strip().lower()
+        for m in metrics
+        if "voice_playground" in (m.enabled_surfaces or [])
+    }
+
+
+# Keys produced by qualitative_voice_service.calculate_all_metrics that correspond
+# to user-toggleable audio metrics. Anything else (WER, CER, ASR Transcript,
+# custom_metric_scores, ...) passes through untouched.
+_QUALITATIVE_AUDIO_KEYS = {
+    "MOS Score",
+    "Valence",
+    "Arousal",
+    "Prosody Score",
+    "Emotion Category",
+    "Emotion Confidence",
+    "Speaker Consistency",
+}
+
+
+def _filter_qualitative_metrics(
+    metrics: Dict[str, Any],
+    enabled_names_lower: set,
+) -> Dict[str, Any]:
+    """Drop disabled qualitative audio keys from the metrics dict in-place safe."""
+    out: Dict[str, Any] = {}
+    for key, value in metrics.items():
+        if key in _QUALITATIVE_AUDIO_KEYS and key.strip().lower() not in enabled_names_lower:
+            continue
+        out[key] = value
+    return out
+
+
+def _evaluate_custom_voice_metrics(sample, metrics: Dict[str, Any], comp, db) -> None:
+    """Run LLM-as-judge on custom metrics enabled for the voice_playground surface.
+
+    Uses the source TTS text plus the ASR transcript of the generated audio as the
+    "transcription" passed to the existing LLM evaluation helper. Default audio-only
+    metrics are skipped because they are already computed by qualitative_voice_service.
+
+    Results are merged into metrics["custom_metric_scores"] keyed by metric UUID so
+    they don't collide with the existing string-keyed audio metric values.
+    """
+    from app.models.database import Metric, AIProvider
+    from app.workers.tasks.helpers.constants import AUDIO_ONLY_METRIC_NAMES
+    from app.workers.tasks.helpers.llm_evaluation import (
+        evaluate_with_llm,
+        handle_llm_evaluation_error,
+    )
+
+    try:
+        candidate_metrics = (
+            db.query(Metric)
+            .filter(
+                Metric.organization_id == comp.organization_id,
+                Metric.enabled == True,  # noqa: E712
+            )
+            .all()
+        )
+        vp_metrics = [
+            m for m in candidate_metrics
+            if "voice_playground" in (m.enabled_surfaces or [])
+            and (m.name or "").strip().lower() not in AUDIO_ONLY_METRIC_NAMES
+        ]
+        if not vp_metrics:
+            return
+
+        source_text = sample.text or ""
+        asr_text = metrics.get("ASR Transcript") or "(no transcript available)"
+        transcription = (
+            f"Source text intended for TTS:\n{source_text}\n\n"
+            f"ASR transcript of generated audio:\n{asr_text}"
+        )
+
+        ai_providers = (
+            db.query(AIProvider)
+            .filter(AIProvider.organization_id == comp.organization_id)
+            .all()
+        )
+
+        try:
+            llm_scores, _eval_time = evaluate_with_llm(
+                transcription=transcription,
+                llm_metrics=vp_metrics,
+                ai_providers=ai_providers,
+                organization_id=comp.organization_id,
+                result_id=str(sample.id),
+                db=db,
+            )
+        except Exception as llm_err:
+            logger.warning(
+                "[TTS Eval] LLM custom metric evaluation failed for sample {}: {}",
+                sample.id,
+                llm_err,
+            )
+            llm_scores = handle_llm_evaluation_error(vp_metrics, llm_err)
+
+        existing = metrics.get("custom_metric_scores") or {}
+        if isinstance(existing, dict):
+            existing.update(llm_scores)
+        else:
+            existing = llm_scores
+        metrics["custom_metric_scores"] = existing
+    except Exception as e:
+        logger.warning(
+            "[TTS Eval] Failed to load voice_playground custom metrics for sample {}: {}",
+            sample.id,
+            e,
+        )
+
+
 @celery_app.task(name="evaluate_tts_comparison", bind=True, max_retries=1)
 def evaluate_tts_comparison_task(self, comparison_id: str):
     """
@@ -383,6 +512,16 @@ def evaluate_tts_comparison_task(self, comparison_id: str):
                 "– WER/CER metrics will be skipped"
             )
 
+        enabled_voice_metric_names = _load_enabled_voice_metric_names(db, comp.organization_id)
+        any_qualitative_enabled = any(
+            k.lower() in enabled_voice_metric_names for k in _QUALITATIVE_AUDIO_KEYS
+        )
+        if not any_qualitative_enabled:
+            logger.info(
+                "[TTS Eval] No qualitative audio metrics enabled for voice_playground; "
+                "skipping qualitative_voice_service for this comparison."
+            )
+
         evaluated = 0
         for sample in samples:
             tmp_path = None
@@ -401,7 +540,11 @@ def evaluate_tts_comparison_task(self, comparison_id: str):
                 with open(tmp_path, "wb") as f:
                     f.write(audio_bytes)
 
-                metrics = qualitative_voice_service.calculate_all_metrics(tmp_path)
+                if any_qualitative_enabled:
+                    metrics = qualitative_voice_service.calculate_all_metrics(tmp_path)
+                    metrics = _filter_qualitative_metrics(metrics, enabled_voice_metric_names)
+                else:
+                    metrics = {}
 
                 if stt_available and sample.text:
                     selected_stt_provider = ModelProvider(stt_provider_str)
@@ -443,6 +586,8 @@ def evaluate_tts_comparison_task(self, comparison_id: str):
                         metrics["WER Normalized"] = None
                         metrics["CER Normalized"] = None
                         metrics["ASR Transcript"] = None
+
+                _evaluate_custom_voice_metrics(sample, metrics, comp, db)
 
                 sample.evaluation_metrics = _sanitize_metrics(metrics)
                 db.commit()

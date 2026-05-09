@@ -13,6 +13,8 @@ export default function JudgeAlignment() {
   const queryClient = useQueryClient()
   const [showNewModal, setShowNewModal] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [pendingDelete, setPendingDelete] = useState<JudgeDataset | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
 
   const { data: datasets = [], isLoading } = useQuery({
     queryKey: ['judge-datasets'],
@@ -21,7 +23,16 @@ export default function JudgeAlignment() {
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => apiClient.deleteJudgeDataset(id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['judge-datasets'] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['judge-datasets'] })
+      setPendingDelete(null)
+      setDeleteError(null)
+    },
+    onError: (e: any) => {
+      setDeleteError(
+        e?.response?.data?.detail || e?.message || 'Failed to delete dataset'
+      )
+    },
   })
 
   return (
@@ -67,9 +78,8 @@ export default function JudgeAlignment() {
               key={d.id}
               dataset={d}
               onDelete={() => {
-                if (window.confirm(`Delete dataset "${d.name}"?`)) {
-                  deleteMutation.mutate(d.id)
-                }
+                setDeleteError(null)
+                setPendingDelete(d)
               }}
             />
           ))}
@@ -82,6 +92,92 @@ export default function JudgeAlignment() {
       {showSettings && (
         <SettingsPanel onClose={() => setShowSettings(false)} />
       )}
+      {pendingDelete && (
+        <DeleteDatasetModal
+          dataset={pendingDelete}
+          isLoading={deleteMutation.isPending}
+          error={deleteError}
+          onCancel={() => {
+            if (deleteMutation.isPending) return
+            setPendingDelete(null)
+            setDeleteError(null)
+          }}
+          onConfirm={() => deleteMutation.mutate(pendingDelete.id)}
+        />
+      )}
+    </div>
+  )
+}
+
+function DeleteDatasetModal({
+  dataset,
+  isLoading,
+  error,
+  onCancel,
+  onConfirm,
+}: {
+  dataset: JudgeDataset
+  isLoading: boolean
+  error: string | null
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  return (
+    <div className="fixed inset-0 z-50 overflow-y-auto">
+      <div className="flex min-h-screen items-center justify-center p-4">
+        <div
+          className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"
+          onClick={onCancel}
+        />
+        <div className="relative bg-white rounded-2xl shadow-xl max-w-md w-full">
+          <div className="p-6">
+            <div className="w-12 h-12 rounded-full bg-rose-100 flex items-center justify-center mx-auto mb-4">
+              <Trash2 className="w-6 h-6 text-rose-600" />
+            </div>
+            <h3 className="text-lg font-semibold text-gray-900 text-center">
+              Delete dataset?
+            </h3>
+            <p className="text-sm text-gray-500 text-center mt-2">
+              <span className="font-semibold text-gray-900">
+                "{dataset.name}"
+              </span>
+              <br />
+              This will permanently remove{' '}
+              <span className="font-semibold text-gray-900">
+                {dataset.total_samples}
+              </span>{' '}
+              sample{dataset.total_samples !== 1 ? 's' : ''}, all human labels,
+              and every judge run associated with this dataset. This action
+              cannot be undone.
+            </p>
+            {error && (
+              <div className="mt-3 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-700">
+                {error}
+              </div>
+            )}
+          </div>
+          <div className="px-6 py-4 border-t border-gray-100 flex justify-end gap-3 rounded-b-2xl">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onCancel}
+              disabled={isLoading}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={onConfirm}
+              disabled={isLoading}
+              isLoading={isLoading}
+              leftIcon={!isLoading ? <Trash2 className="h-4 w-4" /> : undefined}
+            >
+              Delete
+            </Button>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
