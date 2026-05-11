@@ -21,9 +21,11 @@ import type {
   S3ListFilesResponse,
   S3BrowseResponse,
   S3Status,
+  CallImport,
   CallImportDetail,
   CallImportListResponse,
   CallImportStatus,
+  CallImportTag,
   CallImportUploadResponse,
 } from '../types/api'
 
@@ -110,11 +112,14 @@ export interface TelephonyIntegrationResponse {
   id: string
   organization_id: string
   provider: string
+  name?: string | null
   verify_app_uuid?: string | null
   voice_app_id?: string | null
   sip_domain?: string | null
   masking_config?: Record<string, any> | null
   is_active: boolean
+  /** True if this row is the default credential for (org, provider). */
+  is_default?: boolean
   last_tested_at?: string | null
   created_at: string
   updated_at: string
@@ -122,16 +127,22 @@ export interface TelephonyIntegrationResponse {
 
 export interface TelephonyIntegrationCreatePayload {
   provider?: string
+  name?: string
   auth_id: string
   auth_token: string
   verify_app_uuid?: string
   voice_app_id?: string
   sip_domain?: string
   masking_config?: Record<string, any>
+  /** Mark the new credential as the default for (org, provider). */
+  is_default?: boolean
 }
 
 export interface TelephonyIntegrationUpdatePayload {
+  /** When set, update this specific credential row instead of the legacy single-row flow. */
+  id?: string
   provider?: string
+  name?: string
   auth_id?: string
   auth_token?: string
   verify_app_uuid?: string
@@ -712,6 +723,13 @@ class ApiClient {
     await this.client.delete(`/api/v1/aiproviders/${aiproviderId}`)
   }
 
+  async setDefaultAIProvider(aiproviderId: string): Promise<any> {
+    const response = await this.client.post(
+      `/api/v1/aiproviders/${aiproviderId}/set-default`,
+    )
+    return response.data
+  }
+
   async testAIProvider(aiproviderId: string): Promise<any> {
     const response = await this.client.post(`/api/v1/aiproviders/${aiproviderId}/test`)
     return response.data
@@ -830,6 +848,13 @@ class ApiClient {
     return response.data
   }
 
+  async setDefaultIntegration(integrationId: string): Promise<Integration> {
+    const response = await this.client.post(
+      `/api/v1/integrations/${integrationId}/set-default`,
+    )
+    return response.data
+  }
+
   async getIntegrationApiKey(integrationId: string): Promise<{ api_key: string; public_key?: string | null }> {
     const response = await this.client.get(`/api/v1/integrations/${integrationId}/api-key`)
     return response.data
@@ -846,9 +871,27 @@ class ApiClient {
     return response.data
   }
 
+  async listTelephonyConfigs(provider?: string): Promise<TelephonyIntegrationResponse[]> {
+    const response = await this.client.get('/api/v1/telephony/configs', {
+      params: provider ? { provider } : undefined,
+    })
+    return response.data
+  }
+
   async updateTelephonyConfig(data: TelephonyIntegrationUpdatePayload): Promise<TelephonyIntegrationResponse> {
     const response = await this.client.put('/api/v1/telephony/config', data)
     return response.data
+  }
+
+  async setDefaultTelephonyConfig(integrationId: string): Promise<TelephonyIntegrationResponse> {
+    const response = await this.client.post(
+      `/api/v1/telephony/config/${integrationId}/set-default`,
+    )
+    return response.data
+  }
+
+  async deleteTelephonyConfig(integrationId: string): Promise<void> {
+    await this.client.delete(`/api/v1/telephony/config/${integrationId}`)
   }
 
   async testTelephonyConfig(provider: string = 'plivo'): Promise<{ success: boolean }> {
@@ -945,9 +988,20 @@ class ApiClient {
   }
 
   // Call Imports endpoints
-  async uploadCallImport(file: File): Promise<CallImportUploadResponse> {
+  async uploadCallImport(
+    file: File,
+    options: { dataset?: string | null; tagIds?: string[] } = {}
+  ): Promise<CallImportUploadResponse> {
     const formData = new FormData()
     formData.append('file', file)
+    if (options.dataset !== undefined && options.dataset !== null) {
+      formData.append('dataset', options.dataset)
+    }
+    if (options.tagIds && options.tagIds.length > 0) {
+      for (const tagId of options.tagIds) {
+        formData.append('tag_ids', tagId)
+      }
+    }
     const response = await this.client.post('/api/v1/call-imports/upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
@@ -955,9 +1009,27 @@ class ApiClient {
   }
 
   async listCallImports(
-    params: { page?: number; page_size?: number; status?: CallImportStatus } = {}
+    params: {
+      page?: number
+      page_size?: number
+      status?: CallImportStatus
+      dataset?: string
+      tag_id?: string[]
+    } = {}
   ): Promise<CallImportListResponse> {
-    const response = await this.client.get('/api/v1/call-imports', { params })
+    // Send tag_id repeated rather than as a JSON array.
+    const search = new URLSearchParams()
+    if (params.page !== undefined) search.set('page', String(params.page))
+    if (params.page_size !== undefined) search.set('page_size', String(params.page_size))
+    if (params.status) search.set('status', params.status)
+    if (params.dataset !== undefined) search.set('dataset', params.dataset)
+    for (const tag of params.tag_id || []) search.append('tag_id', tag)
+    const response = await this.client.get('/api/v1/call-imports', { params: search })
+    return response.data
+  }
+
+  async listCallImportDatasets(): Promise<string[]> {
+    const response = await this.client.get('/api/v1/call-imports/datasets')
     return response.data
   }
 
@@ -969,12 +1041,49 @@ class ApiClient {
     return response.data
   }
 
+  async updateCallImport(
+    id: string,
+    payload: { dataset?: string | null; tag_ids?: string[] }
+  ): Promise<CallImport> {
+    const response = await this.client.patch(`/api/v1/call-imports/${id}`, payload)
+    return response.data
+  }
+
   async deleteCallImport(id: string): Promise<void> {
     await this.client.delete(`/api/v1/call-imports/${id}`)
   }
 
   async deleteCallImportRow(id: string, rowId: string): Promise<void> {
     await this.client.delete(`/api/v1/call-imports/${id}/rows/${rowId}`)
+  }
+
+  // Call Import Tags endpoints
+  async listCallImportTags(): Promise<CallImportTag[]> {
+    const response = await this.client.get('/api/v1/call-import-tags')
+    return response.data
+  }
+
+  async createCallImportTag(payload: {
+    name: string
+    color?: string | null
+  }): Promise<CallImportTag> {
+    const response = await this.client.post('/api/v1/call-import-tags', payload)
+    return response.data
+  }
+
+  async updateCallImportTag(
+    tagId: string,
+    payload: { name?: string; color?: string | null },
+  ): Promise<CallImportTag> {
+    const response = await this.client.patch(
+      `/api/v1/call-import-tags/${tagId}`,
+      payload,
+    )
+    return response.data
+  }
+
+  async deleteCallImportTag(tagId: string): Promise<void> {
+    await this.client.delete(`/api/v1/call-import-tags/${tagId}`)
   }
 
   // Model Config endpoints

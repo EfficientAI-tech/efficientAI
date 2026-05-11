@@ -83,6 +83,7 @@ import BlindTestForm from './pages/public/BlindTestForm'
 // Call Imports
 import CallImports from './pages/callImports/CallImports'
 import CallImportDetail from './pages/callImports/CallImportDetail'
+import CallImportTagsPage from './pages/callImports/Tags'
 
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -165,6 +166,7 @@ function App() {
           <Route path="cron-jobs" element={<CronJobs />} />
           <Route path="prompt-partials" element={<PromptPartials />} />
           <Route path="call-imports" element={<CallImports />} />
+          <Route path="call-imports/tags" element={<CallImportTagsPage />} />
           <Route path="call-imports/:id" element={<CallImportDetail />} />
           <Route path="prompt-optimization" element={<EnterpriseGate feature="gepa_optimization"><PromptOptimization /></EnterpriseGate>} />
           <Route path="judge-alignment" element={<JudgeAlignment />} />

@@ -1,10 +1,11 @@
 import { useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from 'react-router-dom'
 import { AlertCircle, FileText, Upload, X } from 'lucide-react'
 import { apiClient } from '../../../lib/api'
 import Button from '../../../components/Button'
+import type { CallImportTag } from '../../../types/api'
 
 interface UploadCsvModalProps {
   open: boolean
@@ -50,11 +51,30 @@ export default function UploadCsvModal({ open, onClose }: UploadCsvModalProps) {
   const navigate = useNavigate()
   const [file, setFile] = useState<File | null>(null)
   const [clientError, setClientError] = useState<string | null>(null)
+  const [dataset, setDataset] = useState('')
+  const [selectedTagIds, setSelectedTagIds] = useState<string[]>([])
+
+  const { data: existingDatasets = [] } = useQuery({
+    queryKey: ['call-import-datasets'],
+    queryFn: () => apiClient.listCallImportDatasets(),
+    enabled: open,
+  })
+
+  const { data: allTags = [] } = useQuery({
+    queryKey: ['call-import-tags'],
+    queryFn: () => apiClient.listCallImportTags(),
+    enabled: open,
+  })
 
   const uploadMutation = useMutation({
-    mutationFn: (f: File) => apiClient.uploadCallImport(f),
+    mutationFn: (f: File) =>
+      apiClient.uploadCallImport(f, {
+        dataset: dataset.trim() ? dataset.trim() : null,
+        tagIds: selectedTagIds,
+      }),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['call-imports'] })
+      queryClient.invalidateQueries({ queryKey: ['call-import-datasets'] })
       handleClose()
       navigate(`/call-imports/${data.id}`)
     },
@@ -63,6 +83,8 @@ export default function UploadCsvModal({ open, onClose }: UploadCsvModalProps) {
   const handleClose = () => {
     setFile(null)
     setClientError(null)
+    setDataset('')
+    setSelectedTagIds([])
     uploadMutation.reset()
     onClose()
   }
@@ -143,6 +165,70 @@ export default function UploadCsvModal({ open, onClose }: UploadCsvModalProps) {
               </p>
             )}
           </div>
+
+          <div>
+            <label htmlFor="csv-dataset" className="block text-sm font-medium text-gray-700 mb-1">
+              Dataset <span className="text-gray-400 font-normal">(optional)</span>
+            </label>
+            <input
+              id="csv-dataset"
+              type="text"
+              list="csv-dataset-suggestions"
+              value={dataset}
+              onChange={(e) => setDataset(e.target.value)}
+              disabled={uploadMutation.isPending}
+              placeholder="e.g., march-2026-batch"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent disabled:opacity-60"
+            />
+            <datalist id="csv-dataset-suggestions">
+              {existingDatasets.map((d) => (
+                <option key={d} value={d} />
+              ))}
+            </datalist>
+            <p className="mt-1 text-xs text-gray-500">
+              Free-text label used for high-level segregation on the imports
+              page. Leave blank to import without a dataset.
+            </p>
+          </div>
+
+          {allTags.length > 0 && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Tags <span className="text-gray-400 font-normal">(optional)</span>
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {allTags.map((tag: CallImportTag) => {
+                  const active = selectedTagIds.includes(tag.id)
+                  return (
+                    <button
+                      type="button"
+                      key={tag.id}
+                      onClick={() =>
+                        setSelectedTagIds((prev) =>
+                          prev.includes(tag.id)
+                            ? prev.filter((id) => id !== tag.id)
+                            : [...prev, tag.id],
+                        )
+                      }
+                      disabled={uploadMutation.isPending}
+                      className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${
+                        active
+                          ? 'bg-primary-600 border-primary-600 text-white'
+                          : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'
+                      }`}
+                      style={
+                        !active && tag.color
+                          ? { borderColor: tag.color, color: tag.color }
+                          : undefined
+                      }
+                    >
+                      {tag.name}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )}
 
           <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 text-xs text-blue-800 space-y-1">
             <p>

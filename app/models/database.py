@@ -302,6 +302,11 @@ class Integration(Base):
     api_key = Column(String, nullable=False)  # Encrypted Private API key for the platform
     public_key = Column(String, nullable=True)  # Optional Public API key (e.g. for Vapi)
     is_active = Column(Boolean, default=True, nullable=False)
+    # Multiple credentials per (org, platform) are allowed. is_default marks
+    # the row used when a caller does not explicitly select a credential.
+    # A partial unique index in migration 028 enforces at most one default
+    # per (org, platform) at the DB level.
+    is_default = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     last_tested_at = Column(DateTime(timezone=True), nullable=True)  # When API key was last validated
@@ -369,14 +374,13 @@ class AIProvider(Base):
     api_key = Column(String, nullable=False)  # Encrypted API key
     name = Column(String, nullable=True)  # Optional friendly name
     is_active = Column(Boolean, default=True, nullable=False)
+    # Multiple AIProvider rows per (org, provider) are allowed. is_default
+    # marks the row resolved when no explicit credential id is selected.
+    # A partial unique index in migration 028 enforces at most one default.
+    is_default = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     last_tested_at = Column(DateTime(timezone=True), nullable=True)  # When API key was last validated
-    
-    # Unique constraint: one active provider per organization
-    __table_args__ = (
-        UniqueConstraint('organization_id', 'provider', name='unique_org_provider'),
-    )
 
 
 # Enums moved to enums.py
@@ -398,11 +402,16 @@ class VoiceBundle(Base):
     
     # STT Configuration (references AIProvider via provider name) - required for STT_LLM_TTS, optional for S2S
     stt_provider = Column(String, nullable=True)
+    # Optional explicit credential row (aiproviders.id or integrations.id).
+    # When NULL the credential resolver picks the default row for the
+    # provider. No FK is set because the target table varies by provider.
+    stt_credential_id = Column(UUID(as_uuid=True), nullable=True)
 
     stt_model = Column(String, nullable=True)  # e.g., "whisper-1", "google-speech-v2"
     
     # LLM Configuration (references AIProvider via provider name) - required for STT_LLM_TTS, optional for S2S
     llm_provider = Column(String, nullable=True)
+    llm_credential_id = Column(UUID(as_uuid=True), nullable=True)
 
     llm_model = Column(String, nullable=True)  # e.g., "gpt-4", "claude-3-opus"
     llm_temperature = Column(Float, nullable=True, default=0.7)
@@ -411,6 +420,7 @@ class VoiceBundle(Base):
     
     # TTS Configuration (references AIProvider via provider name) - required for STT_LLM_TTS, optional for S2S
     tts_provider = Column(String, nullable=True)
+    tts_credential_id = Column(UUID(as_uuid=True), nullable=True)
 
     tts_model = Column(String, nullable=True)  # e.g., "tts-1", "neural-voice"
     tts_voice = Column(String, nullable=True)  # Voice selection if applicable
@@ -418,6 +428,7 @@ class VoiceBundle(Base):
     
     # S2S Configuration - required for S2S type, optional for STT_LLM_TTS
     s2s_provider = Column(String, nullable=True)
+    s2s_credential_id = Column(UUID(as_uuid=True), nullable=True)
 
 
 
@@ -1056,16 +1067,21 @@ class PromptOptimizationCandidate(Base):
 
 
 class TelephonyIntegration(Base):
-    """Per-organization telephony provider credentials and configuration."""
+    """Per-organization telephony provider credentials and configuration.
+
+    Multiple rows per (organization_id, provider) are allowed so that an
+    organization can keep several Plivo / Exotel accounts side-by-side.
+    A partial unique index in migration 028 enforces at most one row with
+    is_default = TRUE per (org, provider); resolution falls back to that
+    default row when the caller does not pin a specific credential.
+    """
 
     __tablename__ = "telephony_integrations"
-    __table_args__ = (
-        UniqueConstraint("organization_id", "provider", name="uq_telephony_integration_org_provider"),
-    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
     provider = Column(String(50), nullable=False, default="plivo")
+    name = Column(String(255), nullable=True)  # Optional friendly name to disambiguate multiple credentials
 
     auth_id = Column(String(255), nullable=False)
     auth_token = Column(String(512), nullable=False)
@@ -1076,6 +1092,7 @@ class TelephonyIntegration(Base):
     masking_config = Column(JSON, nullable=True)
 
     is_active = Column(Boolean, default=True, nullable=False)
+    is_default = Column(Boolean, default=False, nullable=False)
     last_tested_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -1172,6 +1189,10 @@ class CallImport(Base):
     provider = Column(String(50), nullable=False, default="exotel")
     original_filename = Column(String(512), nullable=True)
 
+    # Free-text high-level segregation label. Powers the "Dataset" filter
+    # at the top of the imports page; multiple imports can share a value.
+    dataset = Column(String(255), nullable=True, index=True)
+
     total_rows = Column(Integer, nullable=False, default=0)
     completed_rows = Column(Integer, nullable=False, default=0)
     failed_rows = Column(Integer, nullable=False, default=0)
@@ -1192,6 +1213,12 @@ class CallImport(Base):
         back_populates="call_import",
         cascade="all, delete-orphan",
         order_by="CallImportRow.row_index",
+    )
+    tags = relationship(
+        "CallImportTag",
+        secondary="call_import_tag_assignments",
+        backref="call_imports",
+        lazy="selectin",
     )
 
 
@@ -1238,6 +1265,50 @@ class CallImportRow(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     call_import = relationship("CallImport", back_populates="rows")
+
+
+class CallImportTag(Base):
+    """User-defined tag that can be attached to one or more call imports.
+
+    Tags coexist with the free-text ``CallImport.dataset`` column: dataset
+    is the primary high-level segregation, tags are an optional secondary
+    classification (an import can have many tags).
+    """
+
+    __tablename__ = "call_import_tags"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "name", name="uq_call_import_tag_org_name"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(
+        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    name = Column(String(255), nullable=False)
+    color = Column(String(32), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CallImportTagAssignment(Base):
+    """Many-to-many join table between CallImport and CallImportTag."""
+
+    __tablename__ = "call_import_tag_assignments"
+
+    call_import_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_imports.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    tag_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_import_tags.id", ondelete="CASCADE"),
+        primary_key=True,
+        index=True,
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 # ---------------------------------------------------------------------------

@@ -5,9 +5,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
   ArrowLeft,
+  Check,
   ChevronLeft,
   ChevronRight,
   Download,
+  Edit3,
   FileText,
   Pause,
   Play,
@@ -18,7 +20,7 @@ import {
   XCircle,
 } from 'lucide-react'
 import { apiClient } from '../../lib/api'
-import type { CallImportRow } from '../../types/api'
+import type { CallImportRow, CallImportTag } from '../../types/api'
 import Button from '../../components/Button'
 import ConfirmModal from '../../components/ConfirmModal'
 import StatusBadge from '../../components/shared/StatusBadge'
@@ -59,6 +61,32 @@ export default function CallImportDetail() {
   const [showDeleteImport, setShowDeleteImport] = useState(false)
   const [pendingDeleteRow, setPendingDeleteRow] = useState<CallImportRow | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+
+  const [editingMeta, setEditingMeta] = useState(false)
+  const [draftDataset, setDraftDataset] = useState('')
+  const [draftTagIds, setDraftTagIds] = useState<string[]>([])
+
+  const { data: existingDatasets = [] } = useQuery({
+    queryKey: ['call-import-datasets'],
+    queryFn: () => apiClient.listCallImportDatasets(),
+    enabled: editingMeta,
+  })
+
+  const { data: allTags = [] } = useQuery({
+    queryKey: ['call-import-tags'],
+    queryFn: () => apiClient.listCallImportTags(),
+  })
+
+  const updateMetaMutation = useMutation({
+    mutationFn: (payload: { dataset?: string | null; tag_ids?: string[] }) =>
+      apiClient.updateCallImport(id!, payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['call-import', id] })
+      queryClient.invalidateQueries({ queryKey: ['call-imports'] })
+      queryClient.invalidateQueries({ queryKey: ['call-import-datasets'] })
+      setEditingMeta(false)
+    },
+  })
 
   const deleteImportMutation = useMutation({
     mutationFn: (importId: string) => apiClient.deleteCallImport(importId),
@@ -295,6 +323,163 @@ export default function CallImportDetail() {
               </div>
             </div>
           </div>
+        </div>
+
+        <div className="mt-4 border-t border-gray-100 pt-4">
+          {!editingMeta ? (
+            <div className="flex items-start justify-between gap-3 flex-wrap">
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                    Dataset:
+                  </span>
+                  {data.dataset ? (
+                    <span className="inline-flex items-center text-sm font-medium text-gray-800 bg-gray-100 rounded px-2 py-0.5">
+                      {data.dataset}
+                    </span>
+                  ) : (
+                    <span className="text-sm text-gray-400 italic">none</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                    Tags:
+                  </span>
+                  {data.tags.length > 0 ? (
+                    data.tags.map((tag) => (
+                      <span
+                        key={tag.id}
+                        className="inline-flex items-center text-xs uppercase tracking-wide rounded-full px-2 py-0.5 border"
+                        style={{
+                          borderColor: tag.color || '#d1d5db',
+                          color: tag.color || '#4b5563',
+                        }}
+                      >
+                        {tag.name}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="text-sm text-gray-400 italic">none</span>
+                  )}
+                </div>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                leftIcon={<Edit3 className="h-4 w-4" />}
+                onClick={() => {
+                  setDraftDataset(data.dataset || '')
+                  setDraftTagIds(data.tags.map((t) => t.id))
+                  setEditingMeta(true)
+                }}
+              >
+                Edit dataset / tags
+              </Button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div>
+                <label
+                  htmlFor="dataset-edit"
+                  className="block text-xs font-medium text-gray-600 uppercase tracking-wide mb-1"
+                >
+                  Dataset
+                </label>
+                <input
+                  id="dataset-edit"
+                  type="text"
+                  list="dataset-edit-suggestions"
+                  value={draftDataset}
+                  onChange={(e) => setDraftDataset(e.target.value)}
+                  placeholder="Leave blank to clear"
+                  className="w-full max-w-sm px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                />
+                <datalist id="dataset-edit-suggestions">
+                  {existingDatasets.map((d) => (
+                    <option key={d} value={d} />
+                  ))}
+                </datalist>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 uppercase tracking-wide mb-1">
+                  Tags
+                </label>
+                {allTags.length === 0 ? (
+                  <p className="text-xs text-gray-500">
+                    No tags created yet.{' '}
+                    <Link
+                      to="/call-imports/tags"
+                      className="text-primary-600 hover:text-primary-700 underline"
+                    >
+                      Create tags
+                    </Link>
+                    .
+                  </p>
+                ) : (
+                  <div className="flex flex-wrap gap-2">
+                    {allTags.map((tag: CallImportTag) => {
+                      const active = draftTagIds.includes(tag.id)
+                      return (
+                        <button
+                          key={tag.id}
+                          type="button"
+                          onClick={() =>
+                            setDraftTagIds((prev) =>
+                              prev.includes(tag.id)
+                                ? prev.filter((t) => t !== tag.id)
+                                : [...prev, tag.id],
+                            )
+                          }
+                          className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${
+                            active
+                              ? 'bg-primary-600 border-primary-600 text-white'
+                              : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'
+                          }`}
+                          style={
+                            !active && tag.color
+                              ? { borderColor: tag.color, color: tag.color }
+                              : undefined
+                          }
+                        >
+                          {tag.name}
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  variant="primary"
+                  size="sm"
+                  leftIcon={<Check className="h-4 w-4" />}
+                  isLoading={updateMetaMutation.isPending}
+                  onClick={() =>
+                    updateMetaMutation.mutate({
+                      dataset: draftDataset.trim() ? draftDataset.trim() : null,
+                      tag_ids: draftTagIds,
+                    })
+                  }
+                >
+                  Save
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setEditingMeta(false)}
+                  disabled={updateMetaMutation.isPending}
+                >
+                  Cancel
+                </Button>
+              </div>
+              {updateMetaMutation.isError && (
+                <p className="text-xs text-red-600">
+                  {(updateMetaMutation.error as any)?.response?.data?.detail ||
+                    'Failed to update.'}
+                </p>
+              )}
+            </div>
+          )}
         </div>
 
         {data.error_message && (

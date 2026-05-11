@@ -21,6 +21,8 @@ from app.models.database import (
     TelephonyVerifySession,
 )
 from app.models.enums import CallRecordingStatus
+from app.services.credentials import resolve_telephony_integration
+from app.services.credentials.resolver import clear_other_defaults
 from app.services.telephony.exotel_client import build_exotel_client_from_integration
 from app.services.telephony.plivo_client import PlivoClient, normalize_e164
 from app.services.telephony.plivo_xml import dial_number, reject_call, speak_and_hangup
@@ -30,23 +32,46 @@ class TelephonyService:
     """Encapsulates telephony business operations for API routes."""
 
     def get_org_integration(
-        self, org_id: UUID, db: Session, provider: str = "plivo"
+        self,
+        org_id: UUID,
+        db: Session,
+        provider: str = "plivo",
+        credential_id: Optional[UUID] = None,
     ) -> TelephonyIntegration:
-        integration = (
-            db.query(TelephonyIntegration)
-            .filter(
-                TelephonyIntegration.organization_id == org_id,
-                TelephonyIntegration.provider == provider,
-                TelephonyIntegration.is_active.is_(True),
-            )
-            .first()
+        """Resolve a single TelephonyIntegration for ``(org, provider)``.
+
+        Multiple credentials per provider are now supported. ``credential_id``
+        pins a specific row; otherwise the row marked ``is_default`` wins,
+        with a fallback to the most recently updated active row.
+        """
+        integration = resolve_telephony_integration(
+            provider, db, org_id, credential_id=credential_id
         )
         if not integration:
             raise ValueError(f"Active {provider} telephony integration not found for organization")
         return integration
 
-    def get_provider_client(self, org_id: UUID, db: Session, provider: str):
-        integration = self.get_org_integration(org_id, db, provider=provider)
+    def list_org_integrations(
+        self, org_id: UUID, db: Session, provider: Optional[str] = None
+    ) -> List[TelephonyIntegration]:
+        """List every TelephonyIntegration row for the org (newest first)."""
+        query = db.query(TelephonyIntegration).filter(
+            TelephonyIntegration.organization_id == org_id
+        )
+        if provider:
+            query = query.filter(TelephonyIntegration.provider == provider)
+        return query.order_by(TelephonyIntegration.created_at.desc()).all()
+
+    def get_provider_client(
+        self,
+        org_id: UUID,
+        db: Session,
+        provider: str,
+        credential_id: Optional[UUID] = None,
+    ):
+        integration = self.get_org_integration(
+            org_id, db, provider=provider, credential_id=credential_id
+        )
         auth_id = decrypt_api_key(integration.auth_id)
         auth_token = decrypt_api_key(integration.auth_token)
         provider_key = provider.lower()
@@ -61,17 +86,60 @@ class TelephonyService:
         raise ValueError(f"Unsupported telephony provider: {provider}")
 
     def save_integration(
-        self, org_id: UUID, data: Dict[str, Any], db: Session
+        self,
+        org_id: UUID,
+        data: Dict[str, Any],
+        db: Session,
+        *,
+        allow_implicit_update: bool = True,
     ) -> TelephonyIntegration:
+        """Create or update a TelephonyIntegration row.
+
+        Multiple credentials per provider are allowed. If ``data`` contains
+        an explicit ``id`` we update that row. Otherwise behavior depends
+        on ``allow_implicit_update``:
+
+        * ``True`` (default, used by the legacy ``PUT /telephony/config``
+          route): when exactly one row exists for ``(org, provider)`` and
+          no id was supplied, update that row in place. This preserves
+          the original "single config per provider" UX for callers that
+          have not migrated to passing an id.
+        * ``False`` (used by ``POST /telephony/config``): always create a
+          new row. Required so users can register additional credentials
+          for a provider that already has one configured.
+        """
         provider = data.get("provider", "plivo")
-        integration = (
-            db.query(TelephonyIntegration)
-            .filter(
-                TelephonyIntegration.organization_id == org_id,
-                TelephonyIntegration.provider == provider,
+        explicit_id = data.get("id")
+        integration: Optional[TelephonyIntegration] = None
+        if explicit_id:
+            integration = (
+                db.query(TelephonyIntegration)
+                .filter(
+                    TelephonyIntegration.id == explicit_id,
+                    TelephonyIntegration.organization_id == org_id,
+                )
+                .first()
             )
-            .first()
-        )
+            if not integration:
+                raise ValueError("Telephony integration not found")
+        elif allow_implicit_update:
+            existing_count = (
+                db.query(TelephonyIntegration)
+                .filter(
+                    TelephonyIntegration.organization_id == org_id,
+                    TelephonyIntegration.provider == provider,
+                )
+                .count()
+            )
+            if existing_count == 1:
+                integration = (
+                    db.query(TelephonyIntegration)
+                    .filter(
+                        TelephonyIntegration.organization_id == org_id,
+                        TelephonyIntegration.provider == provider,
+                    )
+                    .first()
+                )
         encrypted_auth_id = encrypt_api_key(data["auth_id"]) if data.get("auth_id") else None
         encrypted_auth_token = encrypt_api_key(data["auth_token"]) if data.get("auth_token") else None
         effective_voice_app_id = (
@@ -82,11 +150,15 @@ class TelephonyService:
         if provider.lower() == "exotel" and not effective_voice_app_id:
             raise ValueError("voice_app_id (Exotel Account SID) is required for Exotel")
 
+        becoming_default = bool(data.get("is_default")) if "is_default" in data else False
+
         if integration:
             if encrypted_auth_id:
                 integration.auth_id = encrypted_auth_id
             if encrypted_auth_token:
                 integration.auth_token = encrypted_auth_token
+            if "name" in data:
+                integration.name = data.get("name")
             if "verify_app_uuid" in data:
                 integration.verify_app_uuid = data.get("verify_app_uuid")
             if "voice_app_id" in data:
@@ -103,6 +175,7 @@ class TelephonyService:
             integration = TelephonyIntegration(
                 organization_id=org_id,
                 provider=provider,
+                name=data.get("name"),
                 auth_id=encrypted_auth_id,
                 auth_token=encrypted_auth_token,
                 verify_app_uuid=data.get("verify_app_uuid"),
@@ -112,7 +185,59 @@ class TelephonyService:
                 is_active=bool(data.get("is_active", True)),
             )
             db.add(integration)
+            db.flush()
 
+        # Auto-default the very first row for this (org, provider) pair so
+        # existing single-credential flows keep working.
+        existing_default = (
+            db.query(TelephonyIntegration)
+            .filter(
+                TelephonyIntegration.organization_id == org_id,
+                TelephonyIntegration.provider == provider,
+                TelephonyIntegration.is_default.is_(True),
+                TelephonyIntegration.id != integration.id,
+            )
+            .first()
+        )
+        if becoming_default or existing_default is None:
+            if existing_default is not None:
+                clear_other_defaults(
+                    TelephonyIntegration,
+                    db,
+                    org_id,
+                    keep_id=integration.id,
+                    provider_field="provider",
+                    provider_value=provider,
+                )
+            integration.is_default = True
+
+        db.commit()
+        db.refresh(integration)
+        return integration
+
+    def set_default_integration(
+        self, org_id: UUID, integration_id: UUID, db: Session
+    ) -> TelephonyIntegration:
+        """Mark the given integration as the default for its (org, provider)."""
+        integration = (
+            db.query(TelephonyIntegration)
+            .filter(
+                TelephonyIntegration.id == integration_id,
+                TelephonyIntegration.organization_id == org_id,
+            )
+            .first()
+        )
+        if not integration:
+            raise ValueError("Telephony integration not found")
+        clear_other_defaults(
+            TelephonyIntegration,
+            db,
+            org_id,
+            keep_id=integration.id,
+            provider_field="provider",
+            provider_value=integration.provider,
+        )
+        integration.is_default = True
         db.commit()
         db.refresh(integration)
         return integration

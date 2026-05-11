@@ -16,9 +16,9 @@ import io
 from typing import List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from loguru import logger
-from sqlalchemy import desc
+from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -26,6 +26,7 @@ from app.dependencies import get_api_key, get_organization_id
 from app.models.database import (
     CallImport,
     CallImportRow,
+    CallImportTag,
     TelephonyIntegration,
 )
 from app.models.enums import (
@@ -38,11 +39,47 @@ from app.models.schemas import (
     CallImportListResponse,
     CallImportResponse,
     CallImportRowResponse,
+    CallImportUpdate,
     CallImportUploadResponse,
 )
 
 
 router = APIRouter(prefix="/call-imports", tags=["Call Imports"])
+
+
+def _normalize_dataset(raw: Optional[str]) -> Optional[str]:
+    """Trim and treat empty strings as 'no dataset' (NULL)."""
+    if raw is None:
+        return None
+    cleaned = raw.strip()
+    return cleaned or None
+
+
+def _resolve_tags(
+    db: Session, organization_id: UUID, tag_ids: Optional[List[UUID]]
+) -> List[CallImportTag]:
+    """Look up tag rows by id, scoped to the organization.
+
+    Raises HTTPException(400) if any id is unknown for the org.
+    """
+    if not tag_ids:
+        return []
+    rows = (
+        db.query(CallImportTag)
+        .filter(
+            CallImportTag.organization_id == organization_id,
+            CallImportTag.id.in_(tag_ids),
+        )
+        .all()
+    )
+    found_ids = {row.id for row in rows}
+    missing = [str(tag_id) for tag_id in tag_ids if tag_id not in found_ids]
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown call_import_tag id(s): {missing}",
+        )
+    return rows
 
 
 REQUIRED_HEADERS = {"callid", "transcript"}
@@ -140,11 +177,27 @@ def _parse_csv(file_bytes: bytes) -> List[dict]:
 )
 async def upload_call_import_csv(
     file: UploadFile = File(...),
+    dataset: Optional[str] = Form(
+        None,
+        description=(
+            "Optional free-text dataset label for high-level segregation. "
+            "Empty strings are stored as NULL."
+        ),
+    ),
+    tag_ids: Optional[List[UUID]] = Form(
+        None,
+        description="Optional list of CallImportTag ids to attach to the new batch.",
+    ),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ) -> CallImportUploadResponse:
-    """Accept a CSV (CallID, Recording URL, Transcript) and queue per-row import jobs."""
+    """Accept a CSV (CallID, Recording URL, Transcript) and queue per-row import jobs.
+
+    Optional ``dataset`` (free-text) and ``tag_ids`` form fields let the
+    caller categorise the upload at creation time. Both can also be edited
+    later via ``PATCH /call-imports/{id}``.
+    """
 
     if not file.filename or not file.filename.lower().endswith(".csv"):
         raise HTTPException(
@@ -179,15 +232,20 @@ async def upload_call_import_csv(
             ),
         )
 
+    tag_rows = _resolve_tags(db, organization_id, tag_ids)
+
     call_import = CallImport(
         organization_id=organization_id,
         provider=TelephonyProvider.EXOTEL.value,
         original_filename=file.filename,
+        dataset=_normalize_dataset(dataset),
         total_rows=len(rows),
         completed_rows=0,
         failed_rows=0,
         status=CallImportStatus.PENDING,
     )
+    if tag_rows:
+        call_import.tags = tag_rows
     db.add(call_import)
     db.flush()  # populate call_import.id
 
@@ -228,6 +286,17 @@ async def upload_call_import_csv(
         id=call_import.id,
         total_rows=call_import.total_rows,
         status=call_import.status,
+        dataset=call_import.dataset,
+        tags=[
+            {
+                "id": tag.id,
+                "name": tag.name,
+                "color": tag.color,
+                "created_at": tag.created_at,
+                "updated_at": tag.updated_at,
+            }
+            for tag in (call_import.tags or [])
+        ],
         message=(
             f"Accepted {call_import.total_rows} rows for import. "
             "Recordings will be fetched asynchronously."
@@ -244,15 +313,50 @@ async def list_call_imports(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     status_filter: Optional[CallImportStatus] = Query(None, alias="status"),
+    dataset: Optional[str] = Query(
+        None,
+        description=(
+            "Filter by exact dataset string (case-insensitive). Pass the "
+            "literal value '__none__' to filter to imports with no dataset."
+        ),
+    ),
+    tag_id: Optional[List[UUID]] = Query(
+        None,
+        description="Filter to imports tagged with ALL of the given tag ids.",
+    ),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ) -> CallImportListResponse:
-    """List call-import batches for the organization, newest first."""
+    """List call-import batches for the organization, newest first.
+
+    Supports a high-level ``dataset`` filter (powers the segregation
+    dropdown at the top of the imports page) plus an AND-style multi-tag
+    filter via repeated ``tag_id`` parameters.
+    """
 
     query = db.query(CallImport).filter(CallImport.organization_id == organization_id)
     if status_filter is not None:
         query = query.filter(CallImport.status == status_filter)
+
+    if dataset is not None:
+        if dataset == "__none__":
+            query = query.filter(CallImport.dataset.is_(None))
+        elif dataset.strip():
+            query = query.filter(
+                func.lower(CallImport.dataset) == dataset.strip().lower()
+            )
+
+    if tag_id:
+        from sqlalchemy import select
+
+        from app.models.database import CallImportTagAssignment
+
+        for single_tag_id in tag_id:
+            sub = select(CallImportTagAssignment.call_import_id).where(
+                CallImportTagAssignment.tag_id == single_tag_id
+            )
+            query = query.filter(CallImport.id.in_(sub))
 
     total = query.count()
     items = (
@@ -268,6 +372,79 @@ async def list_call_imports(
         page=page,
         page_size=page_size,
     )
+
+
+@router.get(
+    "/datasets",
+    response_model=List[str],
+    operation_id="listCallImportDatasets",
+)
+async def list_call_import_datasets(
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> List[str]:
+    """Return the distinct, non-null dataset labels in use for this org.
+
+    Powers the high-level Dataset dropdown at the top of the call imports
+    page.
+    """
+    rows = (
+        db.query(CallImport.dataset)
+        .filter(
+            CallImport.organization_id == organization_id,
+            CallImport.dataset.isnot(None),
+            CallImport.dataset != "",
+        )
+        .distinct()
+        .order_by(CallImport.dataset.asc())
+        .all()
+    )
+    return [row[0] for row in rows if row[0]]
+
+
+@router.patch(
+    "/{call_import_id}",
+    response_model=CallImportResponse,
+    operation_id="updateCallImport",
+)
+async def update_call_import(
+    call_import_id: UUID,
+    payload: CallImportUpdate,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportResponse:
+    """Edit dataset / tag assignments on an existing call-import batch.
+
+    ``dataset = ""`` clears the label; ``tag_ids = []`` removes all tag
+    assignments. Fields omitted from the body are left untouched.
+    """
+    call_import = (
+        db.query(CallImport)
+        .filter(
+            CallImport.id == call_import_id,
+            CallImport.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not call_import:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Call import not found",
+        )
+
+    body = payload.model_dump(exclude_unset=True)
+    if "dataset" in body:
+        call_import.dataset = _normalize_dataset(body["dataset"])
+
+    if "tag_ids" in body:
+        tag_ids = body["tag_ids"] or []
+        call_import.tags = _resolve_tags(db, organization_id, tag_ids)
+
+    db.commit()
+    db.refresh(call_import)
+    return CallImportResponse.model_validate(call_import)
 
 
 @router.get(

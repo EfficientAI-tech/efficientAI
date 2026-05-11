@@ -555,6 +555,13 @@ class IntegrationCreate(BaseModel):
     api_key: str = Field(..., description="Private API key for the platform")
     public_key: Optional[str] = Field(None, description="Optional public API key (e.g. for Vapi)")
     name: Optional[str] = Field(None, description="Optional friendly name for the integration")
+    is_default: Optional[bool] = Field(
+        None,
+        description=(
+            "Mark this credential as the default for the (org, platform). "
+            "If omitted and no default exists yet, this row becomes the default."
+        ),
+    )
 
 
 class IntegrationUpdate(BaseModel):
@@ -573,6 +580,7 @@ class IntegrationResponse(BaseModel):
     name: Optional[str]
     public_key: Optional[str] = None
     is_active: bool
+    is_default: bool = False
     created_at: datetime
     updated_at: datetime
     last_tested_at: Optional[datetime] = None
@@ -663,6 +671,13 @@ class AIProviderCreate(BaseModel):
     provider: ModelProvider
     api_key: str = Field(..., min_length=1)
     name: Optional[str] = None
+    is_default: Optional[bool] = Field(
+        None,
+        description=(
+            "Mark this credential as the default for the (org, provider). "
+            "If omitted and no default exists yet, this row becomes the default."
+        ),
+    )
 
 
 class AIProviderUpdate(BaseModel):
@@ -679,6 +694,7 @@ class AIProviderResponse(BaseModel):
     api_key: Optional[str] = None  # Will be None in response for security
     name: Optional[str]
     is_active: bool
+    is_default: bool = False
     created_at: datetime
     updated_at: datetime
     last_tested_at: Optional[datetime]
@@ -715,6 +731,13 @@ class VoiceBundleCreate(BaseModel):
     # STT Configuration - required for STT_LLM_TTS, optional for S2S
     stt_provider: Optional[ModelProvider] = None
     stt_model: Optional[str] = Field(None, min_length=1)
+    stt_credential_id: Optional[UUID] = Field(
+        None,
+        description=(
+            "Optional explicit AIProvider/Integration row id to use for STT. "
+            "When omitted the resolver picks the default credential for stt_provider."
+        ),
+    )
     
     # LLM Configuration - required for STT_LLM_TTS, optional for S2S
     llm_provider: Optional[ModelProvider] = None
@@ -722,17 +745,20 @@ class VoiceBundleCreate(BaseModel):
     llm_temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
     llm_max_tokens: Optional[int] = Field(None, gt=0)
     llm_config: Optional[Dict[str, Any]] = None
+    llm_credential_id: Optional[UUID] = None
     
     # TTS Configuration - required for STT_LLM_TTS, optional for S2S
     tts_provider: Optional[ModelProvider] = None
     tts_model: Optional[str] = Field(None, min_length=1)
     tts_voice: Optional[str] = None
     tts_config: Optional[Dict[str, Any]] = None
+    tts_credential_id: Optional[UUID] = None
     
     # S2S Configuration - required for S2S, optional for STT_LLM_TTS
     s2s_provider: Optional[ModelProvider] = None
     s2s_model: Optional[str] = Field(None, min_length=1)
     s2s_config: Optional[Dict[str, Any]] = None
+    s2s_credential_id: Optional[UUID] = None
     
     # Additional metadata
     extra_metadata: Optional[Dict[str, Any]] = None
@@ -764,6 +790,7 @@ class VoiceBundleUpdate(BaseModel):
     # STT Configuration
     stt_provider: Optional[ModelProvider] = None
     stt_model: Optional[str] = Field(None, min_length=1)
+    stt_credential_id: Optional[UUID] = None
     
     # LLM Configuration
     llm_provider: Optional[ModelProvider] = None
@@ -771,17 +798,20 @@ class VoiceBundleUpdate(BaseModel):
     llm_temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
     llm_max_tokens: Optional[int] = Field(None, gt=0)
     llm_config: Optional[Dict[str, Any]] = None
+    llm_credential_id: Optional[UUID] = None
     
     # TTS Configuration
     tts_provider: Optional[ModelProvider] = None
     tts_model: Optional[str] = Field(None, min_length=1)
     tts_voice: Optional[str] = None
     tts_config: Optional[Dict[str, Any]] = None
+    tts_credential_id: Optional[UUID] = None
     
     # S2S Configuration
     s2s_provider: Optional[ModelProvider] = None
     s2s_model: Optional[str] = Field(None, min_length=1)
     s2s_config: Optional[Dict[str, Any]] = None
+    s2s_credential_id: Optional[UUID] = None
     
     # Additional metadata
     extra_metadata: Optional[Dict[str, Any]] = None
@@ -834,6 +864,7 @@ class VoiceBundleResponse(BaseModel):
     # STT Configuration
     stt_provider: Optional[ModelProvider]
     stt_model: Optional[str]
+    stt_credential_id: Optional[UUID] = None
     
     # LLM Configuration
     llm_provider: Optional[ModelProvider]
@@ -841,17 +872,20 @@ class VoiceBundleResponse(BaseModel):
     llm_temperature: Optional[float]
     llm_max_tokens: Optional[int]
     llm_config: Optional[Dict[str, Any]]
+    llm_credential_id: Optional[UUID] = None
     
     # TTS Configuration
     tts_provider: Optional[ModelProvider]
     tts_model: Optional[str]
     tts_voice: Optional[str]
     tts_config: Optional[Dict[str, Any]]
+    tts_credential_id: Optional[UUID] = None
     
     # S2S Configuration
     s2s_provider: Optional[ModelProvider]
     s2s_model: Optional[str]
     s2s_config: Optional[Dict[str, Any]]
+    s2s_credential_id: Optional[UUID] = None
     
     # Additional metadata
     extra_metadata: Optional[Dict[str, Any]]
@@ -1643,18 +1677,28 @@ class TelephonyIntegrationCreate(BaseModel):
     """Schema for creating a telephony provider integration."""
 
     provider: str = "plivo"
+    name: Optional[str] = None
     auth_id: str
     auth_token: str
     verify_app_uuid: Optional[str] = None
     voice_app_id: Optional[str] = None
     sip_domain: Optional[str] = None
     masking_config: Optional[Dict[str, Any]] = None
+    is_default: Optional[bool] = Field(
+        None,
+        description=(
+            "Mark this credential as the default for the (org, provider). "
+            "If omitted and no default exists yet, this row becomes the default."
+        ),
+    )
 
 
 class TelephonyIntegrationUpdate(BaseModel):
     """Schema for partial updates to a telephony provider integration."""
 
+    id: Optional[UUID] = None
     provider: Optional[str] = None
+    name: Optional[str] = None
     auth_id: Optional[str] = None
     auth_token: Optional[str] = None
     verify_app_uuid: Optional[str] = None
@@ -1670,11 +1714,13 @@ class TelephonyIntegrationResponse(BaseModel):
     id: UUID
     organization_id: UUID
     provider: str
+    name: Optional[str] = None
     verify_app_uuid: Optional[str]
     voice_app_id: Optional[str]
     sip_domain: Optional[str]
     masking_config: Optional[Dict[str, Any]]
     is_active: bool
+    is_default: bool = False
     last_tested_at: Optional[datetime]
     created_at: datetime
     updated_at: datetime
@@ -1800,6 +1846,32 @@ class CallImportRowResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class CallImportTagResponse(BaseModel):
+    """Tag attached to call import batches."""
+
+    id: UUID
+    name: str
+    color: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CallImportTagCreate(BaseModel):
+    """Create a new call-import tag for the organization."""
+
+    name: str = Field(..., min_length=1, max_length=255)
+    color: Optional[str] = Field(None, max_length=32)
+
+
+class CallImportTagUpdate(BaseModel):
+    """Partial update for a call-import tag."""
+
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    color: Optional[str] = Field(None, max_length=32)
+
+
 class CallImportResponse(BaseModel):
     """Summary of a call-import batch."""
 
@@ -1807,6 +1879,8 @@ class CallImportResponse(BaseModel):
     organization_id: UUID
     provider: str
     original_filename: Optional[str] = None
+    dataset: Optional[str] = None
+    tags: List[CallImportTagResponse] = Field(default_factory=list)
     total_rows: int
     completed_rows: int
     failed_rows: int
@@ -1839,4 +1913,23 @@ class CallImportUploadResponse(BaseModel):
     id: UUID
     total_rows: int
     status: CallImportStatus
+    dataset: Optional[str] = None
+    tags: List[CallImportTagResponse] = Field(default_factory=list)
     message: str
+
+
+class CallImportUpdate(BaseModel):
+    """Partial update of a call-import batch (currently dataset/tags)."""
+
+    dataset: Optional[str] = Field(
+        None,
+        description=(
+            "Free-text dataset label. Pass an empty string to clear the dataset."
+        ),
+    )
+    tag_ids: Optional[List[UUID]] = Field(
+        None,
+        description=(
+            "Replace the full set of tag assignments. Pass an empty list to clear all tags."
+        ),
+    )

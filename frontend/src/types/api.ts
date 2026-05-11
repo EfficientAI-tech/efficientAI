@@ -191,6 +191,8 @@ export interface Integration {
   name?: string | null
   public_key?: string | null
   is_active: boolean
+  /** True if this row is the default credential for (org, platform). */
+  is_default?: boolean
   created_at: string
   updated_at: string
   last_tested_at?: string | null
@@ -201,6 +203,8 @@ export interface IntegrationCreate {
   api_key: string
   public_key?: string
   name?: string | null
+  /** Mark the new credential as the default for (org, platform). */
+  is_default?: boolean
 }
 
 // VoiceBundle Types
@@ -233,6 +237,8 @@ export interface AIProvider {
   api_key?: string | null
   name?: string | null
   is_active: boolean
+  /** True if this row is the default credential for (org, provider). */
+  is_default?: boolean
   created_at: string
   updated_at: string
   last_tested_at?: string | null
@@ -242,6 +248,8 @@ export interface AIProviderCreate {
   provider: ModelProvider
   api_key: string
   name?: string | null
+  /** Mark the new credential as the default for (org, provider). */
+  is_default?: boolean
 }
 
 export interface AIProviderUpdate {
@@ -262,18 +270,26 @@ export interface VoiceBundle {
   bundle_type: VoiceBundleType
   stt_provider?: ModelProvider | null
   stt_model?: string | null
+  /**
+   * Optional explicit AIProvider/Integration row id for STT. When null the
+   * runtime resolver picks the default credential for stt_provider.
+   */
+  stt_credential_id?: string | null
   llm_provider?: ModelProvider | null
   llm_model?: string | null
   llm_temperature?: number | null
   llm_max_tokens?: number | null
   llm_config?: Record<string, any> | null
+  llm_credential_id?: string | null
   tts_provider?: ModelProvider | null
   tts_model?: string | null
   tts_voice?: string | null
   tts_config?: Record<string, any> | null
+  tts_credential_id?: string | null
   s2s_provider?: ModelProvider | null
   s2s_model?: string | null
   s2s_config?: Record<string, any> | null
+  s2s_credential_id?: string | null
   extra_metadata?: Record<string, any> | null
   is_active: boolean
   created_at: string
@@ -287,18 +303,22 @@ export interface VoiceBundleCreate {
   bundle_type?: VoiceBundleType
   stt_provider?: ModelProvider | null
   stt_model?: string | null
+  stt_credential_id?: string | null
   llm_provider?: ModelProvider | null
   llm_model?: string | null
   llm_temperature?: number | null
   llm_max_tokens?: number | null
   llm_config?: Record<string, any> | null
+  llm_credential_id?: string | null
   tts_provider?: ModelProvider | null
   tts_model?: string | null
   tts_voice?: string | null
   tts_config?: Record<string, any> | null
+  tts_credential_id?: string | null
   s2s_provider?: ModelProvider | null
   s2s_model?: string | null
   s2s_config?: Record<string, any> | null
+  s2s_credential_id?: string | null
   extra_metadata?: Record<string, any> | null
 }
 
@@ -366,15 +386,22 @@ export interface VoiceBundleUpdate {
   description?: string | null
   stt_provider?: ModelProvider
   stt_model?: string
+  stt_credential_id?: string | null
   llm_provider?: ModelProvider
   llm_model?: string
   llm_temperature?: number | null
   llm_max_tokens?: number | null
   llm_config?: Record<string, any> | null
+  llm_credential_id?: string | null
   tts_provider?: ModelProvider
   tts_model?: string
   tts_voice?: string | null
   tts_config?: Record<string, any> | null
+  tts_credential_id?: string | null
+  s2s_provider?: ModelProvider | null
+  s2s_model?: string | null
+  s2s_config?: Record<string, any> | null
+  s2s_credential_id?: string | null
   extra_metadata?: Record<string, any> | null
   is_active?: boolean
 }
@@ -614,11 +641,23 @@ export interface CallImportRow {
   updated_at: string
 }
 
+export interface CallImportTag {
+  id: string
+  name: string
+  color: string | null
+  created_at: string
+  updated_at: string
+}
+
 export interface CallImport {
   id: string
   organization_id: string
   provider: string
   original_filename: string | null
+  /** Optional free-text dataset label (high-level segregation filter). */
+  dataset: string | null
+  /** Tags currently attached to this import. Empty array if untagged. */
+  tags: CallImportTag[]
   total_rows: number
   completed_rows: number
   failed_rows: number
@@ -643,5 +682,7 @@ export interface CallImportUploadResponse {
   id: string
   total_rows: number
   status: CallImportStatus
+  dataset: string | null
+  tags: CallImportTag[]
   message: string
 }
