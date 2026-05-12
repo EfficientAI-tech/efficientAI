@@ -41,4 +41,5 @@ celery_app.conf.update(
 # All other tasks remain on the default queue, so existing behavior is unchanged.
 celery_app.conf.task_routes = {
     "process_call_import_row": {"queue": "imports"},
+    "evaluate_call_import_row": {"queue": "imports"},
 }

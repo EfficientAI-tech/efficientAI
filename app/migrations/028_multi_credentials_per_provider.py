@@ -1,216 +1,197 @@
 """
-Migration: Allow multiple API keys per provider.
+Migration: Backfill multi-credential columns for integrations / aiproviders / telephony_integrations.
 
-Removes the (organization_id, provider) UNIQUE constraints on aiproviders
-and telephony_integrations and adds an `is_default` boolean column on
-integrations, aiproviders, and telephony_integrations so that the system
-can resolve a single default credential per (org, provider) when no
-explicit credential is selected.
+The ORM models already declare ``is_default`` (and ``last_tested_at`` /
+``name``) for these tables, but historical databases were created before
+those columns existed. This migration is idempotent and only adds what is
+missing, plus the partial unique index that pins at most one
+``is_default = TRUE`` row per ``(org, provider/platform)``.
 
-Backfills `is_default = TRUE` on the single existing row per (org,
-provider) so all existing call sites resolving by provider name keep
-working untouched.
-
-Adds partial UNIQUE indexes that enforce at most one default credential
-per (org, provider) at the DB level.
+Adding these columns here unblocks the configurable Call Imports flow,
+which needs to pin a specific telephony credential row per upload (so the
+worker can fetch recordings using *that* credential rather than the org's
+default).
 """
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 description = (
-    "Allow multiple credentials per provider; add is_default + partial unique indexes"
+    "Add multi-credential columns and partial unique defaults to "
+    "integrations / aiproviders / telephony_integrations"
 )
 
 
-def _column_exists(db: Session, table_name: str, column_name: str) -> bool:
-    result = db.execute(
+def _column_exists(db: Session, table: str, column: str) -> bool:
+    row = db.execute(
         text(
             """
             SELECT 1
             FROM information_schema.columns
-            WHERE table_name = :table_name
-              AND column_name = :column_name
+            WHERE table_name = :table_name AND column_name = :column_name
             """
         ),
-        {"table_name": table_name, "column_name": column_name},
-    )
-    return result.first() is not None
+        {"table_name": table, "column_name": column},
+    ).first()
+    return row is not None
 
 
-def _constraint_exists(db: Session, constraint_name: str) -> bool:
-    result = db.execute(
+def _table_exists(db: Session, table: str) -> bool:
+    row = db.execute(
         text(
             """
-            SELECT 1
-            FROM information_schema.table_constraints
-            WHERE constraint_name = :constraint_name
+            SELECT 1 FROM information_schema.tables
+            WHERE table_name = :table_name
             """
         ),
-        {"constraint_name": constraint_name},
-    )
-    return result.first() is not None
+        {"table_name": table},
+    ).first()
+    return row is not None
 
 
 def _index_exists(db: Session, index_name: str) -> bool:
-    result = db.execute(
+    row = db.execute(
         text(
             """
-            SELECT 1
-            FROM pg_indexes
-            WHERE indexname = :index_name
+            SELECT 1 FROM pg_indexes WHERE indexname = :index_name
             """
         ),
         {"index_name": index_name},
-    )
-    return result.first() is not None
+    ).first()
+    return row is not None
 
 
-def _add_is_default_column(db: Session, table_name: str) -> None:
-    if _column_exists(db, table_name, "is_default"):
-        print(f"{table_name}.is_default already exists, skipping...")
+def _add_is_default(db: Session, table: str) -> None:
+    if _column_exists(db, table, "is_default"):
         return
     db.execute(
         text(
-            f"ALTER TABLE {table_name} "
-            "ADD COLUMN is_default BOOLEAN NOT NULL DEFAULT FALSE"
+            f"ALTER TABLE {table} ADD COLUMN is_default BOOLEAN NOT NULL DEFAULT FALSE"
         )
     )
-    print(f"Added {table_name}.is_default")
+    print(f"Added {table}.is_default")
 
 
-def _drop_constraint_if_exists(
-    db: Session, table_name: str, constraint_name: str
-) -> None:
-    if not _constraint_exists(db, constraint_name):
-        print(f"Constraint {constraint_name} not found, skipping drop...")
+def _add_last_tested_at(db: Session, table: str) -> None:
+    if _column_exists(db, table, "last_tested_at"):
         return
     db.execute(
-        text(f"ALTER TABLE {table_name} DROP CONSTRAINT {constraint_name}")
+        text(
+            f"ALTER TABLE {table} ADD COLUMN last_tested_at TIMESTAMP WITH TIME ZONE NULL"
+        )
     )
-    print(f"Dropped constraint {constraint_name} on {table_name}")
+    print(f"Added {table}.last_tested_at")
+
+
+def _add_name(db: Session, table: str) -> None:
+    if _column_exists(db, table, "name"):
+        return
+    db.execute(text(f"ALTER TABLE {table} ADD COLUMN name VARCHAR(255) NULL"))
+    print(f"Added {table}.name")
+
+
+def _create_partial_default_index(
+    db: Session, *, table: str, provider_column: str, index_name: str
+) -> None:
+    if _index_exists(db, index_name):
+        return
+    db.execute(
+        text(
+            f"""
+            CREATE UNIQUE INDEX {index_name}
+            ON {table} (organization_id, {provider_column})
+            WHERE is_default = TRUE
+            """
+        )
+    )
+    print(f"Created partial unique index {index_name}")
+
+
+def _backfill_default(
+    db: Session, *, table: str, provider_column: str
+) -> None:
+    """Promote one row per ``(org, provider)`` to ``is_default = TRUE``.
+
+    Picks the most recently updated active row, mirroring the resolver
+    fallback so behavior pre/post migration matches.
+    """
+    db.execute(
+        text(
+            f"""
+            UPDATE {table} t
+            SET is_default = TRUE
+            FROM (
+                SELECT DISTINCT ON (organization_id, {provider_column}) id
+                FROM {table}
+                WHERE is_active = TRUE
+                ORDER BY organization_id, {provider_column},
+                         updated_at DESC NULLS LAST,
+                         created_at DESC NULLS LAST
+            ) chosen
+            WHERE t.id = chosen.id
+              AND NOT EXISTS (
+                  SELECT 1 FROM {table} other
+                  WHERE other.organization_id = t.organization_id
+                    AND lower(other.{provider_column}) = lower(t.{provider_column})
+                    AND other.is_default = TRUE
+              )
+            """
+        )
+    )
 
 
 def upgrade(db: Session):
-    _add_is_default_column(db, "integrations")
-    _add_is_default_column(db, "aiproviders")
-    _add_is_default_column(db, "telephony_integrations")
+    # integrations table (voice platforms: retell, vapi, ...)
+    if _table_exists(db, "integrations"):
+        _add_is_default(db, "integrations")
+        if not _column_exists(db, "integrations", "name"):
+            _add_name(db, "integrations")
+        _backfill_default(db, table="integrations", provider_column="platform")
+        _create_partial_default_index(
+            db,
+            table="integrations",
+            provider_column="platform",
+            index_name="uq_integrations_default_per_org_platform",
+        )
 
-    # Telephony integrations historically had no friendly name. Add one so
-    # users can distinguish multiple credentials for the same provider in
-    # the UI.
-    if not _column_exists(db, "telephony_integrations", "name"):
-        db.execute(
-            text("ALTER TABLE telephony_integrations ADD COLUMN name VARCHAR(255)")
+    # aiproviders table (openai, anthropic, ...)
+    if _table_exists(db, "aiproviders"):
+        _add_is_default(db, "aiproviders")
+        _add_last_tested_at(db, "aiproviders")
+        _backfill_default(db, table="aiproviders", provider_column="provider")
+        _create_partial_default_index(
+            db,
+            table="aiproviders",
+            provider_column="provider",
+            index_name="uq_aiproviders_default_per_org_provider",
         )
-        print("Added telephony_integrations.name column")
 
-    _drop_constraint_if_exists(db, "aiproviders", "unique_org_provider")
-    _drop_constraint_if_exists(
-        db, "telephony_integrations", "uq_telephony_integration_org_provider"
-    )
-
-    # Backfill: mark exactly one row per (org, provider/platform) as default,
-    # preferring active rows. We use DISTINCT ON to deterministically pick
-    # the most recently updated active row when duplicates already exist.
-    db.execute(
-        text(
-            """
-            WITH ranked AS (
-                SELECT id,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY organization_id, LOWER(platform)
-                           ORDER BY is_active DESC, updated_at DESC, created_at DESC
-                       ) AS rn
-                FROM integrations
-            )
-            UPDATE integrations
-            SET is_default = TRUE
-            FROM ranked
-            WHERE integrations.id = ranked.id AND ranked.rn = 1
-            """
+    # telephony_integrations table (plivo, exotel, ...)
+    if _table_exists(db, "telephony_integrations"):
+        _add_is_default(db, "telephony_integrations")
+        _add_last_tested_at(db, "telephony_integrations")
+        _add_name(db, "telephony_integrations")
+        _backfill_default(
+            db, table="telephony_integrations", provider_column="provider"
         )
-    )
-    db.execute(
-        text(
-            """
-            WITH ranked AS (
-                SELECT id,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY organization_id, LOWER(provider)
-                           ORDER BY is_active DESC, updated_at DESC, created_at DESC
-                       ) AS rn
-                FROM aiproviders
-            )
-            UPDATE aiproviders
-            SET is_default = TRUE
-            FROM ranked
-            WHERE aiproviders.id = ranked.id AND ranked.rn = 1
-            """
+        _create_partial_default_index(
+            db,
+            table="telephony_integrations",
+            provider_column="provider",
+            index_name="uq_telephony_default_per_org_provider",
         )
-    )
-    db.execute(
-        text(
-            """
-            WITH ranked AS (
-                SELECT id,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY organization_id, LOWER(provider)
-                           ORDER BY is_active DESC, updated_at DESC, created_at DESC
-                       ) AS rn
-                FROM telephony_integrations
-            )
-            UPDATE telephony_integrations
-            SET is_default = TRUE
-            FROM ranked
-            WHERE telephony_integrations.id = ranked.id AND ranked.rn = 1
-            """
-        )
-    )
-
-    if not _index_exists(db, "uq_default_aiprovider"):
-        db.execute(
-            text(
-                "CREATE UNIQUE INDEX uq_default_aiprovider "
-                "ON aiproviders(organization_id, LOWER(provider)) "
-                "WHERE is_default"
-            )
-        )
-        print("Created partial unique index uq_default_aiprovider")
-    if not _index_exists(db, "uq_default_telephony"):
-        db.execute(
-            text(
-                "CREATE UNIQUE INDEX uq_default_telephony "
-                "ON telephony_integrations(organization_id, LOWER(provider)) "
-                "WHERE is_default"
-            )
-        )
-        print("Created partial unique index uq_default_telephony")
-    if not _index_exists(db, "uq_default_voice_integration"):
-        db.execute(
-            text(
-                "CREATE UNIQUE INDEX uq_default_voice_integration "
-                "ON integrations(organization_id, LOWER(platform)) "
-                "WHERE is_default AND is_active"
-            )
-        )
-        print("Created partial unique index uq_default_voice_integration")
 
     db.commit()
-    print("Successfully migrated to multi-credentials-per-provider schema")
+    print("Multi-credential columns and indexes are in place")
 
 
 def downgrade(db: Session):
     for index_name in (
-        "uq_default_aiprovider",
-        "uq_default_telephony",
-        "uq_default_voice_integration",
+        "uq_integrations_default_per_org_platform",
+        "uq_aiproviders_default_per_org_provider",
+        "uq_telephony_default_per_org_provider",
     ):
-        if _index_exists(db, index_name):
-            db.execute(text(f"DROP INDEX IF EXISTS {index_name}"))
-
-    for table_name in ("integrations", "aiproviders", "telephony_integrations"):
-        if _column_exists(db, table_name, "is_default"):
-            db.execute(text(f"ALTER TABLE {table_name} DROP COLUMN is_default"))
-
+        db.execute(text(f"DROP INDEX IF EXISTS {index_name}"))
+    # We intentionally do NOT drop columns to avoid data loss; downgrade is
+    # only meant to remove the partial indexes if they cause issues.
     db.commit()

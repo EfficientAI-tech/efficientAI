@@ -47,7 +47,7 @@ from uuid import UUID
 from pathlib import Path
 
 from app.models.database import ModelProvider, AIProvider, Integration
-from app.services.credentials import resolve_ai_provider, resolve_voice_integration
+from app.services.credentials import resolve_ai_provider, resolve_integration
 from app.services.storage.s3_service import s3_service
 from app.core.exceptions import StorageError
 from sqlalchemy.orm import Session
@@ -97,7 +97,7 @@ class TranscriptionService:
         if ai_provider:
             return decrypt_api_key(ai_provider.api_key)
 
-        integration = resolve_voice_integration(
+        integration = resolve_integration(
             provider, db, organization_id, credential_id=credential_id
         )
         if integration:

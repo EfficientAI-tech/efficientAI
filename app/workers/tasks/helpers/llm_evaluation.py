@@ -52,6 +52,36 @@ def _get_number_range(metric) -> Optional[dict]:
     }
 
 
+def _coerce_text_value(raw: Any) -> Optional[str]:
+    """Coerce an LLM-returned value for a text/summary metric into a string.
+
+    Accepts the well-formed case (a plain string) and tolerates a few common
+    drift patterns: dict wrappers like ``{"value": "..."}``, numeric/bool
+    scalars, and short lists of strings (joined with spaces). Returns ``None``
+    when no usable text is found so the UI can show an explicit empty state.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        stripped = raw.strip()
+        return stripped or None
+    if isinstance(raw, (int, float, bool)):
+        return str(raw)
+    if isinstance(raw, dict):
+        for k in ("value", "text", "summary", "answer", "content"):
+            if k in raw and raw[k] is not None:
+                return _coerce_text_value(raw[k])
+        return None
+    if isinstance(raw, list):
+        parts = [p for p in (_coerce_text_value(item) for item in raw) if p]
+        return " ".join(parts) or None
+    try:
+        text = str(raw).strip()
+    except Exception:  # noqa: BLE001
+        return None
+    return text or None
+
+
 def _normalize_enum_value(raw: Any, options: list[str]) -> Optional[str]:
     """Map an LLM-returned value to the canonical option string (case-insensitive).
 
@@ -160,6 +190,16 @@ The following is the system prompt / instructions that the agent was configured 
         m_type = get_metric_type_value(metric)
         custom_type = _get_custom_data_type(metric)
 
+        # Text metrics are unstructured by definition; ignore any stale
+        # ``custom_data_type`` (e.g. left over from when the metric used to be
+        # an enum) and ask the LLM for a free-form string.
+        if m_type == "text":
+            prompt += (
+                f'\n- "{metric_key}" (free-form text, 1-3 concise sentences, '
+                f'plain string): {metric_desc}'
+            )
+            continue
+
         if custom_type == "enum":
             options = _get_enum_options(metric)
             if options:
@@ -207,6 +247,15 @@ Example format:
         m_type = get_metric_type_value(metric)
         custom_type = _get_custom_data_type(metric)
 
+        # ``text`` short-circuits any stale custom_data_type for the same
+        # reason it does in ``build_evaluation_prompt``.
+        if m_type == "text":
+            instructions += (
+                f'  "{metric_key}": '
+                f'"A brief 1-3 sentence summary describing what was observed.",\n'
+            )
+            continue
+
         if custom_type == "enum":
             options = _get_enum_options(metric)
             if options:
@@ -226,9 +275,10 @@ CRITICAL RULES:
 1. Use the EXACT metric keys shown above - copy them character-for-character
 2. For numeric/boolean metrics, the value must be a SINGLE NUMBER or true/false (no nested objects)
 3. For enum metrics ("one of: ..."), the value must be EXACTLY one of the listed strings (copy verbatim, including casing)
-4. Do NOT wrap in "metrics" or any other object
-5. Do NOT add comments or explanations
-6. Return ONLY the JSON object, nothing else"""
+4. For text metrics ("free-form text"), the value must be a plain JSON string (use \\n for newlines, escape quotes); keep it concise (1-3 sentences unless the metric description asks for more)
+5. Do NOT wrap in "metrics" or any other object
+6. Do NOT add comments or explanations
+7. Return ONLY the JSON object, nothing else"""
 
     return instructions
 
@@ -254,15 +304,29 @@ def _build_system_message(llm_metrics: list) -> str:
             "verbatim (preserve casing, no synonyms):\n" + "\n".join(enum_constraints)
         )
 
+    text_keys = [
+        metric.name.lower().replace(" ", "_")
+        for metric in llm_metrics
+        if get_metric_type_value(metric) == "text"
+    ]
+    text_block = ""
+    if text_keys:
+        text_block = (
+            "\n5. Text metrics must use a plain JSON STRING value (free-form, "
+            "no nested objects, no arrays). Keep it concise (1-3 sentences unless "
+            "the metric description asks for more). The following keys are text:\n"
+            + "\n".join(f'   - "{k}"' for k in text_keys)
+        )
+
     return f"""You are an expert conversation evaluator. You MUST follow these rules STRICTLY:
 
 1. Return ONLY valid JSON - no markdown, no explanations, no comments
 2. Use ONLY these exact metric keys (copy-paste them exactly): {json.dumps(exact_keys)}
 3. For numeric/boolean metrics, the value must be a single number (0.0-1.0 for ratings, true/false for booleans) - NO nested objects, NO comments
-4. Do NOT rename, abbreviate, or modify the metric keys in any way{enum_block}
+4. Do NOT rename, abbreviate, or modify the metric keys in any way{enum_block}{text_block}
 
 Example of CORRECT format:
-{{"follow_instructions": 0.8, "tone_category": "Friendly"}}
+{{"follow_instructions": 0.8, "tone_category": "Friendly", "call_summary": "Customer asked about billing; agent resolved the issue in one turn."}}
 
 Example of WRONG format (DO NOT do this):
 {{"metrics": {{"Clarity": {{"score": 7}}}}}}"""
@@ -403,6 +467,22 @@ def _map_evaluation_to_metrics(
             matched_key = find_matching_key(metric.name, response_keys)
             if matched_key:
                 raw_score = evaluation_data.get(matched_key)
+
+        # Free-form text / summary metric. Checked BEFORE the custom enum/
+        # number_range branches so a stale ``custom_data_type`` left over
+        # from a previous metric configuration can't hijack the answer
+        # shape. The LLM is asked to return a plain JSON string; tolerate a
+        # few obvious shapes (dict with ``value``/``text``/``summary``,
+        # numbers/booleans, lists of strings) and coerce to one string.
+        # ``None`` is preserved so the UI can render an explicit empty state.
+        if m_type == "text":
+            text_value = _coerce_text_value(raw_score)
+            metric_scores[str(metric.id)] = {
+                "value": text_value,
+                "type": "text",
+                "metric_name": metric.name,
+            }
+            continue
 
         if custom_type == "enum":
             options = _get_enum_options(metric)

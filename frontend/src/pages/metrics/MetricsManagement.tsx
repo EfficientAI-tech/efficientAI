@@ -9,7 +9,7 @@ interface Metric {
   id: string
   name: string
   description?: string
-  metric_type: 'number' | 'boolean' | 'rating'
+  metric_type: 'number' | 'boolean' | 'rating' | 'text'
   metric_origin: 'default' | 'custom'
   supported_surfaces: Array<'agent' | 'voice_playground' | 'blind_test'>
   enabled_surfaces: Array<'agent' | 'voice_playground' | 'blind_test'>
@@ -84,7 +84,7 @@ export default function MetricsManagement() {
   const [formData, setFormData] = useState({
     name: '',
     description: '',
-    metric_type: 'rating' as 'number' | 'boolean' | 'rating',
+    metric_type: 'rating' as 'number' | 'boolean' | 'rating' | 'text',
     metric_origin: 'custom' as 'default' | 'custom',
     supported_surfaces: ['agent'] as MetricSurface[],
     enabled_surfaces: ['agent'] as MetricSurface[],
@@ -193,15 +193,21 @@ export default function MetricsManagement() {
       examples?: Array<{ transcript: string; rating: any; notes?: string }>
     }) => apiClient.generateMetric(payload),
     onSuccess: (suggestion) => {
-      const inferredCustomDataType: CustomDataType =
-        (suggestion.custom_data_type as CustomDataType) ||
-        (suggestion.metric_type === 'boolean'
-          ? 'boolean'
-          : suggestion.metric_type === 'number'
-            ? 'number_range'
-            : 'enum')
       const cfg = suggestion.custom_config || {}
       const fallbackSurface: MetricSurface = formData.supported_surfaces[0] || 'agent'
+      const isText = suggestion.metric_type === 'text'
+      // For text metrics there is no custom_data_type / custom_config; we
+      // keep the previous form value for those fields purely so the user
+      // can flip the type back without losing what they had typed (the
+      // payload builder will strip them on submit anyway).
+      const inferredCustomDataType: CustomDataType = isText
+        ? formData.custom_data_type
+        : (suggestion.custom_data_type as CustomDataType) ||
+          (suggestion.metric_type === 'boolean'
+            ? 'boolean'
+            : suggestion.metric_type === 'number'
+              ? 'number_range'
+              : 'enum')
       setFormData((prev) => ({
         ...prev,
         name: suggestion.name,
@@ -213,15 +219,21 @@ export default function MetricsManagement() {
         enabled_surfaces:
           (suggestion.enabled_surfaces as MetricSurface[]) || [fallbackSurface],
         custom_data_type: inferredCustomDataType,
-        enum_options_csv: Array.isArray(cfg.options) ? cfg.options.join(', ') : '',
-        number_min: Number(cfg.min ?? 0),
-        number_max: Number(cfg.max ?? 10),
-        number_step: Number(cfg.step ?? 1),
+        enum_options_csv:
+          !isText && Array.isArray(cfg.options) ? cfg.options.join(', ') : prev.enum_options_csv,
+        number_min: !isText ? Number(cfg.min ?? prev.number_min) : prev.number_min,
+        number_max: !isText ? Number(cfg.max ?? prev.number_max) : prev.number_max,
+        number_step: !isText ? Number(cfg.step ?? prev.number_step) : prev.number_step,
         tags_csv: (suggestion.suggested_tags || []).join(', '),
         trigger: 'always',
         enabled: true,
       }))
-      showToast('AI suggestion applied - review and save', 'success')
+      showToast(
+        isText
+          ? 'AI suggestion applied - a Text (LLM summary) metric'
+          : 'AI suggestion applied - review and save',
+        'success',
+      )
     },
     onError: () => {
       showToast('Failed to generate metric with AI', 'error')
@@ -322,6 +334,12 @@ export default function MetricsManagement() {
       .split(',')
       .map((tag) => tag.trim())
       .filter(Boolean)
+    // Text metrics are unstructured by definition, so we never persist a
+    // ``custom_data_type``/``custom_config`` for them even when the modal was
+    // opened in "custom" mode. This keeps the backend's LLM prompt branch
+    // clean (no stale enum/number_range hints attached to text metrics).
+    const useCustomConfig =
+      formData.metric_origin === 'custom' && formData.metric_type !== 'text'
     return {
       name: formData.name,
       description: formData.description,
@@ -331,8 +349,8 @@ export default function MetricsManagement() {
       metric_origin: formData.metric_origin,
       supported_surfaces: formData.supported_surfaces,
       enabled_surfaces: formData.enabled ? formData.enabled_surfaces : [],
-      custom_data_type: formData.metric_origin === 'custom' ? formData.custom_data_type : undefined,
-      custom_config: formData.metric_origin === 'custom' ? getCustomConfigFromForm() : undefined,
+      custom_data_type: useCustomConfig ? formData.custom_data_type : undefined,
+      custom_config: useCustomConfig ? getCustomConfigFromForm() : undefined,
       tags: tags.length > 0 ? tags : undefined,
     }
   }
@@ -910,17 +928,41 @@ export default function MetricsManagement() {
                   </label>
                   <select
                     value={formData.metric_type}
-                    onChange={(e) => setFormData({ ...formData, metric_type: e.target.value as any })}
-                    disabled={editingMetric?.is_default || isCustomMetricMode}
+                    onChange={(e) => {
+                      const next = e.target.value as 'number' | 'boolean' | 'rating' | 'text'
+                      setFormData((prev) => ({
+                        ...prev,
+                        metric_type: next,
+                        // Picking Text means the custom_data_type / custom_config
+                        // form fields are no longer relevant; we still keep their
+                        // local state so toggling back restores the user's input,
+                        // but `buildPayload` will drop them from the request.
+                      }))
+                    }}
+                    disabled={editingMetric?.is_default}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
                   >
                     <option value="number">Number</option>
                     <option value="boolean">Boolean</option>
                     <option value="rating">Rating</option>
+                    <option value="text">Text (LLM summary)</option>
                   </select>
+                  {formData.metric_type === 'text' && (
+                    <p className="mt-1 text-xs text-gray-500">
+                      The LLM returns a free-form sentence/summary instead of a
+                      numeric score. Use the Description field to tell the model
+                      what to summarize. Text metrics are not aggregated in
+                      numeric dashboards.
+                    </p>
+                  )}
+                  {editingMetric?.is_default && (
+                    <p className="mt-1 text-xs text-gray-500">
+                      The type of a built-in default metric cannot be changed.
+                    </p>
+                  )}
                 </div>
 
-                {isCustomMetricMode && (
+                {isCustomMetricMode && formData.metric_type !== 'text' && (
                   <>
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">

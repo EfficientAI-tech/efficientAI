@@ -85,7 +85,15 @@ def _csv_bytes(rows=None):
 
 def _upload(client, *, dataset=None, tag_ids=None, rows=None):
     files = {"file": ("test.csv", _csv_bytes(rows), "text/csv")}
-    data = {}
+    # New upload contract requires provider, pinned credential id, and
+    # JSON-encoded column mapping / extras.
+    first_cfg = client.get("/api/v1/telephony/configs").json()[0]
+    data = {
+        "provider": first_cfg["provider"],
+        "telephony_integration_id": first_cfg["id"],
+        "column_mapping": '{"external_call_id":"CallID","transcript":"Transcript","recording_url":"Recording URL"}',
+        "extra_columns": "[]",
+    }
     if dataset is not None:
         data["dataset"] = dataset
     if tag_ids:
@@ -201,10 +209,7 @@ def test_patch_updates_dataset_and_tags(
     assert response.json()["dataset"] is None
     assert response.json()["tags"] == []
 
-    # Confirm the join rows actually went away. Coerce the JSON id string
-    # to UUID — SQLAlchemy's UUID(as_uuid=True) bind processor expects a
-    # UUID instance and would otherwise raise
-    # ``'str' object has no attribute 'hex'``.
+    # And confirm the join rows actually went away.
     leftover_assignments = (
         db_session.query(CallImportTagAssignment)
         .filter(CallImportTagAssignment.call_import_id == UUID(initial["id"]))

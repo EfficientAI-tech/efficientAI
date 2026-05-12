@@ -27,6 +27,9 @@ import type {
   CallImportStatus,
   CallImportTag,
   CallImportUploadResponse,
+  CallImportEvaluation,
+  CallImportEvaluationListResponse,
+  CallImportEvaluationRowListResponse,
 } from '../types/api'
 
 export interface EnterpriseFeatureMeta {
@@ -990,10 +993,30 @@ class ApiClient {
   // Call Imports endpoints
   async uploadCallImport(
     file: File,
-    options: { dataset?: string | null; tagIds?: string[] } = {}
+    options: {
+      provider: string
+      telephonyIntegrationId: string
+      columnMapping: {
+        external_call_id: string
+        transcript?: string | null
+        recording_url?: string | null
+      }
+      extraColumns?: string[]
+      customColumnMapping?: Record<string, string>
+      dataset?: string | null
+      tagIds?: string[]
+    }
   ): Promise<CallImportUploadResponse> {
     const formData = new FormData()
     formData.append('file', file)
+    formData.append('provider', options.provider)
+    formData.append('telephony_integration_id', options.telephonyIntegrationId)
+    formData.append('column_mapping', JSON.stringify(options.columnMapping))
+    formData.append('extra_columns', JSON.stringify(options.extraColumns || []))
+    formData.append(
+      'custom_column_mapping',
+      JSON.stringify(options.customColumnMapping || {}),
+    )
     if (options.dataset !== undefined && options.dataset !== null) {
       formData.append('dataset', options.dataset)
     }
@@ -1055,6 +1078,59 @@ class ApiClient {
 
   async deleteCallImportRow(id: string, rowId: string): Promise<void> {
     await this.client.delete(`/api/v1/call-imports/${id}/rows/${rowId}`)
+  }
+
+  async createCallImportEvaluation(
+    callImportId: string,
+    payload: { metric_ids: string[] },
+  ): Promise<CallImportEvaluation> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/evaluations`,
+      payload,
+    )
+    return response.data
+  }
+
+  async listCallImportEvaluations(callImportId: string): Promise<CallImportEvaluationListResponse> {
+    const response = await this.client.get(`/api/v1/call-imports/${callImportId}/evaluations`)
+    return response.data
+  }
+
+  async getCallImportEvaluation(
+    callImportId: string,
+    evaluationId: string,
+  ): Promise<CallImportEvaluation> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}`,
+    )
+    return response.data
+  }
+
+  async listCallImportEvaluationRows(
+    callImportId: string,
+    evaluationId: string,
+    params: { page?: number; page_size?: number } = {},
+  ): Promise<CallImportEvaluationRowListResponse> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/rows`,
+      { params },
+    )
+    return response.data
+  }
+
+  async exportCallImportEvaluation(
+    callImportId: string,
+    evaluationId: string,
+  ): Promise<Blob> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/export`,
+      { responseType: 'blob' },
+    )
+    return response.data
+  }
+
+  async deleteCallImportEvaluation(callImportId: string, evaluationId: string): Promise<void> {
+    await this.client.delete(`/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}`)
   }
 
   // Call Import Tags endpoints
@@ -1508,7 +1584,7 @@ class ApiClient {
   async createMetric(data: {
     name: string
     description?: string
-    metric_type: 'number' | 'boolean' | 'rating'
+    metric_type: 'number' | 'boolean' | 'rating' | 'text'
     trigger?: 'always'
     enabled?: boolean
     metric_origin?: 'default' | 'custom'
@@ -1590,7 +1666,7 @@ class ApiClient {
   async updateMetric(metricId: string, data: {
     name?: string
     description?: string
-    metric_type?: 'number' | 'boolean' | 'rating'
+    metric_type?: 'number' | 'boolean' | 'rating' | 'text'
     trigger?: 'always'
     enabled?: boolean
     metric_origin?: 'default' | 'custom'
@@ -1621,8 +1697,8 @@ class ApiClient {
   }): Promise<{
     name: string
     description: string
-    metric_type: 'rating' | 'boolean' | 'number'
-    custom_data_type: 'boolean' | 'enum' | 'number_range'
+    metric_type: 'rating' | 'boolean' | 'number' | 'text'
+    custom_data_type: 'boolean' | 'enum' | 'number_range' | null
     custom_config: Record<string, any>
     supported_surfaces: string[]
     enabled_surfaces: string[]

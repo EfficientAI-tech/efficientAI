@@ -112,8 +112,15 @@ def process_call_import_row_task(self, row_id: str):
         db.commit()
 
         try:
+            # Use the credential pinned on the batch when available so the
+            # uploader's choice is respected even if the org default has
+            # changed since upload. Falls back to (org, provider) default
+            # for legacy rows imported before the column existed.
             client = telephony_service.get_provider_client(
-                row.organization_id, db, provider=call_import.provider
+                row.organization_id,
+                db,
+                provider=call_import.provider,
+                credential_id=call_import.telephony_integration_id,
             )
         except Exception as exc:
             logger.exception("Failed to build provider client for row {}", row_id)

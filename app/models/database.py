@@ -1187,11 +1187,33 @@ class CallImport(Base):
     created_by_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
 
     provider = Column(String(50), nullable=False, default="exotel")
+    # Pin a specific telephony credential for this batch so the worker
+    # downloads recordings using *that* row instead of the org default.
+    # NULL preserves legacy behavior (resolve by provider + default).
+    telephony_integration_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("telephony_integrations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     original_filename = Column(String(512), nullable=True)
 
     # Free-text high-level segregation label. Powers the "Dataset" filter
     # at the top of the imports page; multiple imports can share a value.
     dataset = Column(String(255), nullable=True, index=True)
+
+    # JSON describing how the uploader's CSV headers map to system fields.
+    # Keys: external_call_id (required), transcript, recording_url.
+    # Values: original CSV header strings (preserve user casing for export).
+    column_mapping = Column(JSON, nullable=False, default=dict)
+    # Ordered list of additional CSV header strings the uploader wants
+    # preserved verbatim into the evaluation export CSV.
+    extra_columns = Column(JSON, nullable=False, default=list)
+    # User-defined ``{custom_field_name: csv_header}`` mappings on top of
+    # the three system fields above. Cells from the mapped CSV columns are
+    # preserved per row (keyed by the CSV header in ``raw_columns``) and
+    # surface in the evaluation export under the uploader-chosen name.
+    custom_column_mapping = Column(JSON, nullable=False, default=dict)
 
     total_rows = Column(Integer, nullable=False, default=0)
     completed_rows = Column(Integer, nullable=False, default=0)
@@ -1220,6 +1242,11 @@ class CallImport(Base):
         backref="call_imports",
         lazy="selectin",
     )
+    evaluations = relationship(
+        "CallImportEvaluation",
+        back_populates="call_import",
+        cascade="all, delete-orphan",
+    )
 
 
 class CallImportRow(Base):
@@ -1245,6 +1272,10 @@ class CallImportRow(Base):
     # absent and writes the resolved URL back here so retries are cheap.
     recording_url = Column(Text, nullable=True)
     transcript = Column(Text, nullable=True)
+    # Snapshot of the original CSV row keyed by the user's headers so the
+    # evaluation export can reproduce every column the uploader supplied
+    # (mapped + extra). NULL on legacy rows imported before this column.
+    raw_columns = Column(JSON, nullable=True)
 
     status = Column(
         Enum(CallImportRowStatus, values_callable=get_enum_values),
@@ -1309,6 +1340,104 @@ class CallImportTagAssignment(Base):
         index=True,
     )
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class CallImportEvaluation(Base):
+    """Parent record for an evaluation run over a CallImport batch.
+
+    A user picks a subset of org ``Metric`` rows and triggers an evaluation;
+    we fan out one ``CallImportEvaluationRow`` per source row and roll up
+    counters as workers finish. Status mirrors ``CallImportStatus`` plus a
+    ``RUNNING`` value so the UI can distinguish "queued" from "in flight".
+    """
+
+    __tablename__ = "call_import_evaluations"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    call_import_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_imports.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    organization_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id"),
+        nullable=False,
+        index=True,
+    )
+    created_by_user_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+
+    # JSON list of Metric UUID strings selected for this run. Stored as text
+    # in JSON so we don't have to deal with PG arrays of UUIDs / cascade
+    # delete policies when metrics are removed; the loader filters for
+    # still-existing org metrics at run time.
+    selected_metric_ids = Column(JSON, nullable=False, default=list)
+
+    status = Column(String(20), nullable=False, default="pending", index=True)
+
+    total_rows = Column(Integer, nullable=False, default=0)
+    completed_rows = Column(Integer, nullable=False, default=0)
+    failed_rows = Column(Integer, nullable=False, default=0)
+    error_message = Column(Text, nullable=True)
+    celery_group_id = Column(String(255), nullable=True)
+
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    call_import = relationship("CallImport", back_populates="evaluations")
+    row_results = relationship(
+        "CallImportEvaluationRow",
+        back_populates="evaluation",
+        cascade="all, delete-orphan",
+    )
+
+
+class CallImportEvaluationRow(Base):
+    """Per-source-row scoring output for a CallImportEvaluation parent."""
+
+    __tablename__ = "call_import_evaluation_rows"
+    __table_args__ = (
+        UniqueConstraint(
+            "evaluation_id", "call_import_row_id", name="uq_call_import_evaluation_row"
+        ),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    evaluation_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_import_evaluations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    call_import_row_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_import_rows.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    # Same shape as EvaluatorResult.metric_scores: {metric_id_str: {value, type, metric_name, ...}}
+    metric_scores = Column(JSON, nullable=False, default=dict)
+    error_message = Column(Text, nullable=True)
+    celery_task_id = Column(String(255), nullable=True)
+
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    evaluation = relationship("CallImportEvaluation", back_populates="row_results")
+    source_row = relationship("CallImportRow")
 
 
 # ---------------------------------------------------------------------------

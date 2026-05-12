@@ -10,6 +10,7 @@ from . import tts_comparison
 from . import tts_report
 from . import run_prompt_optimization
 from . import process_call_import_row
+from . import evaluate_call_import_row
 from . import run_judge_alignment
 
 __all__ = [
@@ -22,6 +23,7 @@ __all__ = [
     "generate_tts_report_pdf_task",
     "run_prompt_optimization_task",
     "process_call_import_row_task",
+    "evaluate_call_import_row_task",
     "run_judge_alignment_task",
 ]
 
@@ -33,4 +35,5 @@ evaluate_tts_comparison_task = tts_comparison.evaluate_tts_comparison_task
 generate_tts_report_pdf_task = tts_report.generate_tts_report_pdf_task
 run_prompt_optimization_task = run_prompt_optimization.run_prompt_optimization_task
 process_call_import_row_task = process_call_import_row.process_call_import_row_task
+evaluate_call_import_row_task = evaluate_call_import_row.evaluate_call_import_row_task
 run_judge_alignment_task = run_judge_alignment.run_judge_alignment_task

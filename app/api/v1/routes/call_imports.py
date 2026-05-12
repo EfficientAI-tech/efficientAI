@@ -1,23 +1,25 @@
 """CSV-driven call import routes.
 
-Users upload a CSV with columns CallID, Transcript (and optionally
-Recording URL). The backend persists a CallImport batch + one
-CallImportRow per line, then fans the rows out to the Celery `imports`
-queue where each row is fetched from the configured voice provider
-(currently Exotel) and stored in S3. When a row has no Recording URL,
-the worker resolves it from the provider's call detail endpoint using
-the CallID.
+Users upload a CSV plus a per-batch column mapping (CSV header -> system
+field). The backend persists a CallImport batch + one CallImportRow per
+line, then fans the rows out to the Celery ``imports`` queue where each
+row is downloaded using the telephony credential pinned on the batch.
+When a row has no recording URL, the worker resolves it via the chosen
+provider's call detail endpoint (Exotel today; Plivo CSVs must include
+the URL).
 """
 
 from __future__ import annotations
 
 import csv
 import io
-from typing import List, Optional
+import json
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from loguru import logger
+from pydantic import ValidationError
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
@@ -32,9 +34,9 @@ from app.models.database import (
 from app.models.enums import (
     CallImportRowStatus,
     CallImportStatus,
-    TelephonyProvider,
 )
 from app.models.schemas import (
+    CallImportColumnMapping,
     CallImportDetailResponse,
     CallImportListResponse,
     CallImportResponse,
@@ -82,8 +84,6 @@ def _resolve_tags(
     return rows
 
 
-REQUIRED_HEADERS = {"callid", "transcript"}
-OPTIONAL_HEADERS = {"recording url"}
 MAX_CSV_BYTES = 10 * 1024 * 1024  # 10 MB CSV cap
 
 
@@ -91,16 +91,40 @@ def _normalize_header(name: str) -> str:
     return (name or "").strip().lower()
 
 
-def _header_lookup(fieldnames: List[str]) -> dict[str, str]:
-    """Map normalized header -> original header so DictReader access works regardless of case."""
+def _header_lookup(fieldnames: List[str]) -> Dict[str, str]:
+    """Map normalized header -> original header for case-insensitive lookup."""
     return {_normalize_header(h): h for h in fieldnames or []}
 
 
-def _parse_csv(file_bytes: bytes) -> List[dict]:
-    """Parse the CSV bytes into a list of {callid, recording_url, transcript} dicts.
+def _resolve_mapped_header(
+    mapping_value: Optional[str], header_lookup: Dict[str, str]
+) -> Optional[str]:
+    """Translate a user-supplied CSV header into the actual column key.
 
-    Raises HTTPException(400) on empty input, missing headers, or rows missing
-    required values.
+    The frontend sends headers exactly as they appear in the CSV, but we
+    still normalize on the server so trailing whitespace / casing doesn't
+    break matching. Returns the canonical fieldname or ``None`` if not
+    present in the CSV.
+    """
+    if not mapping_value:
+        return None
+    return header_lookup.get(_normalize_header(mapping_value))
+
+
+def _parse_csv(
+    file_bytes: bytes,
+    mapping: CallImportColumnMapping,
+    extra_columns: List[str],
+    custom_column_mapping: Optional[Dict[str, str]] = None,
+) -> List[Dict[str, Any]]:
+    """Parse the CSV using ``mapping`` to find each system field.
+
+    The returned list has one entry per non-empty row with:
+      * ``external_call_id`` (str, required - row dropped with 400 if blank)
+      * ``recording_url`` (Optional[str])
+      * ``transcript`` (Optional[str])
+      * ``raw_columns`` (Dict[str, str]) of the original row keyed by the
+        uploader's headers, restricted to mapped + ``extra_columns``.
     """
     if not file_bytes:
         raise HTTPException(
@@ -123,40 +147,86 @@ def _parse_csv(file_bytes: bytes) -> List[dict]:
             detail="CSV is missing a header row.",
         )
 
-    headers = _header_lookup(reader.fieldnames)
-    missing = REQUIRED_HEADERS - set(headers.keys())
-    if missing:
+    header_lookup = _header_lookup(list(reader.fieldnames))
+    callid_h = _resolve_mapped_header(mapping.external_call_id, header_lookup)
+    if not callid_h:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                "CSV is missing required headers: "
-                f"{sorted(missing)}. Required headers (case-insensitive): "
-                "CallID, Transcript. Optional: Recording URL "
-                "(resolved from the provider when omitted)."
+                f"CSV does not contain the column '{mapping.external_call_id}' "
+                "mapped to External Call ID."
+            ),
+        )
+    transcript_h = _resolve_mapped_header(mapping.transcript, header_lookup)
+    if mapping.transcript and transcript_h is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"CSV does not contain the column '{mapping.transcript}' mapped to Transcript.",
+        )
+    url_h = _resolve_mapped_header(mapping.recording_url, header_lookup)
+    if mapping.recording_url and url_h is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"CSV does not contain the column '{mapping.recording_url}' "
+                "mapped to Recording URL."
             ),
         )
 
-    callid_h = headers["callid"]
-    url_h = headers.get("recording url")
-    transcript_h = headers["transcript"]
+    # Headers we must capture in raw_columns (mapped + extras + custom),
+    # keyed by the canonical CSV fieldname so reads always work regardless
+    # of case. Custom-mapped CSV headers are validated the same way as the
+    # system fields so a typo surfaces as a 400 rather than a silent drop.
+    custom_mapping = custom_column_mapping or {}
+    for custom_name, custom_header in custom_mapping.items():
+        canonical = _resolve_mapped_header(custom_header, header_lookup)
+        if canonical is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"CSV does not contain the column '{custom_header}' "
+                    f"mapped to custom field '{custom_name}'."
+                ),
+            )
 
-    parsed: List[dict] = []
+    keep_canonical: Dict[str, str] = {}
+    for raw_header in [
+        mapping.external_call_id,
+        mapping.transcript,
+        mapping.recording_url,
+        *extra_columns,
+        *custom_mapping.values(),
+    ]:
+        canonical = _resolve_mapped_header(raw_header, header_lookup)
+        if canonical:
+            # Preserve user-facing label (uploader's casing) as the key.
+            keep_canonical[canonical] = raw_header  # type: ignore[assignment]
+
+    parsed: List[Dict[str, Any]] = []
     for idx, row in enumerate(reader):
         call_id = (row.get(callid_h) or "").strip()
         url = (row.get(url_h) or "").strip() if url_h else ""
-        transcript = (row.get(transcript_h) or "").strip()
-        if not call_id and not url and not transcript:
+        transcript = (row.get(transcript_h) or "").strip() if transcript_h else ""
+        # Fully blank line — skip silently to allow trailing newlines.
+        if not any((row.get(h) or "").strip() for h in (callid_h, url_h, transcript_h) if h):
             continue
         if not call_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Row {idx + 1} is missing CallID.",
+                detail=f"Row {idx + 1} is missing the External Call ID column.",
             )
+
+        raw_snapshot = {
+            label: (row.get(canonical) or "").strip()
+            for canonical, label in keep_canonical.items()
+        }
+
         parsed.append(
             {
                 "external_call_id": call_id,
                 "recording_url": url or None,
                 "transcript": transcript or None,
+                "raw_columns": raw_snapshot,
             }
         )
 
@@ -169,6 +239,19 @@ def _parse_csv(file_bytes: bytes) -> List[dict]:
     return parsed
 
 
+def _parse_json_form_field(name: str, raw: Optional[str], default):
+    """Decode a JSON-encoded form field with a friendly 400 on bad JSON."""
+    if raw is None or raw == "":
+        return default
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{name} must be valid JSON: {exc}",
+        )
+
+
 @router.post(
     "/upload",
     response_model=CallImportUploadResponse,
@@ -177,6 +260,43 @@ def _parse_csv(file_bytes: bytes) -> List[dict]:
 )
 async def upload_call_import_csv(
     file: UploadFile = File(...),
+    provider: str = Form(
+        ...,
+        description=(
+            "Telephony provider key (e.g. 'exotel', 'plivo'). Must match the "
+            "selected telephony_integration_id's provider."
+        ),
+    ),
+    telephony_integration_id: UUID = Form(
+        ...,
+        description=(
+            "Specific TelephonyIntegration credential row to use when "
+            "downloading recordings for this batch."
+        ),
+    ),
+    column_mapping: str = Form(
+        ...,
+        description=(
+            "JSON-encoded mapping from system fields to CSV header strings. "
+            "Required key: external_call_id. Optional: transcript, recording_url."
+        ),
+    ),
+    extra_columns: Optional[str] = Form(
+        None,
+        description=(
+            "JSON-encoded list of additional CSV header strings to preserve "
+            "verbatim into raw_columns for export."
+        ),
+    ),
+    custom_column_mapping: Optional[str] = Form(
+        None,
+        description=(
+            "JSON-encoded ``{custom_field_name: csv_header}`` map for "
+            "uploader-defined columns. The CSV cells under each mapped "
+            "header are preserved per row and surface under the chosen "
+            "custom name in the evaluation export."
+        ),
+    ),
     dataset: Optional[str] = Form(
         None,
         description=(
@@ -192,12 +312,14 @@ async def upload_call_import_csv(
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ) -> CallImportUploadResponse:
-    """Accept a CSV (CallID, Recording URL, Transcript) and queue per-row import jobs.
+    """Accept a CSV + column mapping and queue per-row import jobs.
 
-    Optional ``dataset`` (free-text) and ``tag_ids`` form fields let the
-    caller categorise the upload at creation time. Both can also be edited
-    later via ``PATCH /call-imports/{id}``.
+    The caller selects a specific telephony credential (so the worker uses
+    *that* row to fetch recordings) and provides a column mapping so any
+    CSV layout works. Unmapped headers can be preserved via ``extra_columns``
+    so they ride along into the eventual evaluation export.
     """
+    del api_key
 
     if not file.filename or not file.filename.lower().endswith(".csv"):
         raise HTTPException(
@@ -212,33 +334,126 @@ async def upload_call_import_csv(
             detail=f"CSV exceeds {MAX_CSV_BYTES} bytes",
         )
 
-    rows = _parse_csv(file_bytes)
+    mapping_payload = _parse_json_form_field("column_mapping", column_mapping, {})
+    try:
+        mapping = CallImportColumnMapping.model_validate(mapping_payload)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid column_mapping: {exc.errors()}",
+        )
+
+    extras_payload = _parse_json_form_field("extra_columns", extra_columns, [])
+    if not isinstance(extras_payload, list) or not all(
+        isinstance(item, str) for item in extras_payload
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="extra_columns must be a JSON array of header strings.",
+        )
+    # Strip blanks and de-duplicate (case-insensitive) while preserving order.
+    seen = set()
+    extras_clean: List[str] = []
+    for item in extras_payload:
+        norm = _normalize_header(item)
+        if not norm or norm in seen:
+            continue
+        # Skip extras that collide with mapped fields - already captured.
+        if norm in {
+            _normalize_header(mapping.external_call_id),
+            _normalize_header(mapping.transcript or ""),
+            _normalize_header(mapping.recording_url or ""),
+        }:
+            continue
+        seen.add(norm)
+        extras_clean.append(item)
+
+    custom_payload = _parse_json_form_field(
+        "custom_column_mapping", custom_column_mapping, {}
+    )
+    if not isinstance(custom_payload, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in custom_payload.items()
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="custom_column_mapping must be a JSON object of {name: csv_header}.",
+        )
+    system_field_names = {"external_call_id", "transcript", "recording_url"}
+    custom_clean: Dict[str, str] = {}
+    seen_custom_names: set[str] = set()
+    for raw_name, raw_header in custom_payload.items():
+        name = raw_name.strip()
+        header = raw_header.strip()
+        if not name or not header:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "custom_column_mapping entries must have non-empty "
+                    "name and CSV header values."
+                ),
+            )
+        if name in system_field_names:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Custom column name '{name}' collides with a built-in "
+                    "system field. Use a different name."
+                ),
+            )
+        if name.lower() in seen_custom_names:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Duplicate custom column name '{name}'.",
+            )
+        seen_custom_names.add(name.lower())
+        custom_clean[name] = header
 
     integration = (
         db.query(TelephonyIntegration)
         .filter(
+            TelephonyIntegration.id == telephony_integration_id,
             TelephonyIntegration.organization_id == organization_id,
-            TelephonyIntegration.provider == TelephonyProvider.EXOTEL.value,
-            TelephonyIntegration.is_active.is_(True),
         )
         .first()
     )
     if not integration:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Telephony credential not found for this organization.",
+        )
+    if (integration.provider or "").lower() != provider.lower():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                "No active Exotel telephony integration is configured for this "
-                "organization. Add one via /api/v1/telephony before importing."
+                f"Selected credential is for provider '{integration.provider}', "
+                f"but request specified '{provider}'."
             ),
         )
+    if not integration.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Selected telephony credential is inactive.",
+        )
+
+    rows = _parse_csv(file_bytes, mapping, extras_clean, custom_clean)
 
     tag_rows = _resolve_tags(db, organization_id, tag_ids)
 
+    stored_mapping = {
+        "external_call_id": mapping.external_call_id,
+        "transcript": mapping.transcript,
+        "recording_url": mapping.recording_url,
+    }
+
     call_import = CallImport(
         organization_id=organization_id,
-        provider=TelephonyProvider.EXOTEL.value,
+        provider=integration.provider,
+        telephony_integration_id=integration.id,
         original_filename=file.filename,
         dataset=_normalize_dataset(dataset),
+        column_mapping=stored_mapping,
+        extra_columns=extras_clean,
+        custom_column_mapping=custom_clean,
         total_rows=len(rows),
         completed_rows=0,
         failed_rows=0,
@@ -258,6 +473,7 @@ async def upload_call_import_csv(
             external_call_id=row["external_call_id"],
             recording_url=row["recording_url"],
             transcript=row["transcript"],
+            raw_columns=row["raw_columns"] or None,
             status=CallImportRowStatus.PENDING,
         )
         db.add(row_model)
@@ -348,13 +564,13 @@ async def list_call_imports(
             )
 
     if tag_id:
-        from sqlalchemy import select
-
         from app.models.database import CallImportTagAssignment
 
         for single_tag_id in tag_id:
-            sub = select(CallImportTagAssignment.call_import_id).where(
-                CallImportTagAssignment.tag_id == single_tag_id
+            sub = (
+                db.query(CallImportTagAssignment.call_import_id)
+                .filter(CallImportTagAssignment.tag_id == single_tag_id)
+                .subquery()
             )
             query = query.filter(CallImport.id.in_(sub))
 

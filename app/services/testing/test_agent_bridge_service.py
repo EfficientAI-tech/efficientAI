@@ -420,7 +420,7 @@ class TestAgentBridgeService:
             # -> environment variable fallback.
             from app.services.credentials import (
                 resolve_ai_provider as _resolve_ai_provider,
-                resolve_voice_integration as _resolve_voice_integration,
+                resolve_integration as _resolve_voice_integration,
             )
 
             def resolve_api_key_for_provider(

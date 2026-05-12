@@ -316,6 +316,7 @@ def client(db_session, api_key, org_id):
         alerts,
         audio,
         auth,
+        call_import_evaluations,
         call_import_tags,
         call_imports,
         chat,
@@ -380,6 +381,7 @@ def client(db_session, api_key, org_id):
     app.include_router(telephony.router, prefix="/api/v1")
     app.include_router(call_imports.router, prefix="/api/v1")
     app.include_router(call_import_tags.router, prefix="/api/v1")
+    app.include_router(call_import_evaluations.router, prefix="/api/v1")
 
     # Enterprise route dependencies call app.dependencies.is_feature_enabled at runtime.
     # Force-enable it for API tests so tests remain focused on route behavior.

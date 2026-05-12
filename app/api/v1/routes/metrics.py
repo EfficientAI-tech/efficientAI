@@ -495,7 +495,7 @@ class MetricGenerateResponse(BaseModel):
     """Suggested (un-persisted) metric definition returned to the client."""
     name: str
     description: str
-    metric_type: Literal["rating", "boolean", "number"]
+    metric_type: Literal["rating", "boolean", "number", "text"]
     custom_data_type: Optional[Literal["boolean", "enum", "number_range"]] = None
     custom_config: Dict[str, Any] = {}
     supported_surfaces: List[str]
@@ -516,12 +516,13 @@ You MUST respond with ONLY a JSON object (no markdown, no commentary) with this 
 {
   "name": str (concise, Title Case, <= 60 chars),
   "description": str (1-3 sentences explaining what is measured and how to score it),
-  "metric_type": "rating" | "boolean" | "number",
-  "custom_data_type": "boolean" | "enum" | "number_range",
+  "metric_type": "rating" | "boolean" | "number" | "text",
+  "custom_data_type": "boolean" | "enum" | "number_range" | null,
   "custom_config": {
       // for "enum": {"options": ["...", "..."]}
       // for "number_range": {"min": <number>, "max": <number>, "step": <number>}
       // for "boolean": {}
+      // for "text": {}  (no extra config; the description tells the LLM what to summarize)
   },
   "supported_surfaces": ["agent" | "voice_playground" | "blind_test", ...],
   "enabled_surfaces": ["agent" | "voice_playground" | "blind_test", ...],
@@ -531,6 +532,12 @@ You MUST respond with ONLY a JSON object (no markdown, no commentary) with this 
 Rules:
   - "metric_type" must align with "custom_data_type":
       boolean -> "boolean", enum -> "rating", number_range -> "number".
+  - Use "text" ONLY when the user clearly wants a free-form sentence /
+    summary / explanation / classification label as the answer (e.g. "summarize
+    the call", "extract the customer's main concern", "describe what went
+    wrong in one paragraph"). For text metrics, set "custom_data_type" to null
+    and "custom_config" to {}.
+  - Otherwise prefer a structured numeric/boolean/enum metric.
 """ + surfaces_block
 
     system_message = (
@@ -627,30 +634,38 @@ def generate_metric(
         enabled_surfaces = list(supported)
 
     metric_type = (parsed.get("metric_type") or "rating").lower()
-    if metric_type not in {"rating", "boolean", "number"}:
+    if metric_type not in {"rating", "boolean", "number", "text"}:
         metric_type = "rating"
 
     custom_data_type = parsed.get("custom_data_type")
     if custom_data_type not in {"boolean", "enum", "number_range", None}:
         custom_data_type = None
-    if custom_data_type is None:
-        custom_data_type = (
-            "boolean" if metric_type == "boolean"
-            else "number_range" if metric_type == "number"
-            else "enum"
-        )
 
-    custom_config = parsed.get("custom_config") or {}
-    if custom_data_type == "enum" and not isinstance(custom_config.get("options"), list):
-        custom_config = {"options": ["Excellent", "Good", "Neutral", "Poor"]}
-    if custom_data_type == "number_range":
-        custom_config = {
-            "min": float(custom_config.get("min", 0)),
-            "max": float(custom_config.get("max", 10)),
-            "step": float(custom_config.get("step", 1)),
-        }
-    if custom_data_type == "boolean":
-        custom_config = {}
+    # Text metrics are unstructured by definition: no custom_data_type,
+    # no extra config. Force-clear both regardless of what the LLM said so a
+    # stale enum/number_range hint never sneaks through.
+    if metric_type == "text":
+        custom_data_type = None
+        custom_config: Dict[str, Any] = {}
+    else:
+        if custom_data_type is None:
+            custom_data_type = (
+                "boolean" if metric_type == "boolean"
+                else "number_range" if metric_type == "number"
+                else "enum"
+            )
+
+        custom_config = parsed.get("custom_config") or {}
+        if custom_data_type == "enum" and not isinstance(custom_config.get("options"), list):
+            custom_config = {"options": ["Excellent", "Good", "Neutral", "Poor"]}
+        if custom_data_type == "number_range":
+            custom_config = {
+                "min": float(custom_config.get("min", 0)),
+                "max": float(custom_config.get("max", 10)),
+                "step": float(custom_config.get("step", 1)),
+            }
+        if custom_data_type == "boolean":
+            custom_config = {}
 
     name = (parsed.get("name") or "Custom Metric").strip()[:60]
     existing = db.query(Metric).filter(

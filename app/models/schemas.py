@@ -1840,10 +1840,23 @@ class CallImportRowResponse(BaseModel):
     recording_size_bytes: Optional[int] = None
     error_message: Optional[str] = None
     attempts: int
+    raw_columns: Optional[Dict[str, Any]] = None
     created_at: datetime
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class CallImportColumnMapping(BaseModel):
+    """Maps system fields to CSV header strings (case preserved as uploaded).
+
+    ``external_call_id`` is required so the worker can identify each row;
+    the other two are optional. Values must be unique across the mapping.
+    """
+
+    external_call_id: str = Field(..., min_length=1, max_length=255)
+    transcript: Optional[str] = Field(None, max_length=255)
+    recording_url: Optional[str] = Field(None, max_length=255)
 
 
 class CallImportTagResponse(BaseModel):
@@ -1878,9 +1891,13 @@ class CallImportResponse(BaseModel):
     id: UUID
     organization_id: UUID
     provider: str
+    telephony_integration_id: Optional[UUID] = None
     original_filename: Optional[str] = None
     dataset: Optional[str] = None
     tags: List[CallImportTagResponse] = Field(default_factory=list)
+    column_mapping: Dict[str, Optional[str]] = Field(default_factory=dict)
+    extra_columns: List[str] = Field(default_factory=list)
+    custom_column_mapping: Dict[str, str] = Field(default_factory=dict)
     total_rows: int
     completed_rows: int
     failed_rows: int
@@ -1933,3 +1950,84 @@ class CallImportUpdate(BaseModel):
             "Replace the full set of tag assignments. Pass an empty list to clear all tags."
         ),
     )
+
+
+# --- Call Import Evaluation Schemas ---
+
+
+class CallImportEvaluationCreate(BaseModel):
+    """Request body for triggering an evaluation over a call-import batch."""
+
+    metric_ids: List[UUID] = Field(
+        ...,
+        min_length=1,
+        description="Org Metric ids to score every completed row against.",
+    )
+
+
+class CallImportMetricSummary(BaseModel):
+    """Lightweight metric descriptor returned alongside an evaluation."""
+
+    id: UUID
+    name: str
+    metric_type: Optional[str] = None
+    description: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CallImportEvaluationResponse(BaseModel):
+    """Parent record describing one evaluation run over a batch."""
+
+    id: UUID
+    call_import_id: UUID
+    organization_id: UUID
+    selected_metric_ids: List[UUID] = Field(default_factory=list)
+    metrics: List[CallImportMetricSummary] = Field(default_factory=list)
+    status: str
+    total_rows: int
+    completed_rows: int
+    failed_rows: int
+    error_message: Optional[str] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CallImportEvaluationListResponse(BaseModel):
+    """Wrapper for listing evaluations on a single batch."""
+
+    items: List[CallImportEvaluationResponse]
+    total: int
+
+
+class CallImportEvaluationRowResponse(BaseModel):
+    """Per-source-row evaluation output (one Metric set applied to one row)."""
+
+    id: UUID
+    evaluation_id: UUID
+    call_import_row_id: UUID
+    row_index: Optional[int] = None
+    external_call_id: Optional[str] = None
+    transcript: Optional[str] = None
+    status: str
+    metric_scores: Dict[str, Any] = Field(default_factory=dict)
+    error_message: Optional[str] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CallImportEvaluationRowListResponse(BaseModel):
+    """Paginated per-row evaluation results."""
+
+    items: List[CallImportEvaluationRowResponse]
+    total: int
+    page: int
+    page_size: int

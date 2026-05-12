@@ -1,19 +1,19 @@
-"""Credential resolution helpers for multi-key-per-provider support."""
+"""Shared credential resolution helpers (telephony + AI providers).
+
+Centralizes the "pick one row for (org, provider)" logic so that ordering
+and tie-breaking stay consistent across the codebase.
+"""
 
 from app.services.credentials.resolver import (
-    AIProviderCredential,
-    IntegrationCredential,
-    TelephonyCredential,
+    clear_other_defaults,
     resolve_ai_provider,
-    resolve_voice_integration,
+    resolve_integration,
     resolve_telephony_integration,
 )
 
 __all__ = [
-    "AIProviderCredential",
-    "IntegrationCredential",
-    "TelephonyCredential",
+    "clear_other_defaults",
     "resolve_ai_provider",
-    "resolve_voice_integration",
+    "resolve_integration",
     "resolve_telephony_integration",
 ]

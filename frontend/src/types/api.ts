@@ -631,6 +631,7 @@ export interface CallImportRow {
   external_call_id: string
   recording_url: string | null
   transcript: string | null
+  raw_columns: Record<string, string> | null
   status: CallImportRowStatus
   recording_s3_key: string | null
   recording_content_type: string | null
@@ -653,11 +654,15 @@ export interface CallImport {
   id: string
   organization_id: string
   provider: string
+  telephony_integration_id: string | null
   original_filename: string | null
   /** Optional free-text dataset label (high-level segregation filter). */
   dataset: string | null
   /** Tags currently attached to this import. Empty array if untagged. */
   tags: CallImportTag[]
+  column_mapping: Record<string, string | null>
+  extra_columns: string[]
+  custom_column_mapping: Record<string, string>
   total_rows: number
   completed_rows: number
   failed_rows: number
@@ -685,4 +690,56 @@ export interface CallImportUploadResponse {
   dataset: string | null
   tags: CallImportTag[]
   message: string
+}
+
+export interface CallImportMetricSummary {
+  id: string
+  name: string
+  metric_type: string | null
+  description: string | null
+}
+
+export interface CallImportEvaluation {
+  id: string
+  call_import_id: string
+  organization_id: string
+  selected_metric_ids: string[]
+  metrics: CallImportMetricSummary[]
+  status: 'pending' | 'running' | 'completed' | 'partial' | 'failed'
+  total_rows: number
+  completed_rows: number
+  failed_rows: number
+  error_message: string | null
+  started_at: string | null
+  finished_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CallImportEvaluationListResponse {
+  items: CallImportEvaluation[]
+  total: number
+}
+
+export interface CallImportEvaluationRow {
+  id: string
+  evaluation_id: string
+  call_import_row_id: string
+  row_index: number | null
+  external_call_id: string | null
+  transcript: string | null
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
+  metric_scores: Record<string, any>
+  error_message: string | null
+  started_at: string | null
+  finished_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CallImportEvaluationRowListResponse {
+  items: CallImportEvaluationRow[]
+  total: number
+  page: number
+  page_size: number
 }

@@ -26,8 +26,8 @@ from app.models.database import (
 from app.services.credentials.resolver import (
     clear_other_defaults,
     resolve_ai_provider,
+    resolve_integration,
     resolve_telephony_integration,
-    resolve_voice_integration,
 )
 
 
@@ -82,7 +82,7 @@ def test_resolve_ai_provider_falls_back_to_most_recent_active_when_no_default(db
 
 
 def test_resolve_ai_provider_explicit_credential_id_wins(db_session, org):
-    default_row = _make_ai_provider(db_session, org, name="Default", is_default=True)
+    _default_row = _make_ai_provider(db_session, org, name="Default", is_default=True)
     other = _make_ai_provider(db_session, org, name="Other")
 
     resolved = resolve_ai_provider(
@@ -91,20 +91,21 @@ def test_resolve_ai_provider_explicit_credential_id_wins(db_session, org):
     assert resolved is not None
     assert resolved.id == other.id
 
-    # Stale id (right org, wrong provider entirely) -> falls back to default.
+    # When an explicit credential_id is passed but doesn't match any row, the
+    # resolver returns None - the caller is asking for that specific credential,
+    # so silently substituting a different one would be surprising.
     bogus_id = uuid4()
-    fallback = resolve_ai_provider(
-        "openai", db_session, org.id, credential_id=bogus_id
+    assert (
+        resolve_ai_provider("openai", db_session, org.id, credential_id=bogus_id)
+        is None
     )
-    assert fallback is not None
-    assert fallback.id == default_row.id
 
 
 def test_resolve_ai_provider_returns_none_when_no_credentials(db_session, org):
     assert resolve_ai_provider("openai", db_session, org.id) is None
 
 
-def test_resolve_voice_integration_prefers_default(db_session, org):
+def test_resolve_integration_prefers_default(db_session, org):
     older = Integration(
         id=uuid4(),
         organization_id=org.id,
@@ -126,7 +127,7 @@ def test_resolve_voice_integration_prefers_default(db_session, org):
     db_session.add_all([older, default_row])
     db_session.commit()
 
-    resolved = resolve_voice_integration("retell", db_session, org.id)
+    resolved = resolve_integration("retell", db_session, org.id)
     assert resolved is not None
     assert resolved.id == default_row.id
 

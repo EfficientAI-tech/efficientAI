@@ -1,176 +1,123 @@
-"""Shared credential resolution for AIProvider / Integration / TelephonyIntegration.
+"""Credential resolution helpers shared by telephony, AI, and voice integrations.
 
-Now that an organization can hold multiple API keys for the same provider,
-runtime callers (LLM service, transcription service, telephony service,
-WebRTC bridge, etc.) need a single, consistent place to pick which row to
-use. This module centralises that logic:
-
-    1. If an explicit ``credential_id`` is given, look up exactly that row.
-    2. Otherwise prefer the row with ``is_default = TRUE``.
-    3. Otherwise (back-compat for orgs that haven't been migrated yet) fall
-       back to the most recently updated active row.
+Each helper returns a single row for ``(org, provider)`` using a consistent
+priority: explicit ``credential_id`` -> ``is_default = TRUE`` -> most
+recently updated active row. ``clear_other_defaults`` is used when promoting
+a row so the partial unique index on ``is_default`` is never violated.
 """
 
 from __future__ import annotations
 
-from typing import Optional, Type, TypeVar, Union
+from typing import Any, Optional, Type
 from uuid import UUID
 
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
-from app.models.database import (
-    AIProvider,
-    Integration,
-    ModelProvider,
-    TelephonyIntegration,
-)
+from app.models.database import AIProvider, Integration, TelephonyIntegration
 
 
-AIProviderCredential = AIProvider
-IntegrationCredential = Integration
-TelephonyCredential = TelephonyIntegration
-
-
-T = TypeVar("T")
-
-
-def _to_str(provider: Union[str, ModelProvider, None]) -> Optional[str]:
-    if provider is None:
-        return None
-    return provider.value if hasattr(provider, "value") else str(provider)
-
-
-def resolve_ai_provider(
-    provider: Union[str, ModelProvider],
-    db: Session,
-    organization_id: UUID,
+def _resolve_for_org_provider(
+    model: Type[Any],
     *,
-    credential_id: Optional[UUID] = None,
-) -> Optional[AIProvider]:
-    """Resolve a single AIProvider row for ``(provider, organization_id)``.
-
-    Selection precedence:
-        1. ``credential_id`` if provided (and the row matches the org +
-           provider).
-        2. The row marked ``is_default``.
-        3. Most recently updated active row.
-    """
-    provider_value = _to_str(provider)
-    if provider_value is None:
-        return None
-
-    base = db.query(AIProvider).filter(
-        AIProvider.organization_id == organization_id,
-        func.lower(AIProvider.provider) == provider_value.lower(),
+    db: Session,
+    org_id: UUID,
+    provider_field: str,
+    provider_value: str,
+    credential_id: Optional[UUID],
+) -> Optional[Any]:
+    base = db.query(model).filter(
+        model.organization_id == org_id,
+        model.is_active.is_(True),
     )
 
     if credential_id is not None:
-        row = base.filter(AIProvider.id == credential_id).first()
-        if row:
-            return row
-        # Fall through to default if the explicit id is stale (deleted / wrong org)
+        return base.filter(model.id == credential_id).first()
 
-    default_row = base.filter(AIProvider.is_default.is_(True)).first()
-    if default_row:
-        return default_row
+    column = getattr(model, provider_field)
+    base = base.filter(func.lower(column) == provider_value.lower())
 
-    return (
-        base.filter(AIProvider.is_active.is_(True))
-        .order_by(desc(AIProvider.updated_at), desc(AIProvider.created_at))
-        .first()
-    )
-
-
-def resolve_voice_integration(
-    platform: Union[str, ModelProvider],
-    db: Session,
-    organization_id: UUID,
-    *,
-    credential_id: Optional[UUID] = None,
-    require_active: bool = True,
-) -> Optional[Integration]:
-    """Resolve a single Integration (voice platform) row.
-
-    See :func:`resolve_ai_provider` for selection precedence.
-    """
-    platform_value = _to_str(platform)
-    if platform_value is None:
-        return None
-
-    base = db.query(Integration).filter(
-        Integration.organization_id == organization_id,
-        func.lower(Integration.platform) == platform_value.lower(),
-    )
-    if require_active:
-        base = base.filter(Integration.is_active.is_(True))
-
-    if credential_id is not None:
-        row = base.filter(Integration.id == credential_id).first()
-        if row:
-            return row
-
-    default_row = base.filter(Integration.is_default.is_(True)).first()
-    if default_row:
+    default_row = base.filter(model.is_default.is_(True)).first()
+    if default_row is not None:
         return default_row
 
     return base.order_by(
-        desc(Integration.updated_at), desc(Integration.created_at)
+        desc(model.updated_at),
+        desc(model.created_at),
     ).first()
 
 
 def resolve_telephony_integration(
     provider: str,
     db: Session,
-    organization_id: UUID,
-    *,
+    org_id: UUID,
     credential_id: Optional[UUID] = None,
-    require_active: bool = True,
 ) -> Optional[TelephonyIntegration]:
-    """Resolve a single TelephonyIntegration row for ``(provider, org)``.
-
-    See :func:`resolve_ai_provider` for selection precedence.
-    """
-    if not provider:
-        return None
-
-    base = db.query(TelephonyIntegration).filter(
-        TelephonyIntegration.organization_id == organization_id,
-        func.lower(TelephonyIntegration.provider) == provider.lower(),
+    """Resolve one ``TelephonyIntegration`` row for ``(org, provider)``."""
+    return _resolve_for_org_provider(
+        TelephonyIntegration,
+        db=db,
+        org_id=org_id,
+        provider_field="provider",
+        provider_value=provider,
+        credential_id=credential_id,
     )
-    if require_active:
-        base = base.filter(TelephonyIntegration.is_active.is_(True))
 
-    if credential_id is not None:
-        row = base.filter(TelephonyIntegration.id == credential_id).first()
-        if row:
-            return row
 
-    default_row = base.filter(TelephonyIntegration.is_default.is_(True)).first()
-    if default_row:
-        return default_row
+def resolve_integration(
+    platform: str,
+    db: Session,
+    org_id: UUID,
+    credential_id: Optional[UUID] = None,
+) -> Optional[Integration]:
+    """Resolve one ``Integration`` row for ``(org, platform)``."""
+    return _resolve_for_org_provider(
+        Integration,
+        db=db,
+        org_id=org_id,
+        provider_field="platform",
+        provider_value=platform,
+        credential_id=credential_id,
+    )
 
-    return base.order_by(
-        desc(TelephonyIntegration.updated_at), desc(TelephonyIntegration.created_at)
-    ).first()
+
+def resolve_ai_provider(
+    provider: str,
+    db: Session,
+    org_id: UUID,
+    credential_id: Optional[UUID] = None,
+) -> Optional[AIProvider]:
+    """Resolve one ``AIProvider`` row for ``(org, provider)``."""
+    return _resolve_for_org_provider(
+        AIProvider,
+        db=db,
+        org_id=org_id,
+        provider_field="provider",
+        provider_value=provider,
+        credential_id=credential_id,
+    )
 
 
 def clear_other_defaults(
-    model: Type[T],
+    model: Type[Any],
     db: Session,
-    organization_id: UUID,
+    org_id: UUID,
     *,
     keep_id: UUID,
     provider_field: str,
     provider_value: str,
 ) -> None:
-    """Clear ``is_default`` on every row in ``model`` for ``(org, provider)``
-    except ``keep_id``. Caller is responsible for committing.
+    """Set ``is_default = FALSE`` on every other row for ``(org, provider)``.
+
+    Caller is expected to flip the kept row's ``is_default`` to ``TRUE``
+    afterwards (and commit). Using ``synchronize_session=False`` keeps the
+    bulk update cheap; identity-mapped rows already loaded into the session
+    will be refreshed on the next access.
     """
     column = getattr(model, provider_field)
     db.query(model).filter(
-        model.organization_id == organization_id,
+        model.organization_id == org_id,
         func.lower(column) == provider_value.lower(),
         model.id != keep_id,
         model.is_default.is_(True),
-    ).update({model.is_default: False}, synchronize_session=False)
+    ).update({"is_default": False}, synchronize_session=False)

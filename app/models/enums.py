@@ -146,10 +146,16 @@ class TestAgentConversationStatus(str, enum.Enum):
     CANCELLED = "cancelled"
 
 class MetricType(str, enum.Enum):
-    """Metric type enumeration."""
+    """Metric type enumeration.
+
+    ``TEXT`` is for free-form LLM-generated text (summaries, classifications,
+    explanations) where the value is a string rather than a number/boolean.
+    Text metrics are *not* aggregated in numeric dashboards.
+    """
     NUMBER = "number"
     BOOLEAN = "boolean"
     RATING = "rating"
+    TEXT = "text"
 
 class MetricTrigger(str, enum.Enum):
     """Metric trigger enumeration."""
