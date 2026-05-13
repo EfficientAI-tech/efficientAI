@@ -13,7 +13,7 @@ import {
   getProviderDescription,
   TELEPHONY_PROVIDER_CONFIG,
   getTelephonyProviderLabel,
-  getTelephonyProviderDescription,
+  getTelephonyProviderLogo,
 } from '../../config/providers'
 import WalkthroughToggleButton from '../../components/walkthrough/WalkthroughToggleButton'
 
@@ -302,8 +302,11 @@ export default function Integrations() {
       }
     } else if (integrationType === 'ai_provider') {
       if (isEditMode && selectedAIProvider) {
-        if (!apiKey.trim()) { showToast('Please enter an API key', 'error'); return }
-        updateAIProviderMutation.mutate({ id: selectedAIProvider.id, data: { api_key: apiKey, name: name || null } })
+        const updateData: Partial<AIProviderCreate> = {}
+        if (apiKey.trim()) updateData.api_key = apiKey
+        if (name !== (selectedAIProvider.name || '')) updateData.name = name || null
+        if (Object.keys(updateData).length === 0) { resetForm(); return }
+        updateAIProviderMutation.mutate({ id: selectedAIProvider.id, data: updateData })
       } else {
         if (!selectedProvider || !apiKey.trim()) { showToast('Please select a provider and enter an API key', 'error'); return }
         createAIProviderMutation.mutate({ provider: selectedProvider, api_key: apiKey, name: name || null })
@@ -427,31 +430,39 @@ export default function Integrations() {
                     const platformInfo = getPlatformInfo(integration.platform)
                     return (
                       <div key={integration.id} className="px-6 py-4 hover:bg-gray-50 transition-colors">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-4 flex-1">
+                        <div className="flex items-center gap-4">
+                          {/* Name */}
+                          <div className="flex flex-col min-w-[160px] max-w-[240px] flex-shrink-0">
+                            <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Name</span>
+                            <span className={`text-sm mt-0.5 truncate ${integration.name ? 'font-semibold text-gray-900' : 'text-gray-400 italic'}`} title={integration.name || ''}>
+                              {integration.name || '—'}
+                            </span>
+                          </div>
+                          {/* Type */}
+                          <div className="flex-shrink-0 min-w-[120px]">
+                            <span className="px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded-full whitespace-nowrap">Voice Platform</span>
+                          </div>
+                          {/* Logo + Provider */}
+                          <div className="flex items-center gap-3 flex-1 min-w-0">
                             <div className="flex-shrink-0">
                               {platformInfo?.image ? (
-                                <div className="w-12 h-12 bg-white rounded-lg flex items-center justify-center border border-gray-200 p-2"><img src={platformInfo.image} alt={platformInfo.name} className="w-full h-full object-contain" /></div>
+                                <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center border border-gray-200 p-1.5"><img src={platformInfo.image} alt={platformInfo.name} className="w-full h-full object-contain" /></div>
                               ) : (
-                                <div className="w-12 h-12 bg-gradient-to-br from-primary-100 to-primary-200 rounded-lg flex items-center justify-center"><Plug className="h-6 w-6 text-primary-600" /></div>
+                                <div className="w-10 h-10 bg-gradient-to-br from-primary-100 to-primary-200 rounded-lg flex items-center justify-center"><Plug className="h-5 w-5 text-primary-600" /></div>
                               )}
                             </div>
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <h3 className="text-lg font-semibold text-gray-900">{platformInfo?.name || integration.platform}</h3>
-                                <span className="px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded-full">Voice Platform</span>
-                                {integration.name && <span className="text-sm text-gray-500">({integration.name})</span>}
-                                {integration.is_default && (
-                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-700 rounded">
-                                    <Star className="h-3 w-3 fill-current" /> Default
-                                  </span>
-                                )}
-                                {!integration.is_active && <span className="px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-600 rounded">Inactive</span>}
-                              </div>
-                              <p className="text-sm text-gray-600 mt-1">{platformInfo?.description || 'Voice AI platform integration'}</p>
+                            <div className="flex items-center gap-2 flex-wrap min-w-0">
+                              <h3 className="text-base font-semibold text-gray-900 truncate">{platformInfo?.name || integration.platform}</h3>
+                              {integration.is_default && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-700 rounded">
+                                  <Star className="h-3 w-3 fill-current" /> Default
+                                </span>
+                              )}
+                              {!integration.is_active && <span className="px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-600 rounded">Inactive</span>}
                             </div>
                           </div>
-                          <div className="flex items-center gap-2">
+                          {/* Actions */}
+                          <div className="flex items-center gap-2 flex-shrink-0">
                             {!integration.is_default && integration.is_active && (
                               <Button
                                 variant="ghost"
@@ -492,31 +503,39 @@ export default function Integrations() {
                       key={provider.id}
                       className="px-6 py-4 hover:bg-gray-50 transition-colors"
                     >
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-4 flex-1">
+                      <div className="flex items-center gap-4">
+                        {/* Name */}
+                        <div className="flex flex-col min-w-[160px] max-w-[240px] flex-shrink-0">
+                          <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Name</span>
+                          <span className={`text-sm mt-0.5 truncate ${provider.name ? 'font-semibold text-gray-900' : 'text-gray-400 italic'}`} title={provider.name || ''}>
+                            {provider.name || '—'}
+                          </span>
+                        </div>
+                        {/* Type */}
+                        <div className="flex-shrink-0 min-w-[120px]">
+                          <span className="px-2 py-0.5 text-xs font-medium bg-purple-100 text-purple-700 rounded-full whitespace-nowrap">AI Provider</span>
+                        </div>
+                        {/* Logo + Provider */}
+                        <div className="flex items-center gap-3 flex-1 min-w-0">
                           <div className="flex-shrink-0">
                             {getProviderLogo(provider.provider) ? (
-                              <div className="w-12 h-12 bg-white rounded-lg flex items-center justify-center border border-gray-200 p-2"><img src={getProviderLogo(provider.provider)!} alt={getProviderLabel(provider.provider)} className="w-full h-full object-contain" /></div>
+                              <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center border border-gray-200 p-1.5"><img src={getProviderLogo(provider.provider)!} alt={getProviderLabel(provider.provider)} className="w-full h-full object-contain" /></div>
                             ) : (
-                              <div className="w-12 h-12 bg-gradient-to-br from-primary-100 to-primary-200 rounded-lg flex items-center justify-center"><Brain className="h-6 w-6 text-primary-600" /></div>
+                              <div className="w-10 h-10 bg-gradient-to-br from-primary-100 to-primary-200 rounded-lg flex items-center justify-center"><Brain className="h-5 w-5 text-primary-600" /></div>
                             )}
                           </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <h3 className="text-lg font-semibold text-gray-900">{getProviderLabel(provider.provider)}</h3>
-                              <span className="px-2 py-0.5 text-xs font-medium bg-purple-100 text-purple-700 rounded-full">AI Provider</span>
-                              {provider.name && <span className="text-sm text-gray-500">({provider.name})</span>}
-                              {provider.is_default && (
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-700 rounded">
-                                  <Star className="h-3 w-3 fill-current" /> Default
-                                </span>
-                              )}
-                              {!provider.is_active && <span className="px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-600 rounded">Inactive</span>}
-                            </div>
-                            <p className="text-sm text-gray-600 mt-1">{getProviderDescription(provider.provider)}</p>
+                          <div className="flex items-center gap-2 flex-wrap min-w-0">
+                            <h3 className="text-base font-semibold text-gray-900 truncate">{getProviderLabel(provider.provider)}</h3>
+                            {provider.is_default && (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-700 rounded">
+                                <Star className="h-3 w-3 fill-current" /> Default
+                              </span>
+                            )}
+                            {!provider.is_active && <span className="px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-600 rounded">Inactive</span>}
                           </div>
                         </div>
-                        <div className="flex items-center gap-2">
+                        {/* Actions */}
+                        <div className="flex items-center gap-2 flex-shrink-0">
                           {!provider.is_default && provider.is_active && (
                             <Button
                               variant="ghost"
@@ -550,40 +569,50 @@ export default function Integrations() {
                 <div className="divide-y divide-gray-200">
                   {allTelephonyConfigs.map((cfg) => (
                   <div key={cfg.id} className="px-6 py-4 hover:bg-gray-50 transition-colors">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-4 flex-1">
+                    <div className="flex items-center gap-4">
+                      {/* Name */}
+                      <div className="flex flex-col min-w-[160px] max-w-[240px] flex-shrink-0">
+                        <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Name</span>
+                        <span className={`text-sm mt-0.5 truncate ${cfg.name ? 'font-semibold text-gray-900' : 'text-gray-400 italic'}`} title={cfg.name || ''}>
+                          {cfg.name || '—'}
+                        </span>
+                      </div>
+                      {/* Type */}
+                      <div className="flex-shrink-0 min-w-[120px]">
+                        <span className="px-2 py-0.5 text-xs font-medium bg-green-100 text-green-700 rounded-full whitespace-nowrap">Telephony</span>
+                      </div>
+                      {/* Logo + Provider */}
+                      <div className="flex items-center gap-3 flex-1 min-w-0">
                         <div className="flex-shrink-0">
-                          <div className="w-12 h-12 bg-gradient-to-br from-green-100 to-green-200 rounded-lg flex items-center justify-center"><Phone className="h-6 w-6 text-green-600" /></div>
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <h3 className="text-lg font-semibold text-gray-900">{getTelephonyProviderLabel(cfg.provider as TelephonyProvider)}</h3>
-                            <span className="px-2 py-0.5 text-xs font-medium bg-green-100 text-green-700 rounded-full">Telephony</span>
-                            {cfg.name && <span className="text-sm text-gray-500">({cfg.name})</span>}
-                            {cfg.is_default && (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-700 rounded">
-                                <Star className="h-3 w-3 fill-current" /> Default
-                              </span>
-                            )}
-                            <span className={`px-2 py-0.5 text-xs font-medium rounded ${cfg.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>{cfg.is_active ? 'Active' : 'Inactive'}</span>
-                          </div>
-                          <p className="text-sm text-gray-600 mt-1">{getTelephonyProviderDescription(cfg.provider as TelephonyProvider)}</p>
-                          {((cfg.provider as TelephonyProvider) === TelephonyProvider.EXOTEL) && (
-                            <div className="mt-2 flex flex-wrap gap-2 text-xs text-gray-600">
-                              {cfg.voice_app_id && (
-                                <span className="rounded bg-gray-100 px-2 py-1">Account SID: {cfg.voice_app_id}</span>
-                              )}
-                              {cfg.sip_domain && (
-                                <span className="rounded bg-gray-100 px-2 py-1">API Host: {cfg.sip_domain}</span>
-                              )}
+                          {getTelephonyProviderLogo(cfg.provider as TelephonyProvider) ? (
+                            <div className="w-12 h-12 bg-white rounded-lg flex items-center justify-center border border-gray-200 p-2">
+                              <img
+                                src={getTelephonyProviderLogo(cfg.provider as TelephonyProvider)!}
+                                alt={getTelephonyProviderLabel(cfg.provider as TelephonyProvider)}
+                                className="w-full h-full object-contain"
+                              />
                             </div>
+                          ) : (
+                            <div className="w-12 h-12 bg-gradient-to-br from-green-100 to-green-200 rounded-lg flex items-center justify-center"><Phone className="h-6 w-6 text-green-600" /></div>
                           )}
+                        </div>
+                        <div className="flex items-center gap-2 flex-wrap min-w-0">
+                          <h3 className="text-base font-semibold text-gray-900 truncate">{getTelephonyProviderLabel(cfg.provider as TelephonyProvider)}</h3>
+                          {cfg.is_default && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-700 rounded">
+                              <Star className="h-3 w-3 fill-current" /> Default
+                            </span>
+                          )}
+                          <span className={`px-2 py-0.5 text-xs font-medium rounded ${cfg.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>{cfg.is_active ? 'Active' : 'Inactive'}</span>
                           {cfg.last_tested_at && (
-                            <div className="flex items-center gap-1 mt-1 text-xs text-green-700"><CheckCircle2 className="h-3 w-3" />Last tested: {new Date(cfg.last_tested_at).toLocaleString()}</div>
+                            <span className="inline-flex items-center gap-1 text-xs text-green-700" title={`Last tested: ${new Date(cfg.last_tested_at).toLocaleString()}`}>
+                              <CheckCircle2 className="h-3 w-3" />
+                            </span>
                           )}
                         </div>
                       </div>
-                      <div className="flex items-center gap-2">
+                      {/* Actions */}
+                      <div className="flex items-center gap-2 flex-shrink-0">
                         {!cfg.is_default && cfg.is_active && (
                           <Button
                             variant="ghost"
@@ -813,9 +842,11 @@ export default function Integrations() {
                     <input type="text" value={name} onChange={(e) => setName(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500" placeholder="e.g., OpenAI Production Key" />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">API Key *</label>
-                    <input type="password" required value={apiKey} onChange={(e) => setApiKey(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
-                      placeholder={isEditMode ? "Enter new API key" : "Enter API key"} />
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      API Key {isEditMode ? <span className="text-gray-500 font-normal">(leave empty to keep current)</span> : '*'}
+                    </label>
+                    <input type="password" required={!isEditMode} value={apiKey} onChange={(e) => setApiKey(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                      placeholder={isEditMode ? "Enter new API key (optional)" : "Enter API key"} />
                     <p className="mt-1 text-xs text-gray-500">Your API key will be encrypted and stored securely</p>
                   </div>
                 </>
@@ -831,7 +862,14 @@ export default function Integrations() {
                         return (
                           <button key={tp} type="button" disabled={isEditMode} onClick={() => setSelectedTelephonyProvider(tp)}
                             className={`text-left rounded-lg border p-3 transition ${selectedTelephonyProvider === tp ? 'border-green-500 bg-green-50' : 'border-gray-200 hover:border-gray-300'} ${isEditMode ? 'opacity-75 cursor-not-allowed' : ''}`}>
-                            <div className="flex items-center gap-2"><Phone className="h-4 w-4 text-green-600" /><span className="font-medium text-gray-900">{meta?.label || tp}</span></div>
+                            <div className="flex items-center gap-2">
+                              {meta?.logo ? (
+                                <img src={meta.logo} alt={meta.label} className="w-5 h-5 object-contain" />
+                              ) : (
+                                <Phone className="h-4 w-4 text-green-600" />
+                              )}
+                              <span className="font-medium text-gray-900">{meta?.label || tp}</span>
+                            </div>
                             <p className="text-xs text-gray-600 mt-1">{meta?.description}</p>
                           </button>
                         )

@@ -1370,6 +1370,10 @@ class CallImportEvaluation(Base):
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
 
+    # Optional user-supplied label for this run. Lets the UI surface
+    # something more meaningful than the UUID prefix (e.g. "March QA pass").
+    name = Column(String(255), nullable=True)
+
     # JSON list of Metric UUID strings selected for this run. Stored as text
     # in JSON so we don't have to deal with PG arrays of UUIDs / cascade
     # delete policies when metrics are removed; the loader filters for

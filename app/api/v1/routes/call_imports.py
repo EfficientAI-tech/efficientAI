@@ -670,13 +670,18 @@ async def update_call_import(
 )
 async def get_call_import_detail(
     call_import_id: UUID,
-    row_limit: int = Query(500, ge=1, le=5000),
+    row_limit: int = Query(500, ge=0, le=5000),
     row_offset: int = Query(0, ge=0),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ) -> CallImportDetailResponse:
-    """Fetch a single import batch with a slice of its rows."""
+    """Fetch a single import batch with a slice of its rows.
+
+    ``row_limit=0`` is intentionally allowed so callers that only need the
+    batch metadata (e.g. the evaluation-detail page rendering the parent's
+    column mapping) can skip the rows payload entirely.
+    """
 
     call_import = (
         db.query(CallImport)
@@ -692,14 +697,17 @@ async def get_call_import_detail(
             detail="Call import not found",
         )
 
-    rows = (
-        db.query(CallImportRow)
-        .filter(CallImportRow.call_import_id == call_import.id)
-        .order_by(CallImportRow.row_index)
-        .offset(row_offset)
-        .limit(row_limit)
-        .all()
-    )
+    if row_limit == 0:
+        rows: List[CallImportRow] = []
+    else:
+        rows = (
+            db.query(CallImportRow)
+            .filter(CallImportRow.call_import_id == call_import.id)
+            .order_by(CallImportRow.row_index)
+            .offset(row_offset)
+            .limit(row_limit)
+            .all()
+        )
 
     detail = CallImportDetailResponse.model_validate(call_import)
     detail.rows = [CallImportRowResponse.model_validate(r) for r in rows]

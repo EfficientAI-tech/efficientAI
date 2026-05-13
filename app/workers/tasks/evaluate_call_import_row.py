@@ -1,4 +1,20 @@
-"""Celery task: evaluate one CallImport row against selected metrics."""
+"""Celery task: evaluate one CallImport row against selected metrics.
+
+Metric routing mirrors ``process_evaluator_result``:
+
+* Audio-only metrics (MOS Score, Pitch Variance, Jitter, Shimmer, HNR,
+  Emotion Category/Confidence, Valence, Arousal, Speaker Consistency,
+  Prosody Score) are dispatched through
+  :func:`app.workers.tasks.helpers.audio_evaluation.evaluate_audio_metrics`,
+  which downloads the recording from S3 and hands it to the actual signal
+  processing libraries (Praat / UTMOS / qualitative voice service).
+* The remaining metrics are evaluated against the transcript by the LLM
+  helper, which is the appropriate medium for content-quality metrics.
+
+Previously every metric was handed to the LLM, which meant scores like
+"MOS" were hallucinated from transcript text instead of being measured
+from the audio.
+"""
 
 from __future__ import annotations
 
@@ -17,10 +33,16 @@ from app.models.database import (
     Metric,
 )
 from app.workers.config import celery_app
+from app.workers.tasks.helpers.audio_evaluation import (
+    evaluate_audio_metrics,
+    handle_audio_evaluation_error,
+)
+from app.workers.tasks.helpers.constants import AUDIO_ONLY_METRIC_NAMES
 from app.workers.tasks.helpers.llm_evaluation import (
     evaluate_with_llm,
     handle_llm_evaluation_error,
 )
+from app.workers.tasks.helpers.score_utils import get_metric_type_value
 
 
 def _now() -> datetime:
@@ -29,6 +51,39 @@ def _now() -> datetime:
 
 def _as_json_dict(value: Any) -> dict:
     return value if isinstance(value, dict) else {}
+
+
+def _categorize_metrics(
+    metrics: list[Metric], has_audio: bool
+) -> tuple[list[Metric], list[Metric], dict[str, dict[str, Any]]]:
+    """Split selected metrics into LLM vs audio buckets.
+
+    Audio-only metrics that cannot be evaluated (no recording available
+    on the row) are returned as pre-built "skipped" score entries so
+    they still surface in the UI with an explanation rather than being
+    silently dropped or routed to the LLM.
+    """
+
+    llm_metrics: list[Metric] = []
+    audio_metrics: list[Metric] = []
+    skipped_scores: dict[str, dict[str, Any]] = {}
+
+    for m in metrics:
+        normalized = (m.name or "").strip().lower()
+        if normalized in AUDIO_ONLY_METRIC_NAMES:
+            if has_audio:
+                audio_metrics.append(m)
+            else:
+                skipped_scores[str(m.id)] = {
+                    "value": None,
+                    "type": get_metric_type_value(m),
+                    "metric_name": m.name,
+                    "skipped": "audio_required",
+                }
+        else:
+            llm_metrics.append(m)
+
+    return llm_metrics, audio_metrics, skipped_scores
 
 
 def _rollup_parent(db, evaluation: CallImportEvaluation) -> None:
@@ -63,9 +118,20 @@ def _rollup_parent(db, evaluation: CallImportEvaluation) -> None:
         evaluation.status = "partial"
 
 
-@celery_app.task(name="evaluate_call_import_row", bind=True, max_retries=2)
+# Per-task time limits keep a wedged audio evaluation (e.g. torch.hub UTMOS
+# download stuck on a network hiccup, or libgomp deadlock in a prefork child)
+# from holding a worker child hostage for the global 30 min fallback. With
+# task_acks_late + worker_max_tasks_per_child enabled in app/workers/config.py,
+# a hard-killed task gets redelivered to a healthy child.
+@celery_app.task(
+    name="evaluate_call_import_row",
+    bind=True,
+    max_retries=2,
+    time_limit=10 * 60,
+    soft_time_limit=8 * 60,
+)
 def evaluate_call_import_row_task(self, eval_row_id: str):
-    """Evaluate one row transcript with selected LLM metrics."""
+    """Evaluate one row using the appropriate library per metric type."""
     db = SessionLocal()
     try:
         row_uuid = UUID(eval_row_id)
@@ -114,14 +180,8 @@ def evaluate_call_import_row_task(self, eval_row_id: str):
         db.commit()
 
         transcript = (source_row.transcript or "").strip()
-        if not transcript:
-            eval_row.status = "failed"
-            eval_row.error_message = "Transcript is empty for this row"
-            eval_row.finished_at = _now()
-            db.commit()
-            _rollup_parent(db, evaluation)
-            db.commit()
-            return {"status": "failed", "reason": "missing_transcript"}
+        recording_s3_key = (source_row.recording_s3_key or "").strip() or None
+        has_audio = recording_s3_key is not None
 
         metric_ids_raw = evaluation.selected_metric_ids or []
         metric_ids = []
@@ -151,33 +211,94 @@ def evaluate_call_import_row_task(self, eval_row_id: str):
             db.commit()
             return {"status": "failed", "reason": "no_metrics"}
 
-        ai_providers = (
-            db.query(AIProvider)
-            .filter(
-                AIProvider.organization_id == evaluation.organization_id,
-                AIProvider.is_active.is_(True),
-            )
-            .all()
+        llm_metrics, audio_metrics, metric_scores = _categorize_metrics(
+            metrics, has_audio
         )
 
-        try:
-            metric_scores, _ = evaluate_with_llm(
-                transcription=transcript,
-                llm_metrics=metrics,
-                ai_providers=ai_providers,
-                organization_id=evaluation.organization_id,
-                result_id=f"call-import-eval:{eval_row.id}",
-                db=db,
-                evaluator=None,
-                agent=None,
-                persona=None,
-                scenario=None,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("LLM evaluation failed for eval_row {}", eval_row.id)
-            metric_scores = handle_llm_evaluation_error(metrics, exc)
+        if not llm_metrics and not audio_metrics:
             eval_row.status = "failed"
-            eval_row.error_message = str(exc)
+            eval_row.error_message = (
+                "Selected metrics require audio but no recording is available "
+                "for this row"
+            )
+            eval_row.metric_scores = _as_json_dict(metric_scores)
+            eval_row.finished_at = _now()
+            db.commit()
+            _rollup_parent(db, evaluation)
+            db.commit()
+            return {"status": "failed", "reason": "audio_required"}
+
+        result_id = f"call-import-eval:{eval_row.id}"
+        evaluation_failed = False
+        primary_error_message: str | None = None
+
+        if audio_metrics and recording_s3_key:
+            try:
+                audio_scores = evaluate_audio_metrics(
+                    audio_s3_key=recording_s3_key,
+                    audio_metrics=audio_metrics,
+                    result_id=result_id,
+                )
+                metric_scores.update(audio_scores)
+            except Exception as audio_err:  # noqa: BLE001
+                logger.exception(
+                    "[CallImportEval {}] Audio analysis failed", eval_row.id
+                )
+                metric_scores.update(
+                    handle_audio_evaluation_error(audio_metrics, audio_err)
+                )
+
+        if llm_metrics:
+            if not transcript:
+                logger.warning(
+                    "[CallImportEval {}] Skipping LLM metrics: transcript is empty",
+                    eval_row.id,
+                )
+                err = RuntimeError("Transcript is empty for this row")
+                metric_scores.update(handle_llm_evaluation_error(llm_metrics, err))
+                evaluation_failed = True
+                primary_error_message = (
+                    "Transcript is empty for this row; LLM-evaluated metrics "
+                    "could not be scored."
+                )
+            else:
+                ai_providers = (
+                    db.query(AIProvider)
+                    .filter(
+                        AIProvider.organization_id == evaluation.organization_id,
+                        AIProvider.is_active.is_(True),
+                    )
+                    .all()
+                )
+                try:
+                    llm_scores, _eval_time = evaluate_with_llm(
+                        transcription=transcript,
+                        llm_metrics=llm_metrics,
+                        ai_providers=ai_providers,
+                        organization_id=evaluation.organization_id,
+                        result_id=result_id,
+                        db=db,
+                        evaluator=None,
+                        agent=None,
+                        persona=None,
+                        scenario=None,
+                    )
+                    metric_scores.update(llm_scores)
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception(
+                        "[CallImportEval {}] LLM evaluation failed", eval_row.id
+                    )
+                    metric_scores.update(
+                        handle_llm_evaluation_error(llm_metrics, exc)
+                    )
+                    evaluation_failed = True
+                    primary_error_message = str(exc)
+
+        if evaluation_failed:
+            eval_row.status = "failed"
+            eval_row.error_message = (
+                primary_error_message or "Evaluation failed for one or more metrics"
+            )
         else:
             eval_row.status = "completed"
             eval_row.error_message = None

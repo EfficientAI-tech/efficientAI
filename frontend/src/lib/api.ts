@@ -1082,13 +1082,46 @@ class ApiClient {
 
   async createCallImportEvaluation(
     callImportId: string,
-    payload: { metric_ids: string[] },
+    payload: { metric_ids: string[]; name?: string | null },
   ): Promise<CallImportEvaluation> {
     const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/evaluations`,
       payload,
     )
     return response.data
+  }
+
+  async updateCallImportEvaluation(
+    callImportId: string,
+    evaluationId: string,
+    payload: { name?: string | null },
+  ): Promise<CallImportEvaluation> {
+    const response = await this.client.patch(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}`,
+      payload,
+    )
+    return response.data
+  }
+
+  async bulkDeleteCallImportEvaluations(
+    callImportId: string,
+    evaluationIds: string[],
+  ): Promise<{ deleted: number }> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/evaluations/bulk-delete`,
+      { evaluation_ids: evaluationIds },
+    )
+    return response.data
+  }
+
+  async deleteCallImportEvaluationRow(
+    callImportId: string,
+    evaluationId: string,
+    evalRowId: string,
+  ): Promise<void> {
+    await this.client.delete(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/rows/${evalRowId}`,
+    )
   }
 
   async listCallImportEvaluations(callImportId: string): Promise<CallImportEvaluationListResponse> {

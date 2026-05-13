@@ -3,11 +3,31 @@
 
 Heavy imports (telephony service, S3 client) are deferred so the Celery boot
 cost stays low and the task module can be imported safely at worker startup.
+
+Recording-fetch strategy is two-tier so retries / stale CSVs both work:
+
+    1. **Credentialed call-id lookup** (preferred). When the provider client
+       supports it (Exotel today), authenticate with the batch's pinned
+       credentials, resolve a fresh recording URL via the Calls API, then
+       download from that URL. This is the "freshest" path and works even
+       when a CSV-supplied URL has expired / isn't accepting our auth.
+    2. **CSV-supplied recording URL** (fallback). Only used when (a) the
+       call-id flow couldn't deliver a recording for non-retryable reasons,
+       or (b) the provider client has no lookup capability (e.g. Plivo —
+       Plivo CSVs must include a recording URL).
+
+When the call-id flow fails, the CSV-supplied URL is always given a turn
+(if present) — that maximizes the chance of delivering bytes on this
+attempt. The final outcome is then determined by the union of failure
+modes: if any tier hit a transient error and bytes still couldn't be
+fetched, schedule a Celery retry; if every applicable tier failed
+non-retryably, mark the row failed with a composite error message.
 """
 
 from __future__ import annotations
 
 import mimetypes
+from typing import Optional, Tuple
 from uuid import UUID
 
 from loguru import logger
@@ -77,7 +97,8 @@ def process_call_import_row_task(self, row_id: str):
     """Fetch one call recording from the provider and store it in S3.
 
     Retries on transient errors (network blips, 5xx); marks the row failed
-    immediately on auth/4xx/oversize errors.
+    immediately on auth/4xx/oversize errors after exhausting both the
+    call-id lookup path and the CSV-URL fallback.
     """
 
     from app.models.database import CallImportRow
@@ -91,6 +112,13 @@ def process_call_import_row_task(self, row_id: str):
         ExotelTransientError,
     )
     from app.services.telephony.telephony_service import telephony_service
+
+    NON_RETRYABLE_ERRORS = (
+        ExotelAuthError,
+        ExotelNotFoundError,
+        ExotelInvalidContentError,
+        ExotelRecordingTooLargeError,
+    )
 
     db = SessionLocal()
     try:
@@ -131,85 +159,155 @@ def process_call_import_row_task(self, row_id: str):
             db.commit()
             return {"status": "failed", "reason": "provider_client_error"}
 
-        # If the CSV did not include a Recording URL for this row, resolve it
-        # from the provider's call detail endpoint using the CallID. The
-        # resolved URL is persisted onto the row so retries don't re-resolve.
-        if not (row.recording_url and row.recording_url.strip()):
+        original_csv_url = (row.recording_url or "").strip() or None
+        provider_lookup_supported = bool(row.external_call_id) and hasattr(
+            client, "get_call_recording_url"
+        )
+
+        # ------------------------------------------------------------------
+        # Tier 1 — credentialed call-id flow (preferred). On success we
+        # download the recording right here so a successful lookup combined
+        # with a failing download still has a chance to fall back to the
+        # CSV-supplied URL on the next tier.
+        # ------------------------------------------------------------------
+        audio_bytes: Optional[bytes] = None
+        content_type: Optional[str] = None
+        used_url: Optional[str] = None
+        primary_failure: Optional[Exception] = None
+        primary_was_transient = False
+
+        if provider_lookup_supported:
             try:
                 resolved_url = client.get_call_recording_url(row.external_call_id)
-            except (
-                ExotelAuthError,
-                ExotelNotFoundError,
-                ExotelInvalidContentError,
-            ) as exc:
+                fetched: Tuple[bytes, str] = client.download_recording(resolved_url)
+                audio_bytes, content_type = fetched
+                used_url = resolved_url
+            except NON_RETRYABLE_ERRORS as exc:
+                primary_failure = exc
                 logger.warning(
-                    "Non-retryable error resolving recording URL for row {}: {}",
+                    "Call-id flow failed (non-retryable) for row {}: {}",
                     row_id,
                     exc,
                 )
-                row.status = CallImportRowStatus.FAILED
-                row.error_message = str(exc)
-                db.commit()
-                _rollup_parent_status(db, call_import)
-                db.commit()
-                return {"status": "failed", "reason": "non_retryable_provider_error"}
             except ExotelTransientError as exc:
+                primary_failure = exc
+                primary_was_transient = True
                 logger.warning(
-                    "Transient error resolving recording URL for row {} (attempt {}): {}",
+                    "Call-id flow failed (transient) for row {} attempt {}: {}",
                     row_id,
                     row.attempts,
                     exc,
                 )
-                row.status = CallImportRowStatus.PENDING
-                row.error_message = f"Transient: {exc}"
-                db.commit()
-                raise self.retry(exc=exc, countdown=_RETRYABLE_COUNTDOWN_SECONDS)
             except Exception as exc:
+                primary_failure = exc
+                primary_was_transient = True
                 logger.exception(
-                    "Unexpected error resolving recording URL for row {}", row_id
+                    "Call-id flow failed (unexpected) for row {}", row_id
                 )
-                row.error_message = f"Unexpected error: {exc}"
-                row.status = CallImportRowStatus.PENDING
+
+        # ------------------------------------------------------------------
+        # Tier 2 — CSV-supplied recording URL (fallback). Only attempted
+        # when Tier 1 didn't deliver bytes. We use this both for "Tier 1
+        # not supported" (e.g. Plivo) and "Tier 1 failed" cases so a stale
+        # CSV URL is the last line of defense, never the first.
+        # ------------------------------------------------------------------
+        fallback_failure: Optional[Exception] = None
+        fallback_was_transient = False
+
+        if audio_bytes is None and original_csv_url:
+            try:
+                fetched = client.download_recording(original_csv_url)
+                audio_bytes, content_type = fetched
+                used_url = original_csv_url
+                if primary_failure is not None:
+                    logger.info(
+                        "Recovered row {} via CSV-supplied recording URL after "
+                        "call-id flow failed ({})",
+                        row_id,
+                        primary_failure,
+                    )
+            except NON_RETRYABLE_ERRORS as exc:
+                fallback_failure = exc
+                logger.warning(
+                    "CSV-URL fallback failed (non-retryable) for row {}: {}",
+                    row_id,
+                    exc,
+                )
+            except ExotelTransientError as exc:
+                fallback_failure = exc
+                fallback_was_transient = True
+                logger.warning(
+                    "CSV-URL fallback failed (transient) for row {} attempt {}: {}",
+                    row_id,
+                    row.attempts,
+                    exc,
+                )
+            except Exception as exc:
+                fallback_failure = exc
+                fallback_was_transient = True
+                logger.exception(
+                    "CSV-URL fallback failed (unexpected) for row {}", row_id
+                )
+
+        # ------------------------------------------------------------------
+        # Decide: success / retry / fail
+        # ------------------------------------------------------------------
+        if audio_bytes is None:
+            # Nothing to attempt at all — neither call-id lookup nor CSV URL
+            # is available. This is a permanent data error.
+            if primary_failure is None and fallback_failure is None:
+                msg = (
+                    "Cannot fetch recording: row has no recording URL and the "
+                    "provider does not support call-id lookup."
+                )
+                logger.warning("{} (row {})", msg, row_id)
+                row.status = CallImportRowStatus.FAILED
+                row.error_message = msg
                 db.commit()
-                raise self.retry(exc=exc, countdown=_RETRYABLE_COUNTDOWN_SECONDS)
+                _rollup_parent_status(db, call_import)
+                db.commit()
+                return {"status": "failed", "reason": "no_recording_source"}
 
-            row.recording_url = resolved_url
-            db.commit()
+            # If anything along the way was transient, schedule a retry —
+            # the next attempt re-tries the call-id flow from the top.
+            if primary_was_transient or fallback_was_transient:
+                exc_to_raise = (
+                    fallback_failure if fallback_was_transient else primary_failure
+                )
+                row.status = CallImportRowStatus.PENDING
+                row.error_message = f"Transient: {exc_to_raise}"
+                db.commit()
+                raise self.retry(
+                    exc=exc_to_raise, countdown=_RETRYABLE_COUNTDOWN_SECONDS
+                )
 
-        try:
-            audio_bytes, content_type = client.download_recording(row.recording_url)
-        except (
-            ExotelAuthError,
-            ExotelNotFoundError,
-            ExotelInvalidContentError,
-            ExotelRecordingTooLargeError,
-        ) as exc:
-            logger.warning(
-                "Non-retryable error fetching recording for row {}: {}", row_id, exc
-            )
+            # Both tiers failed with non-retryable errors (or only one tier
+            # was applicable and it failed non-retryably). Surface a
+            # composite message so the operator sees both paths' results.
+            parts = []
+            if primary_failure is not None:
+                parts.append(f"call-id lookup: {primary_failure}")
+            if fallback_failure is not None:
+                parts.append(f"recording URL: {fallback_failure}")
+            err_msg = "; ".join(parts) if parts else "Recording fetch failed"
             row.status = CallImportRowStatus.FAILED
-            row.error_message = str(exc)
+            row.error_message = err_msg
             db.commit()
             _rollup_parent_status(db, call_import)
             db.commit()
             return {"status": "failed", "reason": "non_retryable_provider_error"}
-        except ExotelTransientError as exc:
-            logger.warning(
-                "Transient error fetching recording for row {} (attempt {}): {}",
-                row_id,
-                row.attempts,
-                exc,
-            )
-            row.status = CallImportRowStatus.PENDING  # let the retry pick it up
-            row.error_message = f"Transient: {exc}"
+
+        # ------------------------------------------------------------------
+        # Success path — persist the resolved URL when the CSV didn't
+        # supply one (matches legacy behavior so retries / debugging
+        # surface what we actually fetched). When the CSV *did* supply a
+        # URL we leave it untouched so a future retry can still fall back
+        # to the original uploader-supplied value if a fresh lookup
+        # produces a different (and possibly broken) URL.
+        # ------------------------------------------------------------------
+        if not original_csv_url and used_url:
+            row.recording_url = used_url
             db.commit()
-            raise self.retry(exc=exc, countdown=_RETRYABLE_COUNTDOWN_SECONDS)
-        except Exception as exc:
-            logger.exception("Unexpected error fetching recording for row {}", row_id)
-            row.error_message = f"Unexpected error: {exc}"
-            row.status = CallImportRowStatus.PENDING
-            db.commit()
-            raise self.retry(exc=exc, countdown=_RETRYABLE_COUNTDOWN_SECONDS)
 
         if not s3_service.is_enabled():
             err = (
@@ -224,7 +322,7 @@ def process_call_import_row_task(self, row_id: str):
             db.commit()
             return {"status": "failed", "reason": "s3_unavailable"}
 
-        ext = _extension_for_content_type(content_type)
+        ext = _extension_for_content_type(content_type or "")
         prefix = s3_service.prefix
         key = (
             f"{prefix}organizations/{row.organization_id}/call_imports/"

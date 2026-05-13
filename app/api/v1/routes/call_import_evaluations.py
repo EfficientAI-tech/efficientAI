@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
-from typing import Dict, List
+from typing import Dict, List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -24,11 +24,13 @@ from app.models.database import (
 )
 from app.models.enums import CallImportRowStatus
 from app.models.schemas import (
+    CallImportEvaluationBulkDelete,
     CallImportEvaluationCreate,
     CallImportEvaluationListResponse,
     CallImportEvaluationResponse,
     CallImportEvaluationRowListResponse,
     CallImportEvaluationRowResponse,
+    CallImportEvaluationUpdate,
     CallImportMetricSummary,
 )
 
@@ -90,6 +92,7 @@ def _serialize_eval(db: Session, row: CallImportEvaluation) -> CallImportEvaluat
         id=row.id,
         call_import_id=row.call_import_id,
         organization_id=row.organization_id,
+        name=row.name,
         selected_metric_ids=selected_ids,
         metrics=[
             CallImportMetricSummary(
@@ -110,6 +113,54 @@ def _serialize_eval(db: Session, row: CallImportEvaluation) -> CallImportEvaluat
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
+
+
+def _normalize_name(value: Optional[str]) -> Optional[str]:
+    """Trim user-supplied name; empty string becomes ``NULL``."""
+    if value is None:
+        return None
+    trimmed = value.strip()
+    return trimmed or None
+
+
+def _rollup_evaluation_status(evaluation: CallImportEvaluation, db: Session) -> None:
+    """Recompute counters + terminal status after rows are added/removed.
+
+    Mirrors the rollup logic in
+    ``app.workers.tasks.evaluate_call_import_row._rollup_parent`` so the
+    parent stays consistent even when the user manually deletes a row.
+    """
+
+    rows = (
+        db.query(CallImportEvaluationRow.status)
+        .filter(CallImportEvaluationRow.evaluation_id == evaluation.id)
+        .all()
+    )
+    total = len(rows)
+    completed = sum(1 for (status,) in rows if status == "completed")
+    failed = sum(1 for (status,) in rows if status == "failed")
+    in_progress = sum(
+        1 for (status,) in rows if status in {"pending", "running"}
+    )
+
+    evaluation.total_rows = total
+    evaluation.completed_rows = completed
+    evaluation.failed_rows = failed
+
+    if total == 0:
+        # No rows left → treat as completed (empty result set) so the UI
+        # doesn't keep polling a zombie "running" evaluation.
+        evaluation.status = "completed"
+        return
+    if in_progress > 0:
+        evaluation.status = "running"
+        return
+    if failed == 0:
+        evaluation.status = "completed"
+    elif completed == 0:
+        evaluation.status = "failed"
+    else:
+        evaluation.status = "partial"
 
 
 @router.post(
@@ -180,6 +231,7 @@ async def create_call_import_evaluation(
     evaluation = CallImportEvaluation(
         call_import_id=call_import.id,
         organization_id=organization_id,
+        name=_normalize_name(payload.name),
         selected_metric_ids=[str(metric_id) for metric_id in metric_ids],
         status="pending",
         total_rows=len(completed_rows),
@@ -450,13 +502,84 @@ async def export_call_import_evaluation_csv(
             row_out[metric.name] = "" if value is None else str(value)
         writer.writerow(row_out)
 
-    output.seek(0)
+    # Excel on Windows defaults to the system ANSI codepage (Windows-1252)
+    # when a CSV has no encoding marker, which turns UTF-8 Hindi/Devanagari
+    # / any non-ASCII text into mojibake (e.g. ``ठीक`` → ``à¤ à¥€à¤•``).
+    # A UTF-8 BOM tells Excel to switch to UTF-8 decoding and is silently
+    # skipped by every other UTF-8-aware reader (pandas, LibreOffice,
+    # Google Sheets, etc.), so the data round-trips correctly everywhere.
+    csv_text = output.getvalue()
+    csv_bytes = ("\ufeff" + csv_text).encode("utf-8")
     filename = f"call-import-{call_import_id}-evaluation-{eval_id}.csv"
     return StreamingResponse(
-        iter([output.getvalue()]),
-        media_type="text/csv",
+        iter([csv_bytes]),
+        media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.patch(
+    "/{eval_id}",
+    response_model=CallImportEvaluationResponse,
+    operation_id="updateCallImportEvaluation",
+)
+async def update_call_import_evaluation(
+    call_import_id: UUID,
+    eval_id: UUID,
+    payload: CallImportEvaluationUpdate,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportEvaluationResponse:
+    """Edit metadata on an existing evaluation run (currently just ``name``)."""
+
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    row = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Call import evaluation not found")
+
+    # Treat unset vs explicit ``None`` differently: unset = leave alone,
+    # explicit ``None`` or empty string = clear the name.
+    payload_data = payload.model_dump(exclude_unset=True)
+    if "name" in payload_data:
+        row.name = _normalize_name(payload_data["name"])
+
+    db.commit()
+    db.refresh(row)
+    return _serialize_eval(db, row)
+
+
+def _revoke_pending_tasks(evaluation: CallImportEvaluation) -> None:
+    """Best-effort cancel of any in-flight Celery tasks for an evaluation."""
+
+    if not evaluation.celery_group_id and not any(
+        r.celery_task_id for r in evaluation.row_results
+    ):
+        return
+    try:
+        from app.workers.celery_app import celery_app
+
+        pending_task_ids = [
+            eval_row.celery_task_id
+            for eval_row in evaluation.row_results
+            if eval_row.celery_task_id
+            and eval_row.status in {"pending", "running"}
+        ]
+        if pending_task_ids:
+            celery_app.control.revoke(pending_task_ids, terminate=False)
+    except Exception:
+        # Best effort — DB delete remains the source of truth.
+        pass
 
 
 @router.delete(
@@ -486,21 +609,118 @@ async def delete_call_import_evaluation(
     if not row:
         raise HTTPException(status_code=404, detail="Call import evaluation not found")
 
-    if row.celery_group_id:
+    _revoke_pending_tasks(row)
+
+    db.delete(row)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/bulk-delete",
+    status_code=status.HTTP_200_OK,
+    operation_id="bulkDeleteCallImportEvaluations",
+)
+async def bulk_delete_call_import_evaluations(
+    call_import_id: UUID,
+    payload: CallImportEvaluationBulkDelete,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> Dict[str, int]:
+    """Delete multiple evaluation runs scoped to one call import.
+
+    Mirrors :func:`delete_call_import_evaluation` but in bulk so the UI
+    can clear out a multi-select. Unknown ids (already deleted, or
+    belonging to a different org/import) are silently skipped — the
+    response just reports how many actually went away.
+    """
+
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    if not payload.evaluation_ids:
+        return {"deleted": 0}
+
+    rows = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id.in_(payload.evaluation_ids),
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .all()
+    )
+    deleted = 0
+    for row in rows:
+        _revoke_pending_tasks(row)
+        db.delete(row)
+        deleted += 1
+    db.commit()
+    return {"deleted": deleted}
+
+
+@router.delete(
+    "/{eval_id}/rows/{eval_row_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    operation_id="deleteCallImportEvaluationRow",
+)
+async def delete_call_import_evaluation_row(
+    call_import_id: UUID,
+    eval_id: UUID,
+    eval_row_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Delete a single per-row scoring entry within an evaluation run.
+
+    Useful when the user wants to drop a noisy row before re-exporting
+    the CSV — e.g. a row whose audio was corrupt and skewed the
+    aggregate. Counters on the parent are recomputed so the rolled-up
+    status stays accurate.
+    """
+
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(status_code=404, detail="Call import evaluation not found")
+
+    eval_row = (
+        db.query(CallImportEvaluationRow)
+        .filter(
+            CallImportEvaluationRow.id == eval_row_id,
+            CallImportEvaluationRow.evaluation_id == eval_id,
+        )
+        .first()
+    )
+    if not eval_row:
+        raise HTTPException(
+            status_code=404, detail="Evaluation row not found in this run"
+        )
+
+    # If the row was still in flight, best-effort revoke the worker task
+    # so it doesn't try to write into a deleted DB row mid-execution.
+    if eval_row.celery_task_id and eval_row.status in {"pending", "running"}:
         try:
             from app.workers.celery_app import celery_app
 
-            pending_task_ids = [
-                eval_row.celery_task_id
-                for eval_row in row.row_results
-                if eval_row.celery_task_id and eval_row.status in {"pending", "running"}
-            ]
-            if pending_task_ids:
-                celery_app.control.revoke(pending_task_ids, terminate=False)
+            celery_app.control.revoke(eval_row.celery_task_id, terminate=False)
         except Exception:
-            # Best effort - DB delete is source of truth.
             pass
 
-    db.delete(row)
+    db.delete(eval_row)
+    db.flush()
+    _rollup_evaluation_status(evaluation, db)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

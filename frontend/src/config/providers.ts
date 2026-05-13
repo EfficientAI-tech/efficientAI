@@ -206,7 +206,7 @@ export interface TelephonyProviderMetadata {
 export const TELEPHONY_PROVIDER_CONFIG: Record<TelephonyProvider, TelephonyProviderMetadata> = {
   [TelephonyProvider.PLIVO]: {
     label: 'Plivo',
-    logo: null,
+    logo: '/plivo.png',
     description: 'Voice telephony, SIP routing, voice OTP, and number masking',
     fields: [
       { key: 'auth_id', label: 'Auth ID', required: true, type: 'password' },
@@ -217,7 +217,7 @@ export const TELEPHONY_PROVIDER_CONFIG: Record<TelephonyProvider, TelephonyProvi
   },
   [TelephonyProvider.EXOTEL]: {
     label: 'Exotel',
-    logo: null,
+    logo: '/exotel.jpg',
     description: 'Voice telephony, applet routing, voice OTP, and masking workflows',
     fields: [
       { key: 'auth_id', label: 'API Key', required: true, type: 'password' },
@@ -231,6 +231,9 @@ export const TELEPHONY_PROVIDER_CONFIG: Record<TelephonyProvider, TelephonyProvi
 
 export const getTelephonyProviderLabel = (provider: TelephonyProvider): string =>
   TELEPHONY_PROVIDER_CONFIG[provider]?.label ?? provider
+
+export const getTelephonyProviderLogo = (provider: TelephonyProvider): string | null =>
+  TELEPHONY_PROVIDER_CONFIG[provider]?.logo ?? null
 
 export const getTelephonyProviderDescription = (provider: TelephonyProvider): string =>
   TELEPHONY_PROVIDER_CONFIG[provider]?.description ?? ''

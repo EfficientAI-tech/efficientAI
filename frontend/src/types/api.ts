@@ -703,6 +703,8 @@ export interface CallImportEvaluation {
   id: string
   call_import_id: string
   organization_id: string
+  /** User-supplied label for the run; null when not named. */
+  name: string | null
   selected_metric_ids: string[]
   metrics: CallImportMetricSummary[]
   status: 'pending' | 'running' | 'completed' | 'partial' | 'failed'

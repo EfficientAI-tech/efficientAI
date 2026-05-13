@@ -1963,6 +1963,34 @@ class CallImportEvaluationCreate(BaseModel):
         min_length=1,
         description="Org Metric ids to score every completed row against.",
     )
+    name: Optional[str] = Field(
+        default=None,
+        max_length=255,
+        description=(
+            "Optional human-readable label for the run. Shown in the UI "
+            "instead of the UUID prefix."
+        ),
+    )
+
+
+class CallImportEvaluationUpdate(BaseModel):
+    """Patch body for editing a previously-created evaluation run."""
+
+    name: Optional[str] = Field(
+        default=None,
+        max_length=255,
+        description="New name for the evaluation. Empty string clears it.",
+    )
+
+
+class CallImportEvaluationBulkDelete(BaseModel):
+    """Request body for deleting multiple evaluation runs in one call."""
+
+    evaluation_ids: List[UUID] = Field(
+        ...,
+        min_length=1,
+        description="Evaluation ids to delete.",
+    )
 
 
 class CallImportMetricSummary(BaseModel):
@@ -1982,6 +2010,7 @@ class CallImportEvaluationResponse(BaseModel):
     id: UUID
     call_import_id: UUID
     organization_id: UUID
+    name: Optional[str] = None
     selected_metric_ids: List[UUID] = Field(default_factory=list)
     metrics: List[CallImportMetricSummary] = Field(default_factory=list)
     status: str

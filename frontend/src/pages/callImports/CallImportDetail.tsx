@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -11,6 +11,8 @@ import {
   Download,
   Edit3,
   FileText,
+  ListTree,
+  MessageSquare,
   Pause,
   Play,
   RefreshCw,
@@ -22,7 +24,6 @@ import {
 import { apiClient } from '../../lib/api'
 import type {
   CallImportEvaluation,
-  CallImportEvaluationRow,
   CallImportRow,
   CallImportTag,
 } from '../../types/api'
@@ -30,6 +31,7 @@ import Button from '../../components/Button'
 import ConfirmModal from '../../components/ConfirmModal'
 import StatusBadge from '../../components/shared/StatusBadge'
 import CallImportProgressBar from './components/CallImportProgressBar'
+import TranscriptView from './components/TranscriptView'
 
 const ROW_PAGE_SIZE = 100
 
@@ -55,7 +57,7 @@ export default function CallImportDetail() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [rowOffset, setRowOffset] = useState(0)
-  const [transcriptRow, setTranscriptRow] = useState<CallImportRow | null>(null)
+  const [expandedRowIds, setExpandedRowIds] = useState<Set<string>>(new Set())
 
   const [playingRowId, setPlayingRowId] = useState<string | null>(null)
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
@@ -68,9 +70,11 @@ export default function CallImportDetail() {
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [showRunEval, setShowRunEval] = useState(false)
   const [selectedMetricIds, setSelectedMetricIds] = useState<string[]>([])
-  const [activeEvalId, setActiveEvalId] = useState<string | null>(null)
-  const [evalRowsPage, setEvalRowsPage] = useState(1)
+  const [runDraftName, setRunDraftName] = useState('')
   const [activeTab, setActiveTab] = useState<'rows' | 'evaluations'>('rows')
+  const [selectedEvalIds, setSelectedEvalIds] = useState<Set<string>>(new Set())
+  const [showBulkDeleteEvals, setShowBulkDeleteEvals] = useState(false)
+  const [bulkDeleteEvalsError, setBulkDeleteEvalsError] = useState<string | null>(null)
 
   const [editingMeta, setEditingMeta] = useState(false)
   const [draftDataset, setDraftDataset] = useState('')
@@ -160,104 +164,35 @@ export default function CallImportDetail() {
     },
   })
 
-  const activeEvaluation = useMemo(
-    () => evaluationsData?.items.find((row) => row.id === activeEvalId) || null,
-    [evaluationsData?.items, activeEvalId],
-  )
-
-  const { data: activeEvalRows } = useQuery({
-    queryKey: ['call-import-evaluation-rows', id, activeEvalId, evalRowsPage],
-    queryFn: () =>
-      apiClient.listCallImportEvaluationRows(id!, activeEvalId!, {
-        page: evalRowsPage,
-        page_size: 50,
-      }),
-    enabled: !!id && !!activeEvalId,
-    refetchInterval: () => {
-      if (!activeEvaluation) return false
-      return activeEvaluation.status === 'pending' || activeEvaluation.status === 'running'
-        ? 3000
-        : false
-    },
-  })
-
-  // Columns to render in the per-row results table.
-  //
-  // We intentionally union three sources rather than only trusting
-  // `activeEvaluation.metrics` so the UI stays in sync with the actual
-  // scored data even if the server metrics list is stale or filtered:
-  //   1. `activeEvaluation.metrics`      -- server-known metrics, in selected
-  //                                         order. Source of truth for ordering.
-  //   2. `selected_metric_ids`           -- in case the server dropped a row
-  //                                         from (1) but the id is still
-  //                                         recorded on the evaluation.
-  //   3. keys observed in `metric_scores` -- catches anything that was actually
-  //                                         scored (what the CSV export
-  //                                         iterates), with `metric_name`
-  //                                         falling back from the score payload
-  //                                         itself.
-  const displayMetrics = useMemo(() => {
-    const byId = new Map<string, { id: string; name: string }>()
-
-    for (const m of activeEvaluation?.metrics ?? []) {
-      if (m && m.id) {
-        byId.set(m.id, { id: m.id, name: m.name || `Metric ${m.id.slice(0, 8)}` })
-      }
-    }
-
-    for (const mid of activeEvaluation?.selected_metric_ids ?? []) {
-      if (typeof mid === 'string' && !byId.has(mid)) {
-        byId.set(mid, { id: mid, name: `Metric ${mid.slice(0, 8)}` })
-      }
-    }
-
-    for (const row of activeEvalRows?.items ?? []) {
-      const scores = row.metric_scores
-      if (!scores || typeof scores !== 'object') continue
-      for (const [metricId, entry] of Object.entries(scores)) {
-        if (!metricId) continue
-        const existing = byId.get(metricId)
-        const fallbackName =
-          entry && typeof entry === 'object' && 'metric_name' in entry
-            ? (entry as { metric_name?: unknown }).metric_name
-            : undefined
-        const nameFromScore =
-          typeof fallbackName === 'string' && fallbackName.trim()
-            ? fallbackName
-            : undefined
-        if (!existing) {
-          byId.set(metricId, {
-            id: metricId,
-            name: nameFromScore || `Metric ${metricId.slice(0, 8)}`,
-          })
-        } else if (
-          nameFromScore &&
-          existing.name.startsWith('Metric ') &&
-          existing.name.length <= 'Metric '.length + 8
-        ) {
-          // Upgrade placeholder name with the real one from the score payload.
-          byId.set(metricId, { id: metricId, name: nameFromScore })
-        }
-      }
-    }
-
-    return Array.from(byId.values())
-  }, [
-    activeEvaluation?.metrics,
-    activeEvaluation?.selected_metric_ids,
-    activeEvalRows?.items,
-  ])
-
   const runEvaluationMutation = useMutation({
-    mutationFn: (metricIds: string[]) =>
-      apiClient.createCallImportEvaluation(id!, { metric_ids: metricIds }),
+    mutationFn: (payload: { metric_ids: string[]; name?: string | null }) =>
+      apiClient.createCallImportEvaluation(id!, payload),
     onSuccess: (created) => {
       queryClient.invalidateQueries({ queryKey: ['call-import-evaluations', id] })
       setShowRunEval(false)
       setSelectedMetricIds([])
-      setActiveEvalId(created.id)
-      setEvalRowsPage(1)
+      setRunDraftName('')
       setActiveTab('evaluations')
+      // Land directly on the dedicated detail page for the new run.
+      navigate(`/call-imports/${id}/evaluations/${created.id}`)
+    },
+  })
+
+  const bulkDeleteEvalsMutation = useMutation({
+    mutationFn: (ids: string[]) =>
+      apiClient.bulkDeleteCallImportEvaluations(id!, ids),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['call-import-evaluations', id] })
+      setSelectedEvalIds(new Set())
+      setShowBulkDeleteEvals(false)
+      setBulkDeleteEvalsError(null)
+    },
+    onError: (err: any) => {
+      setBulkDeleteEvalsError(
+        err?.response?.data?.detail ||
+          err?.message ||
+          'Failed to delete evaluation runs.',
+      )
     },
   })
 
@@ -268,13 +203,6 @@ export default function CallImportDetail() {
       }
     }
   }, [])
-
-  useEffect(() => {
-    const firstEval = evaluationsData?.items?.[0]
-    if (!activeEvalId && firstEval) {
-      setActiveEvalId(firstEval.id)
-    }
-  }, [evaluationsData?.items, activeEvalId])
 
   const totalRows = data?.total_rows ?? 0
   const rowPage = Math.floor(rowOffset / ROW_PAGE_SIZE) + 1
@@ -340,24 +268,6 @@ export default function CallImportDetail() {
     } catch (e) {
       console.error('Failed to download recording', e)
       alert('Failed to download recording')
-    }
-  }
-
-  const handleExportEvaluation = async (evaluationId: string) => {
-    if (!id) return
-    try {
-      const blob = await apiClient.exportCallImportEvaluation(id, evaluationId)
-      const url = window.URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = url
-      link.download = `call-import-${id}-evaluation-${evaluationId}.csv`
-      document.body.appendChild(link)
-      link.click()
-      link.remove()
-      window.URL.revokeObjectURL(url)
-    } catch (e) {
-      console.error('Failed to export evaluation', e)
-      alert('Failed to export evaluation CSV')
     }
   }
 
@@ -703,12 +613,33 @@ export default function CallImportDetail() {
 
       {activeTab === 'rows' && (
       <div className="bg-white shadow rounded-lg p-6">
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
           <h2 className="text-lg font-semibold text-gray-900">Rows</h2>
-          <p className="text-sm text-gray-500">
-            Showing {rows.length === 0 ? 0 : rowOffset + 1}&ndash;
-            {rowOffset + rows.length} of {totalRows}
-          </p>
+          <div className="flex items-center gap-3 flex-wrap">
+            {rows.length > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                leftIcon={<ListTree className="h-4 w-4" />}
+                onClick={() => {
+                  const everyExpanded = rows.every((r) => expandedRowIds.has(r.id))
+                  setExpandedRowIds(
+                    everyExpanded
+                      ? new Set()
+                      : new Set(rows.map((r) => r.id)),
+                  )
+                }}
+              >
+                {rows.every((r) => expandedRowIds.has(r.id)) && rows.length > 0
+                  ? 'Collapse all'
+                  : 'Expand all'}
+              </Button>
+            )}
+            <p className="text-sm text-gray-500">
+              Showing {rows.length === 0 ? 0 : rowOffset + 1}&ndash;
+              {rowOffset + rows.length} of {totalRows}
+            </p>
+          </div>
         </div>
 
         {rows.length === 0 ? (
@@ -717,153 +648,267 @@ export default function CallImportDetail() {
             <p>No rows in this slice.</p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-12">
-                    #
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    CallID
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Status
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Attempts
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Recording
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Transcript
-                  </th>
-                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider w-12">
-                    <span className="sr-only">Actions</span>
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {rows.map((row) => {
-                  const hasRecording = !!row.recording_s3_key
-                  const isThisPlaying = playingRowId === row.id && isPlaying
-                  return (
-                    <Fragment key={row.id}>
-                      <tr className="hover:bg-gray-50 align-top">
-                        <td className="px-4 py-3 text-sm text-gray-500">
-                          {row.row_index + 1}
-                        </td>
-                        <td className="px-4 py-3 text-sm font-mono text-gray-900 break-all">
-                          {row.external_call_id}
-                        </td>
-                        <td className="px-4 py-3">
-                          <StatusBadge status={row.status} size="sm" />
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-600">{row.attempts}</td>
-                        <td className="px-4 py-3 text-sm">
-                          {hasRecording ? (
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => handlePlay(row)}
-                                isLoading={loadingRowId === row.id}
-                                leftIcon={
-                                  loadingRowId === row.id
-                                    ? undefined
-                                    : isThisPlaying
-                                      ? <Pause className="h-4 w-4" />
-                                      : <Play className="h-4 w-4" />
-                                }
-                                className={
-                                  isThisPlaying
-                                    ? 'text-green-600 hover:text-green-700 bg-green-50'
-                                    : 'text-blue-600 hover:text-blue-700'
-                                }
-                                title={isThisPlaying ? 'Pause' : 'Play'}
-                              >
-                                {isThisPlaying ? 'Pause' : 'Play'}
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => handleDownload(row)}
-                                leftIcon={<Download className="h-4 w-4" />}
-                                className="text-primary-600 hover:text-primary-700"
-                              >
-                                Download
-                              </Button>
-                              <span className="text-xs text-gray-400">
-                                {formatBytes(row.recording_size_bytes)}
-                              </span>
-                            </div>
-                          ) : (
-                            <span className="text-xs text-gray-400">
-                              {row.status === 'failed' ? '\u2014' : 'Pending...'}
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3 text-sm">
-                          {row.transcript ? (
-                            <button
-                              onClick={() => setTranscriptRow(row)}
-                              className="text-left text-gray-700 hover:text-primary-700 underline-offset-2 hover:underline line-clamp-2 max-w-md"
-                              title="View transcript"
-                            >
-                              {row.transcript.length > 120
-                                ? `${row.transcript.slice(0, 120)}...`
-                                : row.transcript}
-                            </button>
-                          ) : (
-                            <span className="text-xs text-gray-400">No transcript</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3 text-right">
+          <div className="space-y-2">
+            {rows.map((row) => {
+              const hasRecording = !!row.recording_s3_key
+              const isThisPlaying = playingRowId === row.id && isPlaying
+              const isLoadingThis = loadingRowId === row.id
+              const isExpanded = expandedRowIds.has(row.id)
+              // Hide raw_columns entries that just duplicate fields we
+              // already render in dedicated UI (Conversation, Recording
+              // section, summary line). The backend always preserves the
+              // mapped CSV columns into raw_columns under their original
+              // header, so without this filter the user sees, e.g. a
+              // "transcript" cell containing the exact same conversation
+              // they're already reading as chat bubbles.
+              const transcriptValue = (row.transcript || '').trim()
+              const recordingUrlValue = (row.recording_url || '').trim()
+              const externalCallIdValue = (row.external_call_id || '').trim()
+              const rawColumnEntries = Object.entries(row.raw_columns || {}).filter(
+                ([key, value]) => {
+                  if (!key.trim()) return false
+                  const trimmedValue = (value || '').trim()
+                  if (!trimmedValue) return true
+                  if (transcriptValue && trimmedValue === transcriptValue) return false
+                  if (recordingUrlValue && trimmedValue === recordingUrlValue) return false
+                  if (externalCallIdValue && trimmedValue === externalCallIdValue) {
+                    return false
+                  }
+                  return true
+                },
+              )
+              return (
+                <div
+                  key={row.id}
+                  className="border border-gray-200 rounded-lg bg-white overflow-hidden transition-shadow hover:shadow-sm"
+                >
+                  <div className="flex items-center gap-2 px-3 py-2.5">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setExpandedRowIds((prev) => {
+                          const next = new Set(prev)
+                          if (next.has(row.id)) next.delete(row.id)
+                          else next.add(row.id)
+                          return next
+                        })
+                      }
+                      aria-expanded={isExpanded}
+                      aria-label={isExpanded ? 'Collapse row' : 'Expand row'}
+                      className="flex items-center gap-3 flex-1 min-w-0 text-left rounded hover:bg-gray-50 -mx-1 px-1 py-1 transition-colors"
+                    >
+                      <ChevronRight
+                        className={`h-4 w-4 flex-shrink-0 text-gray-400 transition-transform duration-150 ${
+                          isExpanded ? 'rotate-90' : ''
+                        }`}
+                      />
+                      <span className="text-xs text-gray-400 w-10 tabular-nums flex-shrink-0">
+                        #{row.row_index + 1}
+                      </span>
+                      <span
+                        className="font-mono text-sm text-gray-900 truncate flex-1 min-w-0"
+                        title={row.external_call_id}
+                      >
+                        {row.external_call_id}
+                      </span>
+                      <StatusBadge status={row.status} size="sm" />
+                    </button>
+
+                    <div className="flex items-center gap-1 flex-shrink-0">
+                      {hasRecording ? (
+                        <>
                           <button
                             type="button"
-                            aria-label={`Delete recording for ${row.external_call_id}`}
-                            title="Delete recording"
-                            onClick={() => {
-                              setDeleteError(null)
-                              setPendingDeleteRow(row)
-                            }}
-                            disabled={
-                              deleteRowMutation.isPending &&
-                              pendingDeleteRow?.id === row.id
-                            }
-                            className="text-gray-400 hover:text-red-600 transition-colors disabled:opacity-40"
+                            onClick={() => handlePlay(row)}
+                            disabled={isLoadingThis}
+                            title={isThisPlaying ? 'Pause' : 'Play recording'}
+                            className={`p-1.5 rounded transition-colors disabled:opacity-50 ${
+                              isThisPlaying
+                                ? 'text-green-600 bg-green-50 hover:bg-green-100'
+                                : 'text-blue-600 hover:bg-blue-50'
+                            }`}
                           >
-                            <Trash2 className="h-4 w-4" />
+                            {isLoadingThis ? (
+                              <RefreshCw className="h-4 w-4 animate-spin" />
+                            ) : isThisPlaying ? (
+                              <Pause className="h-4 w-4" />
+                            ) : (
+                              <Play className="h-4 w-4" />
+                            )}
                           </button>
-                        </td>
-                      </tr>
-                      {row.status === 'failed' && row.error_message && (
-                        <tr className="bg-red-50">
-                          <td />
-                          <td colSpan={6} className="px-4 py-2 text-xs text-red-800">
-                            <div className="flex items-start gap-2">
-                              <AlertCircle className="h-3.5 w-3.5 text-red-600 mt-0.5 flex-shrink-0" />
-                              <div className="flex-1">
-                                <span className="font-medium">Error:</span> {row.error_message}
-                                {isNonRetryableError(row.error_message) && (
-                                  <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-100 text-red-700">
-                                    no retry
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                          </td>
-                        </tr>
+                          <button
+                            type="button"
+                            onClick={() => handleDownload(row)}
+                            title="Download recording"
+                            className="p-1.5 rounded text-gray-500 hover:text-primary-600 hover:bg-primary-50 transition-colors"
+                          >
+                            <Download className="h-4 w-4" />
+                          </button>
+                        </>
+                      ) : (
+                        <span className="text-[11px] text-gray-400 px-2">
+                          {row.status === 'failed' ? 'no audio' : 'pending'}
+                        </span>
                       )}
-                    </Fragment>
-                  )
-                })}
-              </tbody>
-            </table>
+                      <button
+                        type="button"
+                        aria-label={`Delete recording for ${row.external_call_id}`}
+                        title="Delete row"
+                        onClick={() => {
+                          setDeleteError(null)
+                          setPendingDeleteRow(row)
+                        }}
+                        disabled={
+                          deleteRowMutation.isPending &&
+                          pendingDeleteRow?.id === row.id
+                        }
+                        className="p-1.5 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors disabled:opacity-40"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {row.status === 'failed' && row.error_message && (
+                    <div className="border-t border-red-100 bg-red-50 px-3 py-2 text-xs text-red-800 flex items-start gap-2">
+                      <AlertCircle className="h-3.5 w-3.5 text-red-600 flex-shrink-0 mt-0.5" />
+                      <div className="min-w-0 flex-1 break-words">
+                        <span className="font-medium">Error:</span> {row.error_message}
+                        {isNonRetryableError(row.error_message) && (
+                          <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-100 text-red-700">
+                            no retry
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {isExpanded && (
+                    <div className="border-t border-gray-200 px-4 py-4 bg-gray-100 space-y-3">
+                      <div className="grid grid-cols-1 lg:grid-cols-5 gap-3">
+                        <section className="lg:col-span-3 min-w-0 bg-white border border-gray-200 rounded-lg shadow-sm">
+                          <header className="px-3 py-2 border-b border-gray-100 flex items-center gap-1.5">
+                            <MessageSquare className="h-3.5 w-3.5 text-gray-400" />
+                            <h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                              Conversation
+                            </h4>
+                          </header>
+                          <div className="p-3">
+                            <TranscriptView transcript={row.transcript} compact />
+                          </div>
+                        </section>
+
+                        <div className="lg:col-span-2 min-w-0 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-1 gap-3">
+                          <section className="bg-white border border-gray-200 rounded-lg shadow-sm">
+                            <header className="px-3 py-2 border-b border-gray-100 flex items-center gap-1.5">
+                              <Volume2 className="h-3.5 w-3.5 text-gray-400" />
+                              <h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                                Recording
+                              </h4>
+                            </header>
+                            <dl className="p-3 space-y-1.5 text-xs">
+                              <div className="flex justify-between gap-2">
+                                <dt className="text-gray-500">Size</dt>
+                                <dd className="text-gray-800 tabular-nums">
+                                  {formatBytes(row.recording_size_bytes)}
+                                </dd>
+                              </div>
+                              <div className="flex justify-between gap-2">
+                                <dt className="text-gray-500">Type</dt>
+                                <dd className="text-gray-800 truncate text-right">
+                                  {row.recording_content_type || '—'}
+                                </dd>
+                              </div>
+                              {row.recording_url && (
+                                <div className="flex flex-col gap-0.5 pt-1 border-t border-gray-50">
+                                  <dt className="text-gray-500">Source URL</dt>
+                                  <dd className="min-w-0">
+                                    <a
+                                      href={row.recording_url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="text-blue-700 hover:text-blue-800 underline break-all"
+                                      title={row.recording_url}
+                                    >
+                                      {row.recording_url}
+                                    </a>
+                                  </dd>
+                                </div>
+                              )}
+                            </dl>
+                          </section>
+
+                          <section className="bg-white border border-gray-200 rounded-lg shadow-sm">
+                            <header className="px-3 py-2 border-b border-gray-100 flex items-center gap-1.5">
+                              <RefreshCw className="h-3.5 w-3.5 text-gray-400" />
+                              <h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                                Run
+                              </h4>
+                            </header>
+                            <dl className="p-3 space-y-1.5 text-xs">
+                              <div className="flex justify-between gap-2">
+                                <dt className="text-gray-500">Attempts</dt>
+                                <dd className="text-gray-800 tabular-nums">
+                                  {row.attempts}
+                                </dd>
+                              </div>
+                              <div className="flex justify-between gap-2">
+                                <dt className="text-gray-500">Created</dt>
+                                <dd className="text-gray-800 text-right">
+                                  {new Date(row.created_at).toLocaleString()}
+                                </dd>
+                              </div>
+                              <div className="flex justify-between gap-2">
+                                <dt className="text-gray-500">Updated</dt>
+                                <dd className="text-gray-800 text-right">
+                                  {new Date(row.updated_at).toLocaleString()}
+                                </dd>
+                              </div>
+                            </dl>
+                          </section>
+                        </div>
+                      </div>
+
+                      {rawColumnEntries.length > 0 && (
+                        <section className="bg-white border border-gray-200 rounded-lg shadow-sm">
+                          <header className="px-3 py-2 border-b border-gray-100 flex items-center gap-1.5">
+                            <FileText className="h-3.5 w-3.5 text-gray-400" />
+                            <h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                              Imported columns
+                            </h4>
+                            <span className="ml-1 inline-flex items-center justify-center rounded-full bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-600">
+                              {rawColumnEntries.length}
+                            </span>
+                          </header>
+                          <dl className="p-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 text-xs">
+                            {rawColumnEntries.map(([key, value]) => (
+                              <div
+                                key={key}
+                                className="bg-gray-50 border border-gray-200 rounded px-2.5 py-1.5"
+                              >
+                                <dt className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider truncate">
+                                  {key}
+                                </dt>
+                                <dd className="text-gray-800 break-words mt-0.5 whitespace-pre-wrap">
+                                  {value && value.trim() ? (
+                                    value
+                                  ) : (
+                                    <span className="italic text-gray-400">empty</span>
+                                  )}
+                                </dd>
+                              </div>
+                            ))}
+                          </dl>
+                        </section>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
 
             {rowTotalPages > 1 && (
-              <div className="px-4 py-3 bg-gray-50 border-t border-gray-200 flex items-center justify-between mt-2 rounded-b-lg">
+              <div className="px-4 py-3 bg-gray-50 border border-gray-200 flex items-center justify-between mt-3 rounded-lg">
                 <p className="text-sm text-gray-600">
                   Page {rowPage} of {rowTotalPages}
                 </p>
@@ -932,222 +977,130 @@ export default function CallImportDetail() {
 
       {activeTab === 'evaluations' && (
       <div className="bg-white shadow rounded-lg p-6">
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
           <div>
             <h2 className="text-lg font-semibold text-gray-900">Evaluations</h2>
             <p className="text-xs text-gray-500 mt-0.5">
-              Use the Run Evaluation button at the top to start a new evaluation.
+              Click a run to view its results in detail. Use the Run Evaluation
+              button at the top to start a new run.
             </p>
           </div>
+          {selectedEvalIds.size > 0 && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-600">
+                {selectedEvalIds.size} selected
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setSelectedEvalIds(new Set())}
+              >
+                Clear
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                leftIcon={<Trash2 className="h-4 w-4" />}
+                onClick={() => {
+                  setBulkDeleteEvalsError(null)
+                  setShowBulkDeleteEvals(true)
+                }}
+                className="text-red-600 hover:text-red-700 hover:bg-red-50"
+              >
+                Delete selected
+              </Button>
+            </div>
+          )}
         </div>
 
         {(evaluationsData?.items?.length || 0) === 0 ? (
-          <p className="text-sm text-gray-500">No evaluations have been run for this dataset yet.</p>
+          <p className="text-sm text-gray-500">
+            No evaluations have been run for this dataset yet.
+          </p>
         ) : (
-          <div className="space-y-3">
-            {evaluationsData?.items.map((evaluation: CallImportEvaluation) => (
-              <button
-                key={evaluation.id}
-                type="button"
-                onClick={() => {
-                  setActiveEvalId(evaluation.id)
-                  setEvalRowsPage(1)
-                }}
-                className={`w-full text-left border rounded-lg px-4 py-3 transition ${
-                  activeEvalId === evaluation.id
-                    ? 'border-primary-500 bg-primary-50'
-                    : 'border-gray-200 hover:border-gray-300'
-                }`}
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-medium text-gray-900">
-                      Evaluation {evaluation.id.slice(0, 8)}
-                    </p>
-                    <p className="text-xs text-gray-600">
-                      {evaluation.metrics.map((metric) => metric.name).join(', ') || 'No metrics'}
-                    </p>
-                  </div>
-                  <div className="text-right">
-                    <StatusBadge status={evaluation.status} size="sm" />
-                    <p className="text-xs text-gray-500 mt-1">
-                      {evaluation.completed_rows}/{evaluation.total_rows} rows
-                    </p>
-                  </div>
+          <div className="space-y-2">
+            {(() => {
+              const items = evaluationsData?.items ?? []
+              const allSelected =
+                items.length > 0 &&
+                items.every((row) => selectedEvalIds.has(row.id))
+              return (
+                <div className="flex items-center gap-2 px-3 py-2 border border-gray-200 rounded-lg bg-gray-50">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all evaluations"
+                    checked={allSelected}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setSelectedEvalIds(new Set(items.map((row) => row.id)))
+                      } else {
+                        setSelectedEvalIds(new Set())
+                      }
+                    }}
+                  />
+                  <span className="text-xs text-gray-600">
+                    Select all ({items.length})
+                  </span>
                 </div>
-              </button>
-            ))}
-          </div>
-        )}
-
-        {activeEvaluation && (
-          <div className="mt-6 border-t border-gray-100 pt-4">
-            <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
-              <div className="min-w-0">
-                <p className="text-sm font-medium text-gray-900">
-                  Rows for evaluation {activeEvaluation.id.slice(0, 8)}
-                </p>
-                <p className="text-xs text-gray-500">
-                  Metrics ({displayMetrics.length}):{' '}
-                  {displayMetrics.map((m) => m.name).join(', ') || 'none'}
-                </p>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                leftIcon={<Download className="h-4 w-4" />}
-                onClick={() => handleExportEvaluation(activeEvaluation.id)}
-              >
-                Download CSV
-              </Button>
-            </div>
-
-            {activeEvalRows?.items?.length ? (
-              <>
-                {displayMetrics.length > 3 && (
-                  <p className="mb-2 text-[11px] text-gray-500">
-                    Scroll the table horizontally to see all {displayMetrics.length}{' '}
-                    metric columns.
-                  </p>
-                )}
-                <div className="overflow-x-auto border border-gray-100 rounded">
-                  <table className="min-w-max w-full divide-y divide-gray-200">
-                    <thead className="bg-gray-50">
-                      <tr>
-                        <th className="sticky left-0 z-10 bg-gray-50 px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase whitespace-nowrap">
-                          #
-                        </th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase whitespace-nowrap">
-                          CallID
-                        </th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase whitespace-nowrap">
-                          Status
-                        </th>
-                        {displayMetrics.map((metric) => (
-                          <th
-                            key={metric.id}
-                            className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase whitespace-nowrap"
-                            title={metric.name}
-                          >
-                            {metric.name}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody className="bg-white divide-y divide-gray-200">
-                      {activeEvalRows.items.map((row: CallImportEvaluationRow) => (
-                        <tr key={row.id} className="hover:bg-gray-50">
-                          <td className="sticky left-0 z-10 bg-inherit px-3 py-2 text-sm text-gray-600 whitespace-nowrap">
-                            {(row.row_index ?? 0) + 1}
-                          </td>
-                          <td className="px-3 py-2 text-sm font-mono text-gray-900 whitespace-nowrap">
-                            {row.external_call_id || '-'}
-                          </td>
-                          <td className="px-3 py-2 whitespace-nowrap">
-                            <StatusBadge status={row.status} size="sm" />
-                          </td>
-                          {displayMetrics.map((metric) => {
-                            const score = row.metric_scores?.[metric.id]
-                            const value =
-                              score && typeof score === 'object' ? score.value : undefined
-                            const scoreType =
-                              score && typeof score === 'object' && typeof score.type === 'string'
-                                ? score.type.toLowerCase()
-                                : undefined
-                            const isEmpty =
-                              value === undefined || value === null || value === ''
-                            const valueStr = isEmpty ? '' : String(value)
-                            const isLongText = scoreType === 'text' && valueStr.length > 80
-                            const errorText =
-                              score && typeof score === 'object' && score.error
-                                ? String(score.error)
-                                : undefined
-                            return (
-                              <td
-                                key={metric.id}
-                                className={
-                                  scoreType === 'text'
-                                    ? 'px-3 py-2 text-sm text-gray-700 align-top max-w-xs'
-                                    : 'px-3 py-2 text-sm text-gray-700 whitespace-nowrap'
-                                }
-                                title={errorText || (isLongText ? valueStr : undefined)}
-                              >
-                                {isEmpty ? (
-                                  '-'
-                                ) : scoreType === 'text' ? (
-                                  <span className="block whitespace-pre-wrap break-words leading-snug line-clamp-3">
-                                    {valueStr}
-                                  </span>
-                                ) : (
-                                  valueStr
-                                )}
-                              </td>
-                            )
-                          })}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </>
-            ) : (
-              <p className="text-sm text-gray-500">No row results yet.</p>
-            )}
-
-            {activeEvalRows && activeEvalRows.total > activeEvalRows.page_size && (
-              <div className="mt-3 flex items-center justify-between">
-                <p className="text-sm text-gray-500">
-                  Page {activeEvalRows.page} of {Math.max(1, Math.ceil(activeEvalRows.total / activeEvalRows.page_size))}
-                </p>
-                <div className="flex gap-2">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setEvalRowsPage((p) => Math.max(1, p - 1))}
-                    disabled={activeEvalRows.page <= 1}
+              )
+            })()}
+            {evaluationsData?.items.map((evaluation: CallImportEvaluation) => {
+              const isSelected = selectedEvalIds.has(evaluation.id)
+              const headerLabel = evaluation.name?.trim()
+                ? evaluation.name
+                : `Evaluation ${evaluation.id.slice(0, 8)}`
+              return (
+                <div
+                  key={evaluation.id}
+                  className={`flex items-center gap-3 border rounded-lg px-3 py-2.5 bg-white transition ${
+                    isSelected
+                      ? 'border-primary-400 bg-primary-50/40'
+                      : 'border-gray-200 hover:border-gray-300'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    aria-label={`Select ${headerLabel}`}
+                    checked={isSelected}
+                    onChange={(e) => {
+                      setSelectedEvalIds((prev) => {
+                        const next = new Set(prev)
+                        if (e.target.checked) next.add(evaluation.id)
+                        else next.delete(evaluation.id)
+                        return next
+                      })
+                    }}
+                  />
+                  <Link
+                    to={`/call-imports/${id}/evaluations/${evaluation.id}`}
+                    className="flex-1 min-w-0 flex items-center justify-between gap-3"
                   >
-                    Prev
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setEvalRowsPage((p) => p + 1)}
-                    disabled={activeEvalRows.page * activeEvalRows.page_size >= activeEvalRows.total}
-                  >
-                    Next
-                  </Button>
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-gray-900 truncate">
+                        {headerLabel}
+                      </p>
+                      <p className="text-xs text-gray-600 truncate">
+                        {evaluation.metrics.map((metric) => metric.name).join(', ') ||
+                          'No metrics'}
+                      </p>
+                      <p className="text-[11px] text-gray-400 mt-0.5">
+                        Created {new Date(evaluation.created_at).toLocaleString()}
+                      </p>
+                    </div>
+                    <div className="text-right flex-shrink-0">
+                      <StatusBadge status={evaluation.status} size="sm" />
+                      <p className="text-xs text-gray-500 mt-1">
+                        {evaluation.completed_rows}/{evaluation.total_rows} rows
+                      </p>
+                    </div>
+                  </Link>
                 </div>
-              </div>
-            )}
+              )
+            })}
           </div>
         )}
       </div>
       )}
-
-      {transcriptRow &&
-        renderModal(
-          <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]">
-            <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[80vh] flex flex-col">
-              <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-                <div className="min-w-0">
-                  <h3 className="text-lg font-semibold">Transcript</h3>
-                  <p className="text-xs text-gray-500 font-mono truncate">
-                    {transcriptRow.external_call_id}
-                  </p>
-                </div>
-                <button
-                  onClick={() => setTranscriptRow(null)}
-                  className="text-gray-400 hover:text-gray-600 flex-shrink-0"
-                >
-                  <X className="h-5 w-5" />
-                </button>
-              </div>
-              <div className="p-6 overflow-y-auto whitespace-pre-wrap text-sm text-gray-800 leading-relaxed">
-                {transcriptRow.transcript || '(no transcript)'}
-              </div>
-            </div>
-          </div>,
-        )}
 
       {showRunEval &&
         renderModal(
@@ -1184,6 +1137,29 @@ export default function CallImportDetail() {
                       >
                         Manage metrics →
                       </Link>
+                    </div>
+
+                    <div>
+                      <label
+                        htmlFor="run-eval-name"
+                        className="block text-xs font-medium text-gray-700 mb-1"
+                      >
+                        Name this run{' '}
+                        <span className="text-gray-400 font-normal">(optional)</span>
+                      </label>
+                      <input
+                        id="run-eval-name"
+                        type="text"
+                        value={runDraftName}
+                        onChange={(e) => setRunDraftName(e.target.value)}
+                        placeholder="e.g. March QA pass"
+                        maxLength={255}
+                        disabled={runEvaluationMutation.isPending}
+                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent disabled:opacity-60"
+                      />
+                      <p className="mt-1 text-[11px] text-gray-500">
+                        Leave blank to fall back to the run's UUID prefix.
+                      </p>
                     </div>
 
                     {enabledMetrics.length === 0 ? (
@@ -1299,7 +1275,12 @@ export default function CallImportDetail() {
                           enabledMetrics.length === 0 ||
                           runEvaluationMutation.isPending
                         }
-                        onClick={() => runEvaluationMutation.mutate(selectedMetricIds)}
+                        onClick={() =>
+                          runEvaluationMutation.mutate({
+                            metric_ids: selectedMetricIds,
+                            name: runDraftName.trim() || null,
+                          })
+                        }
                         className="flex-1"
                       >
                         Start
@@ -1337,6 +1318,39 @@ export default function CallImportDetail() {
           if (deleteImportMutation.isPending) return
           setShowDeleteImport(false)
           setDeleteError(null)
+        }}
+      />
+
+      <ConfirmModal
+        isOpen={showBulkDeleteEvals}
+        title={
+          selectedEvalIds.size === 1
+            ? 'Delete this evaluation run?'
+            : `Delete ${selectedEvalIds.size} evaluation runs?`
+        }
+        description={(() => {
+          const lines = [
+            selectedEvalIds.size === 1
+              ? 'This run and all of its per-row score records will be permanently removed.'
+              : `These ${selectedEvalIds.size} runs and all of their per-row score records will be permanently removed.`,
+            'In-flight runs will have their pending tasks revoked before deletion.',
+            'The underlying CSV import stays intact, so you can re-run later.',
+            'This cannot be undone.',
+            bulkDeleteEvalsError ? `Error: ${bulkDeleteEvalsError}` : '',
+          ]
+          return lines.filter(Boolean).join('\n\n')
+        })()}
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        variant="danger"
+        isLoading={bulkDeleteEvalsMutation.isPending}
+        onConfirm={() => {
+          bulkDeleteEvalsMutation.mutate(Array.from(selectedEvalIds))
+        }}
+        onCancel={() => {
+          if (bulkDeleteEvalsMutation.isPending) return
+          setShowBulkDeleteEvals(false)
+          setBulkDeleteEvalsError(null)
         }}
       />
 
