@@ -28,8 +28,13 @@ import type {
   CallImportTag,
   CallImportUploadResponse,
   CallImportEvaluation,
+  CallImportEvaluationLLMOverride,
   CallImportEvaluationListResponse,
   CallImportEvaluationRowListResponse,
+  CallImportEvaluationAggregateResponse,
+  CallImportInsightsResponse,
+  CallImportTranscribeRequest,
+  CallImportTranscribeResponse,
 } from '../types/api'
 
 export interface EnterpriseFeatureMeta {
@@ -1082,10 +1087,72 @@ class ApiClient {
 
   async createCallImportEvaluation(
     callImportId: string,
-    payload: { metric_ids: string[]; name?: string | null },
+    payload: {
+      metric_ids: string[]
+      name?: string | null
+      /** Run-level LLM provider key. Leave undefined for legacy default. */
+      llm_provider?: string | null
+      llm_model?: string | null
+      llm_credential_id?: string | null
+      /** Per-metric LLM override map keyed by metric UUID. */
+      metric_llm_overrides?: Record<string, CallImportEvaluationLLMOverride> | null
+      /** When true, diarize rows missing transcripts before evaluation. */
+      auto_transcribe?: boolean
+      transcribe_overwrite?: boolean
+      stt_provider?: string | null
+      stt_model?: string | null
+      stt_credential_id?: string | null
+      stt_language?: string | null
+    },
   ): Promise<CallImportEvaluation> {
     const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/evaluations`,
+      payload,
+    )
+    return response.data
+  }
+
+  /** Aggregated metric distributions for a single evaluation run. */
+  async getCallImportEvaluationAggregate(
+    callImportId: string,
+    evaluationId: string,
+  ): Promise<CallImportEvaluationAggregateResponse> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/aggregate`,
+    )
+    return response.data
+  }
+
+  /** Cross-run insights for the call import detail page. */
+  async getCallImportInsights(
+    callImportId: string,
+  ): Promise<CallImportInsightsResponse> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/insights`,
+    )
+    return response.data
+  }
+
+  /** Fan out diarization tasks for a batch of rows. */
+  async transcribeCallImport(
+    callImportId: string,
+    payload: CallImportTranscribeRequest,
+  ): Promise<CallImportTranscribeResponse> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/transcribe`,
+      payload,
+    )
+    return response.data
+  }
+
+  /** Diarize a single row's recording. */
+  async transcribeCallImportRow(
+    callImportId: string,
+    rowId: string,
+    payload: CallImportTranscribeRequest,
+  ): Promise<CallImportTranscribeResponse> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/rows/${rowId}/transcribe`,
       payload,
     )
     return response.data

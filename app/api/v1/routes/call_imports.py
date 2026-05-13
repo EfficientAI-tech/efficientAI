@@ -38,9 +38,15 @@ from app.models.enums import (
 from app.models.schemas import (
     CallImportColumnMapping,
     CallImportDetailResponse,
+    CallImportInsightsMetric,
+    CallImportInsightsResponse,
+    CallImportInsightsRunPoint,
     CallImportListResponse,
+    CallImportMetricAggregate,
     CallImportResponse,
     CallImportRowResponse,
+    CallImportTranscribeRequest,
+    CallImportTranscribeResponse,
     CallImportUpdate,
     CallImportUploadResponse,
 )
@@ -961,3 +967,381 @@ async def delete_call_import_row(
     )
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ---------------------------------------------------------------------------
+# Diarization / transcription endpoints
+# ---------------------------------------------------------------------------
+
+
+def _select_rows_for_transcription(
+    db: Session,
+    call_import: CallImport,
+    payload: CallImportTranscribeRequest,
+    requested_row_ids: Optional[List[UUID]] = None,
+) -> tuple[List[CallImportRow], Dict[str, int]]:
+    """Pick which rows to enqueue for diarization.
+
+    Centralises the "should this row be touched?" decision so both the
+    batch endpoint and the per-row endpoint apply the same rules:
+
+    * row must exist on the import,
+    * row must have an S3 recording (otherwise nothing to transcribe),
+    * if ``only_missing`` is set and ``overwrite_existing`` is not, rows
+      with a non-empty transcript are skipped.
+
+    Returns the list of rows to enqueue plus a per-reason skip count
+    that the response can surface so the user knows why a "no-op"
+    happened.
+    """
+
+    query = db.query(CallImportRow).filter(
+        CallImportRow.call_import_id == call_import.id
+    )
+    if requested_row_ids:
+        query = query.filter(CallImportRow.id.in_(requested_row_ids))
+    rows = query.order_by(CallImportRow.row_index.asc()).all()
+
+    if requested_row_ids:
+        found_ids = {r.id for r in rows}
+        missing = [rid for rid in requested_row_ids if rid not in found_ids]
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Some row ids were not found on this import: "
+                    f"{[str(m) for m in missing]}"
+                ),
+            )
+
+    selected: List[CallImportRow] = []
+    skip_counts: Dict[str, int] = {}
+
+    for row in rows:
+        recording = (row.recording_s3_key or "").strip()
+        if not recording:
+            skip_counts["no_recording"] = skip_counts.get("no_recording", 0) + 1
+            continue
+        existing = (row.transcript or "").strip()
+        if existing and payload.only_missing and not payload.overwrite_existing:
+            skip_counts["transcript_present"] = (
+                skip_counts.get("transcript_present", 0) + 1
+            )
+            continue
+        selected.append(row)
+
+    return selected, skip_counts
+
+
+@router.post(
+    "/{call_import_id}/transcribe",
+    response_model=CallImportTranscribeResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    operation_id="transcribeCallImport",
+)
+async def transcribe_call_import(
+    call_import_id: UUID,
+    payload: CallImportTranscribeRequest,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportTranscribeResponse:
+    """Fan out diarization tasks for many rows in a single call.
+
+    Returns a summary with how many rows were queued and how many were
+    skipped (broken down by reason) so the UI can show a meaningful
+    toast even when nothing actually got enqueued (e.g. "All 12 rows
+    already have transcripts").
+    """
+
+    del api_key
+
+    call_import = (
+        db.query(CallImport)
+        .filter(
+            CallImport.id == call_import_id,
+            CallImport.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not call_import:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Call import not found",
+        )
+
+    rows, skip_counts = _select_rows_for_transcription(
+        db, call_import, payload, requested_row_ids=payload.row_ids
+    )
+
+    # Mark the about-to-be-enqueued rows as ``pending`` so the UI can
+    # show a "Queued for transcription" badge immediately, even before
+    # the worker picks the row up. The worker flips it to ``running``
+    # on entry.
+    for row in rows:
+        row.transcript_status = "pending"
+        row.transcript_error = None
+    db.commit()
+
+    if not rows:
+        return CallImportTranscribeResponse(
+            queued=0,
+            skipped_rows=sum(skip_counts.values()),
+            skipped_reason_counts=skip_counts,
+        )
+
+    from app.workers.tasks.transcribe_call_import_row import (
+        transcribe_call_import_row_task,
+    )
+
+    enqueued = 0
+    for row in rows:
+        try:
+            transcribe_call_import_row_task.delay(
+                str(row.id),
+                payload.stt_provider,
+                payload.stt_model,
+                str(payload.credential_id) if payload.credential_id else None,
+                payload.language,
+                payload.overwrite_existing,
+            )
+            enqueued += 1
+        except Exception as exc:
+            logger.exception(
+                "Failed to enqueue transcribe for row {}: {}", row.id, exc
+            )
+            row.transcript_status = "failed"
+            row.transcript_error = f"Failed to enqueue: {exc}"
+    db.commit()
+
+    return CallImportTranscribeResponse(
+        queued=enqueued,
+        skipped_rows=sum(skip_counts.values()),
+        skipped_reason_counts=skip_counts,
+    )
+
+
+@router.post(
+    "/{call_import_id}/rows/{row_id}/transcribe",
+    response_model=CallImportTranscribeResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    operation_id="transcribeCallImportRow",
+)
+async def transcribe_call_import_row(
+    call_import_id: UUID,
+    row_id: UUID,
+    payload: CallImportTranscribeRequest,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportTranscribeResponse:
+    """Diarize / transcribe a single row.
+
+    Thin wrapper over the batch endpoint that hard-codes a single
+    ``row_ids`` filter. Skip counts still surface so the UI can render
+    "Skipped — transcript present" diagnostics consistently.
+    """
+
+    del api_key
+
+    call_import = (
+        db.query(CallImport)
+        .filter(
+            CallImport.id == call_import_id,
+            CallImport.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not call_import:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Call import not found",
+        )
+
+    rows, skip_counts = _select_rows_for_transcription(
+        db, call_import, payload, requested_row_ids=[row_id]
+    )
+
+    for row in rows:
+        row.transcript_status = "pending"
+        row.transcript_error = None
+    db.commit()
+
+    if not rows:
+        return CallImportTranscribeResponse(
+            queued=0,
+            skipped_rows=sum(skip_counts.values()),
+            skipped_reason_counts=skip_counts,
+        )
+
+    from app.workers.tasks.transcribe_call_import_row import (
+        transcribe_call_import_row_task,
+    )
+
+    target = rows[0]
+    try:
+        transcribe_call_import_row_task.delay(
+            str(target.id),
+            payload.stt_provider,
+            payload.stt_model,
+            str(payload.credential_id) if payload.credential_id else None,
+            payload.language,
+            payload.overwrite_existing,
+        )
+        return CallImportTranscribeResponse(
+            queued=1,
+            skipped_rows=sum(skip_counts.values()),
+            skipped_reason_counts=skip_counts,
+        )
+    except Exception as exc:
+        logger.exception(
+            "Failed to enqueue transcribe for row {}: {}", target.id, exc
+        )
+        target.transcript_status = "failed"
+        target.transcript_error = f"Failed to enqueue: {exc}"
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to enqueue transcription: {exc}",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Cross-run insights for the import detail page
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/{call_import_id}/insights",
+    response_model=CallImportInsightsResponse,
+    operation_id="getCallImportInsights",
+)
+async def get_call_import_insights(
+    call_import_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportInsightsResponse:
+    """Aggregate signals across every evaluation run on this import.
+
+    Powers the Insights tab on the call-import detail page: returns
+    per-metric "latest run" summaries plus a trend series of mean values
+    across runs so the UI can render a small line chart per metric. Also
+    bundles transcript coverage stats since those are the cheapest
+    pre-eval health-check (e.g. "30 of 50 rows still missing
+    transcripts").
+    """
+
+    del api_key
+
+    from app.models.database import (
+        CallImportEvaluation,
+        CallImportEvaluationRow,
+        Metric,
+    )
+
+    call_import = (
+        db.query(CallImport)
+        .filter(
+            CallImport.id == call_import_id,
+            CallImport.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not call_import:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Call import not found",
+        )
+
+    rows = (
+        db.query(CallImportRow)
+        .filter(CallImportRow.call_import_id == call_import_id)
+        .all()
+    )
+    rows_with_transcript = sum(
+        1 for r in rows if (r.transcript or "").strip()
+    )
+    rows_without_transcript = len(rows) - rows_with_transcript
+    source_counts: Dict[str, int] = {}
+    for r in rows:
+        if not (r.transcript or "").strip():
+            continue
+        key = r.transcript_source or "unknown"
+        source_counts[key] = source_counts.get(key, 0) + 1
+
+    evaluations = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .order_by(CallImportEvaluation.created_at.asc())
+        .all()
+    )
+
+    # Defer heavy lifting to the aggregation helper so this endpoint and
+    # the per-run aggregate endpoint share the exact same metric
+    # bucketing math (no chance of "trend" disagreeing with "latest" on
+    # the same data set).
+    from app.api.v1.routes.call_import_evaluations import (
+        _compute_metric_aggregates,
+    )
+
+    metric_history: Dict[str, List[CallImportInsightsRunPoint]] = {}
+    metric_meta: Dict[str, Metric] = {}
+    metric_latest: Dict[str, CallImportMetricAggregate] = {}
+
+    for evaluation in evaluations:
+        eval_rows = (
+            db.query(CallImportEvaluationRow)
+            .filter(CallImportEvaluationRow.evaluation_id == evaluation.id)
+            .all()
+        )
+        aggregates = _compute_metric_aggregates(db, evaluation, eval_rows)
+        for agg in aggregates:
+            if agg.metric_id not in metric_meta:
+                metric_obj = (
+                    db.query(Metric)
+                    .filter(
+                        Metric.id == UUID(agg.metric_id),
+                        Metric.organization_id == organization_id,
+                    )
+                    .first()
+                )
+                if metric_obj is not None:
+                    metric_meta[agg.metric_id] = metric_obj
+            history = metric_history.setdefault(agg.metric_id, [])
+            history.append(
+                CallImportInsightsRunPoint(
+                    evaluation_id=evaluation.id,
+                    name=evaluation.name,
+                    created_at=evaluation.created_at,
+                    mean=agg.mean,
+                    completed_rows=agg.count,
+                )
+            )
+            metric_latest[agg.metric_id] = agg
+
+    metrics_payload: List[CallImportInsightsMetric] = []
+    for metric_id, latest in metric_latest.items():
+        meta = metric_meta.get(metric_id)
+        metrics_payload.append(
+            CallImportInsightsMetric(
+                metric_id=metric_id,
+                metric_name=(meta.name if meta else latest.metric_name),
+                metric_type=(meta.metric_type if meta else latest.metric_type),
+                latest=latest,
+                trend=metric_history.get(metric_id, []),
+            )
+        )
+
+    return CallImportInsightsResponse(
+        call_import_id=call_import_id,
+        total_rows=len(rows),
+        rows_with_transcript=rows_with_transcript,
+        rows_without_transcript=rows_without_transcript,
+        transcript_source_counts=source_counts,
+        evaluation_count=len(evaluations),
+        metrics=metrics_payload,
+    )

@@ -1834,6 +1834,12 @@ class CallImportRowResponse(BaseModel):
     external_call_id: str
     recording_url: Optional[str] = None
     transcript: Optional[str] = None
+    transcript_source: Optional[str] = None
+    transcript_provider: Optional[str] = None
+    transcript_model: Optional[str] = None
+    transcript_status: Optional[str] = None
+    transcript_error: Optional[str] = None
+    transcribed_at: Optional[datetime] = None
     status: CallImportRowStatus
     recording_s3_key: Optional[str] = None
     recording_content_type: Optional[str] = None
@@ -1955,6 +1961,32 @@ class CallImportUpdate(BaseModel):
 # --- Call Import Evaluation Schemas ---
 
 
+class CallImportEvaluationLLMOverride(BaseModel):
+    """Per-metric LLM override used on top of the run-level default.
+
+    Any field left ``None`` falls back to the run-level value (which
+    itself falls back to the historical OpenAI/gpt-4o default). This
+    lets users pick a specific provider/model for a single metric (e.g.
+    a stronger Anthropic model for a tricky qualitative metric) without
+    re-typing the rest of the metrics in the run.
+    """
+
+    provider: Optional[str] = Field(
+        default=None,
+        max_length=50,
+        description="Override LLM provider key, e.g. 'openai' or 'anthropic'.",
+    )
+    model: Optional[str] = Field(
+        default=None,
+        max_length=100,
+        description="Override LLM model name, e.g. 'gpt-4o' or 'claude-3-opus'.",
+    )
+    credential_id: Optional[UUID] = Field(
+        default=None,
+        description="Optional AIProvider id when the org has multiple credentials.",
+    )
+
+
 class CallImportEvaluationCreate(BaseModel):
     """Request body for triggering an evaluation over a call-import batch."""
 
@@ -1970,6 +2002,68 @@ class CallImportEvaluationCreate(BaseModel):
             "Optional human-readable label for the run. Shown in the UI "
             "instead of the UUID prefix."
         ),
+    )
+    # --- Run-level LLM config ---
+    llm_provider: Optional[str] = Field(
+        default=None,
+        max_length=50,
+        description=(
+            "Run-level LLM provider key (e.g. 'openai', 'anthropic'). NULL "
+            "preserves the historical OpenAI/gpt-4o default."
+        ),
+    )
+    llm_model: Optional[str] = Field(
+        default=None,
+        max_length=100,
+        description="Run-level LLM model name. Required when llm_provider is set.",
+    )
+    llm_credential_id: Optional[UUID] = Field(
+        default=None,
+        description="Optional AIProvider row to pin for the run-level LLM.",
+    )
+    metric_llm_overrides: Optional[
+        Dict[str, CallImportEvaluationLLMOverride]
+    ] = Field(
+        default=None,
+        description=(
+            "Optional per-metric LLM overrides keyed by metric UUID. Each "
+            "entry overrides the run-level default for that metric only."
+        ),
+    )
+    # --- Auto-transcribe / diarization hook ---
+    auto_transcribe: bool = Field(
+        default=False,
+        description=(
+            "If true, run diarization/transcription on every selected row "
+            "before evaluation. ``stt_provider`` + ``stt_model`` are "
+            "required when this flag is set."
+        ),
+    )
+    transcribe_overwrite: bool = Field(
+        default=False,
+        description=(
+            "When auto_transcribe is on, overwrite existing transcripts "
+            "instead of skipping rows that already have one."
+        ),
+    )
+    stt_provider: Optional[str] = Field(
+        default=None,
+        max_length=50,
+        description="STT provider key, e.g. 'deepgram', 'openai'.",
+    )
+    stt_model: Optional[str] = Field(
+        default=None,
+        max_length=100,
+        description="STT model name, e.g. 'nova-2', 'whisper-1'.",
+    )
+    stt_credential_id: Optional[UUID] = Field(
+        default=None,
+        description="Optional AIProvider/Integration row to pin for STT.",
+    )
+    stt_language: Optional[str] = Field(
+        default=None,
+        max_length=20,
+        description="ISO language hint for the STT provider, e.g. 'en'.",
     )
 
 
@@ -2018,6 +2112,13 @@ class CallImportEvaluationResponse(BaseModel):
     completed_rows: int
     failed_rows: int
     error_message: Optional[str] = None
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+    llm_credential_id: Optional[UUID] = None
+    metric_llm_overrides: Optional[Dict[str, Any]] = None
+    stt_provider: Optional[str] = None
+    stt_model: Optional[str] = None
+    stt_credential_id: Optional[UUID] = None
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
     created_at: datetime
@@ -2060,3 +2161,171 @@ class CallImportEvaluationRowListResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+# --- Diarization / Transcription request/response shapes ---
+
+
+class CallImportTranscribeRequest(BaseModel):
+    """Body for kicking off diarization for one or many call-import rows.
+
+    The same shape powers both the per-row endpoint (where ``row_ids``
+    is ignored) and the batch-level endpoint. ``only_missing`` is the
+    safe default — rows with an existing transcript are skipped unless
+    ``overwrite_existing`` is set.
+    """
+
+    stt_provider: str = Field(
+        ...,
+        max_length=50,
+        description="STT provider key, e.g. 'deepgram' or 'openai'.",
+    )
+    stt_model: str = Field(
+        ...,
+        max_length=100,
+        description="STT model name, e.g. 'nova-2' or 'whisper-1'.",
+    )
+    credential_id: Optional[UUID] = Field(
+        default=None,
+        description="Optional AIProvider/Integration row to pin for this run.",
+    )
+    language: Optional[str] = Field(
+        default=None,
+        max_length=20,
+        description="Optional ISO language hint, e.g. 'en'.",
+    )
+    only_missing: bool = Field(
+        default=True,
+        description=(
+            "When true, rows with an existing transcript are skipped (the "
+            "default safe behavior)."
+        ),
+    )
+    overwrite_existing: bool = Field(
+        default=False,
+        description=(
+            "When true, existing transcripts are replaced. Mutually "
+            "exclusive with only_missing."
+        ),
+    )
+    row_ids: Optional[List[UUID]] = Field(
+        default=None,
+        description=(
+            "Restrict the run to a specific subset of rows. NULL = every "
+            "row in the import (subject to only_missing)."
+        ),
+    )
+
+
+class CallImportTranscribeResponse(BaseModel):
+    """Summary of a transcribe fan-out request."""
+
+    queued: int = Field(
+        ...,
+        description=(
+            "How many rows were enqueued for diarization. Skipped rows "
+            "(missing recording, transcript already present, etc.) are "
+            "not counted."
+        ),
+    )
+    skipped_rows: int = Field(
+        default=0,
+        description="Rows excluded by only_missing or because they had no recording.",
+    )
+    skipped_reason_counts: Dict[str, int] = Field(
+        default_factory=dict,
+        description="Per-reason breakdown of skipped rows for the UI to surface.",
+    )
+
+
+# --- Per-run aggregation / visualization payloads ---
+
+
+class CallImportMetricHistogramBucket(BaseModel):
+    """One bin of a numeric metric histogram."""
+
+    x0: float
+    x1: float
+    count: int
+
+
+class CallImportMetricValueCount(BaseModel):
+    """One row of a categorical metric's value frequency table."""
+
+    label: str
+    count: int
+
+
+class CallImportMetricAggregate(BaseModel):
+    """Per-metric aggregate computed from an evaluation run's rows.
+
+    Numeric metrics return summary statistics + histogram buckets;
+    categorical / pass-fail / text metrics return the top value counts.
+    Both shapes can coexist if a metric mixes types — the UI prefers
+    histogram when present, falls back to value_counts otherwise.
+    """
+
+    metric_id: str
+    metric_name: str
+    metric_type: Optional[str] = None
+    count: int = 0
+    skipped_count: int = 0
+    error_count: int = 0
+    # Numeric stats (None when no numeric values were observed)
+    mean: Optional[float] = None
+    median: Optional[float] = None
+    p25: Optional[float] = None
+    p75: Optional[float] = None
+    p95: Optional[float] = None
+    min: Optional[float] = None
+    max: Optional[float] = None
+    stddev: Optional[float] = None
+    histogram_buckets: List[CallImportMetricHistogramBucket] = Field(
+        default_factory=list
+    )
+    value_counts: List[CallImportMetricValueCount] = Field(default_factory=list)
+
+
+class CallImportEvaluationAggregateResponse(BaseModel):
+    """Aggregated metric distributions for a single evaluation run."""
+
+    evaluation_id: UUID
+    total_rows: int
+    completed_rows: int
+    failed_rows: int
+    metrics: List[CallImportMetricAggregate] = Field(default_factory=list)
+
+
+# --- Cross-run insights for a CallImport batch ---
+
+
+class CallImportInsightsRunPoint(BaseModel):
+    """One run's mean for a metric, used to render trend lines."""
+
+    evaluation_id: UUID
+    name: Optional[str] = None
+    created_at: datetime
+    mean: Optional[float] = None
+    completed_rows: int = 0
+
+
+class CallImportInsightsMetric(BaseModel):
+    """Per-metric history across every evaluation run on this import."""
+
+    metric_id: str
+    metric_name: str
+    metric_type: Optional[str] = None
+    latest: Optional[CallImportMetricAggregate] = None
+    trend: List[CallImportInsightsRunPoint] = Field(default_factory=list)
+
+
+class CallImportInsightsResponse(BaseModel):
+    """Aggregated cross-run signals for a single call-import batch."""
+
+    call_import_id: UUID
+    total_rows: int
+    rows_with_transcript: int
+    rows_without_transcript: int
+    transcript_source_counts: Dict[str, int] = Field(default_factory=dict)
+    evaluation_count: int = 0
+    metrics: List[CallImportInsightsMetric] = Field(default_factory=list)

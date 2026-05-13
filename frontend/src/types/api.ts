@@ -625,12 +625,35 @@ export type CallImportRowStatus =
   | 'completed'
   | 'failed'
 
+/** Where the value in `transcript` came from. */
+export type CallImportTranscriptSource =
+  | 'csv'
+  | 'transcribed'
+  | 'edited'
+  | null
+/** Lifecycle status for the post-hoc transcription workflow itself. */
+export type CallImportTranscriptStatus =
+  | 'idle'
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | null
+
 export interface CallImportRow {
   id: string
   row_index: number
   external_call_id: string
   recording_url: string | null
   transcript: string | null
+  /** Provenance of the stored transcript (csv = CSV upload, transcribed = post-hoc STT). */
+  transcript_source: CallImportTranscriptSource
+  /** Provider used by the post-hoc transcription worker (e.g. "deepgram"). */
+  transcript_provider: string | null
+  transcript_model: string | null
+  transcript_status: CallImportTranscriptStatus
+  transcript_error: string | null
+  transcribed_at: string | null
   raw_columns: Record<string, string> | null
   status: CallImportRowStatus
   recording_s3_key: string | null
@@ -699,6 +722,13 @@ export interface CallImportMetricSummary {
   description: string | null
 }
 
+/** Per-metric LLM override (provider+model+optional credential). */
+export interface CallImportEvaluationLLMOverride {
+  provider?: string | null
+  model?: string | null
+  credential_id?: string | null
+}
+
 export interface CallImportEvaluation {
   id: string
   call_import_id: string
@@ -712,6 +742,14 @@ export interface CallImportEvaluation {
   completed_rows: number
   failed_rows: number
   error_message: string | null
+  /** Run-level LLM provider chosen by the user (null = legacy default). */
+  llm_provider: string | null
+  llm_model: string | null
+  llm_credential_id: string | null
+  metric_llm_overrides: Record<string, CallImportEvaluationLLMOverride> | null
+  stt_provider: string | null
+  stt_model: string | null
+  stt_credential_id: string | null
   started_at: string | null
   finished_at: string | null
   created_at: string
@@ -744,4 +782,88 @@ export interface CallImportEvaluationRowListResponse {
   total: number
   page: number
   page_size: number
+}
+
+// --- Diarization / transcription ---
+
+export interface CallImportTranscribeRequest {
+  stt_provider: string
+  stt_model: string
+  credential_id?: string | null
+  language?: string | null
+  only_missing?: boolean
+  overwrite_existing?: boolean
+  row_ids?: string[]
+}
+
+export interface CallImportTranscribeResponse {
+  queued: number
+  skipped_rows: number
+  skipped_reason_counts: Record<string, number>
+}
+
+// --- Aggregation / visualization payloads ---
+
+export interface CallImportMetricHistogramBucket {
+  x0: number
+  x1: number
+  count: number
+}
+
+export interface CallImportMetricValueCount {
+  label: string
+  count: number
+}
+
+export interface CallImportMetricAggregate {
+  metric_id: string
+  metric_name: string
+  metric_type: string | null
+  count: number
+  skipped_count: number
+  error_count: number
+  mean: number | null
+  median: number | null
+  p25: number | null
+  p75: number | null
+  p95: number | null
+  min: number | null
+  max: number | null
+  stddev: number | null
+  histogram_buckets: CallImportMetricHistogramBucket[]
+  value_counts: CallImportMetricValueCount[]
+}
+
+export interface CallImportEvaluationAggregateResponse {
+  evaluation_id: string
+  total_rows: number
+  completed_rows: number
+  failed_rows: number
+  metrics: CallImportMetricAggregate[]
+}
+
+export interface CallImportInsightsRunPoint {
+  evaluation_id: string
+  name: string | null
+  created_at: string
+  mean: number | null
+  completed_rows: number
+}
+
+export interface CallImportInsightsMetric {
+  metric_id: string
+  metric_name: string
+  metric_type: string | null
+  latest: CallImportMetricAggregate | null
+  trend: CallImportInsightsRunPoint[]
+}
+
+export interface CallImportInsightsResponse {
+  call_import_id: string
+  total_rows: number
+  rows_with_transcript: number
+  rows_without_transcript: number
+  transcript_source_counts: Record<string, number>
+  evaluation_count: number
+  metrics: CallImportInsightsMetric[]
 }

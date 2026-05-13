@@ -5,6 +5,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
   ArrowLeft,
+  AudioLines,
+  BarChart3,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -12,6 +14,7 @@ import {
   Edit3,
   FileText,
   ListTree,
+  Mic,
   MessageSquare,
   Pause,
   Play,
@@ -21,17 +24,44 @@ import {
   X,
   XCircle,
 } from 'lucide-react'
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts'
 import { apiClient } from '../../lib/api'
 import type {
   CallImportEvaluation,
+  CallImportEvaluationLLMOverride,
   CallImportRow,
   CallImportTag,
 } from '../../types/api'
 import Button from '../../components/Button'
 import ConfirmModal from '../../components/ConfirmModal'
 import StatusBadge from '../../components/shared/StatusBadge'
+import ProviderModelPicker, {
+  type ProviderModelValue,
+} from '../../components/providers/ProviderModelPicker'
 import CallImportProgressBar from './components/CallImportProgressBar'
 import TranscriptView from './components/TranscriptView'
+
+// Providers we know `TranscriptionService.transcribe()` already supports
+// for the full diarization-enabled path. Local Whisper is omitted since
+// it's an unconditional fallback inside the service rather than
+// something the user explicitly picks.
+const STT_PROVIDER_ALLOWLIST = [
+  'deepgram',
+  'openai',
+  'elevenlabs',
+  'sarvam',
+  'smallest',
+]
 
 const ROW_PAGE_SIZE = 100
 
@@ -71,10 +101,53 @@ export default function CallImportDetail() {
   const [showRunEval, setShowRunEval] = useState(false)
   const [selectedMetricIds, setSelectedMetricIds] = useState<string[]>([])
   const [runDraftName, setRunDraftName] = useState('')
-  const [activeTab, setActiveTab] = useState<'rows' | 'evaluations'>('rows')
+  // Run-level LLM picker for the eval modal. Empty provider keeps the
+  // legacy OpenAI/gpt-4o default; any non-empty provider+model becomes
+  // the new run-level default that propagates to every selected metric
+  // unless overridden in the Advanced section.
+  const [runLLM, setRunLLM] = useState<ProviderModelValue>({
+    provider: null,
+    model: null,
+    credential_id: null,
+  })
+  // Per-metric LLM overrides keyed by metric id. Only metrics with a
+  // non-null provider+model end up in the request payload; everything
+  // else inherits the run-level default.
+  const [metricLLMOverrides, setMetricLLMOverrides] = useState<
+    Record<string, ProviderModelValue>
+  >({})
+  const [showAdvancedLLM, setShowAdvancedLLM] = useState(false)
+  // Auto-transcribe toggles for the eval modal: when on, the backend
+  // chains a transcribe -> evaluate per row so the user doesn't have
+  // to run two flows back-to-back when the CSV is missing transcripts.
+  const [autoTranscribe, setAutoTranscribe] = useState(false)
+  const [transcribeOverwrite, setTranscribeOverwrite] = useState(false)
+  const [evalSTT, setEvalSTT] = useState<ProviderModelValue>({
+    provider: null,
+    model: null,
+    credential_id: null,
+  })
+  const [evalSTTLanguage, setEvalSTTLanguage] = useState('')
+  const [activeTab, setActiveTab] = useState<
+    'rows' | 'evaluations' | 'insights'
+  >('rows')
   const [selectedEvalIds, setSelectedEvalIds] = useState<Set<string>>(new Set())
   const [showBulkDeleteEvals, setShowBulkDeleteEvals] = useState(false)
   const [bulkDeleteEvalsError, setBulkDeleteEvalsError] = useState<string | null>(null)
+  // Standalone "Transcribe row" modal (separate from the eval flow).
+  const [showTranscribeModal, setShowTranscribeModal] = useState(false)
+  const [transcribeTargetRows, setTranscribeTargetRows] = useState<
+    CallImportRow[] | null
+  >(null)
+  const [transcribeSTT, setTranscribeSTT] = useState<ProviderModelValue>({
+    provider: null,
+    model: null,
+    credential_id: null,
+  })
+  const [transcribeOverwriteStandalone, setTranscribeOverwriteStandalone] =
+    useState(false)
+  const [transcribeLanguage, setTranscribeLanguage] = useState('')
+  const [transcribeError, setTranscribeError] = useState<string | null>(null)
 
   const [editingMeta, setEditingMeta] = useState(false)
   const [draftDataset, setDraftDataset] = useState('')
@@ -142,7 +215,18 @@ export default function CallImportDetail() {
     enabled: !!id,
     refetchInterval: (query) => {
       const status = query.state.data?.status
-      return status === 'pending' || status === 'processing' ? 5000 : false
+      // Keep polling while the CSV import itself is in flight, or
+      // while any row has an active (pending/running) transcription —
+      // otherwise the user has to manually refresh to see whether
+      // the transcribe worker finished or failed.
+      if (status === 'pending' || status === 'processing') return 5000
+      const rows = query.state.data?.rows ?? []
+      const hasActiveTranscript = rows.some(
+        (r: { transcript_status?: string | null }) =>
+          r.transcript_status === 'pending' ||
+          r.transcript_status === 'running',
+      )
+      return hasActiveTranscript ? 4000 : false
     },
   })
 
@@ -164,17 +248,92 @@ export default function CallImportDetail() {
     },
   })
 
+  // Insights tab: fetched lazily so we don't pay for the cross-run
+  // aggregation on first page load. Refetches on a 30s cadence while
+  // any evaluation is still running so the trend chart fills in as
+  // data arrives.
+  const { data: insightsData, isLoading: insightsLoading } = useQuery({
+    queryKey: ['call-import-insights', id],
+    queryFn: () => apiClient.getCallImportInsights(id!),
+    enabled: !!id && activeTab === 'insights',
+    refetchInterval: () => {
+      const rows = evaluationsData?.items || []
+      return rows.some(
+        (row) => row.status === 'pending' || row.status === 'running',
+      )
+        ? 15000
+        : false
+    },
+  })
+
   const runEvaluationMutation = useMutation({
-    mutationFn: (payload: { metric_ids: string[]; name?: string | null }) =>
+    mutationFn: (payload: Parameters<typeof apiClient.createCallImportEvaluation>[1]) =>
       apiClient.createCallImportEvaluation(id!, payload),
     onSuccess: (created) => {
       queryClient.invalidateQueries({ queryKey: ['call-import-evaluations', id] })
+      queryClient.invalidateQueries({ queryKey: ['call-import', id] })
       setShowRunEval(false)
       setSelectedMetricIds([])
       setRunDraftName('')
+      setRunLLM({ provider: null, model: null, credential_id: null })
+      setMetricLLMOverrides({})
+      setShowAdvancedLLM(false)
+      setAutoTranscribe(false)
+      setTranscribeOverwrite(false)
+      setEvalSTT({ provider: null, model: null, credential_id: null })
+      setEvalSTTLanguage('')
       setActiveTab('evaluations')
       // Land directly on the dedicated detail page for the new run.
       navigate(`/call-imports/${id}/evaluations/${created.id}`)
+    },
+  })
+
+  const transcribeRowsMutation = useMutation({
+    mutationFn: ({
+      rowIds,
+      stt,
+      language,
+      overwrite,
+    }: {
+      rowIds: string[] | null
+      stt: ProviderModelValue
+      language: string
+      overwrite: boolean
+    }) => {
+      const trimmedLang = language.trim() || null
+      // Single-row endpoint vs batch endpoint: prefer the single-row
+      // endpoint when the modal targets exactly one row so the API
+      // surface stays self-documenting.
+      if (rowIds && rowIds.length === 1) {
+        return apiClient.transcribeCallImportRow(id!, rowIds[0], {
+          stt_provider: stt.provider as string,
+          stt_model: stt.model as string,
+          credential_id: stt.credential_id ?? null,
+          language: trimmedLang,
+          only_missing: !overwrite,
+          overwrite_existing: overwrite,
+        })
+      }
+      return apiClient.transcribeCallImport(id!, {
+        stt_provider: stt.provider as string,
+        stt_model: stt.model as string,
+        credential_id: stt.credential_id ?? null,
+        language: trimmedLang,
+        only_missing: !overwrite,
+        overwrite_existing: overwrite,
+        row_ids: rowIds ?? undefined,
+      })
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['call-import', id] })
+      setShowTranscribeModal(false)
+      setTranscribeTargetRows(null)
+      setTranscribeError(null)
+    },
+    onError: (err: any) => {
+      setTranscribeError(
+        err?.response?.data?.detail || err?.message || 'Failed to enqueue transcription.',
+      )
     },
   })
 
@@ -277,6 +436,22 @@ export default function CallImportDetail() {
         ? prev.filter((id) => id !== metricId)
         : [...prev, metricId],
     )
+  }
+
+  const openTranscribeModal = (rows: CallImportRow[]) => {
+    setTranscribeTargetRows(rows)
+    setTranscribeError(null)
+    setTranscribeOverwriteStandalone(false)
+    // Default to deepgram/nova-2 since it's the most common diarization
+    // setup; the user can change it before submitting.
+    if (!transcribeSTT.provider) {
+      setTranscribeSTT({
+        provider: 'deepgram',
+        model: 'nova-2',
+        credential_id: null,
+      })
+    }
+    setShowTranscribeModal(true)
   }
 
   if (!id) {
@@ -608,6 +783,19 @@ export default function CallImportDetail() {
               {evaluationsData?.items?.length ?? 0}
             </span>
           </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('insights')}
+            className={`whitespace-nowrap py-3 px-1 border-b-2 text-sm font-medium transition ${
+              activeTab === 'insights'
+                ? 'border-primary-500 text-primary-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            }`}
+            aria-current={activeTab === 'insights' ? 'page' : undefined}
+          >
+            <BarChart3 className="h-3.5 w-3.5 inline mr-1 -mt-0.5" />
+            Insights
+          </button>
         </nav>
       </div>
 
@@ -744,6 +932,28 @@ export default function CallImportDetail() {
                           >
                             <Download className="h-4 w-4" />
                           </button>
+                          <button
+                            type="button"
+                            onClick={() => openTranscribeModal([row])}
+                            disabled={
+                              row.transcript_status === 'pending' ||
+                              row.transcript_status === 'running'
+                            }
+                            title={
+                              row.transcript_status === 'pending' ||
+                              row.transcript_status === 'running'
+                                ? 'Transcription in progress'
+                                : 'Transcribe this row'
+                            }
+                            className="p-1.5 rounded text-gray-500 hover:text-purple-600 hover:bg-purple-50 transition-colors disabled:opacity-40"
+                          >
+                            {row.transcript_status === 'pending' ||
+                            row.transcript_status === 'running' ? (
+                              <RefreshCw className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <Mic className="h-4 w-4" />
+                            )}
+                          </button>
                         </>
                       ) : (
                         <span className="text-[11px] text-gray-400 px-2">
@@ -787,12 +997,83 @@ export default function CallImportDetail() {
                     <div className="border-t border-gray-200 px-4 py-4 bg-gray-100 space-y-3">
                       <div className="grid grid-cols-1 lg:grid-cols-5 gap-3">
                         <section className="lg:col-span-3 min-w-0 bg-white border border-gray-200 rounded-lg shadow-sm">
-                          <header className="px-3 py-2 border-b border-gray-100 flex items-center gap-1.5">
-                            <MessageSquare className="h-3.5 w-3.5 text-gray-400" />
-                            <h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wider">
-                              Conversation
-                            </h4>
+                          <header className="px-3 py-2 border-b border-gray-100 flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <MessageSquare className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />
+                              <h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                                Conversation
+                              </h4>
+                              {row.transcript_source === 'transcribed' && (
+                                <span className="ml-1 inline-flex items-center gap-1 rounded-full bg-purple-50 text-purple-700 px-2 py-0.5 text-[10px] font-medium">
+                                  <AudioLines className="h-3 w-3" />
+                                  Transcribed
+                                  {row.transcript_provider && (
+                                    <span className="font-mono">
+                                      · {row.transcript_provider}
+                                      {row.transcript_model
+                                        ? `/${row.transcript_model}`
+                                        : ''}
+                                    </span>
+                                  )}
+                                </span>
+                              )}
+                              {row.transcript_source === 'csv' && (
+                                <span className="ml-1 inline-flex items-center rounded-full bg-gray-100 text-gray-700 px-2 py-0.5 text-[10px] font-medium">
+                                  From CSV
+                                </span>
+                              )}
+                              {(row.transcript_status === 'pending' ||
+                                row.transcript_status === 'running') && (
+                                <span className="ml-1 inline-flex items-center gap-1 rounded-full bg-blue-50 text-blue-700 px-2 py-0.5 text-[10px] font-medium">
+                                  <RefreshCw className="h-3 w-3 animate-spin" />
+                                  Transcribing…
+                                </span>
+                              )}
+                              {row.transcript_status === 'failed' && (
+                                <span
+                                  className="ml-1 inline-flex items-center gap-1 rounded-full bg-red-50 text-red-700 px-2 py-0.5 text-[10px] font-medium"
+                                  title={row.transcript_error || ''}
+                                >
+                                  <AlertCircle className="h-3 w-3" />
+                                  Transcribe failed
+                                </span>
+                              )}
+                            </div>
+                            {hasRecording && (
+                              <button
+                                type="button"
+                                onClick={() => openTranscribeModal([row])}
+                                disabled={
+                                  row.transcript_status === 'pending' ||
+                                  row.transcript_status === 'running'
+                                }
+                                className="text-[11px] font-medium text-purple-700 hover:text-purple-900 disabled:opacity-50"
+                              >
+                                {row.transcript ? 'Re-transcribe' : 'Transcribe'}
+                              </button>
+                            )}
                           </header>
+                          {row.transcript_status === 'failed' &&
+                            row.transcript_error && (
+                              <div className="border-b border-red-100 bg-red-50 px-3 py-2 text-xs text-red-800 flex items-start gap-2">
+                                <AlertCircle className="h-3.5 w-3.5 text-red-600 flex-shrink-0 mt-0.5" />
+                                <div className="min-w-0 flex-1 break-words">
+                                  <span className="font-medium">
+                                    Transcription failed:
+                                  </span>{' '}
+                                  {row.transcript_error}
+                                  {row.transcript_provider && (
+                                    <span className="ml-1 text-[10px] text-red-700/80 font-mono">
+                                      ({row.transcript_provider}
+                                      {row.transcript_model
+                                        ? `/${row.transcript_model}`
+                                        : ''}
+                                      )
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            )}
                           <div className="p-3">
                             <TranscriptView transcript={row.transcript} compact />
                           </div>
@@ -1102,6 +1383,267 @@ export default function CallImportDetail() {
       </div>
       )}
 
+      {activeTab === 'insights' && (
+        <div className="bg-white shadow rounded-lg p-6 space-y-6">
+          <div>
+            <h2 className="text-lg font-semibold text-gray-900">Insights</h2>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Cross-run signals for this call import. Trend lines show the
+              mean of each metric across every evaluation; transcript
+              coverage helps you spot rows that still need diarization.
+            </p>
+          </div>
+
+          {insightsLoading || !insightsData ? (
+            <div className="text-center py-12 text-gray-500">
+              <RefreshCw className="h-6 w-6 mx-auto mb-2 animate-spin" />
+              <p>Loading insights…</p>
+            </div>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="border border-gray-200 rounded-lg px-3 py-2">
+                  <p className="text-[11px] text-gray-500 uppercase tracking-wide">
+                    Total rows
+                  </p>
+                  <p className="text-2xl font-semibold text-gray-900">
+                    {insightsData.total_rows}
+                  </p>
+                </div>
+                <div className="border border-gray-200 rounded-lg px-3 py-2">
+                  <p className="text-[11px] text-gray-500 uppercase tracking-wide">
+                    With transcript
+                  </p>
+                  <p className="text-2xl font-semibold text-gray-900">
+                    {insightsData.rows_with_transcript}
+                  </p>
+                </div>
+                <div className="border border-gray-200 rounded-lg px-3 py-2">
+                  <p className="text-[11px] text-gray-500 uppercase tracking-wide">
+                    Missing transcript
+                  </p>
+                  <p className="text-2xl font-semibold text-gray-900">
+                    {insightsData.rows_without_transcript}
+                  </p>
+                </div>
+                <div className="border border-gray-200 rounded-lg px-3 py-2">
+                  <p className="text-[11px] text-gray-500 uppercase tracking-wide">
+                    Eval runs
+                  </p>
+                  <p className="text-2xl font-semibold text-gray-900">
+                    {insightsData.evaluation_count}
+                  </p>
+                </div>
+              </div>
+
+              {Object.keys(insightsData.transcript_source_counts).length >
+                0 && (
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-800 mb-2">
+                    Transcript source mix
+                  </h3>
+                  <div className="flex gap-2 flex-wrap">
+                    {Object.entries(
+                      insightsData.transcript_source_counts,
+                    ).map(([source, count]) => (
+                      <span
+                        key={source}
+                        className="inline-flex items-center gap-1 rounded-full bg-gray-100 text-gray-800 px-3 py-1 text-xs"
+                      >
+                        <span className="font-medium capitalize">{source}</span>
+                        <span className="tabular-nums">· {count}</span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {insightsData.metrics.length === 0 ? (
+                <p className="text-sm text-gray-500">
+                  Run at least one evaluation to populate metric trends.
+                </p>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {insightsData.metrics.map((m) => {
+                    const trend = m.trend
+                      .filter((p) => p.mean !== null)
+                      .map((p) => ({
+                        x: new Date(p.created_at).toLocaleDateString(),
+                        mean: p.mean as number,
+                        name: p.name,
+                      }))
+                    const latest = m.latest
+                    return (
+                      <div
+                        key={m.metric_id}
+                        className="border border-gray-200 rounded-lg p-3 space-y-2"
+                      >
+                        <div className="flex items-center justify-between">
+                          <p className="text-sm font-medium text-gray-900">
+                            {m.metric_name}
+                          </p>
+                          {latest?.mean != null && (
+                            <span className="text-sm font-semibold text-primary-700 tabular-nums">
+                              μ {latest.mean.toFixed(2)}
+                            </span>
+                          )}
+                        </div>
+                        {trend.length > 1 ? (
+                          <ResponsiveContainer width="100%" height={120}>
+                            <LineChart data={trend}>
+                              <CartesianGrid strokeDasharray="3 3" />
+                              <XAxis dataKey="x" tick={{ fontSize: 10 }} />
+                              <YAxis tick={{ fontSize: 10 }} />
+                              <Tooltip />
+                              <Line
+                                type="monotone"
+                                dataKey="mean"
+                                strokeWidth={2}
+                                stroke="#6366f1"
+                                dot={{ r: 3 }}
+                              />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        ) : latest && latest.value_counts.length ? (
+                          <ResponsiveContainer width="100%" height={120}>
+                            <BarChart data={latest.value_counts}>
+                              <CartesianGrid strokeDasharray="3 3" />
+                              <XAxis dataKey="label" tick={{ fontSize: 10 }} />
+                              <YAxis tick={{ fontSize: 10 }} />
+                              <Tooltip />
+                              <Bar dataKey="count" fill="#10b981" />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        ) : (
+                          <p className="text-xs text-gray-400 italic">
+                            Need at least two runs to plot a trend.
+                          </p>
+                        )}
+                        {latest && (
+                          <div className="grid grid-cols-3 text-[11px] text-gray-500 gap-1">
+                            <span>n={latest.count}</span>
+                            <span>p50={latest.median?.toFixed(2) ?? '—'}</span>
+                            <span>p95={latest.p95?.toFixed(2) ?? '—'}</span>
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {showTranscribeModal &&
+        renderModal(
+          (() => {
+            const targets = transcribeTargetRows ?? []
+            const headerLabel =
+              targets.length === 1
+                ? `Transcribe row #${(targets[0]?.row_index ?? 0) + 1}`
+                : `Transcribe ${targets.length} rows`
+            const canSubmit =
+              !!transcribeSTT.provider &&
+              !!transcribeSTT.model &&
+              targets.length > 0 &&
+              !transcribeRowsMutation.isPending
+            return (
+              <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]">
+                <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
+                  <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+                    <h3 className="text-lg font-semibold">{headerLabel}</h3>
+                    <button
+                      onClick={() => {
+                        if (transcribeRowsMutation.isPending) return
+                        setShowTranscribeModal(false)
+                        setTranscribeTargetRows(null)
+                      }}
+                      className="text-gray-400 hover:text-gray-600"
+                    >
+                      <X className="h-5 w-5" />
+                    </button>
+                  </div>
+                  <div className="p-6 space-y-3">
+                    <p className="text-sm text-gray-600">
+                      Pick the STT provider and model. Diarization is enabled
+                      automatically — the transcript is stored in
+                      <code className="mx-1 px-1 bg-gray-100 rounded text-[11px]">
+                        Speaker N:
+                      </code>
+                      format that the conversation viewer renders as bubbles.
+                    </p>
+                    <ProviderModelPicker
+                      kind="stt"
+                      value={transcribeSTT}
+                      onChange={setTranscribeSTT}
+                      providerAllowList={STT_PROVIDER_ALLOWLIST}
+                      defaultLabel="Pick an STT provider"
+                      allowCredentialPick
+                    />
+                    <input
+                      type="text"
+                      value={transcribeLanguage}
+                      onChange={(e) => setTranscribeLanguage(e.target.value)}
+                      placeholder="Language hint (e.g. en, hi)"
+                      className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                    />
+                    <label className="flex items-start gap-2 text-xs">
+                      <input
+                        type="checkbox"
+                        checked={transcribeOverwriteStandalone}
+                        onChange={(e) =>
+                          setTranscribeOverwriteStandalone(e.target.checked)
+                        }
+                      />
+                      <span>
+                        Overwrite existing transcripts (otherwise rows with
+                        a transcript are skipped).
+                      </span>
+                    </label>
+                    {transcribeError && (
+                      <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+                        {transcribeError}
+                      </div>
+                    )}
+                    <div className="flex gap-2 pt-2">
+                      <Button
+                        variant="outline"
+                        onClick={() => {
+                          if (transcribeRowsMutation.isPending) return
+                          setShowTranscribeModal(false)
+                          setTranscribeTargetRows(null)
+                        }}
+                        disabled={transcribeRowsMutation.isPending}
+                        className="flex-1"
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        variant="primary"
+                        isLoading={transcribeRowsMutation.isPending}
+                        disabled={!canSubmit}
+                        onClick={() =>
+                          transcribeRowsMutation.mutate({
+                            rowIds: targets.map((r) => r.id),
+                            stt: transcribeSTT,
+                            language: transcribeLanguage,
+                            overwrite: transcribeOverwriteStandalone,
+                          })
+                        }
+                        className="flex-1"
+                      >
+                        Start
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )
+          })(),
+        )}
+
       {showRunEval &&
         renderModal(
           (() => {
@@ -1241,6 +1783,136 @@ export default function CallImportDetail() {
                             </Link>
                           </details>
                         )}
+
+                        {/* Run-level LLM config */}
+                        <div className="rounded-md border border-gray-200 bg-gray-50 p-3 space-y-2">
+                          <p className="text-xs uppercase tracking-wide font-semibold text-gray-500">
+                            Evaluation LLM
+                          </p>
+                          <p className="text-[11px] text-gray-500">
+                            Pick the LLM that scores every selected metric.
+                            Leave empty to keep the default (OpenAI · gpt-4o).
+                          </p>
+                          <ProviderModelPicker
+                            kind="llm"
+                            value={runLLM}
+                            onChange={setRunLLM}
+                            defaultLabel="Default (OpenAI · gpt-4o)"
+                            allowCredentialPick
+                          />
+
+                          {selectedMetricIds.length > 0 && (
+                            <div className="pt-2 border-t border-gray-200">
+                              <button
+                                type="button"
+                                onClick={() => setShowAdvancedLLM((s) => !s)}
+                                className="text-[11px] font-medium text-primary-700 hover:text-primary-900"
+                              >
+                                {showAdvancedLLM ? 'Hide' : 'Show'} per-metric overrides
+                                ({selectedMetricIds.length} metric
+                                {selectedMetricIds.length === 1 ? '' : 's'})
+                              </button>
+                              {showAdvancedLLM && (
+                                <div className="mt-2 space-y-3">
+                                  {selectedMetricIds.map((metricId) => {
+                                    const metric = enabledMetrics.find(
+                                      (m: any) => m.id === metricId,
+                                    )
+                                    if (!metric) return null
+                                    const override = metricLLMOverrides[
+                                      metricId
+                                    ] || {
+                                      provider: null,
+                                      model: null,
+                                      credential_id: null,
+                                    }
+                                    return (
+                                      <div
+                                        key={metricId}
+                                        className="rounded border border-gray-200 bg-white p-2"
+                                      >
+                                        <p className="text-xs font-medium text-gray-800 mb-1">
+                                          {metric.name}
+                                        </p>
+                                        <ProviderModelPicker
+                                          kind="llm"
+                                          value={override}
+                                          onChange={(next) => {
+                                            setMetricLLMOverrides((prev) => {
+                                              const copy = { ...prev }
+                                              if (!next.provider && !next.model) {
+                                                delete copy[metricId]
+                                              } else {
+                                                copy[metricId] = next
+                                              }
+                                              return copy
+                                            })
+                                          }}
+                                          defaultLabel="Use run default"
+                                        />
+                                      </div>
+                                    )
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Auto-transcribe hook */}
+                        <div className="rounded-md border border-gray-200 bg-gray-50 p-3 space-y-2">
+                          <label className="flex items-start gap-2 text-sm cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={autoTranscribe}
+                              onChange={(e) =>
+                                setAutoTranscribe(e.target.checked)
+                              }
+                              className="mt-0.5"
+                            />
+                            <span>
+                              <span className="font-medium text-gray-900">
+                                Auto-transcribe rows missing transcripts
+                              </span>
+                              <span className="block text-[11px] text-gray-500">
+                                Runs the STT provider first, then evaluates.
+                                Rows that already have a transcript are reused
+                                unless overwrite is enabled.
+                              </span>
+                            </span>
+                          </label>
+                          {autoTranscribe && (
+                            <div className="pl-6 space-y-2">
+                              <ProviderModelPicker
+                                kind="stt"
+                                value={evalSTT}
+                                onChange={setEvalSTT}
+                                providerAllowList={STT_PROVIDER_ALLOWLIST}
+                                defaultLabel="Pick an STT provider"
+                                allowCredentialPick
+                              />
+                              <input
+                                type="text"
+                                value={evalSTTLanguage}
+                                onChange={(e) =>
+                                  setEvalSTTLanguage(e.target.value)
+                                }
+                                placeholder="Language hint (e.g. en, hi)"
+                                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                              />
+                              <label className="flex items-start gap-2 text-xs">
+                                <input
+                                  type="checkbox"
+                                  checked={transcribeOverwrite}
+                                  onChange={(e) =>
+                                    setTranscribeOverwrite(e.target.checked)
+                                  }
+                                />
+                                <span>Overwrite existing transcripts</span>
+                              </label>
+                            </div>
+                          )}
+                        </div>
                       </>
                     )}
 
@@ -1273,14 +1945,56 @@ export default function CallImportDetail() {
                         disabled={
                           selectedMetricIds.length === 0 ||
                           enabledMetrics.length === 0 ||
-                          runEvaluationMutation.isPending
+                          runEvaluationMutation.isPending ||
+                          (autoTranscribe &&
+                            (!evalSTT.provider || !evalSTT.model)) ||
+                          (Boolean(runLLM.provider) !==
+                            Boolean(runLLM.model))
                         }
-                        onClick={() =>
+                        onClick={() => {
+                          // Build a clean overrides payload — drop any
+                          // entries that didn't end up with both a
+                          // provider and a model set so the API doesn't
+                          // 400 on partial fills.
+                          const overrides: Record<
+                            string,
+                            CallImportEvaluationLLMOverride
+                          > = {}
+                          for (const [mid, val] of Object.entries(
+                            metricLLMOverrides,
+                          )) {
+                            if (val.provider && val.model) {
+                              overrides[mid] = {
+                                provider: val.provider,
+                                model: val.model,
+                                credential_id: val.credential_id || null,
+                              }
+                            }
+                          }
                           runEvaluationMutation.mutate({
                             metric_ids: selectedMetricIds,
                             name: runDraftName.trim() || null,
+                            llm_provider: runLLM.provider || null,
+                            llm_model: runLLM.model || null,
+                            llm_credential_id: runLLM.credential_id || null,
+                            metric_llm_overrides: Object.keys(overrides).length
+                              ? overrides
+                              : null,
+                            auto_transcribe: autoTranscribe,
+                            transcribe_overwrite:
+                              autoTranscribe && transcribeOverwrite,
+                            stt_provider: autoTranscribe
+                              ? evalSTT.provider
+                              : null,
+                            stt_model: autoTranscribe ? evalSTT.model : null,
+                            stt_credential_id: autoTranscribe
+                              ? evalSTT.credential_id || null
+                              : null,
+                            stt_language: autoTranscribe
+                              ? evalSTTLanguage.trim() || null
+                              : null,
                           })
-                        }
+                        }}
                         className="flex-1"
                       >
                         Start

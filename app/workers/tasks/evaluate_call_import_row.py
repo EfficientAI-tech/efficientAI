@@ -19,6 +19,7 @@ from the audio.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
 
@@ -228,6 +229,25 @@ def evaluate_call_import_row_task(self, eval_row_id: str):
             db.commit()
             return {"status": "failed", "reason": "audio_required"}
 
+        if llm_metrics and not transcript:
+            logger.warning(
+                "[CallImportEval {}] Skipping LLM metrics: transcript is empty",
+                eval_row.id,
+            )
+            err = RuntimeError("Transcript is empty for this row")
+            metric_scores.update(handle_llm_evaluation_error(llm_metrics, err))
+            eval_row.status = "failed"
+            eval_row.error_message = (
+                "Transcript is empty for this row; LLM-evaluated metrics "
+                "could not be scored."
+            )
+            eval_row.metric_scores = _as_json_dict(metric_scores)
+            eval_row.finished_at = _now()
+            db.commit()
+            _rollup_parent(db, evaluation)
+            db.commit()
+            return {"status": "failed", "reason": "missing_transcript"}
+
         result_id = f"call-import-eval:{eval_row.id}"
         evaluation_failed = False
         primary_error_message: str | None = None
@@ -248,37 +268,58 @@ def evaluate_call_import_row_task(self, eval_row_id: str):
                     handle_audio_evaluation_error(audio_metrics, audio_err)
                 )
 
-        if llm_metrics:
-            if not transcript:
-                logger.warning(
-                    "[CallImportEval {}] Skipping LLM metrics: transcript is empty",
-                    eval_row.id,
+        if llm_metrics and transcript:
+            ai_providers = (
+                db.query(AIProvider)
+                .filter(
+                    AIProvider.organization_id == evaluation.organization_id,
+                    AIProvider.is_active.is_(True),
                 )
-                err = RuntimeError("Transcript is empty for this row")
-                metric_scores.update(handle_llm_evaluation_error(llm_metrics, err))
-                evaluation_failed = True
-                primary_error_message = (
-                    "Transcript is empty for this row; LLM-evaluated metrics "
-                    "could not be scored."
+                .all()
+            )
+
+            # Group metrics by their effective (provider, model) so we
+            # only call the LLM once per unique config. Per-metric
+            # overrides win, then fall back to the run-level default,
+            # then the historical OpenAI/gpt-4o default inside
+            # ``evaluate_with_llm``.
+            run_provider = (evaluation.llm_provider or "").strip() or None
+            run_model = (evaluation.llm_model or "").strip() or None
+            overrides = (
+                evaluation.metric_llm_overrides
+                if isinstance(evaluation.metric_llm_overrides, dict)
+                else {}
+            )
+
+            groups: dict[
+                tuple[str | None, str | None], list[Metric]
+            ] = {}
+            for metric in llm_metrics:
+                metric_id_str = str(metric.id)
+                override = overrides.get(metric_id_str) or {}
+                provider = (
+                    override.get("provider") or run_provider or None
                 )
-            else:
-                ai_providers = (
-                    db.query(AIProvider)
-                    .filter(
-                        AIProvider.organization_id == evaluation.organization_id,
-                        AIProvider.is_active.is_(True),
+                model = override.get("model") or run_model or None
+                groups.setdefault((provider, model), []).append(metric)
+
+            for (provider, model), bucket in groups.items():
+                evaluator_obj = None
+                if provider and model:
+                    evaluator_obj = SimpleNamespace(
+                        llm_provider=provider,
+                        llm_model=model,
+                        custom_prompt=None,
                     )
-                    .all()
-                )
                 try:
                     llm_scores, _eval_time = evaluate_with_llm(
                         transcription=transcript,
-                        llm_metrics=llm_metrics,
+                        llm_metrics=bucket,
                         ai_providers=ai_providers,
                         organization_id=evaluation.organization_id,
                         result_id=result_id,
                         db=db,
-                        evaluator=None,
+                        evaluator=evaluator_obj,
                         agent=None,
                         persona=None,
                         scenario=None,
@@ -286,10 +327,14 @@ def evaluate_call_import_row_task(self, eval_row_id: str):
                     metric_scores.update(llm_scores)
                 except Exception as exc:  # noqa: BLE001
                     logger.exception(
-                        "[CallImportEval {}] LLM evaluation failed", eval_row.id
+                        "[CallImportEval {}] LLM evaluation failed for "
+                        "provider={} model={}",
+                        eval_row.id,
+                        provider,
+                        model,
                     )
                     metric_scores.update(
-                        handle_llm_evaluation_error(llm_metrics, exc)
+                        handle_llm_evaluation_error(bucket, exc)
                     )
                     evaluation_failed = True
                     primary_error_message = str(exc)

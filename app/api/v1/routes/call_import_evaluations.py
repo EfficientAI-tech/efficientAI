@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import csv
 import io
-from typing import Dict, List, Optional
+import math
+import statistics
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -16,14 +18,16 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.dependencies import get_api_key, get_organization_id
 from app.models.database import (
+    AIProvider,
     CallImport,
     CallImportEvaluation,
     CallImportEvaluationRow,
     CallImportRow,
     Metric,
 )
-from app.models.enums import CallImportRowStatus
+from app.models.enums import CallImportRowStatus, ModelProvider
 from app.models.schemas import (
+    CallImportEvaluationAggregateResponse,
     CallImportEvaluationBulkDelete,
     CallImportEvaluationCreate,
     CallImportEvaluationListResponse,
@@ -31,7 +35,10 @@ from app.models.schemas import (
     CallImportEvaluationRowListResponse,
     CallImportEvaluationRowResponse,
     CallImportEvaluationUpdate,
+    CallImportMetricAggregate,
+    CallImportMetricHistogramBucket,
     CallImportMetricSummary,
+    CallImportMetricValueCount,
 )
 
 router = APIRouter(
@@ -108,6 +115,17 @@ def _serialize_eval(db: Session, row: CallImportEvaluation) -> CallImportEvaluat
         completed_rows=row.completed_rows,
         failed_rows=row.failed_rows,
         error_message=row.error_message,
+        llm_provider=row.llm_provider,
+        llm_model=row.llm_model,
+        llm_credential_id=row.llm_credential_id,
+        metric_llm_overrides=(
+            row.metric_llm_overrides
+            if isinstance(row.metric_llm_overrides, dict)
+            else None
+        ),
+        stt_provider=row.stt_provider,
+        stt_model=row.stt_model,
+        stt_credential_id=row.stt_credential_id,
         started_at=row.started_at,
         finished_at=row.finished_at,
         created_at=row.created_at,
@@ -217,6 +235,125 @@ async def create_call_import_evaluation(
             ),
         )
     metric_rows = org_metrics
+    valid_metric_id_strs = {str(m.id) for m in metric_rows}
+
+    # ----- Validate run-level + per-metric LLM config -----
+    llm_provider_norm: Optional[str] = None
+    llm_model_norm: Optional[str] = None
+    if payload.llm_provider or payload.llm_model:
+        if not (payload.llm_provider and payload.llm_model):
+            raise HTTPException(
+                status_code=400,
+                detail="Both llm_provider and llm_model are required when overriding the run LLM.",
+            )
+        try:
+            llm_provider_norm = ModelProvider(
+                payload.llm_provider.lower()
+            ).value
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Unknown LLM provider '{payload.llm_provider}'. "
+                    "Valid keys are documented in ModelProvider."
+                ),
+            )
+        llm_model_norm = payload.llm_model.strip() or None
+        if not llm_model_norm:
+            raise HTTPException(
+                status_code=400, detail="llm_model cannot be empty."
+            )
+
+    if payload.llm_credential_id is not None:
+        cred = (
+            db.query(AIProvider)
+            .filter(
+                AIProvider.id == payload.llm_credential_id,
+                AIProvider.organization_id == organization_id,
+            )
+            .first()
+        )
+        if not cred:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "The provided llm_credential_id does not exist in this "
+                    "organization."
+                ),
+            )
+
+    # Per-metric overrides: allow keys only for metrics actually selected,
+    # and validate provider strings the same way as the run-level default.
+    metric_overrides_payload: Optional[Dict[str, Dict[str, Any]]] = None
+    if payload.metric_llm_overrides:
+        metric_overrides_payload = {}
+        for metric_id, override in payload.metric_llm_overrides.items():
+            if metric_id not in valid_metric_id_strs:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "metric_llm_overrides references metric "
+                        f"{metric_id} which is not in metric_ids."
+                    ),
+                )
+            override_dict: Dict[str, Any] = {}
+            if override.provider is not None:
+                if not override.model:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Override for metric {metric_id} has a provider "
+                            "but no model."
+                        ),
+                    )
+                try:
+                    override_dict["provider"] = ModelProvider(
+                        override.provider.lower()
+                    ).value
+                except ValueError:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Override for metric {metric_id} uses unknown "
+                            f"provider '{override.provider}'."
+                        ),
+                    )
+                override_dict["model"] = override.model.strip()
+            elif override.model:
+                # Model without provider doesn't make sense — treat as 400
+                # so the UI can fix it instead of silently falling back.
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Override for metric {metric_id} has a model but "
+                        "no provider."
+                    ),
+                )
+            if override.credential_id is not None:
+                override_dict["credential_id"] = str(override.credential_id)
+            if override_dict:
+                metric_overrides_payload[metric_id] = override_dict
+
+    # ----- Validate auto-transcribe settings -----
+    auto_transcribe = payload.auto_transcribe and bool(payload.stt_provider)
+    stt_provider_norm: Optional[str] = None
+    stt_model_norm: Optional[str] = None
+    if auto_transcribe:
+        if not payload.stt_model:
+            raise HTTPException(
+                status_code=400,
+                detail="stt_model is required when auto_transcribe is true.",
+            )
+        try:
+            stt_provider_norm = ModelProvider(
+                payload.stt_provider.lower()
+            ).value
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown STT provider '{payload.stt_provider}'.",
+            )
+        stt_model_norm = payload.stt_model.strip() or None
 
     completed_rows = (
         db.query(CallImportRow)
@@ -237,11 +374,18 @@ async def create_call_import_evaluation(
         total_rows=len(completed_rows),
         completed_rows=0,
         failed_rows=0,
+        llm_provider=llm_provider_norm,
+        llm_model=llm_model_norm,
+        llm_credential_id=payload.llm_credential_id,
+        metric_llm_overrides=metric_overrides_payload,
+        stt_provider=stt_provider_norm,
+        stt_model=stt_model_norm,
+        stt_credential_id=payload.stt_credential_id if auto_transcribe else None,
     )
     db.add(evaluation)
     db.flush()
 
-    eval_rows: List[CallImportEvaluationRow] = []
+    eval_rows: List[Tuple[CallImportEvaluationRow, CallImportRow]] = []
     for source_row in completed_rows:
         eval_row = CallImportEvaluationRow(
             evaluation_id=evaluation.id,
@@ -250,7 +394,7 @@ async def create_call_import_evaluation(
             metric_scores={},
         )
         db.add(eval_row)
-        eval_rows.append(eval_row)
+        eval_rows.append((eval_row, source_row))
 
     db.commit()
     db.refresh(evaluation)
@@ -261,19 +405,69 @@ async def create_call_import_evaluation(
         db.refresh(evaluation)
         return _serialize_eval(db, evaluation)
 
+    # ------------------------------------------------------------------
+    # Decide per-row whether to chain transcribe -> evaluate, or just
+    # enqueue evaluate immediately. We prefer chaining over a single
+    # ``chord`` because some rows already have transcripts and shouldn't
+    # be transcribed again — chaining lets each row pick its own path
+    # without one slow / failed transcription holding up the rest.
+    # ------------------------------------------------------------------
+
+    transcribe_targets: List[Tuple[CallImportEvaluationRow, CallImportRow]] = []
+    eval_only_rows: List[CallImportEvaluationRow] = []
+    if auto_transcribe:
+        for eval_row, source_row in eval_rows:
+            existing = (source_row.transcript or "").strip()
+            has_recording = bool((source_row.recording_s3_key or "").strip())
+            if not has_recording:
+                eval_only_rows.append(eval_row)
+                continue
+            if existing and not payload.transcribe_overwrite:
+                eval_only_rows.append(eval_row)
+                continue
+            transcribe_targets.append((eval_row, source_row))
+    else:
+        eval_only_rows = [er for er, _ in eval_rows]
+
     # Lazy imports keep test setup simple — tests stub the worker module so
     # importing the route never reaches into Celery's broker config.
-    from celery import group
     from app.workers.tasks.evaluate_call_import_row import (
         evaluate_call_import_row_task,
     )
+    from celery import group
 
     try:
-        sigs = [
-            evaluate_call_import_row_task.s(str(eval_row.id)) for eval_row in eval_rows
-        ]
-        job = group(sigs).apply_async()
-        evaluation.celery_group_id = getattr(job, "id", None)
+        if auto_transcribe and transcribe_targets:
+            from app.workers.tasks.transcribe_call_import_row import (
+                transcribe_call_import_row_task,
+            )
+
+            for eval_row, source_row in transcribe_targets:
+                source_row.transcript_status = "pending"
+                source_row.transcript_error = None
+            db.commit()
+
+            for eval_row, source_row in transcribe_targets:
+                transcribe_call_import_row_task.delay(
+                    str(source_row.id),
+                    stt_provider_norm,
+                    stt_model_norm,
+                    str(payload.stt_credential_id)
+                    if payload.stt_credential_id
+                    else None,
+                    payload.stt_language,
+                    payload.transcribe_overwrite,
+                    str(eval_row.id),
+                )
+
+        if eval_only_rows:
+            group(
+                [
+                    evaluate_call_import_row_task.s(str(eval_row.id))
+                    for eval_row in eval_only_rows
+                ]
+            ).apply_async()
+
         evaluation.status = "running"
     except Exception as exc:  # noqa: BLE001 — surface but don't 500
         logger.exception(
@@ -509,11 +703,15 @@ async def export_call_import_evaluation_csv(
     # skipped by every other UTF-8-aware reader (pandas, LibreOffice,
     # Google Sheets, etc.), so the data round-trips correctly everywhere.
     csv_text = output.getvalue()
-    csv_bytes = ("\ufeff" + csv_text).encode("utf-8")
+    # ``utf-8-sig`` adds the UTF-8 BOM so Excel on Windows decodes the file
+    # as UTF-8 instead of the system codepage. We also declare the same
+    # codec in the Content-Type header so well-behaved HTTP clients (incl.
+    # ``httpx`` / ``requests`` in our tests) strip the BOM during decode.
+    csv_bytes = csv_text.encode("utf-8-sig")
     filename = f"call-import-{call_import_id}-evaluation-{eval_id}.csv"
     return StreamingResponse(
         iter([csv_bytes]),
-        media_type="text/csv; charset=utf-8",
+        media_type="text/csv; charset=utf-8-sig",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
@@ -658,6 +856,267 @@ async def bulk_delete_call_import_evaluations(
         deleted += 1
     db.commit()
     return {"deleted": deleted}
+
+
+# ---------------------------------------------------------------------------
+# Aggregation: turns per-row metric scores into histograms / value counts.
+#
+# Designed to be cheap enough to call on every page load: we read each
+# evaluation row once, bucket numeric values into a fixed 10-bin
+# histogram, and tally the top categorical values. Scaling concerns
+# (millions of rows) are deferred — at that point we'd push this into a
+# Postgres aggregate query, but for typical CSV imports (<10k rows) the
+# Python pass is fast enough and dramatically simpler.
+# ---------------------------------------------------------------------------
+
+
+_HISTOGRAM_BUCKETS = 10
+_TOP_VALUE_COUNTS = 10
+
+
+def _coerce_numeric(value: Any) -> Optional[float]:
+    """Return ``value`` as ``float`` when it's numeric; ``None`` otherwise."""
+    if isinstance(value, bool):
+        # Booleans are ints in Python; treat them as categorical so
+        # pass/fail metrics show up in value_counts instead of becoming
+        # a degenerate {0,1} histogram.
+        return None
+    if isinstance(value, (int, float)) and math.isfinite(value):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            f = float(value)
+            if math.isfinite(f):
+                return f
+        except ValueError:
+            return None
+    return None
+
+
+def _coerce_category(value: Any) -> Optional[str]:
+    """Render ``value`` as a label suitable for a value_counts bucket."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    # Lists / dicts: stringify so they still group sensibly without
+    # exploding the cardinality (worst case: everything is "[…]" once).
+    return str(value)
+
+
+def _build_histogram(
+    values: List[float],
+) -> List[CallImportMetricHistogramBucket]:
+    """Fixed-bin histogram over ``values``; returns [] for <2 values."""
+    if len(values) < 2:
+        return []
+    lo = min(values)
+    hi = max(values)
+    if lo == hi:
+        # All values identical — render a single bucket so the UI shows a
+        # spike rather than empty space.
+        return [
+            CallImportMetricHistogramBucket(x0=lo, x1=hi, count=len(values))
+        ]
+    width = (hi - lo) / _HISTOGRAM_BUCKETS
+    buckets: List[List[float]] = [[] for _ in range(_HISTOGRAM_BUCKETS)]
+    for v in values:
+        # Right-edge inclusive on the last bucket so ``hi`` doesn't fall
+        # off into a non-existent bucket index.
+        idx = int((v - lo) / width)
+        if idx >= _HISTOGRAM_BUCKETS:
+            idx = _HISTOGRAM_BUCKETS - 1
+        buckets[idx].append(v)
+    return [
+        CallImportMetricHistogramBucket(
+            x0=lo + i * width,
+            x1=lo + (i + 1) * width,
+            count=len(bucket),
+        )
+        for i, bucket in enumerate(buckets)
+    ]
+
+
+def _percentile(values: List[float], pct: float) -> Optional[float]:
+    """Linear-interpolated percentile compatible with NumPy default."""
+    if not values:
+        return None
+    sorted_vals = sorted(values)
+    if len(sorted_vals) == 1:
+        return sorted_vals[0]
+    rank = (pct / 100.0) * (len(sorted_vals) - 1)
+    lo = int(math.floor(rank))
+    hi = int(math.ceil(rank))
+    if lo == hi:
+        return sorted_vals[lo]
+    frac = rank - lo
+    return sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * frac
+
+
+def _compute_metric_aggregates(
+    db: Session,
+    evaluation: CallImportEvaluation,
+    eval_rows: List[CallImportEvaluationRow],
+) -> List[CallImportMetricAggregate]:
+    """Collapse per-row ``metric_scores`` into one aggregate per metric.
+
+    Selected metrics are read fresh from the DB so the response always
+    surfaces the current ``metric.name`` / ``metric_type`` even when a
+    metric was renamed after the run finished.
+    """
+
+    selected_ids = _serialize_selected_metric_ids(evaluation.selected_metric_ids)
+    metrics = _metrics_for_ids(db, evaluation.organization_id, selected_ids)
+    metric_meta: Dict[str, Metric] = {str(m.id): m for m in metrics}
+
+    # Default to selected metrics, but also include any metric ids that
+    # surface in row scores even if missing from the metric registry —
+    # otherwise renaming/deleting a metric mid-run would silently drop
+    # results from the chart.
+    discovered_ids: List[str] = list(metric_meta.keys())
+    for row in eval_rows:
+        scores = row.metric_scores if isinstance(row.metric_scores, dict) else {}
+        for metric_id_str in scores.keys():
+            if metric_id_str not in metric_meta and metric_id_str not in discovered_ids:
+                discovered_ids.append(metric_id_str)
+
+    results: List[CallImportMetricAggregate] = []
+
+    for metric_id_str in discovered_ids:
+        meta = metric_meta.get(metric_id_str)
+        numeric_values: List[float] = []
+        category_counts: Dict[str, int] = {}
+        skipped = 0
+        errored = 0
+        observed_metric_type: Optional[str] = None
+        observed_name: Optional[str] = None
+
+        for row in eval_rows:
+            scores = (
+                row.metric_scores
+                if isinstance(row.metric_scores, dict)
+                else {}
+            )
+            entry = scores.get(metric_id_str)
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("metric_name"):
+                observed_name = entry.get("metric_name")
+            if entry.get("type"):
+                observed_metric_type = entry.get("type")
+            if entry.get("skipped"):
+                skipped += 1
+                continue
+            if entry.get("error"):
+                errored += 1
+                continue
+            value = entry.get("value")
+            numeric = _coerce_numeric(value)
+            if numeric is not None:
+                numeric_values.append(numeric)
+                continue
+            category = _coerce_category(value)
+            if category is not None:
+                category_counts[category] = category_counts.get(category, 0) + 1
+
+        # Build numeric stats first, then categorical (both can coexist).
+        agg = CallImportMetricAggregate(
+            metric_id=metric_id_str,
+            metric_name=(
+                (meta.name if meta else observed_name) or "Unknown metric"
+            ),
+            metric_type=(
+                meta.metric_type if meta else observed_metric_type
+            ),
+            count=len(numeric_values) + sum(category_counts.values()),
+            skipped_count=skipped,
+            error_count=errored,
+        )
+        if numeric_values:
+            agg.mean = float(statistics.fmean(numeric_values))
+            agg.median = float(statistics.median(numeric_values))
+            agg.min = min(numeric_values)
+            agg.max = max(numeric_values)
+            agg.stddev = (
+                float(statistics.pstdev(numeric_values))
+                if len(numeric_values) > 1
+                else 0.0
+            )
+            agg.p25 = _percentile(numeric_values, 25)
+            agg.p75 = _percentile(numeric_values, 75)
+            agg.p95 = _percentile(numeric_values, 95)
+            agg.histogram_buckets = _build_histogram(numeric_values)
+        if category_counts:
+            sorted_counts = sorted(
+                category_counts.items(), key=lambda kv: kv[1], reverse=True
+            )
+            agg.value_counts = [
+                CallImportMetricValueCount(label=label, count=count)
+                for label, count in sorted_counts[:_TOP_VALUE_COUNTS]
+            ]
+
+        results.append(agg)
+
+    return results
+
+
+@router.get(
+    "/{eval_id}/aggregate",
+    response_model=CallImportEvaluationAggregateResponse,
+    operation_id="getCallImportEvaluationAggregate",
+)
+async def get_call_import_evaluation_aggregate(
+    call_import_id: UUID,
+    eval_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportEvaluationAggregateResponse:
+    """Return per-metric distributions for the Visualizations tab.
+
+    The shape is intentionally chart-friendly: histograms for numeric
+    metrics, top-N value counts for categorical/text metrics, plus
+    summary stats (mean/p50/p95) so the UI can render summary cards
+    without recomputing on the client.
+    """
+
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation not found"
+        )
+
+    eval_rows = (
+        db.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == eval_id)
+        .all()
+    )
+
+    metrics = _compute_metric_aggregates(db, evaluation, eval_rows)
+
+    return CallImportEvaluationAggregateResponse(
+        evaluation_id=eval_id,
+        total_rows=evaluation.total_rows,
+        completed_rows=evaluation.completed_rows,
+        failed_rows=evaluation.failed_rows,
+        metrics=metrics,
+    )
 
 
 @router.delete(

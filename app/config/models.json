@@ -1,15 +1,18 @@
 {
   "whisper-1": {
     "provider": "openai",
-    "model_type": "stt"
+    "model_type": "stt",
+    "description": "Original Whisper transcription API (verbose_json + word/segment timestamps)"
   },
   "gpt-4o-transcribe": {
     "provider": "openai",
-    "model_type": "stt"
+    "model_type": "stt",
+    "description": "GPT-4o speech-to-text; higher accuracy, no granular word timestamps"
   },
   "gpt-4o-mini-transcribe": {
     "provider": "openai",
-    "model_type": "stt"
+    "model_type": "stt",
+    "description": "Cheaper / faster GPT-4o transcription; no granular word timestamps"
   },
   "gpt-4.1": {
     "provider": "openai",

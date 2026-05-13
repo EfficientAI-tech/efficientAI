@@ -582,11 +582,14 @@ class TranscriptionService:
             )
 
             if stt_provider == ModelProvider.OPENAI:
-                if stt_model.startswith("whisper-"):
-                    result = transcribe_openai(temp_file_path, stt_model, api_key, language)
-                else:
-                    model_name = stt_model.replace("whisper-", "") if stt_model.startswith("whisper-") else "base"
-                    result = self._transcribe_with_whisper_local(temp_file_path, model_name)
+                # All OpenAI STT models in app/config/models.json
+                # (``whisper-1``, ``gpt-4o-transcribe``,
+                # ``gpt-4o-mini-transcribe``) are hosted-API models, so
+                # always go through the OpenAI client. ``transcribe_openai``
+                # handles the per-model differences in ``response_format``
+                # / ``timestamp_granularities`` internally. Local Whisper
+                # is reserved for the unknown-provider fallback below.
+                result = transcribe_openai(temp_file_path, stt_model, api_key, language)
             elif stt_provider == ModelProvider.DEEPGRAM:
                 result = transcribe_deepgram(temp_file_path, stt_model, api_key, language)
             elif stt_provider == ModelProvider.ELEVENLABS:

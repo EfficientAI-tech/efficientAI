@@ -1277,6 +1277,28 @@ class CallImportRow(Base):
     # (mapped + extra). NULL on legacy rows imported before this column.
     raw_columns = Column(JSON, nullable=True)
 
+    # Where the value in ``transcript`` came from. ``csv`` = supplied via
+    # the upload mapping, ``diarized`` = produced by the post-hoc
+    # transcription/diarization worker, ``edited`` = manually changed in
+    # the UI. NULL on legacy rows / rows that have never had a transcript.
+    transcript_source = Column(String(20), nullable=True)
+    # When the transcript was diarized, which AI provider/model was used.
+    # Lets the UI surface a "Diarized via deepgram/nova-2" badge and
+    # makes auditing/debugging much easier. Both NULL when source != 'diarized'.
+    transcript_provider = Column(String(50), nullable=True)
+    transcript_model = Column(String(100), nullable=True)
+    # Lifecycle status for the diarization workflow itself, independent
+    # of the row's recording-fetch ``status``. ``idle`` = no transcribe
+    # task has run; ``pending``/``running`` = a Celery task is queued or
+    # in flight; ``completed``/``failed`` = terminal.
+    transcript_status = Column(
+        String(20),
+        nullable=False,
+        default="idle",
+    )
+    transcript_error = Column(Text, nullable=True)
+    transcribed_at = Column(DateTime(timezone=True), nullable=True)
+
     status = Column(
         Enum(CallImportRowStatus, values_callable=get_enum_values),
         nullable=False,
@@ -1379,6 +1401,35 @@ class CallImportEvaluation(Base):
     # delete policies when metrics are removed; the loader filters for
     # still-existing org metrics at run time.
     selected_metric_ids = Column(JSON, nullable=False, default=list)
+
+    # Run-level LLM config picked from the Run Evaluation modal. NULL on
+    # legacy rows means "use the historical OpenAI/gpt-4o default" — the
+    # worker checks for this and falls back accordingly. ``llm_credential_id``
+    # pins a specific AIProvider row when the org has multiple credentials
+    # for the same provider.
+    llm_provider = Column(String(50), nullable=True)
+    llm_model = Column(String(100), nullable=True)
+    llm_credential_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("aiproviders.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # Optional per-metric LLM override:
+    # ``{"<metric_id>": {"provider": "...", "model": "...", "credential_id": "..."}}``.
+    # Each entry overrides the run-level default for that metric only;
+    # missing keys = use run-level default. Stored as JSON so the UI can
+    # round-trip arbitrary {provider, model} pairs without migrations.
+    metric_llm_overrides = Column(JSON, nullable=True)
+
+    # When ``auto_transcribe`` was set on the create payload, record the
+    # STT provider/model used so the UI can show "Auto-transcribed via
+    # deepgram/nova-2" on the evaluation header. ``stt_credential_id`` is
+    # untyped (no FK) because STT keys may live in either ``aiproviders``
+    # (OpenAI) or ``integrations`` (Deepgram, ElevenLabs) — the
+    # transcription service handles the lookup.
+    stt_provider = Column(String(50), nullable=True)
+    stt_model = Column(String(100), nullable=True)
+    stt_credential_id = Column(UUID(as_uuid=True), nullable=True)
 
     status = Column(String(20), nullable=False, default="pending", index=True)
 

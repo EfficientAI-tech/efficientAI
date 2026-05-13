@@ -4,21 +4,38 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
   ArrowLeft,
+  BarChart3,
   Check,
   Download,
   Edit3,
   RefreshCw,
+  Table,
   Trash2,
   X,
 } from 'lucide-react'
+import {
+  Bar,
+  BarChart,
+  Cell,
+  CartesianGrid,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts'
 import { apiClient } from '../../lib/api'
 import type {
   CallImportEvaluation,
   CallImportEvaluationRow,
+  CallImportMetricAggregate,
 } from '../../types/api'
 import Button from '../../components/Button'
 import ConfirmModal from '../../components/ConfirmModal'
 import StatusBadge from '../../components/shared/StatusBadge'
+
+const PIE_COLORS = ['#10b981', '#ef4444', '#6366f1', '#f59e0b', '#a855f7']
 
 const ROWS_PAGE_SIZE = 50
 
@@ -40,6 +57,9 @@ export default function CallImportEvaluationDetail() {
     useState<CallImportEvaluationRow | null>(null)
   const [deleteEvalOpen, setDeleteEvalOpen] = useState(false)
   const [rowDeleteError, setRowDeleteError] = useState<string | null>(null)
+  const [resultsTab, setResultsTab] = useState<'table' | 'visualizations'>(
+    'table',
+  )
 
   const callImportQuery = useQuery({
     queryKey: ['call-import', id],
@@ -68,6 +88,21 @@ export default function CallImportEvaluationDetail() {
     refetchInterval: () => {
       const status = evaluationQuery.data?.status
       return status === 'pending' || status === 'running' ? 3000 : false
+    },
+  })
+
+  // Lazy: only fetch aggregates when the user lands on the
+  // visualizations tab. Refetches while the run is still in flight so
+  // the chart fills in as workers complete rows.
+  const aggregateQuery = useQuery({
+    queryKey: ['call-import-evaluation-aggregate', id, evalId],
+    queryFn: () =>
+      apiClient.getCallImportEvaluationAggregate(id!, evalId!),
+    enabled:
+      !!id && !!evalId && resultsTab === 'visualizations',
+    refetchInterval: () => {
+      const status = evaluationQuery.data?.status
+      return status === 'pending' || status === 'running' ? 5000 : false
     },
   })
 
@@ -488,9 +523,52 @@ export default function CallImportEvaluationDetail() {
               {displayMetrics.length === 1 ? '' : 's'}.
             </p>
           </div>
+          <div className="inline-flex border border-gray-200 rounded-lg p-1 bg-gray-50">
+            <button
+              type="button"
+              onClick={() => setResultsTab('table')}
+              className={`px-3 py-1.5 text-xs font-medium rounded transition ${
+                resultsTab === 'table'
+                  ? 'bg-white text-primary-700 shadow-sm'
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              <Table className="h-3.5 w-3.5 inline mr-1 -mt-0.5" />
+              Table
+            </button>
+            <button
+              type="button"
+              onClick={() => setResultsTab('visualizations')}
+              className={`px-3 py-1.5 text-xs font-medium rounded transition ${
+                resultsTab === 'visualizations'
+                  ? 'bg-white text-primary-700 shadow-sm'
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              <BarChart3 className="h-3.5 w-3.5 inline mr-1 -mt-0.5" />
+              Visualizations
+            </button>
+          </div>
         </div>
 
-        {rowsQuery.isLoading ? (
+        {resultsTab === 'visualizations' ? (
+          aggregateQuery.isLoading || !aggregateQuery.data ? (
+            <div className="text-center py-12 text-gray-500">
+              <RefreshCw className="h-6 w-6 mx-auto mb-2 animate-spin" />
+              <p>Loading visualizations…</p>
+            </div>
+          ) : aggregateQuery.data.metrics.length === 0 ? (
+            <p className="text-sm text-gray-500">
+              No metric data yet. Charts populate as rows finish scoring.
+            </p>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {aggregateQuery.data.metrics.map((m) => (
+                <MetricVisualization key={m.metric_id} metric={m} />
+              ))}
+            </div>
+          )
+        ) : rowsQuery.isLoading ? (
           <p className="text-sm text-gray-500">Loading rows…</p>
         ) : !rowsQuery.data?.items?.length ? (
           <p className="text-sm text-gray-500">
@@ -710,5 +788,121 @@ export default function CallImportEvaluationDetail() {
     </div>
   )
 }
+
+/**
+ * Single-metric chart card used inside the Visualizations tab. Picks
+ * the chart shape from the aggregate payload: numeric histograms beat
+ * categorical pie/bar charts when both are present, since numeric
+ * distributions tell a richer story than the top-N category tally.
+ */
+function MetricVisualization({
+  metric,
+}: {
+  metric: CallImportMetricAggregate
+}) {
+  const histogram = metric.histogram_buckets
+  const valueCounts = metric.value_counts
+  const hasNumeric = histogram.length > 0 || metric.mean != null
+  const hasCategorical = valueCounts.length > 0
+
+  // Render mode: numeric histogram, categorical pie/bar, or empty state.
+  // The Pie chart is reserved for low-cardinality categorical metrics
+  // (<= 5 values) so it stays readable; otherwise we fall back to a
+  // horizontal bar chart for the top categories.
+  let chart: ReactNodeLike = null
+  if (histogram.length > 0) {
+    const data = histogram.map((b) => ({
+      label: `${b.x0.toFixed(2)}-${b.x1.toFixed(2)}`,
+      count: b.count,
+    }))
+    chart = (
+      <ResponsiveContainer width="100%" height={180}>
+        <BarChart data={data}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis dataKey="label" tick={{ fontSize: 10 }} />
+          <YAxis tick={{ fontSize: 10 }} />
+          <Tooltip />
+          <Bar dataKey="count" fill="#6366f1" />
+        </BarChart>
+      </ResponsiveContainer>
+    )
+  } else if (valueCounts.length && valueCounts.length <= 5) {
+    chart = (
+      <ResponsiveContainer width="100%" height={180}>
+        <PieChart>
+          <Tooltip />
+          <Pie
+            data={valueCounts}
+            dataKey="count"
+            nameKey="label"
+            outerRadius={70}
+            label={(entry) => entry.label}
+          >
+            {valueCounts.map((_, i) => (
+              <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+            ))}
+          </Pie>
+        </PieChart>
+      </ResponsiveContainer>
+    )
+  } else if (valueCounts.length) {
+    chart = (
+      <ResponsiveContainer width="100%" height={180}>
+        <BarChart data={valueCounts} layout="vertical">
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis type="number" tick={{ fontSize: 10 }} />
+          <YAxis
+            type="category"
+            dataKey="label"
+            tick={{ fontSize: 10 }}
+            width={80}
+          />
+          <Tooltip />
+          <Bar dataKey="count" fill="#10b981" />
+        </BarChart>
+      </ResponsiveContainer>
+    )
+  }
+
+  return (
+    <div className="border border-gray-200 rounded-lg p-3 space-y-2">
+      <div className="flex items-baseline justify-between">
+        <p className="text-sm font-medium text-gray-900 truncate">
+          {metric.metric_name}
+        </p>
+        <p className="text-[11px] text-gray-500">
+          n={metric.count}
+          {metric.skipped_count > 0
+            ? ` · skipped ${metric.skipped_count}`
+            : ''}
+          {metric.error_count > 0 ? ` · errors ${metric.error_count}` : ''}
+        </p>
+      </div>
+      {hasNumeric && (
+        <div className="grid grid-cols-4 text-[11px] text-gray-600 gap-2">
+          <span>μ {metric.mean?.toFixed(2) ?? '—'}</span>
+          <span>p50 {metric.median?.toFixed(2) ?? '—'}</span>
+          <span>p95 {metric.p95?.toFixed(2) ?? '—'}</span>
+          <span>σ {metric.stddev?.toFixed(2) ?? '—'}</span>
+        </div>
+      )}
+      {chart ?? (
+        <p className="text-xs text-gray-400 italic py-6 text-center">
+          No values recorded yet.
+        </p>
+      )}
+      {!hasNumeric && hasCategorical && metric.value_counts.length > 5 && (
+        <p className="text-[11px] text-gray-400">
+          Showing top {metric.value_counts.length} categories.
+        </p>
+      )}
+    </div>
+  )
+}
+
+// Lightweight ReactNode alias keeps the chart variable typed without
+// pulling React's full ReactNode through the function signature
+// (prevents a "type-only import" tangle on tsx/lint).
+type ReactNodeLike = React.ReactNode
 
 export type { CallImportEvaluation as _ }

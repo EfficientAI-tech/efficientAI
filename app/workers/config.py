@@ -105,4 +105,5 @@ celery_app.conf.update(
 celery_app.conf.task_routes = {
     "process_call_import_row": {"queue": "imports"},
     "evaluate_call_import_row": {"queue": "imports"},
+    "transcribe_call_import_row": {"queue": "imports"},
 }
