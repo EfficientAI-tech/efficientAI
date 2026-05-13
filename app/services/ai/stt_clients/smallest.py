@@ -1,11 +1,21 @@
-"""Smallest Pulse batch transcription client (REST /pulse/get_text)."""
+"""Smallest.ai batch transcription client.
+
+Smallest's hosted STT exposes a multipart-form endpoint at
+``/v1/speech-to-text``. This client posts the audio file and returns
+the transcript text in our common ``{text, language, segments}`` shape.
+"""
 
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, Optional
 
+import httpx
+
 logger = logging.getLogger(__name__)
+
+SMALLEST_STT_URL = "https://waves-api.smallest.ai/api/v1/speech-to-text"
 
 
 def transcribe_smallest(
@@ -14,72 +24,37 @@ def transcribe_smallest(
     api_key: str,
     language: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Transcribe an audio file via Smallest Pulse (pre-recorded) REST API."""
-    import httpx
+    """Transcribe an audio file via Smallest.ai's STT REST API."""
+    chosen_model = (model or "lightning-large-v1").strip() or "lightning-large-v1"
 
-    # The ``model`` argument is intentionally unused — Smallest's
-    # pre-recorded endpoint selects the model from the API key's plan
-    # rather than from a request field. We keep the parameter for
-    # signature symmetry with the other ``transcribe_<provider>`` callables.
-    _ = model
-
-    url = "https://api.smallest.ai/waves/v1/pulse/get_text"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/octet-stream",
-    }
-    params: Dict[str, str] = {
-        "word_timestamps": "true",
-        "sentence_timestamps": "true",
-        "language": language or "multi",
-    }
+    headers = {"Authorization": f"Bearer {api_key}"}
+    data: Dict[str, Any] = {"model": chosen_model}
+    if language:
+        data["language"] = language
 
     with open(audio_file_path, "rb") as f:
-        audio_bytes = f.read()
+        files = {
+            "file": (
+                os.path.basename(audio_file_path) or "audio",
+                f,
+                "application/octet-stream",
+            ),
+        }
+        with httpx.Client(timeout=180.0) as client:
+            resp = client.post(
+                SMALLEST_STT_URL,
+                headers=headers,
+                data=data,
+                files=files,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
 
-    response = httpx.post(
-        url,
-        headers=headers,
-        params=params,
-        content=audio_bytes,
-        timeout=120.0,
-    )
-    response.raise_for_status()
-    result = response.json()
-
-    words = []
-    for w in result.get("words", []) or []:
-        if not isinstance(w, dict):
-            continue
-        words.append(
-            {
-                "word": w.get("word", "") or "",
-                "start": float(w.get("start", 0) or 0),
-                "end": float(w.get("end", 0) or 0),
-                "speaker": w.get("speaker"),
-            }
-        )
-
-    segments = []
-    for utterance in result.get("utterances", []) or []:
-        if not isinstance(utterance, dict):
-            continue
-        segments.append(
-            {
-                "start": float(utterance.get("start", 0) or 0),
-                "end": float(utterance.get("end", 0) or 0),
-                "text": utterance.get("text", "") or "",
-                "speaker": utterance.get("speaker"),
-            }
-        )
-
-    text = (result.get("transcription") or "").strip()
-    if not segments and text:
-        segments = [{"start": 0.0, "end": float(result.get("audio_length", 0) or 0), "text": text}]
-
+    # Smallest returns either ``transcript`` or ``text`` depending on
+    # the route; accept both.
+    text = (payload.get("transcript") or payload.get("text") or "").strip()
     return {
         "text": text,
-        "language": result.get("language", language or "en"),
-        "segments": segments,
-        "words": words,
+        "language": payload.get("language") or language or "en",
+        "segments": [],
     }

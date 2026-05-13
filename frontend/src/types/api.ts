@@ -768,6 +768,8 @@ export interface CallImportEvaluationRow {
   row_index: number | null
   external_call_id: string | null
   transcript: string | null
+  raw_columns: Record<string, any> | null
+  recording_url: string | null
   status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
   metric_scores: Record<string, any>
   error_message: string | null

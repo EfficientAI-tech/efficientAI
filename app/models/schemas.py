@@ -1102,6 +1102,7 @@ class MetricCreate(BaseModel):
     custom_data_type: Optional[str] = None
     custom_config: Optional[Dict[str, Any]] = None
     tags: Optional[List[str]] = None
+    capture_rationale: Optional[bool] = False
     
     model_config = ConfigDict(json_schema_extra={
             "example": {
@@ -1127,6 +1128,7 @@ class MetricUpdate(BaseModel):
     custom_data_type: Optional[str] = None
     custom_config: Optional[Dict[str, Any]] = None
     tags: Optional[List[str]] = None
+    capture_rationale: Optional[bool] = None
 
 
 class MetricResponse(BaseModel):
@@ -1145,6 +1147,7 @@ class MetricResponse(BaseModel):
     custom_data_type: Optional[str]
     custom_config: Optional[Dict[str, Any]]
     tags: Optional[List[str]]
+    capture_rationale: bool = False
     created_at: datetime
     updated_at: datetime
     created_by: Optional[str]
@@ -2135,7 +2138,14 @@ class CallImportEvaluationListResponse(BaseModel):
 
 
 class CallImportEvaluationRowResponse(BaseModel):
-    """Per-source-row evaluation output (one Metric set applied to one row)."""
+    """Per-source-row evaluation output (one Metric set applied to one row).
+
+    ``raw_columns`` and ``recording_url`` come from the parent
+    ``CallImportRow`` so the row-detail panel can show the full CSV row
+    metadata + audio without a second round-trip. ``raw_columns`` is
+    typically a few hundred bytes per row so we include it directly in
+    the paginated list.
+    """
 
     id: UUID
     evaluation_id: UUID
@@ -2143,6 +2153,8 @@ class CallImportEvaluationRowResponse(BaseModel):
     row_index: Optional[int] = None
     external_call_id: Optional[str] = None
     transcript: Optional[str] = None
+    raw_columns: Optional[Dict[str, Any]] = None
+    recording_url: Optional[str] = None
     status: str
     metric_scores: Dict[str, Any] = Field(default_factory=dict)
     error_message: Optional[str] = None

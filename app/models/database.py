@@ -538,6 +538,10 @@ class Metric(Base):
     custom_config = Column(JSON, nullable=True)  # enum options / number range config
     tags = Column(JSON, nullable=True)  # ["tone", "latency", ...]
 
+    # When true, the LLM-judge is asked to also return a short free-form
+    # rationale alongside the value (stored under ``metric_scores[id].rationale``).
+    # Adds a second "<Name> - LLM Rationale" column in the call-import CSV export.
+    capture_rationale = Column(Boolean, nullable=False, default=False)
 
     enabled = Column(Boolean, nullable=False, default=True)
     

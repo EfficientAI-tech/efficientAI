@@ -1,23 +1,30 @@
-"""Centralized STT provider API clients for batch / file-based transcription.
+"""Batch / file-based Speech-to-Text clients.
 
-Every provider-specific HTTP or SDK call for transcribing an audio *file*
-lives in this package, one provider per submodule.  ``TranscriptionService``
-(and any other consumer) imports the ``transcribe_<provider>`` callables
-re-exported here so endpoint URLs, header conventions, and SDK usage
-patterns are defined in exactly one place per provider.
+Each ``transcribe_<provider>`` function follows the same minimal
+contract::
 
-The streaming / real-time STT services under
-``src/efficientai/services/<provider>/stt.py`` serve a different purpose
-(WebSocket streams, frame pipelines) and are intentionally separate from
-this package — the protocols, request shapes, and result shapes don't
-share enough surface area to make a unified abstraction worthwhile.
+    transcribe_<provider>(
+        audio_file_path: str,
+        model: str,
+        api_key: str,
+        language: Optional[str] = None,
+    ) -> Dict[str, Any]
+
+and returns a dict with at least a ``text`` key. ``language`` and
+``segments`` may also be returned when the upstream provider supplies
+them (or empty defaults otherwise).
+
+These are deliberately *not* the realtime / frame-based STT services
+under ``src/efficientai/services/...`` — those are for live audio
+pipelines. This module is for offline, single-file transcription
+(e.g. transcribing a recorded MP3 from S3 inside a Celery worker).
 """
 
-from .deepgram import transcribe_deepgram
-from .elevenlabs import transcribe_elevenlabs
-from .openai import transcribe_openai
-from .sarvam import transcribe_sarvam
-from .smallest import transcribe_smallest
+from app.services.ai.stt_clients.deepgram import transcribe_deepgram
+from app.services.ai.stt_clients.elevenlabs import transcribe_elevenlabs
+from app.services.ai.stt_clients.openai import transcribe_openai
+from app.services.ai.stt_clients.sarvam import transcribe_sarvam
+from app.services.ai.stt_clients.smallest import transcribe_smallest
 
 __all__ = [
     "transcribe_deepgram",

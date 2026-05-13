@@ -294,6 +294,9 @@ def make_metric(db_session, org_id, seed_org):
             trigger=overrides.get("trigger", MetricTrigger.ALWAYS.value),
             enabled=overrides.get("enabled", True),
             is_default=overrides.get("is_default", False),
+            custom_data_type=overrides.get("custom_data_type"),
+            custom_config=overrides.get("custom_config"),
+            capture_rationale=overrides.get("capture_rationale", False),
         )
         db_session.add(metric)
         db_session.commit()

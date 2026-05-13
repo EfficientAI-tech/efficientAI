@@ -1209,11 +1209,22 @@ class ApiClient {
   async listCallImportEvaluationRows(
     callImportId: string,
     evaluationId: string,
-    params: { page?: number; page_size?: number } = {},
+    params: {
+      page?: number
+      page_size?: number
+      q?: string
+      metric_id?: string
+      metric_value?: string
+      status?: string
+    } = {},
   ): Promise<CallImportEvaluationRowListResponse> {
+    const cleaned: Record<string, any> = {}
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null && v !== '') cleaned[k] = v
+    }
     const response = await this.client.get(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/rows`,
-      { params },
+      { params: cleaned },
     )
     return response.data
   }
@@ -1693,6 +1704,7 @@ class ApiClient {
     custom_data_type?: 'boolean' | 'enum' | 'number_range'
     custom_config?: Record<string, any>
     tags?: string[]
+    capture_rationale?: boolean
   }): Promise<any> {
     const response = await this.client.post('/api/v1/metrics', data)
     return response.data
@@ -1775,6 +1787,7 @@ class ApiClient {
     custom_data_type?: 'boolean' | 'enum' | 'number_range'
     custom_config?: Record<string, any>
     tags?: string[]
+    capture_rationale?: boolean
   }): Promise<any> {
     const response = await this.client.put(`/api/v1/metrics/${metricId}`, data)
     return response.data
@@ -1805,6 +1818,27 @@ class ApiClient {
     suggested_tags: string[]
   }> {
     const response = await this.client.post('/api/v1/metrics/generate', data)
+    return response.data
+  }
+
+  async parseBulkMetric(data: {
+    prompt: string
+    surface: 'agent' | 'voice_playground' | 'blind_test'
+  }): Promise<{
+    metrics: Array<{
+      name: string
+      description: string
+      metric_type: 'rating' | 'boolean' | 'number' | 'text'
+      custom_data_type: 'boolean' | 'enum' | 'number_range' | null
+      custom_config: Record<string, any>
+      supported_surfaces: string[]
+      enabled_surfaces: string[]
+      capture_rationale: boolean
+      suggested_tags: string[]
+      source_label: { label_name: string; definition: string; examples: string }
+    }>
+  }> {
+    const response = await this.client.post('/api/v1/metrics/parse-bulk', data)
     return response.data
   }
 

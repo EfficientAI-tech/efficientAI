@@ -12,7 +12,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
 from loguru import logger
-from sqlalchemy import desc
+from sqlalchemy import desc, func, or_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -548,6 +548,30 @@ async def list_call_import_evaluation_rows(
     eval_id: UUID,
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=500),
+    q: Optional[str] = Query(
+        None,
+        description=(
+            "Free-text search across external_call_id and transcript "
+            "(case-insensitive substring match)."
+        ),
+    ),
+    metric_id: Optional[UUID] = Query(
+        None,
+        description=(
+            "If set, only return rows whose ``metric_scores[metric_id].value`` "
+            "exactly matches ``metric_value`` (string-compared). "
+            "Use together with ``metric_value``."
+        ),
+    ),
+    metric_value: Optional[str] = Query(
+        None,
+        description="Value to match against metric_id (string compare).",
+    ),
+    status_filter: Optional[str] = Query(
+        None,
+        alias="status",
+        description="Restrict to rows with this evaluation row status.",
+    ),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
@@ -571,8 +595,41 @@ async def list_call_import_evaluation_rows(
         db.query(CallImportEvaluationRow, CallImportRow)
         .join(CallImportRow, CallImportRow.id == CallImportEvaluationRow.call_import_row_id)
         .filter(CallImportEvaluationRow.evaluation_id == eval_id)
-        .order_by(CallImportRow.row_index.asc())
     )
+
+    # --- Filters ----------------------------------------------------------
+    if q and q.strip():
+        needle = f"%{q.strip()}%"
+        query = query.filter(
+            or_(
+                CallImportRow.external_call_id.ilike(needle),
+                CallImportRow.transcript.ilike(needle),
+            )
+        )
+
+    if status_filter:
+        # The CallImportEvaluationRow.status column is a string in PG so a
+        # plain == filter works; we lowercase to match the stored values.
+        query = query.filter(
+            CallImportEvaluationRow.status == status_filter.strip().lower()
+        )
+
+    if metric_id is not None and metric_value is not None:
+        # ``metric_scores`` is a JSONB column shaped like
+        # ``{"<metric_id>": {"value": <X>, "type": "boolean", ...}}``. We
+        # extract the nested ``value`` as text and compare to the user
+        # input as a string — that handles bool/int/enum without needing
+        # per-type casts. ``metric_value`` is matched case-insensitively
+        # so chart clicks on labels like "True" survive any casing drift
+        # between worker output and the chart label.
+        path_value = func.json_extract_path_text(
+            CallImportEvaluationRow.metric_scores,
+            str(metric_id),
+            "value",
+        )
+        query = query.filter(func.lower(path_value) == metric_value.strip().lower())
+
+    query = query.order_by(CallImportRow.row_index.asc())
     total = query.count()
     rows = query.offset((page - 1) * page_size).limit(page_size).all()
 
@@ -586,6 +643,8 @@ async def list_call_import_evaluation_rows(
                 row_index=source_row.row_index,
                 external_call_id=source_row.external_call_id,
                 transcript=source_row.transcript,
+                raw_columns=source_row.raw_columns,
+                recording_url=source_row.recording_url,
                 status=eval_row_obj.status,
                 metric_scores=eval_row_obj.metric_scores or {},
                 error_message=eval_row_obj.error_message,
@@ -660,7 +719,20 @@ async def export_call_import_evaluation_csv(
                 continue  # would clobber a real column
             custom_export.append((name, csv_header))
 
-    metric_headers = [metric_names[str(metric.id)] for metric in metrics]
+    # For each selected metric we emit one column for the value, and a
+    # second "<Name> - LLM Rationale" column when the metric is configured
+    # with ``capture_rationale=True``. This matches the reference CSV
+    # layout (e.g. "Language adherence - LLM Label" + "Language adherence -
+    # LLM Rationale").
+    metric_headers: List[str] = []
+    rationale_headers: Dict[str, str] = {}  # metric_id_str -> rationale column name
+    for metric in metrics:
+        header = metric_names[str(metric.id)]
+        metric_headers.append(header)
+        if bool(getattr(metric, "capture_rationale", False)):
+            rationale_header = f"{header} - LLM Rationale"
+            metric_headers.append(rationale_header)
+            rationale_headers[str(metric.id)] = rationale_header
     fieldnames = [
         *standard_export_headers,
         *[h for h, _ in custom_export],
@@ -694,6 +766,14 @@ async def export_call_import_evaluation_csv(
             metric_score = scores.get(str(metric.id)) if isinstance(scores, dict) else None
             value = metric_score.get("value") if isinstance(metric_score, dict) else None
             row_out[metric.name] = "" if value is None else str(value)
+            rationale_header = rationale_headers.get(str(metric.id))
+            if rationale_header is not None:
+                rationale = (
+                    metric_score.get("rationale")
+                    if isinstance(metric_score, dict)
+                    else None
+                )
+                row_out[rationale_header] = "" if rationale is None else str(rationale)
         writer.writerow(row_out)
 
     # Excel on Windows defaults to the system ANSI codepage (Windows-1252)

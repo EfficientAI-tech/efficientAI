@@ -1,70 +1,86 @@
-"""Sarvam batch transcription client (REST /speech-to-text endpoint).
+"""Sarvam AI batch transcription client.
 
-The realtime endpoint Sarvam exposes for batch transcription
-(``POST https://api.sarvam.ai/speech-to-text``) caps each request at
-**30 seconds** of audio and rejects longer files with HTTP 400 +
-``"Audio duration exceeds the maximum limit of 30 seconds. Please use
-the batch API for longer audio files."``.
-
-Rather than implementing Sarvam's multi-step batch jobs API
-(``/speech-to-text/job/...`` — init → upload to Azure SAS → start →
-poll status → download results) we transparently chunk audio longer
-than the cap into ≤28 s WAV slices, send each slice through the realtime
-endpoint, and concatenate the resulting transcripts.  For short clips
-the chunked path is skipped entirely, so behaviour is unchanged.
-
-The streaming/WebSocket Sarvam STT path used by live voice agents is
-implemented separately in ``src/efficientai/services/sarvam/stt.py`` and
-does not have this 30 s limit.
+Sarvam's real-time ``/speech-to-text`` endpoint caps audio at 30
+seconds per request. For longer recordings (the common case for call
+imports) we split the file into <=28s WAV chunks via ``pydub`` and
+concatenate the text. Doing the chunking client-side avoids forcing
+operators to switch to Sarvam's batch (job) API for every long file.
 """
 
 from __future__ import annotations
 
+import io
 import logging
 import os
 import tempfile
 from typing import Any, Dict, List, Optional
 
+import httpx
+
 logger = logging.getLogger(__name__)
 
+SARVAM_STT_URL = "https://api.sarvam.ai/speech-to-text"
 
-# A 2 s safety margin under Sarvam's 30 s ceiling — empirically reliable
-# even when the audio container reports a slightly different duration
-# than what the API measures internally.
-_SARVAM_MAX_CHUNK_SECONDS = 28.0
+# Sarvam's documented limit is 30s; leave a safety margin so a slightly
+# longer chunk from rounding doesn't trip the API.
+_CHUNK_SECONDS = 28
+_MAX_INLINE_SECONDS = 28  # if shorter than this, send as-is
 
 
-def _post_chunk(
-    *,
-    chunk_path: str,
+def _sarvam_post_chunk(
+    file_path: str,
     model: str,
     api_key: str,
     language: Optional[str],
 ) -> Dict[str, Any]:
-    """POST a single ≤30 s chunk to Sarvam's /speech-to-text endpoint."""
-    import httpx
-
-    url = "https://api.sarvam.ai/speech-to-text"
+    """POST a single (<=30s) audio chunk and return the raw JSON dict."""
     headers = {"api-subscription-key": api_key}
-
-    with open(chunk_path, "rb") as f:
-        audio_bytes = f.read()
-
-    files = {"file": ("audio.wav", audio_bytes, "audio/wav")}
-    data: Dict[str, str] = {"model": model or "saarika:v2.5"}
+    data: Dict[str, Any] = {"model": model}
     if language:
+        # Sarvam accepts ``language_code`` like ``hi-IN`` / ``en-IN``;
+        # callers usually pass either form. Pass through unchanged.
         data["language_code"] = language
 
-    resp = httpx.post(url, headers=headers, files=files, data=data, timeout=60.0)
-    try:
-        resp.raise_for_status()
-    except httpx.HTTPStatusError as e:
-        body = (e.response.text or "").strip()
-        detail = f"{e}"
-        if body:
-            detail = f"{detail} | response={body[:500]}"
-        raise RuntimeError(detail) from e
-    return resp.json()
+    with open(file_path, "rb") as f:
+        files = {
+            "file": (
+                os.path.basename(file_path) or "audio.wav",
+                f,
+                "audio/wav",
+            ),
+        }
+        with httpx.Client(timeout=120.0) as client:
+            resp = client.post(
+                SARVAM_STT_URL,
+                headers=headers,
+                data=data,
+                files=files,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+
+def _split_audio_to_chunks(audio_file_path: str, chunk_seconds: int) -> List[str]:
+    """Split ``audio_file_path`` into WAV chunks of up to ``chunk_seconds``.
+
+    Returns a list of temp file paths the caller is responsible for
+    deleting. We always re-encode to WAV PCM so Sarvam doesn't reject
+    the chunk on container/codec edge cases.
+    """
+    from pydub import AudioSegment
+
+    audio = AudioSegment.from_file(audio_file_path)
+    chunk_ms = chunk_seconds * 1000
+    paths: List[str] = []
+    for start in range(0, len(audio), chunk_ms):
+        segment = audio[start : start + chunk_ms]
+        tmp = tempfile.NamedTemporaryFile(
+            delete=False, suffix=".wav", prefix="sarvam_chunk_"
+        )
+        tmp.close()
+        segment.export(tmp.name, format="wav")
+        paths.append(tmp.name)
+    return paths
 
 
 def transcribe_sarvam(
@@ -73,83 +89,58 @@ def transcribe_sarvam(
     api_key: str,
     language: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Transcribe an audio file via the Sarvam AI Speech-to-Text REST API.
+    """Transcribe an audio file via Sarvam's real-time STT endpoint.
 
-    Audio longer than ~28 s is sliced into ≤28 s WAV chunks (using
-    pydub), each one sent through ``/speech-to-text``, and the resulting
-    transcripts concatenated. The chunked path is transparent to
-    callers — the return shape matches the single-shot case.
+    Files longer than ~28s are split client-side into smaller chunks
+    and the resulting transcripts are concatenated.
     """
-    # Probe duration cheaply with pydub. If anything goes wrong (corrupt
-    # audio, missing ffmpeg, etc.) we fall back to a single-shot request
-    # and let Sarvam raise its own error — that preserves existing
-    # behaviour for callers passing already-short clips.
+    chosen_model = (model or "saarika:v2.5").strip() or "saarika:v2.5"
+
+    # Decide whether we need to chunk. Cheaply probe duration with
+    # pydub; if pydub can't read the file we fall back to a single
+    # request and let Sarvam tell us why.
     duration_seconds: Optional[float] = None
-    full_audio = None
     try:
         from pydub import AudioSegment
 
-        full_audio = AudioSegment.from_file(audio_file_path)
-        duration_seconds = len(full_audio) / 1000.0
-    except Exception as exc:  # noqa: BLE001 — duration probe is best-effort
+        duration_seconds = (
+            AudioSegment.from_file(audio_file_path).duration_seconds
+        )
+    except Exception as e:  # noqa: BLE001 - probing only
         logger.warning(
-            "transcribe_sarvam: could not measure duration for %s (%s); "
-            "sending in one shot",
-            audio_file_path,
-            exc,
+            "[sarvam] could not probe audio duration (%s); sending as-is",
+            e,
         )
 
-    # Short-clip fast path — keeps behaviour identical for ≤30 s recordings.
-    if (
-        duration_seconds is None
-        or duration_seconds <= _SARVAM_MAX_CHUNK_SECONDS
-    ):
-        result = _post_chunk(
-            chunk_path=audio_file_path,
-            model=model,
-            api_key=api_key,
-            language=language,
-        )
+    if duration_seconds is None or duration_seconds <= _MAX_INLINE_SECONDS:
+        result = _sarvam_post_chunk(audio_file_path, chosen_model, api_key, language)
+        text = (result.get("transcript") or "").strip()
         return {
-            "text": result.get("transcript", ""),
-            "language": result.get("language_code", language or "unknown"),
+            "text": text,
+            "language": result.get("language_code") or language or "en",
             "segments": [],
         }
 
-    # Long-clip path — slice into ≤28 s WAV chunks and stitch together.
-    chunk_ms = int(_SARVAM_MAX_CHUNK_SECONDS * 1000)
-    transcripts: List[str] = []
-    detected_language: Optional[str] = None
-
-    chunk_paths: List[str] = []
+    chunk_paths = _split_audio_to_chunks(audio_file_path, _CHUNK_SECONDS)
+    pieces: List[str] = []
+    detected_lang: Optional[str] = None
     try:
-        for start_ms in range(0, len(full_audio), chunk_ms):  # type: ignore[arg-type]
-            chunk = full_audio[start_ms : start_ms + chunk_ms]  # type: ignore[index]
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-                chunk_path = tmp.name
-            chunk.export(chunk_path, format="wav")
-            chunk_paths.append(chunk_path)
-
-            chunk_result = _post_chunk(
-                chunk_path=chunk_path,
-                model=model,
-                api_key=api_key,
-                language=language,
-            )
+        for path in chunk_paths:
+            chunk_result = _sarvam_post_chunk(path, chosen_model, api_key, language)
             piece = (chunk_result.get("transcript") or "").strip()
             if piece:
-                transcripts.append(piece)
-            if not detected_language:
-                detected_language = chunk_result.get("language_code") or None
+                pieces.append(piece)
+            if not detected_lang:
+                detected_lang = chunk_result.get("language_code")
     finally:
         for path in chunk_paths:
             try:
-                os.remove(path)
+                os.unlink(path)
             except OSError:
                 pass
 
     return {
-        "text": " ".join(transcripts).strip(),
-        "language": detected_language or language or "unknown",
+        "text": " ".join(pieces).strip(),
+        "language": detected_lang or language or "en",
         "segments": [],
     }

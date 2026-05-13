@@ -13,11 +13,10 @@ def _normalize_deepgram_model(model: Optional[str]) -> str:
 
     The Deepgram API accepts model names like ``nova-3``, ``nova-2``,
     ``flux``, etc. We prefix them with ``deepgram-`` in ``models.json``
-    to keep entries unique across providers (so e.g. an OpenAI model
-    can also be named ``nova-`` something without collision). Sending
-    the prefixed form to Deepgram's API yields a 403 "Project does not
-    have access to the requested model" because the literal model
-    ``deepgram-nova-3`` doesn't exist on their side.
+    to keep entries unique across providers. Sending the prefixed form
+    to Deepgram's API yields a 403 "Project does not have access to
+    the requested model" because the literal model ``deepgram-nova-3``
+    doesn't exist on their side.
     """
     cleaned = (model or "").strip()
     if not cleaned:

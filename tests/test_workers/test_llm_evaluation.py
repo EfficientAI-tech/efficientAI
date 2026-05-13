@@ -18,6 +18,7 @@ def _make_metric(
     custom_config=None,
     description=None,
     metric_id=None,
+    capture_rationale=False,
 ):
     """Build a duck-typed metric matching what the helpers read off ORM rows."""
     return SimpleNamespace(
@@ -27,6 +28,7 @@ def _make_metric(
         metric_type=metric_type,
         custom_data_type=custom_data_type,
         custom_config=custom_config,
+        capture_rationale=capture_rationale,
     )
 
 
@@ -353,3 +355,164 @@ def test_text_metric_type_wins_over_stale_enum_custom_data_type():
     assert entry["type"] == "text"
     assert entry["value"] == "Customer asked about billing; agent resolved."
     assert "options" not in entry
+
+
+# ---------------------------------------------------------------------------
+# capture_rationale: prompt + parser + system message
+# ---------------------------------------------------------------------------
+
+
+def test_build_evaluation_prompt_adds_rationale_key_when_capture_rationale():
+    metric = _make_metric(
+        name="Pitch Type",
+        metric_type="rating",
+        custom_data_type="enum",
+        custom_config={"options": ["WITH data", "WITHOUT data", "Others"]},
+        capture_rationale=True,
+    )
+    prompt = llm_evaluation.build_evaluation_prompt(
+        transcription="hello",
+        llm_metrics=[metric],
+        evaluator=SimpleNamespace(custom_prompt="judge it"),
+    )
+    assert '"pitch_type" (one of:' in prompt
+    assert '"pitch_type_rationale" (free-form text' in prompt
+    # Example block should also include the rationale placeholder.
+    assert '"pitch_type_rationale": "Brief justification' in prompt
+
+
+def test_build_evaluation_prompt_omits_rationale_key_when_capture_rationale_false():
+    metric = _make_metric(
+        name="Pitch Type",
+        metric_type="rating",
+        custom_data_type="enum",
+        custom_config={"options": ["A", "B"]},
+        capture_rationale=False,
+    )
+    prompt = llm_evaluation.build_evaluation_prompt(
+        transcription="hello",
+        llm_metrics=[metric],
+        evaluator=SimpleNamespace(custom_prompt="judge it"),
+    )
+    assert "_rationale" not in prompt
+
+
+def test_build_evaluation_prompt_skips_rationale_for_text_metrics():
+    # Text metrics are themselves free-form prose; layering a rationale on
+    # top would just be redundant. The flag is silently ignored.
+    metric = _make_metric(
+        name="Call Summary",
+        metric_type="text",
+        capture_rationale=True,
+    )
+    prompt = llm_evaluation.build_evaluation_prompt(
+        transcription="hi", llm_metrics=[metric]
+    )
+    assert "_rationale" not in prompt
+
+
+def test_build_system_message_includes_rationale_keys_in_exact_keys():
+    metric = _make_metric(
+        name="Pitch Type",
+        metric_type="rating",
+        custom_data_type="enum",
+        custom_config={"options": ["A", "B"]},
+        capture_rationale=True,
+    )
+    msg = llm_evaluation._build_system_message([metric])
+    assert '"pitch_type"' in msg
+    assert '"pitch_type_rationale"' in msg
+    assert "Rationale companion keys must use a plain JSON STRING" in msg
+
+
+def test_map_evaluation_attaches_rationale_to_enum_score():
+    metric = _make_metric(
+        name="Pitch Type",
+        metric_type="rating",
+        custom_data_type="enum",
+        custom_config={"options": ["WITH data", "WITHOUT data"]},
+        capture_rationale=True,
+    )
+    scores = llm_evaluation._map_evaluation_to_metrics(
+        {
+            "pitch_type": "WITH data",
+            "pitch_type_rationale": "Agent referenced 120% growth.",
+        },
+        [metric],
+    )
+    entry = scores[str(metric.id)]
+    assert entry["value"] == "WITH data"
+    assert entry["rationale"] == "Agent referenced 120% growth."
+
+
+def test_map_evaluation_attaches_rationale_to_rating_score():
+    metric = _make_metric(
+        name="Follow Instructions",
+        metric_type="rating",
+        capture_rationale=True,
+    )
+    scores = llm_evaluation._map_evaluation_to_metrics(
+        {
+            "follow_instructions": 0.9,
+            "follow_instructions_rationale": "Followed every step.",
+        },
+        [metric],
+    )
+    entry = scores[str(metric.id)]
+    assert entry["value"] == 0.9
+    assert entry["rationale"] == "Followed every step."
+
+
+def test_map_evaluation_rationale_is_none_when_missing_in_response():
+    metric = _make_metric(
+        name="Pitch Type",
+        metric_type="rating",
+        custom_data_type="enum",
+        custom_config={"options": ["A", "B"]},
+        capture_rationale=True,
+    )
+    scores = llm_evaluation._map_evaluation_to_metrics(
+        {"pitch_type": "A"},  # no _rationale companion key
+        [metric],
+    )
+    entry = scores[str(metric.id)]
+    assert entry["value"] == "A"
+    assert entry["rationale"] is None
+
+
+def test_map_evaluation_omits_rationale_when_capture_rationale_false():
+    metric = _make_metric(
+        name="Pitch Type",
+        metric_type="rating",
+        custom_data_type="enum",
+        custom_config={"options": ["A", "B"]},
+        capture_rationale=False,
+    )
+    scores = llm_evaluation._map_evaluation_to_metrics(
+        {"pitch_type": "A", "pitch_type_rationale": "ignored"},
+        [metric],
+    )
+    entry = scores[str(metric.id)]
+    # Rationale field is intentionally NOT present on the entry to avoid
+    # bloating storage for metrics that didn't ask for it.
+    assert "rationale" not in entry
+
+
+def test_handle_llm_evaluation_error_includes_null_rationale_when_flag_on():
+    metric = _make_metric(
+        name="Pitch Type",
+        metric_type="rating",
+        custom_data_type="enum",
+        custom_config={"options": ["A", "B"]},
+        capture_rationale=True,
+    )
+    plain = _make_metric(name="Other", metric_type="rating")
+    scores = llm_evaluation.handle_llm_evaluation_error(
+        [metric, plain], RuntimeError("nope")
+    )
+    rationale_entry = scores[str(metric.id)]
+    assert rationale_entry["value"] is None
+    assert rationale_entry["rationale"] is None
+    plain_entry = scores[str(plain.id)]
+    assert plain_entry["value"] is None
+    assert "rationale" not in plain_entry

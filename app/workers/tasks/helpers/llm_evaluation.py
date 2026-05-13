@@ -82,6 +82,16 @@ def _coerce_text_value(raw: Any) -> Optional[str]:
     return text or None
 
 
+def _wants_rationale(metric) -> bool:
+    """Return True when the metric is configured to capture an LLM rationale."""
+    return bool(getattr(metric, "capture_rationale", False))
+
+
+def _rationale_key(metric_key: str) -> str:
+    """Companion key emitted by the LLM next to the metric value."""
+    return f"{metric_key}_rationale"
+
+
 def _normalize_enum_value(raw: Any, options: list[str]) -> Optional[str]:
     """Map an LLM-returned value to the canonical option string (case-insensitive).
 
@@ -192,7 +202,9 @@ The following is the system prompt / instructions that the agent was configured 
 
         # Text metrics are unstructured by definition; ignore any stale
         # ``custom_data_type`` (e.g. left over from when the metric used to be
-        # an enum) and ask the LLM for a free-form string.
+        # an enum) and ask the LLM for a free-form string. Rationale doesn't
+        # apply to text metrics (they are themselves free-form prose), so we
+        # short-circuit the rest of the loop body.
         if m_type == "text":
             prompt += (
                 f'\n- "{metric_key}" (free-form text, 1-3 concise sentences, '
@@ -200,14 +212,19 @@ The following is the system prompt / instructions that the agent was configured 
             )
             continue
 
+        # Emit the metric line. We deliberately do NOT ``continue`` after
+        # the enum / number_range branches — falling through lets the
+        # rationale companion block at the end of the loop run for those
+        # metric shapes too.
+        line_added = False
         if custom_type == "enum":
             options = _get_enum_options(metric)
             if options:
                 opts_str = ", ".join(f'"{o}"' for o in options)
                 prompt += f'\n- "{metric_key}" (one of: {opts_str}): {metric_desc}'
-                continue
+                line_added = True
 
-        if custom_type == "number_range":
+        if not line_added and custom_type == "number_range":
             rng = _get_number_range(metric)
             if rng:
                 bounds = []
@@ -219,14 +236,26 @@ The following is the system prompt / instructions that the agent was configured 
                     bounds.append(f"step={rng['step']}")
                 bound_str = ", ".join(bounds) if bounds else "numeric value"
                 prompt += f'\n- "{metric_key}" (numeric, {bound_str}): {metric_desc}'
-                continue
+                line_added = True
 
-        if m_type == "rating":
-            prompt += f'\n- "{metric_key}" (rating 0.0-1.0): {metric_desc}'
-        elif m_type == "boolean":
-            prompt += f'\n- "{metric_key}" (true/false): {metric_desc}'
-        elif m_type == "number":
-            prompt += f'\n- "{metric_key}" (numeric value): {metric_desc}'
+        if not line_added:
+            if m_type == "rating":
+                prompt += f'\n- "{metric_key}" (rating 0.0-1.0): {metric_desc}'
+            elif m_type == "boolean":
+                prompt += f'\n- "{metric_key}" (true/false): {metric_desc}'
+            elif m_type == "number":
+                prompt += f'\n- "{metric_key}" (numeric value): {metric_desc}'
+
+        # When capture_rationale is on, ask for a sibling free-form rationale
+        # key in the SAME flat JSON object. Stays consistent with the "no
+        # nested objects" rule enforced below.
+        if _wants_rationale(metric):
+            prompt += (
+                f'\n- "{_rationale_key(metric_key)}" (free-form text, '
+                f'1-2 concise sentences explaining why "{metric_key}" was chosen): '
+                f"Justification for the value above. Reference specific lines or "
+                f"behaviors from the transcript when possible."
+            )
 
     prompt += _build_response_format_instructions(llm_metrics)
     return prompt
@@ -256,18 +285,29 @@ Example format:
             )
             continue
 
+        # Like build_evaluation_prompt: do NOT ``continue`` out of the
+        # enum branch — fall through so the rationale example line gets
+        # appended for enum metrics too when ``capture_rationale`` is on.
+        line_added = False
         if custom_type == "enum":
             options = _get_enum_options(metric)
             if options:
                 instructions += f'  "{metric_key}": "{options[0]}",\n'
-                continue
+                line_added = True
 
-        if m_type == "rating":
-            instructions += f'  "{metric_key}": 0.75,\n'
-        elif m_type == "boolean":
-            instructions += f'  "{metric_key}": true,\n'
-        elif m_type == "number":
-            instructions += f'  "{metric_key}": 5,\n'
+        if not line_added:
+            if m_type == "rating":
+                instructions += f'  "{metric_key}": 0.75,\n'
+            elif m_type == "boolean":
+                instructions += f'  "{metric_key}": true,\n'
+            elif m_type == "number":
+                instructions += f'  "{metric_key}": 5,\n'
+
+        if _wants_rationale(metric):
+            instructions += (
+                f'  "{_rationale_key(metric_key)}": '
+                f'"Brief justification referencing the transcript.",\n'
+            )
 
     instructions += """}
 
@@ -285,7 +325,12 @@ CRITICAL RULES:
 
 def _build_system_message(llm_metrics: list) -> str:
     """Build the system message for LLM evaluation."""
-    exact_keys = [metric.name.lower().replace(" ", "_") for metric in llm_metrics]
+    exact_keys: list[str] = []
+    for metric in llm_metrics:
+        key = metric.name.lower().replace(" ", "_")
+        exact_keys.append(key)
+        if _wants_rationale(metric) and get_metric_type_value(metric) != "text":
+            exact_keys.append(_rationale_key(key))
 
     enum_constraints: list[str] = []
     for metric in llm_metrics:
@@ -318,12 +363,26 @@ def _build_system_message(llm_metrics: list) -> str:
             + "\n".join(f'   - "{k}"' for k in text_keys)
         )
 
+    rationale_keys = [
+        _rationale_key(metric.name.lower().replace(" ", "_"))
+        for metric in llm_metrics
+        if _wants_rationale(metric) and get_metric_type_value(metric) != "text"
+    ]
+    rationale_block = ""
+    if rationale_keys:
+        rationale_block = (
+            "\n5. Rationale companion keys must use a plain JSON STRING value "
+            "(1-2 concise sentences explaining the corresponding value, no nested "
+            "objects). The following keys are rationales:\n"
+            + "\n".join(f'   - "{k}"' for k in rationale_keys)
+        )
+
     return f"""You are an expert conversation evaluator. You MUST follow these rules STRICTLY:
 
 1. Return ONLY valid JSON - no markdown, no explanations, no comments
 2. Use ONLY these exact metric keys (copy-paste them exactly): {json.dumps(exact_keys)}
 3. For numeric/boolean metrics, the value must be a single number (0.0-1.0 for ratings, true/false for booleans) - NO nested objects, NO comments
-4. Do NOT rename, abbreviate, or modify the metric keys in any way{enum_block}{text_block}
+4. Do NOT rename, abbreviate, or modify the metric keys in any way{enum_block}{text_block}{rationale_block}
 
 Example of CORRECT format:
 {{"follow_instructions": 0.8, "tone_category": "Friendly", "call_summary": "Customer asked about billing; agent resolved the issue in one turn."}}
@@ -477,17 +536,15 @@ def _map_evaluation_to_metrics(
         # ``None`` is preserved so the UI can render an explicit empty state.
         if m_type == "text":
             text_value = _coerce_text_value(raw_score)
-            metric_scores[str(metric.id)] = {
+            entry: dict[str, Any] = {
                 "value": text_value,
                 "type": "text",
                 "metric_name": metric.name,
             }
-            continue
-
-        if custom_type == "enum":
+        elif custom_type == "enum":
             options = _get_enum_options(metric)
             value = _normalize_enum_value(raw_score, options)
-            entry: dict[str, Any] = {
+            entry = {
                 "value": value,
                 "type": "enum",
                 "metric_name": metric.name,
@@ -495,29 +552,46 @@ def _map_evaluation_to_metrics(
             }
             if value is None and raw_score is not None:
                 entry["raw_value"] = str(raw_score)
-            metric_scores[str(metric.id)] = entry
-            continue
+        else:
+            score = extract_score(raw_score)
+            score = normalize_score(score, m_type)
 
-        score = extract_score(raw_score)
-        score = normalize_score(score, m_type)
+            if custom_type == "number_range" and isinstance(score, (int, float)):
+                rng = _get_number_range(metric) or {}
+                min_v = rng.get("min")
+                max_v = rng.get("max")
+                try:
+                    if min_v is not None:
+                        score = max(float(min_v), float(score))
+                    if max_v is not None:
+                        score = min(float(max_v), float(score))
+                except (TypeError, ValueError):
+                    pass
 
-        if custom_type == "number_range" and isinstance(score, (int, float)):
-            rng = _get_number_range(metric) or {}
-            min_v = rng.get("min")
-            max_v = rng.get("max")
-            try:
-                if min_v is not None:
-                    score = max(float(min_v), float(score))
-                if max_v is not None:
-                    score = min(float(max_v), float(score))
-            except (TypeError, ValueError):
-                pass
+            entry = {
+                "value": score,
+                "type": m_type,
+                "metric_name": metric.name,
+            }
 
-        metric_scores[str(metric.id)] = {
-            "value": score,
-            "type": m_type,
-            "metric_name": metric.name,
-        }
+        if _wants_rationale(metric) and m_type != "text":
+            rationale_key = _rationale_key(metric_key)
+            raw_rationale = evaluation_data.get(rationale_key)
+            if raw_rationale is None:
+                # Try the same fuzzy fallback the value uses, but constrained
+                # to keys ending in ``_rationale`` so we never steal another
+                # metric's value.
+                rationale_candidates = [
+                    k for k in response_keys if k.lower().endswith("_rationale")
+                ]
+                matched = find_matching_key(
+                    f"{metric.name} rationale", rationale_candidates
+                )
+                if matched:
+                    raw_rationale = evaluation_data.get(matched)
+            entry["rationale"] = _coerce_text_value(raw_rationale)
+
+        metric_scores[str(metric.id)] = entry
 
     return metric_scores
 
@@ -529,10 +603,13 @@ def handle_llm_evaluation_error(
     """Build error response for all LLM metrics when evaluation fails."""
     metric_scores: dict[str, dict[str, Any]] = {}
     for metric in llm_metrics:
-        metric_scores[str(metric.id)] = {
+        entry: dict[str, Any] = {
             "value": None,
             "type": get_metric_type_value(metric),
             "metric_name": metric.name,
             "error": str(error),
         }
+        if _wants_rationale(metric) and get_metric_type_value(metric) != "text":
+            entry["rationale"] = None
+        metric_scores[str(metric.id)] = entry
     return metric_scores

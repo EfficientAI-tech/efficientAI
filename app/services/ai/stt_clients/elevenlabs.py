@@ -1,11 +1,16 @@
-"""ElevenLabs batch transcription client (REST /v1/speech-to-text)."""
+"""ElevenLabs batch transcription client (Speech-to-Text REST API)."""
 
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, Optional
 
+import httpx
+
 logger = logging.getLogger(__name__)
+
+ELEVENLABS_STT_URL = "https://api.elevenlabs.io/v1/speech-to-text"
 
 
 def transcribe_elevenlabs(
@@ -14,31 +19,41 @@ def transcribe_elevenlabs(
     api_key: str,
     language: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Transcribe an audio file via the ElevenLabs Speech-to-Text REST API.
+    """Transcribe an audio file via the ElevenLabs STT REST API.
 
-    Uses ``httpx`` for a synchronous POST (no ElevenLabs SDK in the project).
-    The endpoint, headers, and form-field names are identical to those used by
-    ``src/efficientai/services/elevenlabs/stt.py`` (async streaming variant).
+    Uses the multipart-form ``/v1/speech-to-text`` endpoint so we don't
+    take a hard dependency on a specific ElevenLabs SDK version.
     """
-    import httpx
+    chosen_model = (model or "scribe_v1").strip() or "scribe_v1"
 
-    url = "https://api.elevenlabs.io/v1/speech-to-text"
     headers = {"xi-api-key": api_key}
-
-    with open(audio_file_path, "rb") as f:
-        audio_bytes = f.read()
-
-    files = {"file": ("audio.wav", audio_bytes, "audio/wav")}
-    data: Dict[str, str] = {"model_id": model or "scribe_v2"}
+    data: Dict[str, Any] = {"model_id": chosen_model}
     if language:
+        # ElevenLabs accepts ISO-639-1 codes ("en", "hi", ...); accept
+        # whatever the caller passes — no normalization here.
         data["language_code"] = language
 
-    resp = httpx.post(url, headers=headers, files=files, data=data, timeout=60.0)
-    resp.raise_for_status()
-    result = resp.json()
+    with open(audio_file_path, "rb") as f:
+        files = {
+            "file": (
+                os.path.basename(audio_file_path) or "audio",
+                f,
+                "application/octet-stream",
+            ),
+        }
+        with httpx.Client(timeout=180.0) as client:
+            resp = client.post(
+                ELEVENLABS_STT_URL,
+                headers=headers,
+                data=data,
+                files=files,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
 
+    text = (payload.get("text") or "").strip()
     return {
-        "text": result.get("text", ""),
-        "language": result.get("language_code", language or "en"),
+        "text": text,
+        "language": payload.get("language_code") or language or "en",
         "segments": [],
     }

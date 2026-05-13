@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../lib/api'
 import Button from '../../components/Button'
 import { useToast } from '../../hooks/useToast'
-import { Edit, Trash2, X, ToggleLeft, ToggleRight, Brain, RefreshCw, AudioWaveform, Sparkles, Plus } from 'lucide-react'
+import { Edit, Trash2, X, ToggleLeft, ToggleRight, Brain, RefreshCw, AudioWaveform, Sparkles, Plus, ListChecks } from 'lucide-react'
 
 interface Metric {
   id: string
@@ -16,6 +16,7 @@ interface Metric {
   custom_data_type?: 'boolean' | 'enum' | 'number_range' | null
   custom_config?: Record<string, any> | null
   tags?: string[] | null
+  capture_rationale?: boolean
   trigger: 'always'
   enabled: boolean
   is_default: boolean
@@ -76,6 +77,34 @@ export default function MetricsManagement() {
   const [aiExamples, setAIExamples] = useState<Array<{ transcript: string; rating: string; notes: string }>>([
     { transcript: '', rating: '', notes: '' },
   ])
+  // Bulk-import-from-labels modal state. Each parsed label becomes its
+  // own *independent* draft row that the user can configure (type,
+  // rationale, name) before we create them all in one click.
+  const [showBulkModal, setShowBulkModal] = useState(false)
+  const [bulkPrompt, setBulkPrompt] = useState('')
+  const [bulkSurface, setBulkSurface] = useState<MetricSurface>('agent')
+  type BulkMetricDraft = {
+    // Local-only id used as React key + for row updates / removal.
+    local_id: string
+    name: string
+    description: string
+    metric_type: 'number' | 'boolean' | 'rating' | 'text'
+    custom_data_type: CustomDataType
+    enum_options_csv: string
+    number_min: number
+    number_max: number
+    number_step: number
+    capture_rationale: boolean
+    supported_surfaces: MetricSurface[]
+    enabled_surfaces: MetricSurface[]
+    source_label?: { label_name: string; definition: string; examples: string }
+    // Per-row save state.
+    status: 'idle' | 'saving' | 'saved' | 'error'
+    error?: string
+    // Whether the rubric (definition + examples) is expanded.
+    expanded: boolean
+  }
+  const [bulkDrafts, setBulkDrafts] = useState<BulkMetricDraft[]>([])
   const [surfaceFilter, setSurfaceFilter] = useState<'all' | MetricSurface>('all')
   const [editingMetric, setEditingMetric] = useState<Metric | null>(null)
   const [sortField, setSortField] = useState<'type' | 'method'>('type')
@@ -96,6 +125,7 @@ export default function MetricsManagement() {
     tags_csv: '',
     trigger: 'always' as 'always',
     enabled: true,
+    capture_rationale: false,
   })
 
   const { data: metrics = [], isLoading } = useQuery({
@@ -185,6 +215,168 @@ export default function MetricsManagement() {
     },
   })
 
+  const parseBulkMutation = useMutation({
+    mutationFn: (payload: { prompt: string; surface: MetricSurface }) =>
+      apiClient.parseBulkMetric(payload),
+    onSuccess: ({ metrics: drafts }) => {
+      const newRows: BulkMetricDraft[] = drafts.map((d, idx) => {
+        const dataType: CustomDataType =
+          (d.custom_data_type as CustomDataType) ||
+          (d.metric_type === 'boolean'
+            ? 'boolean'
+            : d.metric_type === 'number'
+              ? 'number_range'
+              : 'enum')
+        const cfg = d.custom_config || {}
+        return {
+          local_id: `parsed-${Date.now()}-${idx}`,
+          name: d.name,
+          description: d.description,
+          metric_type: d.metric_type,
+          custom_data_type: dataType,
+          enum_options_csv: Array.isArray(cfg.options)
+            ? (cfg.options as string[]).join(', ')
+            : '',
+          number_min: Number(cfg.min ?? 0),
+          number_max: Number(cfg.max ?? 10),
+          number_step: Number(cfg.step ?? 1),
+          capture_rationale: d.capture_rationale,
+          supported_surfaces: d.supported_surfaces as MetricSurface[],
+          enabled_surfaces: d.enabled_surfaces as MetricSurface[],
+          source_label: d.source_label,
+          status: 'idle',
+          expanded: false,
+        }
+      })
+      setBulkDrafts(newRows)
+      showToast(
+        `Parsed ${newRows.length} ${newRows.length === 1 ? 'metric' : 'metrics'}. Review and save.`,
+        'success',
+      )
+    },
+    onError: (err: any) => {
+      const detail =
+        err?.response?.data?.detail ||
+        'Could not parse the prompt. Please check the Label #N format.'
+      showToast(detail, 'error')
+    },
+  })
+
+  const updateBulkDraft = (
+    local_id: string,
+    patch: Partial<BulkMetricDraft>,
+  ) => {
+    setBulkDrafts((prev) =>
+      prev.map((row) => (row.local_id === local_id ? { ...row, ...patch } : row)),
+    )
+  }
+
+  const buildBulkDraftPayload = (row: BulkMetricDraft) => {
+    let custom_config: Record<string, any> = {}
+    if (row.metric_type !== 'text') {
+      if (row.custom_data_type === 'enum') {
+        custom_config = {
+          options: row.enum_options_csv
+            .split(',')
+            .map((opt) => opt.trim())
+            .filter(Boolean),
+        }
+      } else if (row.custom_data_type === 'number_range') {
+        custom_config = {
+          min: Number(row.number_min),
+          max: Number(row.number_max),
+          step: Number(row.number_step),
+        }
+      }
+    }
+    const useCustomConfig = row.metric_type !== 'text'
+    return {
+      name: row.name.trim(),
+      description: row.description,
+      metric_type: row.metric_type,
+      trigger: 'always' as const,
+      enabled: true,
+      metric_origin: 'custom' as const,
+      supported_surfaces: row.supported_surfaces,
+      enabled_surfaces: row.enabled_surfaces,
+      custom_data_type: useCustomConfig ? row.custom_data_type : undefined,
+      custom_config: useCustomConfig ? custom_config : undefined,
+      capture_rationale:
+        row.metric_type !== 'text' ? row.capture_rationale : false,
+    }
+  }
+
+  // Save *all* unsaved drafts in parallel; per-row status flags drive the
+  // UI badges so partial failures stay obvious to the user.
+  const createAllBulkMetricsMutation = useMutation({
+    mutationFn: async () => {
+      const drafts = bulkDrafts.filter((d) => d.status !== 'saved')
+      const results = await Promise.all(
+        drafts.map(async (row) => {
+          if (!row.name.trim()) {
+            return { row, ok: false as const, error: 'Name is required' }
+          }
+          if (
+            row.metric_type !== 'text' &&
+            row.custom_data_type === 'enum' &&
+            row.enum_options_csv
+              .split(',')
+              .map((s) => s.trim())
+              .filter(Boolean).length < 2
+          ) {
+            return {
+              row,
+              ok: false as const,
+              error: 'Enum metrics need at least 2 options',
+            }
+          }
+          updateBulkDraft(row.local_id, { status: 'saving', error: undefined })
+          try {
+            await apiClient.createMetric(buildBulkDraftPayload(row) as any)
+            return { row, ok: true as const }
+          } catch (err: any) {
+            const detail =
+              err?.response?.data?.detail ||
+              err?.message ||
+              'Failed to create metric'
+            return { row, ok: false as const, error: String(detail) }
+          }
+        }),
+      )
+      return results
+    },
+    onSuccess: (results) => {
+      // Apply per-row status flags so the user can see exactly which
+      // rows succeeded and which still need attention.
+      setBulkDrafts((prev) =>
+        prev.map((row) => {
+          const result = results.find((r) => r.row.local_id === row.local_id)
+          if (!result) return row
+          if (result.ok) {
+            return { ...row, status: 'saved', error: undefined }
+          }
+          return { ...row, status: 'error', error: result.error }
+        }),
+      )
+      const successCount = results.filter((r) => r.ok).length
+      const failCount = results.length - successCount
+      queryClient.invalidateQueries({ queryKey: ['metrics'] })
+      if (failCount === 0) {
+        showToast(
+          `Created ${successCount} metric${successCount > 1 ? 's' : ''}`,
+          'success',
+        )
+      } else if (successCount === 0) {
+        showToast(`Failed to create ${failCount} metrics`, 'error')
+      } else {
+        showToast(
+          `Created ${successCount}, ${failCount} failed (see rows)`,
+          'error',
+        )
+      }
+    },
+  })
+
   const generateMetricMutation = useMutation({
     mutationFn: (payload: {
       mode: 'description' | 'examples'
@@ -239,6 +431,56 @@ export default function MetricsManagement() {
       showToast('Failed to generate metric with AI', 'error')
     },
   })
+
+  const resetBulkForm = () => {
+    setShowBulkModal(false)
+    setBulkPrompt('')
+    setBulkSurface('agent')
+    setBulkDrafts([])
+  }
+
+  const handleParseBulk = () => {
+    if (!bulkPrompt.trim()) {
+      showToast('Paste a labels prompt to parse', 'error')
+      return
+    }
+    parseBulkMutation.mutate({ prompt: bulkPrompt, surface: bulkSurface })
+  }
+
+  const handleAddBlankBulkRow = () => {
+    setBulkDrafts((prev) => [
+      ...prev,
+      {
+        local_id: `manual-${Date.now()}-${prev.length}`,
+        name: '',
+        description: '',
+        metric_type: 'boolean',
+        custom_data_type: 'boolean',
+        enum_options_csv: '',
+        number_min: 0,
+        number_max: 10,
+        number_step: 1,
+        capture_rationale: true,
+        supported_surfaces: [bulkSurface],
+        enabled_surfaces: [bulkSurface],
+        status: 'idle',
+        expanded: true,
+      },
+    ])
+  }
+
+  const handleRemoveBulkRow = (local_id: string) => {
+    setBulkDrafts((prev) => prev.filter((row) => row.local_id !== local_id))
+  }
+
+  const handleSaveAllBulk = () => {
+    const unsaved = bulkDrafts.filter((d) => d.status !== 'saved')
+    if (unsaved.length === 0) {
+      showToast('Nothing to save', 'success')
+      return
+    }
+    createAllBulkMetricsMutation.mutate()
+  }
 
   const handleToggleSurface = (metric: Metric, surface: MetricSurface) => {
     const current = new Set<MetricSurface>(metric.enabled_surfaces || [])
@@ -308,6 +550,7 @@ export default function MetricsManagement() {
       tags_csv: '',
       trigger: 'always',
       enabled: true,
+      capture_rationale: false,
     })
   }
 
@@ -352,6 +595,11 @@ export default function MetricsManagement() {
       custom_data_type: useCustomConfig ? formData.custom_data_type : undefined,
       custom_config: useCustomConfig ? getCustomConfigFromForm() : undefined,
       tags: tags.length > 0 ? tags : undefined,
+      // Capture LLM rationale only makes sense for LLM-judged metrics
+      // (i.e. anything that isn't a free-form text summary). The CSV
+      // exporter and worker both no-op when the flag is false.
+      capture_rationale:
+        formData.metric_type !== 'text' ? formData.capture_rationale : false,
     }
   }
 
@@ -380,6 +628,7 @@ export default function MetricsManagement() {
       tags_csv: metric.tags?.join(', ') || '',
       trigger: metric.trigger,
       enabled: metric.enabled,
+      capture_rationale: !!metric.capture_rationale,
     })
     setIsCustomMetricMode(metric.metric_origin === 'custom')
     setShowCreateModal(true)
@@ -515,12 +764,23 @@ export default function MetricsManagement() {
                 enabled_surfaces: ['agent'],
                 trigger: 'always',
                 enabled: true,
+                capture_rationale: false,
               })
               setShowCreateModal(true)
             }}
             leftIcon={<Plus className="w-4 h-4" />}
           >
             Create Custom Metric
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() => {
+              setShowBulkModal(true)
+              setBulkDrafts([])
+            }}
+            leftIcon={<ListChecks className="w-4 h-4" />}
+          >
+            Bulk Create Metrics
           </Button>
           <Button
             variant="outline"
@@ -962,6 +1222,32 @@ export default function MetricsManagement() {
                   )}
                 </div>
 
+                {formData.metric_type !== 'text' && (
+                  <div className="rounded-md border border-gray-200 bg-gray-50 p-3">
+                    <label className="flex items-start gap-2">
+                      <input
+                        type="checkbox"
+                        checked={formData.capture_rationale}
+                        onChange={(e) =>
+                          setFormData({ ...formData, capture_rationale: e.target.checked })
+                        }
+                        className="mt-0.5 h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
+                      />
+                      <span className="text-sm text-gray-800">
+                        <span className="font-medium">Capture LLM Rationale</span>
+                        <span className="block text-xs text-gray-500 mt-0.5">
+                          Ask the LLM to also return a 1-2 sentence reason
+                          alongside the value. Adds a{' '}
+                          <code className="px-1 py-0.5 bg-white border border-gray-200 rounded text-[11px]">
+                            &lt;Name&gt; - LLM Rationale
+                          </code>{' '}
+                          column to the call-import CSV export.
+                        </span>
+                      </span>
+                    </label>
+                  </div>
+                )}
+
                 {isCustomMetricMode && formData.metric_type !== 'text' && (
                   <>
                     <div>
@@ -1222,6 +1508,314 @@ export default function MetricsManagement() {
                 >
                   Enable Selected ({selectedDisabledMetricIds.size})
                 </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk Create Metrics Modal */}
+      {showBulkModal && (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+          <div className="flex min-h-screen items-center justify-center p-4">
+            <div
+              className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"
+              onClick={resetBulkForm}
+            />
+            <div className="relative bg-white rounded-lg shadow-xl max-w-4xl w-full p-6 max-h-[90vh] overflow-y-auto">
+              <div className="flex items-center justify-between mb-2">
+                <h2 className="text-2xl font-bold text-gray-900">
+                  Bulk Create Metrics
+                </h2>
+                <button
+                  onClick={resetBulkForm}
+                  className="text-gray-400 hover:text-gray-500"
+                >
+                  <X className="h-6 w-6" />
+                </button>
+              </div>
+              <p className="text-sm text-gray-600 mb-5">
+                Paste a rubric (e.g. <code>Label #1 / Label Name / Label
+                Definition / Example (Optional)</code> blocks). Each label
+                becomes its own draft metric below — pick the type and the
+                rationale flag per metric, then save them all in one click.
+              </p>
+
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-[200px_1fr_auto] gap-3 items-start">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Default surface
+                    </label>
+                    <select
+                      value={bulkSurface}
+                      onChange={(e) =>
+                        setBulkSurface(e.target.value as MetricSurface)
+                      }
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
+                    >
+                      {ALL_SURFACES.map((surface) => (
+                        <option key={surface} value={surface}>
+                          {SURFACE_LABELS[surface]}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Labels prompt
+                    </label>
+                    <textarea
+                      value={bulkPrompt}
+                      onChange={(e) => setBulkPrompt(e.target.value)}
+                      rows={6}
+                      placeholder={
+                        'Label #1\n\nLabel Name\nLanguage Adherence\nLabel Definition\n...\n'
+                      }
+                      className="w-full px-3 py-2 text-sm font-mono border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
+                    />
+                  </div>
+                  <div className="md:pt-7">
+                    <Button
+                      variant="primary"
+                      onClick={handleParseBulk}
+                      isLoading={parseBulkMutation.isPending}
+                      leftIcon={<Sparkles className="w-4 h-4" />}
+                    >
+                      Parse
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="border-t border-gray-200 pt-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="text-sm font-semibold text-gray-900">
+                      Drafts ({bulkDrafts.length})
+                    </h3>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={handleAddBlankBulkRow}
+                      leftIcon={<Plus className="w-3.5 h-3.5" />}
+                    >
+                      Add metric
+                    </Button>
+                  </div>
+
+                  {bulkDrafts.length === 0 ? (
+                    <div className="border border-dashed border-gray-300 rounded-md p-6 text-center text-sm text-gray-500">
+                      Parse a labels prompt above, or click <span className="font-medium">Add metric</span> to start with a blank row.
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {bulkDrafts.map((row) => {
+                        const statusBadge =
+                          row.status === 'saved' ? (
+                            <span className="px-2 py-0.5 text-[11px] font-medium rounded-full bg-emerald-100 text-emerald-800">
+                              Saved
+                            </span>
+                          ) : row.status === 'saving' ? (
+                            <span className="px-2 py-0.5 text-[11px] font-medium rounded-full bg-blue-100 text-blue-800">
+                              Saving…
+                            </span>
+                          ) : row.status === 'error' ? (
+                            <span
+                              className="px-2 py-0.5 text-[11px] font-medium rounded-full bg-red-100 text-red-800"
+                              title={row.error}
+                            >
+                              Error
+                            </span>
+                          ) : null
+                        const isLocked = row.status === 'saved' || row.status === 'saving'
+                        return (
+                          <div
+                            key={row.local_id}
+                            className={`border rounded-md p-3 space-y-3 ${
+                              row.status === 'saved'
+                                ? 'border-emerald-200 bg-emerald-50/40'
+                                : row.status === 'error'
+                                  ? 'border-red-200 bg-red-50/40'
+                                  : 'border-gray-200 bg-gray-50'
+                            }`}
+                          >
+                            <div className="grid grid-cols-1 md:grid-cols-[1fr_140px_auto_auto] gap-2 items-start">
+                              <input
+                                type="text"
+                                value={row.name}
+                                disabled={isLocked}
+                                onChange={(e) =>
+                                  updateBulkDraft(row.local_id, { name: e.target.value })
+                                }
+                                placeholder="Metric name"
+                                className="px-2 py-1.5 text-sm font-medium border border-gray-300 rounded focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
+                              />
+                              <select
+                                value={row.metric_type}
+                                disabled={isLocked}
+                                onChange={(e) => {
+                                  const next = e.target.value as
+                                    | 'boolean' | 'rating' | 'number' | 'text'
+                                  updateBulkDraft(row.local_id, {
+                                    metric_type: next,
+                                    custom_data_type:
+                                      next === 'boolean'
+                                        ? 'boolean'
+                                        : next === 'number'
+                                          ? 'number_range'
+                                          : 'enum',
+                                  })
+                                }}
+                                className="px-2 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
+                              >
+                                <option value="boolean">Boolean</option>
+                                <option value="rating">Rating (enum)</option>
+                                <option value="number">Number (range)</option>
+                                <option value="text">Text (LLM summary)</option>
+                              </select>
+                              <label
+                                className="inline-flex items-center gap-1.5 text-xs text-gray-700 px-2 py-1.5 border border-gray-300 rounded bg-white"
+                                title="Ask the LLM to also return a 1-2 sentence reason"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={row.capture_rationale}
+                                  disabled={isLocked || row.metric_type === 'text'}
+                                  onChange={(e) =>
+                                    updateBulkDraft(row.local_id, {
+                                      capture_rationale: e.target.checked,
+                                    })
+                                  }
+                                  className="h-3.5 w-3.5 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
+                                />
+                                Rationale
+                              </label>
+                              <div className="flex items-center gap-2">
+                                {statusBadge}
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveBulkRow(row.local_id)}
+                                  disabled={row.status === 'saving'}
+                                  className="text-xs text-red-600 hover:text-red-800 disabled:text-gray-400"
+                                  title="Remove this draft"
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                            </div>
+
+                            {row.metric_type !== 'text' && row.custom_data_type === 'enum' && (
+                              <input
+                                type="text"
+                                value={row.enum_options_csv}
+                                disabled={isLocked}
+                                onChange={(e) =>
+                                  updateBulkDraft(row.local_id, {
+                                    enum_options_csv: e.target.value,
+                                  })
+                                }
+                                placeholder="Enum options, comma separated (e.g. Excellent, Good, Poor)"
+                                className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
+                              />
+                            )}
+
+                            {row.metric_type !== 'text' && row.custom_data_type === 'number_range' && (
+                              <div className="grid grid-cols-3 gap-2">
+                                <input
+                                  type="number"
+                                  value={row.number_min}
+                                  disabled={isLocked}
+                                  onChange={(e) =>
+                                    updateBulkDraft(row.local_id, {
+                                      number_min: Number(e.target.value),
+                                    })
+                                  }
+                                  placeholder="Min"
+                                  className="px-2 py-1.5 text-xs border border-gray-300 rounded focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
+                                />
+                                <input
+                                  type="number"
+                                  value={row.number_max}
+                                  disabled={isLocked}
+                                  onChange={(e) =>
+                                    updateBulkDraft(row.local_id, {
+                                      number_max: Number(e.target.value),
+                                    })
+                                  }
+                                  placeholder="Max"
+                                  className="px-2 py-1.5 text-xs border border-gray-300 rounded focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
+                                />
+                                <input
+                                  type="number"
+                                  value={row.number_step}
+                                  disabled={isLocked}
+                                  onChange={(e) =>
+                                    updateBulkDraft(row.local_id, {
+                                      number_step: Number(e.target.value),
+                                    })
+                                  }
+                                  placeholder="Step"
+                                  className="px-2 py-1.5 text-xs border border-gray-300 rounded focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
+                                />
+                              </div>
+                            )}
+
+                            <div>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  updateBulkDraft(row.local_id, { expanded: !row.expanded })
+                                }
+                                className="text-[11px] font-medium text-gray-600 hover:text-gray-800"
+                              >
+                                {row.expanded ? '▾ Hide rubric' : '▸ Edit rubric / description'}
+                              </button>
+                              {row.expanded && (
+                                <textarea
+                                  value={row.description}
+                                  disabled={isLocked}
+                                  onChange={(e) =>
+                                    updateBulkDraft(row.local_id, {
+                                      description: e.target.value,
+                                    })
+                                  }
+                                  rows={5}
+                                  placeholder="Judging rubric the LLM-judge will see"
+                                  className="mt-1 w-full px-2 py-1.5 text-xs border border-gray-300 rounded focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
+                                />
+                              )}
+                            </div>
+
+                            {row.error && (
+                              <p className="text-xs text-red-700">{row.error}</p>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between pt-5">
+                <p className="text-xs text-gray-500">
+                  {bulkDrafts.filter((d) => d.status === 'saved').length} saved · {bulkDrafts.filter((d) => d.status !== 'saved').length} pending
+                </p>
+                <div className="flex space-x-3">
+                  <Button variant="ghost" onClick={resetBulkForm}>
+                    Close
+                  </Button>
+                  <Button
+                    variant="primary"
+                    onClick={handleSaveAllBulk}
+                    isLoading={createAllBulkMetricsMutation.isPending}
+                    disabled={
+                      bulkDrafts.length === 0 ||
+                      bulkDrafts.every((d) => d.status === 'saved')
+                    }
+                  >
+                    Save all ({bulkDrafts.filter((d) => d.status !== 'saved').length})
+                  </Button>
+                </div>
               </div>
             </div>
           </div>

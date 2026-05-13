@@ -62,6 +62,7 @@ def create_metric(
         custom_data_type=metric_data.custom_data_type,
         custom_config=metric_data.custom_config,
         tags=metric_data.tags,
+        capture_rationale=bool(metric_data.capture_rationale),
     )
     db.add(metric)
     db.commit()
@@ -195,6 +196,9 @@ def update_metric(
 
     if metric_data.tags is not None:
         metric.tags = metric_data.tags
+
+    if metric_data.capture_rationale is not None:
+        metric.capture_rationale = bool(metric_data.capture_rationale)
 
     db.commit()
     db.refresh(metric)
@@ -689,4 +693,343 @@ def generate_metric(
         enabled_surfaces=enabled_surfaces,
         suggested_tags=[str(t) for t in (parsed.get("suggested_tags") or [])][:8],
     )
+
+
+# =============================================================================
+# Bulk-import: build a LIST of independent metric drafts from a labels prompt
+# =============================================================================
+#
+# Each "Label #N" block in the pasted prompt is turned into a *separate*
+# draft metric so the user can decide per metric:
+#   - the metric type (boolean / rating / number / text)
+#   - whether to capture an LLM rationale
+#   - whether to keep / rename / delete it
+# The endpoint NEVER persists anything; the frontend collects the user's
+# edits and POSTs each draft to ``/metrics`` individually.
+
+class ParsedLabel(BaseModel):
+    """One label parsed out of the bulk prompt."""
+    label_name: str
+    definition: str = ""
+    examples: str = ""
+
+
+class MetricDraft(BaseModel):
+    """One un-persisted metric draft built from a parsed label.
+
+    The defaults reflect the most common shape of a parsed label
+    ("did <X> happen?" → boolean, with a free-form rationale). The user
+    can flip the type / rationale flag in the bulk-import modal before
+    saving each draft to the metrics table.
+    """
+    name: str
+    description: str
+    metric_type: Literal["rating", "boolean", "number", "text"] = "boolean"
+    custom_data_type: Optional[Literal["boolean", "enum", "number_range"]] = "boolean"
+    custom_config: Dict[str, Any] = Field(default_factory=dict)
+    supported_surfaces: List[str]
+    enabled_surfaces: List[str]
+    capture_rationale: bool = True
+    suggested_tags: List[str] = Field(default_factory=list)
+    # Echo the source label so the frontend can show the rubric / examples
+    # alongside the editable fields without re-fetching.
+    source_label: ParsedLabel
+
+
+class MetricParseBulkRequest(BaseModel):
+    """Request body for bulk-importing multiple metrics from a prompt."""
+    prompt: str = Field(..., description="The pasted Label-block prompt.")
+    surface: Literal["agent", "voice_playground", "blind_test"] = "agent"
+
+
+class MetricParseBulkResponse(BaseModel):
+    """List of independent un-persisted metric drafts, one per label."""
+    metrics: List[MetricDraft]
+
+
+# A "Label #N" block looks like:
+#
+#   Label #1
+#
+#   Label Name
+#   Pitch done WITH data (...)
+#   Label Definition
+#   The pitch window contains any numeric data tied to the seller...
+#   Example (Optional)
+#   Example 1 (...): ...
+#
+# We split on each "Label #<n>" header and then pull "Label Name",
+# "Label Definition", and the "Example (Optional)" body out of each
+# block independently. Section headers are matched case-insensitively
+# and must each appear on their own line so prose containing the words
+# can't trip the parser.
+_LABEL_BLOCK_SPLIT = re.compile(r"(?im)^\s*label\s*#\s*\d+\s*$")
+_LABEL_NAME_HEADER = re.compile(r"(?im)^\s*label\s+name\s*$")
+_LABEL_DEFINITION_HEADER = re.compile(r"(?im)^\s*label\s+definition\s*$")
+_LABEL_EXAMPLE_HEADER = re.compile(r"(?im)^\s*example(?:\s*\(optional\))?\s*$")
+
+
+def _section_after(text: str, header_re: re.Pattern, *stop_res: re.Pattern) -> str:
+    """Return the text between ``header_re`` and the next stop header (or EOS)."""
+    match = header_re.search(text)
+    if not match:
+        return ""
+    after = text[match.end():]
+    end = len(after)
+    for stop_re in stop_res:
+        stop_match = stop_re.search(after)
+        if stop_match and stop_match.start() < end:
+            end = stop_match.start()
+    return after[:end].strip()
+
+
+def _parse_label_blocks(prompt: str) -> List[ParsedLabel]:
+    """Deterministic regex parse of "Label #N" blocks.
+
+    Returns labels in the order they appear. Labels with an empty name
+    are skipped. Definition / examples are best-effort: missing sections
+    are returned as empty strings and the caller decides whether to fall
+    back to an LLM parse.
+    """
+    if not prompt or not prompt.strip():
+        return []
+
+    pieces = _LABEL_BLOCK_SPLIT.split(prompt)
+    # The first piece (before any "Label #N" header) is preamble; ignore.
+    blocks = [p for p in pieces[1:] if p.strip()]
+
+    labels: List[ParsedLabel] = []
+    for block in blocks:
+        name = _section_after(
+            block,
+            _LABEL_NAME_HEADER,
+            _LABEL_DEFINITION_HEADER,
+            _LABEL_EXAMPLE_HEADER,
+        )
+        # Collapse whitespace: the label name should be a single line.
+        name = " ".join(name.split())
+        if not name:
+            continue
+
+        definition = _section_after(
+            block,
+            _LABEL_DEFINITION_HEADER,
+            _LABEL_EXAMPLE_HEADER,
+        )
+        examples = _section_after(
+            block,
+            _LABEL_EXAMPLE_HEADER,
+        )
+
+        labels.append(
+            ParsedLabel(
+                label_name=name[:120],
+                definition=definition[:2000],
+                examples=examples[:4000],
+            )
+        )
+    return labels
+
+
+def _build_bulk_llm_prompt(prompt: str) -> List[Dict[str, str]]:
+    """Build messages for an LLM fallback parse when the regex finds no labels.
+
+    The output is a flat list of evaluation criteria; each one will be
+    materialised into its OWN draft metric on the frontend, so they do
+    not need to be mutually exclusive.
+    """
+    system = (
+        "You extract a list of independent evaluation criteria (labels) "
+        "from an evaluation rubric. Always respond with valid JSON only."
+    )
+    user = (
+        "Extract every distinct evaluation criterion from the rubric below. "
+        "For each one return its short label name, a 1-3 sentence definition, "
+        "and any examples block (or empty string). Return JSON of shape:\n"
+        '{"labels": [{"label_name": "...", "definition": "...", "examples": "..."}]}\n\n'
+        "Rules:\n"
+        "  - Preserve the EXACT label names as written; no summarising.\n"
+        "  - Each label is independent (will become its own metric).\n"
+        "  - If the rubric is unparseable, return {\"labels\": []}.\n\n"
+        f"## Rubric\n{prompt.strip()}\n"
+    )
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+
+def _llm_parse_labels(
+    prompt: str,
+    organization_id: UUID,
+    db: Session,
+) -> List[ParsedLabel]:
+    """Call the LLM to extract labels from a non-standard rubric format."""
+    from app.services.ai.llm_service import llm_service
+
+    messages = _build_bulk_llm_prompt(prompt)
+    try:
+        llm_result = llm_service.generate_response(
+            messages=messages,
+            llm_provider=ModelProvider.OPENAI,
+            llm_model="gpt-4o",
+            organization_id=organization_id,
+            db=db,
+            temperature=0.2,
+            max_tokens=1500,
+        )
+    except Exception as e:
+        logger.error(f"[Metric ParseBulk] LLM call failed: {e}")
+        return []
+
+    try:
+        parsed = _parse_metric_generation_response(llm_result.get("text", ""))
+    except Exception as e:
+        logger.error(f"[Metric ParseBulk] Failed to parse LLM JSON: {e}")
+        return []
+
+    raw_labels = parsed.get("labels") if isinstance(parsed, dict) else None
+    if not isinstance(raw_labels, list):
+        return []
+
+    labels: List[ParsedLabel] = []
+    for item in raw_labels:
+        if not isinstance(item, dict):
+            continue
+        name = " ".join(str(item.get("label_name") or "").split())
+        if not name:
+            continue
+        labels.append(
+            ParsedLabel(
+                label_name=name[:120],
+                definition=str(item.get("definition") or "")[:2000].strip(),
+                examples=str(item.get("examples") or "")[:4000].strip(),
+            )
+        )
+    return labels
+
+
+def _build_description_from_label(label: ParsedLabel) -> str:
+    """Turn a parsed label block into a per-metric judging rubric.
+
+    The result is what the LLM-judge sees as ``Metric.description`` when
+    this draft is later saved. We keep the label name verbatim at the top
+    so the prompt the user pasted survives intact.
+    """
+    parts: List[str] = []
+    parts.append(
+        f'Decide whether "{label.label_name}" applies to the conversation.'
+    )
+    if label.definition:
+        parts.append(f"Definition:\n{label.definition}")
+    if label.examples:
+        parts.append(f"Examples:\n{label.examples}")
+    description = "\n\n".join(parts)
+    return description[:4000]
+
+
+def _ensure_unique_metric_name(
+    base_name: str,
+    organization_id: UUID,
+    db: Session,
+    reserved: set[str],
+) -> str:
+    """Auto-suffix ``base_name`` so it collides with neither the DB nor
+    other names already chosen in this same bulk batch."""
+    candidate = (base_name or "").strip()[:60] or "Custom Metric"
+
+    def _taken(name: str) -> bool:
+        if name.lower() in reserved:
+            return True
+        return (
+            db.query(Metric)
+            .filter(
+                and_(Metric.name == name, Metric.organization_id == organization_id)
+            )
+            .first()
+            is not None
+        )
+
+    if not _taken(candidate):
+        return candidate
+    suffix = 2
+    while _taken(f"{candidate} ({suffix})"):
+        suffix += 1
+    return f"{candidate} ({suffix})"
+
+
+@router.post("/parse-bulk", response_model=MetricParseBulkResponse)
+def parse_bulk_metric(
+    req: MetricParseBulkRequest,
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+):
+    """Parse a multi-label rubric into a *list* of independent metric drafts.
+
+    Each "Label #N" block becomes its own un-persisted draft metric the
+    user can edit (name, type, capture_rationale, ...) before POSTing to
+    ``/metrics`` individually. Defaults are chosen so the most common
+    case ("did <X> happen?") is one click away: ``metric_type="boolean"``
+    with ``capture_rationale=True``.
+
+    The endpoint does NOT write to the database.
+    """
+    if not req.prompt or not req.prompt.strip():
+        raise HTTPException(status_code=400, detail="prompt is required")
+
+    labels = _parse_label_blocks(req.prompt)
+    if len(labels) < 1:
+        # Format didn't match the deterministic regex; fall back to an LLM
+        # parse so we still produce something useful for free-form rubrics.
+        labels = _llm_parse_labels(req.prompt, organization_id, db)
+
+    if len(labels) < 1:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Could not extract any labels from the prompt. Format each "
+                "label as 'Label #N' followed by 'Label Name', 'Label "
+                "Definition', and optionally 'Example (Optional)'."
+            ),
+        )
+
+    # Deduplicate label names case-insensitively (preserve first occurrence)
+    # so two identically-named labels in the rubric don't produce two
+    # collidingly-named drafts.
+    seen: set[str] = set()
+    unique_labels: List[ParsedLabel] = []
+    for label in labels:
+        key = label.label_name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_labels.append(label)
+    labels = unique_labels
+
+    drafts: List[MetricDraft] = []
+    chosen_names: set[str] = set()
+    for label in labels:
+        unique_name = _ensure_unique_metric_name(
+            label.label_name,
+            organization_id,
+            db,
+            chosen_names,
+        )
+        chosen_names.add(unique_name.lower())
+        drafts.append(
+            MetricDraft(
+                name=unique_name,
+                description=_build_description_from_label(label),
+                metric_type="boolean",
+                custom_data_type="boolean",
+                custom_config={},
+                supported_surfaces=[req.surface],
+                enabled_surfaces=[req.surface],
+                capture_rationale=True,
+                suggested_tags=[],
+                source_label=label,
+            )
+        )
+
+    return MetricParseBulkResponse(metrics=drafts)
 
