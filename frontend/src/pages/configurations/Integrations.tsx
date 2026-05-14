@@ -1,9 +1,9 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../lib/api'
-import type { TelephonyIntegrationResponse, TelephonyPhoneNumberResponse } from '../../lib/api'
+import type { TelephonyIntegrationResponse } from '../../lib/api'
 import { useState, useEffect, useRef, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { Plus, Trash2, X, AlertCircle, Plug, Edit, Brain, ChevronDown, Phone, RefreshCw, ShieldCheck, CheckCircle2, Star } from 'lucide-react'
+import { Plus, Trash2, X, AlertCircle, Plug, Edit, Brain, ChevronDown, Phone, Star } from 'lucide-react'
 import { IntegrationCreate, IntegrationPlatform, Integration, AIProvider, AIProviderCreate, ModelProvider, TelephonyProvider } from '../../types/api'
 import Button from '../../components/Button'
 import { useToast } from '../../hooks/useToast'
@@ -64,7 +64,6 @@ export default function Integrations() {
   const [telephonyVerifyAppUuid, setTelephonyVerifyAppUuid] = useState('')
   const [telephonyVoiceAppId, setTelephonyVoiceAppId] = useState('')
   const [telephonySipDomain, setTelephonySipDomain] = useState('')
-  const [expandedTelephony, setExpandedTelephony] = useState<string | null>(null)
   const [telephonyProviderFilter, setTelephonyProviderFilter] = useState<TelephonyProvider>(TelephonyProvider.PLIVO)
 
   const renderModal = (content: ReactNode) => {
@@ -98,7 +97,6 @@ export default function Integrations() {
     telephonyConfigsForFilter[0] ||
     allTelephonyConfigs[0]
 
-  const activeTelephonyProvider = (telephonyConfig?.provider as TelephonyProvider | undefined) || telephonyProviderFilter
   const hasTelephony = allTelephonyConfigs.length > 0 && Boolean(telephonyConfig)
 
   useEffect(() => {
@@ -106,21 +104,6 @@ export default function Integrations() {
       setTelephonyProviderFilter(allTelephonyConfigs[0].provider as TelephonyProvider)
     }
   }, [telephonyConfig, allTelephonyConfigs])
-
-  // Numbers are scoped to whichever telephony card the user has expanded so
-  // that listing every credential side-by-side still shows the correct
-  // numbers per provider (instead of a single global "active" provider).
-  const expandedTelephonyConfig = expandedTelephony
-    ? allTelephonyConfigs.find((c) => c.id === expandedTelephony) || null
-    : null
-  const expandedTelephonyProvider = (expandedTelephonyConfig?.provider as TelephonyProvider | undefined)
-
-  const { data: telephonyNumbers = [], isLoading: telephonyNumbersLoading } = useQuery({
-    queryKey: ['telephony-numbers', expandedTelephonyProvider],
-    queryFn: () => apiClient.listTelephonyNumbers(expandedTelephonyProvider as TelephonyProvider),
-    retry: false,
-    enabled: !!expandedTelephonyProvider,
-  })
 
   const createIntegrationMutation = useMutation({
     mutationFn: (data: IntegrationCreate) => apiClient.createIntegration(data),
@@ -217,28 +200,6 @@ export default function Integrations() {
     mutationFn: (id: string) => apiClient.deleteTelephonyConfig(id),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['telephony-configs'] }); showToast('Telephony credential deleted', 'success') },
     onError: (error: any) => { showToast(error?.response?.data?.detail || error?.message || 'Failed to delete', 'error') },
-  })
-
-  const testTelephonyMutation = useMutation({
-    mutationFn: (provider?: string) => apiClient.testTelephonyConfig(
-      (provider || selectedTelephonyProvider || activeTelephonyProvider || 'plivo') as string,
-    ),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['telephony-config'] }); showToast('Telephony connection test succeeded!', 'success') },
-    onError: (error: any) => { showToast(error?.response?.data?.detail || error?.message || 'Connection test failed', 'error') },
-  })
-
-  const syncNumbersMutation = useMutation({
-    mutationFn: (provider?: string) => apiClient.syncTelephonyNumbers(
-      (provider || selectedTelephonyProvider || activeTelephonyProvider || 'plivo') as string,
-    ),
-    onSuccess: (synced) => { queryClient.invalidateQueries({ queryKey: ['telephony-numbers'] }); showToast(`Synced ${synced.length} number(s) from provider.`, 'success') },
-    onError: (error: any) => { showToast(error?.response?.data?.detail || error?.message || 'Failed to sync numbers', 'error') },
-  })
-
-  const updateNumberMutation = useMutation({
-    mutationFn: ({ id, is_masking_pool }: { id: string; is_masking_pool: boolean }) => apiClient.updateTelephonyNumber(id, { is_masking_pool }),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['telephony-numbers'] }); showToast('Number settings updated.', 'success') },
-    onError: (error: any) => { showToast(error?.response?.data?.detail || error?.message || 'Failed to update number', 'error') },
   })
 
   useEffect(() => {
@@ -604,11 +565,6 @@ export default function Integrations() {
                             </span>
                           )}
                           <span className={`px-2 py-0.5 text-xs font-medium rounded ${cfg.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>{cfg.is_active ? 'Active' : 'Inactive'}</span>
-                          {cfg.last_tested_at && (
-                            <span className="inline-flex items-center gap-1 text-xs text-green-700" title={`Last tested: ${new Date(cfg.last_tested_at).toLocaleString()}`}>
-                              <CheckCircle2 className="h-3 w-3" />
-                            </span>
-                          )}
                         </div>
                       </div>
                       {/* Actions */}
@@ -624,18 +580,6 @@ export default function Integrations() {
                             Set Default
                           </Button>
                         )}
-                        {cfg.is_default && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => testTelephonyMutation.mutate(cfg.provider as string)}
-                            isLoading={testTelephonyMutation.isPending && testTelephonyMutation.variables === cfg.provider}
-                            leftIcon={!(testTelephonyMutation.isPending && testTelephonyMutation.variables === cfg.provider) ? <ShieldCheck className="h-4 w-4" /> : undefined}
-                          >
-                            Test
-                          </Button>
-                        )}
-                        <Button variant="ghost" size="sm" onClick={() => setExpandedTelephony(expandedTelephony === cfg.id ? null : cfg.id)} leftIcon={<Phone className="h-4 w-4" />}>Numbers</Button>
                         <Button variant="ghost" size="sm" onClick={() => handleEditTelephony(cfg)} leftIcon={<Edit className="h-4 w-4" />}>Edit</Button>
                         <Button
                           variant="ghost"
@@ -652,42 +596,6 @@ export default function Integrations() {
                         </Button>
                       </div>
                     </div>
-                    {expandedTelephony === cfg.id && (
-                      <div className="mt-4 border-t border-gray-100 pt-4">
-                        <div className="flex items-center justify-between mb-3">
-                          <h4 className="text-sm font-semibold text-gray-800">Phone Numbers</h4>
-                          <Button
-                            variant="secondary"
-                            size="sm"
-                            onClick={() => syncNumbersMutation.mutate(cfg.provider as string)}
-                            isLoading={syncNumbersMutation.isPending && syncNumbersMutation.variables === cfg.provider}
-                            leftIcon={!(syncNumbersMutation.isPending && syncNumbersMutation.variables === cfg.provider) ? <RefreshCw className="h-4 w-4" /> : undefined}
-                          >
-                            Sync Numbers
-                          </Button>
-                        </div>
-                        {telephonyNumbersLoading ? (
-                          <p className="text-sm text-gray-500">Loading numbers...</p>
-                        ) : telephonyNumbers.length === 0 ? (
-                          <p className="text-sm text-gray-500">No numbers synced yet. Click <strong>Sync Numbers</strong> to pull from your provider.</p>
-                        ) : (
-                          <div className="divide-y divide-gray-100 border border-gray-200 rounded-lg">
-                            {telephonyNumbers.map((num: TelephonyPhoneNumberResponse) => (
-                              <div key={num.id} className="px-4 py-3 flex items-center justify-between">
-                                <div>
-                                  <div className="text-sm font-semibold text-gray-900">{num.phone_number}</div>
-                                  <div className="text-xs text-gray-500">{num.country_iso2 || 'N/A'} &bull; {num.region || 'Unknown'} &bull; {num.number_type || 'Unknown'}</div>
-                                </div>
-                                <label className="flex items-center gap-2 text-sm text-gray-700">
-                                  <input type="checkbox" checked={num.is_masking_pool} onChange={(e) => updateNumberMutation.mutate({ id: num.id, is_masking_pool: e.target.checked })} />
-                                  Masking Pool
-                                </label>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    )}
                   </div>
                   ))}
                 </div>

@@ -645,6 +645,7 @@ async def list_call_import_evaluation_rows(
                 transcript=source_row.transcript,
                 raw_columns=source_row.raw_columns,
                 recording_url=source_row.recording_url,
+                recording_s3_key=source_row.recording_s3_key,
                 status=eval_row_obj.status,
                 metric_scores=eval_row_obj.metric_scores or {},
                 error_message=eval_row_obj.error_message,

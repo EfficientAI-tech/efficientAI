@@ -697,6 +697,12 @@ export interface CallImport {
 
 export interface CallImportDetail extends CallImport {
   rows: CallImportRow[]
+  /**
+   * Total row count *after* applying the optional ``q`` search filter.
+   * ``null`` when no filter is active — paginate against ``total_rows``
+   * in that case.
+   */
+  filtered_total_rows: number | null
 }
 
 export interface CallImportListResponse {
@@ -770,6 +776,13 @@ export interface CallImportEvaluationRow {
   transcript: string | null
   raw_columns: Record<string, any> | null
   recording_url: string | null
+  /**
+   * S3 object key for the downloaded recording. Prefer this over
+   * ``recording_url`` for playback — we resolve it to a presigned URL
+   * so audio plays from our storage instead of the (often expired)
+   * provider URL.
+   */
+  recording_s3_key: string | null
   status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
   metric_scores: Record<string, any>
   error_message: string | null

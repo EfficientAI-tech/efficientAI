@@ -902,30 +902,10 @@ class ApiClient {
     await this.client.delete(`/api/v1/telephony/config/${integrationId}`)
   }
 
-  async testTelephonyConfig(provider: string = 'plivo'): Promise<{ success: boolean }> {
-    const response = await this.client.post('/api/v1/telephony/config/test', null, { params: { provider } })
-    return response.data
-  }
-
-  async syncTelephonyNumbers(provider: string = 'plivo'): Promise<TelephonyPhoneNumberResponse[]> {
-    const response = await this.client.post('/api/v1/telephony/numbers/sync', null, {
-      params: { provider },
-    })
-    return response.data
-  }
-
   async listTelephonyNumbers(provider?: string): Promise<TelephonyPhoneNumberResponse[]> {
     const response = await this.client.get('/api/v1/telephony/numbers', {
       params: provider ? { provider } : undefined,
     })
-    return response.data
-  }
-
-  async updateTelephonyNumber(
-    numberId: string,
-    data: { is_masking_pool?: boolean; agent_id?: string | null; is_active?: boolean }
-  ): Promise<TelephonyPhoneNumberResponse> {
-    const response = await this.client.patch(`/api/v1/telephony/numbers/${numberId}`, data)
     return response.data
   }
 
@@ -1063,7 +1043,7 @@ class ApiClient {
 
   async getCallImport(
     id: string,
-    params: { row_limit?: number; row_offset?: number } = {}
+    params: { row_limit?: number; row_offset?: number; q?: string } = {}
   ): Promise<CallImportDetail> {
     const response = await this.client.get(`/api/v1/call-imports/${id}`, { params })
     return response.data
@@ -1083,6 +1063,17 @@ class ApiClient {
 
   async deleteCallImportRow(id: string, rowId: string): Promise<void> {
     await this.client.delete(`/api/v1/call-imports/${id}/rows/${rowId}`)
+  }
+
+  async bulkDeleteCallImportRows(
+    id: string,
+    rowIds: string[],
+  ): Promise<{ deleted: number }> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${id}/rows/bulk-delete`,
+      { row_ids: rowIds },
+    )
+    return response.data
   }
 
   async createCallImportEvaluation(

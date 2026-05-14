@@ -4,11 +4,10 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_api_key, get_db, get_organization_id
-from app.models.database import TelephonyIntegration, TelephonyMaskedSession, TelephonyPhoneNumber
+from app.models.database import TelephonyIntegration, TelephonyMaskedSession
 from app.models.schemas import (
     TelephonyIntegrationCreate,
     TelephonyIntegrationResponse,
@@ -26,14 +25,6 @@ from app.models.schemas import (
 from app.services.telephony.telephony_service import telephony_service
 
 router = APIRouter(prefix="/telephony", tags=["Telephony"])
-
-
-class TelephonyNumberUpdateRequest(BaseModel):
-    """Patch schema for organization number configuration."""
-
-    is_masking_pool: Optional[bool] = None
-    agent_id: Optional[UUID] = None
-    is_active: Optional[bool] = None
 
 
 @router.post("/config", response_model=TelephonyIntegrationResponse, status_code=status.HTTP_201_CREATED)
@@ -185,35 +176,6 @@ async def delete_telephony_config(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post("/config/test")
-async def test_telephony_config(
-    provider: str = "plivo",
-    organization_id: UUID = Depends(get_organization_id),
-    api_key: str = Depends(get_api_key),
-    db: Session = Depends(get_db),
-):
-    del api_key
-    try:
-        ok = telephony_service.test_connection(organization_id, db, provider=provider)
-        return {"success": ok}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@router.post("/numbers/sync", response_model=List[TelephonyPhoneNumberResponse])
-async def sync_telephony_numbers(
-    provider: str = "plivo",
-    organization_id: UUID = Depends(get_organization_id),
-    api_key: str = Depends(get_api_key),
-    db: Session = Depends(get_db),
-):
-    del api_key
-    try:
-        return telephony_service.sync_numbers(organization_id, db, provider=provider)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
 @router.get("/numbers", response_model=List[TelephonyPhoneNumberResponse])
 async def list_telephony_numbers(
     provider: Optional[str] = None,
@@ -223,31 +185,6 @@ async def list_telephony_numbers(
 ):
     del api_key
     return telephony_service.list_numbers(organization_id, db, provider=provider)
-
-
-@router.patch("/numbers/{number_id}", response_model=TelephonyPhoneNumberResponse)
-async def update_telephony_number(
-    number_id: UUID,
-    data: TelephonyNumberUpdateRequest,
-    organization_id: UUID = Depends(get_organization_id),
-    api_key: str = Depends(get_api_key),
-    db: Session = Depends(get_db),
-):
-    del api_key
-    number = (
-        db.query(TelephonyPhoneNumber)
-        .filter(TelephonyPhoneNumber.id == number_id, TelephonyPhoneNumber.organization_id == organization_id)
-        .first()
-    )
-    if not number:
-        raise HTTPException(status_code=404, detail="Phone number not found")
-
-    update_data = data.model_dump(exclude_none=True)
-    for key, value in update_data.items():
-        setattr(number, key, value)
-    db.commit()
-    db.refresh(number)
-    return number
 
 
 @router.post("/calls/outbound", response_model=TelephonyOutboundCallResponse)

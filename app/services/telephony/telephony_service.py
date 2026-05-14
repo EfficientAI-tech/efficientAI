@@ -242,59 +242,6 @@ class TelephonyService:
         db.refresh(integration)
         return integration
 
-    def test_connection(self, org_id: UUID, db: Session, provider: str = "plivo") -> bool:
-        client = self.get_provider_client(org_id, db, provider=provider)
-        ok = client.test_connection()
-        integration = self.get_org_integration(org_id, db, provider=provider)
-        integration.last_tested_at = datetime.now(timezone.utc)
-        db.commit()
-        return ok
-
-    def sync_numbers(self, org_id: UUID, db: Session, provider: str = "plivo") -> List[TelephonyPhoneNumber]:
-        client = self.get_provider_client(org_id, db, provider=provider)
-        integration = self.get_org_integration(org_id, db, provider=provider)
-        numbers = client.list_numbers()
-        synced: List[TelephonyPhoneNumber] = []
-
-        for num in numbers:
-            raw = num.get("number") or num.get("phone_number")
-            if not raw:
-                continue
-            phone_number = normalize_e164(raw)
-            existing = (
-                db.query(TelephonyPhoneNumber)
-                .filter(
-                    TelephonyPhoneNumber.organization_id == org_id,
-                    TelephonyPhoneNumber.phone_number == phone_number,
-                )
-                .first()
-            )
-            payload = {
-                "country_iso2": num.get("country_iso"),
-                "region": num.get("region"),
-                "number_type": num.get("number_type"),
-                "capabilities": num.get("capabilities") or {},
-                "provider_app_id": num.get("app_id"),
-                "is_active": True,
-            }
-            if existing:
-                existing.telephony_integration_id = integration.id
-                for key, value in payload.items():
-                    setattr(existing, key, value)
-                synced.append(existing)
-            else:
-                row = TelephonyPhoneNumber(
-                    organization_id=org_id,
-                    telephony_integration_id=integration.id,
-                    phone_number=phone_number,
-                    **payload,
-                )
-                db.add(row)
-                synced.append(row)
-
-        db.commit()
-        return synced
-
     def list_numbers(self, org_id: UUID, db: Session, provider: Optional[str] = None) -> List[TelephonyPhoneNumber]:
         query = db.query(TelephonyPhoneNumber).filter(TelephonyPhoneNumber.organization_id == org_id)
         if provider:

@@ -44,6 +44,8 @@ from app.models.schemas import (
     CallImportListResponse,
     CallImportMetricAggregate,
     CallImportResponse,
+    CallImportRowBulkDelete,
+    CallImportRowBulkDeleteResponse,
     CallImportRowResponse,
     CallImportTranscribeRequest,
     CallImportTranscribeResponse,
@@ -678,6 +680,15 @@ async def get_call_import_detail(
     call_import_id: UUID,
     row_limit: int = Query(500, ge=0, le=5000),
     row_offset: int = Query(0, ge=0),
+    q: Optional[str] = Query(
+        None,
+        description=(
+            "Optional case-insensitive substring filter on "
+            "``external_call_id``. When set, ``filtered_total_rows`` in "
+            "the response reflects the post-filter row count so the UI "
+            "can paginate against the filtered slice."
+        ),
+    ),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
@@ -703,13 +714,23 @@ async def get_call_import_detail(
             detail="Call import not found",
         )
 
+    rows_query = db.query(CallImportRow).filter(
+        CallImportRow.call_import_id == call_import.id
+    )
+
+    search_term = (q or "").strip()
+    filtered_total_rows: Optional[int] = None
+    if search_term:
+        rows_query = rows_query.filter(
+            CallImportRow.external_call_id.ilike(f"%{search_term}%")
+        )
+        filtered_total_rows = rows_query.count()
+
     if row_limit == 0:
         rows: List[CallImportRow] = []
     else:
         rows = (
-            db.query(CallImportRow)
-            .filter(CallImportRow.call_import_id == call_import.id)
-            .order_by(CallImportRow.row_index)
+            rows_query.order_by(CallImportRow.row_index)
             .offset(row_offset)
             .limit(row_limit)
             .all()
@@ -717,6 +738,7 @@ async def get_call_import_detail(
 
     detail = CallImportDetailResponse.model_validate(call_import)
     detail.rows = [CallImportRowResponse.model_validate(r) for r in rows]
+    detail.filtered_total_rows = filtered_total_rows
     return detail
 
 
@@ -926,14 +948,41 @@ async def delete_call_import_row(
     db.delete(row)
     db.flush()
 
-    # Recompute parent counters/status from what's left.
+    _recompute_call_import_counters(db, call_import)
+    db.commit()
+
+    logger.info(
+        "Deleted call_import_row {} (call_import={}, org={})",
+        row_id,
+        call_import.id,
+        organization_id,
+    )
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+def _recompute_call_import_counters(
+    db: Session, call_import: CallImport
+) -> None:
+    """Resync ``total/completed/failed_rows`` + status on the parent batch.
+
+    Called after row-level mutations (single delete, bulk delete) so the
+    UI's progress bar stays consistent with the actual row set. The
+    rules mirror :func:`delete_call_import_row` so behavior doesn't
+    diverge between the per-row and bulk paths.
+    """
+
     remaining = (
         db.query(CallImportRow)
         .filter(CallImportRow.call_import_id == call_import.id)
         .all()
     )
-    completed = sum(1 for r in remaining if r.status == CallImportRowStatus.COMPLETED)
-    failed = sum(1 for r in remaining if r.status == CallImportRowStatus.FAILED)
+    completed = sum(
+        1 for r in remaining if r.status == CallImportRowStatus.COMPLETED
+    )
+    failed = sum(
+        1 for r in remaining if r.status == CallImportRowStatus.FAILED
+    )
     pending_or_processing = sum(
         1
         for r in remaining
@@ -957,16 +1006,88 @@ async def delete_call_import_row(
     else:
         call_import.status = CallImportStatus.PARTIAL
 
+
+@router.post(
+    "/{call_import_id}/rows/bulk-delete",
+    response_model=CallImportRowBulkDeleteResponse,
+    operation_id="bulkDeleteCallImportRows",
+)
+async def bulk_delete_call_import_rows(
+    call_import_id: UUID,
+    payload: CallImportRowBulkDelete,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportRowBulkDeleteResponse:
+    """Delete multiple ``CallImportRow`` rows in one request.
+
+    Unknown / cross-tenant row ids are silently skipped — the response
+    reports how many actually went away so a UI that holds onto stale
+    ids (e.g. after another tab already deleted a row) doesn't 404
+    the entire bulk action.
+    """
+    del api_key
+
+    from app.services.storage.s3_service import s3_service
+
+    call_import = (
+        db.query(CallImport)
+        .filter(
+            CallImport.id == call_import_id,
+            CallImport.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not call_import:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Call import not found",
+        )
+
+    rows = (
+        db.query(CallImportRow)
+        .filter(
+            CallImportRow.id.in_(payload.row_ids),
+            CallImportRow.call_import_id == call_import.id,
+        )
+        .all()
+    )
+    if not rows:
+        return CallImportRowBulkDeleteResponse(deleted=0)
+
+    _revoke_pending_tasks(rows)
+
+    if s3_service.is_enabled():
+        for row in rows:
+            if not row.recording_s3_key:
+                continue
+            try:
+                s3_service.delete_file_by_key(row.recording_s3_key)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Failed to delete S3 object {} for row {}: {}",
+                    row.recording_s3_key,
+                    row.id,
+                    exc,
+                )
+
+    deleted = 0
+    for row in rows:
+        db.delete(row)
+        deleted += 1
+    db.flush()
+
+    _recompute_call_import_counters(db, call_import)
     db.commit()
 
     logger.info(
-        "Deleted call_import_row {} (call_import={}, org={})",
-        row_id,
+        "Bulk-deleted {} call_import_rows (call_import={}, org={})",
+        deleted,
         call_import.id,
         organization_id,
     )
 
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return CallImportRowBulkDeleteResponse(deleted=deleted)
 
 
 # ---------------------------------------------------------------------------

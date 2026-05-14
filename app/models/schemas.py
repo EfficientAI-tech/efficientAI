@@ -1919,9 +1919,15 @@ class CallImportResponse(BaseModel):
 
 
 class CallImportDetailResponse(CallImportResponse):
-    """A call-import batch with its rows expanded."""
+    """A call-import batch with its rows expanded.
+
+    ``filtered_total_rows`` is only set when the caller passed a ``q``
+    search term — it lets the UI paginate against the filtered subset
+    while still showing the unfiltered ``total_rows`` in the header.
+    """
 
     rows: List[CallImportRowResponse] = Field(default_factory=list)
+    filtered_total_rows: Optional[int] = None
 
 
 class CallImportListResponse(BaseModel):
@@ -2140,11 +2146,12 @@ class CallImportEvaluationListResponse(BaseModel):
 class CallImportEvaluationRowResponse(BaseModel):
     """Per-source-row evaluation output (one Metric set applied to one row).
 
-    ``raw_columns`` and ``recording_url`` come from the parent
-    ``CallImportRow`` so the row-detail panel can show the full CSV row
-    metadata + audio without a second round-trip. ``raw_columns`` is
-    typically a few hundred bytes per row so we include it directly in
-    the paginated list.
+    ``raw_columns``, ``recording_url`` and ``recording_s3_key`` come from
+    the parent ``CallImportRow`` so the row-detail panel can show the
+    full CSV row metadata + audio without a second round-trip. The UI
+    prefers ``recording_s3_key`` (resolved via a presigned URL) over
+    ``recording_url`` so playback uses our downloaded copy instead of
+    the raw provider URL, which is often expired/auth-gated.
     """
 
     id: UUID
@@ -2155,6 +2162,7 @@ class CallImportEvaluationRowResponse(BaseModel):
     transcript: Optional[str] = None
     raw_columns: Optional[Dict[str, Any]] = None
     recording_url: Optional[str] = None
+    recording_s3_key: Optional[str] = None
     status: str
     metric_scores: Dict[str, Any] = Field(default_factory=dict)
     error_message: Optional[str] = None
@@ -2173,6 +2181,25 @@ class CallImportEvaluationRowListResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class CallImportRowBulkDelete(BaseModel):
+    """Request body for deleting multiple rows from a call-import batch."""
+
+    row_ids: List[UUID] = Field(
+        ...,
+        min_length=1,
+        description="Row ids to delete (must belong to the same call import).",
+    )
+
+
+class CallImportRowBulkDeleteResponse(BaseModel):
+    """Response after a bulk-delete pass over ``CallImportRow`` rows."""
+
+    deleted: int = Field(
+        ...,
+        description="How many rows were actually removed (unknown ids are skipped).",
+    )
 
 
 # --- Diarization / Transcription request/response shapes ---

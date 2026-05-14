@@ -19,6 +19,7 @@ import {
   Pause,
   Play,
   RefreshCw,
+  Search,
   Trash2,
   Volume2,
   X,
@@ -88,6 +89,20 @@ export default function CallImportDetail() {
   const queryClient = useQueryClient()
   const [rowOffset, setRowOffset] = useState(0)
   const [expandedRowIds, setExpandedRowIds] = useState<Set<string>>(new Set())
+  // Row search: debounce keystrokes so we don't refire the rows fetch on
+  // every character — the backend filters by external_call_id ILIKE %q%
+  // and reports the post-filter total in ``filtered_total_rows``.
+  const [rowSearchInput, setRowSearchInput] = useState('')
+  const [rowSearchQuery, setRowSearchQuery] = useState('')
+  // Multi-select state for the row list — drives the bulk-action
+  // toolbar (delete / transcribe). The header checkbox toggles every
+  // row currently visible on the page; selection is intentionally
+  // scoped to the current page so cross-page operations stay explicit.
+  const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set())
+  const [showBulkDeleteRows, setShowBulkDeleteRows] = useState(false)
+  const [bulkDeleteRowsError, setBulkDeleteRowsError] = useState<string | null>(
+    null,
+  )
 
   const [playingRowId, setPlayingRowId] = useState<string | null>(null)
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
@@ -204,9 +219,55 @@ export default function CallImportDetail() {
     },
   })
 
+  const bulkDeleteRowsMutation = useMutation({
+    mutationFn: (rowIds: string[]) =>
+      apiClient.bulkDeleteCallImportRows(id!, rowIds),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['call-import', id] })
+      queryClient.invalidateQueries({ queryKey: ['call-imports'] })
+      setSelectedRowIds(new Set())
+      setShowBulkDeleteRows(false)
+      setBulkDeleteRowsError(null)
+    },
+    onError: (err: any) => {
+      setBulkDeleteRowsError(
+        err?.response?.data?.detail ||
+          err?.message ||
+          'Failed to delete selected rows.',
+      )
+    },
+  })
+
+  // Debounce the row-search input so we don't requery on every keystroke.
+  useEffect(() => {
+    const handle = setTimeout(() => {
+      setRowSearchQuery(rowSearchInput.trim())
+    }, 250)
+    return () => clearTimeout(handle)
+  }, [rowSearchInput])
+
+  // Snap back to the first page whenever the active query changes —
+  // otherwise the user could be sitting on page 3 of a filtered set
+  // that only has one page of results.
+  useEffect(() => {
+    setRowOffset(0)
+  }, [rowSearchQuery])
+
+  // Clear any active row selection when the visible slice changes
+  // (search / pagination). Selection is scoped to the current page so
+  // keeping stale ids around just leads to confusing "X selected"
+  // counters that don't match what's on screen.
+  useEffect(() => {
+    setSelectedRowIds(new Set())
+  }, [rowSearchQuery, rowOffset])
+
   const queryParams = useMemo(
-    () => ({ row_limit: ROW_PAGE_SIZE, row_offset: rowOffset }),
-    [rowOffset],
+    () => ({
+      row_limit: ROW_PAGE_SIZE,
+      row_offset: rowOffset,
+      q: rowSearchQuery || undefined,
+    }),
+    [rowOffset, rowSearchQuery],
   )
 
   const { data, isLoading, isFetching, refetch, error } = useQuery({
@@ -329,6 +390,10 @@ export default function CallImportDetail() {
       setShowTranscribeModal(false)
       setTranscribeTargetRows(null)
       setTranscribeError(null)
+      // Drop the bulk selection too — those rows are now in-flight so
+      // keeping them "selected" would invite repeat clicks while the
+      // transcribe worker is still doing its first pass.
+      setSelectedRowIds(new Set())
     },
     onError: (err: any) => {
       setTranscribeError(
@@ -364,8 +429,14 @@ export default function CallImportDetail() {
   }, [])
 
   const totalRows = data?.total_rows ?? 0
+  // ``filtered_total_rows`` is only set when ``q`` is on; pagination
+  // should always page against whatever slice the user is actually
+  // looking at (filtered or otherwise).
+  const filteredTotalRows = rowSearchQuery
+    ? data?.filtered_total_rows ?? 0
+    : totalRows
   const rowPage = Math.floor(rowOffset / ROW_PAGE_SIZE) + 1
-  const rowTotalPages = Math.max(1, Math.ceil(totalRows / ROW_PAGE_SIZE))
+  const rowTotalPages = Math.max(1, Math.ceil(filteredTotalRows / ROW_PAGE_SIZE))
 
   const handlePlay = async (row: CallImportRow) => {
     if (!row.recording_s3_key) return
@@ -493,6 +564,19 @@ export default function CallImportDetail() {
   }
 
   const rows = data.rows ?? []
+
+  // Selection state derived from the current page's row list. We
+  // intentionally scope selection to the current page so a "Select all"
+  // tick on screen always matches the rows the user can see.
+  const selectedOnPage = rows.filter((r) => selectedRowIds.has(r.id))
+  const selectedCount = selectedOnPage.length
+  const allOnPageSelected = rows.length > 0 && selectedCount === rows.length
+  const transcribeReadySelection = selectedOnPage.filter(
+    (r) =>
+      !!r.recording_s3_key &&
+      r.transcript_status !== 'pending' &&
+      r.transcript_status !== 'running',
+  )
 
   return (
     <div className="space-y-6">
@@ -825,18 +909,120 @@ export default function CallImportDetail() {
             )}
             <p className="text-sm text-gray-500">
               Showing {rows.length === 0 ? 0 : rowOffset + 1}&ndash;
-              {rowOffset + rows.length} of {totalRows}
+              {rowOffset + rows.length} of {filteredTotalRows}
+              {rowSearchQuery ? ` (filtered from ${totalRows})` : ''}
             </p>
           </div>
+        </div>
+
+        <div className="mb-4 flex items-stretch gap-2 flex-wrap">
+          <div className="relative flex-1 min-w-[260px] max-w-md">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
+            <input
+              type="text"
+              value={rowSearchInput}
+              onChange={(e) => setRowSearchInput(e.target.value)}
+              placeholder="Search by Call ID…"
+              aria-label="Search rows by Call ID"
+              className="w-full pl-9 pr-9 py-2 text-sm border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-500"
+            />
+            {rowSearchInput && (
+              <button
+                type="button"
+                onClick={() => setRowSearchInput('')}
+                className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded text-gray-400 hover:text-gray-600 hover:bg-gray-100"
+                aria-label="Clear search"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+          {selectedCount > 0 && (
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs text-gray-600">
+                {selectedCount} selected
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setSelectedRowIds(new Set())}
+              >
+                Clear
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                leftIcon={<Mic className="h-4 w-4" />}
+                disabled={transcribeReadySelection.length === 0}
+                title={
+                  transcribeReadySelection.length === 0
+                    ? 'Selected rows have no downloaded recording or are already transcribing'
+                    : `Transcribe ${transcribeReadySelection.length} row${
+                        transcribeReadySelection.length === 1 ? '' : 's'
+                      }`
+                }
+                onClick={() => openTranscribeModal(transcribeReadySelection)}
+                className="text-purple-600 hover:text-purple-700 hover:bg-purple-50"
+              >
+                Transcribe selected
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                leftIcon={<Trash2 className="h-4 w-4" />}
+                onClick={() => {
+                  setBulkDeleteRowsError(null)
+                  setShowBulkDeleteRows(true)
+                }}
+                className="text-red-600 hover:text-red-700 hover:bg-red-50"
+              >
+                Delete selected
+              </Button>
+            </div>
+          )}
         </div>
 
         {rows.length === 0 ? (
           <div className="text-center py-12 text-gray-500">
             <FileText className="h-12 w-12 mx-auto mb-3 text-gray-300" />
-            <p>No rows in this slice.</p>
+            {rowSearchQuery ? (
+              <p>
+                No rows match{' '}
+                <span className="font-mono text-gray-700">
+                  &quot;{rowSearchQuery}&quot;
+                </span>
+                .
+              </p>
+            ) : (
+              <p>No rows in this slice.</p>
+            )}
           </div>
         ) : (
           <div className="space-y-2">
+            <div className="flex items-center gap-2 px-3 py-2 border border-gray-200 rounded-lg bg-gray-50">
+              <input
+                type="checkbox"
+                aria-label="Select all rows on this page"
+                checked={allOnPageSelected}
+                ref={(el) => {
+                  if (el) el.indeterminate = selectedCount > 0 && !allOnPageSelected
+                }}
+                onChange={(e) => {
+                  if (e.target.checked) {
+                    setSelectedRowIds(new Set(rows.map((r) => r.id)))
+                  } else {
+                    setSelectedRowIds(new Set())
+                  }
+                }}
+              />
+              <span className="text-xs text-gray-600">
+                {allOnPageSelected
+                  ? `All ${rows.length} on this page selected`
+                  : selectedCount > 0
+                  ? `${selectedCount} of ${rows.length} on this page selected`
+                  : `Select all on this page (${rows.length})`}
+              </span>
+            </div>
             {rows.map((row) => {
               const hasRecording = !!row.recording_s3_key
               const isThisPlaying = playingRowId === row.id && isPlaying
@@ -865,12 +1051,31 @@ export default function CallImportDetail() {
                   return true
                 },
               )
+              const isSelected = selectedRowIds.has(row.id)
               return (
                 <div
                   key={row.id}
-                  className="border border-gray-200 rounded-lg bg-white overflow-hidden transition-shadow hover:shadow-sm"
+                  className={`border rounded-lg bg-white overflow-hidden transition-shadow hover:shadow-sm ${
+                    isSelected
+                      ? 'border-primary-400 bg-primary-50/30'
+                      : 'border-gray-200'
+                  }`}
                 >
                   <div className="flex items-center gap-2 px-3 py-2.5">
+                    <input
+                      type="checkbox"
+                      aria-label={`Select row ${row.external_call_id}`}
+                      checked={isSelected}
+                      onChange={(e) => {
+                        setSelectedRowIds((prev) => {
+                          const next = new Set(prev)
+                          if (e.target.checked) next.add(row.id)
+                          else next.delete(row.id)
+                          return next
+                        })
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                    />
                     <button
                       type="button"
                       onClick={() =>
@@ -1208,10 +1413,10 @@ export default function CallImportDetail() {
                     size="sm"
                     onClick={() =>
                       setRowOffset((o) =>
-                        o + ROW_PAGE_SIZE >= totalRows ? o : o + ROW_PAGE_SIZE,
+                        o + ROW_PAGE_SIZE >= filteredTotalRows ? o : o + ROW_PAGE_SIZE,
                       )
                     }
-                    disabled={rowOffset + ROW_PAGE_SIZE >= totalRows}
+                    disabled={rowOffset + ROW_PAGE_SIZE >= filteredTotalRows}
                     rightIcon={<ChevronRight className="h-4 w-4" />}
                   >
                     Next
@@ -2098,6 +2303,39 @@ export default function CallImportDetail() {
           if (deleteRowMutation.isPending) return
           setPendingDeleteRow(null)
           setDeleteError(null)
+        }}
+      />
+
+      <ConfirmModal
+        isOpen={showBulkDeleteRows}
+        title={
+          selectedRowIds.size === 1
+            ? 'Delete this row?'
+            : `Delete ${selectedRowIds.size} rows?`
+        }
+        description={(() => {
+          const lines = [
+            selectedRowIds.size === 1
+              ? 'The selected row will be removed from this import, along with its stored recording in S3.'
+              : `${selectedRowIds.size} rows will be removed from this import, along with their stored recordings in S3.`,
+            'In-flight transcribe / download tasks for these rows will be revoked.',
+            'This cannot be undone.',
+            bulkDeleteRowsError ? `Error: ${bulkDeleteRowsError}` : '',
+          ]
+          return lines.filter(Boolean).join('\n\n')
+        })()}
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        variant="danger"
+        isLoading={bulkDeleteRowsMutation.isPending}
+        onConfirm={() => {
+          if (selectedRowIds.size === 0) return
+          bulkDeleteRowsMutation.mutate(Array.from(selectedRowIds))
+        }}
+        onCancel={() => {
+          if (bulkDeleteRowsMutation.isPending) return
+          setShowBulkDeleteRows(false)
+          setBulkDeleteRowsError(null)
         }}
       />
     </div>

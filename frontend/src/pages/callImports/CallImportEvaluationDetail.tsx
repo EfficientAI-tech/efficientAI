@@ -1,15 +1,19 @@
 import { useEffect, useMemo, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
+  AlertTriangle,
   ArrowLeft,
   BarChart3,
   Check,
+  CheckCircle2,
   Download,
   Edit3,
   ExternalLink,
   Filter,
+  PieChart as PieChartIcon,
   RefreshCw,
   Search,
   Sparkles,
@@ -64,6 +68,12 @@ export default function CallImportEvaluationDetail() {
   const [resultsTab, setResultsTab] = useState<'table' | 'visualizations'>(
     'table',
   )
+  // Categorical metrics can be rendered either as a pie (default,
+  // best for ≤5 buckets) or as a vertical bar chart. Numeric metrics
+  // always use a histogram regardless of this toggle.
+  const [categoricalChartType, setCategoricalChartType] = useState<
+    'pie' | 'bar'
+  >('pie')
 
   // --- Filters / search / drilldown state -------------------------------
   // Search input is debounced (250 ms) before becoming the actual query
@@ -723,15 +733,52 @@ export default function CallImportEvaluationDetail() {
             </p>
           ) : (
             <>
-              <p className="mb-3 text-xs text-gray-500 inline-flex items-center gap-1.5">
-                <Sparkles className="h-3.5 w-3.5 text-primary-500" />
-                Click any bar or slice to filter the row table by that value.
-              </p>
+              <EvaluationTLDR
+                evaluation={evaluation}
+                aggregate={aggregateQuery.data}
+              />
+              <div className="mt-4 mb-3 flex items-center justify-between gap-3 flex-wrap">
+                <p className="text-xs text-gray-500 inline-flex items-center gap-1.5">
+                  <Sparkles className="h-3.5 w-3.5 text-primary-500" />
+                  Click any bar or slice to filter the row table by that value.
+                </p>
+                <div className="inline-flex border border-gray-200 rounded-lg p-1 bg-gray-50">
+                  <button
+                    type="button"
+                    onClick={() => setCategoricalChartType('pie')}
+                    className={`px-2.5 py-1 text-[11px] font-medium rounded transition inline-flex items-center gap-1.5 ${
+                      categoricalChartType === 'pie'
+                        ? 'bg-white text-primary-700 shadow-sm'
+                        : 'text-gray-600 hover:text-gray-900'
+                    }`}
+                    aria-pressed={categoricalChartType === 'pie'}
+                    title="Render categorical metrics as pie charts"
+                  >
+                    <PieChartIcon className="h-3 w-3" />
+                    Pie
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCategoricalChartType('bar')}
+                    className={`px-2.5 py-1 text-[11px] font-medium rounded transition inline-flex items-center gap-1.5 ${
+                      categoricalChartType === 'bar'
+                        ? 'bg-white text-primary-700 shadow-sm'
+                        : 'text-gray-600 hover:text-gray-900'
+                    }`}
+                    aria-pressed={categoricalChartType === 'bar'}
+                    title="Render categorical metrics as bar charts"
+                  >
+                    <BarChart3 className="h-3 w-3" />
+                    Bar
+                  </button>
+                </div>
+              </div>
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                 {aggregateQuery.data.metrics.map((m) => (
                   <MetricVisualization
                     key={m.metric_id}
                     metric={m}
+                    categoricalChartType={categoricalChartType}
                     isActive={metricFilter?.metricId === m.metric_id}
                     activeValue={
                       metricFilter?.metricId === m.metric_id
@@ -1087,7 +1134,13 @@ function formatScoreValue(value: unknown): string {
  * Slide-in panel that shows everything we know about a single
  * evaluation row: the original CSV row (``raw_columns``), the
  * transcript, every metric score (with rationale where available),
- * and the recording link/audio. Triggered by clicking a table row.
+ * and the recording (played back from our S3 copy via a presigned
+ * URL). Triggered by clicking a table row.
+ *
+ * The backdrop matches the platform's standard modal overlay
+ * (``bg-gray-500 bg-opacity-75``) so it reads as a proper modal
+ * regardless of which page opens it. We portal into ``document.body``
+ * so the overlay can't be clipped by an ancestor with ``overflow``.
  */
 function RowDetailPanel({
   row,
@@ -1108,17 +1161,38 @@ function RowDetailPanel({
     return () => window.removeEventListener('keydown', onKey)
   }, [row, onClose])
 
+  // Resolve the downloaded recording (S3 object) into a short-lived
+  // presigned URL. We prefer this over ``row.recording_url`` because
+  // many provider URLs are time-limited / auth-gated and won't play
+  // back in an <audio> tag.
+  const recordingS3Key = row?.recording_s3_key || null
+  const {
+    data: presignedRecording,
+    isLoading: presignedLoading,
+    isError: presignedError,
+  } = useQuery({
+    queryKey: ['call-import-row-recording-presign', recordingS3Key],
+    queryFn: () => apiClient.getS3PresignedUrl(recordingS3Key!),
+    enabled: !!recordingS3Key,
+    staleTime: 60 * 1000,
+  })
+
   if (!row) return null
 
   const callId = row.external_call_id || `Row ${(row.row_index ?? 0) + 1}`
+  const playbackUrl = presignedRecording?.url || null
 
-  return (
-    <div className="fixed inset-0 z-50 flex" role="dialog" aria-modal="true">
-      <div
-        className="flex-1 bg-gray-900/40 backdrop-blur-[1px]"
-        onClick={onClose}
-      />
-      <aside className="w-full max-w-xl bg-white shadow-2xl overflow-y-auto border-l border-gray-200">
+  const panel = (
+    <div
+      className="fixed inset-0 z-[9999] flex justify-end bg-gray-500 bg-opacity-75"
+      role="dialog"
+      aria-modal="true"
+      onClick={onClose}
+    >
+      <aside
+        className="w-full max-w-xl bg-white shadow-2xl overflow-y-auto border-l border-gray-200 h-full"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="sticky top-0 z-10 bg-white border-b border-gray-200 px-5 py-3 flex items-start justify-between gap-3">
           <div className="min-w-0">
             <p className="text-xs uppercase tracking-wider text-gray-500">
@@ -1158,24 +1232,66 @@ function RowDetailPanel({
             </div>
           )}
 
-          {/* Recording */}
-          {row.recording_url && (
+          {/* Recording — play from our downloaded S3 copy (not the raw
+              provider URL) so playback works regardless of provider
+              URL expiry / auth requirements. */}
+          {recordingS3Key ? (
             <section>
               <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
                 Recording
               </h3>
-              <audio controls src={row.recording_url} className="w-full" />
+              {presignedLoading && !playbackUrl ? (
+                <div className="text-xs text-gray-500 inline-flex items-center gap-2">
+                  <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                  Loading audio…
+                </div>
+              ) : presignedError || !playbackUrl ? (
+                <div className="text-xs text-red-700 inline-flex items-center gap-2">
+                  <AlertCircle className="h-3.5 w-3.5" />
+                  Could not load recording from storage.
+                </div>
+              ) : (
+                <>
+                  <audio
+                    controls
+                    src={playbackUrl}
+                    className="w-full"
+                    preload="metadata"
+                  />
+                  <a
+                    href={playbackUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-1 inline-flex items-center gap-1 text-[11px] text-primary-600 hover:text-primary-700"
+                  >
+                    Open in new tab
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                </>
+              )}
+            </section>
+          ) : row.recording_url ? (
+            // Fallback: no downloaded copy yet — show the provider URL
+            // as a link only (don't try to play it inline, which often
+            // fails on expired/auth-gated provider URLs).
+            <section>
+              <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+                Recording
+              </h3>
+              <p className="text-xs text-gray-500 mb-1">
+                Recording hasn't been downloaded to storage yet.
+              </p>
               <a
                 href={row.recording_url}
                 target="_blank"
                 rel="noreferrer"
-                className="mt-1 inline-flex items-center gap-1 text-[11px] text-primary-600 hover:text-primary-700"
+                className="inline-flex items-center gap-1 text-[11px] text-primary-600 hover:text-primary-700"
               >
-                Open in new tab
+                Open source URL in new tab
                 <ExternalLink className="h-3 w-3" />
               </a>
             </section>
-          )}
+          ) : null}
 
           {/* Metric scores */}
           <section>
@@ -1284,6 +1400,31 @@ function RowDetailPanel({
       </aside>
     </div>
   )
+
+  if (typeof document === 'undefined') return panel
+  return createPortal(panel, document.body)
+}
+
+// Light-themed tooltip styling shared by every recharts ``Tooltip``
+// on this page. Replaces the previous dark navy backdrop which made
+// the hovered number hard to read against most page colors.
+const CHART_TOOLTIP_STYLE: React.CSSProperties = {
+  background: '#ffffff',
+  border: '1px solid #e5e7eb',
+  borderRadius: 8,
+  fontSize: 11,
+  color: '#0f172a',
+  boxShadow: '0 8px 24px rgba(15, 23, 42, 0.08)',
+  padding: '6px 10px',
+}
+const CHART_TOOLTIP_LABEL_STYLE: React.CSSProperties = {
+  color: '#475569',
+  fontWeight: 500,
+  marginBottom: 2,
+}
+const CHART_TOOLTIP_ITEM_STYLE: React.CSSProperties = {
+  color: '#0f172a',
+  fontWeight: 600,
 }
 
 /**
@@ -1292,17 +1433,24 @@ function RowDetailPanel({
  * categorical pie/bar charts when both are present, since numeric
  * distributions tell a richer story than the top-N category tally.
  *
+ * Categorical metrics render as either a pie or a vertical bar
+ * depending on ``categoricalChartType``. Wide categorical sets (>8
+ * unique values) always render as a horizontal bar regardless so we
+ * don't truncate labels in a cramped pie chart.
+ *
  * Categorical bars and pie slices are clickable: clicking one calls
  * ``onValueClick(label)`` with the value the user wants to drill into
  * — the parent uses that to apply a row-table filter.
  */
 function MetricVisualization({
   metric,
+  categoricalChartType,
   isActive,
   activeValue,
   onValueClick,
 }: {
   metric: CallImportMetricAggregate
+  categoricalChartType: 'pie' | 'bar'
   isActive: boolean
   activeValue: string | null
   onValueClick: (value: string) => void
@@ -1314,9 +1462,12 @@ function MetricVisualization({
   const totalCategorical = valueCounts.reduce((sum, v) => sum + v.count, 0)
 
   // Render mode: numeric histogram, categorical pie/bar, or empty state.
-  // The Pie chart is reserved for low-cardinality categorical metrics
-  // (<= 5 values) so it stays readable; otherwise we fall back to a
-  // horizontal bar chart for the top categories.
+  // Numeric metrics always render as a histogram (richer than counts).
+  // Categorical pies are capped to a low-cardinality threshold (<=8) so
+  // they stay readable — beyond that we always fall back to bars.
+  const wideCategorical = valueCounts.length > 8
+  const usePieForCategorical =
+    categoricalChartType === 'pie' && !wideCategorical
   let chart: ReactNodeLike = null
   if (histogram.length > 0) {
     const data = histogram.map((b) => ({
@@ -1346,14 +1497,11 @@ function MetricVisualization({
             allowDecimals={false}
           />
           <Tooltip
-            contentStyle={{
-              background: '#0f172a',
-              border: 'none',
-              borderRadius: 6,
-              fontSize: 11,
-              color: '#f8fafc',
-            }}
+            contentStyle={CHART_TOOLTIP_STYLE}
+            labelStyle={CHART_TOOLTIP_LABEL_STYLE}
+            itemStyle={CHART_TOOLTIP_ITEM_STYLE}
             cursor={{ fill: 'rgba(99,102,241,0.08)' }}
+            formatter={(value: any) => [`${value} rows`, 'Count']}
           />
           <Bar
             dataKey="count"
@@ -1363,18 +1511,15 @@ function MetricVisualization({
         </BarChart>
       </ResponsiveContainer>
     )
-  } else if (valueCounts.length && valueCounts.length <= 5) {
+  } else if (valueCounts.length && usePieForCategorical) {
     chart = (
       <ResponsiveContainer width="100%" height={200}>
         <PieChart>
           <Tooltip
-            contentStyle={{
-              background: '#0f172a',
-              border: 'none',
-              borderRadius: 6,
-              fontSize: 11,
-              color: '#f8fafc',
-            }}
+            contentStyle={CHART_TOOLTIP_STYLE}
+            labelStyle={CHART_TOOLTIP_LABEL_STYLE}
+            itemStyle={CHART_TOOLTIP_ITEM_STYLE}
+            formatter={(value: any, name: any) => [`${value} rows`, name]}
           />
           <Pie
             data={valueCounts}
@@ -1407,7 +1552,63 @@ function MetricVisualization({
       </ResponsiveContainer>
     )
   } else if (valueCounts.length) {
-    chart = (
+    // Vertical bar chart when ``categoricalChartType === 'bar'`` and
+    // the category list is short; otherwise horizontal so long labels
+    // (e.g. "Failed to extract") don't get truncated on the X axis.
+    const useVertical = categoricalChartType === 'bar' && valueCounts.length <= 6
+    chart = useVertical ? (
+      <ResponsiveContainer width="100%" height={220}>
+        <BarChart
+          data={valueCounts}
+          margin={{ top: 4, right: 8, left: -16, bottom: 4 }}
+        >
+          <defs>
+            <linearGradient id={`bar-cat-v-${metric.metric_id}`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#10b981" stopOpacity={0.95} />
+              <stop offset="100%" stopColor="#10b981" stopOpacity={0.55} />
+            </linearGradient>
+          </defs>
+          <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+          <XAxis
+            dataKey="label"
+            tick={{ fontSize: 11, fill: '#334155' }}
+            axisLine={{ stroke: '#e2e8f0' }}
+            tickLine={false}
+            interval={0}
+          />
+          <YAxis
+            tick={{ fontSize: 10, fill: '#64748b' }}
+            axisLine={false}
+            tickLine={false}
+            allowDecimals={false}
+          />
+          <Tooltip
+            contentStyle={CHART_TOOLTIP_STYLE}
+            labelStyle={CHART_TOOLTIP_LABEL_STYLE}
+            itemStyle={CHART_TOOLTIP_ITEM_STYLE}
+            cursor={{ fill: 'rgba(16,185,129,0.08)' }}
+            formatter={(value: any) => [`${value} rows`, 'Count']}
+          />
+          <Bar
+            dataKey="count"
+            fill={`url(#bar-cat-v-${metric.metric_id})`}
+            radius={[6, 6, 0, 0]}
+            onClick={(bar: any) => {
+              const label = bar?.label ?? bar?.payload?.label
+              if (typeof label === 'string') onValueClick(label)
+            }}
+          >
+            {valueCounts.map((vc) => (
+              <Cell
+                key={vc.label}
+                cursor="pointer"
+                opacity={activeValue && activeValue !== vc.label ? 0.35 : 1}
+              />
+            ))}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    ) : (
       <ResponsiveContainer width="100%" height={Math.min(260, 32 + valueCounts.length * 26)}>
         <BarChart
           data={valueCounts}
@@ -1437,13 +1638,9 @@ function MetricVisualization({
             width={120}
           />
           <Tooltip
-            contentStyle={{
-              background: '#0f172a',
-              border: 'none',
-              borderRadius: 6,
-              fontSize: 11,
-              color: '#f8fafc',
-            }}
+            contentStyle={CHART_TOOLTIP_STYLE}
+            labelStyle={CHART_TOOLTIP_LABEL_STYLE}
+            itemStyle={CHART_TOOLTIP_ITEM_STYLE}
             cursor={{ fill: 'rgba(16,185,129,0.08)' }}
             formatter={(value: any) => [`${value} rows`, 'Count']}
           />
@@ -1591,5 +1788,249 @@ function MetricVisualization({
 // pulling React's full ReactNode through the function signature
 // (prevents a "type-only import" tangle on tsx/lint).
 type ReactNodeLike = React.ReactNode
+
+// ---------------------------------------------------------------------------
+// TLDR summary: a punchy at-a-glance digest that sits above the charts on
+// the Visualizations tab. Pulls signal directly out of the aggregate
+// payload so we don't need an extra backend round-trip.
+// ---------------------------------------------------------------------------
+
+type TldrTone = 'good' | 'warn' | 'info'
+
+type TldrItem = {
+  metricName: string
+  text: string
+  tone: TldrTone
+}
+
+/**
+ * Format a numeric value compactly for the TLDR line — integers stay
+ * integers, floats are clipped to two decimals so card text doesn't
+ * stretch absurdly wide for high-precision metrics.
+ */
+function formatTldrNumber(value: number): string {
+  if (!Number.isFinite(value)) return '—'
+  if (Number.isInteger(value)) return value.toString()
+  return value.toFixed(2)
+}
+
+/**
+ * Convert a 0-1 ratio into a percentage label rounded to the nearest
+ * integer; falls back to "—" for non-finite inputs.
+ */
+function formatPct(ratio: number): string {
+  if (!Number.isFinite(ratio)) return '—'
+  return `${Math.round(ratio * 100)}%`
+}
+
+/**
+ * Build a one-line summary for a single metric aggregate.
+ *
+ * Heuristics:
+ *  * If we have numeric stats, lead with mean ± stddev plus the range
+ *    so the user immediately knows whether scores cluster or spread.
+ *  * If only categorical counts exist, surface the dominant value and
+ *    its share so the dominant outcome (e.g. "78% pass") is obvious
+ *    at a glance.
+ *  * Append any non-trivial error/skipped counts on the end and bump
+ *    the tone to ``warn`` so noisy metrics stand out.
+ */
+function buildMetricTldr(metric: CallImportMetricAggregate): TldrItem | null {
+  const totalScored = metric.count + metric.skipped_count + metric.error_count
+  if (totalScored === 0) {
+    return {
+      metricName: metric.metric_name,
+      text: 'No rows scored yet.',
+      tone: 'info',
+    }
+  }
+
+  let text: string = ''
+  let tone: TldrTone = 'info'
+
+  if (metric.mean != null) {
+    const stddev = metric.stddev != null ? metric.stddev : 0
+    const min = metric.min != null ? formatTldrNumber(metric.min) : '—'
+    const max = metric.max != null ? formatTldrNumber(metric.max) : '—'
+    text = `Avg ${formatTldrNumber(metric.mean)} · σ ${formatTldrNumber(
+      stddev,
+    )} · range ${min}–${max}`
+    tone = 'good'
+  } else if (metric.value_counts.length > 0) {
+    const total = metric.value_counts.reduce((s, v) => s + v.count, 0)
+    const top = metric.value_counts[0]
+    const share = total > 0 ? top.count / total : 0
+    if (metric.value_counts.length === 1) {
+      text = `Every scored row → "${top.label}"`
+      tone = 'good'
+    } else {
+      text = `Most common: "${top.label}" (${formatPct(share)} of ${total})`
+      // Strongly skewed outcomes are interesting in both directions:
+      // a 95% pass rate is good news, a 95% fail rate is bad news.
+      // We keep tone neutral here because we don't know which is
+      // which — the user has the label right there.
+      tone = share >= 0.8 ? 'good' : 'info'
+    }
+  }
+
+  const notes: string[] = []
+  if (metric.error_count > 0) notes.push(`${metric.error_count} error`)
+  if (metric.skipped_count > 0) notes.push(`${metric.skipped_count} skipped`)
+  if (notes.length > 0) {
+    text = text ? `${text} · ${notes.join(', ')}` : notes.join(', ')
+    if (metric.error_count > 0) tone = 'warn'
+  }
+
+  if (!text) {
+    text = `${metric.count} row${metric.count === 1 ? '' : 's'} scored.`
+  }
+
+  return { metricName: metric.metric_name, text, tone }
+}
+
+/**
+ * High-level TLDR card pinned above the Visualizations charts. Renders
+ * an aggregated headline (rows scored / completed / failed) followed by
+ * one bullet per metric so a reviewer can size up a run in a glance.
+ */
+function EvaluationTLDR({
+  evaluation,
+  aggregate,
+}: {
+  evaluation: CallImportEvaluation
+  aggregate: {
+    total_rows: number
+    completed_rows: number
+    failed_rows: number
+    metrics: CallImportMetricAggregate[]
+  }
+}) {
+  const items = aggregate.metrics
+    .map(buildMetricTldr)
+    .filter((item): item is TldrItem => item !== null)
+
+  const totalRows = aggregate.total_rows
+  const completed = aggregate.completed_rows
+  const failed = aggregate.failed_rows
+  const completionRate =
+    totalRows > 0 ? completed / totalRows : null
+  const failureRate = totalRows > 0 ? failed / totalRows : null
+
+  // Pick an overall mood for the headline pill — green when ≥80% of
+  // rows completed cleanly, amber when failures are non-trivial, gray
+  // before any rows finish.
+  let statusTone: 'good' | 'warn' | 'info' = 'info'
+  if (completionRate != null && completionRate >= 0.8 && (failureRate ?? 0) < 0.1) {
+    statusTone = 'good'
+  } else if ((failureRate ?? 0) >= 0.1) {
+    statusTone = 'warn'
+  }
+
+  const statusToneClass =
+    statusTone === 'good'
+      ? 'bg-green-100 text-green-800 border-green-200'
+      : statusTone === 'warn'
+      ? 'bg-amber-100 text-amber-800 border-amber-200'
+      : 'bg-gray-100 text-gray-700 border-gray-200'
+
+  return (
+    <section
+      aria-label="Evaluation summary (TLDR)"
+      className="rounded-xl border border-primary-100 bg-gradient-to-br from-primary-50/60 via-white to-white p-4 shadow-sm"
+    >
+      <header className="flex items-center justify-between gap-3 flex-wrap mb-3">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="inline-flex items-center justify-center h-6 w-6 rounded-full bg-primary-600 text-white shadow-sm shrink-0">
+            <Sparkles className="h-3.5 w-3.5" />
+          </span>
+          <div className="min-w-0">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-primary-700">
+              TLDR
+            </p>
+            <p className="text-sm font-semibold text-gray-900 truncate">
+              At-a-glance summary
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap text-[11px]">
+          <span
+            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border font-medium ${statusToneClass}`}
+          >
+            {statusTone === 'good' ? (
+              <CheckCircle2 className="h-3 w-3" />
+            ) : statusTone === 'warn' ? (
+              <AlertTriangle className="h-3 w-3" />
+            ) : (
+              <Sparkles className="h-3 w-3" />
+            )}
+            {completionRate != null
+              ? `${formatPct(completionRate)} completed`
+              : 'In progress'}
+          </span>
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-gray-200 bg-white text-gray-700">
+            <span className="text-gray-500">Rows:</span>
+            <span className="font-semibold">{totalRows}</span>
+          </span>
+          {failed > 0 && (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-red-200 bg-red-50 text-red-700">
+              <AlertCircle className="h-3 w-3" />
+              {failed} failed
+            </span>
+          )}
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-gray-200 bg-white text-gray-700">
+            <span className="text-gray-500">Metrics:</span>
+            <span className="font-semibold">{aggregate.metrics.length}</span>
+          </span>
+        </div>
+      </header>
+
+      {evaluation.status === 'pending' || evaluation.status === 'running' ? (
+        <p className="text-xs text-gray-500 inline-flex items-center gap-1.5 mb-3">
+          <RefreshCw className="h-3 w-3 animate-spin" />
+          Results refresh automatically as workers finish each row.
+        </p>
+      ) : null}
+
+      {items.length === 0 ? (
+        <p className="text-xs text-gray-500 italic">
+          Metric breakdown will appear here once scoring completes.
+        </p>
+      ) : (
+        <ul className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          {items.map((item) => {
+            const toneRingClass =
+              item.tone === 'good'
+                ? 'bg-green-500'
+                : item.tone === 'warn'
+                ? 'bg-amber-500'
+                : 'bg-primary-400'
+            return (
+              <li
+                key={item.metricName}
+                className="flex items-start gap-2 rounded-lg border border-gray-100 bg-white/80 px-3 py-2 shadow-[0_1px_2px_rgba(15,23,42,0.04)]"
+              >
+                <span
+                  className={`mt-1 h-2 w-2 rounded-full shrink-0 ${toneRingClass}`}
+                  aria-hidden="true"
+                />
+                <div className="min-w-0">
+                  <p
+                    className="text-xs font-semibold text-gray-900 truncate"
+                    title={item.metricName}
+                  >
+                    {item.metricName}
+                  </p>
+                  <p className="text-[11px] text-gray-600 leading-snug">
+                    {item.text}
+                  </p>
+                </div>
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </section>
+  )
+}
 
 export type { CallImportEvaluation as _ }
