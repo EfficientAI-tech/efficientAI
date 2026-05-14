@@ -100,11 +100,21 @@ export default function MetricsManagement() {
       { local_id: 'c2', name: '', description: '', capture_rationale: true },
     ],
   })
-  // Track which parent metric ids are expanded in the metrics list so
-  // children render indented underneath. Defaults to "all expanded".
-  const [expandedParents, setExpandedParents] = useState<Set<string>>(
+  // Track which parent metric ids are COLLAPSED in the metrics list.
+  // We invert the more common "expanded" set so the default of "no
+  // entries" naturally means every parent is expanded, which is the
+  // shape users expect when they land on the page.
+  const [collapsedParents, setCollapsedParents] = useState<Set<string>>(
     new Set(),
   )
+  const toggleParentCollapsed = (parentId: string) => {
+    setCollapsedParents((prev) => {
+      const next = new Set(prev)
+      if (next.has(parentId)) next.delete(parentId)
+      else next.add(parentId)
+      return next
+    })
+  }
   const [showAIAssist, setShowAIAssist] = useState(false)
   const [aiMode, setAIMode] = useState<'description' | 'examples'>('description')
   const [aiDescription, setAIDescription] = useState('')
@@ -805,8 +815,7 @@ export default function MetricsManagement() {
     for (const metric of parents) {
       result.push(metric)
       if (metric.selection_mode && Array.isArray(metric.children)) {
-        const isCollapsed = expandedParents.has(`collapsed:${metric.id}`)
-        if (!isCollapsed) {
+        if (!collapsedParents.has(metric.id)) {
           for (const child of metric.children) {
             if (child.enabled) {
               result.push(child)
@@ -816,7 +825,7 @@ export default function MetricsManagement() {
       }
     }
     return result
-  }, [metrics, sortField, sortDirection, expandedParents])
+  }, [metrics, sortField, sortDirection, collapsedParents])
 
   return (
     <div className="space-y-6">
@@ -1000,16 +1009,22 @@ export default function MetricsManagement() {
                             </span>
                           )}
                           {metric.selection_mode && (
-                            <span
-                              className="ml-2 px-2 py-0.5 text-xs bg-purple-100 text-purple-800 rounded"
+                            <button
+                              type="button"
+                              onClick={() => toggleParentCollapsed(metric.id)}
+                              className="ml-2 px-2 py-0.5 text-xs bg-purple-100 text-purple-800 rounded hover:bg-purple-200 transition-colors"
                               title={`Category metric (${metric.selection_mode}). ${
                                 (metric.children?.length || 0)
                               } sub-label${
                                 metric.children?.length === 1 ? '' : 's'
+                              }. Click to ${
+                                collapsedParents.has(metric.id)
+                                  ? 'expand'
+                                  : 'collapse'
                               }.`}
                             >
-                              Category · {metric.selection_mode === 'single_choice' ? 'single' : 'multi'} · {metric.children?.length || 0}
-                            </span>
+                              {collapsedParents.has(metric.id) ? '▸' : '▾'} Category · {metric.selection_mode === 'single_choice' ? 'single' : 'multi'} · {metric.children?.length || 0}
+                            </button>
                           )}
                           {metric.parent_metric_id && (
                             <span className="ml-2 px-2 py-0.5 text-xs bg-gray-100 text-gray-700 rounded">
