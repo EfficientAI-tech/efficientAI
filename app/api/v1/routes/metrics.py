@@ -2,9 +2,9 @@
 
 import json
 import re
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
-from sqlalchemy import and_
+from sqlalchemy import and_, or_
 from uuid import UUID
 from typing import List, Optional, Dict, Any, Literal
 from pydantic import BaseModel, Field
@@ -15,11 +15,140 @@ from app.dependencies import get_organization_id, get_api_key
 from app.models.database import Metric, MetricType, MetricTrigger, ModelProvider
 from app.models.schemas import (
     MetricCreate,
+    MetricCreateWithChildren,
+    MetricChildDraft,
     MetricUpdate,
     MetricResponse,
 )
 
 router = APIRouter(prefix="/metrics", tags=["metrics"])
+
+
+# ---------------------------------------------------------------------------
+# Hierarchy helpers
+#
+# Metrics support a 2-level hierarchy:
+#   - A parent (selection_mode set, parent_metric_id NULL) acts as a
+#     category container; its description gives the LLM context for the
+#     children.
+#   - Each child (parent_metric_id set, selection_mode NULL) is a
+#     boolean sub-metric label.
+# Both levels are real ``Metric`` rows so they can be filtered,
+# aggregated, and CSV-exported independently.
+# ---------------------------------------------------------------------------
+
+
+_VALID_SELECTION_MODES = {"single_choice", "multi_label"}
+
+
+def _validate_hierarchy_fields(
+    organization_id: UUID,
+    db: Session,
+    *,
+    parent_metric_id: Optional[UUID],
+    selection_mode: Optional[str],
+    metric_type: Optional[Any] = None,
+) -> None:
+    """Enforce the invariants documented on ``Metric``.
+
+    Raises ``HTTPException`` (400) when the caller mixes parent and
+    child semantics on the same row, references a non-existent parent,
+    or tries to nest a child under another child (max depth = 2).
+    """
+
+    if selection_mode and parent_metric_id:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "A metric cannot be a parent (selection_mode) and a child "
+                "(parent_metric_id) at the same time."
+            ),
+        )
+
+    if selection_mode and selection_mode not in _VALID_SELECTION_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Invalid selection_mode '{selection_mode}'. Allowed values: "
+                f"{', '.join(sorted(_VALID_SELECTION_MODES))}."
+            ),
+        )
+
+    if parent_metric_id is None:
+        return
+
+    parent = (
+        db.query(Metric)
+        .filter(
+            Metric.id == parent_metric_id,
+            Metric.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not parent:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"parent_metric_id {parent_metric_id} does not exist in this "
+                "organization."
+            ),
+        )
+    if parent.parent_metric_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Cannot nest a sub-metric under another sub-metric — metric "
+                "hierarchies are at most 2 levels deep."
+            ),
+        )
+    if not parent.selection_mode:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Metric {parent_metric_id} is not a parent (no selection_mode "
+                "set) and cannot own children."
+            ),
+        )
+
+
+def _serialize_metric_tree(metric: Metric) -> Dict[str, Any]:
+    """Convert a Metric ORM row into a dict shaped for ``MetricResponse``.
+
+    Children are inlined when this row is a parent. We hand-build the
+    dict (instead of relying on ``from_attributes``) so the children
+    list is always populated in one pass without triggering N+1
+    relationship loads later.
+    """
+    children_payload: List[Dict[str, Any]] = []
+    if metric.selection_mode:
+        for child in sorted(
+            metric.children or [], key=lambda c: c.created_at or c.id
+        ):
+            children_payload.append(_serialize_metric_tree(child))
+
+    return {
+        "id": metric.id,
+        "organization_id": metric.organization_id,
+        "name": metric.name,
+        "description": metric.description,
+        "metric_type": metric.metric_type,
+        "trigger": metric.trigger,
+        "enabled": metric.enabled,
+        "is_default": metric.is_default,
+        "metric_origin": metric.metric_origin,
+        "supported_surfaces": metric.supported_surfaces or [],
+        "enabled_surfaces": metric.enabled_surfaces or [],
+        "custom_data_type": metric.custom_data_type,
+        "custom_config": metric.custom_config,
+        "tags": metric.tags,
+        "capture_rationale": bool(metric.capture_rationale),
+        "parent_metric_id": metric.parent_metric_id,
+        "selection_mode": metric.selection_mode,
+        "children": children_payload,
+        "created_at": metric.created_at,
+        "updated_at": metric.updated_at,
+        "created_by": metric.created_by,
+    }
 
 
 @router.post("", response_model=MetricResponse, status_code=201)
@@ -28,19 +157,37 @@ def create_metric(
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ):
-    """Create a new metric."""
-    # Check if metric with same name already exists for this organization
-    existing = db.query(Metric).filter(
-        and_(
+    """Create a new metric.
+
+    Supports flat metrics, parent "category" metrics (set
+    ``selection_mode``), and child sub-metrics (set
+    ``parent_metric_id``). Name uniqueness is scoped to
+    ``(organization_id, parent_metric_id)`` so a child label like
+    "happy" can coexist under multiple parents.
+    """
+    _validate_hierarchy_fields(
+        organization_id,
+        db,
+        parent_metric_id=metric_data.parent_metric_id,
+        selection_mode=metric_data.selection_mode,
+        metric_type=metric_data.metric_type,
+    )
+
+    existing = (
+        db.query(Metric)
+        .filter(
             Metric.name == metric_data.name,
-            Metric.organization_id == organization_id
+            Metric.organization_id == organization_id,
+            Metric.parent_metric_id.is_(metric_data.parent_metric_id)
+            if metric_data.parent_metric_id is None
+            else Metric.parent_metric_id == metric_data.parent_metric_id,
         )
-    ).first()
-    
+        .first()
+    )
     if existing:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="A metric with this name already exists"
+            detail="A metric with this name already exists",
         )
 
     enabled_surfaces = (
@@ -48,11 +195,20 @@ def create_metric(
         if metric_data.enabled_surfaces is not None
         else ((metric_data.supported_surfaces or ["agent"]) if metric_data.enabled else [])
     )
+
+    # Children are always boolean — they are the "yes/no" leaves of a
+    # parent category. Force the type server-side so a stale UI payload
+    # can't sneak in a rating/number child that the LLM grouping logic
+    # wouldn't know how to handle.
+    effective_metric_type = metric_data.metric_type
+    if metric_data.parent_metric_id is not None:
+        effective_metric_type = MetricType.BOOLEAN
+
     metric = Metric(
         organization_id=organization_id,
         name=metric_data.name,
         description=metric_data.description,
-        metric_type=metric_data.metric_type,
+        metric_type=effective_metric_type,
         trigger=metric_data.trigger,
         enabled=len(enabled_surfaces) > 0,
         is_default=False,
@@ -63,33 +219,256 @@ def create_metric(
         custom_config=metric_data.custom_config,
         tags=metric_data.tags,
         capture_rationale=bool(metric_data.capture_rationale),
+        parent_metric_id=metric_data.parent_metric_id,
+        selection_mode=metric_data.selection_mode,
     )
     db.add(metric)
     db.commit()
     db.refresh(metric)
 
-    return metric
+    return _serialize_metric_tree(metric)
+
+
+@router.post(
+    "/with-children",
+    response_model=MetricResponse,
+    status_code=201,
+    operation_id="createMetricWithChildren",
+)
+def create_metric_with_children(
+    payload: MetricCreateWithChildren,
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+):
+    """Atomically create a parent category metric plus its children.
+
+    The parent gets ``metric_type=text`` (it's a category label, not a
+    score) and ``selection_mode`` from the payload. Every child is
+    forced to ``boolean`` so the LLM-evaluation path treats them as
+    yes/no labels.
+    """
+    if payload.selection_mode not in _VALID_SELECTION_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Invalid selection_mode '{payload.selection_mode}'. "
+                f"Allowed: {', '.join(sorted(_VALID_SELECTION_MODES))}."
+            ),
+        )
+
+    parent_existing = (
+        db.query(Metric)
+        .filter(
+            Metric.name == payload.name,
+            Metric.organization_id == organization_id,
+            Metric.parent_metric_id.is_(None),
+        )
+        .first()
+    )
+    if parent_existing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"A top-level metric named '{payload.name}' already exists.",
+        )
+
+    # Detect duplicate child names within the same request before any
+    # writes — the DB has no compound uniqueness constraint, so we
+    # enforce it in code.
+    child_names_seen: set[str] = set()
+    for child in payload.children:
+        key = (child.name or "").strip().lower()
+        if not key:
+            raise HTTPException(
+                status_code=400, detail="Child sub-metric name is required."
+            )
+        if key in child_names_seen:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Duplicate child sub-metric name '{child.name}' in "
+                    "request."
+                ),
+            )
+        child_names_seen.add(key)
+
+    enabled_surfaces = (
+        payload.enabled_surfaces
+        if payload.enabled_surfaces is not None
+        else (payload.supported_surfaces or ["agent"]) if payload.enabled else []
+    )
+
+    parent = Metric(
+        organization_id=organization_id,
+        name=payload.name,
+        description=payload.description,
+        # The parent itself stores no numeric value — its "result" is the
+        # set of true children. Treat it as text so the rest of the
+        # stack (aggregation, CSV export, etc.) renders the chosen child
+        # name as the parent's "value".
+        metric_type=MetricType.TEXT,
+        trigger=MetricTrigger.ALWAYS,
+        enabled=len(enabled_surfaces) > 0,
+        is_default=False,
+        metric_origin="custom",
+        supported_surfaces=payload.supported_surfaces or ["agent"],
+        enabled_surfaces=enabled_surfaces,
+        tags=payload.tags,
+        capture_rationale=False,
+        selection_mode=payload.selection_mode,
+    )
+    db.add(parent)
+    db.flush()
+
+    for child_draft in payload.children:
+        child = Metric(
+            organization_id=organization_id,
+            name=child_draft.name,
+            description=child_draft.description,
+            metric_type=MetricType.BOOLEAN,
+            trigger=MetricTrigger.ALWAYS,
+            enabled=bool(child_draft.enabled) and len(enabled_surfaces) > 0,
+            is_default=False,
+            metric_origin="custom",
+            supported_surfaces=payload.supported_surfaces or ["agent"],
+            enabled_surfaces=(
+                enabled_surfaces if child_draft.enabled else []
+            ),
+            custom_data_type="boolean",
+            custom_config={},
+            tags=child_draft.tags,
+            capture_rationale=bool(child_draft.capture_rationale),
+            parent_metric_id=parent.id,
+        )
+        db.add(child)
+
+    db.commit()
+    db.refresh(parent)
+    return _serialize_metric_tree(parent)
+
+
+@router.post(
+    "/{metric_id}/children",
+    response_model=MetricResponse,
+    status_code=201,
+    operation_id="addMetricChild",
+)
+def add_metric_child(
+    metric_id: UUID,
+    child_draft: MetricChildDraft,
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+):
+    """Append a new child sub-metric under an existing parent."""
+
+    parent = (
+        db.query(Metric)
+        .filter(
+            Metric.id == metric_id,
+            Metric.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not parent:
+        raise HTTPException(status_code=404, detail="Parent metric not found")
+    if not parent.selection_mode:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Cannot add a child to a metric that has no selection_mode "
+                "(it is not a parent / category metric)."
+            ),
+        )
+    if parent.parent_metric_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot nest a sub-metric under another sub-metric.",
+        )
+
+    existing = (
+        db.query(Metric)
+        .filter(
+            Metric.name == child_draft.name,
+            Metric.organization_id == organization_id,
+            Metric.parent_metric_id == parent.id,
+        )
+        .first()
+    )
+    if existing:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"A child named '{child_draft.name}' already exists under "
+                "this parent."
+            ),
+        )
+
+    enabled_surfaces = parent.enabled_surfaces or []
+    child = Metric(
+        organization_id=organization_id,
+        name=child_draft.name,
+        description=child_draft.description,
+        metric_type=MetricType.BOOLEAN,
+        trigger=MetricTrigger.ALWAYS,
+        enabled=bool(child_draft.enabled) and len(enabled_surfaces) > 0,
+        is_default=False,
+        metric_origin="custom",
+        supported_surfaces=parent.supported_surfaces or ["agent"],
+        enabled_surfaces=enabled_surfaces if child_draft.enabled else [],
+        custom_data_type="boolean",
+        custom_config={},
+        tags=child_draft.tags,
+        capture_rationale=bool(child_draft.capture_rationale),
+        parent_metric_id=parent.id,
+    )
+    db.add(child)
+    db.commit()
+    db.refresh(parent)
+    return _serialize_metric_tree(parent)
 
 
 @router.get("", response_model=List[MetricResponse])
 def list_metrics(
     surface: Optional[str] = None,
+    include_children: bool = Query(
+        True,
+        description=(
+            "When true (default), children are nested under their parent "
+            "and not returned as top-level rows. When false, the response "
+            "is a flat list of every metric (parents + standalone + "
+            "orphaned children)."
+        ),
+    ),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ):
-    """List all metrics for the organization."""
+    """List metrics with optional nesting for the parent/child hierarchy."""
     query = db.query(Metric).filter(
         Metric.organization_id == organization_id,
         ~Metric.name.in_(REMOVED_DEFAULT_METRICS),
     )
-    metrics = query.order_by(Metric.is_default.desc(), Metric.created_at.desc()).all()
+    metrics = (
+        query.order_by(Metric.is_default.desc(), Metric.created_at.desc()).all()
+    )
     if surface:
         normalized_surface = surface.strip().lower()
         metrics = [
             m for m in metrics
             if normalized_surface in (m.supported_surfaces or [])
         ]
-    return metrics
+
+    if not include_children:
+        return [_serialize_metric_tree(m) for m in metrics]
+
+    # Top-level rows = anything without a parent, OR a child whose parent
+    # is not visible at this surface (so users still see "orphaned"
+    # children rather than losing them silently).
+    visible_ids = {m.id for m in metrics}
+    top_level = [
+        m
+        for m in metrics
+        if m.parent_metric_id is None or m.parent_metric_id not in visible_ids
+    ]
+    return [_serialize_metric_tree(m) for m in top_level]
 
 
 @router.get("/{metric_id}", response_model=MetricResponse)
@@ -98,7 +477,7 @@ def get_metric(
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ):
-    """Get a specific metric."""
+    """Get a specific metric, with children inlined for parents."""
     metric = db.query(Metric).filter(
         and_(
             Metric.id == metric_id,
@@ -109,7 +488,7 @@ def get_metric(
     if not metric:
         raise HTTPException(status_code=404, detail="Metric not found")
 
-    return metric
+    return _serialize_metric_tree(metric)
 
 
 @router.put("/{metric_id}", response_model=MetricResponse)
@@ -145,14 +524,20 @@ def update_metric(
 
     # Update fields if provided
     if metric_data.name is not None:
-        # Check for name conflicts
-        existing = db.query(Metric).filter(
-            and_(
+        # Name uniqueness is scoped to the same parent: e.g. two parents
+        # may each have a child named "happy" without colliding.
+        existing = (
+            db.query(Metric)
+            .filter(
                 Metric.name == metric_data.name,
                 Metric.organization_id == organization_id,
-                Metric.id != metric_id
+                Metric.id != metric_id,
+                Metric.parent_metric_id.is_(metric.parent_metric_id)
+                if metric.parent_metric_id is None
+                else Metric.parent_metric_id == metric.parent_metric_id,
             )
-        ).first()
+            .first()
+        )
         if existing:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -164,6 +549,12 @@ def update_metric(
         metric.description = metric_data.description
 
     if metric_data.metric_type is not None:
+        # Children stay boolean — refuse a type change request.
+        if metric.parent_metric_id is not None and metric_data.metric_type != MetricType.BOOLEAN:
+            raise HTTPException(
+                status_code=400,
+                detail="Child sub-metrics must remain boolean.",
+            )
         metric.metric_type = metric_data.metric_type
 
     if metric_data.trigger is not None:
@@ -200,10 +591,29 @@ def update_metric(
     if metric_data.capture_rationale is not None:
         metric.capture_rationale = bool(metric_data.capture_rationale)
 
+    if metric_data.selection_mode is not None:
+        # Only parent rows can flip selection_mode. Children + standalone
+        # metrics with no children are rejected so the worker grouping
+        # logic doesn't have to second-guess what mode a row is in.
+        if metric.parent_metric_id is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot set selection_mode on a child sub-metric.",
+            )
+        if metric_data.selection_mode not in _VALID_SELECTION_MODES:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Invalid selection_mode '{metric_data.selection_mode}'. "
+                    f"Allowed: {', '.join(sorted(_VALID_SELECTION_MODES))}."
+                ),
+            )
+        metric.selection_mode = metric_data.selection_mode
+
     db.commit()
     db.refresh(metric)
 
-    return metric
+    return _serialize_metric_tree(metric)
 
 
 # Deprecated default metrics that can be deleted
@@ -737,14 +1147,56 @@ class MetricDraft(BaseModel):
 
 
 class MetricParseBulkRequest(BaseModel):
-    """Request body for bulk-importing multiple metrics from a prompt."""
+    """Request body for bulk-importing multiple metrics from a prompt.
+
+    Optional hierarchy fields let the bulk import produce a parent
+    category metric with the parsed labels as children instead of N
+    independent top-level metrics.
+    """
     prompt: str = Field(..., description="The pasted Label-block prompt.")
     surface: Literal["agent", "voice_playground", "blind_test"] = "agent"
+    parent_name: Optional[str] = Field(
+        default=None,
+        max_length=120,
+        description=(
+            "When set, returns ONE parent draft owning every parsed label "
+            "as a child. Used to build a 'category' metric in one shot."
+        ),
+    )
+    parent_description: Optional[str] = Field(
+        default=None,
+        max_length=4000,
+        description="Optional description used as the parent's LLM rubric.",
+    )
+    selection_mode: Optional[Literal["single_choice", "multi_label"]] = Field(
+        default=None,
+        description=(
+            "Required when ``parent_name`` is set. Controls how the LLM "
+            "scores children together: single_choice = exactly one true; "
+            "multi_label = independent yes/no with logical consistency."
+        ),
+    )
+
+
+class MetricParseBulkParentDraft(BaseModel):
+    """Optional parent metric returned when ``parent_name`` was set."""
+
+    name: str
+    description: Optional[str] = None
+    selection_mode: Literal["single_choice", "multi_label"]
+    supported_surfaces: List[str]
+    enabled_surfaces: List[str]
 
 
 class MetricParseBulkResponse(BaseModel):
-    """List of independent un-persisted metric drafts, one per label."""
+    """List of independent un-persisted metric drafts, one per label.
+
+    ``parent`` is populated only when the request asked for a hierarchy
+    (``parent_name`` set); the frontend then POSTs to
+    ``/metrics/with-children`` instead of N independent ``/metrics`` calls.
+    """
     metrics: List[MetricDraft]
+    parent: Optional[MetricParseBulkParentDraft] = None
 
 
 # A "Label #N" block looks like:
@@ -1006,15 +1458,69 @@ def parse_bulk_metric(
         unique_labels.append(label)
     labels = unique_labels
 
+    # When the user asks for a hierarchy we skip the per-child uniqueness
+    # check against the existing org metrics: children are scoped to the
+    # parent, not the org, so a child named "Pitch done" doesn't
+    # collide with a top-level metric of the same name.
+    parent_payload: Optional[MetricParseBulkParentDraft] = None
+    build_hierarchy = bool(req.parent_name and req.parent_name.strip())
+    if build_hierarchy:
+        if not req.selection_mode:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "selection_mode is required when parent_name is "
+                    "provided."
+                ),
+            )
+        parent_name = req.parent_name.strip()
+        # The parent metric DOES need to be unique among top-level
+        # metrics in the org, so flag conflicts up front.
+        existing_parent = (
+            db.query(Metric)
+            .filter(
+                Metric.name == parent_name,
+                Metric.organization_id == organization_id,
+                Metric.parent_metric_id.is_(None),
+            )
+            .first()
+        )
+        if existing_parent:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"A top-level metric named '{parent_name}' already "
+                    "exists."
+                ),
+            )
+        parent_payload = MetricParseBulkParentDraft(
+            name=parent_name,
+            description=(req.parent_description or "").strip() or None,
+            selection_mode=req.selection_mode,
+            supported_surfaces=[req.surface],
+            enabled_surfaces=[req.surface],
+        )
+
     drafts: List[MetricDraft] = []
     chosen_names: set[str] = set()
     for label in labels:
-        unique_name = _ensure_unique_metric_name(
-            label.label_name,
-            organization_id,
-            db,
-            chosen_names,
-        )
+        if build_hierarchy:
+            # Children are scoped to the parent, so we just dedupe
+            # within this batch (the unique-against-DB check is
+            # skipped because the parent doesn't exist yet).
+            candidate = (label.label_name or "").strip()[:60] or "Sub-metric"
+            unique_name = candidate
+            suffix = 2
+            while unique_name.lower() in chosen_names:
+                unique_name = f"{candidate} ({suffix})"
+                suffix += 1
+        else:
+            unique_name = _ensure_unique_metric_name(
+                label.label_name,
+                organization_id,
+                db,
+                chosen_names,
+            )
         chosen_names.add(unique_name.lower())
         drafts.append(
             MetricDraft(
@@ -1031,5 +1537,5 @@ def parse_bulk_metric(
             )
         )
 
-    return MetricParseBulkResponse(metrics=drafts)
+    return MetricParseBulkResponse(metrics=drafts, parent=parent_payload)
 

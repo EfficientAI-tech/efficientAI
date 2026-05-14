@@ -1,7 +1,7 @@
 """Pydantic schemas for request/response validation."""
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, validator
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 from datetime import datetime
 from uuid import UUID
 from app.models.enums import (
@@ -1089,8 +1089,18 @@ class RunEvaluatorsResponse(BaseModel):
 
 
 # Metric Schemas
+SelectionMode = Literal["single_choice", "multi_label"]
+
+
 class MetricCreate(BaseModel):
-    """Schema for creating a metric."""
+    """Schema for creating a metric.
+
+    Hierarchy:
+    - ``parent_metric_id`` set => this is a child sub-metric. ``metric_type``
+      is forced to ``boolean`` server-side; ``selection_mode`` must be None.
+    - ``selection_mode`` set => this is a parent category metric.
+      ``parent_metric_id`` must be None (max depth = 2).
+    """
     name: str
     description: Optional[str] = None
     metric_type: MetricType = MetricType.RATING
@@ -1103,6 +1113,8 @@ class MetricCreate(BaseModel):
     custom_config: Optional[Dict[str, Any]] = None
     tags: Optional[List[str]] = None
     capture_rationale: Optional[bool] = False
+    parent_metric_id: Optional[UUID] = None
+    selection_mode: Optional[SelectionMode] = None
     
     model_config = ConfigDict(json_schema_extra={
             "example": {
@@ -1113,6 +1125,38 @@ class MetricCreate(BaseModel):
                 "enabled": True
             }
         })
+
+
+class MetricChildDraft(BaseModel):
+    """One child sub-metric in a parent + children atomic create body."""
+
+    name: str = Field(..., max_length=120)
+    description: Optional[str] = Field(default=None, max_length=4000)
+    enabled: bool = True
+    capture_rationale: Optional[bool] = True
+    tags: Optional[List[str]] = None
+
+
+class MetricCreateWithChildren(BaseModel):
+    """One-shot create body: a parent metric + N children, atomically.
+
+    Children are persisted as full ``Metric`` rows with
+    ``parent_metric_id`` set to the new parent. ``metric_type`` on every
+    child is forced to ``boolean`` server-side regardless of what's
+    passed in the parent body.
+    """
+
+    name: str = Field(..., max_length=120)
+    description: Optional[str] = Field(default=None, max_length=4000)
+    selection_mode: SelectionMode
+    enabled: bool = True
+    supported_surfaces: List[str] = Field(default_factory=lambda: ["agent"])
+    enabled_surfaces: Optional[List[str]] = None
+    tags: Optional[List[str]] = None
+    children: List[MetricChildDraft] = Field(
+        default_factory=list,
+        description="Child sub-metric labels under this parent.",
+    )
 
 
 class MetricUpdate(BaseModel):
@@ -1129,10 +1173,17 @@ class MetricUpdate(BaseModel):
     custom_config: Optional[Dict[str, Any]] = None
     tags: Optional[List[str]] = None
     capture_rationale: Optional[bool] = None
+    selection_mode: Optional[SelectionMode] = None
 
 
 class MetricResponse(BaseModel):
-    """Schema for metric response."""
+    """Schema for metric response.
+
+    ``children`` is populated for parent metrics (those with
+    ``selection_mode`` set) and is otherwise an empty list. The list is
+    built once at serialization time so callers get a single tree
+    structure without follow-up requests.
+    """
     id: UUID
     organization_id: UUID
     name: str
@@ -1148,6 +1199,9 @@ class MetricResponse(BaseModel):
     custom_config: Optional[Dict[str, Any]]
     tags: Optional[List[str]]
     capture_rationale: bool = False
+    parent_metric_id: Optional[UUID] = None
+    selection_mode: Optional[SelectionMode] = None
+    children: List["MetricResponse"] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
     created_by: Optional[str]
@@ -1203,6 +1257,9 @@ class MetricResponse(BaseModel):
         return str(v).lower()
     
     model_config = ConfigDict(from_attributes=True)
+
+
+MetricResponse.model_rebuild()
 
 
 # Evaluator Result Schemas
@@ -2103,6 +2160,8 @@ class CallImportMetricSummary(BaseModel):
     name: str
     metric_type: Optional[str] = None
     description: Optional[str] = None
+    parent_metric_id: Optional[UUID] = None
+    selection_mode: Optional[SelectionMode] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -2115,6 +2174,10 @@ class CallImportEvaluationResponse(BaseModel):
     organization_id: UUID
     name: Optional[str] = None
     selected_metric_ids: List[UUID] = Field(default_factory=list)
+    # Parent UUID string -> [child UUID string]. Captured at run creation
+    # so the UI can rebuild the parent/child tree even after metrics are
+    # renamed or deleted. Empty / NULL = no hierarchy was used.
+    selected_metric_groups: Optional[Dict[str, List[str]]] = None
     metrics: List[CallImportMetricSummary] = Field(default_factory=list)
     status: str
     total_rows: int
@@ -2368,3 +2431,46 @@ class CallImportInsightsResponse(BaseModel):
     transcript_source_counts: Dict[str, int] = Field(default_factory=dict)
     evaluation_count: int = 0
     metrics: List[CallImportInsightsMetric] = Field(default_factory=list)
+
+
+# --- Flow chart visualization for hierarchical metrics ---
+
+
+class MetricFlowNode(BaseModel):
+    """One step in the LLM-inferred temporal flow for a parent metric.
+
+    Represents a child sub-metric label. ``count`` is the number of rows
+    in the evaluation where this child appears anywhere in its
+    ``sequence`` array. ``is_terminal`` is set when the child is the
+    last entry in a meaningful fraction of those sequences.
+    """
+
+    id: str
+    label: str
+    count: int = 0
+    is_terminal: bool = False
+
+
+class MetricFlowEdge(BaseModel):
+    """One directed transition between two children across all rows.
+
+    ``count`` is the number of rows where ``source`` immediately
+    precedes ``target`` in the sequence. The synthetic ``START`` node
+    is used as the ``source`` for the first child in every sequence.
+    """
+
+    source: str
+    target: str
+    count: int = 0
+
+
+class MetricFlowResponse(BaseModel):
+    """Aggregate flow diagram payload for a single parent metric."""
+
+    parent_metric_id: str
+    parent_metric_name: str
+    selection_mode: Optional[SelectionMode] = None
+    nodes: List[MetricFlowNode] = Field(default_factory=list)
+    edges: List[MetricFlowEdge] = Field(default_factory=list)
+    total_rows: int = 0
+    rows_with_sequence: int = 0

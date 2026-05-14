@@ -39,6 +39,9 @@ from app.models.schemas import (
     CallImportMetricHistogramBucket,
     CallImportMetricSummary,
     CallImportMetricValueCount,
+    MetricFlowEdge,
+    MetricFlowNode,
+    MetricFlowResponse,
 )
 
 router = APIRouter(
@@ -92,21 +95,173 @@ def _metrics_for_ids(db: Session, org_id: UUID, ids: List[UUID]) -> List[Metric]
     return [by_id[mid] for mid in ids if mid in by_id]
 
 
+def _expand_metric_selection(
+    db: Session,
+    org_id: UUID,
+    selected_ids: List[UUID],
+) -> Tuple[List[Metric], Dict[UUID, List[Metric]]]:
+    """Resolve user-supplied metric ids into actual leaves + parent grouping.
+
+    Rules:
+      * If a parent id is in ``selected_ids`` and no specific children of
+        that parent are also listed, include EVERY enabled child of that
+        parent.
+      * If a parent id AND some of its children are listed, include only
+        the listed children (treat the parent selection as the
+        "container" so users can deselect labels).
+      * Standalone metrics (no parent, no children) pass through
+        unchanged.
+      * Disabled metrics are filtered out at this layer so the caller
+        doesn't have to repeat the check.
+
+    Returns:
+        (effective_metrics, parent_to_children)
+
+        ``effective_metrics`` is the deduplicated list of metrics the
+        worker will actually score (children + standalone). Order is
+        preserved from ``selected_ids`` for display stability.
+
+        ``parent_to_children`` maps each parent metric id (UUID) to the
+        list of its selected children. Useful for grouping in the LLM
+        prompt builder.
+    """
+    if not selected_ids:
+        return [], {}
+
+    requested = list(selected_ids)
+    initial_rows = (
+        db.query(Metric)
+        .filter(
+            Metric.organization_id == org_id,
+            Metric.id.in_(requested),
+        )
+        .all()
+    )
+    initial_by_id = {row.id: row for row in initial_rows}
+
+    parent_ids_requested = {
+        m.id for m in initial_rows if m.selection_mode and not m.parent_metric_id
+    }
+    # Map parent id -> children explicitly requested by the user.
+    explicit_children_by_parent: Dict[UUID, List[Metric]] = {}
+    for m in initial_rows:
+        if m.parent_metric_id and m.parent_metric_id in parent_ids_requested:
+            explicit_children_by_parent.setdefault(
+                m.parent_metric_id, []
+            ).append(m)
+
+    # For parents without explicit children, hydrate every enabled child.
+    parents_needing_full_expansion = [
+        pid
+        for pid in parent_ids_requested
+        if pid not in explicit_children_by_parent
+    ]
+    auto_expanded_children: Dict[UUID, List[Metric]] = {}
+    if parents_needing_full_expansion:
+        for pid in parents_needing_full_expansion:
+            child_rows = (
+                db.query(Metric)
+                .filter(
+                    Metric.organization_id == org_id,
+                    Metric.parent_metric_id == pid,
+                    Metric.enabled.is_(True),
+                )
+                .order_by(Metric.created_at.asc())
+                .all()
+            )
+            auto_expanded_children[pid] = child_rows
+
+    parent_to_children: Dict[UUID, List[Metric]] = {}
+    for pid in parent_ids_requested:
+        children = explicit_children_by_parent.get(
+            pid
+        ) or auto_expanded_children.get(pid, [])
+        # Drop disabled children so the worker doesn't waste a slot on
+        # them. Empty parents (no enabled children) are still tracked
+        # because the UI may want to show "0 of 0" rather than swallow
+        # them silently.
+        parent_to_children[pid] = [c for c in children if c.enabled]
+
+    effective: List[Metric] = []
+    seen: set[UUID] = set()
+    for mid in requested:
+        m = initial_by_id.get(mid)
+        if m is None:
+            continue
+        if m.selection_mode and not m.parent_metric_id:
+            # Parent row itself is not scored — only its children.
+            for child in parent_to_children.get(m.id, []):
+                if child.id in seen or not child.enabled:
+                    continue
+                seen.add(child.id)
+                effective.append(child)
+            continue
+        if m.parent_metric_id and m.parent_metric_id in parent_ids_requested:
+            # Already accounted for via the parent expansion above.
+            continue
+        if not m.enabled:
+            continue
+        if m.id in seen:
+            continue
+        seen.add(m.id)
+        effective.append(m)
+
+    return effective, parent_to_children
+
+
 def _serialize_eval(db: Session, row: CallImportEvaluation) -> CallImportEvaluationResponse:
     selected_ids = _serialize_selected_metric_ids(row.selected_metric_ids)
-    metrics = _metrics_for_ids(db, row.organization_id, selected_ids)
+
+    # Pull every metric referenced anywhere in the run's grouping (leaves,
+    # standalone, AND parents from selected_metric_groups) so the UI can
+    # render parent labels even when only children were materialized into
+    # selected_metric_ids.
+    groups_raw: Dict[str, List[str]] = {}
+    if isinstance(row.selected_metric_groups, dict):
+        for parent_str, children in row.selected_metric_groups.items():
+            if not isinstance(children, list):
+                continue
+            cleaned: List[str] = []
+            for c in children:
+                try:
+                    UUID(str(c))
+                    cleaned.append(str(c))
+                except (TypeError, ValueError):
+                    continue
+            try:
+                UUID(parent_str)
+                groups_raw[parent_str] = cleaned
+            except (TypeError, ValueError):
+                continue
+
+    metric_ids_for_lookup: List[UUID] = list(selected_ids)
+    for parent_str in groups_raw.keys():
+        try:
+            pid = UUID(parent_str)
+            if pid not in metric_ids_for_lookup:
+                metric_ids_for_lookup.append(pid)
+        except (TypeError, ValueError):
+            continue
+
+    metrics = _metrics_for_ids(
+        db, row.organization_id, metric_ids_for_lookup
+    )
+
     return CallImportEvaluationResponse(
         id=row.id,
         call_import_id=row.call_import_id,
         organization_id=row.organization_id,
         name=row.name,
         selected_metric_ids=selected_ids,
+        selected_metric_groups=groups_raw or None,
         metrics=[
             CallImportMetricSummary(
                 id=metric.id,
                 name=metric.name,
                 metric_type=metric.metric_type,
                 description=metric.description,
+                parent_metric_id=metric.parent_metric_id,
+                selection_mode=metric.selection_mode,
             )
             for metric in metrics
         ],
@@ -223,9 +378,18 @@ async def create_call_import_evaluation(
                 "Refresh the metrics list and try again."
             ),
         )
-    disabled = [metric for metric in org_metrics if not metric.enabled]
-    if disabled:
-        names = ", ".join(metric.name for metric in disabled)
+    # Parents themselves are containers, not scored rows, so a disabled
+    # parent shouldn't block the run as long as it has enabled children.
+    # We only reject disabled rows that the worker will actually try to
+    # evaluate (children + standalone leaves).
+    disabled_leaves = [
+        metric
+        for metric in org_metrics
+        if not metric.enabled
+        and not (metric.selection_mode and not metric.parent_metric_id)
+    ]
+    if disabled_leaves:
+        names = ", ".join(metric.name for metric in disabled_leaves)
         raise HTTPException(
             status_code=400,
             detail=(
@@ -234,7 +398,32 @@ async def create_call_import_evaluation(
                 "try again."
             ),
         )
-    metric_rows = org_metrics
+
+    # Expand hierarchical selection: parents auto-include their enabled
+    # children, mixed parent+child selections respect the user's subset.
+    effective_metrics, parent_to_children = _expand_metric_selection(
+        db, organization_id, metric_ids
+    )
+    if not effective_metrics:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "None of the selected metrics yielded an enabled leaf to "
+                "evaluate. Check that parent categories have enabled "
+                "children, then try again."
+            ),
+        )
+
+    # The effective list (children + standalone leaves) is what gets
+    # persisted to ``selected_metric_ids`` and scored by the worker.
+    # The original parents are preserved in ``selected_metric_groups``
+    # so the UI can rebuild the tree later.
+    leaf_metric_ids: List[UUID] = [m.id for m in effective_metrics]
+    selected_metric_groups: Dict[str, List[str]] = {
+        str(pid): [str(c.id) for c in children]
+        for pid, children in parent_to_children.items()
+    }
+    metric_rows = effective_metrics
     valid_metric_id_strs = {str(m.id) for m in metric_rows}
 
     # ----- Validate run-level + per-metric LLM config -----
@@ -282,20 +471,41 @@ async def create_call_import_evaluation(
                 ),
             )
 
-    # Per-metric overrides: allow keys only for metrics actually selected,
-    # and validate provider strings the same way as the run-level default.
+    # Per-metric overrides: keys can be either a leaf metric id (applies
+    # to that metric only) or a parent metric id (applies to every
+    # child of that parent). Parent keys are expanded to their
+    # children so the worker only sees concrete leaf ids.
     metric_overrides_payload: Optional[Dict[str, Dict[str, Any]]] = None
     if payload.metric_llm_overrides:
         metric_overrides_payload = {}
         for metric_id, override in payload.metric_llm_overrides.items():
-            if metric_id not in valid_metric_id_strs:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "metric_llm_overrides references metric "
-                        f"{metric_id} which is not in metric_ids."
-                    ),
-                )
+            target_leaf_ids: List[str] = []
+            if metric_id in valid_metric_id_strs:
+                target_leaf_ids = [metric_id]
+            else:
+                # Maybe it's a parent id — expand to the children that
+                # are part of THIS run.
+                try:
+                    parent_uuid = UUID(metric_id)
+                except (TypeError, ValueError):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "metric_llm_overrides references metric "
+                            f"{metric_id} which is not a valid UUID."
+                        ),
+                    )
+                children_for_parent = parent_to_children.get(parent_uuid)
+                if not children_for_parent:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "metric_llm_overrides references metric "
+                            f"{metric_id} which is not in metric_ids."
+                        ),
+                    )
+                target_leaf_ids = [str(c.id) for c in children_for_parent]
+
             override_dict: Dict[str, Any] = {}
             if override.provider is not None:
                 if not override.model:
@@ -332,7 +542,8 @@ async def create_call_import_evaluation(
             if override.credential_id is not None:
                 override_dict["credential_id"] = str(override.credential_id)
             if override_dict:
-                metric_overrides_payload[metric_id] = override_dict
+                for leaf_id in target_leaf_ids:
+                    metric_overrides_payload[leaf_id] = override_dict
 
     # ----- Validate auto-transcribe settings -----
     auto_transcribe = payload.auto_transcribe and bool(payload.stt_provider)
@@ -369,7 +580,8 @@ async def create_call_import_evaluation(
         call_import_id=call_import.id,
         organization_id=organization_id,
         name=_normalize_name(payload.name),
-        selected_metric_ids=[str(metric_id) for metric_id in metric_ids],
+        selected_metric_ids=[str(metric_id) for metric_id in leaf_metric_ids],
+        selected_metric_groups=selected_metric_groups or None,
         status="pending",
         total_rows=len(completed_rows),
         completed_rows=0,
@@ -691,8 +903,25 @@ async def export_call_import_evaluation_csv(
         raise HTTPException(status_code=404, detail="Call import evaluation not found")
 
     selected_metric_ids = _serialize_selected_metric_ids(evaluation.selected_metric_ids)
-    metrics = _metrics_for_ids(db, organization_id, selected_metric_ids)
+    # Include parent metric ids referenced in selected_metric_groups so
+    # the export shows a parent "Chosen Label" column next to its
+    # children's true/false columns.
+    lookup_ids: List[UUID] = list(selected_metric_ids)
+    groups_raw = (
+        evaluation.selected_metric_groups
+        if isinstance(evaluation.selected_metric_groups, dict)
+        else {}
+    )
+    for parent_str in groups_raw.keys():
+        try:
+            pid = UUID(parent_str)
+            if pid not in lookup_ids:
+                lookup_ids.append(pid)
+        except (TypeError, ValueError):
+            continue
+    metrics = _metrics_for_ids(db, organization_id, lookup_ids)
     metric_names = {str(metric.id): metric.name for metric in metrics}
+    metrics_by_id = {str(metric.id): metric for metric in metrics}
 
     mapping = call_import.column_mapping or {}
     mapped_headers = [
@@ -720,20 +949,43 @@ async def export_call_import_evaluation_csv(
                 continue  # would clobber a real column
             custom_export.append((name, csv_header))
 
-    # For each selected metric we emit one column for the value, and a
-    # second "<Name> - LLM Rationale" column when the metric is configured
-    # with ``capture_rationale=True``. This matches the reference CSV
-    # layout (e.g. "Language adherence - LLM Label" + "Language adherence -
-    # LLM Rationale").
+    # Build the metric columns in a hierarchy-aware order: each parent
+    # (if any) gets a column, then its children appear directly after it
+    # so the export reads like the metrics tree. Standalone metrics keep
+    # their original ordering.
     metric_headers: List[str] = []
     rationale_headers: Dict[str, str] = {}  # metric_id_str -> rationale column name
-    for metric in metrics:
-        header = metric_names[str(metric.id)]
+    seen_metric_ids: set[str] = set()
+
+    def _add_metric_column(metric: Metric) -> None:
+        mid_str = str(metric.id)
+        if mid_str in seen_metric_ids:
+            return
+        seen_metric_ids.add(mid_str)
+        header = metric_names[mid_str]
         metric_headers.append(header)
         if bool(getattr(metric, "capture_rationale", False)):
             rationale_header = f"{header} - LLM Rationale"
             metric_headers.append(rationale_header)
-            rationale_headers[str(metric.id)] = rationale_header
+            rationale_headers[mid_str] = rationale_header
+
+    for parent_str, child_strs in groups_raw.items():
+        parent = metrics_by_id.get(parent_str)
+        if parent:
+            _add_metric_column(parent)
+        for child_str in child_strs:
+            child = metrics_by_id.get(child_str)
+            if child:
+                _add_metric_column(child)
+    # Append anything left over (standalone metrics not in any group, or
+    # legacy runs without ``selected_metric_groups``).
+    for metric in metrics:
+        if metric.selection_mode and not metric.parent_metric_id:
+            continue  # already handled above
+        if str(metric.id) in seen_metric_ids:
+            continue
+        _add_metric_column(metric)
+
     fieldnames = [
         *standard_export_headers,
         *[h for h, _ in custom_export],
@@ -766,6 +1018,23 @@ async def export_call_import_evaluation_csv(
         for metric in metrics:
             metric_score = scores.get(str(metric.id)) if isinstance(scores, dict) else None
             value = metric_score.get("value") if isinstance(metric_score, dict) else None
+            # Parent metrics (selection_mode set) render the chosen
+            # child name for single_choice or the ";"-joined list of
+            # true child names for multi_label.
+            if (
+                metric.selection_mode
+                and not metric.parent_metric_id
+                and isinstance(metric_score, dict)
+            ):
+                if metric.selection_mode == "multi_label":
+                    selected = metric_score.get("selected_child_names")
+                    if isinstance(selected, list):
+                        value = ";".join(str(s) for s in selected)
+                else:
+                    value = (
+                        metric_score.get("chosen_child_name")
+                        or metric_score.get("value")
+                    )
             row_out[metric.name] = "" if value is None else str(value)
             rationale_header = rationale_headers.get(str(metric.id))
             if rationale_header is not None:
@@ -1052,6 +1321,21 @@ def _compute_metric_aggregates(
     """
 
     selected_ids = _serialize_selected_metric_ids(evaluation.selected_metric_ids)
+    # Include parent metrics from selected_metric_groups so they appear
+    # alongside their children in the aggregate response.
+    groups_raw = (
+        evaluation.selected_metric_groups
+        if isinstance(evaluation.selected_metric_groups, dict)
+        else {}
+    )
+    for parent_str in groups_raw.keys():
+        try:
+            pid = UUID(parent_str)
+            if pid not in selected_ids:
+                selected_ids.append(pid)
+        except (TypeError, ValueError):
+            continue
+
     metrics = _metrics_for_ids(db, evaluation.organization_id, selected_ids)
     metric_meta: Dict[str, Metric] = {str(m.id): m for m in metrics}
 
@@ -1077,6 +1361,12 @@ def _compute_metric_aggregates(
         observed_metric_type: Optional[str] = None
         observed_name: Optional[str] = None
 
+        is_multi_label_parent = bool(
+            meta
+            and meta.selection_mode == "multi_label"
+            and not meta.parent_metric_id
+        )
+
         for row in eval_rows:
             scores = (
                 row.metric_scores
@@ -1096,6 +1386,22 @@ def _compute_metric_aggregates(
             if entry.get("error"):
                 errored += 1
                 continue
+
+            # Multi-label parents store a comma-joined value that
+            # isn't useful as a single category; instead tally each
+            # selected child individually so the chart shows per-label
+            # counts that mirror the children's own boolean histograms.
+            if is_multi_label_parent:
+                selected = entry.get("selected_child_names")
+                if isinstance(selected, list) and selected:
+                    for label in selected:
+                        text_label = str(label).strip() or None
+                        if text_label:
+                            category_counts[text_label] = (
+                                category_counts.get(text_label, 0) + 1
+                            )
+                continue
+
             value = entry.get("value")
             numeric = _coerce_numeric(value)
             if numeric is not None:
@@ -1198,6 +1504,251 @@ async def get_call_import_evaluation_aggregate(
         failed_rows=evaluation.failed_rows,
         metrics=metrics,
     )
+
+
+# ---------------------------------------------------------------------------
+# Flow chart: turns per-row LLM-inferred ``sequence`` arrays into a
+# directed graph of (label -> label) transitions across the whole run.
+# Powers the aggregate Sankey-style React Flow chart on the evaluation
+# overview; per-call flow charts are built client-side from the same
+# ``sequence`` field on a single row's metric_scores entry.
+# ---------------------------------------------------------------------------
+
+
+_FLOW_TERMINAL_THRESHOLD = 0.2  # Mark as terminal when >=20% of sequences end here.
+_FLOW_START_NODE_ID = "__START__"
+
+
+def _build_flow_graph(
+    eval_rows: List[CallImportEvaluationRow],
+    parent_metric: Metric,
+    children: List[Metric],
+) -> MetricFlowResponse:
+    """Walk per-row ``sequence`` arrays and produce aggregate nodes/edges.
+
+    A synthetic ``START`` node is prepended to every sequence so the
+    diagram has a single origin. Children that never appear in any
+    sequence are still emitted as nodes (count=0) so the UI can render
+    them in the legend.
+    """
+    parent_id_str = str(parent_metric.id)
+    # Build a fast lookup keyed by both the lower_snake child key (what the
+    # LLM emits in ``sequence``) and the child UUID (what some clients may
+    # store) so legacy / drifted payloads still resolve.
+    child_lookup: Dict[str, Metric] = {}
+    for child in children:
+        slug = child.name.lower().replace(" ", "_")
+        child_lookup[slug] = child
+        child_lookup[str(child.id)] = child
+
+    node_counts: Dict[str, int] = {}
+    edge_counts: Dict[tuple[str, str], int] = {}
+    terminal_counts: Dict[str, int] = {}
+
+    total_rows = len(eval_rows)
+    rows_with_sequence = 0
+
+    for row in eval_rows:
+        scores = (
+            row.metric_scores if isinstance(row.metric_scores, dict) else {}
+        )
+        parent_entry = scores.get(parent_id_str)
+        if not isinstance(parent_entry, dict):
+            continue
+        raw_sequence = parent_entry.get("sequence")
+        if not isinstance(raw_sequence, list):
+            continue
+
+        resolved_ids: List[str] = []
+        for item in raw_sequence:
+            if not isinstance(item, str):
+                continue
+            normalized = item.strip().lower().replace(" ", "_")
+            child = child_lookup.get(normalized) or child_lookup.get(item)
+            if child is None:
+                continue
+            resolved_ids.append(str(child.id))
+
+        if not resolved_ids:
+            continue
+
+        rows_with_sequence += 1
+        for child_id in resolved_ids:
+            node_counts[child_id] = node_counts.get(child_id, 0) + 1
+
+        edge_counts[(_FLOW_START_NODE_ID, resolved_ids[0])] = (
+            edge_counts.get((_FLOW_START_NODE_ID, resolved_ids[0]), 0) + 1
+        )
+        for src, tgt in zip(resolved_ids, resolved_ids[1:]):
+            if src == tgt:
+                continue
+            edge_counts[(src, tgt)] = edge_counts.get((src, tgt), 0) + 1
+
+        terminal_id = resolved_ids[-1]
+        terminal_counts[terminal_id] = terminal_counts.get(terminal_id, 0) + 1
+
+    nodes: List[MetricFlowNode] = []
+    # Always include a START node so the UI has a stable entry point.
+    nodes.append(
+        MetricFlowNode(
+            id=_FLOW_START_NODE_ID,
+            label="Start",
+            count=rows_with_sequence,
+            is_terminal=False,
+        )
+    )
+    for child in children:
+        cid = str(child.id)
+        count = node_counts.get(cid, 0)
+        terminal_count = terminal_counts.get(cid, 0)
+        is_terminal = False
+        if rows_with_sequence > 0:
+            is_terminal = (
+                terminal_count / rows_with_sequence
+            ) >= _FLOW_TERMINAL_THRESHOLD
+        nodes.append(
+            MetricFlowNode(
+                id=cid,
+                label=child.name,
+                count=count,
+                is_terminal=is_terminal,
+            )
+        )
+
+    edges: List[MetricFlowEdge] = [
+        MetricFlowEdge(source=src, target=tgt, count=count)
+        for (src, tgt), count in sorted(
+            edge_counts.items(), key=lambda kv: kv[1], reverse=True
+        )
+    ]
+
+    return MetricFlowResponse(
+        parent_metric_id=parent_id_str,
+        parent_metric_name=parent_metric.name,
+        selection_mode=parent_metric.selection_mode,
+        nodes=nodes,
+        edges=edges,
+        total_rows=total_rows,
+        rows_with_sequence=rows_with_sequence,
+    )
+
+
+@router.get(
+    "/{eval_id}/flow",
+    response_model=MetricFlowResponse,
+    operation_id="getCallImportEvaluationFlow",
+)
+async def get_call_import_evaluation_flow(
+    call_import_id: UUID,
+    eval_id: UUID,
+    parent_metric_id: UUID = Query(
+        ...,
+        description=(
+            "Parent (category) metric whose children's sequences should be "
+            "aggregated into a flow graph."
+        ),
+    ),
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> MetricFlowResponse:
+    """Aggregate the LLM-inferred per-row sequences into one flow graph.
+
+    Returns ``nodes`` (one per child of the parent metric, plus a
+    synthetic ``START`` node) and ``edges`` (counts of consecutive
+    label transitions across every row that produced a sequence). The
+    frontend feeds this directly into a React Flow / xyflow canvas;
+    edge thickness should scale with ``count / total_rows`` and
+    ``is_terminal`` nodes should be styled as outcomes.
+    """
+
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation not found"
+        )
+
+    parent = (
+        db.query(Metric)
+        .filter(
+            Metric.id == parent_metric_id,
+            Metric.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not parent:
+        raise HTTPException(
+            status_code=404,
+            detail="Parent metric not found in this organization.",
+        )
+    if not parent.selection_mode:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Flow charts are only meaningful for parent metrics "
+                "(selection_mode set). This metric is standalone."
+            ),
+        )
+
+    # Children are taken from selected_metric_groups when present so the
+    # flow chart reflects exactly the subset that ran in this
+    # evaluation; otherwise fall back to every enabled child of the
+    # parent.
+    groups_raw = (
+        evaluation.selected_metric_groups
+        if isinstance(evaluation.selected_metric_groups, dict)
+        else {}
+    )
+    parent_id_str = str(parent.id)
+    children: List[Metric] = []
+    if parent_id_str in groups_raw and isinstance(
+        groups_raw[parent_id_str], list
+    ):
+        child_ids: List[UUID] = []
+        for c in groups_raw[parent_id_str]:
+            try:
+                child_ids.append(UUID(str(c)))
+            except (TypeError, ValueError):
+                continue
+        if child_ids:
+            children = (
+                db.query(Metric)
+                .filter(
+                    Metric.organization_id == organization_id,
+                    Metric.id.in_(child_ids),
+                )
+                .order_by(Metric.created_at.asc())
+                .all()
+            )
+    if not children:
+        children = (
+            db.query(Metric)
+            .filter(
+                Metric.organization_id == organization_id,
+                Metric.parent_metric_id == parent.id,
+            )
+            .order_by(Metric.created_at.asc())
+            .all()
+        )
+
+    eval_rows = (
+        db.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == eval_id)
+        .all()
+    )
+
+    return _build_flow_graph(eval_rows, parent, children)
 
 
 @router.delete(

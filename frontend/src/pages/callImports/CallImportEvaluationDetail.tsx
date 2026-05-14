@@ -19,6 +19,7 @@ import {
   Sparkles,
   Table,
   Trash2,
+  Workflow,
   X,
 } from 'lucide-react'
 import {
@@ -42,6 +43,9 @@ import type {
 import Button from '../../components/Button'
 import ConfirmModal from '../../components/ConfirmModal'
 import StatusBadge from '../../components/shared/StatusBadge'
+import MetricFlowChart, {
+  flowFromSequence,
+} from './components/MetricFlowChart'
 
 const PIE_COLORS = ['#10b981', '#ef4444', '#6366f1', '#f59e0b', '#a855f7']
 
@@ -65,9 +69,9 @@ export default function CallImportEvaluationDetail() {
     useState<CallImportEvaluationRow | null>(null)
   const [deleteEvalOpen, setDeleteEvalOpen] = useState(false)
   const [rowDeleteError, setRowDeleteError] = useState<string | null>(null)
-  const [resultsTab, setResultsTab] = useState<'table' | 'visualizations'>(
-    'table',
-  )
+  const [resultsTab, setResultsTab] = useState<
+    'table' | 'visualizations' | 'flow'
+  >('table')
   // Categorical metrics can be rendered either as a pie (default,
   // best for ≤5 buckets) or as a vertical bar chart. Numeric metrics
   // always use a histogram regardless of this toggle.
@@ -292,6 +296,47 @@ export default function CallImportEvaluationDetail() {
     evaluation?.selected_metric_ids,
     rowsQuery.data?.items,
   ])
+
+  // Parent metrics (selection_mode != null) and their enabled children
+  // pulled straight from the run's metric summaries. The Flow tab uses
+  // these to render one diagram per parent and to translate per-row
+  // ``sequence`` arrays back into child IDs/names for the row drawer.
+  type FlowParentMetric = {
+    id: string
+    name: string
+    selection_mode: 'single_choice' | 'multi_label' | null
+    children: { id: string; name: string }[]
+  }
+  const parentMetrics = useMemo<FlowParentMetric[]>(() => {
+    const all = evaluation?.metrics ?? []
+    const childrenByParent = new Map<string, { id: string; name: string }[]>()
+    for (const m of all) {
+      const pid = (m as any).parent_metric_id as string | null | undefined
+      if (pid) {
+        const list = childrenByParent.get(pid) || []
+        list.push({ id: m.id, name: m.name })
+        childrenByParent.set(pid, list)
+      }
+    }
+    const parents: FlowParentMetric[] = []
+    for (const m of all) {
+      const mode = (m as any).selection_mode as
+        | 'single_choice'
+        | 'multi_label'
+        | null
+        | undefined
+      const parentId = (m as any).parent_metric_id as string | null | undefined
+      if (mode && !parentId) {
+        parents.push({
+          id: m.id,
+          name: m.name,
+          selection_mode: mode ?? null,
+          children: childrenByParent.get(m.id) || [],
+        })
+      }
+    }
+    return parents
+  }, [evaluation?.metrics])
 
   // Total visible metric-related columns (value + optional rationale per
   // metric). Used for the "scroll horizontally" hint.
@@ -637,6 +682,18 @@ export default function CallImportEvaluationDetail() {
               <BarChart3 className="h-3.5 w-3.5 inline mr-1 -mt-0.5" />
               Visualizations
             </button>
+            <button
+              type="button"
+              onClick={() => setResultsTab('flow')}
+              className={`px-3 py-1.5 text-xs font-medium rounded transition ${
+                resultsTab === 'flow'
+                  ? 'bg-white text-primary-700 shadow-sm'
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              <Workflow className="h-3.5 w-3.5 inline mr-1 -mt-0.5" />
+              Flow
+            </button>
           </div>
         </div>
 
@@ -721,7 +778,31 @@ export default function CallImportEvaluationDetail() {
           </>
         )}
 
-        {resultsTab === 'visualizations' ? (
+        {resultsTab === 'flow' ? (
+          parentMetrics.length === 0 ? (
+            <div className="text-sm text-gray-500 border border-dashed border-gray-300 rounded-md p-6 text-center">
+              No category metrics in this run. Flow diagrams are only
+              rendered for parent metrics with sub-labels.
+            </div>
+          ) : (
+            <div className="space-y-6">
+              <p className="text-xs text-gray-500 inline-flex items-center gap-1.5">
+                <Sparkles className="h-3.5 w-3.5 text-primary-500" />
+                One diagram per category metric. Edge thickness scales
+                with how many calls flowed between each pair of labels;
+                terminal labels are outlined.
+              </p>
+              {parentMetrics.map((pm) => (
+                <FlowDiagramForParent
+                  key={pm.id}
+                  callImportId={id!}
+                  evalId={evalId!}
+                  parent={pm}
+                />
+              ))}
+            </div>
+          )
+        ) : resultsTab === 'visualizations' ? (
           aggregateQuery.isLoading || !aggregateQuery.data ? (
             <div className="text-center py-12 text-gray-500">
               <RefreshCw className="h-6 w-6 mx-auto mb-2 animate-spin" />
@@ -1034,6 +1115,7 @@ export default function CallImportEvaluationDetail() {
       <RowDetailPanel
         row={detailRow}
         displayMetrics={displayMetrics}
+        parentMetrics={parentMetrics}
         onClose={() => setDetailRow(null)}
       />
 
@@ -1145,10 +1227,17 @@ function formatScoreValue(value: unknown): string {
 function RowDetailPanel({
   row,
   displayMetrics,
+  parentMetrics,
   onClose,
 }: {
   row: CallImportEvaluationRow | null
   displayMetrics: { id: string; name: string; hasRationale: boolean }[]
+  parentMetrics: {
+    id: string
+    name: string
+    selection_mode: 'single_choice' | 'multi_label' | null
+    children: { id: string; name: string }[]
+  }[]
   onClose: () => void
 }) {
   // Close on Escape so the panel feels like a proper drawer.
@@ -1357,6 +1446,72 @@ function RowDetailPanel({
               </div>
             )}
           </section>
+
+          {/* Per-call flow diagrams — one per parent category metric.
+              Driven entirely by the ``sequence`` array the LLM
+              produced for this row, so it always matches the scores
+              above. */}
+          {parentMetrics.length > 0 && (() => {
+            const flowEntries = parentMetrics
+              .map((parent) => {
+                const score = (row.metric_scores || {})[parent.id]
+                if (!score || typeof score !== 'object') return null
+                const sequence = (score as any).sequence
+                if (!Array.isArray(sequence) || sequence.length === 0)
+                  return null
+                const childByKey: Record<string, { id: string; name: string }> =
+                  {}
+                for (const child of parent.children) {
+                  childByKey[child.id] = child
+                  childByKey[child.name] = child
+                  // The worker stores sequence entries as lower_snake_case
+                  // slugs of the child name (matching the LLM JSON key).
+                  // Accept that shape here so per-call flows render even
+                  // when the backend never round-tripped to UUIDs.
+                  childByKey[
+                    child.name.toLowerCase().replace(/\s+/g, '_')
+                  ] = child
+                }
+                const data = flowFromSequence(
+                  parent.id,
+                  parent.name,
+                  sequence as string[],
+                  childByKey,
+                  parent.selection_mode,
+                )
+                if (data.nodes.length === 0) return null
+                return { parent, data }
+              })
+              .filter(
+                (entry): entry is { parent: typeof parentMetrics[number]; data: ReturnType<typeof flowFromSequence> } =>
+                  entry !== null,
+              )
+            if (flowEntries.length === 0) return null
+            return (
+              <section>
+                <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+                  Call flow ({flowEntries.length})
+                </h3>
+                <div className="space-y-3">
+                  {flowEntries.map(({ parent, data }) => (
+                    <div
+                      key={parent.id}
+                      className="border border-gray-200 rounded-md p-2"
+                    >
+                      <p className="text-xs font-medium text-gray-700 mb-1.5">
+                        {parent.name}
+                      </p>
+                      <MetricFlowChart
+                        data={data}
+                        mode="per_call"
+                        height={220}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )
+          })()}
 
           {/* Transcript */}
           {row.transcript && (
@@ -2030,6 +2185,63 @@ function EvaluationTLDR({
         </ul>
       )}
     </section>
+  )
+}
+
+// Renders one aggregate flow diagram for a parent metric. We isolate
+// the query into a child component so each parent fetches in parallel
+// and stays in its own React Query cache slot.
+function FlowDiagramForParent({
+  callImportId,
+  evalId,
+  parent,
+}: {
+  callImportId: string
+  evalId: string
+  parent: {
+    id: string
+    name: string
+    selection_mode: 'single_choice' | 'multi_label' | null
+    children: { id: string; name: string }[]
+  }
+}) {
+  const flowQuery = useQuery({
+    queryKey: ['call-import-eval-flow', callImportId, evalId, parent.id],
+    queryFn: () =>
+      apiClient.getCallImportEvaluationFlow(callImportId, evalId, parent.id),
+  })
+  return (
+    <div className="border border-gray-200 rounded-lg p-3 bg-white">
+      <div className="flex items-baseline justify-between mb-2 gap-3 flex-wrap">
+        <div>
+          <p className="text-sm font-semibold text-gray-900">{parent.name}</p>
+          <p className="text-[11px] text-gray-500">
+            {parent.selection_mode === 'single_choice'
+              ? 'Pick-one category'
+              : 'Multi-label category'}{' '}
+            · {parent.children.length} sub-labels
+          </p>
+        </div>
+        {flowQuery.data && (
+          <p className="text-[11px] text-gray-500 tabular-nums">
+            {flowQuery.data.rows_with_sequence}/{flowQuery.data.total_rows}{' '}
+            rows scored
+          </p>
+        )}
+      </div>
+      {flowQuery.isLoading || !flowQuery.data ? (
+        <div className="text-center py-8 text-gray-500">
+          <RefreshCw className="h-5 w-5 mx-auto mb-2 animate-spin" />
+          <p className="text-xs">Loading flow…</p>
+        </div>
+      ) : flowQuery.data.rows_with_sequence === 0 ? (
+        <p className="text-xs text-gray-500 italic">
+          No rows produced a label sequence for this category yet.
+        </p>
+      ) : (
+        <MetricFlowChart data={flowQuery.data} mode="aggregate" height={360} />
+      )}
+    </div>
   )
 }
 

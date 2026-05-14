@@ -1114,6 +1114,23 @@ class ApiClient {
     return response.data
   }
 
+  /**
+   * Aggregate flow chart for a parent metric: returns nodes/edges built
+   * from per-row LLM-inferred ``sequence`` arrays. Used by the React
+   * Flow visualisation on the evaluation overview.
+   */
+  async getCallImportEvaluationFlow(
+    callImportId: string,
+    evaluationId: string,
+    parentMetricId: string,
+  ): Promise<import('../types/api').MetricFlowResponse> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/flow`,
+      { params: { parent_metric_id: parentMetricId } },
+    )
+    return response.data
+  }
+
   /** Cross-run insights for the call import detail page. */
   async getCallImportInsights(
     callImportId: string,
@@ -1696,14 +1713,61 @@ class ApiClient {
     custom_config?: Record<string, any>
     tags?: string[]
     capture_rationale?: boolean
+    parent_metric_id?: string | null
+    selection_mode?: 'single_choice' | 'multi_label' | null
   }): Promise<any> {
     const response = await this.client.post('/api/v1/metrics', data)
     return response.data
   }
 
-  async listMetrics(surface?: string): Promise<any[]> {
+  /**
+   * Atomically create a parent (category) metric + N children, used by
+   * the "Create category" flow on the Metrics page and by the
+   * /parse-bulk → save path when a hierarchy was requested.
+   */
+  async createMetricWithChildren(data: {
+    name: string
+    description?: string | null
+    selection_mode: 'single_choice' | 'multi_label'
+    enabled?: boolean
+    supported_surfaces?: string[]
+    enabled_surfaces?: string[]
+    tags?: string[] | null
+    children: Array<{
+      name: string
+      description?: string | null
+      enabled?: boolean
+      capture_rationale?: boolean | null
+      tags?: string[] | null
+    }>
+  }): Promise<any> {
+    const response = await this.client.post(
+      '/api/v1/metrics/with-children',
+      data,
+    )
+    return response.data
+  }
+
+  async addMetricChild(parentMetricId: string, data: {
+    name: string
+    description?: string | null
+    enabled?: boolean
+    capture_rationale?: boolean | null
+    tags?: string[] | null
+  }): Promise<any> {
+    const response = await this.client.post(
+      `/api/v1/metrics/${parentMetricId}/children`,
+      data,
+    )
+    return response.data
+  }
+
+  async listMetrics(surface?: string, includeChildren: boolean = true): Promise<any[]> {
     const response = await this.client.get('/api/v1/metrics', {
-      params: surface ? { surface } : undefined,
+      params: {
+        ...(surface ? { surface } : {}),
+        include_children: includeChildren,
+      },
     })
     return response.data
   }
@@ -1779,6 +1843,7 @@ class ApiClient {
     custom_config?: Record<string, any>
     tags?: string[]
     capture_rationale?: boolean
+    selection_mode?: 'single_choice' | 'multi_label' | null
   }): Promise<any> {
     const response = await this.client.put(`/api/v1/metrics/${metricId}`, data)
     return response.data
@@ -1815,6 +1880,10 @@ class ApiClient {
   async parseBulkMetric(data: {
     prompt: string
     surface: 'agent' | 'voice_playground' | 'blind_test'
+    /** When set, the response includes a ``parent`` block + all labels are children. */
+    parent_name?: string
+    parent_description?: string
+    selection_mode?: 'single_choice' | 'multi_label'
   }): Promise<{
     metrics: Array<{
       name: string
@@ -1828,6 +1897,13 @@ class ApiClient {
       suggested_tags: string[]
       source_label: { label_name: string; definition: string; examples: string }
     }>
+    parent?: {
+      name: string
+      description: string | null
+      selection_mode: 'single_choice' | 'multi_label'
+      supported_surfaces: string[]
+      enabled_surfaces: string[]
+    } | null
   }> {
     const response = await this.client.post('/api/v1/metrics/parse-bulk', data)
     return response.data

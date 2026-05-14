@@ -518,7 +518,15 @@ class Evaluator(Base):
 
 
 class Metric(Base):
-    """Metric - Configuration for evaluation metrics."""
+    """Metric - Configuration for evaluation metrics.
+
+    Supports a 2-level hierarchy via ``parent_metric_id``: a "category"
+    parent metric (e.g. "Call Outcome") owns N child sub-metric labels
+    (e.g. "happy_completion", "angry_hangup"). ``selection_mode`` is set
+    only on parents and controls how the LLM scores children together
+    (``single_choice`` = pick exactly one; ``multi_label`` = independent
+    yes/no with logical consistency). Children are always boolean.
+    """
     __tablename__ = "metrics"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -537,6 +545,26 @@ class Metric(Base):
     custom_data_type = Column(String(30), nullable=True)  # "boolean" | "enum" | "number_range"
     custom_config = Column(JSON, nullable=True)  # enum options / number range config
     tags = Column(JSON, nullable=True)  # ["tone", "latency", ...]
+
+    # Hierarchy: NULL = standalone or parent. When set, this row is a
+    # child sub-metric of the referenced parent. ON DELETE CASCADE so
+    # deleting a category removes its children atomically.
+    parent_metric_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("metrics.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    # Set only on parent rows (``parent_metric_id IS NULL``). Either
+    # ``single_choice`` or ``multi_label``. NULL = legacy / non-hierarchical
+    # metric (no children).
+    selection_mode = Column(String(20), nullable=True)
+
+    parent = relationship(
+        "Metric",
+        remote_side=[id],
+        backref="children",
+    )
 
     # When true, the LLM-judge is asked to also return a short free-form
     # rationale alongside the value (stored under ``metric_scores[id].rationale``).
@@ -1405,6 +1433,13 @@ class CallImportEvaluation(Base):
     # delete policies when metrics are removed; the loader filters for
     # still-existing org metrics at run time.
     selected_metric_ids = Column(JSON, nullable=False, default=list)
+    # Hierarchy grouping snapshot: ``{parent_id_str: [child_id_str, ...]}``.
+    # Captures which children belong to which parent for THIS run so the UI
+    # / aggregator can reconstruct the tree even when the user selected
+    # only a subset of children, or after metrics are deleted / renamed.
+    # NULL on legacy rows means "no hierarchy" → fall back to flat
+    # ``selected_metric_ids`` semantics.
+    selected_metric_groups = Column(JSON, nullable=True)
 
     # Run-level LLM config picked from the Run Evaluation modal. NULL on
     # legacy rows means "use the historical OpenAI/gpt-4o default" — the

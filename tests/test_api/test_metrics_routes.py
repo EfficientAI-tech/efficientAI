@@ -280,3 +280,226 @@ def test_parse_bulk_metric_avoids_intra_batch_name_collisions(authenticated_clie
     # Duplicates dedupe to one draft (preserving the first occurrence).
     assert len(drafts) == 1
     assert drafts[0]["name"] == "Greeting"
+
+
+# =============================================================================
+# Hierarchical metrics: parent/child CRUD + invariants
+# =============================================================================
+
+
+def _parent_payload(**overrides):
+    payload = {
+        "name": "Call Outcome",
+        "description": "High-level category of how the call ended.",
+        "metric_type": "boolean",
+        "selection_mode": "single_choice",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _child_payload(**overrides):
+    payload = {
+        "name": "happy_completion",
+        "description": "Customer answered every question and was satisfied.",
+        "metric_type": "boolean",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_create_parent_metric_with_selection_mode(authenticated_client):
+    response = authenticated_client.post("/api/v1/metrics", json=_parent_payload())
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["selection_mode"] == "single_choice"
+    assert body["parent_metric_id"] is None
+
+
+def test_create_child_metric_links_to_parent(authenticated_client):
+    parent = authenticated_client.post(
+        "/api/v1/metrics", json=_parent_payload()
+    ).json()
+    response = authenticated_client.post(
+        "/api/v1/metrics",
+        json=_child_payload(parent_metric_id=parent["id"]),
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["parent_metric_id"] == parent["id"]
+    # Children must not carry a selection_mode.
+    assert body["selection_mode"] is None
+
+
+def test_create_metric_with_children_atomic(authenticated_client):
+    response = authenticated_client.post(
+        "/api/v1/metrics/with-children",
+        json={
+            "name": "Call Outcome",
+            "description": "High-level category of how the call ended.",
+            "selection_mode": "multi_label",
+            "children": [
+                {"name": "call_connected", "description": "did connect"},
+                {
+                    "name": "customer_answered_some",
+                    "description": "answered some",
+                },
+                {"name": "customer_hung_up", "description": "hung up"},
+            ],
+        },
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["selection_mode"] == "multi_label"
+    assert len(body["children"]) == 3
+    assert {c["name"] for c in body["children"]} == {
+        "call_connected",
+        "customer_answered_some",
+        "customer_hung_up",
+    }
+    for child in body["children"]:
+        assert child["parent_metric_id"] == body["id"]
+        assert child["selection_mode"] is None
+
+
+def test_post_child_to_existing_parent(authenticated_client):
+    parent = authenticated_client.post(
+        "/api/v1/metrics", json=_parent_payload()
+    ).json()
+    response = authenticated_client.post(
+        f"/api/v1/metrics/{parent['id']}/children",
+        json=_child_payload(name="angry_hangup"),
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["parent_metric_id"] == parent["id"]
+
+
+def test_reject_grandchild_metric(authenticated_client):
+    parent = authenticated_client.post(
+        "/api/v1/metrics", json=_parent_payload()
+    ).json()
+    child = authenticated_client.post(
+        "/api/v1/metrics",
+        json=_child_payload(parent_metric_id=parent["id"]),
+    ).json()
+    # Try to nest a grandchild under the child — must be rejected because
+    # depth is capped at 2.
+    response = authenticated_client.post(
+        "/api/v1/metrics",
+        json=_child_payload(name="grandkid", parent_metric_id=child["id"]),
+    )
+    assert response.status_code == 400, response.text
+
+
+def test_reject_selection_mode_on_child(authenticated_client):
+    parent = authenticated_client.post(
+        "/api/v1/metrics", json=_parent_payload()
+    ).json()
+    response = authenticated_client.post(
+        "/api/v1/metrics",
+        json=_child_payload(
+            parent_metric_id=parent["id"], selection_mode="multi_label"
+        ),
+    )
+    assert response.status_code == 400
+
+
+def test_reject_invalid_selection_mode_value(authenticated_client):
+    response = authenticated_client.post(
+        "/api/v1/metrics",
+        json=_parent_payload(selection_mode="some_random_mode"),
+    )
+    assert response.status_code == 422
+
+
+def test_list_metrics_returns_tree_by_default(authenticated_client):
+    parent = authenticated_client.post(
+        "/api/v1/metrics/with-children",
+        json={
+            "name": "Call Outcome",
+            "description": "Outcome category.",
+            "selection_mode": "single_choice",
+            "children": [
+                {"name": "child_a", "description": "first"},
+                {"name": "child_b", "description": "second"},
+            ],
+        },
+    ).json()
+    response = authenticated_client.get("/api/v1/metrics")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    # Default list response embeds children under the parent and never
+    # returns children at the top level.
+    parent_entries = [m for m in body if m["id"] == parent["id"]]
+    assert len(parent_entries) == 1
+    assert len(parent_entries[0]["children"]) == 2
+    top_level_ids = {m["id"] for m in body}
+    for child in parent_entries[0]["children"]:
+        assert child["id"] not in top_level_ids
+
+
+def test_list_metrics_flat_includes_children_at_top_level(authenticated_client):
+    parent = authenticated_client.post(
+        "/api/v1/metrics/with-children",
+        json={
+            "name": "Pitch Outcome",
+            "description": "Pitch outcome.",
+            "selection_mode": "single_choice",
+            "children": [{"name": "leaf_one", "description": "one"}],
+        },
+    ).json()
+    response = authenticated_client.get(
+        "/api/v1/metrics?include_children=false"
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    ids = {m["id"] for m in body}
+    assert parent["id"] in ids
+    # Flat mode returns children alongside parents (caller flattens
+    # itself), and the parent entry omits a children list.
+    leaf_ids = [m for m in body if m.get("parent_metric_id") == parent["id"]]
+    assert len(leaf_ids) == 1
+
+
+def test_delete_parent_cascades_children(authenticated_client):
+    parent = authenticated_client.post(
+        "/api/v1/metrics/with-children",
+        json={
+            "name": "Cascade Outcome",
+            "description": "Outcome.",
+            "selection_mode": "single_choice",
+            "children": [{"name": "leaf_one", "description": "leaf"}],
+        },
+    ).json()
+    child_id = parent["children"][0]["id"]
+    delete_response = authenticated_client.delete(
+        f"/api/v1/metrics/{parent['id']}"
+    )
+    assert delete_response.status_code == 204
+    # Direct GET on the child should now 404 — FK ``ON DELETE CASCADE``
+    # removes the row alongside its parent.
+    get_response = authenticated_client.get(f"/api/v1/metrics/{child_id}")
+    assert get_response.status_code == 404
+
+
+def test_parse_bulk_creates_hierarchy_when_parent_supplied(authenticated_client):
+    # When parent_name + selection_mode are passed, the parsed labels
+    # become children of the new parent metric rather than free-floating
+    # boolean metrics.
+    response = authenticated_client.post(
+        "/api/v1/metrics/parse-bulk",
+        json={
+            "prompt": _MEESHO_PROMPT,
+            "surface": "agent",
+            "parent_name": "Pitch Outcome",
+            "parent_description": "Whether the pitch landed.",
+            "selection_mode": "single_choice",
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    # Backend returns a parent draft alongside the child drafts.
+    assert body.get("parent") is not None
+    assert body["parent"]["name"] == "Pitch Outcome"
+    assert body["parent"]["selection_mode"] == "single_choice"
+    assert len(body["metrics"]) == 3

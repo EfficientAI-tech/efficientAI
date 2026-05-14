@@ -22,6 +22,9 @@ interface Metric {
   is_default: boolean
   created_at: string
   updated_at: string
+  parent_metric_id?: string | null
+  selection_mode?: 'single_choice' | 'multi_label' | null
+  children?: Metric[]
 }
 
 type MetricSurface = 'agent' | 'voice_playground' | 'blind_test'
@@ -71,6 +74,37 @@ export default function MetricsManagement() {
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [isCustomMetricMode, setIsCustomMetricMode] = useState(false)
   const [showEnableModal, setShowEnableModal] = useState(false)
+  // "Create category metric" modal: a single parent with N inline
+  // children authored together so the user doesn't have to chain
+  // /metrics calls. Selection mode controls how the LLM scores the
+  // children at evaluation time.
+  const [showCategoryModal, setShowCategoryModal] = useState(false)
+  const [categoryForm, setCategoryForm] = useState<{
+    name: string
+    description: string
+    selection_mode: 'single_choice' | 'multi_label'
+    surfaces: MetricSurface[]
+    children: Array<{
+      local_id: string
+      name: string
+      description: string
+      capture_rationale: boolean
+    }>
+  }>({
+    name: '',
+    description: '',
+    selection_mode: 'single_choice',
+    surfaces: ['agent'],
+    children: [
+      { local_id: 'c1', name: '', description: '', capture_rationale: true },
+      { local_id: 'c2', name: '', description: '', capture_rationale: true },
+    ],
+  })
+  // Track which parent metric ids are expanded in the metrics list so
+  // children render indented underneath. Defaults to "all expanded".
+  const [expandedParents, setExpandedParents] = useState<Set<string>>(
+    new Set(),
+  )
   const [showAIAssist, setShowAIAssist] = useState(false)
   const [aiMode, setAIMode] = useState<'description' | 'examples'>('description')
   const [aiDescription, setAIDescription] = useState('')
@@ -212,6 +246,51 @@ export default function MetricsManagement() {
     },
     onError: () => {
       showToast('Failed to update surface', 'error')
+    },
+  })
+
+  const createCategoryMutation = useMutation({
+    mutationFn: (payload: {
+      name: string
+      description?: string | null
+      selection_mode: 'single_choice' | 'multi_label'
+      supported_surfaces: string[]
+      enabled_surfaces: string[]
+      children: Array<{
+        name: string
+        description?: string | null
+        capture_rationale?: boolean
+        enabled?: boolean
+      }>
+    }) => apiClient.createMetricWithChildren(payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['metrics'] })
+      setShowCategoryModal(false)
+      setCategoryForm({
+        name: '',
+        description: '',
+        selection_mode: 'single_choice',
+        surfaces: ['agent'],
+        children: [
+          {
+            local_id: `c-${Date.now()}-1`,
+            name: '',
+            description: '',
+            capture_rationale: true,
+          },
+          {
+            local_id: `c-${Date.now()}-2`,
+            name: '',
+            description: '',
+            capture_rationale: true,
+          },
+        ],
+      })
+      showToast('Category metric created', 'success')
+    },
+    onError: (err: any) => {
+      const detail = err?.response?.data?.detail || 'Failed to create category metric'
+      showToast(detail, 'error')
     },
   })
 
@@ -703,7 +782,7 @@ export default function MetricsManagement() {
     const getTypeLabel = (metric: Metric) => (isQuantitativeMetric(metric.name) ? 'quantitative' : 'qualitative')
     const getMethodLabel = (metric: Metric) => (isAIVoiceMetric(metric.name) ? 'ai voice' : isAudioMetric(metric.name) ? 'acoustic' : 'llm')
 
-    return metrics
+    const parents = metrics
       .filter((metric: Metric) => metric.enabled)
       .sort((a: Metric, b: Metric) => {
       const aValue = sortField === 'type' ? getTypeLabel(a) : getMethodLabel(a)
@@ -717,7 +796,27 @@ export default function MetricsManagement() {
       // Stable secondary sort for predictable ordering within groups.
       return a.name.localeCompare(b.name)
       })
-  }, [metrics, sortField, sortDirection])
+
+    // Flatten parent + children into a single list so the table renders
+    // each child directly after its parent. Hidden children are
+    // collapsed when the user folded the parent (tracked in
+    // ``expandedParents``). By default every parent is expanded.
+    const result: Metric[] = []
+    for (const metric of parents) {
+      result.push(metric)
+      if (metric.selection_mode && Array.isArray(metric.children)) {
+        const isCollapsed = expandedParents.has(`collapsed:${metric.id}`)
+        if (!isCollapsed) {
+          for (const child of metric.children) {
+            if (child.enabled) {
+              result.push(child)
+            }
+          }
+        }
+      }
+    }
+    return result
+  }, [metrics, sortField, sortDirection, expandedParents])
 
   return (
     <div className="space-y-6">
@@ -743,6 +842,14 @@ export default function MetricsManagement() {
             leftIcon={<Plus className="w-4 h-4" />}
           >
             Add Metric
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() => setShowCategoryModal(true)}
+            leftIcon={<ListChecks className="w-4 h-4" />}
+            title="Create a parent category metric with sub-labels (e.g. Call Outcome -> happy_completion / angry_hangup / didnt_understand)"
+          >
+            Create Category
           </Button>
           <Button
             variant="secondary"
@@ -879,10 +986,34 @@ export default function MetricsManagement() {
                     <tr key={metric.id} className="hover:bg-gray-50">
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="flex items-center">
-                          <div className="text-sm font-medium text-gray-900">{metric.name}</div>
+                          <div
+                            className={`text-sm font-medium text-gray-900 ${
+                              metric.parent_metric_id ? 'pl-4' : ''
+                            }`}
+                          >
+                            {metric.parent_metric_id ? '↳ ' : ''}
+                            {metric.name}
+                          </div>
                           {metric.is_default && (
                             <span className="ml-2 px-2 py-0.5 text-xs bg-blue-100 text-blue-800 rounded">
                               Default
+                            </span>
+                          )}
+                          {metric.selection_mode && (
+                            <span
+                              className="ml-2 px-2 py-0.5 text-xs bg-purple-100 text-purple-800 rounded"
+                              title={`Category metric (${metric.selection_mode}). ${
+                                (metric.children?.length || 0)
+                              } sub-label${
+                                metric.children?.length === 1 ? '' : 's'
+                              }.`}
+                            >
+                              Category · {metric.selection_mode === 'single_choice' ? 'single' : 'multi'} · {metric.children?.length || 0}
+                            </span>
+                          )}
+                          {metric.parent_metric_id && (
+                            <span className="ml-2 px-2 py-0.5 text-xs bg-gray-100 text-gray-700 rounded">
+                              Sub-label
                             </span>
                           )}
                         </div>
@@ -1816,6 +1947,222 @@ export default function MetricsManagement() {
                     Save all ({bulkDrafts.filter((d) => d.status !== 'saved').length})
                   </Button>
                 </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showCategoryModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-lg w-full max-w-3xl max-h-[90vh] overflow-y-auto">
+            <div className="p-6 space-y-4">
+              <div className="flex items-start justify-between">
+                <div>
+                  <h2 className="text-xl font-bold text-gray-900">
+                    Create a category metric
+                  </h2>
+                  <p className="mt-1 text-xs text-gray-500">
+                    A parent metric groups N sub-label children that the LLM scores together.
+                    Pick a selection mode to control how children relate
+                    (one-of vs. independent yes/no).
+                  </p>
+                </div>
+                <button
+                  onClick={() => setShowCategoryModal(false)}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">
+                    Category name *
+                  </label>
+                  <input
+                    type="text"
+                    value={categoryForm.name}
+                    onChange={(e) =>
+                      setCategoryForm((s) => ({ ...s, name: e.target.value }))
+                    }
+                    placeholder="e.g. Call Outcome"
+                    className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">
+                    Selection mode *
+                  </label>
+                  <select
+                    value={categoryForm.selection_mode}
+                    onChange={(e) =>
+                      setCategoryForm((s) => ({
+                        ...s,
+                        selection_mode: e.target.value as 'single_choice' | 'multi_label',
+                      }))
+                    }
+                    className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
+                  >
+                    <option value="single_choice">Single choice (exactly one true)</option>
+                    <option value="multi_label">Multi-label (each child independent)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">
+                  Description / context for the LLM
+                </label>
+                <textarea
+                  value={categoryForm.description}
+                  onChange={(e) =>
+                    setCategoryForm((s) => ({ ...s, description: e.target.value }))
+                  }
+                  rows={2}
+                  placeholder="e.g. Outcomes for an outbound survey call. The LLM uses this as context when scoring sub-labels below."
+                  className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-xs font-medium text-gray-700">
+                    Children ({categoryForm.children.length})
+                  </label>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() =>
+                      setCategoryForm((s) => ({
+                        ...s,
+                        children: [
+                          ...s.children,
+                          {
+                            local_id: `c-${Date.now()}-${s.children.length + 1}`,
+                            name: '',
+                            description: '',
+                            capture_rationale: true,
+                          },
+                        ],
+                      }))
+                    }
+                    leftIcon={<Plus className="w-3 h-3" />}
+                  >
+                    Add child
+                  </Button>
+                </div>
+                <div className="space-y-2">
+                  {categoryForm.children.map((child, idx) => (
+                    <div
+                      key={child.local_id}
+                      className="border border-gray-200 rounded p-3 space-y-2 bg-gray-50"
+                    >
+                      <div className="flex items-start gap-2">
+                        <div className="flex-1">
+                          <input
+                            type="text"
+                            value={child.name}
+                            onChange={(e) =>
+                              setCategoryForm((s) => ({
+                                ...s,
+                                children: s.children.map((c, i) =>
+                                  i === idx ? { ...c, name: e.target.value } : c,
+                                ),
+                              }))
+                            }
+                            placeholder="child name (e.g. happy_completion)"
+                            className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm"
+                          />
+                        </div>
+                        <label className="inline-flex items-center gap-1.5 text-xs text-gray-700 px-2 py-1.5 border border-gray-300 rounded bg-white">
+                          <input
+                            type="checkbox"
+                            checked={child.capture_rationale}
+                            onChange={(e) =>
+                              setCategoryForm((s) => ({
+                                ...s,
+                                children: s.children.map((c, i) =>
+                                  i === idx
+                                    ? { ...c, capture_rationale: e.target.checked }
+                                    : c,
+                                ),
+                              }))
+                            }
+                            className="h-3.5 w-3.5 text-primary-600 border-gray-300 rounded"
+                          />
+                          Rationale
+                        </label>
+                        {categoryForm.children.length > 2 && (
+                          <button
+                            onClick={() =>
+                              setCategoryForm((s) => ({
+                                ...s,
+                                children: s.children.filter((_, i) => i !== idx),
+                              }))
+                            }
+                            className="text-gray-400 hover:text-red-600 px-2 py-1.5"
+                            title="Remove child"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
+                      <textarea
+                        value={child.description}
+                        onChange={(e) =>
+                          setCategoryForm((s) => ({
+                            ...s,
+                            children: s.children.map((c, i) =>
+                              i === idx
+                                ? { ...c, description: e.target.value }
+                                : c,
+                            ),
+                          }))
+                        }
+                        rows={2}
+                        placeholder="Rubric: when should the LLM mark this child true?"
+                        className="w-full px-2 py-1.5 border border-gray-300 rounded text-xs"
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-2 border-t">
+                <Button variant="ghost" onClick={() => setShowCategoryModal(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  variant="primary"
+                  isLoading={createCategoryMutation.isPending}
+                  disabled={
+                    !categoryForm.name.trim() ||
+                    categoryForm.children.filter((c) => c.name.trim()).length < 2
+                  }
+                  onClick={() => {
+                    const cleanedChildren = categoryForm.children
+                      .filter((c) => c.name.trim())
+                      .map((c) => ({
+                        name: c.name.trim(),
+                        description: c.description.trim() || null,
+                        capture_rationale: c.capture_rationale,
+                        enabled: true,
+                      }))
+                    createCategoryMutation.mutate({
+                      name: categoryForm.name.trim(),
+                      description:
+                        categoryForm.description.trim() || null,
+                      selection_mode: categoryForm.selection_mode,
+                      supported_surfaces: categoryForm.surfaces,
+                      enabled_surfaces: categoryForm.surfaces,
+                      children: cleanedChildren,
+                    })
+                  }}
+                >
+                  Create category
+                </Button>
               </div>
             </div>
           </div>

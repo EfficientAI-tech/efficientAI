@@ -509,6 +509,56 @@ export default function CallImportDetail() {
     )
   }
 
+  // Toggle a parent metric in the 2-level picker. Selecting a parent
+  // implicitly selects all of its enabled children (the backend
+  // re-expands a bare parent id to its children, but we mirror that
+  // here so the per-metric override UI surfaces the right rows). When
+  // the parent has no children we treat it like a regular leaf toggle.
+  const toggleParentMetric = (parent: any) => {
+    const childIds: string[] = Array.isArray(parent.children)
+      ? parent.children.filter((c: any) => c.enabled).map((c: any) => c.id)
+      : []
+    setSelectedMetricIds((prev) => {
+      const set = new Set(prev)
+      const parentSelected = set.has(parent.id)
+      const someChildren = childIds.some((cid) => set.has(cid))
+      if (parentSelected || someChildren) {
+        set.delete(parent.id)
+        for (const cid of childIds) set.delete(cid)
+      } else {
+        set.add(parent.id)
+        for (const cid of childIds) set.add(cid)
+      }
+      return Array.from(set)
+    })
+  }
+
+  // Toggle one child while keeping the parent reference in sync: if a
+  // child is the only remaining selected member of its group we drop
+  // the parent id; if every child is selected we add the parent id so
+  // the run modal can show a single chip for the whole group.
+  const toggleChildMetric = (parent: any, childId: string) => {
+    const childIds: string[] = Array.isArray(parent.children)
+      ? parent.children.filter((c: any) => c.enabled).map((c: any) => c.id)
+      : []
+    setSelectedMetricIds((prev) => {
+      const set = new Set(prev)
+      if (set.has(childId)) {
+        set.delete(childId)
+      } else {
+        set.add(childId)
+      }
+      const allSelected =
+        childIds.length > 0 && childIds.every((cid) => set.has(cid))
+      if (allSelected) {
+        set.add(parent.id)
+      } else {
+        set.delete(parent.id)
+      }
+      return Array.from(set)
+    })
+  }
+
   const openTranscribeModal = (rows: CallImportRow[]) => {
     setTranscribeTargetRows(rows)
     setTranscribeError(null)
@@ -1943,27 +1993,108 @@ export default function CallImportDetail() {
                           <p className="text-xs uppercase tracking-wide font-semibold text-gray-500">
                             Enabled metrics ({enabledMetrics.length})
                           </p>
-                          {enabledMetrics.map((metric: any) => (
-                            <label
-                              key={metric.id}
-                              className="flex items-start gap-2 text-sm cursor-pointer"
-                            >
-                              <input
-                                type="checkbox"
-                                checked={selectedMetricIds.includes(metric.id)}
-                                onChange={() => toggleMetric(metric.id)}
-                                className="mt-1"
-                              />
-                              <span>
-                                <span className="font-medium text-gray-900">{metric.name}</span>
-                                {metric.description ? (
-                                  <span className="block text-xs text-gray-500">
-                                    {metric.description}
+                          {enabledMetrics.map((metric: any) => {
+                            const children: any[] = Array.isArray(metric.children)
+                              ? metric.children.filter((c: any) => c.enabled)
+                              : []
+                            const isParent =
+                              !!metric.selection_mode && children.length > 0
+                            if (!isParent) {
+                              return (
+                                <label
+                                  key={metric.id}
+                                  className="flex items-start gap-2 text-sm cursor-pointer"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedMetricIds.includes(metric.id)}
+                                    onChange={() => toggleMetric(metric.id)}
+                                    className="mt-1"
+                                  />
+                                  <span>
+                                    <span className="font-medium text-gray-900">{metric.name}</span>
+                                    {metric.description ? (
+                                      <span className="block text-xs text-gray-500">
+                                        {metric.description}
+                                      </span>
+                                    ) : null}
                                   </span>
-                                ) : null}
-                              </span>
-                            </label>
-                          ))}
+                                </label>
+                              )
+                            }
+                            const childIds = children.map((c) => c.id)
+                            const selectedChildCount = childIds.filter((cid) =>
+                              selectedMetricIds.includes(cid),
+                            ).length
+                            const allSelected =
+                              selectedChildCount === childIds.length &&
+                              childIds.length > 0
+                            const someSelected =
+                              selectedChildCount > 0 && !allSelected
+                            return (
+                              <div
+                                key={metric.id}
+                                className="rounded-md border border-gray-200 bg-gray-50 p-2 space-y-1"
+                              >
+                                <label className="flex items-start gap-2 text-sm cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    ref={(el) => {
+                                      if (el) el.indeterminate = someSelected
+                                    }}
+                                    checked={allSelected}
+                                    onChange={() => toggleParentMetric(metric)}
+                                    className="mt-1"
+                                  />
+                                  <span className="flex-1">
+                                    <span className="font-medium text-gray-900">
+                                      {metric.name}
+                                    </span>
+                                    <span className="ml-2 inline-flex items-center rounded-full bg-primary-100 px-2 py-0.5 text-[10px] font-medium text-primary-700">
+                                      {metric.selection_mode === 'single_choice'
+                                        ? 'pick one'
+                                        : 'multi-label'}
+                                    </span>
+                                    <span className="ml-2 text-[11px] text-gray-500">
+                                      {selectedChildCount}/{childIds.length} selected
+                                    </span>
+                                    {metric.description ? (
+                                      <span className="block text-xs text-gray-500">
+                                        {metric.description}
+                                      </span>
+                                    ) : null}
+                                  </span>
+                                </label>
+                                <div className="ml-6 space-y-1 border-l border-gray-200 pl-3">
+                                  {children.map((child: any) => (
+                                    <label
+                                      key={child.id}
+                                      className="flex items-start gap-2 text-xs cursor-pointer"
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={selectedMetricIds.includes(child.id)}
+                                        onChange={() =>
+                                          toggleChildMetric(metric, child.id)
+                                        }
+                                        className="mt-0.5"
+                                      />
+                                      <span>
+                                        <span className="font-medium text-gray-800">
+                                          {child.name}
+                                        </span>
+                                        {child.description ? (
+                                          <span className="block text-[11px] text-gray-500">
+                                            {child.description}
+                                          </span>
+                                        ) : null}
+                                      </span>
+                                    </label>
+                                  ))}
+                                </div>
+                              </div>
+                            )
+                          })}
                         </div>
 
                         {disabledMetrics.length > 0 && (
@@ -2020,9 +2151,17 @@ export default function CallImportDetail() {
                               {showAdvancedLLM && (
                                 <div className="mt-2 space-y-3">
                                   {selectedMetricIds.map((metricId) => {
-                                    const metric = enabledMetrics.find(
-                                      (m: any) => m.id === metricId,
-                                    )
+                                    const metric =
+                                      enabledMetrics.find(
+                                        (m: any) => m.id === metricId,
+                                      ) ||
+                                      enabledMetrics
+                                        .flatMap((m: any) =>
+                                          Array.isArray(m.children)
+                                            ? m.children
+                                            : [],
+                                        )
+                                        .find((c: any) => c.id === metricId)
                                     if (!metric) return null
                                     const override = metricLLMOverrides[
                                       metricId

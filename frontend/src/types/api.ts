@@ -721,11 +721,15 @@ export interface CallImportUploadResponse {
   message: string
 }
 
+export type MetricSelectionMode = 'single_choice' | 'multi_label'
+
 export interface CallImportMetricSummary {
   id: string
   name: string
   metric_type: string | null
   description: string | null
+  parent_metric_id?: string | null
+  selection_mode?: MetricSelectionMode | null
 }
 
 /** Per-metric LLM override (provider+model+optional credential). */
@@ -742,6 +746,8 @@ export interface CallImportEvaluation {
   /** User-supplied label for the run; null when not named. */
   name: string | null
   selected_metric_ids: string[]
+  /** parent_id -> [child_id, ...] snapshot captured at run time. */
+  selected_metric_groups?: Record<string, string[]> | null
   metrics: CallImportMetricSummary[]
   status: 'pending' | 'running' | 'completed' | 'partial' | 'failed'
   total_rows: number
@@ -881,4 +887,72 @@ export interface CallImportInsightsResponse {
   transcript_source_counts: Record<string, number>
   evaluation_count: number
   metrics: CallImportInsightsMetric[]
+}
+
+// --- Metrics hierarchy + flow visualization ---
+
+export interface MetricSummary {
+  id: string
+  organization_id: string
+  name: string
+  description: string | null
+  metric_type: string
+  trigger: string
+  enabled: boolean
+  is_default: boolean
+  metric_origin: string
+  supported_surfaces: string[]
+  enabled_surfaces: string[]
+  custom_data_type: string | null
+  custom_config: Record<string, any> | null
+  tags: string[] | null
+  capture_rationale: boolean
+  parent_metric_id: string | null
+  selection_mode: MetricSelectionMode | null
+  children?: MetricSummary[]
+  created_at: string
+  updated_at: string
+  created_by: string | null
+}
+
+export interface MetricChildDraft {
+  name: string
+  description?: string | null
+  enabled?: boolean
+  capture_rationale?: boolean | null
+  tags?: string[] | null
+}
+
+export interface MetricCreateWithChildrenPayload {
+  name: string
+  description?: string | null
+  selection_mode: MetricSelectionMode
+  enabled?: boolean
+  supported_surfaces?: string[]
+  enabled_surfaces?: string[]
+  tags?: string[] | null
+  children: MetricChildDraft[]
+}
+
+export interface MetricFlowNode {
+  id: string
+  label: string
+  count: number
+  is_terminal: boolean
+}
+
+export interface MetricFlowEdge {
+  source: string
+  target: string
+  count: number
+}
+
+export interface MetricFlowResponse {
+  parent_metric_id: string
+  parent_metric_name: string
+  selection_mode: MetricSelectionMode | null
+  nodes: MetricFlowNode[]
+  edges: MetricFlowEdge[]
+  total_rows: number
+  rows_with_sequence: number
 }

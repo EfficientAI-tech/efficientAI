@@ -118,6 +118,80 @@ def _normalize_enum_value(raw: Any, options: list[str]) -> Optional[str]:
     return None
 
 
+def _parent_key(parent_metric) -> str:
+    """Stable LLM JSON key derived from the parent metric's name."""
+    return (parent_metric.name or "parent").lower().replace(" ", "_")
+
+
+def _sequence_key(parent_metric) -> str:
+    """LLM JSON key holding the temporal flow of children for a parent.
+
+    The model returns this alongside the per-child booleans so we can
+    render a per-call React Flow chart and aggregate into a Sankey-style
+    diagram on the evaluation overview.
+    """
+    return f"{_parent_key(parent_metric)}__sequence"
+
+
+def _render_parent_block(parent_metric, children: list) -> str:
+    """Build the per-parent prompt section for a hierarchical group.
+
+    For ``single_choice`` parents the model is told that EXACTLY ONE
+    child must be true. For ``multi_label`` parents the children are
+    independent yes/no but the prompt explicitly warns the model to
+    avoid contradictory pairs (the user's "A and not B" requirement).
+    Both modes ask for a ``<parent_key>__sequence`` array so we can
+    visualize the LLM-inferred flow through the labels.
+    """
+    parent_key = _parent_key(parent_metric)
+    sequence_key = _sequence_key(parent_metric)
+    selection_mode = (parent_metric.selection_mode or "multi_label").lower()
+    parent_desc = parent_metric.description or (
+        f"Category covering {parent_metric.name}"
+    )
+
+    block = (
+        f"\n\n### Category: {parent_metric.name}\n"
+        f"Context: {parent_desc}\n"
+    )
+    if selection_mode == "single_choice":
+        block += (
+            "Mode: SINGLE-CHOICE. Pick EXACTLY ONE child label below that "
+            "best describes what happened in this call. Output a JSON "
+            f'field `{parent_key}` set to the chosen child key, AND set '
+            "every child key to true/false such that EXACTLY ONE is true. "
+            "Any other configuration is invalid.\n"
+        )
+    else:
+        block += (
+            "Mode: MULTI-LABEL. Set each child key to true/false "
+            "INDEPENDENTLY. Some siblings are logically contradictory "
+            "(e.g., 'customer_completed_survey' and 'angry_hangup' cannot "
+            "both be true). MAINTAIN LOGICAL CONSISTENCY: do not mark "
+            "contradictory labels both true at the same time.\n"
+        )
+
+    block += "Children (set each true/false):\n"
+    for child in children:
+        child_key = child.name.lower().replace(" ", "_")
+        child_desc = child.description or f"Detect {child.name}"
+        block += f'- "{child_key}" (true/false): {child_desc}\n'
+        if _wants_rationale(child):
+            block += (
+                f'- "{_rationale_key(child_key)}" (free-form text, '
+                f'1-2 concise sentences explaining why "{child_key}" '
+                "was set): Cite a transcript line when possible.\n"
+            )
+
+    block += (
+        f'- "{sequence_key}" (array of strings, ordered): the child keys '
+        "in the order they occurred during the call. Include ONLY children "
+        "that actually happened. For single-choice, this may be a single "
+        "element (the chosen child) or the path leading up to it.\n"
+    )
+    return block
+
+
 def build_evaluation_prompt(
     transcription: str,
     llm_metrics: list,
@@ -125,6 +199,7 @@ def build_evaluation_prompt(
     agent=None,
     persona=None,
     scenario=None,
+    parent_metric=None,
 ) -> str:
     """
     Build the evaluation prompt for LLM-based metric evaluation.
@@ -136,6 +211,10 @@ def build_evaluation_prompt(
         agent: Optional Agent for context
         persona: Optional Persona for language info
         scenario: Optional Scenario for context
+        parent_metric: Optional parent Metric when ``llm_metrics`` are all
+            children of the same parent. When set, the metrics block is
+            rendered as a single hierarchical category instead of N
+            independent metric lines.
 
     Returns:
         Complete evaluation prompt string
@@ -193,6 +272,16 @@ The following is the system prompt / instructions that the agent was configured 
 
 ## Metrics to Evaluate (use EXACT keys below)
 """
+
+    if parent_metric is not None:
+        # Hierarchical mode: render ONE category block with the children
+        # plus a sequence array. Falls through to the format
+        # instructions which understand the parent grouping.
+        prompt += _render_parent_block(parent_metric, llm_metrics)
+        prompt += _build_response_format_instructions(
+            llm_metrics, parent_metric=parent_metric
+        )
+        return prompt
 
     for metric in llm_metrics:
         metric_key = metric.name.lower().replace(" ", "_")
@@ -261,8 +350,15 @@ The following is the system prompt / instructions that the agent was configured 
     return prompt
 
 
-def _build_response_format_instructions(llm_metrics: list) -> str:
-    """Build the response format section of the prompt."""
+def _build_response_format_instructions(
+    llm_metrics: list, parent_metric=None
+) -> str:
+    """Build the response format section of the prompt.
+
+    When ``parent_metric`` is set, the example block uses the parent's
+    JSON shape (chosen child key + per-child booleans + sequence array)
+    instead of N independent metric lines.
+    """
     instructions = """
 
 ## REQUIRED Response Format
@@ -271,6 +367,53 @@ You MUST respond with ONLY a JSON object using the EXACT metric keys listed abov
 Example format:
 {
 """
+
+    if parent_metric is not None:
+        parent_key = _parent_key(parent_metric)
+        sequence_key = _sequence_key(parent_metric)
+        selection_mode = (parent_metric.selection_mode or "multi_label").lower()
+        child_keys = [
+            c.name.lower().replace(" ", "_") for c in llm_metrics
+        ]
+        if not child_keys:
+            child_keys = ["example_child"]
+        chosen_child = child_keys[0]
+        if selection_mode == "single_choice":
+            instructions += f'  "{parent_key}": "{chosen_child}",\n'
+            for i, ck in enumerate(child_keys):
+                instructions += (
+                    f'  "{ck}": {"true" if i == 0 else "false"},\n'
+                )
+        else:
+            for i, ck in enumerate(child_keys):
+                instructions += (
+                    f'  "{ck}": {"true" if i % 2 == 0 else "false"},\n'
+                )
+        # Sequence: first one or two children in order.
+        seq_sample = child_keys[: min(2, len(child_keys))]
+        seq_str = ", ".join(f'"{k}"' for k in seq_sample)
+        instructions += f'  "{sequence_key}": [{seq_str}],\n'
+        for metric in llm_metrics:
+            if _wants_rationale(metric):
+                rk = _rationale_key(metric.name.lower().replace(" ", "_"))
+                instructions += (
+                    f'  "{rk}": "Brief justification referencing the transcript.",\n'
+                )
+
+        instructions += """}
+
+CRITICAL RULES:
+1. Use the EXACT keys shown above - copy them character-for-character.
+2. Every child key value must be a BOOLEAN (true/false). No nested objects, no strings.
+3. For single-choice mode, EXACTLY ONE child must be true. Any other count is invalid.
+4. For multi-label mode, set children independently but DO NOT mark logically contradictory siblings both true.
+5. The sequence array contains the temporal order of children that actually happened (subset of the true children); use the EXACT child keys.
+6. Do NOT wrap in "metrics" or any other object.
+7. Do NOT add comments or explanations.
+8. Return ONLY the JSON object, nothing else."""
+
+        return instructions
+
     for metric in llm_metrics:
         metric_key = metric.name.lower().replace(" ", "_")
         m_type = get_metric_type_value(metric)
@@ -323,9 +466,12 @@ CRITICAL RULES:
     return instructions
 
 
-def _build_system_message(llm_metrics: list) -> str:
+def _build_system_message(llm_metrics: list, parent_metric=None) -> str:
     """Build the system message for LLM evaluation."""
     exact_keys: list[str] = []
+    if parent_metric is not None:
+        exact_keys.append(_parent_key(parent_metric))
+        exact_keys.append(_sequence_key(parent_metric))
     for metric in llm_metrics:
         key = metric.name.lower().replace(" ", "_")
         exact_keys.append(key)
@@ -424,6 +570,7 @@ def evaluate_with_llm(
     agent=None,
     persona=None,
     scenario=None,
+    parent_metric=None,
 ) -> tuple[dict[str, dict[str, Any]], float | None]:
     """
     Evaluate metrics using LLM.
@@ -439,6 +586,9 @@ def evaluate_with_llm(
         agent: Optional Agent for context
         persona: Optional Persona for language info
         scenario: Optional Scenario for context
+        parent_metric: Optional parent Metric when ``llm_metrics`` are all
+            children of the same hierarchical group. The prompt is then
+            rendered as one category block + sequence array.
 
     Returns:
         Tuple of (metric_scores dict, evaluation_time in seconds)
@@ -452,6 +602,7 @@ def evaluate_with_llm(
         agent=agent,
         persona=persona,
         scenario=scenario,
+        parent_metric=parent_metric,
     )
 
     evaluator_llm_provider = getattr(evaluator, "llm_provider", None) if evaluator else None
@@ -477,7 +628,12 @@ def evaluate_with_llm(
         )
 
     messages = [
-        {"role": "system", "content": _build_system_message(llm_metrics)},
+        {
+            "role": "system",
+            "content": _build_system_message(
+                llm_metrics, parent_metric=parent_metric
+            ),
+        },
         {"role": "user", "content": evaluation_prompt},
     ]
 
@@ -498,13 +654,16 @@ def evaluate_with_llm(
     if "metrics" in evaluation_data and isinstance(evaluation_data["metrics"], dict):
         evaluation_data = evaluation_data["metrics"]
 
-    metric_scores = _map_evaluation_to_metrics(evaluation_data, llm_metrics)
+    metric_scores = _map_evaluation_to_metrics(
+        evaluation_data, llm_metrics, parent_metric=parent_metric
+    )
     return metric_scores, evaluation_time
 
 
 def _map_evaluation_to_metrics(
     evaluation_data: dict,
     llm_metrics: list,
+    parent_metric=None,
 ) -> dict[str, dict[str, Any]]:
     """Map LLM evaluation response to metric scores.
 
@@ -512,9 +671,21 @@ def _map_evaluation_to_metrics(
     against the metric's custom_config.options). Number_range custom metrics
     are clamped to the configured min/max bounds. All others fall back to the
     existing extract+normalize numeric/boolean path.
+
+    When ``parent_metric`` is set, the LLM response is interpreted as a
+    hierarchical group: each item in ``llm_metrics`` is a boolean child
+    and the parent gets its own metric_scores entry summarising the
+    chosen child (single_choice) or the set of selected children
+    (multi_label), plus a ``sequence`` array used by the React Flow
+    visualisation.
     """
     metric_scores: dict[str, dict[str, Any]] = {}
     response_keys = list(evaluation_data.keys())
+
+    if parent_metric is not None:
+        return _map_hierarchical_group(
+            evaluation_data, llm_metrics, parent_metric, metric_scores
+        )
 
     for metric in llm_metrics:
         metric_key = metric.name.lower().replace(" ", "_")
@@ -593,6 +764,182 @@ def _map_evaluation_to_metrics(
 
         metric_scores[str(metric.id)] = entry
 
+    return metric_scores
+
+
+def _map_hierarchical_group(
+    evaluation_data: dict,
+    children: list,
+    parent_metric,
+    metric_scores: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Parse the LLM response for a parent + children group.
+
+    Writes one entry per child (boolean) plus one entry for the parent
+    (chosen child name for single_choice or list of true children for
+    multi_label, plus a ``sequence`` array).
+    """
+    parent_key = _parent_key(parent_metric)
+    sequence_key = _sequence_key(parent_metric)
+    selection_mode = (parent_metric.selection_mode or "multi_label").lower()
+    response_keys = list(evaluation_data.keys())
+
+    child_key_to_metric: dict[str, Any] = {}
+    for child in children:
+        child_key_to_metric[child.name.lower().replace(" ", "_")] = child
+
+    # ----- Per-child booleans -----
+    child_results: dict[str, dict[str, Any]] = {}
+    for child in children:
+        child_key = child.name.lower().replace(" ", "_")
+        raw_value = evaluation_data.get(child_key)
+        if raw_value is None:
+            matched = find_matching_key(child.name, response_keys)
+            if matched:
+                raw_value = evaluation_data.get(matched)
+        score = extract_score(raw_value)
+        score = normalize_score(score, "boolean")
+        if not isinstance(score, bool):
+            # Fall back to False when the LLM returns garbage; we'd
+            # rather show a clear "this didn't happen" than guess.
+            score = False
+        entry: dict[str, Any] = {
+            "value": score,
+            "type": "boolean",
+            "metric_name": child.name,
+            "parent_metric_id": str(parent_metric.id),
+            "parent_metric_name": parent_metric.name,
+        }
+        if _wants_rationale(child):
+            rationale_lookup = _rationale_key(child_key)
+            raw_rationale = evaluation_data.get(rationale_lookup)
+            if raw_rationale is None:
+                rationale_candidates = [
+                    k
+                    for k in response_keys
+                    if k.lower().endswith("_rationale")
+                ]
+                matched = find_matching_key(
+                    f"{child.name} rationale", rationale_candidates
+                )
+                if matched:
+                    raw_rationale = evaluation_data.get(matched)
+            entry["rationale"] = _coerce_text_value(raw_rationale)
+        child_results[child_key] = entry
+
+    # ----- Sequence array (filter to known children, dedupe order) -----
+    raw_sequence = evaluation_data.get(sequence_key)
+    if raw_sequence is None:
+        matched = find_matching_key(sequence_key, response_keys)
+        if matched:
+            raw_sequence = evaluation_data.get(matched)
+    sequence_keys: list[str] = []
+    if isinstance(raw_sequence, list):
+        seen_seq: set[str] = set()
+        for item in raw_sequence:
+            if not isinstance(item, str):
+                continue
+            normalized = item.lower().strip().replace(" ", "_")
+            if normalized in child_key_to_metric and normalized not in seen_seq:
+                seen_seq.add(normalized)
+                sequence_keys.append(normalized)
+
+    # For multi_label, auto-promote any child that appears in the
+    # sequence to ``true`` even if the LLM forgot to flip its boolean —
+    # the sequence implies the event happened. For single_choice we do
+    # NOT promote (it would silently violate the exactly-one invariant)
+    # and instead flag the mismatch.
+    sequence_mismatch = False
+    if selection_mode == "multi_label":
+        for ck in sequence_keys:
+            entry = child_results.get(ck)
+            if entry and not entry.get("value"):
+                entry["value"] = True
+    else:
+        # single_choice: collect any sequenced-but-false keys for logging.
+        for ck in sequence_keys:
+            entry = child_results.get(ck)
+            if entry and not entry.get("value"):
+                sequence_mismatch = True
+                break
+
+    # ----- Single_choice invariant repair -----
+    chosen_child_key: str | None = None
+    if selection_mode == "single_choice":
+        # The LLM may have ALSO emitted a ``<parent_key>`` field telling
+        # us its single chosen child. Use that as the source of truth
+        # for repair when the booleans drift.
+        raw_choice = evaluation_data.get(parent_key)
+        normalized_choice: str | None = None
+        if isinstance(raw_choice, str):
+            normalized_choice = (
+                raw_choice.lower().strip().replace(" ", "_")
+            )
+            if normalized_choice not in child_key_to_metric:
+                normalized_choice = None
+
+        trues = [k for k, e in child_results.items() if e.get("value")]
+        if len(trues) == 1:
+            chosen_child_key = trues[0]
+        elif normalized_choice is not None:
+            # Use the parent_key choice to repair.
+            chosen_child_key = normalized_choice
+            for ck, entry in child_results.items():
+                entry["value"] = ck == chosen_child_key
+        elif len(trues) > 1:
+            # Multiple true with no tiebreaker: keep the first one,
+            # flip the rest, and flag the result.
+            chosen_child_key = trues[0]
+            for ck, entry in child_results.items():
+                if ck != chosen_child_key:
+                    entry["value"] = False
+        else:
+            chosen_child_key = None
+
+    # Persist child entries (now with any repairs applied).
+    for ck, entry in child_results.items():
+        child_metric = child_key_to_metric[ck]
+        metric_scores[str(child_metric.id)] = entry
+
+    # ----- Parent summary -----
+    parent_entry: dict[str, Any] = {
+        "type": "category",
+        "metric_name": parent_metric.name,
+        "selection_mode": selection_mode,
+        "sequence": sequence_keys,
+    }
+
+    if selection_mode == "single_choice":
+        if chosen_child_key:
+            chosen_metric = child_key_to_metric[chosen_child_key]
+            parent_entry["value"] = chosen_metric.name
+            parent_entry["chosen_child_id"] = str(chosen_metric.id)
+            parent_entry["chosen_child_name"] = chosen_metric.name
+        else:
+            parent_entry["value"] = None
+            parent_entry["error"] = "single_choice_invariant_violated"
+        if sequence_mismatch:
+            parent_entry["sequence_mismatch"] = True
+    else:
+        selected_children = [
+            {
+                "child_id": str(child_key_to_metric[ck].id),
+                "child_name": child_key_to_metric[ck].name,
+            }
+            for ck, entry in child_results.items()
+            if entry.get("value")
+        ]
+        parent_entry["value"] = (
+            ", ".join(c["child_name"] for c in selected_children) or None
+        )
+        parent_entry["selected_child_ids"] = [
+            c["child_id"] for c in selected_children
+        ]
+        parent_entry["selected_child_names"] = [
+            c["child_name"] for c in selected_children
+        ]
+
+    metric_scores[str(parent_metric.id)] = parent_entry
     return metric_scores
 
 

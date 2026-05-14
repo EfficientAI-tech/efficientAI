@@ -87,6 +87,56 @@ def _categorize_metrics(
     return llm_metrics, audio_metrics, skipped_scores
 
 
+def _build_parent_groups(
+    db, llm_metrics: list[Metric]
+) -> tuple[dict[UUID, Metric], dict[UUID, list[Metric]], list[Metric]]:
+    """Group LLM metrics by their parent_metric_id.
+
+    Children of the same parent are evaluated together in one LLM call
+    so the model can enforce mutex semantics (single_choice) or keep
+    contradictory labels consistent (multi_label).
+
+    Returns:
+        (parents_by_id, children_by_parent_id, standalone_metrics)
+
+        ``parents_by_id`` maps parent UUID -> parent Metric row (fetched
+        from the DB so the prompt builder has access to the parent's
+        description and selection_mode).
+
+        ``standalone_metrics`` is the leftover list of LLM metrics that
+        have no parent — they are evaluated one-by-one (preserves the
+        legacy code path so non-hierarchical metrics are unaffected).
+    """
+
+    children_by_parent: dict[UUID, list[Metric]] = {}
+    standalone: list[Metric] = []
+    for m in llm_metrics:
+        if m.parent_metric_id:
+            children_by_parent.setdefault(m.parent_metric_id, []).append(m)
+        else:
+            standalone.append(m)
+
+    parents_by_id: dict[UUID, Metric] = {}
+    if children_by_parent:
+        rows = (
+            db.query(Metric)
+            .filter(Metric.id.in_(list(children_by_parent.keys())))
+            .all()
+        )
+        parents_by_id = {row.id: row for row in rows}
+        # Drop groups whose parent disappeared (deleted mid-run) — the
+        # children fall back to standalone evaluation so we don't lose
+        # their scores entirely.
+        orphaned: list[UUID] = []
+        for pid in list(children_by_parent.keys()):
+            if pid not in parents_by_id:
+                orphaned.append(pid)
+        for pid in orphaned:
+            standalone.extend(children_by_parent.pop(pid))
+
+    return parents_by_id, children_by_parent, standalone
+
+
 def _rollup_parent(db, evaluation: CallImportEvaluation) -> None:
     rows = (
         db.query(CallImportEvaluationRow.status)
@@ -278,6 +328,15 @@ def evaluate_call_import_row_task(self, eval_row_id: str):
                 .all()
             )
 
+            # Split LLM metrics into "hierarchical groups" (children
+            # sharing a parent) and "standalone" leaves. Each
+            # hierarchical group is evaluated as one logical unit so
+            # the LLM sees every sibling at once and the
+            # single_choice/multi_label invariants can be enforced.
+            parents_by_id, children_by_parent, standalone_metrics = (
+                _build_parent_groups(db, llm_metrics)
+            )
+
             # Group metrics by their effective (provider, model) so we
             # only call the LLM once per unique config. Per-metric
             # overrides win, then fall back to the run-level default,
@@ -291,19 +350,35 @@ def evaluate_call_import_row_task(self, eval_row_id: str):
                 else {}
             )
 
-            groups: dict[
-                tuple[str | None, str | None], list[Metric]
-            ] = {}
-            for metric in llm_metrics:
-                metric_id_str = str(metric.id)
-                override = overrides.get(metric_id_str) or {}
+            def _resolve_pm(metric: Metric) -> tuple[str | None, str | None]:
+                override = overrides.get(str(metric.id)) or {}
                 provider = (
                     override.get("provider") or run_provider or None
                 )
                 model = override.get("model") or run_model or None
-                groups.setdefault((provider, model), []).append(metric)
+                return provider, model
 
-            for (provider, model), bucket in groups.items():
+            # Bucket = ((provider, model), parent_id_or_None) -> metrics.
+            # parent_id_or_None keys hierarchical groups; ``None`` keys
+            # the standalone bucket. Splitting on parent_id lets us pass
+            # ``parent_metric`` to ``evaluate_with_llm`` for prompt rendering.
+            BucketKey = tuple[tuple[str | None, str | None], UUID | None]
+            groups: dict[BucketKey, list[Metric]] = {}
+            for metric in standalone_metrics:
+                provider, model = _resolve_pm(metric)
+                groups.setdefault(((provider, model), None), []).append(metric)
+            for parent_id, children in children_by_parent.items():
+                # Children of the same parent MUST end up in one bucket
+                # (no per-child provider/model split inside a hierarchy
+                # group) — otherwise we lose the mutex / consistency
+                # guarantees. Use the first child's resolved config.
+                provider, model = _resolve_pm(children[0])
+                groups.setdefault(
+                    ((provider, model), parent_id), []
+                ).extend(children)
+
+            for (config, parent_id), bucket in groups.items():
+                provider, model = config
                 evaluator_obj = None
                 if provider and model:
                     evaluator_obj = SimpleNamespace(
@@ -311,6 +386,9 @@ def evaluate_call_import_row_task(self, eval_row_id: str):
                         llm_model=model,
                         custom_prompt=None,
                     )
+                parent_metric = (
+                    parents_by_id.get(parent_id) if parent_id else None
+                )
                 try:
                     llm_scores, _eval_time = evaluate_with_llm(
                         transcription=transcript,
@@ -323,15 +401,17 @@ def evaluate_call_import_row_task(self, eval_row_id: str):
                         agent=None,
                         persona=None,
                         scenario=None,
+                        parent_metric=parent_metric,
                     )
                     metric_scores.update(llm_scores)
                 except Exception as exc:  # noqa: BLE001
                     logger.exception(
                         "[CallImportEval {}] LLM evaluation failed for "
-                        "provider={} model={}",
+                        "provider={} model={} parent={}",
                         eval_row.id,
                         provider,
                         model,
+                        parent_id,
                     )
                     metric_scores.update(
                         handle_llm_evaluation_error(bucket, exc)
