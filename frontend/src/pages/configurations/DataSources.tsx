@@ -26,18 +26,6 @@ import {
 import { S3FileInfo, S3FolderInfo } from '../../types/api'
 import Button from '../../components/Button'
 
-function getBlobStorageLabel(provider?: string | null): string {
-  if (provider === 'gcs') return 'Google Cloud Storage'
-  if (provider === 's3') return 'Amazon S3'
-  return 'Cloud Storage'
-}
-
-function getBlobStorageShortLabel(provider?: string | null): string {
-  if (provider === 'gcs') return 'GCS'
-  if (provider === 's3') return 'S3'
-  return 'Cloud'
-}
-
 export default function DataSources() {
   const queryClient = useQueryClient()
   const [showUploadModal, setShowUploadModal] = useState(false)
@@ -65,10 +53,6 @@ export default function DataSources() {
     queryKey: ['s3-status'],
     queryFn: () => apiClient.getS3Status(),
   })
-
-  const storageProvider = s3Status?.provider
-  const storageLabel = getBlobStorageLabel(storageProvider)
-  const storageShortLabel = getBlobStorageShortLabel(storageProvider)
 
   const { data: browseData, isLoading: isLoadingBrowse, refetch: refetchBrowse } = useQuery({
     queryKey: ['s3-browse', currentPath],
@@ -174,7 +158,7 @@ export default function DataSources() {
       setShowUploadModal(false)
       setSelectedFile(null)
       setCustomFilename('')
-      alert(`File uploaded successfully to ${storageShortLabel}!`)
+      alert('File uploaded successfully to S3!')
     },
     onError: (error: any) => {
       alert(`Failed to upload file: ${error.response?.data?.detail || error.message}`)
@@ -244,7 +228,7 @@ export default function DataSources() {
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Data Sources</h1>
           <p className="mt-2 text-sm text-gray-600">
-            Browse and manage audio files in your organization's {storageLabel} bucket
+            Browse and manage audio files in your organization's S3 storage
           </p>
         </div>
         <div className="flex gap-3">
@@ -278,17 +262,17 @@ export default function DataSources() {
         </div>
       </div>
 
-      {/* Cloud storage status */}
+      {/* S3 Status Card */}
       <div className="bg-white shadow rounded-lg p-6">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Database className="h-6 w-6 text-primary-600" />
-            <h2 className="text-xl font-semibold">{storageLabel} Connection Status</h2>
+            <h2 className="text-xl font-semibold">S3 Connection Status</h2>
           </div>
           {s3Status?.enabled ? (
             <span className="flex items-center gap-2 text-green-600">
               <CheckCircle className="h-5 w-5" />
-              Connected ({storageShortLabel})
+              Connected
             </span>
           ) : (
             <span className="flex items-center gap-2 text-gray-500">
@@ -310,7 +294,7 @@ export default function DataSources() {
         )}
       </div>
 
-      {/* File browser */}
+      {/* S3 Browser */}
       {s3Status?.enabled && (
         <div className="bg-white shadow rounded-lg p-6">
           {/* Breadcrumb Navigation */}
@@ -618,7 +602,7 @@ export default function DataSources() {
               </div>
               <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3">
                 <p className="text-xs text-blue-700">
-                  Files will be uploaded to your organization's <code className="bg-blue-100 px-1 rounded">audio/</code> folder in {storageLabel}.
+                  Files will be uploaded to your organization's <code className="bg-blue-100 px-1 rounded">audio/</code> folder in S3.
                 </p>
               </div>
               {uploadMutation.isError && (

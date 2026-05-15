@@ -3,14 +3,27 @@ name: Deploy Docs to S3
 on:
   push:
     branches:
-      - main  # Change to the branch you want to deploy from
+      - main
     paths:
-      - 'EfficientAI-Docs/**'
+      - 'docs-fumadocs/**'
+      - '.github/workflows/docs-quality.yml'
       - '.github/workflows/deploy-docs.yml'
+  workflow_dispatch:
+    inputs:
+      deploy_target:
+        description: 'Choose docs stack for deployment'
+        required: true
+        type: choice
+        default: fumadocs
+        options:
+          - fumadocs
+          - legacy
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      DEPLOY_TARGET: ${{ github.event.inputs.deploy_target || 'fumadocs' }}
 
     steps:
       - name: Checkout repository
@@ -21,12 +34,22 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: 'EfficientAI-Docs/package-lock.json'
+          cache-dependency-path: |
+            docs-fumadocs/package-lock.json
+            EfficientAI-Docs/package-lock.json
 
-      - name: Install dependencies & Build
+      - name: Build Fumadocs site
+        if: env.DEPLOY_TARGET == 'fumadocs'
+        run: |
+          cd docs-fumadocs
+          npm ci
+          npm run ci:check
+
+      - name: Build legacy Docusaurus site
+        if: env.DEPLOY_TARGET == 'legacy'
         run: |
           cd EfficientAI-Docs
-          npm install
+          npm ci
           npm run build
 
       - name: Configure AWS credentials
@@ -38,7 +61,11 @@ jobs:
 
       - name: Deploy to S3
         run: |
-          aws s3 sync ./EfficientAI-Docs/build s3://${{ secrets.AWS_S3_BUCKET }} --delete
+          if [ "${DEPLOY_TARGET}" = "legacy" ]; then
+            aws s3 sync ./EfficientAI-Docs/build s3://${{ secrets.AWS_S3_BUCKET }} --delete
+          else
+            aws s3 sync ./docs-fumadocs/out s3://${{ secrets.AWS_S3_BUCKET }} --delete
+          fi
 
       - name: Invalidating CloudFront cache
         run: |
