@@ -1,0 +1,10 @@
+{
+  "title": "Getting Started",
+  "pages": [
+    "installation",
+    "s3-storage",
+    "authentication",
+    "integrations",
+    "voice-bundles"
+  ]
+}

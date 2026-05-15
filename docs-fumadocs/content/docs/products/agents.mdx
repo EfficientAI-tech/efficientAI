@@ -1,0 +1,81 @@
+---
+id: agents
+title: Agents
+sidebar_position: 1
+---
+
+# Agents
+
+An Agent is the voice system you are evaluating in EfficientAI.
+
+## What the Agents section is for
+
+The Agents section is your control plane for:
+
+- defining the system under test,
+- choosing the call context (language, medium, inbound/outbound),
+- managing prompt surfaces used in tests,
+- linking the agent to either internal or external execution paths.
+
+## Creating an agent
+
+![Creating an agent](/screenshots/creating-agents.png)
+
+## Execution paths
+
+An agent can run on one or both paths:
+
+- **Test Agent path (internal)** via `voice_bundle_id`.
+- **Voice AI Agent path (external)** via integration + provider agent mapping.
+
+If both are configured, you can compare outcomes across both paths from Playground and evaluator workflows.
+
+## Core configuration
+
+| Property | Type | Description |
+|---|---|---|
+| `name` | String | Human-readable agent name. |
+| `language` | Enum | Primary language context for evaluation. |
+| `call_type` | Enum | `inbound` or `outbound` behavior context. |
+| `call_medium` | Enum | `phone_call` or `web_call`. |
+| `phone_number` | String | Required when `call_medium = phone_call`. |
+| `voice_bundle_id` | UUID | Internal test stack for voice-bundle testing. |
+| `voice_ai_integration_id` | UUID | External provider integration reference. |
+| `voice_ai_agent_id` | String | External provider agent identifier. |
+
+## Inbound vs outbound calls
+
+Use `call_type` to model the call direction your production agent is designed for:
+
+- **Inbound**: user initiates call to the agent.
+- **Outbound**: agent initiates call to the user.
+
+This setting should match your real deployment pattern so evaluation conditions are realistic.
+
+## Prompt management
+
+Agents can carry two prompt surfaces:
+
+- **EfficientAI Test Agent Description (`description`)**  
+  Internal prompt used for test-agent behavior and evaluation context.
+- **Provider Prompt (`provider_prompt`)**  
+  Prompt fetched from the linked external voice provider.
+
+### Provider prompt sync
+
+When an agent is linked to an external provider, EfficientAI can fetch and store the current provider prompt.
+
+Sync can happen:
+
+- automatically on relevant create/update operations, and
+- manually through "Sync Now" in the agent view.
+
+This keeps local review and optimization aligned with what is currently running on the provider.
+
+## Related setup guides
+
+For setup details, use these getting-started guides:
+
+- Voice bundle setup: [Voice Bundles](/docs/getting-started/voice-bundles)
+- Provider integration setup: [Integrations](/docs/getting-started/integrations)
+

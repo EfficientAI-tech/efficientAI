@@ -1,0 +1,12 @@
+{
+  "title": "EfficientAI Docs",
+  "pages": [
+    "intro",
+    "getting-started",
+    "products",
+    "monitoring",
+    "reference",
+    "advanced",
+    "more"
+  ]
+}

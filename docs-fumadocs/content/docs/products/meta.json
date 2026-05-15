@@ -1,0 +1,13 @@
+{
+  "title": "Products",
+  "pages": [
+    "agents",
+    "personas",
+    "scenarios",
+    "evaluators",
+    "metrics",
+    "playground",
+    "alerting",
+    "prompt-optimization"
+  ]
+}

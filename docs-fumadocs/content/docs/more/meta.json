@@ -1,0 +1,11 @@
+{
+  "title": "More",
+  "defaultOpen": true,
+  "collapsible": false,
+  "pages": [
+    "roadmap",
+    "pitch-ideas",
+    "polls",
+    "qna"
+  ]
+}

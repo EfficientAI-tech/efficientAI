@@ -1,0 +1,265 @@
+{
+  "source": "git-history",
+  "maxContributors": 5,
+  "minCommits": 2,
+  "features": [
+    {
+      "featureId": "advanced/architecture",
+      "docPath": "docs-fumadocs/content/docs/advanced/architecture.mdx",
+      "historyPath": "docs-fumadocs/content/docs/advanced/architecture.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [],
+      "lastReviewed": "2026-05-15"
+    },
+    {
+      "featureId": "advanced/database",
+      "docPath": "docs-fumadocs/content/docs/advanced/database.mdx",
+      "historyPath": "docs-fumadocs/content/docs/advanced/database.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [],
+      "lastReviewed": "2026-05-15"
+    },
+    {
+      "featureId": "advanced/development",
+      "docPath": "docs-fumadocs/content/docs/advanced/development.mdx",
+      "historyPath": "docs-fumadocs/content/docs/advanced/development.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [],
+      "lastReviewed": "2026-05-15"
+    },
+    {
+      "featureId": "contributors",
+      "docPath": "docs-fumadocs/content/docs/contributors.mdx",
+      "historyPath": "docs-fumadocs/content/docs/contributors.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [],
+      "lastReviewed": "2026-05-15"
+    },
+    {
+      "featureId": "getting-started/authentication",
+      "docPath": "docs-fumadocs/content/docs/getting-started/authentication.mdx",
+      "historyPath": "docs-fumadocs/content/docs/getting-started/authentication.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [],
+      "lastReviewed": "2026-05-15"
+    },
+    {
+      "featureId": "getting-started/installation",
+      "docPath": "docs-fumadocs/content/docs/getting-started/installation.mdx",
+      "historyPath": "docs-fumadocs/content/docs/getting-started/installation.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [],
+      "lastReviewed": "2026-05-15"
+    },
+    {
+      "featureId": "getting-started/integrations",
+      "docPath": "docs-fumadocs/content/docs/getting-started/integrations.mdx",
+      "historyPath": "docs-fumadocs/content/docs/getting-started/integrations.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [],
+      "lastReviewed": "2026-05-15"
+    },
+    {
+      "featureId": "getting-started/s3-storage",
+      "docPath": "docs-fumadocs/content/docs/getting-started/s3-storage.mdx",
+      "historyPath": "docs-fumadocs/content/docs/getting-started/s3-storage.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [],
+      "lastReviewed": "2026-05-15"
+    },
+    {
+      "featureId": "getting-started/voice-bundles",
+      "docPath": "docs-fumadocs/content/docs/getting-started/voice-bundles.mdx",
+      "historyPath": "docs-fumadocs/content/docs/getting-started/voice-bundles.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [],
+      "lastReviewed": "2026-05-15"
+    },
+    {
+      "featureId": "intro",
+      "docPath": "docs-fumadocs/content/docs/intro.mdx",
+      "historyPath": "docs-fumadocs/content/docs/intro.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [],
+      "lastReviewed": "2026-05-15"
+    },
+    {
+      "featureId": "monitoring/alerting",
+      "docPath": "docs-fumadocs/content/docs/monitoring/alerting.mdx",
+      "historyPath": "docs-fumadocs/content/docs/monitoring/alerting.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [],
+      "lastReviewed": "2026-05-15"
+    },
+    {
+      "featureId": "monitoring/calls",
+      "docPath": "docs-fumadocs/content/docs/monitoring/calls.mdx",
+      "historyPath": "docs-fumadocs/content/docs/monitoring/calls.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [],
+      "lastReviewed": "2026-05-15"
+    },
+    {
+      "featureId": "monitoring/cron-jobs",
+      "docPath": "docs-fumadocs/content/docs/monitoring/cron-jobs.mdx",
+      "historyPath": "docs-fumadocs/content/docs/monitoring/cron-jobs.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [],
+      "lastReviewed": "2026-05-15"
+    },
+    {
+      "featureId": "products/agents",
+      "docPath": "docs-fumadocs/content/docs/products/agents.mdx",
+      "historyPath": "docs-fumadocs/content/docs/products/agents.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [],
+      "lastReviewed": "2026-05-15"
+    },
+    {
+      "featureId": "products/alerting",
+      "docPath": "docs-fumadocs/content/docs/products/alerting.mdx",
+      "historyPath": "docs-fumadocs/content/docs/products/alerting.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [],
+      "lastReviewed": "2026-05-15"
+    },
+    {
+      "featureId": "products/evaluators",
+      "docPath": "docs-fumadocs/content/docs/products/evaluators.mdx",
+      "historyPath": "docs-fumadocs/content/docs/products/evaluators.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [],
+      "lastReviewed": "2026-05-15"
+    },
+    {
+      "featureId": "products/metrics",
+      "docPath": "docs-fumadocs/content/docs/products/metrics.mdx",
+      "historyPath": "docs-fumadocs/content/docs/products/metrics.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [],
+      "lastReviewed": "2026-05-15"
+    },
+    {
+      "featureId": "products/personas",
+      "docPath": "docs-fumadocs/content/docs/products/personas.mdx",
+      "historyPath": "docs-fumadocs/content/docs/products/personas.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [],
+      "lastReviewed": "2026-05-15"
+    },
+    {
+      "featureId": "products/playground",
+      "docPath": "docs-fumadocs/content/docs/products/playground.mdx",
+      "historyPath": "docs-fumadocs/content/docs/products/playground.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [],
+      "lastReviewed": "2026-05-15"
+    },
+    {
+      "featureId": "products/prompt-optimization",
+      "docPath": "docs-fumadocs/content/docs/products/prompt-optimization.mdx",
+      "historyPath": "docs-fumadocs/content/docs/products/prompt-optimization.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [],
+      "lastReviewed": "2026-05-15"
+    },
+    {
+      "featureId": "products/scenarios",
+      "docPath": "docs-fumadocs/content/docs/products/scenarios.mdx",
+      "historyPath": "docs-fumadocs/content/docs/products/scenarios.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [],
+      "lastReviewed": "2026-05-15"
+    },
+    {
+      "featureId": "reference/cli-commands",
+      "docPath": "docs-fumadocs/content/docs/reference/cli-commands.mdx",
+      "historyPath": "docs-fumadocs/content/docs/reference/cli-commands.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [],
+      "lastReviewed": "2026-05-15"
+    },
+    {
+      "featureId": "reference/configuration",
+      "docPath": "docs-fumadocs/content/docs/reference/configuration.mdx",
+      "historyPath": "docs-fumadocs/content/docs/reference/configuration.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [],
+      "lastReviewed": "2026-05-15"
+    }
+  ],
+  "summary": {
+    "featureCount": 23,
+    "contributorCount": 0,
+    "skippedBots": 0
+  }
+}

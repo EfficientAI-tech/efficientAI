@@ -1,0 +1,41 @@
+---
+id: voice-bundles
+title: Voice Bundles
+sidebar_position: 5
+---
+
+# Voice Bundles
+
+Voice Bundles define the internal speech pipeline used by the EfficientAI Test Agent path.
+
+## Voice Bundle UI
+
+![Voice bundle setup](/screenshots/voice-bundle.png)
+
+## Why voice bundles matter
+
+A voice bundle gives you repeatable, controlled test conditions so you can compare prompt and model changes without provider-side drift.
+
+## Supported bundle types
+
+- **STT + LLM + TTS**
+- **S2S (speech-to-speech)**
+
+For STT + LLM + TTS bundles, you configure provider/model settings per stage and optional parameters like temperature and token limits.
+
+## When to use voice bundles vs integrations
+
+- Use **voice bundles** when you want tightly controlled internal testing.
+- Use **integrations** when you want to test external provider behavior end-to-end.
+
+## Typical workflow
+
+1. Configure a voice bundle in the platform.
+2. Attach `voice_bundle_id` to an agent.
+3. Run tests in Playground or evaluator flows.
+4. Compare outcomes over time using consistent bundle settings.
+
+## Backlinks
+
+- Agent capability overview: [Agents](/docs/products/agents)
+- External provider path setup: [Integrations](/docs/getting-started/integrations)
