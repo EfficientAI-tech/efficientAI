@@ -11,8 +11,19 @@
         "aadhar-EAI",
         "Tejas Narayan"
       ],
-      "contributors": [],
-      "lastReviewed": "2026-05-15"
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        },
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-05-16"
     },
     {
       "featureId": "advanced/database",
@@ -22,8 +33,14 @@
         "aadhar-EAI",
         "Tejas Narayan"
       ],
-      "contributors": [],
-      "lastReviewed": "2026-05-15"
+      "contributors": [
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 2
+        }
+      ],
+      "lastReviewed": "2026-05-16"
     },
     {
       "featureId": "advanced/development",
@@ -33,19 +50,19 @@
         "aadhar-EAI",
         "Tejas Narayan"
       ],
-      "contributors": [],
-      "lastReviewed": "2026-05-15"
-    },
-    {
-      "featureId": "contributors",
-      "docPath": "docs-fumadocs/content/docs/contributors.mdx",
-      "historyPath": "docs-fumadocs/content/docs/contributors.mdx",
-      "owners": [
-        "aadhar-EAI",
-        "Tejas Narayan"
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        },
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 1
+        }
       ],
-      "contributors": [],
-      "lastReviewed": "2026-05-15"
+      "lastReviewed": "2026-05-16"
     },
     {
       "featureId": "getting-started/authentication",
@@ -55,8 +72,19 @@
         "aadhar-EAI",
         "Tejas Narayan"
       ],
-      "contributors": [],
-      "lastReviewed": "2026-05-15"
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        },
+        {
+          "name": "Tejas Narayan",
+          "email": "stejasnarayan@gmail.com",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-05-16"
     },
     {
       "featureId": "getting-started/installation",
@@ -66,8 +94,14 @@
         "aadhar-EAI",
         "Tejas Narayan"
       ],
-      "contributors": [],
-      "lastReviewed": "2026-05-15"
+      "contributors": [
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 2
+        }
+      ],
+      "lastReviewed": "2026-05-16"
     },
     {
       "featureId": "getting-started/integrations",
@@ -77,8 +111,14 @@
         "aadhar-EAI",
         "Tejas Narayan"
       ],
-      "contributors": [],
-      "lastReviewed": "2026-05-15"
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-05-16"
     },
     {
       "featureId": "getting-started/s3-storage",
@@ -88,8 +128,19 @@
         "aadhar-EAI",
         "Tejas Narayan"
       ],
-      "contributors": [],
-      "lastReviewed": "2026-05-15"
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        },
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-05-16"
     },
     {
       "featureId": "getting-started/voice-bundles",
@@ -99,8 +150,14 @@
         "aadhar-EAI",
         "Tejas Narayan"
       ],
-      "contributors": [],
-      "lastReviewed": "2026-05-15"
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-05-16"
     },
     {
       "featureId": "intro",
@@ -110,8 +167,14 @@
         "aadhar-EAI",
         "Tejas Narayan"
       ],
-      "contributors": [],
-      "lastReviewed": "2026-05-15"
+      "contributors": [
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 2
+        }
+      ],
+      "lastReviewed": "2026-05-16"
     },
     {
       "featureId": "monitoring/alerting",
@@ -121,8 +184,19 @@
         "aadhar-EAI",
         "Tejas Narayan"
       ],
-      "contributors": [],
-      "lastReviewed": "2026-05-15"
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        },
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-05-16"
     },
     {
       "featureId": "monitoring/calls",
@@ -132,8 +206,19 @@
         "aadhar-EAI",
         "Tejas Narayan"
       ],
-      "contributors": [],
-      "lastReviewed": "2026-05-15"
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        },
+        {
+          "name": "Tejas Narayan",
+          "email": "stejasnarayan@gmail.com",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-05-16"
     },
     {
       "featureId": "monitoring/cron-jobs",
@@ -143,8 +228,75 @@
         "aadhar-EAI",
         "Tejas Narayan"
       ],
-      "contributors": [],
-      "lastReviewed": "2026-05-15"
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        },
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-05-16"
+    },
+    {
+      "featureId": "more/pitch-ideas",
+      "docPath": "docs-fumadocs/content/docs/more/pitch-ideas.mdx",
+      "historyPath": "docs-fumadocs/content/docs/more/pitch-ideas.mdx",
+      "owners": [],
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-05-16"
+    },
+    {
+      "featureId": "more/polls",
+      "docPath": "docs-fumadocs/content/docs/more/polls.mdx",
+      "historyPath": "docs-fumadocs/content/docs/more/polls.mdx",
+      "owners": [],
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-05-16"
+    },
+    {
+      "featureId": "more/qna",
+      "docPath": "docs-fumadocs/content/docs/more/qna.mdx",
+      "historyPath": "docs-fumadocs/content/docs/more/qna.mdx",
+      "owners": [],
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-05-16"
+    },
+    {
+      "featureId": "more/roadmap",
+      "docPath": "docs-fumadocs/content/docs/more/roadmap.mdx",
+      "historyPath": "docs-fumadocs/content/docs/more/roadmap.mdx",
+      "owners": [],
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-05-16"
     },
     {
       "featureId": "products/agents",
@@ -154,8 +306,14 @@
         "aadhar-EAI",
         "Tejas Narayan"
       ],
-      "contributors": [],
-      "lastReviewed": "2026-05-15"
+      "contributors": [
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 2
+        }
+      ],
+      "lastReviewed": "2026-05-16"
     },
     {
       "featureId": "products/alerting",
@@ -165,8 +323,19 @@
         "aadhar-EAI",
         "Tejas Narayan"
       ],
-      "contributors": [],
-      "lastReviewed": "2026-05-15"
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        },
+        {
+          "name": "Tejas Narayan",
+          "email": "stejasnarayan@gmail.com",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-05-16"
     },
     {
       "featureId": "products/evaluators",
@@ -176,8 +345,19 @@
         "aadhar-EAI",
         "Tejas Narayan"
       ],
-      "contributors": [],
-      "lastReviewed": "2026-05-15"
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        },
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-05-16"
     },
     {
       "featureId": "products/metrics",
@@ -187,8 +367,14 @@
         "aadhar-EAI",
         "Tejas Narayan"
       ],
-      "contributors": [],
-      "lastReviewed": "2026-05-15"
+      "contributors": [
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 3
+        }
+      ],
+      "lastReviewed": "2026-05-16"
     },
     {
       "featureId": "products/personas",
@@ -198,8 +384,14 @@
         "aadhar-EAI",
         "Tejas Narayan"
       ],
-      "contributors": [],
-      "lastReviewed": "2026-05-15"
+      "contributors": [
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 2
+        }
+      ],
+      "lastReviewed": "2026-05-16"
     },
     {
       "featureId": "products/playground",
@@ -209,8 +401,19 @@
         "aadhar-EAI",
         "Tejas Narayan"
       ],
-      "contributors": [],
-      "lastReviewed": "2026-05-15"
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        },
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-05-16"
     },
     {
       "featureId": "products/prompt-optimization",
@@ -220,8 +423,19 @@
         "aadhar-EAI",
         "Tejas Narayan"
       ],
-      "contributors": [],
-      "lastReviewed": "2026-05-15"
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        },
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-05-16"
     },
     {
       "featureId": "products/scenarios",
@@ -231,8 +445,14 @@
         "aadhar-EAI",
         "Tejas Narayan"
       ],
-      "contributors": [],
-      "lastReviewed": "2026-05-15"
+      "contributors": [
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 2
+        }
+      ],
+      "lastReviewed": "2026-05-16"
     },
     {
       "featureId": "reference/cli-commands",
@@ -242,8 +462,19 @@
         "aadhar-EAI",
         "Tejas Narayan"
       ],
-      "contributors": [],
-      "lastReviewed": "2026-05-15"
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        },
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-05-16"
     },
     {
       "featureId": "reference/configuration",
@@ -253,13 +484,29 @@
         "aadhar-EAI",
         "Tejas Narayan"
       ],
-      "contributors": [],
-      "lastReviewed": "2026-05-15"
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        },
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 1
+        },
+        {
+          "name": "Tejas Narayan",
+          "email": "stejasnarayan@gmail.com",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-05-16"
     }
   ],
   "summary": {
-    "featureCount": 23,
-    "contributorCount": 0,
+    "featureCount": 26,
+    "contributorCount": 40,
     "skippedBots": 0
   }
 }
