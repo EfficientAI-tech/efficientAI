@@ -12,6 +12,8 @@ eggs/
 .eggs/
 lib/
 !frontend/src/lib/
+!docs-fumadocs/lib/
+!docs-fumadocs/lib/**
 lib64/
 parts/
 sdist/
