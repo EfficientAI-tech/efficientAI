@@ -637,80 +637,91 @@ async def bot_connect(
     """
     Get WebSocket connection URL for voice agent.
     Returns the WebSocket URL that the client should connect to.
-    Accepts API key from header, query parameter, cookies, or request body.
-    
-    Supports both GET and POST requests for compatibility with different client implementations.
-    
-    Note: This endpoint is called by Pipecat's startBotAndConnect which may not
-    send authentication headers. We try multiple methods to get the API key.
+
+    Accepts either a Bearer access token (email/password / SSO login) or an
+    API key (legacy / machine access). Credentials may be supplied via the
+    `Authorization` header, `X-API-Key` header, cookies (`access_token` /
+    `api_key`), or query parameters (`token` / `X-API-Key` / `api_key`).
+
+    Supports both GET and POST requests for compatibility with different client
+    implementations. Pipecat's `startBotAndConnect` issues an HTTP request to
+    this endpoint; the WebSocket URL returned here embeds the same credential
+    so the subsequent /ws connection can authenticate without re-prompting.
     """
+    from app.core.auth.providers import (
+        AuthError,
+        RawCredential,
+        get_provider_registry,
+    )
+
     print("=" * 80)
     print(f"[BACKEND] /connect endpoint called at {__import__('datetime').datetime.now()}")
     print(f"[BACKEND] Request method: {request.method}")
     print(f"[BACKEND] Request URL: {request.url}")
-    print(f"[BACKEND] Request headers: {dict(request.headers)}")
-    print(f"[BACKEND] Request cookies: {dict(request.cookies)}")
+    print(f"[BACKEND] Request cookies present: {list(request.cookies.keys())}")
     print(f"[BACKEND] Query params: {dict(request.query_params)}")
-    
-    # Get API key - prioritize cookies since Pipecat can send them automatically
-    # Then try headers, then query params
-    api_key = request.cookies.get("api_key")
-    print(f"[BACKEND] API key from cookies: {'found' if api_key else 'not found'}")
-    
-    if not api_key:
-        api_key = request.headers.get("X-API-Key")
-        print(f"[BACKEND] API key from headers: {'found' if api_key else 'not found'}")
-    
-    if not api_key:
-        api_key = request.query_params.get("X-API-Key") or request.query_params.get("api_key")
-        print(f"[BACKEND] API key from query params: {'found' if api_key else 'not found'}")
-    
-    # Also try to extract from the full URL (in case query params aren't parsed)
-    if not api_key:
-        url_str = str(request.url)
-        if "X-API-Key=" in url_str:
-            try:
-                from urllib.parse import urlparse, parse_qs
-                parsed = urlparse(url_str)
-                params = parse_qs(parsed.query)
-                api_key = params.get("X-API-Key", [None])[0] or params.get("api_key", [None])[0]
-                print(f"[BACKEND] API key from URL parsing: {'found' if api_key else 'not found'}")
-            except Exception as e:
-                print(f"[BACKEND] Error parsing URL: {e}")
-    
-    # Don't read request body - it can only be read once and might cause issues
-    # If we need to read body, we'd need to cache it, but cookies should work
-    
+
+    def _extract_bearer(value: Optional[str]) -> Optional[str]:
+        if not value:
+            return None
+        scheme, _, token = value.partition(" ")
+        if scheme.lower() != "bearer" or not token.strip():
+            return None
+        return token.strip()
+
+    # Bearer / access token: header, cookie, query param.
+    bearer_token = (
+        _extract_bearer(request.headers.get("Authorization"))
+        or request.cookies.get("access_token")
+        or request.query_params.get("token")
+        or request.query_params.get("access_token")
+    )
+
+    # API key: header, cookie, query param.
+    api_key = (
+        request.headers.get("X-API-Key")
+        or request.headers.get("X-EFFICIENTAI-API-KEY")
+        or request.cookies.get("api_key")
+        or request.query_params.get("X-API-Key")
+        or request.query_params.get("api_key")
+    )
+
+    print(
+        f"[BACKEND] Bearer token: {'found' if bearer_token else 'not found'}, "
+        f"API key: {'found' if api_key else 'not found'}"
+    )
+
     from app.config import settings
-    
-    # If no API key is provided, we can't return a valid WebSocket URL
-    # because the WebSocket endpoint requires authentication.
-    # However, to allow Pipecat's startBotAndConnect to work, we'll return
-    # a WebSocket URL that the client can modify, or we'll use a session-based approach.
-    # For now, let's require the API key but make it easier to provide.
-    if not api_key:
-        print("[BACKEND] ❌ No API key found, returning 401")
+
+    if not bearer_token and not api_key:
+        print("[BACKEND] ❌ No credentials found, returning 401")
         raise HTTPException(
-            status_code=401, 
-            detail="API key is required. Please ensure you are logged in and the API key is set."
+            status_code=401,
+            detail=(
+                "Authentication required. Send an Authorization: Bearer "
+                "header, X-API-Key header, or matching cookie/query param."
+            ),
         )
-    
-    print(f"[BACKEND] API key found: {api_key[:10]}... (truncated)")
-    
-    # Verify API key if provided
-    from app.core.security import verify_api_key, get_api_key_organization_id
-    if not verify_api_key(api_key, db):
-        print("[BACKEND] ❌ API key verification failed")
-        raise HTTPException(status_code=401, detail="Invalid API key")
-    
-    print("[BACKEND] ✅ API key verified")
-    
-    organization_id = get_api_key_organization_id(api_key, db)
+
+    cred = RawCredential(bearer_token=bearer_token, api_key=api_key)
+    registry = get_provider_registry()
+    provider = registry.find(cred)
+    if provider is None:
+        print("[BACKEND] ❌ No auth provider accepted the credential")
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    try:
+        principal = provider.authenticate(cred, db)
+    except AuthError as e:
+        print(f"[BACKEND] ❌ Auth provider rejected credential: {e}")
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+
+    organization_id = principal.organization_id
     if not organization_id:
-        print("[BACKEND] ❌ Could not get organization ID")
-        raise HTTPException(status_code=401, detail="Invalid API key")
-    
-    print(f"[BACKEND] Organization ID: {organization_id}")
+        print("[BACKEND] ❌ Principal has no organization")
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    print(f"[BACKEND] ✅ Authenticated via {provider.name} (org={organization_id})")
     
     # Get agent_id, persona_id and scenario_id from query params first
     agent_id = request.query_params.get("agent_id")
@@ -850,10 +861,17 @@ async def bot_connect(
     scheme = "wss" if request.url.scheme == "https" else "ws"
     host = request.headers.get("host", f"localhost:{settings.PORT}")
     base_url = f"{scheme}://{host}"
-    
-    # The WebSocket endpoint path with API key as query parameter
-    ws_url = f"{base_url}{settings.API_V1_PREFIX}/voice-agent/ws?X-API-Key={api_key}"
-    
+
+    # The WebSocket endpoint accepts either a bearer token (?token=...) or an
+    # API key (?X-API-Key=...). Embed whichever credential authenticated this
+    # /connect request so the client doesn't need to re-supply it.
+    from urllib.parse import quote
+    if bearer_token:
+        ws_auth_query = f"token={quote(bearer_token, safe='')}"
+    else:
+        ws_auth_query = f"X-API-Key={quote(api_key or '', safe='')}"
+    ws_url = f"{base_url}{settings.API_V1_PREFIX}/voice-agent/ws?{ws_auth_query}"
+
     # Append agent_id, persona_id and scenario_id if present
     if agent_id:
         ws_url += f"&agent_id={agent_id}"
