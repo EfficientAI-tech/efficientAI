@@ -23,7 +23,7 @@
           "commits": 1
         }
       ],
-      "lastReviewed": "2026-05-16"
+      "lastReviewed": "2026-05-17"
     },
     {
       "featureId": "advanced/database",
@@ -40,7 +40,7 @@
           "commits": 2
         }
       ],
-      "lastReviewed": "2026-05-16"
+      "lastReviewed": "2026-05-17"
     },
     {
       "featureId": "advanced/development",
@@ -62,7 +62,7 @@
           "commits": 1
         }
       ],
-      "lastReviewed": "2026-05-16"
+      "lastReviewed": "2026-05-17"
     },
     {
       "featureId": "getting-started/authentication",
@@ -84,7 +84,7 @@
           "commits": 1
         }
       ],
-      "lastReviewed": "2026-05-16"
+      "lastReviewed": "2026-05-17"
     },
     {
       "featureId": "getting-started/installation",
@@ -101,7 +101,7 @@
           "commits": 2
         }
       ],
-      "lastReviewed": "2026-05-16"
+      "lastReviewed": "2026-05-17"
     },
     {
       "featureId": "getting-started/integrations",
@@ -118,7 +118,7 @@
           "commits": 1
         }
       ],
-      "lastReviewed": "2026-05-16"
+      "lastReviewed": "2026-05-17"
     },
     {
       "featureId": "getting-started/s3-storage",
@@ -140,7 +140,7 @@
           "commits": 1
         }
       ],
-      "lastReviewed": "2026-05-16"
+      "lastReviewed": "2026-05-17"
     },
     {
       "featureId": "getting-started/voice-bundles",
@@ -157,7 +157,7 @@
           "commits": 1
         }
       ],
-      "lastReviewed": "2026-05-16"
+      "lastReviewed": "2026-05-17"
     },
     {
       "featureId": "intro",
@@ -174,7 +174,7 @@
           "commits": 2
         }
       ],
-      "lastReviewed": "2026-05-16"
+      "lastReviewed": "2026-05-17"
     },
     {
       "featureId": "monitoring/alerting",
@@ -196,7 +196,7 @@
           "commits": 1
         }
       ],
-      "lastReviewed": "2026-05-16"
+      "lastReviewed": "2026-05-17"
     },
     {
       "featureId": "monitoring/calls",
@@ -218,7 +218,7 @@
           "commits": 1
         }
       ],
-      "lastReviewed": "2026-05-16"
+      "lastReviewed": "2026-05-17"
     },
     {
       "featureId": "monitoring/cron-jobs",
@@ -240,7 +240,7 @@
           "commits": 1
         }
       ],
-      "lastReviewed": "2026-05-16"
+      "lastReviewed": "2026-05-17"
     },
     {
       "featureId": "more/pitch-ideas",
@@ -254,7 +254,7 @@
           "commits": 1
         }
       ],
-      "lastReviewed": "2026-05-16"
+      "lastReviewed": "2026-05-17"
     },
     {
       "featureId": "more/polls",
@@ -268,7 +268,7 @@
           "commits": 1
         }
       ],
-      "lastReviewed": "2026-05-16"
+      "lastReviewed": "2026-05-17"
     },
     {
       "featureId": "more/qna",
@@ -282,7 +282,7 @@
           "commits": 1
         }
       ],
-      "lastReviewed": "2026-05-16"
+      "lastReviewed": "2026-05-17"
     },
     {
       "featureId": "more/roadmap",
@@ -296,7 +296,7 @@
           "commits": 1
         }
       ],
-      "lastReviewed": "2026-05-16"
+      "lastReviewed": "2026-05-17"
     },
     {
       "featureId": "products/agents",
@@ -313,7 +313,7 @@
           "commits": 2
         }
       ],
-      "lastReviewed": "2026-05-16"
+      "lastReviewed": "2026-05-17"
     },
     {
       "featureId": "products/alerting",
@@ -335,7 +335,7 @@
           "commits": 1
         }
       ],
-      "lastReviewed": "2026-05-16"
+      "lastReviewed": "2026-05-17"
     },
     {
       "featureId": "products/evaluators",
@@ -357,7 +357,7 @@
           "commits": 1
         }
       ],
-      "lastReviewed": "2026-05-16"
+      "lastReviewed": "2026-05-17"
     },
     {
       "featureId": "products/metrics",
@@ -374,7 +374,7 @@
           "commits": 3
         }
       ],
-      "lastReviewed": "2026-05-16"
+      "lastReviewed": "2026-05-17"
     },
     {
       "featureId": "products/personas",
@@ -391,7 +391,7 @@
           "commits": 2
         }
       ],
-      "lastReviewed": "2026-05-16"
+      "lastReviewed": "2026-05-17"
     },
     {
       "featureId": "products/playground",
@@ -413,7 +413,7 @@
           "commits": 1
         }
       ],
-      "lastReviewed": "2026-05-16"
+      "lastReviewed": "2026-05-17"
     },
     {
       "featureId": "products/prompt-optimization",
@@ -435,7 +435,7 @@
           "commits": 1
         }
       ],
-      "lastReviewed": "2026-05-16"
+      "lastReviewed": "2026-05-17"
     },
     {
       "featureId": "products/scenarios",
@@ -452,7 +452,7 @@
           "commits": 2
         }
       ],
-      "lastReviewed": "2026-05-16"
+      "lastReviewed": "2026-05-17"
     },
     {
       "featureId": "reference/cli-commands",
@@ -474,7 +474,7 @@
           "commits": 1
         }
       ],
-      "lastReviewed": "2026-05-16"
+      "lastReviewed": "2026-05-17"
     },
     {
       "featureId": "reference/configuration",
@@ -501,7 +501,7 @@
           "commits": 1
         }
       ],
-      "lastReviewed": "2026-05-16"
+      "lastReviewed": "2026-05-17"
     }
   ],
   "summary": {

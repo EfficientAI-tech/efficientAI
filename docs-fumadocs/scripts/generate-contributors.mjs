@@ -6,7 +6,6 @@ import path from 'node:path';
 
 const REPO_ROOT = path.resolve(process.cwd(), '..');
 const DOCS_APP_ROOT = process.cwd();
-const LEGACY_DOCS_ROOT = 'EfficientAI-Docs/docs';
 const CURRENT_DOCS_ROOT = 'docs-fumadocs/content/docs';
 const CURRENT_DOCS_ABS_ROOT = path.join(DOCS_APP_ROOT, 'content', 'docs');
 const OWNERS_PATH = path.join(DOCS_APP_ROOT, 'content', 'feature-owners.json');
@@ -22,10 +21,6 @@ function runGit(args) {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-}
-
-function fileExists(relativePath) {
-  return fs.existsSync(path.join(REPO_ROOT, relativePath));
 }
 
 function discoverFeatureDocs(dirPath, prefix = '') {
@@ -48,11 +43,6 @@ function discoverFeatureDocs(dirPath, prefix = '') {
 
 function historyPathFor(featureId) {
   const current = `${CURRENT_DOCS_ROOT}/${featureId}.mdx`;
-  if (fileExists(current)) return current;
-
-  const legacy = `${LEGACY_DOCS_ROOT}/${featureId}.md`;
-  if (fileExists(legacy)) return legacy;
-
   return current;
 }
 
