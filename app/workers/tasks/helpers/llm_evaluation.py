@@ -133,7 +133,44 @@ def _sequence_key(parent_metric) -> str:
     return f"{_parent_key(parent_metric)}__sequence"
 
 
-def _render_parent_block(parent_metric, children: list) -> str:
+def _discovered_key(parent_metric) -> str:
+    """LLM JSON key carrying candidate sub-labels discovered for a parent.
+
+    Only emitted/parsed when the parent has ``allow_discovery=True`` and
+    is in ``multi_label`` mode. Discovered keys can also appear in the
+    sequence array so they show up in the flow chart.
+    """
+    return f"{_parent_key(parent_metric)}__discovered"
+
+
+def _discovery_enabled(parent_metric) -> bool:
+    """True only on multi_label parents that opted into discovery."""
+    if parent_metric is None:
+        return False
+    mode = (getattr(parent_metric, "selection_mode", None) or "").lower()
+    return (
+        bool(getattr(parent_metric, "allow_discovery", False))
+        and mode == "multi_label"
+    )
+
+
+def _slug_label(value) -> str:
+    """Lowercase + whitespace-collapse + underscore-join for label keys.
+
+    Mirrors the dedup convention used by the routes layer so a label
+    discovered as "Customer on Hold" and reused later as "customer on
+    hold" collapse to the same key.
+    """
+    if value is None:
+        return ""
+    return "_".join(str(value).strip().lower().split())
+
+
+def _render_parent_block(
+    parent_metric,
+    children: list,
+    running_discovered: list | None = None,
+) -> str:
     """Build the per-parent prompt section for a hierarchical group.
 
     For ``single_choice`` parents the model is told that EXACTLY ONE
@@ -189,6 +226,56 @@ def _render_parent_block(parent_metric, children: list) -> str:
         "that actually happened. For single-choice, this may be a single "
         "element (the chosen child) or the path leading up to it.\n"
     )
+
+    # Discovery section: only added for multi_label parents that opted in.
+    # We deliberately do NOT enable discovery for single_choice parents
+    # because an invented "true" label would silently break the exactly-
+    # one-true invariant.
+    #
+    # The wording here is intentionally assertive ("list EVERY distinct
+    # behavior", "aim for 2-5 entries"). When a user has explicitly opted
+    # into discovery they want the LLM to expand their taxonomy, so the
+    # default failure mode should be over-discovery (which they can merge
+    # / discard via the panel) rather than under-discovery (silently
+    # empty arrays that look like discovery is broken). Reuse pressure
+    # for previously-discovered labels is still applied below.
+    if _discovery_enabled(parent_metric):
+        discovered_key = _discovered_key(parent_metric)
+        block += (
+            f'- "{discovered_key}" (array of objects, REQUIRED for '
+            "non-trivial calls): DISCOVERY ENABLED. List EVERY distinct "
+            "behaviour, intent, topic, or outcome demonstrated by the "
+            "agent or user that is NOT already covered by the listed "
+            "children above. Examples of things to surface when present: "
+            "price/budget discussion, product/feature questions, "
+            "scheduling (test drive, callback, appointment), payment / "
+            "financing / EMI, complaints or objections, escalation or "
+            "human-handoff, off-topic chatter, repeat caller context, "
+            "confirmation / acknowledgement patterns, etc. Aim for 2-5 "
+            "entries on a typical call; only return [] when the call is "
+            "trivially short (a few turns) or every behaviour genuinely "
+            "fits an existing child. Each entry must be an object: "
+            '{"key": "snake_case_label", "name": "Human Readable", '
+            '"description": "one short sentence", '
+            '"rationale": "exact transcript line"}. '
+            "Discovered keys may also appear in the sequence array.\n"
+        )
+        if running_discovered:
+            block += (
+                "\nPreviously discovered labels in this evaluation — "
+                "REUSE the existing key (and exact name) if the outcome "
+                "matches; do NOT invent a near-duplicate. Reuse only "
+                "applies to genuine matches — keep emitting NEW entries "
+                "for behaviours not in this list:\n"
+            )
+            for entry in running_discovered:
+                key = entry.get("key") or ""
+                name = entry.get("name") or key
+                desc = entry.get("description")
+                if desc:
+                    block += f'- "{key}" ({name}) — {desc}\n'
+                else:
+                    block += f'- "{key}" ({name})\n'
     return block
 
 
@@ -200,6 +287,7 @@ def build_evaluation_prompt(
     persona=None,
     scenario=None,
     parent_metric=None,
+    running_discovered: list | None = None,
 ) -> str:
     """
     Build the evaluation prompt for LLM-based metric evaluation.
@@ -277,7 +365,11 @@ The following is the system prompt / instructions that the agent was configured 
         # Hierarchical mode: render ONE category block with the children
         # plus a sequence array. Falls through to the format
         # instructions which understand the parent grouping.
-        prompt += _render_parent_block(parent_metric, llm_metrics)
+        prompt += _render_parent_block(
+            parent_metric,
+            llm_metrics,
+            running_discovered=running_discovered,
+        )
         prompt += _build_response_format_instructions(
             llm_metrics, parent_metric=parent_metric
         )
@@ -393,6 +485,15 @@ Example format:
         seq_sample = child_keys[: min(2, len(child_keys))]
         seq_str = ", ".join(f'"{k}"' for k in seq_sample)
         instructions += f'  "{sequence_key}": [{seq_str}],\n'
+        if _discovery_enabled(parent_metric):
+            discovered_key = _discovered_key(parent_metric)
+            instructions += (
+                f'  "{discovered_key}": [\n'
+                '    {"key": "new_outcome_key", "name": "New Outcome", '
+                '"description": "one short sentence", '
+                '"rationale": "verbatim transcript line"}\n'
+                '  ],\n'
+            )
         for metric in llm_metrics:
             if _wants_rationale(metric):
                 rk = _rationale_key(metric.name.lower().replace(" ", "_"))
@@ -400,17 +501,33 @@ Example format:
                     f'  "{rk}": "Brief justification referencing the transcript.",\n'
                 )
 
-        instructions += """}
+        discovery_rule = ""
+        if _discovery_enabled(parent_metric):
+            discovery_rule = (
+                "\n7. Discovered labels: emit entries for EVERY distinct "
+                "behaviour, topic, or outcome the agent or user "
+                "demonstrates that the listed children do NOT already "
+                "capture. Aim for 2-5 entries on a normal call; an empty "
+                "array means you are claiming the listed children cover "
+                "100% of what happened, which is rarely true. Reuse "
+                "previously-discovered keys (shown above) only when the "
+                "outcome is essentially identical — keep emitting new "
+                "entries for genuinely new behaviours. Discovered keys "
+                "may also appear inside the sequence array."
+            )
 
-CRITICAL RULES:
-1. Use the EXACT keys shown above - copy them character-for-character.
-2. Every child key value must be a BOOLEAN (true/false). No nested objects, no strings.
-3. For single-choice mode, EXACTLY ONE child must be true. Any other count is invalid.
-4. For multi-label mode, set children independently but DO NOT mark logically contradictory siblings both true.
-5. The sequence array contains the temporal order of children that actually happened (subset of the true children); use the EXACT child keys.
-6. Do NOT wrap in "metrics" or any other object.
-7. Do NOT add comments or explanations.
-8. Return ONLY the JSON object, nothing else."""
+        instructions += (
+            "}\n\n"
+            "CRITICAL RULES:\n"
+            "1. Use the EXACT keys shown above - copy them character-for-character.\n"
+            "2. Every child key value must be a BOOLEAN (true/false). No nested objects, no strings.\n"
+            "3. For single-choice mode, EXACTLY ONE child must be true. Any other count is invalid.\n"
+            "4. For multi-label mode, set children independently but DO NOT mark logically contradictory siblings both true.\n"
+            "5. The sequence array contains the temporal order of children that actually happened (subset of the true children); use the EXACT child keys.\n"
+            "6. Do NOT wrap in \"metrics\" or any other object."
+            + discovery_rule
+            + "\nN. Do NOT add comments or explanations. Return ONLY the JSON object, nothing else."
+        )
 
         return instructions
 
@@ -472,6 +589,8 @@ def _build_system_message(llm_metrics: list, parent_metric=None) -> str:
     if parent_metric is not None:
         exact_keys.append(_parent_key(parent_metric))
         exact_keys.append(_sequence_key(parent_metric))
+        if _discovery_enabled(parent_metric):
+            exact_keys.append(_discovered_key(parent_metric))
     for metric in llm_metrics:
         key = metric.name.lower().replace(" ", "_")
         exact_keys.append(key)
@@ -571,6 +690,7 @@ def evaluate_with_llm(
     persona=None,
     scenario=None,
     parent_metric=None,
+    running_discovered: list | None = None,
 ) -> tuple[dict[str, dict[str, Any]], float | None]:
     """
     Evaluate metrics using LLM.
@@ -603,6 +723,7 @@ def evaluate_with_llm(
         persona=persona,
         scenario=scenario,
         parent_metric=parent_metric,
+        running_discovered=running_discovered,
     )
 
     evaluator_llm_provider = getattr(evaluator, "llm_provider", None) if evaluator else None
@@ -827,7 +948,49 @@ def _map_hierarchical_group(
             entry["rationale"] = _coerce_text_value(raw_rationale)
         child_results[child_key] = entry
 
-    # ----- Sequence array (filter to known children, dedupe order) -----
+    # ----- Discovered labels (multi_label + allow_discovery only) -----
+    # Parsed before the sequence so discovered slugs can flow through
+    # the sequence array alongside child keys without being filtered out.
+    discovered_labels: list[dict[str, Any]] = []
+    discovered_slugs: set[str] = set()
+    if _discovery_enabled(parent_metric):
+        discovered_lookup_key = _discovered_key(parent_metric)
+        raw_discovered = evaluation_data.get(discovered_lookup_key)
+        if raw_discovered is None:
+            matched = find_matching_key(discovered_lookup_key, response_keys)
+            if matched:
+                raw_discovered = evaluation_data.get(matched)
+        if isinstance(raw_discovered, list):
+            for entry in raw_discovered:
+                if not isinstance(entry, dict):
+                    continue
+                raw_key = entry.get("key") or entry.get("name")
+                slug = _slug_label(raw_key)
+                if not slug:
+                    continue
+                # Drop collisions with real children OR duplicates within
+                # the same response — both indicate the model recycled a
+                # label it should have either reused (children) or
+                # consolidated (in-response dups).
+                if slug in child_key_to_metric or slug in discovered_slugs:
+                    continue
+                discovered_slugs.add(slug)
+                name_val = (entry.get("name") or "").strip() or slug.replace(
+                    "_", " "
+                )
+                description_val = _coerce_text_value(entry.get("description"))
+                rationale_val = _coerce_text_value(entry.get("rationale"))
+                payload: dict[str, Any] = {
+                    "key": slug,
+                    "name": name_val,
+                }
+                if description_val:
+                    payload["description"] = description_val
+                if rationale_val:
+                    payload["rationale"] = rationale_val
+                discovered_labels.append(payload)
+
+    # ----- Sequence array (filter to known children + discovered slugs) -----
     raw_sequence = evaluation_data.get(sequence_key)
     if raw_sequence is None:
         matched = find_matching_key(sequence_key, response_keys)
@@ -839,8 +1002,13 @@ def _map_hierarchical_group(
         for item in raw_sequence:
             if not isinstance(item, str):
                 continue
-            normalized = item.lower().strip().replace(" ", "_")
-            if normalized in child_key_to_metric and normalized not in seen_seq:
+            normalized = _slug_label(item)
+            if normalized in seen_seq:
+                continue
+            if (
+                normalized in child_key_to_metric
+                or normalized in discovered_slugs
+            ):
                 seen_seq.add(normalized)
                 sequence_keys.append(normalized)
 
@@ -908,6 +1076,12 @@ def _map_hierarchical_group(
         "selection_mode": selection_mode,
         "sequence": sequence_keys,
     }
+    if discovered_labels:
+        # Persist into metric_scores so the API surface can aggregate
+        # candidates across rows + the flow chart can render discovered
+        # nodes. Empty list isn't written so non-discovery flows keep
+        # their payload shape unchanged.
+        parent_entry["discovered_labels"] = discovered_labels
 
     if selection_mode == "single_choice":
         if chosen_child_key:

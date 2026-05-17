@@ -389,6 +389,43 @@ def evaluate_call_import_row_task(self, eval_row_id: str):
                 parent_metric = (
                     parents_by_id.get(parent_id) if parent_id else None
                 )
+                # Pull the running discovered-label list for this parent
+                # right before the LLM call so the prompt can ask the
+                # model to REUSE existing keys instead of inventing
+                # near-duplicates. Cheap query (one SELECT scoped to the
+                # current evaluation_id). Imported inside the loop to
+                # avoid a top-level import cycle between routes and
+                # workers.
+                running_discovered: list = []
+                if (
+                    parent_metric is not None
+                    and bool(getattr(parent_metric, "allow_discovery", False))
+                    and (
+                        (parent_metric.selection_mode or "").lower()
+                        == "multi_label"
+                    )
+                ):
+                    from app.api.v1.routes.call_import_evaluations import (
+                        _alias_map_for_parent,
+                        _get_running_discovered_labels,
+                    )
+
+                    # Feed the LLM the post-merge / post-promotion view
+                    # of running discoveries so it stops re-suggesting
+                    # candidates the user has already curated. Without
+                    # passing the org id + alias map, the prompt would
+                    # still echo merged-out slugs and confuse the
+                    # model.
+                    running_discovered = _get_running_discovered_labels(
+                        db,
+                        evaluation.id,
+                        parent_metric.id,
+                        organization_id=evaluation.organization_id,
+                        alias_map=_alias_map_for_parent(
+                            evaluation, parent_metric.id
+                        ),
+                    )
+
                 try:
                     llm_scores, _eval_time = evaluate_with_llm(
                         transcription=transcript,
@@ -402,6 +439,7 @@ def evaluate_call_import_row_task(self, eval_row_id: str):
                         persona=None,
                         scenario=None,
                         parent_metric=parent_metric,
+                        running_discovered=running_discovered,
                     )
                     metric_scores.update(llm_scores)
                 except Exception as exc:  # noqa: BLE001
@@ -427,6 +465,18 @@ def evaluate_call_import_row_task(self, eval_row_id: str):
         else:
             eval_row.status = "completed"
             eval_row.error_message = None
+
+        # Honor any user-driven label merges + promotions that landed
+        # while this row was being scored. Done as a single in-place
+        # rewrite so the on-disk JSON for this row never contains a
+        # slug the user has explicitly retired.
+        from app.api.v1.routes.call_import_evaluations import (
+            normalize_scores_with_aliases,
+        )
+
+        normalize_scores_with_aliases(
+            metric_scores, evaluation, db, evaluation.organization_id
+        )
 
         eval_row.metric_scores = _as_json_dict(metric_scores)
         eval_row.finished_at = _now()

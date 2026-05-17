@@ -560,6 +560,16 @@ class Metric(Base):
     # metric (no children).
     selection_mode = Column(String(20), nullable=True)
 
+    # When true on a ``multi_label`` parent, the LLM is invited during
+    # call-import evaluation to emit additional candidate sub-labels
+    # beyond the user-defined children. The candidates surface in a
+    # "Discovered labels" panel where the user manually promotes them
+    # into real child Metric rows. Ignored on standalone metrics and
+    # on ``single_choice`` parents (the validator rejects mixing them).
+    allow_discovery = Column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+
     parent = relationship(
         "Metric",
         remote_side=[id],
@@ -1440,6 +1450,16 @@ class CallImportEvaluation(Base):
     # NULL on legacy rows means "no hierarchy" → fall back to flat
     # ``selected_metric_ids`` semantics.
     selected_metric_groups = Column(JSON, nullable=True)
+    # User-driven merges of LLM-discovered candidate sub-labels for
+    # ``allow_discovery`` parents. Shape:
+    # ``{"<parent_metric_id>": {"<from_slug>": "<to_slug>", ...}}``.
+    # Populated via ``POST .../discovered-labels/merge``; consulted by
+    # the discovered-labels aggregator, the flow graph builder, and the
+    # worker so that rows finishing AFTER a merge cannot reintroduce
+    # the merged-away slug. Empty dict on fresh rows.
+    discovered_label_aliases = Column(
+        JSON, nullable=False, default=dict, server_default="{}"
+    )
 
     # Run-level LLM config picked from the Run Evaluation modal. NULL on
     # legacy rows means "use the historical OpenAI/gpt-4o default" — the

@@ -1115,7 +1115,11 @@ class MetricCreate(BaseModel):
     capture_rationale: Optional[bool] = False
     parent_metric_id: Optional[UUID] = None
     selection_mode: Optional[SelectionMode] = None
-    
+    # Only meaningful on multi_label parents; ignored everywhere else.
+    # When true, the LLM is invited during call-import evaluation to emit
+    # additional candidate sub-labels beyond the user-defined children.
+    allow_discovery: bool = False
+
     model_config = ConfigDict(json_schema_extra={
             "example": {
                 "name": "Professionalism",
@@ -1153,6 +1157,10 @@ class MetricCreateWithChildren(BaseModel):
     supported_surfaces: List[str] = Field(default_factory=lambda: ["agent"])
     enabled_surfaces: Optional[List[str]] = None
     tags: Optional[List[str]] = None
+    # When true on a multi_label parent, allow the LLM to emit candidate
+    # labels beyond the listed children at evaluation time. Validator
+    # rejects allow_discovery=True on single_choice parents.
+    allow_discovery: bool = False
     children: List[MetricChildDraft] = Field(
         default_factory=list,
         description="Child sub-metric labels under this parent.",
@@ -1174,6 +1182,7 @@ class MetricUpdate(BaseModel):
     tags: Optional[List[str]] = None
     capture_rationale: Optional[bool] = None
     selection_mode: Optional[SelectionMode] = None
+    allow_discovery: Optional[bool] = None
 
 
 class MetricResponse(BaseModel):
@@ -1201,6 +1210,7 @@ class MetricResponse(BaseModel):
     capture_rationale: bool = False
     parent_metric_id: Optional[UUID] = None
     selection_mode: Optional[SelectionMode] = None
+    allow_discovery: bool = False
     children: List["MetricResponse"] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
@@ -2162,6 +2172,10 @@ class CallImportMetricSummary(BaseModel):
     description: Optional[str] = None
     parent_metric_id: Optional[UUID] = None
     selection_mode: Optional[SelectionMode] = None
+    # Surfaced so the Flow tab can decide whether to render the
+    # Discovered Labels panel next to a multi_label parent. Defaults to
+    # False to keep legacy clients (and standalone metrics) unaffected.
+    allow_discovery: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -2443,12 +2457,18 @@ class MetricFlowNode(BaseModel):
     in the evaluation where this child appears anywhere in its
     ``sequence`` array. ``is_terminal`` is set when the child is the
     last entry in a meaningful fraction of those sequences.
+
+    ``is_discovered`` is set when the node represents an LLM-discovered
+    candidate (parent has ``allow_discovery=true``) rather than a
+    user-defined child. The id of a discovered node is prefixed with
+    ``disc:`` so it can't collide with real child UUIDs.
     """
 
     id: str
     label: str
     count: int = 0
     is_terminal: bool = False
+    is_discovered: bool = False
 
 
 class MetricFlowEdge(BaseModel):
@@ -2474,3 +2494,72 @@ class MetricFlowResponse(BaseModel):
     edges: List[MetricFlowEdge] = Field(default_factory=list)
     total_rows: int = 0
     rows_with_sequence: int = 0
+
+
+class DiscoveredLabelItem(BaseModel):
+    """One LLM-discovered candidate sub-label aggregated across rows.
+
+    ``key`` is the slugified label identifier (matches what appears in
+    ``sequence`` entries). ``count`` is the number of rows in the
+    evaluation that emitted this slug. ``sample_rationale`` is the
+    first non-empty rationale captured from any row, suitable for the
+    user to read in the Discovered Labels panel before clicking
+    Promote.
+    """
+
+    key: str
+    name: str
+    description: Optional[str] = None
+    sample_rationale: Optional[str] = None
+    count: int = 0
+
+
+class DiscoveredLabelsResponse(BaseModel):
+    """List of discovered candidate sub-labels for a parent metric."""
+
+    parent_metric_id: str
+    items: List[DiscoveredLabelItem] = Field(default_factory=list)
+
+
+class DiscoveredLabelMergeRequest(BaseModel):
+    """Body for POST /evaluations/{eval_id}/discovered-labels/merge.
+
+    Rewrites every row's ``metric_scores[parent_id].discovered_labels``
+    entries whose key is ``from_key`` to use ``to_key`` instead, so the
+    user can collapse near-duplicate candidates ("On Hold" / "Customer
+    Put On Hold") into a single promoted child.
+    """
+
+    parent_metric_id: UUID
+    from_key: str = Field(..., min_length=1, max_length=120)
+    to_key: str = Field(..., min_length=1, max_length=120)
+
+
+class DiscoveredLabelDeleteRequest(BaseModel):
+    """Body for POST /evaluations/{eval_id}/discovered-labels/delete.
+
+    Strips a candidate sub-label from every row's
+    ``discovered_labels`` list AND from each row's ``sequence`` array,
+    then tombstones the slug at the evaluation level so workers
+    finishing later can't re-introduce it. Use for gibberish or
+    irrelevant candidates the LLM proposed; for near-duplicates that
+    you want to keep but unify, use the merge endpoint instead.
+    """
+
+    parent_metric_id: UUID
+    key: str = Field(..., min_length=1, max_length=120)
+
+
+class PromoteDiscoveredChildRequest(BaseModel):
+    """Body for POST /metrics/{parent_id}/children/from-discovered.
+
+    ``key`` is the slug under which the candidate is currently stored
+    on per-row ``metric_scores``. The newly-created child Metric's
+    name is normalized so ``slugify(name) == key``, which keeps every
+    already-scored row's ``sequence`` array resolvable against the
+    promoted child without a backfill.
+    """
+
+    key: str = Field(..., min_length=1, max_length=120)
+    name: str = Field(..., min_length=1, max_length=120)
+    description: Optional[str] = Field(default=None, max_length=4000)

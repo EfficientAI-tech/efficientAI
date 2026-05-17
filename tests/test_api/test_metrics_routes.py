@@ -503,3 +503,144 @@ def test_parse_bulk_creates_hierarchy_when_parent_supplied(authenticated_client)
     assert body["parent"]["name"] == "Pitch Outcome"
     assert body["parent"]["selection_mode"] == "single_choice"
     assert len(body["metrics"]) == 3
+
+
+# =============================================================================
+# allow_discovery + promote-discovered endpoint
+# =============================================================================
+
+
+def test_create_multi_label_parent_with_allow_discovery(authenticated_client):
+    response = authenticated_client.post(
+        "/api/v1/metrics/with-children",
+        json={
+            "name": "Discovery Outcome",
+            "description": "Multi-label with discovery enabled.",
+            "selection_mode": "multi_label",
+            "allow_discovery": True,
+            "children": [{"name": "first_label", "description": "..."}],
+        },
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["allow_discovery"] is True
+    assert body["selection_mode"] == "multi_label"
+
+
+def test_reject_allow_discovery_on_single_choice_parent(authenticated_client):
+    response = authenticated_client.post(
+        "/api/v1/metrics/with-children",
+        json={
+            "name": "Bad Mix",
+            "description": "...",
+            "selection_mode": "single_choice",
+            "allow_discovery": True,
+            "children": [{"name": "leaf", "description": "..."}],
+        },
+    )
+    assert response.status_code == 400
+    assert "multi_label" in response.json()["detail"]
+
+
+def test_promote_discovered_child_creates_real_metric(authenticated_client):
+    parent = authenticated_client.post(
+        "/api/v1/metrics/with-children",
+        json={
+            "name": "Outcome",
+            "description": "...",
+            "selection_mode": "multi_label",
+            "allow_discovery": True,
+            "children": [{"name": "first_label", "description": "..."}],
+        },
+    ).json()
+
+    response = authenticated_client.post(
+        f"/api/v1/metrics/{parent['id']}/children/from-discovered",
+        json={
+            "key": "customer_on_hold",
+            "name": "customer on hold",
+            "description": "agent placed caller on hold",
+        },
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    # The new child is nested under the parent in the response.
+    child_names = {c["name"] for c in body["children"]}
+    assert "customer on hold" in child_names
+
+
+def test_promote_discovered_child_rejects_slug_mismatch(authenticated_client):
+    parent = authenticated_client.post(
+        "/api/v1/metrics/with-children",
+        json={
+            "name": "Outcome Mismatch",
+            "description": "...",
+            "selection_mode": "multi_label",
+            "allow_discovery": True,
+            "children": [{"name": "first_label", "description": "..."}],
+        },
+    ).json()
+    response = authenticated_client.post(
+        f"/api/v1/metrics/{parent['id']}/children/from-discovered",
+        json={
+            "key": "customer_on_hold",
+            # The name's slug is "fancy_label" — does NOT match the key.
+            # We reject because the worker's sequence arrays would
+            # otherwise stop resolving once the candidate is removed.
+            "name": "Fancy Label",
+            "description": "...",
+        },
+    )
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "slugify" in detail or "slug" in detail
+
+
+def test_promote_discovered_child_rejects_non_multi_label_parent(
+    authenticated_client,
+):
+    parent = authenticated_client.post(
+        "/api/v1/metrics/with-children",
+        json={
+            "name": "Pickone",
+            "description": "...",
+            "selection_mode": "single_choice",
+            "children": [{"name": "first_label", "description": "..."}],
+        },
+    ).json()
+    response = authenticated_client.post(
+        f"/api/v1/metrics/{parent['id']}/children/from-discovered",
+        json={
+            "key": "x",
+            "name": "x",
+            "description": "...",
+        },
+    )
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "multi_label" in detail
+
+
+def test_promote_discovered_child_rejects_when_discovery_disabled(
+    authenticated_client,
+):
+    parent = authenticated_client.post(
+        "/api/v1/metrics/with-children",
+        json={
+            "name": "No Discovery",
+            "description": "...",
+            "selection_mode": "multi_label",
+            "allow_discovery": False,
+            "children": [{"name": "first_label", "description": "..."}],
+        },
+    ).json()
+    response = authenticated_client.post(
+        f"/api/v1/metrics/{parent['id']}/children/from-discovered",
+        json={
+            "key": "anything",
+            "name": "anything",
+            "description": "...",
+        },
+    )
+    assert response.status_code == 400
+    assert "allow_discovery" in response.json()["detail"]

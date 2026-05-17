@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import math
 import statistics
 from typing import Any, Dict, List, Optional, Tuple
@@ -12,11 +13,11 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
 from loguru import logger
-from sqlalchemy import desc, func, or_
+from sqlalchemy import desc, func, or_, text
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import get_api_key, get_organization_id
+from app.dependencies import get_api_key, get_organization_id, require_enterprise_feature
 from app.models.database import (
     AIProvider,
     CallImport,
@@ -39,6 +40,10 @@ from app.models.schemas import (
     CallImportMetricHistogramBucket,
     CallImportMetricSummary,
     CallImportMetricValueCount,
+    DiscoveredLabelDeleteRequest,
+    DiscoveredLabelItem,
+    DiscoveredLabelMergeRequest,
+    DiscoveredLabelsResponse,
     MetricFlowEdge,
     MetricFlowNode,
     MetricFlowResponse,
@@ -47,6 +52,7 @@ from app.models.schemas import (
 router = APIRouter(
     prefix="/call-imports/{call_import_id}/evaluations",
     tags=["Call Import Evaluations"],
+    dependencies=[Depends(require_enterprise_feature("call_imports"))],
 )
 
 
@@ -262,6 +268,13 @@ def _serialize_eval(db: Session, row: CallImportEvaluation) -> CallImportEvaluat
                 description=metric.description,
                 parent_metric_id=metric.parent_metric_id,
                 selection_mode=metric.selection_mode,
+                # Required by the Flow tab to know whether a parent
+                # opted into discovery; without it the
+                # DiscoveredLabelsPanel stays hidden even when the
+                # worker is actively producing discovered_labels.
+                allow_discovery=bool(
+                    getattr(metric, "allow_discovery", False)
+                ),
             )
             for metric in metrics
         ],
@@ -784,6 +797,56 @@ async def list_call_import_evaluation_rows(
         alias="status",
         description="Restrict to rows with this evaluation row status.",
     ),
+    flow_parent_id: Optional[UUID] = Query(
+        None,
+        description=(
+            "Parent (category) metric whose ``sequence`` array should be "
+            "checked against ``flow_node`` and ``flow_edge_target``. Used "
+            "to drill into the calls behind a flow-chart node or edge."
+        ),
+    ),
+    flow_node: Optional[str] = Query(
+        None,
+        description=(
+            "If set together with ``flow_parent_id``, only return rows "
+            "whose sequence under that parent contains this step. Accepts "
+            "either a child metric UUID (resolved to slug(name)), a "
+            "``disc:<slug>`` discovered-label id, or a raw slug."
+        ),
+    ),
+    flow_edge_target: Optional[str] = Query(
+        None,
+        description=(
+            "Optional companion to ``flow_node``: when set, restrict to "
+            "rows whose sequence contains the directed transition "
+            "``flow_node -> flow_edge_target`` (immediately adjacent). "
+            "Same id format as ``flow_node``."
+        ),
+    ),
+    discovered_parent_id: Optional[UUID] = Query(
+        None,
+        description=(
+            "Parent (category) metric that defines the discovery scope "
+            "for ``discovered_label_key`` / ``has_discovered``."
+        ),
+    ),
+    discovered_label_key: Optional[str] = Query(
+        None,
+        description=(
+            "If set together with ``discovered_parent_id``, only return "
+            "rows whose ``metric_scores[parent].discovered_labels`` "
+            "list contains an entry with this slug (after applying "
+            "evaluation-level merge aliases)."
+        ),
+    ),
+    has_discovered: Optional[bool] = Query(
+        None,
+        description=(
+            "If true together with ``discovered_parent_id``, only return "
+            "rows that have at least one LLM-discovered label for the "
+            "parent. Useful to triage which calls produced novel labels."
+        ),
+    ),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
@@ -840,6 +903,183 @@ async def list_call_import_evaluation_rows(
             "value",
         )
         query = query.filter(func.lower(path_value) == metric_value.strip().lower())
+
+    # --- Flow chart drilldown filter -------------------------------------
+    # Translates a clicked node (or edge) on the flow chart into a
+    # SQL filter against ``metric_scores[<parent>].sequence``. The
+    # frontend sends either a child UUID, a ``disc:<slug>`` discovered
+    # node id, or a raw slug — we normalize all three to the slug that
+    # actually appears in stored ``sequence`` arrays.
+    if flow_parent_id is not None and flow_node and flow_node.strip():
+        parent_id_str_local = str(flow_parent_id)
+        alias_map_flow = _alias_map_for_parent(eval_row, flow_parent_id)
+
+        def _flow_node_to_slug(raw: str) -> Optional[str]:
+            raw_clean = raw.strip()
+            if not raw_clean:
+                return None
+            if raw_clean == _FLOW_START_NODE_ID:
+                # The synthetic START node isn't a real sequence entry;
+                # filtering on it is meaningless so we skip silently.
+                return None
+            if raw_clean.startswith(_DISCOVERED_NODE_PREFIX):
+                return _resolve_alias(
+                    alias_map_flow,
+                    _slug_label(raw_clean[len(_DISCOVERED_NODE_PREFIX) :]),
+                )
+            # Try to interpret as a child metric UUID first; fall back
+            # to treating it as a slug.
+            try:
+                child_uuid = UUID(raw_clean)
+            except (TypeError, ValueError):
+                return _resolve_alias(alias_map_flow, _slug_label(raw_clean))
+            child = (
+                db.query(Metric.name)
+                .filter(
+                    Metric.id == child_uuid,
+                    Metric.organization_id == organization_id,
+                )
+                .first()
+            )
+            if child and child[0]:
+                return _resolve_alias(alias_map_flow, _slug_label(child[0]))
+            return _resolve_alias(alias_map_flow, _slug_label(raw_clean))
+
+        from_slug = _flow_node_to_slug(flow_node)
+        target_slug: Optional[str] = None
+        if flow_edge_target and flow_edge_target.strip():
+            target_slug = _flow_node_to_slug(flow_edge_target)
+
+        if from_slug:
+            # The ``metric_scores`` column is declared as ``Column(JSON)``
+            # in the model so on databases where the table was created
+            # from the model (rather than the migration) the physical
+            # type is ``json``, not ``jsonb``. The JSONB-only operators
+            # below (``jsonb_exists``, ``jsonb_array_elements_text``,
+            # ``@>``) require a JSONB input — we cast once up front so
+            # the same SQL works regardless of which path created the
+            # table.
+            scores_jsonb = (
+                "(call_import_evaluation_rows.metric_scores)::jsonb"
+            )
+            if target_slug:
+                # Edge filter: rows whose sequence under this parent
+                # contains ``from_slug`` immediately followed by
+                # ``target_slug``. Implemented as a correlated EXISTS
+                # over ``jsonb_array_elements_text`` with ORDINALITY,
+                # which is the portable way to express "next array
+                # index" against a JSONB array in Postgres.
+                edge_filter_sql = text(
+                    f"""
+                    EXISTS (
+                        SELECT 1
+                        FROM jsonb_array_elements_text(
+                            COALESCE(
+                                {scores_jsonb} -> :p_id -> 'sequence',
+                                '[]'::jsonb
+                            )
+                        ) WITH ORDINALITY AS s1(elem, ord)
+                        JOIN jsonb_array_elements_text(
+                            COALESCE(
+                                {scores_jsonb} -> :p_id -> 'sequence',
+                                '[]'::jsonb
+                            )
+                        ) WITH ORDINALITY AS s2(elem, ord)
+                          ON s2.ord = s1.ord + 1
+                        WHERE s1.elem = :from_slug
+                          AND s2.elem = :to_slug
+                    )
+                    """
+                ).bindparams(
+                    p_id=parent_id_str_local,
+                    from_slug=from_slug,
+                    to_slug=target_slug,
+                )
+                query = query.filter(edge_filter_sql)
+            else:
+                # Node filter: rows whose ``metric_scores -> parent ->
+                # 'sequence'`` array contains ``from_slug``. We use the
+                # function form ``jsonb_exists`` rather than the ``?``
+                # operator to avoid psycopg2 mistaking the question
+                # mark for a parameter placeholder.
+                node_filter_sql = text(
+                    f"""
+                    jsonb_exists(
+                        COALESCE(
+                            {scores_jsonb} -> :p_id -> 'sequence',
+                            '[]'::jsonb
+                        ),
+                        :slug
+                    )
+                    """
+                ).bindparams(p_id=parent_id_str_local, slug=from_slug)
+                query = query.filter(node_filter_sql)
+
+    # --- Discovered label filters ---------------------------------------
+    # Surfaces "which calls produced THIS LLM-discovered label" and the
+    # broader "which calls produced ANY LLM-discovered label". Both
+    # operate on ``metric_scores[<parent>].discovered_labels`` (a list
+    # of dicts) plus the same ``sequence`` array — covering both legacy
+    # rows where the slug only made it into ``sequence`` and newer
+    # rows where it landed in both.
+    if discovered_parent_id is not None and (
+        discovered_label_key or has_discovered
+    ):
+        d_parent_str = str(discovered_parent_id)
+        alias_map_disc = _alias_map_for_parent(eval_row, discovered_parent_id)
+        # See note above: cast once so the JSONB operators don't reject
+        # the column when it's typed as ``json`` in the database.
+        scores_jsonb = "(call_import_evaluation_rows.metric_scores)::jsonb"
+        if discovered_label_key and discovered_label_key.strip():
+            target = _resolve_alias(
+                alias_map_disc, _slug_label(discovered_label_key)
+            )
+            if target:
+                # Match rows whose discovered_labels list has an entry
+                # ``{"key": <target>}`` OR whose sequence array still
+                # contains the slug. The latter covers older rows that
+                # were rewritten by a merge in the discovered_labels
+                # blob but whose sequence may have lagged.
+                contains_json = json.dumps(
+                    {d_parent_str: {"discovered_labels": [{"key": target}]}}
+                )
+                disc_filter_sql = text(
+                    f"""
+                    (
+                        {scores_jsonb} @> CAST(:contains AS JSONB)
+                        OR
+                        jsonb_exists(
+                            COALESCE(
+                                {scores_jsonb} -> :p_id -> 'sequence',
+                                '[]'::jsonb
+                            ),
+                            :slug
+                        )
+                    )
+                    """
+                ).bindparams(
+                    contains=contains_json,
+                    p_id=d_parent_str,
+                    slug=target,
+                )
+                query = query.filter(disc_filter_sql)
+        elif has_discovered:
+            # No specific slug — just rows that surfaced any candidate
+            # under this parent. We coalesce missing paths to ``[]`` so
+            # ``jsonb_array_length`` always sees an array (it raises on
+            # non-array inputs, but our shape guarantees a list when
+            # the key is present).
+            has_disc_sql = text(
+                f"""
+                jsonb_array_length(
+                    COALESCE(
+                        {scores_jsonb} -> :p_id -> 'discovered_labels',
+                        '[]'::jsonb
+                    )
+                ) > 0
+                """
+            ).bindparams(p_id=d_parent_str)
+            query = query.filter(has_disc_sql)
 
     query = query.order_by(CallImportRow.row_index.asc())
     total = query.count()
@@ -1322,11 +1562,13 @@ def _compute_metric_aggregates(
 
     selected_ids = _serialize_selected_metric_ids(evaluation.selected_metric_ids)
     # Include parent metrics from selected_metric_groups so they appear
-    # alongside their children in the aggregate response.
+    # alongside their children in the aggregate response. Use ``getattr``
+    # with a default so the helper still works for callers that pass
+    # lightweight objects (tests, in-memory shims) that don't carry the
+    # attribute at all.
+    groups_raw_candidate = getattr(evaluation, "selected_metric_groups", None)
     groups_raw = (
-        evaluation.selected_metric_groups
-        if isinstance(evaluation.selected_metric_groups, dict)
-        else {}
+        groups_raw_candidate if isinstance(groups_raw_candidate, dict) else {}
     )
     for parent_str in groups_raw.keys():
         try:
@@ -1361,10 +1603,14 @@ def _compute_metric_aggregates(
         observed_metric_type: Optional[str] = None
         observed_name: Optional[str] = None
 
+        # ``meta`` is a real ``Metric`` row in production, but tests
+        # frequently pass a lightweight stub. Pull the two attributes
+        # we need via ``getattr`` so a stub that only sets ``id`` /
+        # ``name`` / ``metric_type`` doesn't blow up here.
         is_multi_label_parent = bool(
             meta
-            and meta.selection_mode == "multi_label"
-            and not meta.parent_metric_id
+            and getattr(meta, "selection_mode", None) == "multi_label"
+            and not getattr(meta, "parent_metric_id", None)
         )
 
         for row in eval_rows:
@@ -1517,12 +1763,329 @@ async def get_call_import_evaluation_aggregate(
 
 _FLOW_TERMINAL_THRESHOLD = 0.2  # Mark as terminal when >=20% of sequences end here.
 _FLOW_START_NODE_ID = "__START__"
+_DISCOVERED_NODE_PREFIX = "disc:"
+
+
+def _slug_label(value: Any) -> str:
+    """Lowercase + whitespace-collapse + underscore-join.
+
+    Used everywhere we need a stable key for a metric/label name —
+    matching the same convention the worker uses when emitting
+    ``sequence`` entries and discovered keys.
+    """
+    if value is None:
+        return ""
+    return "_".join(str(value).strip().lower().split())
+
+
+def _resolve_alias(alias_map: Dict[str, str], key: str) -> str:
+    """Walk the alias map until we hit a slug that doesn't redirect.
+
+    The merge endpoint stores ``from_slug -> to_slug`` pairs. The delete
+    endpoint stores ``from_slug -> ""`` (empty string sentinel) to mark
+    a slug as tombstoned. Chains can accumulate when the user merges
+    A→B and later merges B→C; this helper collapses them so callers
+    always land on the final canonical slug.
+
+    Returns:
+      * the canonical slug if it still resolves to a real label,
+      * an empty string if the slug has been tombstoned (callers MUST
+        treat an empty result as "drop this entry entirely"),
+      * the input ``key`` if it isn't aliased.
+
+    Cycles are guarded by a hard step limit since the alias map is
+    user-driven.
+    """
+    if not key:
+        return ""
+    if not alias_map:
+        return key
+    current = key
+    seen: set[str] = set()
+    for _ in range(16):
+        if current in seen:
+            return current
+        seen.add(current)
+        if current not in alias_map:
+            return current
+        nxt = alias_map[current]
+        if nxt == current:
+            return current
+        if nxt == "":
+            # Deletion sentinel — the user has explicitly retired this
+            # slug. Propagate the empty string up so callers drop it.
+            return ""
+        current = nxt
+    return current
+
+
+def normalize_scores_with_aliases(
+    metric_scores: Dict[str, Any],
+    evaluation: CallImportEvaluation,
+    db: Session,
+    organization_id: UUID,
+) -> Dict[str, Any]:
+    """Rewrite per-row ``metric_scores`` to honor merges + promotions.
+
+    Called by the worker right after ``evaluate_with_llm`` returns so
+    every row that finishes AFTER a user has merged or promoted a
+    discovered label persists data already reflecting that decision.
+    Without this hook, a worker holding a stale prompt could re-emit a
+    ``from_key`` slug long after the user merged it away.
+
+    For every parent entry (``selection_mode != null`` and a
+    ``discovered_labels`` / ``sequence`` field) we:
+
+      * resolve discovered slugs through the evaluation's
+        ``discovered_label_aliases`` map (transitively),
+      * drop any discovered_labels entry whose canonical slug now
+        matches a real promoted child of the parent (merging them out
+        of the panel for free), and
+      * collapse adjacent duplicate sequence entries that result.
+
+    Returns ``metric_scores`` (mutated in place) for chaining.
+    """
+    if not isinstance(metric_scores, dict):
+        return metric_scores
+
+    aliases_top = (
+        evaluation.discovered_label_aliases
+        if isinstance(evaluation.discovered_label_aliases, dict)
+        else {}
+    )
+
+    # Identify the parent entries inside metric_scores. They're the
+    # dicts that carry a ``selection_mode`` key (set by the LLM
+    # hierarchy parser) and either a ``sequence`` or a
+    # ``discovered_labels`` list.
+    for key, entry in list(metric_scores.items()):
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("type") != "category" and not entry.get("selection_mode"):
+            continue
+        try:
+            parent_uuid = UUID(str(key))
+        except (TypeError, ValueError):
+            continue
+
+        alias_map = {}
+        sub = aliases_top.get(str(parent_uuid))
+        if isinstance(sub, dict):
+            alias_map = {
+                str(k): str(v)
+                for k, v in sub.items()
+                if isinstance(k, str) and isinstance(v, str)
+            }
+        promoted = _promoted_child_slugs(db, parent_uuid, organization_id)
+
+        # Rewrite discovered_labels: alias-resolve keys, drop duplicates
+        # post-resolution, and drop entries that have been promoted.
+        discovered = entry.get("discovered_labels")
+        if isinstance(discovered, list):
+            kept_disc: List[Dict[str, Any]] = []
+            seen: set[str] = set()
+            for d in discovered:
+                if not isinstance(d, dict):
+                    continue
+                slug = _slug_label(d.get("key") or d.get("name"))
+                slug = _resolve_alias(alias_map, slug)
+                if not slug or slug in promoted or slug in seen:
+                    continue
+                seen.add(slug)
+                new_entry = dict(d)
+                new_entry["key"] = slug
+                kept_disc.append(new_entry)
+            entry["discovered_labels"] = kept_disc
+
+        # Rewrite sequence: alias-resolve every entry; collapse adjacent
+        # duplicates that result. We DON'T drop slugs that match
+        # promoted children — the promoted child slug is still a valid
+        # sequence entry; the flow chart will resolve it to the real
+        # child node.
+        seq = entry.get("sequence")
+        if isinstance(seq, list):
+            new_seq: List[str] = []
+            last: Optional[str] = None
+            for item in seq:
+                if not isinstance(item, str):
+                    continue
+                slug = _resolve_alias(alias_map, _slug_label(item))
+                if not slug or slug == last:
+                    continue
+                new_seq.append(slug)
+                last = slug
+            entry["sequence"] = new_seq
+
+    return metric_scores
+
+
+def _alias_map_for_parent(
+    evaluation: CallImportEvaluation, parent_metric_id: UUID
+) -> Dict[str, str]:
+    """Pull ``{from_slug: to_slug}`` for one parent out of the eval's blob.
+
+    Stored shape on the evaluation row is
+    ``{parent_id_str: {from_slug: to_slug, ...}}``. Returns an empty
+    dict for parents that have never had a merge applied.
+    """
+    raw = getattr(evaluation, "discovered_label_aliases", None)
+    if not isinstance(raw, dict):
+        return {}
+    submap = raw.get(str(parent_metric_id))
+    if not isinstance(submap, dict):
+        return {}
+    return {
+        str(k): str(v)
+        for k, v in submap.items()
+        if isinstance(k, str) and isinstance(v, str)
+    }
+
+
+def _promoted_child_slugs(
+    db: Session, parent_metric_id: UUID, organization_id: UUID
+) -> set[str]:
+    """Slugs of every real child currently sitting under the parent.
+
+    The Discovered Labels panel hides any candidate whose slug already
+    matches a real child — that covers both freshly-promoted candidates
+    and legacy children the LLM happened to re-discover. We pull from
+    the live ``metrics`` table rather than the eval's
+    ``selected_metric_groups`` snapshot so newly-promoted children take
+    effect immediately, even on evaluations that ran before the
+    promotion.
+    """
+    children = (
+        db.query(Metric.name)
+        .filter(
+            Metric.parent_metric_id == parent_metric_id,
+            Metric.organization_id == organization_id,
+        )
+        .all()
+    )
+    out: set[str] = set()
+    for (name,) in children:
+        slug = _slug_label(name)
+        if slug:
+            out.add(slug)
+    return out
+
+
+def _get_running_discovered_labels(
+    db: Session,
+    eval_id: UUID,
+    parent_metric_id: UUID,
+    organization_id: Optional[UUID] = None,
+    alias_map: Optional[Dict[str, str]] = None,
+) -> List[Dict[str, Any]]:
+    """Slug-deduped view of every discovered label seen in this eval so far.
+
+    Walks each ``call_import_evaluation_rows`` row's
+    ``metric_scores[parent_id]["discovered_labels"]`` and folds entries
+    that share the same slug. Returns a list ordered by descending
+    count and stable on label key, shaped like::
+
+        [{"key": "customer_on_hold", "name": "Customer put on hold",
+          "description": "...", "sample_rationale": "...", "count": 12}]
+
+    Powers two callers:
+      * The worker prompt builder ("REUSE the existing key if it fits")
+        — invoked just before each row's LLM call to feed the model the
+        running list of previously-discovered labels in this evaluation.
+      * The ``/discovered-labels`` API surface used by the frontend
+        Discovered Labels panel to render candidates with counts +
+        sample rationales.
+
+    Non-completed rows are skipped: an in-flight row's discoveries are
+    not yet reliable (the row could fail and never produce final
+    metric_scores). We accept the tradeoff that rows running
+    concurrently won't see each other's labels — slug-collision dedup
+    catches identical re-inventions, and near-paraphrases surface in
+    the UI panel where the user can manually merge.
+    """
+
+    parent_id_str = str(parent_metric_id)
+    rows = (
+        db.query(CallImportEvaluationRow.metric_scores)
+        .filter(
+            CallImportEvaluationRow.evaluation_id == eval_id,
+            CallImportEvaluationRow.status
+            == CallImportRowStatus.COMPLETED.value,
+        )
+        .all()
+    )
+
+    # Suppress slugs that have either:
+    #  * been promoted to a real child of the parent (so the panel doesn't
+    #    keep nagging the user about a candidate they've already
+    #    accepted), or
+    #  * been merged INTO another slug (the "from" side of a merge) —
+    #    those occurrences fold into the canonical target instead.
+    promoted_slugs: set[str] = set()
+    if organization_id is not None:
+        promoted_slugs = _promoted_child_slugs(
+            db, parent_metric_id, organization_id
+        )
+    aliases = alias_map or {}
+
+    by_key: Dict[str, Dict[str, Any]] = {}
+    for (scores,) in rows:
+        if not isinstance(scores, dict):
+            continue
+        parent_entry = scores.get(parent_id_str)
+        if not isinstance(parent_entry, dict):
+            continue
+        discovered = parent_entry.get("discovered_labels")
+        if not isinstance(discovered, list):
+            continue
+        for entry in discovered:
+            if not isinstance(entry, dict):
+                continue
+            raw_key = entry.get("key") or entry.get("name")
+            key = _slug_label(raw_key)
+            if not key:
+                continue
+            # Apply user merges + deletions first, THEN drop anything
+            # that ended up on a real child slug. Order matters: a
+            # candidate that was merged into a slug which has since
+            # been promoted should disappear, not show up at the
+            # canonical slug. An empty resolved key means the slug was
+            # tombstoned via the delete endpoint.
+            key = _resolve_alias(aliases, key)
+            if not key or key in promoted_slugs:
+                continue
+            name = (entry.get("name") or "").strip() or key.replace("_", " ")
+            description = (entry.get("description") or "").strip() or None
+            sample = (entry.get("rationale") or "").strip() or None
+
+            existing = by_key.get(key)
+            if existing is None:
+                by_key[key] = {
+                    "key": key,
+                    "name": name,
+                    "description": description,
+                    "sample_rationale": sample,
+                    "count": 1,
+                }
+                continue
+
+            existing["count"] += 1
+            if not existing["description"] and description:
+                existing["description"] = description
+            if not existing["sample_rationale"] and sample:
+                existing["sample_rationale"] = sample
+
+    return sorted(
+        by_key.values(),
+        key=lambda item: (-item["count"], item["key"]),
+    )
 
 
 def _build_flow_graph(
     eval_rows: List[CallImportEvaluationRow],
     parent_metric: Metric,
     children: List[Metric],
+    alias_map: Optional[Dict[str, str]] = None,
+    extra_children: Optional[List[Metric]] = None,
 ) -> MetricFlowResponse:
     """Walk per-row ``sequence`` arrays and produce aggregate nodes/edges.
 
@@ -1530,16 +2093,70 @@ def _build_flow_graph(
     diagram has a single origin. Children that never appear in any
     sequence are still emitted as nodes (count=0) so the UI can render
     them in the legend.
+
+    ``alias_map`` lets callers fold merged-out discovered slugs into
+    their canonical target before building the graph; ``extra_children``
+    are children of the parent that aren't in the legend list (e.g.
+    children promoted *after* the evaluation was created and therefore
+    missing from ``selected_metric_groups``) but should still resolve in
+    sequences so the slug doesn't get redrawn as a discovered candidate.
     """
     parent_id_str = str(parent_metric.id)
+    aliases = alias_map or {}
     # Build a fast lookup keyed by both the lower_snake child key (what the
     # LLM emits in ``sequence``) and the child UUID (what some clients may
     # store) so legacy / drifted payloads still resolve.
     child_lookup: Dict[str, Metric] = {}
     for child in children:
-        slug = child.name.lower().replace(" ", "_")
+        slug = _slug_label(child.name)
         child_lookup[slug] = child
         child_lookup[str(child.id)] = child
+    # ``extra_children`` are resolved-only — they shouldn't add legend
+    # nodes (those come from the explicit ``children`` argument), but
+    # they need to be in ``child_lookup`` so a sequence step that
+    # matches a freshly-promoted child resolves to the real child UUID
+    # instead of falling through to ``discovered_lookup`` and rendering
+    # as a "discovered" node.
+    if extra_children:
+        for child in extra_children:
+            slug = _slug_label(child.name)
+            if slug and slug not in child_lookup:
+                child_lookup[slug] = child
+            cid = str(child.id)
+            child_lookup.setdefault(cid, child)
+
+    # Discovered labels: walk every row's discovered_labels first so we
+    # know which discovered slugs are valid before resolving sequences.
+    # Discovered nodes get a ``disc:`` prefixed id so they can't collide
+    # with real child UUIDs in the node/edge graph. We apply
+    # ``alias_map`` first so merged-out source slugs fold into their
+    # canonical target — preserving the user's "merge" intent on still-
+    # in-flight rows whose JSON wasn't rewritten by the merge endpoint.
+    discovered_lookup: Dict[str, Dict[str, Any]] = {}
+    for row in eval_rows:
+        scores = (
+            row.metric_scores if isinstance(row.metric_scores, dict) else {}
+        )
+        parent_entry = scores.get(parent_id_str)
+        if not isinstance(parent_entry, dict):
+            continue
+        raw_discovered = parent_entry.get("discovered_labels")
+        if not isinstance(raw_discovered, list):
+            continue
+        for entry in raw_discovered:
+            if not isinstance(entry, dict):
+                continue
+            slug = _slug_label(entry.get("key") or entry.get("name"))
+            slug = _resolve_alias(aliases, slug)
+            if not slug or slug in child_lookup:
+                continue
+            name = (entry.get("name") or "").strip() or slug.replace("_", " ")
+            existing = discovered_lookup.get(slug)
+            if existing is None:
+                discovered_lookup[slug] = {
+                    "id": f"{_DISCOVERED_NODE_PREFIX}{slug}",
+                    "name": name,
+                }
 
     node_counts: Dict[str, int] = {}
     edge_counts: Dict[tuple[str, str], int] = {}
@@ -1560,21 +2177,35 @@ def _build_flow_graph(
             continue
 
         resolved_ids: List[str] = []
+        last_resolved: Optional[str] = None
         for item in raw_sequence:
             if not isinstance(item, str):
                 continue
-            normalized = item.strip().lower().replace(" ", "_")
+            normalized = _resolve_alias(aliases, _slug_label(item))
             child = child_lookup.get(normalized) or child_lookup.get(item)
-            if child is None:
+            if child is not None:
+                cid = str(child.id)
+                # Adjacent dedupe AFTER alias resolution so two
+                # different raw slugs that fold to the same target
+                # don't draw a self-edge through the chart.
+                if cid == last_resolved:
+                    continue
+                resolved_ids.append(cid)
+                last_resolved = cid
                 continue
-            resolved_ids.append(str(child.id))
+            disc = discovered_lookup.get(normalized)
+            if disc is not None:
+                if disc["id"] == last_resolved:
+                    continue
+                resolved_ids.append(disc["id"])
+                last_resolved = disc["id"]
 
         if not resolved_ids:
             continue
 
         rows_with_sequence += 1
-        for child_id in resolved_ids:
-            node_counts[child_id] = node_counts.get(child_id, 0) + 1
+        for nid in resolved_ids:
+            node_counts[nid] = node_counts.get(nid, 0) + 1
 
         edge_counts[(_FLOW_START_NODE_ID, resolved_ids[0])] = (
             edge_counts.get((_FLOW_START_NODE_ID, resolved_ids[0]), 0) + 1
@@ -1597,7 +2228,8 @@ def _build_flow_graph(
             is_terminal=False,
         )
     )
-    for child in children:
+
+    def _emit_child_node(child: Metric) -> None:
         cid = str(child.id)
         count = node_counts.get(cid, 0)
         terminal_count = terminal_counts.get(cid, 0)
@@ -1612,6 +2244,47 @@ def _build_flow_graph(
                 label=child.name,
                 count=count,
                 is_terminal=is_terminal,
+            )
+        )
+
+    emitted_child_ids: set[str] = set()
+    for child in children:
+        cid = str(child.id)
+        if cid in emitted_child_ids:
+            continue
+        emitted_child_ids.add(cid)
+        _emit_child_node(child)
+    # Extra children (promoted after the eval was created) only get
+    # legend nodes if they actually appear in the data — otherwise we'd
+    # pollute the diagram with every standalone promotion the user has
+    # ever made under this parent.
+    if extra_children:
+        for child in extra_children:
+            cid = str(child.id)
+            if cid in emitted_child_ids:
+                continue
+            if node_counts.get(cid, 0) == 0:
+                continue
+            emitted_child_ids.add(cid)
+            _emit_child_node(child)
+    # Append discovered nodes after the real children so legend ordering
+    # keeps user-defined labels first.
+    for slug, info in discovered_lookup.items():
+        nid = info["id"]
+        count = node_counts.get(nid, 0)
+        terminal_count = terminal_counts.get(nid, 0)
+        is_terminal = False
+        if rows_with_sequence > 0:
+            is_terminal = (
+                terminal_count / rows_with_sequence
+            ) >= _FLOW_TERMINAL_THRESHOLD
+        nodes.append(
+            MetricFlowNode(
+                id=nid,
+                label=info["name"],
+                count=count,
+                is_terminal=is_terminal,
+                is_discovered=True,
             )
         )
 
@@ -1742,13 +2415,478 @@ async def get_call_import_evaluation_flow(
             .all()
         )
 
+    # Children promoted AFTER this evaluation was created aren't in
+    # ``selected_metric_groups`` but their slugs still appear in already-
+    # scored rows' sequences. Pass them as ``extra_children`` so those
+    # sequence entries resolve against the real (now promoted) child
+    # instead of being redrawn as discovered candidates.
+    extra_children: List[Metric] = []
+    if children:
+        existing_ids = {child.id for child in children}
+        all_children = (
+            db.query(Metric)
+            .filter(
+                Metric.organization_id == organization_id,
+                Metric.parent_metric_id == parent.id,
+            )
+            .all()
+        )
+        extra_children = [c for c in all_children if c.id not in existing_ids]
+
     eval_rows = (
         db.query(CallImportEvaluationRow)
         .filter(CallImportEvaluationRow.evaluation_id == eval_id)
         .all()
     )
 
-    return _build_flow_graph(eval_rows, parent, children)
+    alias_map = _alias_map_for_parent(evaluation, parent.id)
+    return _build_flow_graph(
+        eval_rows,
+        parent,
+        children,
+        alias_map=alias_map,
+        extra_children=extra_children,
+    )
+
+
+@router.get(
+    "/{eval_id}/discovered-labels",
+    response_model=DiscoveredLabelsResponse,
+    operation_id="getCallImportEvaluationDiscoveredLabels",
+)
+async def get_call_import_evaluation_discovered_labels(
+    call_import_id: UUID,
+    eval_id: UUID,
+    parent_metric_id: UUID = Query(
+        ...,
+        description=(
+            "Parent (category) metric whose LLM-discovered candidate "
+            "sub-labels should be aggregated across rows."
+        ),
+    ),
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> DiscoveredLabelsResponse:
+    """Aggregate candidate sub-labels the LLM discovered during this eval.
+
+    Only meaningful for parents with ``allow_discovery=true``; for other
+    parents we just return an empty ``items`` list rather than 400-ing
+    so the frontend can call the endpoint unconditionally for every
+    parent on the Flow tab without branching.
+    """
+
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation not found"
+        )
+
+    parent = (
+        db.query(Metric)
+        .filter(
+            Metric.id == parent_metric_id,
+            Metric.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not parent:
+        raise HTTPException(
+            status_code=404,
+            detail="Parent metric not found in this organization.",
+        )
+
+    alias_map = _alias_map_for_parent(evaluation, parent_metric_id)
+    items_raw = _get_running_discovered_labels(
+        db,
+        eval_id,
+        parent_metric_id,
+        organization_id=organization_id,
+        alias_map=alias_map,
+    )
+    items = [DiscoveredLabelItem(**item) for item in items_raw]
+    return DiscoveredLabelsResponse(
+        parent_metric_id=str(parent.id), items=items
+    )
+
+
+@router.post(
+    "/{eval_id}/discovered-labels/merge",
+    response_model=DiscoveredLabelsResponse,
+    operation_id="mergeCallImportEvaluationDiscoveredLabels",
+)
+async def merge_call_import_evaluation_discovered_labels(
+    call_import_id: UUID,
+    eval_id: UUID,
+    body: DiscoveredLabelMergeRequest,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> DiscoveredLabelsResponse:
+    """Rewrite every row's ``discovered_labels`` entry from from_key -> to_key.
+
+    Idempotent — re-merging the same pair is a no-op. Discovered slugs
+    inside per-row ``sequence`` arrays are also rewritten so the flow
+    chart stays consistent with the panel. When a row already has
+    ``to_key`` and we're merging ``from_key`` into it, we drop the
+    ``from_key`` entry instead of producing two entries with the same
+    slug.
+    """
+
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation not found"
+        )
+
+    parent = (
+        db.query(Metric)
+        .filter(
+            Metric.id == body.parent_metric_id,
+            Metric.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not parent:
+        raise HTTPException(
+            status_code=404,
+            detail="Parent metric not found in this organization.",
+        )
+
+    from_key = _slug_label(body.from_key)
+    to_key = _slug_label(body.to_key)
+    if not from_key or not to_key:
+        raise HTTPException(
+            status_code=400,
+            detail="from_key and to_key must be non-empty slugs.",
+        )
+    if from_key == to_key:
+        # No-op; just return the current aggregate so the client can
+        # refresh its view.
+        alias_map_existing = _alias_map_for_parent(evaluation, parent.id)
+        items_raw = _get_running_discovered_labels(
+            db,
+            eval_id,
+            body.parent_metric_id,
+            organization_id=organization_id,
+            alias_map=alias_map_existing,
+        )
+        return DiscoveredLabelsResponse(
+            parent_metric_id=str(parent.id),
+            items=[DiscoveredLabelItem(**item) for item in items_raw],
+        )
+
+    parent_id_str = str(parent.id)
+    rows = (
+        db.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == eval_id)
+        .all()
+    )
+
+    for row in rows:
+        scores = (
+            row.metric_scores
+            if isinstance(row.metric_scores, dict)
+            else None
+        )
+        if not scores:
+            continue
+        parent_entry = scores.get(parent_id_str)
+        if not isinstance(parent_entry, dict):
+            continue
+
+        mutated = False
+        # 1. Rewrite the discovered_labels list. If the row already has
+        # an entry for to_key we keep that (it carries the user-chosen
+        # name + sample rationale) and just drop the from_key entry.
+        discovered = parent_entry.get("discovered_labels")
+        if isinstance(discovered, list):
+            kept: List[Dict[str, Any]] = []
+            existing_to = next(
+                (
+                    e
+                    for e in discovered
+                    if isinstance(e, dict)
+                    and _slug_label(e.get("key") or e.get("name")) == to_key
+                ),
+                None,
+            )
+            for entry in discovered:
+                if not isinstance(entry, dict):
+                    kept.append(entry)
+                    continue
+                key = _slug_label(entry.get("key") or entry.get("name"))
+                if key == from_key:
+                    if existing_to is not None:
+                        mutated = True
+                        continue
+                    new_entry = dict(entry)
+                    new_entry["key"] = to_key
+                    kept.append(new_entry)
+                    mutated = True
+                else:
+                    kept.append(entry)
+            if mutated:
+                parent_entry["discovered_labels"] = kept
+
+        # 2. Rewrite any discovered slugs inside the sequence array so
+        # the flow chart stays consistent. Dedupe so we don't end up
+        # with adjacent identical entries.
+        seq = parent_entry.get("sequence")
+        if isinstance(seq, list):
+            new_seq: List[str] = []
+            seq_changed = False
+            last_added: Optional[str] = None
+            for item in seq:
+                if isinstance(item, str) and _slug_label(item) == from_key:
+                    seq_changed = True
+                    if last_added == to_key:
+                        continue
+                    new_seq.append(to_key)
+                    last_added = to_key
+                else:
+                    new_seq.append(item)
+                    last_added = (
+                        _slug_label(item) if isinstance(item, str) else None
+                    )
+            if seq_changed:
+                parent_entry["sequence"] = new_seq
+                mutated = True
+
+        if mutated:
+            # Flag the dict as modified so SQLAlchemy persists the
+            # JSON column update.
+            row.metric_scores = dict(scores)
+
+    # Persist the merge at the evaluation level too. This is what makes
+    # the merge survive future scoring: rows that finish AFTER this
+    # call (e.g. retries, in-flight workers) will go through the
+    # alias map in the API surface even if the per-row JSON they
+    # write still mentions ``from_key``. We chain through any existing
+    # alias so merging A→B and then B→C resolves A→C in the panel.
+    raw_aliases = (
+        evaluation.discovered_label_aliases
+        if isinstance(evaluation.discovered_label_aliases, dict)
+        else {}
+    )
+    aliases_top = dict(raw_aliases)
+    parent_aliases = dict(aliases_top.get(parent_id_str) or {})
+    # Resolve transitively: if to_key itself was previously merged into
+    # something else, point from_key at the canonical end-of-chain.
+    canonical_to = _resolve_alias(parent_aliases, to_key)
+    parent_aliases[from_key] = canonical_to
+    # Re-target any earlier aliases that pointed AT from_key — without
+    # this, A→B and then B→C would leave A still pointing to B (now a
+    # broken pointer because B is gone). Rewriting them keeps the
+    # alias map self-consistent.
+    for k, v in list(parent_aliases.items()):
+        if v == from_key:
+            parent_aliases[k] = canonical_to
+    aliases_top[parent_id_str] = parent_aliases
+    evaluation.discovered_label_aliases = aliases_top
+
+    db.commit()
+
+    alias_map_after = _alias_map_for_parent(evaluation, parent.id)
+    items_raw = _get_running_discovered_labels(
+        db,
+        eval_id,
+        body.parent_metric_id,
+        organization_id=organization_id,
+        alias_map=alias_map_after,
+    )
+    return DiscoveredLabelsResponse(
+        parent_metric_id=str(parent.id),
+        items=[DiscoveredLabelItem(**item) for item in items_raw],
+    )
+
+
+@router.post(
+    "/{eval_id}/discovered-labels/delete",
+    response_model=DiscoveredLabelsResponse,
+    operation_id="deleteCallImportEvaluationDiscoveredLabel",
+)
+async def delete_call_import_evaluation_discovered_label(
+    call_import_id: UUID,
+    eval_id: UUID,
+    body: DiscoveredLabelDeleteRequest,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> DiscoveredLabelsResponse:
+    """Tombstone a single LLM-discovered candidate for this evaluation.
+
+    Symmetric with the merge endpoint, but instead of redirecting the
+    slug at another candidate we mark it as deleted. After this call:
+
+      * the slug is stripped from every row's
+        ``metric_scores[parent].discovered_labels`` list, and from
+        every row's ``sequence`` array (so the flow chart no longer
+        draws a node for it);
+      * the slug is recorded in
+        ``evaluation.discovered_label_aliases[parent][slug] = ""``
+        so any worker that finishes a row AFTER this call (e.g. a row
+        still in flight when the user clicked Delete) silently drops
+        the slug instead of resurrecting it.
+
+    Idempotent: deleting an already-deleted slug is a no-op.
+    """
+
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation not found"
+        )
+
+    parent = (
+        db.query(Metric)
+        .filter(
+            Metric.id == body.parent_metric_id,
+            Metric.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not parent:
+        raise HTTPException(
+            status_code=404,
+            detail="Parent metric not found in this organization.",
+        )
+
+    target_key = _slug_label(body.key)
+    if not target_key:
+        raise HTTPException(
+            status_code=400,
+            detail="key must be a non-empty slug.",
+        )
+
+    parent_id_str = str(parent.id)
+    rows = (
+        db.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == eval_id)
+        .all()
+    )
+
+    for row in rows:
+        scores = (
+            row.metric_scores
+            if isinstance(row.metric_scores, dict)
+            else None
+        )
+        if not scores:
+            continue
+        parent_entry = scores.get(parent_id_str)
+        if not isinstance(parent_entry, dict):
+            continue
+
+        mutated = False
+
+        # 1. Strip the slug from discovered_labels.
+        discovered = parent_entry.get("discovered_labels")
+        if isinstance(discovered, list):
+            kept = [
+                e
+                for e in discovered
+                if not (
+                    isinstance(e, dict)
+                    and _slug_label(e.get("key") or e.get("name"))
+                    == target_key
+                )
+            ]
+            if len(kept) != len(discovered):
+                parent_entry["discovered_labels"] = kept
+                mutated = True
+
+        # 2. Strip the slug from the sequence array, collapsing adjacent
+        # duplicates that the deletion exposes.
+        seq = parent_entry.get("sequence")
+        if isinstance(seq, list):
+            new_seq: List[str] = []
+            seq_changed = False
+            last_added: Optional[str] = None
+            for item in seq:
+                if isinstance(item, str) and _slug_label(item) == target_key:
+                    seq_changed = True
+                    continue
+                if isinstance(item, str):
+                    norm = _slug_label(item)
+                    if norm == last_added:
+                        seq_changed = True
+                        continue
+                    last_added = norm
+                new_seq.append(item)
+            if seq_changed:
+                parent_entry["sequence"] = new_seq
+                mutated = True
+
+        if mutated:
+            row.metric_scores = dict(scores)
+
+    # 3. Persist the tombstone on the evaluation so workers that finish
+    # later don't re-surface the deleted slug. We also retarget any
+    # existing aliases whose ``to_key`` was the deleted slug — without
+    # this, a previous merge that pointed at this slug would leave a
+    # dangling pointer.
+    raw_aliases = (
+        evaluation.discovered_label_aliases
+        if isinstance(evaluation.discovered_label_aliases, dict)
+        else {}
+    )
+    aliases_top = dict(raw_aliases)
+    parent_aliases = dict(aliases_top.get(parent_id_str) or {})
+    parent_aliases[target_key] = ""  # deletion sentinel
+    for k, v in list(parent_aliases.items()):
+        if v == target_key:
+            parent_aliases[k] = ""
+    aliases_top[parent_id_str] = parent_aliases
+    evaluation.discovered_label_aliases = aliases_top
+
+    db.commit()
+
+    alias_map_after = _alias_map_for_parent(evaluation, parent.id)
+    items_raw = _get_running_discovered_labels(
+        db,
+        eval_id,
+        body.parent_metric_id,
+        organization_id=organization_id,
+        alias_map=alias_map_after,
+    )
+    return DiscoveredLabelsResponse(
+        parent_metric_id=str(parent.id),
+        items=[DiscoveredLabelItem(**item) for item in items_raw],
+    )
 
 
 @router.delete(

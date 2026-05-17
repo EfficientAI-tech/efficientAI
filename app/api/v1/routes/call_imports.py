@@ -24,7 +24,7 @@ from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import get_api_key, get_organization_id
+from app.dependencies import get_api_key, get_organization_id, require_enterprise_feature
 from app.models.database import (
     CallImport,
     CallImportRow,
@@ -54,7 +54,11 @@ from app.models.schemas import (
 )
 
 
-router = APIRouter(prefix="/call-imports", tags=["Call Imports"])
+router = APIRouter(
+    prefix="/call-imports",
+    tags=["Call Imports"],
+    dependencies=[Depends(require_enterprise_feature("call_imports"))],
+)
 
 
 def _normalize_dataset(raw: Optional[str]) -> Optional[str]:

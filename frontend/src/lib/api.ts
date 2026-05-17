@@ -1131,6 +1131,74 @@ class ApiClient {
     return response.data
   }
 
+  /**
+   * List LLM-discovered candidate sub-labels for a parent metric in an
+   * evaluation. Returned items power the Discovered Labels panel where
+   * users decide which candidates to promote or merge.
+   */
+  async getCallImportEvaluationDiscoveredLabels(
+    callImportId: string,
+    evaluationId: string,
+    parentMetricId: string,
+  ): Promise<import('../types/api').DiscoveredLabelsResponse> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/discovered-labels`,
+      { params: { parent_metric_id: parentMetricId } },
+    )
+    return response.data
+  }
+
+  /**
+   * Merge a discovered slug into another within an evaluation. Rewrites
+   * every row's discovered_labels and sequence array so the panel +
+   * flow chart converge on the surviving slug.
+   */
+  async mergeCallImportEvaluationDiscoveredLabels(
+    callImportId: string,
+    evaluationId: string,
+    body: { parent_metric_id: string; from_key: string; to_key: string },
+  ): Promise<import('../types/api').DiscoveredLabelsResponse> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/discovered-labels/merge`,
+      body,
+    )
+    return response.data
+  }
+
+  /**
+   * Delete (tombstone) an LLM-discovered candidate. Strips the slug
+   * from every row's discovered_labels + sequence and records a
+   * deletion alias on the evaluation so workers finishing later don't
+   * resurrect it. Use for gibberish candidates the LLM proposed.
+   */
+  async deleteCallImportEvaluationDiscoveredLabel(
+    callImportId: string,
+    evaluationId: string,
+    body: { parent_metric_id: string; key: string },
+  ): Promise<import('../types/api').DiscoveredLabelsResponse> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/discovered-labels/delete`,
+      body,
+    )
+    return response.data
+  }
+
+  /**
+   * Promote an LLM-discovered candidate into a real child Metric under
+   * the given parent. ``key`` must equal ``slugify(name)`` so existing
+   * rows' sequence arrays auto-resolve against the new child.
+   */
+  async promoteDiscoveredChild(
+    parentMetricId: string,
+    body: { key: string; name: string; description?: string | null },
+  ): Promise<import('../types/api').MetricSummary> {
+    const response = await this.client.post(
+      `/api/v1/metrics/${parentMetricId}/children/from-discovered`,
+      body,
+    )
+    return response.data
+  }
+
   /** Cross-run insights for the call import detail page. */
   async getCallImportInsights(
     callImportId: string,
@@ -1224,6 +1292,20 @@ class ApiClient {
       metric_id?: string
       metric_value?: string
       status?: string
+      // Flow-chart drilldown: filter to rows whose sequence under the
+      // given parent contains ``flow_node`` (and optionally is
+      // immediately followed by ``flow_edge_target`` for edge clicks).
+      // Accepts a child UUID, a ``disc:<slug>`` discovered id, or a
+      // raw slug.
+      flow_parent_id?: string
+      flow_node?: string
+      flow_edge_target?: string
+      // Discovered-label filters: either pin to a specific discovered
+      // slug or surface every row that produced any candidate under
+      // ``discovered_parent_id``.
+      discovered_parent_id?: string
+      discovered_label_key?: string
+      has_discovered?: boolean
     } = {},
   ): Promise<CallImportEvaluationRowListResponse> {
     const cleaned: Record<string, any> = {}
@@ -1733,6 +1815,7 @@ class ApiClient {
     supported_surfaces?: string[]
     enabled_surfaces?: string[]
     tags?: string[] | null
+    allow_discovery?: boolean
     children: Array<{
       name: string
       description?: string | null
@@ -1844,6 +1927,8 @@ class ApiClient {
     tags?: string[]
     capture_rationale?: boolean
     selection_mode?: 'single_choice' | 'multi_label' | null
+    /** Only honored on multi_label parents; backend 400s otherwise. */
+    allow_discovery?: boolean
   }): Promise<any> {
     const response = await this.client.put(`/api/v1/metrics/${metricId}`, data)
     return response.data

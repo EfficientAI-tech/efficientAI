@@ -148,3 +148,92 @@ def test_flow_graph_resolves_child_uuids_in_sequence():
     flow = _build_flow_graph(rows, parent, children)
     edge_map = {(e.source, e.target): e.count for e in flow.edges}
     assert (str(a.id), str(c.id)) in edge_map
+
+
+# ---------------------------------------------------------------------------
+# Discovered labels surfaced as is_discovered nodes
+# ---------------------------------------------------------------------------
+
+
+def test_flow_graph_emits_discovered_nodes_from_sequence():
+    parent, children = _parent_and_children()
+    a, _b, c = children
+    parent_id_str = str(parent.id)
+    rows = [
+        _row(
+            {
+                parent_id_str: {
+                    "sequence": [
+                        "connected",
+                        "customer_on_hold",
+                        "hung_up",
+                    ],
+                    "discovered_labels": [
+                        {
+                            "key": "customer_on_hold",
+                            "name": "Customer on hold",
+                            "rationale": "please hold a moment",
+                        }
+                    ],
+                }
+            }
+        ),
+        _row(
+            {
+                parent_id_str: {
+                    # Same discovered slug — counts should accumulate
+                    # rather than producing two nodes.
+                    "sequence": ["connected", "customer_on_hold"],
+                    "discovered_labels": [
+                        {
+                            "key": "customer_on_hold",
+                            "name": "Customer on hold",
+                        }
+                    ],
+                }
+            }
+        ),
+    ]
+    flow = _build_flow_graph(rows, parent, children)
+
+    discovered_id = "disc:customer_on_hold"
+    node_by_id = {n.id: n for n in flow.nodes}
+    assert discovered_id in node_by_id, "discovered slug should produce a node"
+    disc_node = node_by_id[discovered_id]
+    assert disc_node.is_discovered is True
+    assert disc_node.label == "Customer on hold"
+    # Appears in two rows total.
+    assert disc_node.count == 2
+
+    edge_map = {(e.source, e.target): e.count for e in flow.edges}
+    # connected -> customer_on_hold in both rows.
+    assert edge_map[(str(a.id), discovered_id)] == 2
+    # customer_on_hold -> hung_up only in the first row.
+    assert edge_map[(discovered_id, str(c.id))] == 1
+
+
+def test_flow_graph_drops_discovered_collision_with_real_child():
+    # If the LLM accidentally re-emits a slug that matches a real child,
+    # the discovered entry must NOT shadow the real node — we keep the
+    # user-defined Metric as the source of truth.
+    parent, children = _parent_and_children()
+    a, _b, _c = children
+    parent_id_str = str(parent.id)
+    rows = [
+        _row(
+            {
+                parent_id_str: {
+                    "sequence": ["connected"],
+                    "discovered_labels": [
+                        {"key": "connected", "name": "Connected"}
+                    ],
+                }
+            }
+        )
+    ]
+    flow = _build_flow_graph(rows, parent, children)
+    node_by_id = {n.id: n for n in flow.nodes}
+    # The real child gets the count, NOT a "disc:connected" node.
+    assert "disc:connected" not in node_by_id
+    assert node_by_id[str(a.id)].count == 1
+    assert node_by_id[str(a.id)].is_discovered is False

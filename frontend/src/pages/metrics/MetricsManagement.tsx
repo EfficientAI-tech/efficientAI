@@ -1,9 +1,25 @@
-import { useState, useEffect, useMemo } from 'react'
+import { Fragment, useState, useEffect, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../lib/api'
 import Button from '../../components/Button'
 import { useToast } from '../../hooks/useToast'
-import { Edit, Trash2, X, ToggleLeft, ToggleRight, Brain, RefreshCw, AudioWaveform, Sparkles, Plus, ListChecks } from 'lucide-react'
+import {
+  Edit,
+  Trash2,
+  X,
+  ToggleLeft,
+  ToggleRight,
+  Brain,
+  RefreshCw,
+  AudioWaveform,
+  Sparkles,
+  Plus,
+  MoreVertical,
+  ChevronRight,
+  ChevronDown,
+  Layers,
+  AlertTriangle,
+} from 'lucide-react'
 
 interface Metric {
   id: string
@@ -24,6 +40,7 @@ interface Metric {
   updated_at: string
   parent_metric_id?: string | null
   selection_mode?: 'single_choice' | 'multi_label' | null
+  allow_discovery?: boolean
   children?: Metric[]
 }
 
@@ -74,15 +91,17 @@ export default function MetricsManagement() {
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [isCustomMetricMode, setIsCustomMetricMode] = useState(false)
   const [showEnableModal, setShowEnableModal] = useState(false)
-  // "Create category metric" modal: a single parent with N inline
-  // children authored together so the user doesn't have to chain
-  // /metrics calls. Selection mode controls how the LLM scores the
-  // children at evaluation time.
-  const [showCategoryModal, setShowCategoryModal] = useState(false)
+  // The unified "Create Metric" modal now hosts three different forms
+  // — pick the active flow with these tabs. Default is 'single' which
+  // reproduces the legacy single-metric-create experience; the other
+  // two replace what used to be standalone modals.
+  type CreateMode = 'single' | 'bulk' | 'category'
+  const [createMode, setCreateMode] = useState<CreateMode>('single')
   const [categoryForm, setCategoryForm] = useState<{
     name: string
     description: string
     selection_mode: 'single_choice' | 'multi_label'
+    allow_discovery: boolean
     surfaces: MetricSurface[]
     children: Array<{
       local_id: string
@@ -94,37 +113,90 @@ export default function MetricsManagement() {
     name: '',
     description: '',
     selection_mode: 'single_choice',
+    allow_discovery: false,
     surfaces: ['agent'],
     children: [
       { local_id: 'c1', name: '', description: '', capture_rationale: true },
       { local_id: 'c2', name: '', description: '', capture_rationale: true },
     ],
   })
-  // Track which parent metric ids are COLLAPSED in the metrics list.
-  // We invert the more common "expanded" set so the default of "no
-  // entries" naturally means every parent is expanded, which is the
-  // shape users expect when they land on the page.
-  const [collapsedParents, setCollapsedParents] = useState<Set<string>>(
+  // Track which parent metric ids are EXPANDED in the metrics list.
+  // Default is empty → every parent is collapsed on first paint so the
+  // category list reads as a tidy summary; users click the chevron on
+  // a parent row to drill in.
+  const [expandedParents, setExpandedParents] = useState<Set<string>>(
     new Set(),
   )
-  const toggleParentCollapsed = (parentId: string) => {
-    setCollapsedParents((prev) => {
+  const toggleParentExpanded = (parentId: string) => {
+    setExpandedParents((prev) => {
       const next = new Set(prev)
       if (next.has(parentId)) next.delete(parentId)
       else next.add(parentId)
       return next
     })
   }
+  // ---------------------------------------------------------------------------
+  // Manage Metric modal — a per-row contextual sheet that hosts Edit /
+  // Enable / Delete. We pulled these affordances out of the row to keep
+  // the table scan-friendly; the modal is opened either by clicking the
+  // row body OR the kebab button (both routes set ``manageMetric``).
+  // ---------------------------------------------------------------------------
+  const [manageMetric, setManageMetric] = useState<Metric | null>(null)
+  // Inline confirmation step inside the Manage modal so we don't fall
+  // back on the native browser ``confirm()`` dialog (jarring, unstyled,
+  // and easy to dismiss). The confirmed-delete handler reads from this
+  // and clears it once the mutation kicks off.
+  const [pendingDeleteMetric, setPendingDeleteMetric] = useState<Metric | null>(
+    null,
+  )
+  // ---------------------------------------------------------------------------
+  // Edit-category form — only used when editing an existing PARENT
+  // (``selection_mode`` set, no ``parent_metric_id``). Reuses the
+  // create-category modal layout but tracks each child's existing
+  // ``server_id`` (``null`` for newly-added drafts) and a list of
+  // ``deleted_ids`` so the save handler can fan out the right mix of
+  // PUT / POST / DELETE calls against the metrics API.
+  // ---------------------------------------------------------------------------
+  type EditCategoryChild = {
+    local_id: string
+    server_id: string | null
+    name: string
+    description: string
+    capture_rationale: boolean
+    enabled: boolean
+  }
+  const [editCategoryForm, setEditCategoryForm] = useState<{
+    name: string
+    description: string
+    selection_mode: 'single_choice' | 'multi_label'
+    allow_discovery: boolean
+    surfaces: MetricSurface[]
+    children: EditCategoryChild[]
+    deleted_child_ids: string[]
+  }>({
+    name: '',
+    description: '',
+    selection_mode: 'multi_label',
+    allow_discovery: false,
+    surfaces: ['agent'],
+    children: [],
+    deleted_child_ids: [],
+  })
+  // Distinguishes the "edit parent category" flow from the legacy
+  // single-row edit flow inside the same modal. When this is true the
+  // modal renders the category editor instead of the flat form, even
+  // though ``editingMetric`` is also set.
+  const [isEditingCategory, setIsEditingCategory] = useState(false)
   const [showAIAssist, setShowAIAssist] = useState(false)
   const [aiMode, setAIMode] = useState<'description' | 'examples'>('description')
   const [aiDescription, setAIDescription] = useState('')
   const [aiExamples, setAIExamples] = useState<Array<{ transcript: string; rating: string; notes: string }>>([
     { transcript: '', rating: '', notes: '' },
   ])
-  // Bulk-import-from-labels modal state. Each parsed label becomes its
+  // Bulk-import-from-labels state. Each parsed label becomes its
   // own *independent* draft row that the user can configure (type,
-  // rationale, name) before we create them all in one click.
-  const [showBulkModal, setShowBulkModal] = useState(false)
+  // rationale, name) before we create them all in one click. Driven
+  // by the unified Create Metric modal via createMode === 'bulk'.
   const [bulkPrompt, setBulkPrompt] = useState('')
   const [bulkSurface, setBulkSurface] = useState<MetricSurface>('agent')
   type BulkMetricDraft = {
@@ -170,6 +242,11 @@ export default function MetricsManagement() {
     trigger: 'always' as 'always',
     enabled: true,
     capture_rationale: false,
+    // Only surfaced in the edit form for parent metrics with
+    // ``selection_mode === 'multi_label'``. Backend rejects setting
+    // true on anything else, so leaving it false everywhere else is
+    // the safe default.
+    allow_discovery: false,
   })
 
   const { data: metrics = [], isLoading } = useQuery({
@@ -264,6 +341,7 @@ export default function MetricsManagement() {
       name: string
       description?: string | null
       selection_mode: 'single_choice' | 'multi_label'
+      allow_discovery?: boolean
       supported_surfaces: string[]
       enabled_surfaces: string[]
       children: Array<{
@@ -275,31 +353,108 @@ export default function MetricsManagement() {
     }) => apiClient.createMetricWithChildren(payload),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['metrics'] })
-      setShowCategoryModal(false)
-      setCategoryForm({
-        name: '',
-        description: '',
-        selection_mode: 'single_choice',
-        surfaces: ['agent'],
-        children: [
-          {
-            local_id: `c-${Date.now()}-1`,
-            name: '',
-            description: '',
-            capture_rationale: true,
-          },
-          {
-            local_id: `c-${Date.now()}-2`,
-            name: '',
-            description: '',
-            capture_rationale: true,
-          },
-        ],
-      })
+      closeModal()
       showToast('Category metric created', 'success')
     },
     onError: (err: any) => {
       const detail = err?.response?.data?.detail || 'Failed to create category metric'
+      showToast(detail, 'error')
+    },
+  })
+
+  // Update an existing parent + reconcile its children. The metrics
+  // API has no atomic "update with children" endpoint, so we fan out:
+  //   1. PUT  /metrics/{parent}   — parent-level fields
+  //   2. PUT  /metrics/{child}    — for each existing child the user
+  //                                 touched (name/description/rationale/enabled)
+  //   3. POST /metrics/{parent}/children — for newly added child drafts
+  //   4. DELETE /metrics/{child} — for children the user removed
+  // We deliberately run them in parallel after the parent PUT to keep
+  // wall-clock latency reasonable; the metrics list is invalidated
+  // once at the end so the table re-fetches with the final state.
+  // selection_mode is intentionally NOT included in the parent PUT
+  // because the edit form locks it (per user choice) — flipping it on
+  // a parent with completed evaluations corrupts stored selections.
+  const updateCategoryMutation = useMutation({
+    mutationFn: async ({
+      parentId,
+      parent,
+      childrenToUpdate,
+      childrenToCreate,
+      childIdsToDelete,
+    }: {
+      parentId: string
+      parent: {
+        name: string
+        description?: string | null
+        allow_discovery: boolean
+        supported_surfaces: string[]
+        enabled_surfaces: string[]
+      }
+      childrenToUpdate: Array<{
+        id: string
+        name: string
+        description?: string | null
+        capture_rationale: boolean
+        enabled: boolean
+      }>
+      childrenToCreate: Array<{
+        name: string
+        description?: string | null
+        capture_rationale: boolean
+        enabled: boolean
+      }>
+      childIdsToDelete: string[]
+    }) => {
+      await apiClient.updateMetric(parentId, parent as any)
+      const tasks: Promise<any>[] = []
+      for (const child of childrenToUpdate) {
+        tasks.push(
+          apiClient.updateMetric(child.id, {
+            name: child.name,
+            description: child.description ?? undefined,
+            capture_rationale: child.capture_rationale,
+            enabled: child.enabled,
+          } as any),
+        )
+      }
+      for (const child of childrenToCreate) {
+        tasks.push(
+          apiClient.addMetricChild(parentId, {
+            name: child.name,
+            description: child.description ?? undefined,
+            capture_rationale: child.capture_rationale,
+            enabled: child.enabled,
+          }),
+        )
+      }
+      for (const childId of childIdsToDelete) {
+        tasks.push(apiClient.deleteMetric(childId))
+      }
+      const settled = await Promise.allSettled(tasks)
+      const failures = settled.filter((r) => r.status === 'rejected')
+      if (failures.length > 0) {
+        // Surface the first error so the user has something actionable
+        // — the rest get logged. The parent PUT already succeeded by
+        // this point, so partial failures end up with the parent
+        // updated and some children out of sync; the list refetch will
+        // reflect the actual server state.
+        const first = failures[0] as PromiseRejectedResult
+        const detail =
+          first.reason?.response?.data?.detail ||
+          first.reason?.message ||
+          'Some child updates failed'
+        throw new Error(String(detail))
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['metrics'] })
+      closeModal()
+      showToast('Category updated', 'success')
+    },
+    onError: (err: any) => {
+      const detail =
+        err?.response?.data?.detail || err?.message || 'Failed to update category'
       showToast(detail, 'error')
     },
   })
@@ -522,10 +677,23 @@ export default function MetricsManagement() {
   })
 
   const resetBulkForm = () => {
-    setShowBulkModal(false)
     setBulkPrompt('')
     setBulkSurface('agent')
     setBulkDrafts([])
+  }
+
+  const resetCategoryForm = () => {
+    setCategoryForm({
+      name: '',
+      description: '',
+      selection_mode: 'single_choice',
+      allow_discovery: false,
+      surfaces: ['agent'],
+      children: [
+        { local_id: 'c1', name: '', description: '', capture_rationale: true },
+        { local_id: 'c2', name: '', description: '', capture_rationale: true },
+      ],
+    })
   }
 
   const handleParseBulk = () => {
@@ -640,6 +808,7 @@ export default function MetricsManagement() {
       trigger: 'always',
       enabled: true,
       capture_rationale: false,
+      allow_discovery: false,
     })
   }
 
@@ -672,6 +841,17 @@ export default function MetricsManagement() {
     // clean (no stale enum/number_range hints attached to text metrics).
     const useCustomConfig =
       formData.metric_origin === 'custom' && formData.metric_type !== 'text'
+    // ``allow_discovery`` is only valid on multi_label parents
+    // (server enforces this). We only forward the field when editing
+    // an actual parent metric — sending it on create or on a
+    // standalone metric would risk a 400 if the user toggled it true
+    // before realising the field doesn't apply to their shape. When
+    // editing a non-parent we silently omit the field, so the
+    // server-side value is left untouched.
+    const isParentBeingEdited =
+      !!editingMetric &&
+      !!editingMetric.selection_mode &&
+      !editingMetric.parent_metric_id
     return {
       name: formData.name,
       description: formData.description,
@@ -689,6 +869,9 @@ export default function MetricsManagement() {
       // exporter and worker both no-op when the flag is false.
       capture_rationale:
         formData.metric_type !== 'text' ? formData.capture_rationale : false,
+      ...(isParentBeingEdited
+        ? { allow_discovery: !!formData.allow_discovery }
+        : {}),
     }
   }
 
@@ -700,8 +883,27 @@ export default function MetricsManagement() {
     createMutation.mutate(buildPayload() as any)
   }
 
+  // Opens the per-row "Manage" modal. The modal is the entrypoint for
+  // both Edit and Delete now that we've removed those buttons from the
+  // table row itself.
+  const handleManage = (metric: Metric) => {
+    setManageMetric(metric)
+    setPendingDeleteMetric(null)
+  }
+
   const handleEdit = (metric: Metric) => {
+    // A parent category metric: switch to the dedicated category
+    // editor (children appear as editable rows inside the form).
+    // Standalone metrics + children still fall into the flat editor
+    // they used before.
+    const isParent =
+      !!metric.selection_mode && !metric.parent_metric_id
+    if (isParent) {
+      handleEditCategory(metric)
+      return
+    }
     setEditingMetric(metric)
+    setIsEditingCategory(false)
     setFormData({
       name: metric.name,
       description: metric.description || '',
@@ -718,8 +920,43 @@ export default function MetricsManagement() {
       trigger: metric.trigger,
       enabled: metric.enabled,
       capture_rationale: !!metric.capture_rationale,
+      allow_discovery: !!metric.allow_discovery,
     })
     setIsCustomMetricMode(metric.metric_origin === 'custom')
+    setShowCreateModal(true)
+  }
+
+  // Seed the edit-category form from a parent + its existing children
+  // and open the modal in category-edit mode. Each child gets a stable
+  // ``local_id`` (for React keys) and remembers its ``server_id`` so
+  // the save handler can tell new drafts (server_id === null) apart
+  // from updates.
+  const handleEditCategory = (parent: Metric) => {
+    setEditingMetric(parent)
+    setIsEditingCategory(true)
+    const existingChildren: EditCategoryChild[] = (parent.children || []).map(
+      (child) => ({
+        local_id: `srv-${child.id}`,
+        server_id: child.id,
+        name: child.name,
+        description: child.description || '',
+        capture_rationale: !!child.capture_rationale,
+        enabled: child.enabled,
+      }),
+    )
+    setEditCategoryForm({
+      name: parent.name,
+      description: parent.description || '',
+      selection_mode:
+        (parent.selection_mode as 'single_choice' | 'multi_label') ||
+        'multi_label',
+      allow_discovery: !!parent.allow_discovery,
+      surfaces: (parent.supported_surfaces?.length
+        ? parent.supported_surfaces
+        : ['agent']) as MetricSurface[],
+      children: existingChildren,
+      deleted_child_ids: [],
+    })
     setShowCreateModal(true)
   }
 
@@ -732,29 +969,93 @@ export default function MetricsManagement() {
     updateMutation.mutate({ id: editingMetric.id, data: buildPayload() as any })
   }
 
+  // Build the fan-out payload from ``editCategoryForm`` and submit it
+  // through ``updateCategoryMutation``. Children with an empty name
+  // are silently dropped (matches the create-category form rule of
+  // "must have a name to count"). The mutation handler enforces the
+  // "at least 2 named children" invariant before sending anything.
+  const handleUpdateCategory = () => {
+    if (!editingMetric) return
+    if (!editCategoryForm.name.trim()) {
+      alert('Please enter a category name')
+      return
+    }
+    const namedChildren = editCategoryForm.children.filter((c) =>
+      c.name.trim(),
+    )
+    if (namedChildren.length < 2) {
+      alert('A category needs at least 2 named sub-labels')
+      return
+    }
+    const childrenToUpdate = namedChildren
+      .filter((c) => !!c.server_id)
+      .map((c) => ({
+        id: c.server_id as string,
+        name: c.name.trim(),
+        description: c.description.trim() || null,
+        capture_rationale: c.capture_rationale,
+        enabled: c.enabled,
+      }))
+    const childrenToCreate = namedChildren
+      .filter((c) => !c.server_id)
+      .map((c) => ({
+        name: c.name.trim(),
+        description: c.description.trim() || null,
+        capture_rationale: c.capture_rationale,
+        enabled: c.enabled,
+      }))
+    updateCategoryMutation.mutate({
+      parentId: editingMetric.id,
+      parent: {
+        name: editCategoryForm.name.trim(),
+        description: editCategoryForm.description.trim() || null,
+        allow_discovery:
+          editCategoryForm.selection_mode === 'multi_label'
+            ? editCategoryForm.allow_discovery
+            : false,
+        supported_surfaces: editCategoryForm.surfaces,
+        enabled_surfaces: editCategoryForm.surfaces,
+      },
+      childrenToUpdate,
+      childrenToCreate,
+      childIdsToDelete: editCategoryForm.deleted_child_ids,
+    })
+  }
+
   const handleToggleEnabled = (metric: Metric) => {
     toggleEnabledMutation.mutate({ id: metric.id, enabled: !metric.enabled })
   }
 
-  const handleDelete = (metric: Metric) => {
+  // Now that there is no per-row Delete button, this is invoked
+  // exclusively from the Manage modal's confirmation step. We still
+  // hard-block deleting non-deprecated default metrics — the server
+  // would reject the request anyway, but the early return keeps the
+  // confirmation modal honest. Successful delete also dismisses the
+  // Manage modal because the metric no longer exists.
+  const handleConfirmDelete = (metric: Metric) => {
     if (metric.is_default && !isDeprecatedMetric(metric.name)) {
       alert('Cannot delete default metrics')
+      setPendingDeleteMetric(null)
       return
     }
-    const message = isDeprecatedMetric(metric.name)
-      ? `"${metric.name}" is a deprecated metric. Are you sure you want to delete it?`
-      : `Are you sure you want to delete "${metric.name}"?`
-    if (confirm(message)) {
-      deleteMutation.mutate(metric.id)
-    }
+    deleteMutation.mutate(metric.id, {
+      onSuccess: () => {
+        setPendingDeleteMetric(null)
+        setManageMetric(null)
+      },
+    })
   }
 
   const closeModal = () => {
     setShowCreateModal(false)
     setIsCustomMetricMode(false)
     setEditingMetric(null)
+    setIsEditingCategory(false)
+    setCreateMode('single')
     resetForm()
     resetAIForm()
+    resetBulkForm()
+    resetCategoryForm()
   }
 
   const handleSort = (field: 'type' | 'method') => {
@@ -788,44 +1089,41 @@ export default function MetricsManagement() {
     enableMetricsMutation.mutate(Array.from(selectedDisabledMetricIds))
   }
 
-  const sortedEnabledMetrics = useMemo(() => {
-    const getTypeLabel = (metric: Metric) => (isQuantitativeMetric(metric.name) ? 'quantitative' : 'qualitative')
-    const getMethodLabel = (metric: Metric) => (isAIVoiceMetric(metric.name) ? 'ai voice' : isAudioMetric(metric.name) ? 'acoustic' : 'llm')
+  // Only TOP-LEVEL metrics (parents + standalone) are sorted into the
+  // table. Children are rendered inline beneath their parent when
+  // ``expandedParents`` includes the parent id — keeping them out of
+  // this list means children no longer fight the parent's sort key,
+  // don't render as full table rows, and don't show up in any column
+  // (Type/Method) that doesn't apply to a boolean sub-label.
+  const sortedTopLevelMetrics = useMemo(() => {
+    const getTypeLabel = (metric: Metric) =>
+      isQuantitativeMetric(metric.name) ? 'quantitative' : 'qualitative'
+    const getMethodLabel = (metric: Metric) =>
+      isAIVoiceMetric(metric.name)
+        ? 'ai voice'
+        : isAudioMetric(metric.name)
+          ? 'acoustic'
+          : 'llm'
 
-    const parents = metrics
-      .filter((metric: Metric) => metric.enabled)
+    return metrics
+      .filter(
+        (metric: Metric) => metric.enabled && !metric.parent_metric_id,
+      )
       .sort((a: Metric, b: Metric) => {
-      const aValue = sortField === 'type' ? getTypeLabel(a) : getMethodLabel(a)
-      const bValue = sortField === 'type' ? getTypeLabel(b) : getMethodLabel(b)
+        const aValue =
+          sortField === 'type' ? getTypeLabel(a) : getMethodLabel(a)
+        const bValue =
+          sortField === 'type' ? getTypeLabel(b) : getMethodLabel(b)
 
-      const baseCompare = aValue.localeCompare(bValue)
-      if (baseCompare !== 0) {
-        return sortDirection === 'asc' ? baseCompare : -baseCompare
-      }
-
-      // Stable secondary sort for predictable ordering within groups.
-      return a.name.localeCompare(b.name)
-      })
-
-    // Flatten parent + children into a single list so the table renders
-    // each child directly after its parent. Hidden children are
-    // collapsed when the user folded the parent (tracked in
-    // ``expandedParents``). By default every parent is expanded.
-    const result: Metric[] = []
-    for (const metric of parents) {
-      result.push(metric)
-      if (metric.selection_mode && Array.isArray(metric.children)) {
-        if (!collapsedParents.has(metric.id)) {
-          for (const child of metric.children) {
-            if (child.enabled) {
-              result.push(child)
-            }
-          }
+        const baseCompare = aValue.localeCompare(bValue)
+        if (baseCompare !== 0) {
+          return sortDirection === 'asc' ? baseCompare : -baseCompare
         }
-      }
-    }
-    return result
-  }, [metrics, sortField, sortDirection, collapsedParents])
+
+        // Stable secondary sort for predictable ordering within groups.
+        return a.name.localeCompare(b.name)
+      })
+  }, [metrics, sortField, sortDirection])
 
   return (
     <div className="space-y-6">
@@ -854,17 +1152,10 @@ export default function MetricsManagement() {
           </Button>
           <Button
             variant="secondary"
-            onClick={() => setShowCategoryModal(true)}
-            leftIcon={<ListChecks className="w-4 h-4" />}
-            title="Create a parent category metric with sub-labels (e.g. Call Outcome -> happy_completion / angry_hangup / didnt_understand)"
-          >
-            Create Category
-          </Button>
-          <Button
-            variant="secondary"
             onClick={() => {
               setIsCustomMetricMode(true)
               setEditingMetric(null)
+              setCreateMode('single')
               setFormData({
                 name: '',
                 description: '',
@@ -881,22 +1172,16 @@ export default function MetricsManagement() {
                 trigger: 'always',
                 enabled: true,
                 capture_rationale: false,
+                allow_discovery: false,
               })
+              resetBulkForm()
+              resetCategoryForm()
               setShowCreateModal(true)
             }}
             leftIcon={<Plus className="w-4 h-4" />}
+            title="Create a single custom metric, bulk-import metrics from a rubric, or create a parent category with sub-labels — switch flows from inside the modal"
           >
             Create Custom Metric
-          </Button>
-          <Button
-            variant="secondary"
-            onClick={() => {
-              setShowBulkModal(true)
-              setBulkDrafts([])
-            }}
-            leftIcon={<ListChecks className="w-4 h-4" />}
-          >
-            Bulk Create Metrics
           </Button>
           <Button
             variant="outline"
@@ -931,7 +1216,7 @@ export default function MetricsManagement() {
         </div>
         {isLoading ? (
           <div className="p-6 text-center text-gray-500">Loading...</div>
-        ) : sortedEnabledMetrics.length === 0 ? (
+        ) : sortedTopLevelMetrics.length === 0 ? (
           <div className="p-12 text-center">
             <p className="text-gray-500 mb-2">No enabled metrics.</p>
             <p className="text-sm text-gray-500">
@@ -943,6 +1228,10 @@ export default function MetricsManagement() {
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
                 <tr>
+                  {/* Leading column is reserved for the expand/collapse
+                      chevron on parent rows. Standalone rows leave it
+                      empty so the rest of the table stays aligned. */}
+                  <th className="w-8 px-2 py-3" />
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Name
                   </th>
@@ -982,156 +1271,280 @@ export default function MetricsManagement() {
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Enabled
                   </th>
-                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Actions
-                  </th>
+                  {/* Replaces the old per-row Edit / Delete column. The
+                      single kebab opens the Manage Metric modal. */}
+                  <th className="w-10 px-2 py-3" />
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {sortedEnabledMetrics.map((metric: Metric) => {
+                {sortedTopLevelMetrics.map((metric: Metric) => {
                   const isAudio = isAudioMetric(metric.name)
                   const isQuantitative = isQuantitativeMetric(metric.name)
+                  const isParent =
+                    !!metric.selection_mode && !metric.parent_metric_id
+                  const enabledChildren = isParent
+                    ? (metric.children || []).filter((c) => c.enabled)
+                    : []
+                  const isExpanded = expandedParents.has(metric.id)
+                  // Group key: a parent + its (currently expanded)
+                  // children share a top/bottom border so they read as
+                  // one unit. Standalone rows get the default cell
+                  // borders.
+                  const groupBorderClass =
+                    isParent && enabledChildren.length > 0
+                      ? 'bg-purple-50/30 border-l-2 border-l-purple-300'
+                      : ''
                   return (
-                    <tr key={metric.id} className="hover:bg-gray-50">
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="flex items-center">
-                          <div
-                            className={`text-sm font-medium text-gray-900 ${
-                              metric.parent_metric_id ? 'pl-4' : ''
-                            }`}
-                          >
-                            {metric.parent_metric_id ? '↳ ' : ''}
-                            {metric.name}
-                          </div>
-                          {metric.is_default && (
-                            <span className="ml-2 px-2 py-0.5 text-xs bg-blue-100 text-blue-800 rounded">
-                              Default
-                            </span>
-                          )}
-                          {metric.selection_mode && (
+                    <Fragment key={metric.id}>
+                      <tr
+                        onClick={() => handleManage(metric)}
+                        className={`hover:bg-gray-50 cursor-pointer transition-colors ${groupBorderClass}`}
+                        title="Click to open Manage"
+                      >
+                        <td className="w-8 px-2 py-4 align-middle text-center">
+                          {isParent && enabledChildren.length > 0 ? (
                             <button
                               type="button"
-                              onClick={() => toggleParentCollapsed(metric.id)}
-                              className="ml-2 px-2 py-0.5 text-xs bg-purple-100 text-purple-800 rounded hover:bg-purple-200 transition-colors"
-                              title={`Category metric (${metric.selection_mode}). ${
-                                (metric.children?.length || 0)
-                              } sub-label${
-                                metric.children?.length === 1 ? '' : 's'
-                              }. Click to ${
-                                collapsedParents.has(metric.id)
-                                  ? 'expand'
-                                  : 'collapse'
-                              }.`}
+                              onClick={(e) => {
+                                // Don't bubble — the row's onClick
+                                // would otherwise open the Manage
+                                // modal at the same time.
+                                e.stopPropagation()
+                                toggleParentExpanded(metric.id)
+                              }}
+                              className="inline-flex items-center justify-center w-6 h-6 rounded hover:bg-purple-100 text-purple-700"
+                              aria-label={isExpanded ? 'Collapse children' : 'Expand children'}
+                              title={`${isExpanded ? 'Hide' : 'Show'} ${enabledChildren.length} sub-label${enabledChildren.length === 1 ? '' : 's'}`}
                             >
-                              {collapsedParents.has(metric.id) ? '▸' : '▾'} Category · {metric.selection_mode === 'single_choice' ? 'single' : 'multi'} · {metric.children?.length || 0}
+                              {isExpanded ? (
+                                <ChevronDown className="w-4 h-4" />
+                              ) : (
+                                <ChevronRight className="w-4 h-4" />
+                              )}
                             </button>
-                          )}
-                          {metric.parent_metric_id && (
-                            <span className="ml-2 px-2 py-0.5 text-xs bg-gray-100 text-gray-700 rounded">
-                              Sub-label
+                          ) : null}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="flex items-center flex-wrap gap-2">
+                            <span className="text-sm font-medium text-gray-900">
+                              {metric.name}
+                            </span>
+                            {metric.is_default && (
+                              <span className="px-2 py-0.5 text-xs bg-blue-100 text-blue-800 rounded">
+                                Default
+                              </span>
+                            )}
+                            {isParent && (
+                              <span
+                                className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide bg-purple-100 text-purple-800 rounded"
+                                title={`Category metric (${metric.selection_mode}) with ${enabledChildren.length} sub-label${enabledChildren.length === 1 ? '' : 's'}.`}
+                              >
+                                <Layers className="w-3 h-3" />
+                                {metric.selection_mode === 'single_choice'
+                                  ? 'Single-choice'
+                                  : 'Multi-label'}
+                                <span className="ml-0.5 px-1 py-0.5 bg-purple-200 text-purple-900 rounded text-[10px]">
+                                  {enabledChildren.length}
+                                </span>
+                              </span>
+                            )}
+                            {isParent &&
+                              metric.selection_mode === 'multi_label' &&
+                              metric.allow_discovery && (
+                                <span
+                                  className="px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-amber-50 text-amber-700 border border-amber-200 rounded"
+                                  title="LLM may discover and propose additional sub-labels for this category during call-import evaluations."
+                                >
+                                  Auto-discover
+                                </span>
+                              )}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="text-sm text-gray-500 max-w-md truncate">
+                            {metric.description || '-'}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          {isQuantitative ? (
+                            <span className="px-2.5 py-1 text-xs font-medium bg-blue-100 text-blue-800 rounded-full">
+                              Quantitative
+                            </span>
+                          ) : (
+                            <span className="px-2.5 py-1 text-xs font-medium bg-amber-100 text-amber-800 rounded-full">
+                              Qualitative
                             </span>
                           )}
-                        </div>
-                      </td>
-                      <td className="px-6 py-4">
-                        <div className="text-sm text-gray-500 max-w-md truncate">
-                          {metric.description || '-'}
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        {isQuantitative ? (
-                          <span className="px-2.5 py-1 text-xs font-medium bg-blue-100 text-blue-800 rounded-full">
-                            Quantitative
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <span className="px-2 py-1 text-xs font-medium bg-gray-100 text-gray-800 rounded capitalize">
+                            {metric.metric_origin === 'custom'
+                              ? metric.custom_data_type || metric.metric_type
+                              : metric.metric_type}
                           </span>
-                        ) : (
-                          <span className="px-2.5 py-1 text-xs font-medium bg-amber-100 text-amber-800 rounded-full">
-                            Qualitative
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <span className="px-2 py-1 text-xs font-medium bg-gray-100 text-gray-800 rounded capitalize">
-                          {metric.metric_origin === 'custom' ? metric.custom_data_type || metric.metric_type : metric.metric_type}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="flex flex-wrap gap-1.5">
-                          {(metric.supported_surfaces || []).map((surface) => {
-                            const isEnabled = (metric.enabled_surfaces || []).includes(surface)
-                            return (
-                              <button
-                                key={surface}
-                                type="button"
-                                onClick={() => handleToggleSurface(metric, surface)}
-                                disabled={toggleSurfaceMutation.isPending}
-                                title={`${isEnabled ? 'Disable' : 'Enable'} on ${SURFACE_LABELS[surface]}`}
-                                className={`px-2 py-0.5 text-[11px] rounded-full border transition-colors ${
-                                  isEnabled
-                                    ? 'bg-emerald-100 text-emerald-800 border-emerald-200 hover:bg-emerald-200'
-                                    : 'bg-gray-100 text-gray-500 border-gray-200 hover:bg-gray-200'
-                                }`}
-                              >
-                                {SURFACE_LABELS[surface]}
-                                {isEnabled ? ' ✓' : ''}
-                              </button>
-                            )
-                          })}
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        {isAIVoiceMetric(metric.name) ? (
-                          <span className="inline-flex items-center px-2.5 py-1 text-xs font-medium bg-purple-100 text-purple-800 rounded-full">
-                            <Sparkles className="w-3 h-3 mr-1" />
-                            AI Voice
-                          </span>
-                        ) : isAudio ? (
-                          <span className="inline-flex items-center px-2.5 py-1 text-xs font-medium bg-violet-100 text-violet-800 rounded-full">
-                            <AudioWaveform className="w-3 h-3 mr-1" />
-                            Acoustic
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center px-2.5 py-1 text-xs font-medium bg-emerald-100 text-emerald-800 rounded-full">
-                            <Brain className="w-3 h-3 mr-1" />
-                            LLM
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <button
-                          onClick={() => handleToggleEnabled(metric)}
-                          className="flex items-center"
-                          disabled={toggleEnabledMutation.isPending}
+                        </td>
+                        <td
+                          className="px-6 py-4 whitespace-nowrap"
+                          onClick={(e) => e.stopPropagation()}
                         >
-                          {metric.enabled ? (
-                            <ToggleRight className="w-10 h-10 text-green-600" />
+                          <div className="flex flex-wrap gap-1.5">
+                            {(metric.supported_surfaces || []).map(
+                              (surface) => {
+                                const isEnabled = (
+                                  metric.enabled_surfaces || []
+                                ).includes(surface)
+                                return (
+                                  <button
+                                    key={surface}
+                                    type="button"
+                                    onClick={() =>
+                                      handleToggleSurface(metric, surface)
+                                    }
+                                    disabled={toggleSurfaceMutation.isPending}
+                                    title={`${isEnabled ? 'Disable' : 'Enable'} on ${SURFACE_LABELS[surface]}`}
+                                    className={`px-2 py-0.5 text-[11px] rounded-full border transition-colors ${
+                                      isEnabled
+                                        ? 'bg-emerald-100 text-emerald-800 border-emerald-200 hover:bg-emerald-200'
+                                        : 'bg-gray-100 text-gray-500 border-gray-200 hover:bg-gray-200'
+                                    }`}
+                                  >
+                                    {SURFACE_LABELS[surface]}
+                                    {isEnabled ? ' ✓' : ''}
+                                  </button>
+                                )
+                              },
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          {isAIVoiceMetric(metric.name) ? (
+                            <span className="inline-flex items-center px-2.5 py-1 text-xs font-medium bg-purple-100 text-purple-800 rounded-full">
+                              <Sparkles className="w-3 h-3 mr-1" />
+                              AI Voice
+                            </span>
+                          ) : isAudio ? (
+                            <span className="inline-flex items-center px-2.5 py-1 text-xs font-medium bg-violet-100 text-violet-800 rounded-full">
+                              <AudioWaveform className="w-3 h-3 mr-1" />
+                              Acoustic
+                            </span>
                           ) : (
-                            <ToggleLeft className="w-10 h-10 text-gray-400" />
+                            <span className="inline-flex items-center px-2.5 py-1 text-xs font-medium bg-emerald-100 text-emerald-800 rounded-full">
+                              <Brain className="w-3 h-3 mr-1" />
+                              LLM
+                            </span>
                           )}
-                        </button>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                        <div className="flex items-center justify-end space-x-2">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleEdit(metric)}
-                            leftIcon={<Edit className="w-4 h-4" />}
+                        </td>
+                        <td
+                          className="px-6 py-4 whitespace-nowrap"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <button
+                            onClick={() => handleToggleEnabled(metric)}
+                            className="flex items-center"
+                            disabled={toggleEnabledMutation.isPending}
                           >
-                            Edit
-                          </Button>
-                          {(!metric.is_default || isDeprecatedMetric(metric.name)) && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => handleDelete(metric)}
-                              leftIcon={<Trash2 className="w-4 h-4" />}
+                            {metric.enabled ? (
+                              <ToggleRight className="w-10 h-10 text-green-600" />
+                            ) : (
+                              <ToggleLeft className="w-10 h-10 text-gray-400" />
+                            )}
+                          </button>
+                        </td>
+                        <td
+                          className="w-10 px-2 py-4 text-right"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => handleManage(metric)}
+                            className="inline-flex items-center justify-center w-8 h-8 rounded-full text-gray-500 hover:text-gray-700 hover:bg-gray-100"
+                            aria-label="Manage metric"
+                            title="Manage metric"
+                          >
+                            <MoreVertical className="w-4 h-4" />
+                          </button>
+                        </td>
+                      </tr>
+                      {isParent &&
+                        isExpanded &&
+                        enabledChildren.map((child) => (
+                          <tr
+                            key={child.id}
+                            onClick={() => handleManage(child)}
+                            className="cursor-pointer hover:bg-purple-50/50 bg-purple-50/20 border-l-2 border-l-purple-300"
+                            title="Click to open Manage"
+                          >
+                            <td className="w-8 px-2 py-2.5" />
+                            <td className="px-6 py-2.5 whitespace-nowrap">
+                              <div className="flex items-center gap-2 pl-4 border-l border-purple-200">
+                                <span className="text-xs text-purple-500">
+                                  ↳
+                                </span>
+                                <span className="text-sm text-gray-800">
+                                  {child.name}
+                                </span>
+                                {child.capture_rationale && (
+                                  <span
+                                    className="px-1.5 py-0.5 text-[10px] font-medium bg-gray-100 text-gray-600 rounded"
+                                    title="LLM is asked to return a short rationale for this sub-label."
+                                  >
+                                    Rationale
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="px-6 py-2.5">
+                              <div className="text-xs text-gray-500 max-w-md truncate">
+                                {child.description || '-'}
+                              </div>
+                            </td>
+                            <td className="px-6 py-2.5 whitespace-nowrap text-[11px] text-gray-400">
+                              —
+                            </td>
+                            <td className="px-6 py-2.5 whitespace-nowrap">
+                              <span className="px-2 py-0.5 text-[11px] font-medium bg-gray-100 text-gray-700 rounded capitalize">
+                                Boolean
+                              </span>
+                            </td>
+                            <td className="px-6 py-2.5 whitespace-nowrap text-[11px] text-gray-400">
+                              Inherits parent
+                            </td>
+                            <td className="px-6 py-2.5 whitespace-nowrap text-[11px] text-gray-400">
+                              —
+                            </td>
+                            <td
+                              className="px-6 py-2.5 whitespace-nowrap"
+                              onClick={(e) => e.stopPropagation()}
                             >
-                              Delete
-                            </Button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
+                              <button
+                                onClick={() => handleToggleEnabled(child)}
+                                className="flex items-center"
+                                disabled={toggleEnabledMutation.isPending}
+                              >
+                                {child.enabled ? (
+                                  <ToggleRight className="w-7 h-7 text-green-600" />
+                                ) : (
+                                  <ToggleLeft className="w-7 h-7 text-gray-400" />
+                                )}
+                              </button>
+                            </td>
+                            <td
+                              className="w-10 px-2 py-2.5 text-right"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <button
+                                type="button"
+                                onClick={() => handleManage(child)}
+                                className="inline-flex items-center justify-center w-7 h-7 rounded-full text-gray-400 hover:text-gray-700 hover:bg-gray-100"
+                                aria-label="Manage sub-label"
+                                title="Manage sub-label"
+                              >
+                                <MoreVertical className="w-3.5 h-3.5" />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                    </Fragment>
                   )
                 })}
               </tbody>
@@ -1148,10 +1561,32 @@ export default function MetricsManagement() {
               className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"
               onClick={closeModal}
             />
-            <div className="relative bg-white rounded-lg shadow-xl max-w-2xl w-full p-6 max-h-[90vh] overflow-y-auto">
+            <div
+              className={`relative bg-white rounded-lg shadow-xl ${
+                editingMetric
+                  ? isEditingCategory
+                    ? 'max-w-3xl'
+                    : 'max-w-2xl'
+                  : createMode === 'bulk'
+                    ? 'max-w-4xl'
+                    : createMode === 'category'
+                      ? 'max-w-3xl'
+                      : 'max-w-2xl'
+              } w-full p-6 max-h-[90vh] overflow-y-auto`}
+            >
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-2xl font-bold text-gray-900">
-                  {editingMetric ? 'Edit Metric' : (isCustomMetricMode ? 'Create Custom Metric' : 'Create Metric')}
+                  {editingMetric
+                    ? isEditingCategory
+                      ? `Edit category · ${editingMetric.name}`
+                      : 'Edit Metric'
+                    : createMode === 'bulk'
+                      ? 'Bulk create metrics'
+                      : createMode === 'category'
+                        ? 'Create a category metric'
+                        : isCustomMetricMode
+                          ? 'Create Custom Metric'
+                          : 'Create Metric'}
                 </h2>
                 <button
                   onClick={closeModal}
@@ -1161,6 +1596,45 @@ export default function MetricsManagement() {
                 </button>
               </div>
 
+              {/* Mode switcher: lets the user pick between single, bulk,
+                  and category flows without leaving this modal. Hidden
+                  during edit because edit always targets one row. */}
+              {!editingMetric && (
+                <div className="mb-4">
+                  <div className="inline-flex rounded-md border border-gray-200 bg-gray-50 p-1 text-xs font-medium">
+                    {(
+                      [
+                        { id: 'single', label: 'Single metric' },
+                        { id: 'bulk', label: 'Bulk import' },
+                        { id: 'category', label: 'Category with sub-labels' },
+                      ] as Array<{ id: CreateMode; label: string }>
+                    ).map((tab) => (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => setCreateMode(tab.id)}
+                        className={`px-3 py-1.5 rounded ${
+                          createMode === tab.id
+                            ? 'bg-white text-gray-900 shadow-sm border border-gray-200'
+                            : 'text-gray-600 hover:text-gray-900'
+                        }`}
+                      >
+                        {tab.label}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="mt-2 text-[11px] text-gray-500">
+                    {createMode === 'single'
+                      ? 'Configure one custom metric end-to-end.'
+                      : createMode === 'bulk'
+                        ? 'Paste a rubric or labels prompt; each label becomes its own draft metric you can edit and save together.'
+                        : 'A parent metric groups N sub-label children that the LLM scores together. Pick a selection mode to control how children relate (one-of vs. independent yes/no).'}
+                  </p>
+                </div>
+              )}
+
+              {((createMode === 'single' && !editingMetric) ||
+                (editingMetric && !isEditingCategory)) && (
               <div className="space-y-4">
                 {isCustomMetricMode && !editingMetric && (
                   <div className="border border-purple-200 rounded-lg bg-purple-50/40">
@@ -1523,6 +1997,44 @@ export default function MetricsManagement() {
                   </select>
                 </div>
 
+                {/* Discovery toggle: only meaningful (and accepted by
+                    the API) for multi_label parents. We surface it here
+                    in the edit form so a user who forgot to tick the
+                    box during Create Category can flip it on later
+                    without having to delete + recreate the category. */}
+                {editingMetric &&
+                  !editingMetric.parent_metric_id &&
+                  editingMetric.selection_mode === 'multi_label' && (
+                    <div className="border border-amber-200 bg-amber-50/40 rounded-md p-3">
+                      <label className="flex items-start gap-2 text-sm text-gray-800">
+                        <input
+                          type="checkbox"
+                          checked={formData.allow_discovery}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              allow_discovery: e.target.checked,
+                            })
+                          }
+                          className="mt-0.5 h-4 w-4 text-amber-600 focus:ring-amber-500 border-gray-300 rounded"
+                        />
+                        <span>
+                          <span className="font-medium">
+                            Allow LLM-discovered labels
+                          </span>
+                          <span className="block text-xs text-gray-600 mt-0.5">
+                            Lets the LLM emit candidate sub-labels beyond
+                            the children below during call-import
+                            evaluation. Promote useful candidates from
+                            the Discovered Labels panel on each
+                            evaluation. Only available for multi-label
+                            parents.
+                          </span>
+                        </span>
+                      </label>
+                    </div>
+                  )}
+
                 <div className="flex items-center">
                   <input
                     type="checkbox"
@@ -1549,10 +2061,1007 @@ export default function MetricsManagement() {
                   </Button>
                 </div>
               </div>
+              )}
+
+              {!editingMetric && createMode === 'bulk' && (
+                <div>
+                  <p className="text-sm text-gray-600 mb-5">
+                    Paste a rubric (e.g. <code>Label #1 / Label Name / Label
+                    Definition / Example (Optional)</code> blocks). Each label
+                    becomes its own draft metric below — pick the type and the
+                    rationale flag per metric, then save them all in one click.
+                  </p>
+
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr_auto] gap-3 items-start">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          Default surface
+                        </label>
+                        <select
+                          value={bulkSurface}
+                          onChange={(e) =>
+                            setBulkSurface(e.target.value as MetricSurface)
+                          }
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
+                        >
+                          {ALL_SURFACES.map((surface) => (
+                            <option key={surface} value={surface}>
+                              {SURFACE_LABELS[surface]}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          Labels prompt
+                        </label>
+                        <textarea
+                          value={bulkPrompt}
+                          onChange={(e) => setBulkPrompt(e.target.value)}
+                          rows={6}
+                          placeholder={
+                            'Label #1\n\nLabel Name\nLanguage Adherence\nLabel Definition\n...\n'
+                          }
+                          className="w-full px-3 py-2 text-sm font-mono border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
+                        />
+                      </div>
+                      <div className="md:pt-7">
+                        <Button
+                          variant="primary"
+                          onClick={handleParseBulk}
+                          isLoading={parseBulkMutation.isPending}
+                          leftIcon={<Sparkles className="w-4 h-4" />}
+                        >
+                          Parse
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="border-t border-gray-200 pt-4">
+                      <div className="flex items-center justify-between mb-2">
+                        <h3 className="text-sm font-semibold text-gray-900">
+                          Drafts ({bulkDrafts.length})
+                        </h3>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={handleAddBlankBulkRow}
+                          leftIcon={<Plus className="w-3.5 h-3.5" />}
+                        >
+                          Add metric
+                        </Button>
+                      </div>
+
+                      {bulkDrafts.length === 0 ? (
+                        <div className="border border-dashed border-gray-300 rounded-md p-6 text-center text-sm text-gray-500">
+                          Parse a labels prompt above, or click <span className="font-medium">Add metric</span> to start with a blank row.
+                        </div>
+                      ) : (
+                        <div className="space-y-3">
+                          {bulkDrafts.map((row) => {
+                            const statusBadge =
+                              row.status === 'saved' ? (
+                                <span className="px-2 py-0.5 text-[11px] font-medium rounded-full bg-emerald-100 text-emerald-800">
+                                  Saved
+                                </span>
+                              ) : row.status === 'saving' ? (
+                                <span className="px-2 py-0.5 text-[11px] font-medium rounded-full bg-blue-100 text-blue-800">
+                                  Saving…
+                                </span>
+                              ) : row.status === 'error' ? (
+                                <span
+                                  className="px-2 py-0.5 text-[11px] font-medium rounded-full bg-red-100 text-red-800"
+                                  title={row.error}
+                                >
+                                  Error
+                                </span>
+                              ) : null
+                            const isLocked = row.status === 'saved' || row.status === 'saving'
+                            return (
+                              <div
+                                key={row.local_id}
+                                className={`border rounded-md p-3 space-y-3 ${
+                                  row.status === 'saved'
+                                    ? 'border-emerald-200 bg-emerald-50/40'
+                                    : row.status === 'error'
+                                      ? 'border-red-200 bg-red-50/40'
+                                      : 'border-gray-200 bg-gray-50'
+                                }`}
+                              >
+                                <div className="grid grid-cols-1 md:grid-cols-[1fr_140px_auto_auto] gap-2 items-start">
+                                  <input
+                                    type="text"
+                                    value={row.name}
+                                    disabled={isLocked}
+                                    onChange={(e) =>
+                                      updateBulkDraft(row.local_id, { name: e.target.value })
+                                    }
+                                    placeholder="Metric name"
+                                    className="px-2 py-1.5 text-sm font-medium border border-gray-300 rounded focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
+                                  />
+                                  <select
+                                    value={row.metric_type}
+                                    disabled={isLocked}
+                                    onChange={(e) => {
+                                      const next = e.target.value as
+                                        | 'boolean' | 'rating' | 'number' | 'text'
+                                      updateBulkDraft(row.local_id, {
+                                        metric_type: next,
+                                        custom_data_type:
+                                          next === 'boolean'
+                                            ? 'boolean'
+                                            : next === 'number'
+                                              ? 'number_range'
+                                              : 'enum',
+                                      })
+                                    }}
+                                    className="px-2 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
+                                  >
+                                    <option value="boolean">Boolean</option>
+                                    <option value="rating">Rating (enum)</option>
+                                    <option value="number">Number (range)</option>
+                                    <option value="text">Text (LLM summary)</option>
+                                  </select>
+                                  <label
+                                    className="inline-flex items-center gap-1.5 text-xs text-gray-700 px-2 py-1.5 border border-gray-300 rounded bg-white"
+                                    title="Ask the LLM to also return a 1-2 sentence reason"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={row.capture_rationale}
+                                      disabled={isLocked || row.metric_type === 'text'}
+                                      onChange={(e) =>
+                                        updateBulkDraft(row.local_id, {
+                                          capture_rationale: e.target.checked,
+                                        })
+                                      }
+                                      className="h-3.5 w-3.5 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
+                                    />
+                                    Rationale
+                                  </label>
+                                  <div className="flex items-center gap-2">
+                                    {statusBadge}
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemoveBulkRow(row.local_id)}
+                                      disabled={row.status === 'saving'}
+                                      className="text-xs text-red-600 hover:text-red-800 disabled:text-gray-400"
+                                      title="Remove this draft"
+                                    >
+                                      Remove
+                                    </button>
+                                  </div>
+                                </div>
+
+                                {row.metric_type !== 'text' && row.custom_data_type === 'enum' && (
+                                  <input
+                                    type="text"
+                                    value={row.enum_options_csv}
+                                    disabled={isLocked}
+                                    onChange={(e) =>
+                                      updateBulkDraft(row.local_id, {
+                                        enum_options_csv: e.target.value,
+                                      })
+                                    }
+                                    placeholder="Enum options, comma separated (e.g. Excellent, Good, Poor)"
+                                    className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
+                                  />
+                                )}
+
+                                {row.metric_type !== 'text' && row.custom_data_type === 'number_range' && (
+                                  <div className="grid grid-cols-3 gap-2">
+                                    <input
+                                      type="number"
+                                      value={row.number_min}
+                                      disabled={isLocked}
+                                      onChange={(e) =>
+                                        updateBulkDraft(row.local_id, {
+                                          number_min: Number(e.target.value),
+                                        })
+                                      }
+                                      placeholder="Min"
+                                      className="px-2 py-1.5 text-xs border border-gray-300 rounded focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
+                                    />
+                                    <input
+                                      type="number"
+                                      value={row.number_max}
+                                      disabled={isLocked}
+                                      onChange={(e) =>
+                                        updateBulkDraft(row.local_id, {
+                                          number_max: Number(e.target.value),
+                                        })
+                                      }
+                                      placeholder="Max"
+                                      className="px-2 py-1.5 text-xs border border-gray-300 rounded focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
+                                    />
+                                    <input
+                                      type="number"
+                                      value={row.number_step}
+                                      disabled={isLocked}
+                                      onChange={(e) =>
+                                        updateBulkDraft(row.local_id, {
+                                          number_step: Number(e.target.value),
+                                        })
+                                      }
+                                      placeholder="Step"
+                                      className="px-2 py-1.5 text-xs border border-gray-300 rounded focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
+                                    />
+                                  </div>
+                                )}
+
+                                <div>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      updateBulkDraft(row.local_id, { expanded: !row.expanded })
+                                    }
+                                    className="text-[11px] font-medium text-gray-600 hover:text-gray-800"
+                                  >
+                                    {row.expanded ? '▾ Hide rubric' : '▸ Edit rubric / description'}
+                                  </button>
+                                  {row.expanded && (
+                                    <textarea
+                                      value={row.description}
+                                      disabled={isLocked}
+                                      onChange={(e) =>
+                                        updateBulkDraft(row.local_id, {
+                                          description: e.target.value,
+                                        })
+                                      }
+                                      rows={5}
+                                      placeholder="Judging rubric the LLM-judge will see"
+                                      className="mt-1 w-full px-2 py-1.5 text-xs border border-gray-300 rounded focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
+                                    />
+                                  )}
+                                </div>
+
+                                {row.error && (
+                                  <p className="text-xs text-red-700">{row.error}</p>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between pt-5">
+                    <p className="text-xs text-gray-500">
+                      {bulkDrafts.filter((d) => d.status === 'saved').length} saved · {bulkDrafts.filter((d) => d.status !== 'saved').length} pending
+                    </p>
+                    <div className="flex space-x-3">
+                      <Button variant="ghost" onClick={closeModal}>
+                        Close
+                      </Button>
+                      <Button
+                        variant="primary"
+                        onClick={handleSaveAllBulk}
+                        isLoading={createAllBulkMetricsMutation.isPending}
+                        disabled={
+                          bulkDrafts.length === 0 ||
+                          bulkDrafts.every((d) => d.status === 'saved')
+                        }
+                      >
+                        Save all ({bulkDrafts.filter((d) => d.status !== 'saved').length})
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {!editingMetric && createMode === 'category' && (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1">
+                        Category name *
+                      </label>
+                      <input
+                        type="text"
+                        value={categoryForm.name}
+                        onChange={(e) =>
+                          setCategoryForm((s) => ({ ...s, name: e.target.value }))
+                        }
+                        placeholder="e.g. Call Outcome"
+                        className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1">
+                        Selection mode *
+                      </label>
+                      <select
+                        value={categoryForm.selection_mode}
+                        onChange={(e) => {
+                          const next = e.target.value as
+                            | 'single_choice'
+                            | 'multi_label'
+                          setCategoryForm((s) => ({
+                            ...s,
+                            selection_mode: next,
+                            // allow_discovery is only valid on multi_label
+                            // parents — flipping to single_choice should
+                            // immediately disable it so the submit invariant
+                            // stays satisfied.
+                            allow_discovery:
+                              next === 'multi_label' ? s.allow_discovery : false,
+                          }))
+                        }}
+                        className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
+                      >
+                        <option value="single_choice">Single choice (exactly one true)</option>
+                        <option value="multi_label">Multi-label (each child independent)</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {categoryForm.selection_mode === 'multi_label' && (
+                    <label className="flex items-start gap-2 text-xs text-gray-700">
+                      <input
+                        type="checkbox"
+                        checked={categoryForm.allow_discovery}
+                        onChange={(e) =>
+                          setCategoryForm((s) => ({
+                            ...s,
+                            allow_discovery: e.target.checked,
+                          }))
+                        }
+                        className="mt-0.5"
+                      />
+                      <span>
+                        <span className="font-medium">Allow LLM-discovered labels</span>
+                        <span className="block text-gray-500 mt-0.5">
+                          Lets the LLM emit candidate sub-labels beyond the
+                          ones below during call-import evaluation. You can
+                          promote useful candidates into real sub-labels
+                          afterwards. Only available for multi-label
+                          categories.
+                        </span>
+                      </span>
+                    </label>
+                  )}
+
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                      Description / context for the LLM
+                    </label>
+                    <textarea
+                      value={categoryForm.description}
+                      onChange={(e) =>
+                        setCategoryForm((s) => ({ ...s, description: e.target.value }))
+                      }
+                      rows={2}
+                      placeholder="e.g. Outcomes for an outbound survey call. The LLM uses this as context when scoring sub-labels below."
+                      className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="block text-xs font-medium text-gray-700">
+                        Children ({categoryForm.children.length})
+                      </label>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() =>
+                          setCategoryForm((s) => ({
+                            ...s,
+                            children: [
+                              ...s.children,
+                              {
+                                local_id: `c-${Date.now()}-${s.children.length + 1}`,
+                                name: '',
+                                description: '',
+                                capture_rationale: true,
+                              },
+                            ],
+                          }))
+                        }
+                        leftIcon={<Plus className="w-3 h-3" />}
+                      >
+                        Add child
+                      </Button>
+                    </div>
+                    <div className="space-y-2">
+                      {categoryForm.children.map((child, idx) => (
+                        <div
+                          key={child.local_id}
+                          className="border border-gray-200 rounded p-3 space-y-2 bg-gray-50"
+                        >
+                          <div className="flex items-start gap-2">
+                            <div className="flex-1">
+                              <input
+                                type="text"
+                                value={child.name}
+                                onChange={(e) =>
+                                  setCategoryForm((s) => ({
+                                    ...s,
+                                    children: s.children.map((c, i) =>
+                                      i === idx ? { ...c, name: e.target.value } : c,
+                                    ),
+                                  }))
+                                }
+                                placeholder="child name (e.g. happy_completion)"
+                                className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm"
+                              />
+                            </div>
+                            <label className="inline-flex items-center gap-1.5 text-xs text-gray-700 px-2 py-1.5 border border-gray-300 rounded bg-white">
+                              <input
+                                type="checkbox"
+                                checked={child.capture_rationale}
+                                onChange={(e) =>
+                                  setCategoryForm((s) => ({
+                                    ...s,
+                                    children: s.children.map((c, i) =>
+                                      i === idx
+                                        ? { ...c, capture_rationale: e.target.checked }
+                                        : c,
+                                    ),
+                                  }))
+                                }
+                                className="h-3.5 w-3.5 text-primary-600 border-gray-300 rounded"
+                              />
+                              Rationale
+                            </label>
+                            {categoryForm.children.length > 2 && (
+                              <button
+                                onClick={() =>
+                                  setCategoryForm((s) => ({
+                                    ...s,
+                                    children: s.children.filter((_, i) => i !== idx),
+                                  }))
+                                }
+                                className="text-gray-400 hover:text-red-600 px-2 py-1.5"
+                                title="Remove child"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            )}
+                          </div>
+                          <textarea
+                            value={child.description}
+                            onChange={(e) =>
+                              setCategoryForm((s) => ({
+                                ...s,
+                                children: s.children.map((c, i) =>
+                                  i === idx
+                                    ? { ...c, description: e.target.value }
+                                    : c,
+                                ),
+                              }))
+                            }
+                            rows={2}
+                            placeholder="Rubric: when should the LLM mark this child true?"
+                            className="w-full px-2 py-1.5 border border-gray-300 rounded text-xs"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-3 pt-2 border-t">
+                    <Button variant="ghost" onClick={closeModal}>
+                      Cancel
+                    </Button>
+                    <Button
+                      variant="primary"
+                      isLoading={createCategoryMutation.isPending}
+                      disabled={
+                        !categoryForm.name.trim() ||
+                        categoryForm.children.filter((c) => c.name.trim()).length < 2
+                      }
+                      onClick={() => {
+                        const cleanedChildren = categoryForm.children
+                          .filter((c) => c.name.trim())
+                          .map((c) => ({
+                            name: c.name.trim(),
+                            description: c.description.trim() || null,
+                            capture_rationale: c.capture_rationale,
+                            enabled: true,
+                          }))
+                        createCategoryMutation.mutate({
+                          name: categoryForm.name.trim(),
+                          description:
+                            categoryForm.description.trim() || null,
+                          selection_mode: categoryForm.selection_mode,
+                          allow_discovery:
+                            categoryForm.selection_mode === 'multi_label'
+                              ? categoryForm.allow_discovery
+                              : false,
+                          supported_surfaces: categoryForm.surfaces,
+                          enabled_surfaces: categoryForm.surfaces,
+                          children: cleanedChildren,
+                        })
+                      }}
+                    >
+                      Create category
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {/* ------------------------------------------------------------------
+                  EDIT CATEGORY VIEW
+                  ------------------------------------------------------------------
+                  Active when ``editingMetric`` is a parent metric (see
+                  ``handleEditCategory``). Mirrors the create-category
+                  layout but adds:
+                    - selection_mode is locked (read-only badge) so we
+                      don't silently invalidate completed evaluations
+                      that depend on the original mode.
+                    - Each child carries a ``server_id`` (string |
+                      null). null = newly added in this session and
+                      will be POSTed; existing rows are PATCHed if
+                      ``name`` / ``description`` / ``capture_rationale``
+                      / ``enabled`` changed. Removing a child stores
+                      its server id in ``deleted_child_ids`` so the
+                      save handler can issue the DELETE.
+              ------------------------------------------------------------------ */}
+              {editingMetric && isEditingCategory && (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1">
+                        Category name *
+                      </label>
+                      <input
+                        type="text"
+                        value={editCategoryForm.name}
+                        onChange={(e) =>
+                          setEditCategoryForm((s) => ({
+                            ...s,
+                            name: e.target.value,
+                          }))
+                        }
+                        className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1">
+                        Selection mode
+                      </label>
+                      <div className="inline-flex items-center gap-2 px-3 py-2 border border-gray-200 bg-gray-50 rounded text-sm text-gray-700">
+                        <Layers className="w-4 h-4 text-purple-600" />
+                        <span className="font-medium">
+                          {editCategoryForm.selection_mode === 'single_choice'
+                            ? 'Single-choice'
+                            : 'Multi-label'}
+                        </span>
+                        <span
+                          className="text-[11px] text-gray-500"
+                          title="Selection mode is locked after creation. Changing it can invalidate completed evaluations that depend on the original mode."
+                        >
+                          (locked)
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {editCategoryForm.selection_mode === 'multi_label' && (
+                    <label className="flex items-start gap-2 text-xs text-gray-700">
+                      <input
+                        type="checkbox"
+                        checked={editCategoryForm.allow_discovery}
+                        onChange={(e) =>
+                          setEditCategoryForm((s) => ({
+                            ...s,
+                            allow_discovery: e.target.checked,
+                          }))
+                        }
+                        className="mt-0.5"
+                      />
+                      <span>
+                        <span className="font-medium">
+                          Allow LLM-discovered labels
+                        </span>
+                        <span className="block text-gray-500 mt-0.5">
+                          Lets the LLM emit candidate sub-labels beyond
+                          the ones below during call-import evaluation.
+                          You can promote useful candidates into real
+                          sub-labels afterwards.
+                        </span>
+                      </span>
+                    </label>
+                  )}
+
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                      Description / context for the LLM
+                    </label>
+                    <textarea
+                      value={editCategoryForm.description}
+                      onChange={(e) =>
+                        setEditCategoryForm((s) => ({
+                          ...s,
+                          description: e.target.value,
+                        }))
+                      }
+                      rows={2}
+                      placeholder="The LLM uses this as context when scoring sub-labels below."
+                      className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="block text-xs font-medium text-gray-700">
+                        Sub-labels ({editCategoryForm.children.length})
+                      </label>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() =>
+                          setEditCategoryForm((s) => ({
+                            ...s,
+                            children: [
+                              ...s.children,
+                              {
+                                local_id: `new-${Date.now()}-${s.children.length}`,
+                                server_id: null,
+                                name: '',
+                                description: '',
+                                capture_rationale: true,
+                                enabled: true,
+                              },
+                            ],
+                          }))
+                        }
+                        leftIcon={<Plus className="w-3 h-3" />}
+                      >
+                        Add sub-label
+                      </Button>
+                    </div>
+                    <div className="space-y-2">
+                      {editCategoryForm.children.map((child, idx) => (
+                        <div
+                          key={child.local_id}
+                          className={`border rounded p-3 space-y-2 ${
+                            child.server_id
+                              ? 'border-gray-200 bg-gray-50'
+                              : 'border-emerald-200 bg-emerald-50/30'
+                          }`}
+                        >
+                          <div className="flex items-start gap-2">
+                            <div className="flex-1">
+                              <input
+                                type="text"
+                                value={child.name}
+                                onChange={(e) =>
+                                  setEditCategoryForm((s) => ({
+                                    ...s,
+                                    children: s.children.map((c, i) =>
+                                      i === idx
+                                        ? { ...c, name: e.target.value }
+                                        : c,
+                                    ),
+                                  }))
+                                }
+                                placeholder="Sub-label name (e.g. happy_completion)"
+                                className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm"
+                              />
+                            </div>
+                            <label className="inline-flex items-center gap-1.5 text-xs text-gray-700 px-2 py-1.5 border border-gray-300 rounded bg-white">
+                              <input
+                                type="checkbox"
+                                checked={child.capture_rationale}
+                                onChange={(e) =>
+                                  setEditCategoryForm((s) => ({
+                                    ...s,
+                                    children: s.children.map((c, i) =>
+                                      i === idx
+                                        ? {
+                                            ...c,
+                                            capture_rationale:
+                                              e.target.checked,
+                                          }
+                                        : c,
+                                    ),
+                                  }))
+                                }
+                                className="h-3.5 w-3.5 text-primary-600 border-gray-300 rounded"
+                              />
+                              Rationale
+                            </label>
+                            <label className="inline-flex items-center gap-1.5 text-xs text-gray-700 px-2 py-1.5 border border-gray-300 rounded bg-white">
+                              <input
+                                type="checkbox"
+                                checked={child.enabled}
+                                onChange={(e) =>
+                                  setEditCategoryForm((s) => ({
+                                    ...s,
+                                    children: s.children.map((c, i) =>
+                                      i === idx
+                                        ? { ...c, enabled: e.target.checked }
+                                        : c,
+                                    ),
+                                  }))
+                                }
+                                className="h-3.5 w-3.5 text-primary-600 border-gray-300 rounded"
+                              />
+                              Enabled
+                            </label>
+                            {!child.server_id ? (
+                              <span
+                                className="px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-emerald-100 text-emerald-800 border border-emerald-200 rounded"
+                                title="This sub-label was added in this edit session and will be created on Save."
+                              >
+                                New
+                              </span>
+                            ) : null}
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setEditCategoryForm((s) => {
+                                  // Newly-added drafts: just splice out
+                                  // (nothing to delete on the server).
+                                  // Existing rows: stash the id so the
+                                  // save handler can issue the DELETE
+                                  // call, then remove from the visible
+                                  // list.
+                                  const target = s.children[idx]
+                                  const remainingDrafts = s.children.filter(
+                                    (_, i) => i !== idx,
+                                  )
+                                  return {
+                                    ...s,
+                                    children: remainingDrafts,
+                                    deleted_child_ids: target?.server_id
+                                      ? [
+                                          ...s.deleted_child_ids,
+                                          target.server_id,
+                                        ]
+                                      : s.deleted_child_ids,
+                                  }
+                                })
+                              }
+                              className="text-gray-400 hover:text-red-600 px-2 py-1.5"
+                              title="Remove this sub-label"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                          <textarea
+                            value={child.description}
+                            onChange={(e) =>
+                              setEditCategoryForm((s) => ({
+                                ...s,
+                                children: s.children.map((c, i) =>
+                                  i === idx
+                                    ? { ...c, description: e.target.value }
+                                    : c,
+                                ),
+                              }))
+                            }
+                            rows={2}
+                            placeholder="Rubric: when should the LLM mark this sub-label true?"
+                            className="w-full px-2 py-1.5 border border-gray-300 rounded text-xs"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                    {editCategoryForm.deleted_child_ids.length > 0 && (
+                      <p className="mt-2 text-[11px] text-amber-700">
+                        {editCategoryForm.deleted_child_ids.length} sub-label
+                        {editCategoryForm.deleted_child_ids.length === 1
+                          ? ''
+                          : 's'}{' '}
+                        will be deleted on Save. Past evaluation rows keep
+                        their stored scores but the sub-label will no longer
+                        appear in new runs.
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="flex items-center justify-end gap-3 pt-2 border-t">
+                    <Button variant="ghost" onClick={closeModal}>
+                      Cancel
+                    </Button>
+                    <Button
+                      variant="primary"
+                      isLoading={updateCategoryMutation.isPending}
+                      disabled={
+                        !editCategoryForm.name.trim() ||
+                        editCategoryForm.children.filter((c) =>
+                          c.name.trim(),
+                        ).length < 2
+                      }
+                      onClick={handleUpdateCategory}
+                    >
+                      Save changes
+                    </Button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
       )}
+
+      {/* ------------------------------------------------------------------
+          MANAGE METRIC MODAL
+          ------------------------------------------------------------------
+          Opened either by clicking the row body or the "..." kebab on
+          any metric row. Hosts Edit / Enable / Delete affordances that
+          used to live in the table's Actions column — pulling them out
+          keeps the table compact and makes destructive actions
+          deliberate (you have to open the modal to delete).
+          ------------------------------------------------------------------ */}
+      {manageMetric && (() => {
+        const m = manageMetric
+        const isParent = !!m.selection_mode && !m.parent_metric_id
+        const isChild = !!m.parent_metric_id
+        const childCount = isParent
+          ? (m.children || []).filter((c) => c.enabled).length
+          : 0
+        const canDelete = !m.is_default || isDeprecatedMetric(m.name)
+        const pendingDelete =
+          pendingDeleteMetric && pendingDeleteMetric.id === m.id
+        return (
+          <div className="fixed inset-0 z-50 overflow-y-auto">
+            <div className="flex min-h-screen items-center justify-center p-4">
+              <div
+                className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"
+                onClick={() => {
+                  setManageMetric(null)
+                  setPendingDeleteMetric(null)
+                }}
+              />
+              <div className="relative bg-white rounded-lg shadow-xl max-w-md w-full p-6">
+                <div className="flex items-start justify-between mb-3">
+                  <div className="min-w-0">
+                    <p className="text-[11px] uppercase tracking-wide font-semibold text-gray-500">
+                      Manage metric
+                    </p>
+                    <h2 className="text-lg font-bold text-gray-900 truncate">
+                      {m.name}
+                    </h2>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setManageMetric(null)
+                      setPendingDeleteMetric(null)
+                    }}
+                    className="text-gray-400 hover:text-gray-500"
+                    aria-label="Close"
+                  >
+                    <X className="h-5 w-5" />
+                  </button>
+                </div>
+
+                <div className="mb-4 space-y-1.5">
+                  <div className="flex items-center gap-2 flex-wrap text-xs">
+                    {isParent && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 font-semibold uppercase tracking-wide bg-purple-100 text-purple-800 rounded">
+                        <Layers className="w-3 h-3" />
+                        {m.selection_mode === 'single_choice'
+                          ? 'Single-choice'
+                          : 'Multi-label'}
+                        <span className="ml-0.5 px-1 py-0.5 bg-purple-200 text-purple-900 rounded text-[10px]">
+                          {childCount}
+                        </span>
+                      </span>
+                    )}
+                    {isChild && (
+                      <span className="px-2 py-0.5 font-medium bg-gray-100 text-gray-700 rounded">
+                        Sub-label
+                      </span>
+                    )}
+                    {m.is_default && (
+                      <span className="px-2 py-0.5 bg-blue-100 text-blue-800 rounded">
+                        Default
+                      </span>
+                    )}
+                    {isParent &&
+                      m.selection_mode === 'multi_label' &&
+                      m.allow_discovery && (
+                        <span className="px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-amber-50 text-amber-700 border border-amber-200 rounded">
+                          Auto-discover
+                        </span>
+                      )}
+                  </div>
+                  {m.description && (
+                    <p className="text-sm text-gray-600 line-clamp-3">
+                      {m.description}
+                    </p>
+                  )}
+                </div>
+
+                {!pendingDelete ? (
+                  <div className="flex flex-col gap-2">
+                    <Button
+                      variant="primary"
+                      leftIcon={<Edit className="w-4 h-4" />}
+                      onClick={() => {
+                        setManageMetric(null)
+                        handleEdit(m)
+                      }}
+                    >
+                      {isParent
+                        ? 'Edit category & sub-labels'
+                        : 'Edit metric'}
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      leftIcon={
+                        m.enabled ? (
+                          <ToggleRight className="w-4 h-4" />
+                        ) : (
+                          <ToggleLeft className="w-4 h-4" />
+                        )
+                      }
+                      onClick={() => handleToggleEnabled(m)}
+                      isLoading={toggleEnabledMutation.isPending}
+                    >
+                      {m.enabled ? 'Disable' : 'Enable'}
+                    </Button>
+                    {canDelete ? (
+                      <Button
+                        variant="outline"
+                        leftIcon={<Trash2 className="w-4 h-4" />}
+                        onClick={() => setPendingDeleteMetric(m)}
+                      >
+                        Delete
+                      </Button>
+                    ) : (
+                      <p className="text-xs text-gray-500 px-1 mt-1">
+                        Default metrics cannot be deleted.
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="rounded border border-red-200 bg-red-50/60 p-3 space-y-3">
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 text-red-600 mt-0.5 flex-shrink-0" />
+                      <div className="text-sm text-red-800">
+                        <p className="font-semibold">Delete "{m.name}"?</p>
+                        <p className="mt-1 text-xs text-red-700">
+                          {isParent && childCount > 0 ? (
+                            <>
+                              This category has {childCount} sub-label
+                              {childCount === 1 ? '' : 's'}, all of which
+                              will also be deleted. Past evaluation rows
+                              keep their stored scores, but new runs will
+                              no longer reference this category.
+                            </>
+                          ) : isDeprecatedMetric(m.name) ? (
+                            <>
+                              This is a deprecated default metric. Removal
+                              is permanent.
+                            </>
+                          ) : (
+                            <>This action cannot be undone.</>
+                          )}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-end gap-2">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setPendingDeleteMetric(null)}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        isLoading={deleteMutation.isPending}
+                        onClick={() => handleConfirmDelete(m)}
+                        className="!bg-red-600 hover:!bg-red-700"
+                      >
+                        Delete permanently
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )
+      })()}
 
       {/* Enable Metrics Modal */}
       {showEnableModal && (
@@ -1660,529 +3169,9 @@ export default function MetricsManagement() {
         </div>
       )}
 
-      {/* Bulk Create Metrics Modal */}
-      {showBulkModal && (
-        <div className="fixed inset-0 z-50 overflow-y-auto">
-          <div className="flex min-h-screen items-center justify-center p-4">
-            <div
-              className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"
-              onClick={resetBulkForm}
-            />
-            <div className="relative bg-white rounded-lg shadow-xl max-w-4xl w-full p-6 max-h-[90vh] overflow-y-auto">
-              <div className="flex items-center justify-between mb-2">
-                <h2 className="text-2xl font-bold text-gray-900">
-                  Bulk Create Metrics
-                </h2>
-                <button
-                  onClick={resetBulkForm}
-                  className="text-gray-400 hover:text-gray-500"
-                >
-                  <X className="h-6 w-6" />
-                </button>
-              </div>
-              <p className="text-sm text-gray-600 mb-5">
-                Paste a rubric (e.g. <code>Label #1 / Label Name / Label
-                Definition / Example (Optional)</code> blocks). Each label
-                becomes its own draft metric below — pick the type and the
-                rationale flag per metric, then save them all in one click.
-              </p>
-
-              <div className="space-y-4">
-                <div className="grid grid-cols-1 md:grid-cols-[200px_1fr_auto] gap-3 items-start">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Default surface
-                    </label>
-                    <select
-                      value={bulkSurface}
-                      onChange={(e) =>
-                        setBulkSurface(e.target.value as MetricSurface)
-                      }
-                      className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
-                    >
-                      {ALL_SURFACES.map((surface) => (
-                        <option key={surface} value={surface}>
-                          {SURFACE_LABELS[surface]}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Labels prompt
-                    </label>
-                    <textarea
-                      value={bulkPrompt}
-                      onChange={(e) => setBulkPrompt(e.target.value)}
-                      rows={6}
-                      placeholder={
-                        'Label #1\n\nLabel Name\nLanguage Adherence\nLabel Definition\n...\n'
-                      }
-                      className="w-full px-3 py-2 text-sm font-mono border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
-                    />
-                  </div>
-                  <div className="md:pt-7">
-                    <Button
-                      variant="primary"
-                      onClick={handleParseBulk}
-                      isLoading={parseBulkMutation.isPending}
-                      leftIcon={<Sparkles className="w-4 h-4" />}
-                    >
-                      Parse
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="border-t border-gray-200 pt-4">
-                  <div className="flex items-center justify-between mb-2">
-                    <h3 className="text-sm font-semibold text-gray-900">
-                      Drafts ({bulkDrafts.length})
-                    </h3>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={handleAddBlankBulkRow}
-                      leftIcon={<Plus className="w-3.5 h-3.5" />}
-                    >
-                      Add metric
-                    </Button>
-                  </div>
-
-                  {bulkDrafts.length === 0 ? (
-                    <div className="border border-dashed border-gray-300 rounded-md p-6 text-center text-sm text-gray-500">
-                      Parse a labels prompt above, or click <span className="font-medium">Add metric</span> to start with a blank row.
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      {bulkDrafts.map((row) => {
-                        const statusBadge =
-                          row.status === 'saved' ? (
-                            <span className="px-2 py-0.5 text-[11px] font-medium rounded-full bg-emerald-100 text-emerald-800">
-                              Saved
-                            </span>
-                          ) : row.status === 'saving' ? (
-                            <span className="px-2 py-0.5 text-[11px] font-medium rounded-full bg-blue-100 text-blue-800">
-                              Saving…
-                            </span>
-                          ) : row.status === 'error' ? (
-                            <span
-                              className="px-2 py-0.5 text-[11px] font-medium rounded-full bg-red-100 text-red-800"
-                              title={row.error}
-                            >
-                              Error
-                            </span>
-                          ) : null
-                        const isLocked = row.status === 'saved' || row.status === 'saving'
-                        return (
-                          <div
-                            key={row.local_id}
-                            className={`border rounded-md p-3 space-y-3 ${
-                              row.status === 'saved'
-                                ? 'border-emerald-200 bg-emerald-50/40'
-                                : row.status === 'error'
-                                  ? 'border-red-200 bg-red-50/40'
-                                  : 'border-gray-200 bg-gray-50'
-                            }`}
-                          >
-                            <div className="grid grid-cols-1 md:grid-cols-[1fr_140px_auto_auto] gap-2 items-start">
-                              <input
-                                type="text"
-                                value={row.name}
-                                disabled={isLocked}
-                                onChange={(e) =>
-                                  updateBulkDraft(row.local_id, { name: e.target.value })
-                                }
-                                placeholder="Metric name"
-                                className="px-2 py-1.5 text-sm font-medium border border-gray-300 rounded focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
-                              />
-                              <select
-                                value={row.metric_type}
-                                disabled={isLocked}
-                                onChange={(e) => {
-                                  const next = e.target.value as
-                                    | 'boolean' | 'rating' | 'number' | 'text'
-                                  updateBulkDraft(row.local_id, {
-                                    metric_type: next,
-                                    custom_data_type:
-                                      next === 'boolean'
-                                        ? 'boolean'
-                                        : next === 'number'
-                                          ? 'number_range'
-                                          : 'enum',
-                                  })
-                                }}
-                                className="px-2 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
-                              >
-                                <option value="boolean">Boolean</option>
-                                <option value="rating">Rating (enum)</option>
-                                <option value="number">Number (range)</option>
-                                <option value="text">Text (LLM summary)</option>
-                              </select>
-                              <label
-                                className="inline-flex items-center gap-1.5 text-xs text-gray-700 px-2 py-1.5 border border-gray-300 rounded bg-white"
-                                title="Ask the LLM to also return a 1-2 sentence reason"
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={row.capture_rationale}
-                                  disabled={isLocked || row.metric_type === 'text'}
-                                  onChange={(e) =>
-                                    updateBulkDraft(row.local_id, {
-                                      capture_rationale: e.target.checked,
-                                    })
-                                  }
-                                  className="h-3.5 w-3.5 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
-                                />
-                                Rationale
-                              </label>
-                              <div className="flex items-center gap-2">
-                                {statusBadge}
-                                <button
-                                  type="button"
-                                  onClick={() => handleRemoveBulkRow(row.local_id)}
-                                  disabled={row.status === 'saving'}
-                                  className="text-xs text-red-600 hover:text-red-800 disabled:text-gray-400"
-                                  title="Remove this draft"
-                                >
-                                  Remove
-                                </button>
-                              </div>
-                            </div>
-
-                            {row.metric_type !== 'text' && row.custom_data_type === 'enum' && (
-                              <input
-                                type="text"
-                                value={row.enum_options_csv}
-                                disabled={isLocked}
-                                onChange={(e) =>
-                                  updateBulkDraft(row.local_id, {
-                                    enum_options_csv: e.target.value,
-                                  })
-                                }
-                                placeholder="Enum options, comma separated (e.g. Excellent, Good, Poor)"
-                                className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
-                              />
-                            )}
-
-                            {row.metric_type !== 'text' && row.custom_data_type === 'number_range' && (
-                              <div className="grid grid-cols-3 gap-2">
-                                <input
-                                  type="number"
-                                  value={row.number_min}
-                                  disabled={isLocked}
-                                  onChange={(e) =>
-                                    updateBulkDraft(row.local_id, {
-                                      number_min: Number(e.target.value),
-                                    })
-                                  }
-                                  placeholder="Min"
-                                  className="px-2 py-1.5 text-xs border border-gray-300 rounded focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
-                                />
-                                <input
-                                  type="number"
-                                  value={row.number_max}
-                                  disabled={isLocked}
-                                  onChange={(e) =>
-                                    updateBulkDraft(row.local_id, {
-                                      number_max: Number(e.target.value),
-                                    })
-                                  }
-                                  placeholder="Max"
-                                  className="px-2 py-1.5 text-xs border border-gray-300 rounded focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
-                                />
-                                <input
-                                  type="number"
-                                  value={row.number_step}
-                                  disabled={isLocked}
-                                  onChange={(e) =>
-                                    updateBulkDraft(row.local_id, {
-                                      number_step: Number(e.target.value),
-                                    })
-                                  }
-                                  placeholder="Step"
-                                  className="px-2 py-1.5 text-xs border border-gray-300 rounded focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
-                                />
-                              </div>
-                            )}
-
-                            <div>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  updateBulkDraft(row.local_id, { expanded: !row.expanded })
-                                }
-                                className="text-[11px] font-medium text-gray-600 hover:text-gray-800"
-                              >
-                                {row.expanded ? '▾ Hide rubric' : '▸ Edit rubric / description'}
-                              </button>
-                              {row.expanded && (
-                                <textarea
-                                  value={row.description}
-                                  disabled={isLocked}
-                                  onChange={(e) =>
-                                    updateBulkDraft(row.local_id, {
-                                      description: e.target.value,
-                                    })
-                                  }
-                                  rows={5}
-                                  placeholder="Judging rubric the LLM-judge will see"
-                                  className="mt-1 w-full px-2 py-1.5 text-xs border border-gray-300 rounded focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
-                                />
-                              )}
-                            </div>
-
-                            {row.error && (
-                              <p className="text-xs text-red-700">{row.error}</p>
-                            )}
-                          </div>
-                        )
-                      })}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between pt-5">
-                <p className="text-xs text-gray-500">
-                  {bulkDrafts.filter((d) => d.status === 'saved').length} saved · {bulkDrafts.filter((d) => d.status !== 'saved').length} pending
-                </p>
-                <div className="flex space-x-3">
-                  <Button variant="ghost" onClick={resetBulkForm}>
-                    Close
-                  </Button>
-                  <Button
-                    variant="primary"
-                    onClick={handleSaveAllBulk}
-                    isLoading={createAllBulkMetricsMutation.isPending}
-                    disabled={
-                      bulkDrafts.length === 0 ||
-                      bulkDrafts.every((d) => d.status === 'saved')
-                    }
-                  >
-                    Save all ({bulkDrafts.filter((d) => d.status !== 'saved').length})
-                  </Button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showCategoryModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-lg w-full max-w-3xl max-h-[90vh] overflow-y-auto">
-            <div className="p-6 space-y-4">
-              <div className="flex items-start justify-between">
-                <div>
-                  <h2 className="text-xl font-bold text-gray-900">
-                    Create a category metric
-                  </h2>
-                  <p className="mt-1 text-xs text-gray-500">
-                    A parent metric groups N sub-label children that the LLM scores together.
-                    Pick a selection mode to control how children relate
-                    (one-of vs. independent yes/no).
-                  </p>
-                </div>
-                <button
-                  onClick={() => setShowCategoryModal(false)}
-                  className="text-gray-400 hover:text-gray-600"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-medium text-gray-700 mb-1">
-                    Category name *
-                  </label>
-                  <input
-                    type="text"
-                    value={categoryForm.name}
-                    onChange={(e) =>
-                      setCategoryForm((s) => ({ ...s, name: e.target.value }))
-                    }
-                    placeholder="e.g. Call Outcome"
-                    className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-700 mb-1">
-                    Selection mode *
-                  </label>
-                  <select
-                    value={categoryForm.selection_mode}
-                    onChange={(e) =>
-                      setCategoryForm((s) => ({
-                        ...s,
-                        selection_mode: e.target.value as 'single_choice' | 'multi_label',
-                      }))
-                    }
-                    className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
-                  >
-                    <option value="single_choice">Single choice (exactly one true)</option>
-                    <option value="multi_label">Multi-label (each child independent)</option>
-                  </select>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">
-                  Description / context for the LLM
-                </label>
-                <textarea
-                  value={categoryForm.description}
-                  onChange={(e) =>
-                    setCategoryForm((s) => ({ ...s, description: e.target.value }))
-                  }
-                  rows={2}
-                  placeholder="e.g. Outcomes for an outbound survey call. The LLM uses this as context when scoring sub-labels below."
-                  className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
-                />
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="block text-xs font-medium text-gray-700">
-                    Children ({categoryForm.children.length})
-                  </label>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() =>
-                      setCategoryForm((s) => ({
-                        ...s,
-                        children: [
-                          ...s.children,
-                          {
-                            local_id: `c-${Date.now()}-${s.children.length + 1}`,
-                            name: '',
-                            description: '',
-                            capture_rationale: true,
-                          },
-                        ],
-                      }))
-                    }
-                    leftIcon={<Plus className="w-3 h-3" />}
-                  >
-                    Add child
-                  </Button>
-                </div>
-                <div className="space-y-2">
-                  {categoryForm.children.map((child, idx) => (
-                    <div
-                      key={child.local_id}
-                      className="border border-gray-200 rounded p-3 space-y-2 bg-gray-50"
-                    >
-                      <div className="flex items-start gap-2">
-                        <div className="flex-1">
-                          <input
-                            type="text"
-                            value={child.name}
-                            onChange={(e) =>
-                              setCategoryForm((s) => ({
-                                ...s,
-                                children: s.children.map((c, i) =>
-                                  i === idx ? { ...c, name: e.target.value } : c,
-                                ),
-                              }))
-                            }
-                            placeholder="child name (e.g. happy_completion)"
-                            className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm"
-                          />
-                        </div>
-                        <label className="inline-flex items-center gap-1.5 text-xs text-gray-700 px-2 py-1.5 border border-gray-300 rounded bg-white">
-                          <input
-                            type="checkbox"
-                            checked={child.capture_rationale}
-                            onChange={(e) =>
-                              setCategoryForm((s) => ({
-                                ...s,
-                                children: s.children.map((c, i) =>
-                                  i === idx
-                                    ? { ...c, capture_rationale: e.target.checked }
-                                    : c,
-                                ),
-                              }))
-                            }
-                            className="h-3.5 w-3.5 text-primary-600 border-gray-300 rounded"
-                          />
-                          Rationale
-                        </label>
-                        {categoryForm.children.length > 2 && (
-                          <button
-                            onClick={() =>
-                              setCategoryForm((s) => ({
-                                ...s,
-                                children: s.children.filter((_, i) => i !== idx),
-                              }))
-                            }
-                            className="text-gray-400 hover:text-red-600 px-2 py-1.5"
-                            title="Remove child"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        )}
-                      </div>
-                      <textarea
-                        value={child.description}
-                        onChange={(e) =>
-                          setCategoryForm((s) => ({
-                            ...s,
-                            children: s.children.map((c, i) =>
-                              i === idx
-                                ? { ...c, description: e.target.value }
-                                : c,
-                            ),
-                          }))
-                        }
-                        rows={2}
-                        placeholder="Rubric: when should the LLM mark this child true?"
-                        className="w-full px-2 py-1.5 border border-gray-300 rounded text-xs"
-                      />
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="flex items-center justify-end gap-3 pt-2 border-t">
-                <Button variant="ghost" onClick={() => setShowCategoryModal(false)}>
-                  Cancel
-                </Button>
-                <Button
-                  variant="primary"
-                  isLoading={createCategoryMutation.isPending}
-                  disabled={
-                    !categoryForm.name.trim() ||
-                    categoryForm.children.filter((c) => c.name.trim()).length < 2
-                  }
-                  onClick={() => {
-                    const cleanedChildren = categoryForm.children
-                      .filter((c) => c.name.trim())
-                      .map((c) => ({
-                        name: c.name.trim(),
-                        description: c.description.trim() || null,
-                        capture_rationale: c.capture_rationale,
-                        enabled: true,
-                      }))
-                    createCategoryMutation.mutate({
-                      name: categoryForm.name.trim(),
-                      description:
-                        categoryForm.description.trim() || null,
-                      selection_mode: categoryForm.selection_mode,
-                      supported_surfaces: categoryForm.surfaces,
-                      enabled_surfaces: categoryForm.surfaces,
-                      children: cleanedChildren,
-                    })
-                  }}
-                >
-                  Create category
-                </Button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* The "Bulk Create Metrics" and "Create Category" flows are now
+          rendered inside the unified showCreateModal above, switched by
+          createMode. */}
 
     </div>
   )

@@ -38,6 +38,11 @@ FEATURE_CATALOG: Dict[str, Dict[str, str]] = {
         "description": "Self-improving voice agents via reflective prompt evolution.",
         "category": "optimization",
     },
+    "call_imports": {
+        "title": "Call Imports",
+        "description": "Bulk-import production call recordings via CSV and run batch evaluations on them.",
+        "category": "evaluation",
+    },
     # --- Authentication features (gate pluggable auth providers) ---
     "oidc_sso": {
         "title": "Enterprise SSO (OIDC)",

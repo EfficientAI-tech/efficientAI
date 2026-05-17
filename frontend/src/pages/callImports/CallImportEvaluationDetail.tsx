@@ -9,11 +9,15 @@ import {
   BarChart3,
   Check,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Download,
   Edit3,
   ExternalLink,
   Filter,
+  Merge,
   PieChart as PieChartIcon,
+  Plus,
   RefreshCw,
   Search,
   Sparkles,
@@ -92,6 +96,32 @@ export default function CallImportEvaluationDetail() {
     metricName: string
     value: string
   } | null>(null)
+  // ``flowFilter`` is set by clicking a node / edge in the Flow tab.
+  // ``targetNodeId`` (and label) are populated only for edge clicks —
+  // the backend then restricts to rows whose sequence has the
+  // ``nodeId -> targetNodeId`` directed transition (immediately
+  // adjacent). For node clicks ``targetNodeId`` stays null.
+  const [flowFilter, setFlowFilter] = useState<{
+    parentId: string
+    parentName: string
+    nodeId: string
+    nodeLabel: string
+    targetNodeId?: string | null
+    targetNodeLabel?: string | null
+  } | null>(null)
+  // ``discoveredFilter`` is set by the "View calls" buttons on the
+  // Discovered Labels panel. Either a specific candidate slug or a
+  // catch-all "any discovered for this parent".
+  const [discoveredFilter, setDiscoveredFilter] = useState<
+    | {
+        parentId: string
+        parentName: string
+        labelKey?: string
+        labelName?: string
+        anyDiscovered?: boolean
+      }
+    | null
+  >(null)
   // Row-detail side panel: full CSV row + transcript + per-metric scores
   // for the currently-selected row.
   const [detailRow, setDetailRow] =
@@ -106,10 +136,25 @@ export default function CallImportEvaluationDetail() {
   // be paging through a filtered result set that may be smaller than ``page``.
   useEffect(() => {
     setPage(1)
-  }, [searchQuery, statusFilter, metricFilter?.metricId, metricFilter?.value])
+  }, [
+    searchQuery,
+    statusFilter,
+    metricFilter?.metricId,
+    metricFilter?.value,
+    flowFilter?.parentId,
+    flowFilter?.nodeId,
+    flowFilter?.targetNodeId,
+    discoveredFilter?.parentId,
+    discoveredFilter?.labelKey,
+    discoveredFilter?.anyDiscovered,
+  ])
 
   const hasActiveFilters =
-    !!searchQuery || !!statusFilter || !!metricFilter
+    !!searchQuery ||
+    !!statusFilter ||
+    !!metricFilter ||
+    !!flowFilter ||
+    !!discoveredFilter
 
   const callImportQuery = useQuery({
     queryKey: ['call-import', id],
@@ -137,6 +182,12 @@ export default function CallImportEvaluationDetail() {
       statusFilter,
       metricFilter?.metricId,
       metricFilter?.value,
+      flowFilter?.parentId,
+      flowFilter?.nodeId,
+      flowFilter?.targetNodeId,
+      discoveredFilter?.parentId,
+      discoveredFilter?.labelKey,
+      discoveredFilter?.anyDiscovered,
     ],
     queryFn: () =>
       apiClient.listCallImportEvaluationRows(id!, evalId!, {
@@ -146,6 +197,12 @@ export default function CallImportEvaluationDetail() {
         status: statusFilter || undefined,
         metric_id: metricFilter?.metricId,
         metric_value: metricFilter?.value,
+        flow_parent_id: flowFilter?.parentId,
+        flow_node: flowFilter?.nodeId,
+        flow_edge_target: flowFilter?.targetNodeId || undefined,
+        discovered_parent_id: discoveredFilter?.parentId,
+        discovered_label_key: discoveredFilter?.labelKey,
+        has_discovered: discoveredFilter?.anyDiscovered || undefined,
       }),
     enabled: !!id && !!evalId,
     refetchInterval: () => {
@@ -305,6 +362,7 @@ export default function CallImportEvaluationDetail() {
     id: string
     name: string
     selection_mode: 'single_choice' | 'multi_label' | null
+    allow_discovery: boolean
     children: { id: string; name: string }[]
   }
   const parentMetrics = useMemo<FlowParentMetric[]>(() => {
@@ -331,6 +389,7 @@ export default function CallImportEvaluationDetail() {
           id: m.id,
           name: m.name,
           selection_mode: mode ?? null,
+          allow_discovery: Boolean((m as any).allow_discovery),
           children: childrenByParent.get(m.id) || [],
         })
       }
@@ -761,6 +820,29 @@ export default function CallImportEvaluationDetail() {
                     onClear={() => setMetricFilter(null)}
                   />
                 )}
+                {flowFilter && (
+                  <FilterChip
+                    label={
+                      flowFilter.targetNodeId
+                        ? `${flowFilter.parentName}: ${flowFilter.nodeLabel} → ${flowFilter.targetNodeLabel}`
+                        : `${flowFilter.parentName}: passed through "${flowFilter.nodeLabel}"`
+                    }
+                    onClear={() => setFlowFilter(null)}
+                  />
+                )}
+                {discoveredFilter && (
+                  <FilterChip
+                    label={
+                      discoveredFilter.anyDiscovered
+                        ? `${discoveredFilter.parentName}: any LLM-discovered label`
+                        : `${discoveredFilter.parentName}: discovered "${
+                            discoveredFilter.labelName ||
+                            discoveredFilter.labelKey
+                          }"`
+                    }
+                    onClear={() => setDiscoveredFilter(null)}
+                  />
+                )}
                 <button
                   type="button"
                   onClick={() => {
@@ -768,6 +850,8 @@ export default function CallImportEvaluationDetail() {
                     setSearchQuery('')
                     setStatusFilter(null)
                     setMetricFilter(null)
+                    setFlowFilter(null)
+                    setDiscoveredFilter(null)
                   }}
                   className="ml-1 text-gray-500 underline underline-offset-2 hover:text-gray-700"
                 >
@@ -798,6 +882,53 @@ export default function CallImportEvaluationDetail() {
                   callImportId={id!}
                   evalId={evalId!}
                   parent={pm}
+                  onNodeClick={(node) => {
+                    setFlowFilter({
+                      parentId: pm.id,
+                      parentName: pm.name,
+                      nodeId: node.id,
+                      nodeLabel: node.label,
+                      targetNodeId: null,
+                      targetNodeLabel: null,
+                    })
+                    setMetricFilter(null)
+                    setDiscoveredFilter(null)
+                    setResultsTab('table')
+                  }}
+                  onEdgeClick={(edge) => {
+                    setFlowFilter({
+                      parentId: pm.id,
+                      parentName: pm.name,
+                      nodeId: edge.source.id,
+                      nodeLabel: edge.source.label,
+                      targetNodeId: edge.target.id,
+                      targetNodeLabel: edge.target.label,
+                    })
+                    setMetricFilter(null)
+                    setDiscoveredFilter(null)
+                    setResultsTab('table')
+                  }}
+                  onViewDiscoveredCalls={(item) => {
+                    setDiscoveredFilter({
+                      parentId: pm.id,
+                      parentName: pm.name,
+                      labelKey: item.key,
+                      labelName: item.name,
+                    })
+                    setFlowFilter(null)
+                    setMetricFilter(null)
+                    setResultsTab('table')
+                  }}
+                  onViewAnyDiscoveredCalls={() => {
+                    setDiscoveredFilter({
+                      parentId: pm.id,
+                      parentName: pm.name,
+                      anyDiscovered: true,
+                    })
+                    setFlowFilter(null)
+                    setMetricFilter(null)
+                    setResultsTab('table')
+                  }}
                 />
               ))}
             </div>
@@ -892,6 +1023,8 @@ export default function CallImportEvaluationDetail() {
                   setSearchQuery('')
                   setStatusFilter(null)
                   setMetricFilter(null)
+                  setFlowFilter(null)
+                  setDiscoveredFilter(null)
                 }}
                 className="text-primary-600 hover:text-primary-700 underline underline-offset-2"
               >
@@ -1472,12 +1605,25 @@ function RowDetailPanel({
                     child.name.toLowerCase().replace(/\s+/g, '_')
                   ] = child
                 }
+                const discovered = Array.isArray(
+                  (score as any).discovered_labels,
+                )
+                  ? ((score as any).discovered_labels as Array<{
+                      key?: string
+                      name?: string
+                    }>)
+                      .filter(
+                        (d): d is { key: string; name?: string } =>
+                          typeof d?.key === 'string' && d.key.length > 0,
+                      )
+                  : []
                 const data = flowFromSequence(
                   parent.id,
                   parent.name,
                   sequence as string[],
                   childByKey,
                   parent.selection_mode,
+                  discovered,
                 )
                 if (data.nodes.length === 0) return null
                 return { parent, data }
@@ -2195,6 +2341,10 @@ function FlowDiagramForParent({
   callImportId,
   evalId,
   parent,
+  onNodeClick,
+  onEdgeClick,
+  onViewDiscoveredCalls,
+  onViewAnyDiscoveredCalls,
 }: {
   callImportId: string
   evalId: string
@@ -2202,19 +2352,41 @@ function FlowDiagramForParent({
     id: string
     name: string
     selection_mode: 'single_choice' | 'multi_label' | null
+    allow_discovery: boolean
     children: { id: string; name: string }[]
   }
+  onNodeClick?: (node: import('./components/MetricFlowChart').FlowNodeClick) => void
+  onEdgeClick?: (edge: import('./components/MetricFlowChart').FlowEdgeClick) => void
+  onViewDiscoveredCalls?: (item: {
+    key: string
+    name: string
+  }) => void
+  onViewAnyDiscoveredCalls?: () => void
 }) {
   const flowQuery = useQuery({
     queryKey: ['call-import-eval-flow', callImportId, evalId, parent.id],
     queryFn: () =>
       apiClient.getCallImportEvaluationFlow(callImportId, evalId, parent.id),
   })
+
+  const showDiscoveryPanel =
+    parent.selection_mode === 'multi_label' && parent.allow_discovery
+
   return (
     <div className="border border-gray-200 rounded-lg p-3 bg-white">
       <div className="flex items-baseline justify-between mb-2 gap-3 flex-wrap">
         <div>
-          <p className="text-sm font-semibold text-gray-900">{parent.name}</p>
+          <p className="text-sm font-semibold text-gray-900 inline-flex items-center gap-1.5">
+            {parent.name}
+            {parent.allow_discovery && (
+              <span
+                className="text-[9px] uppercase tracking-wide font-semibold rounded-sm bg-amber-50 text-amber-700 border border-amber-200 px-1 py-[1px]"
+                title="LLM-driven discovery enabled for this category"
+              >
+                +disc
+              </span>
+            )}
+          </p>
           <p className="text-[11px] text-gray-500">
             {parent.selection_mode === 'single_choice'
               ? 'Pick-one category'
@@ -2229,19 +2401,339 @@ function FlowDiagramForParent({
           </p>
         )}
       </div>
-      {flowQuery.isLoading || !flowQuery.data ? (
-        <div className="text-center py-8 text-gray-500">
-          <RefreshCw className="h-5 w-5 mx-auto mb-2 animate-spin" />
-          <p className="text-xs">Loading flow…</p>
+      <div
+        className={
+          showDiscoveryPanel
+            ? 'grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-3'
+            : ''
+        }
+      >
+        <div>
+          {flowQuery.isLoading || !flowQuery.data ? (
+            <div className="text-center py-8 text-gray-500">
+              <RefreshCw className="h-5 w-5 mx-auto mb-2 animate-spin" />
+              <p className="text-xs">Loading flow…</p>
+            </div>
+          ) : flowQuery.data.rows_with_sequence === 0 ? (
+            <p className="text-xs text-gray-500 italic">
+              No rows produced a label sequence for this category yet.
+            </p>
+          ) : (
+            <>
+              <MetricFlowChart
+                data={flowQuery.data}
+                mode="aggregate"
+                height={360}
+                onNodeClick={onNodeClick}
+                onEdgeClick={onEdgeClick}
+              />
+              {(onNodeClick || onEdgeClick) && (
+                <p className="text-[11px] text-gray-500 mt-1.5 inline-flex items-center gap-1">
+                  <Filter className="h-3 w-3" />
+                  Click a node to filter calls that passed through that
+                  label, or an edge for the directed transition.
+                </p>
+              )}
+            </>
+          )}
         </div>
-      ) : flowQuery.data.rows_with_sequence === 0 ? (
-        <p className="text-xs text-gray-500 italic">
-          No rows produced a label sequence for this category yet.
+        {showDiscoveryPanel && (
+          <DiscoveredLabelsPanel
+            callImportId={callImportId}
+            evalId={evalId}
+            parent={parent}
+            onViewDiscoveredCalls={onViewDiscoveredCalls}
+            onViewAnyDiscoveredCalls={onViewAnyDiscoveredCalls}
+          />
+        )}
+      </div>
+    </div>
+  )
+}
+
+// Panel: surfaces LLM-discovered candidate sub-labels next to the flow
+// diagram. Each candidate can be merged into another (slug rewrite) or
+// promoted to a real child metric. Promotion is the path that keeps the
+// already-scored rows' ``sequence`` arrays resolving against the new
+// child — the backend enforces slug(name) == key for exactly this
+// reason.
+function DiscoveredLabelsPanel({
+  callImportId,
+  evalId,
+  parent,
+  onViewDiscoveredCalls,
+  onViewAnyDiscoveredCalls,
+}: {
+  callImportId: string
+  evalId: string
+  parent: {
+    id: string
+    name: string
+    selection_mode: 'single_choice' | 'multi_label' | null
+    children: { id: string; name: string }[]
+  }
+  onViewDiscoveredCalls?: (item: { key: string; name: string }) => void
+  onViewAnyDiscoveredCalls?: () => void
+}) {
+  const queryClient = useQueryClient()
+  const discoveredQuery = useQuery({
+    queryKey: [
+      'call-import-eval-discovered',
+      callImportId,
+      evalId,
+      parent.id,
+    ],
+    queryFn: () =>
+      apiClient.getCallImportEvaluationDiscoveredLabels(
+        callImportId,
+        evalId,
+        parent.id,
+      ),
+  })
+
+  const invalidateAll = () => {
+    queryClient.invalidateQueries({
+      queryKey: ['call-import-eval-discovered', callImportId, evalId, parent.id],
+    })
+    queryClient.invalidateQueries({
+      queryKey: ['call-import-eval-flow', callImportId, evalId, parent.id],
+    })
+    queryClient.invalidateQueries({ queryKey: ['metrics'] })
+    queryClient.invalidateQueries({
+      queryKey: ['call-import-evaluation', callImportId, evalId],
+    })
+  }
+
+  const promoteMutation = useMutation({
+    mutationFn: (entry: { key: string; name: string; description?: string | null }) =>
+      apiClient.promoteDiscoveredChild(parent.id, entry),
+    onSuccess: invalidateAll,
+  })
+
+  const mergeMutation = useMutation({
+    mutationFn: (body: { from_key: string; to_key: string }) =>
+      apiClient.mergeCallImportEvaluationDiscoveredLabels(
+        callImportId,
+        evalId,
+        { parent_metric_id: parent.id, ...body },
+      ),
+    onSuccess: invalidateAll,
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (key: string) =>
+      apiClient.deleteCallImportEvaluationDiscoveredLabel(
+        callImportId,
+        evalId,
+        { parent_metric_id: parent.id, key },
+      ),
+    onSuccess: invalidateAll,
+  })
+
+  // Defense-in-depth: even though the backend now hides candidates whose
+  // slug already matches a real promoted child, we re-filter here so a
+  // stale GET response can't briefly resurrect a candidate the user has
+  // already accepted (e.g. between promote and the discovered-labels
+  // refetch).
+  const childSlugs = useMemo(() => {
+    const set = new Set<string>()
+    for (const c of parent.children || []) {
+      const slug = c.name.trim().toLowerCase().split(/\s+/).join('_')
+      if (slug) set.add(slug)
+    }
+    return set
+  }, [parent.children])
+  const items = (discoveredQuery.data?.items ?? []).filter(
+    (item) => !childSlugs.has(item.key),
+  )
+
+  // Per-parent collapse state. Defaults to expanded so existing users
+  // see the panel as before; collapsing only hides the body so the
+  // header still shows the candidate count.
+  const [collapsed, setCollapsed] = useState(false)
+  // Two-step delete confirmation: clicking Delete arms the entry, a
+  // second click within ``confirmKey`` actually fires the mutation.
+  // Avoids a global modal and keeps the action inline with the
+  // candidate row that's about to disappear.
+  const [confirmKey, setConfirmKey] = useState<string | null>(null)
+
+  return (
+    <aside className="border border-amber-200 bg-amber-50/40 rounded-md p-3 text-xs">
+      <header className="flex items-center justify-between mb-2 gap-2">
+        <button
+          type="button"
+          onClick={() => setCollapsed((c) => !c)}
+          className="font-semibold text-amber-900 inline-flex items-center gap-1 hover:text-amber-950"
+          aria-expanded={!collapsed}
+          title={collapsed ? 'Expand panel' : 'Collapse panel'}
+        >
+          {collapsed ? (
+            <ChevronRight className="h-3 w-3" />
+          ) : (
+            <ChevronDown className="h-3 w-3" />
+          )}
+          <Sparkles className="h-3 w-3" /> Discovered labels
+        </button>
+        <span className="text-[10px] text-amber-700">
+          {items.length} {items.length === 1 ? 'candidate' : 'candidates'}
+        </span>
+      </header>
+      {collapsed ? null : onViewAnyDiscoveredCalls && items.length > 0 && (
+        <button
+          type="button"
+          onClick={onViewAnyDiscoveredCalls}
+          className="mb-2 inline-flex items-center gap-1 text-[10px] font-medium text-amber-800 hover:text-amber-900 underline underline-offset-2"
+        >
+          <Filter className="h-3 w-3" />
+          Show all calls with discovered labels
+        </button>
+      )}
+      {collapsed ? null : discoveredQuery.isLoading ? (
+        <p className="text-amber-700 italic">Loading…</p>
+      ) : items.length === 0 ? (
+        <p className="text-amber-800/70 italic">
+          No new labels yet. As rows finish, the LLM may propose
+          candidates here that you can promote into real sub-labels.
         </p>
       ) : (
-        <MetricFlowChart data={flowQuery.data} mode="aggregate" height={360} />
+        <ul className="space-y-2">
+          {items.map((item) => {
+            const others = items.filter((o) => o.key !== item.key)
+            return (
+              <li
+                key={item.key}
+                className="rounded border border-amber-200 bg-white p-2"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="font-semibold text-gray-900 truncate">
+                      {item.name}
+                    </p>
+                    <p className="text-[10px] text-gray-500 font-mono truncate">
+                      {item.key}
+                    </p>
+                  </div>
+                  <span className="text-[10px] tabular-nums text-amber-700 whitespace-nowrap">
+                    {item.count}{' '}
+                    {item.count === 1 ? 'call' : 'calls'}
+                  </span>
+                </div>
+                {item.description && (
+                  <p className="text-gray-700 mt-1">{item.description}</p>
+                )}
+                {item.sample_rationale && (
+                  <blockquote className="text-gray-500 italic mt-1 border-l-2 border-amber-300 pl-2">
+                    "{item.sample_rationale}"
+                  </blockquote>
+                )}
+                <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+                  <button
+                    type="button"
+                    disabled={promoteMutation.isPending}
+                    onClick={() =>
+                      promoteMutation.mutate({
+                        key: item.key,
+                        name: item.key.replace(/_/g, ' '),
+                        description: item.description ?? null,
+                      })
+                    }
+                    className="inline-flex items-center gap-1 text-[10px] font-medium rounded px-1.5 py-0.5 bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-60"
+                  >
+                    <Plus className="h-3 w-3" /> Promote
+                  </button>
+                  {onViewDiscoveredCalls && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onViewDiscoveredCalls({
+                          key: item.key,
+                          name: item.name,
+                        })
+                      }
+                      className="inline-flex items-center gap-1 text-[10px] font-medium rounded px-1.5 py-0.5 border border-amber-300 text-amber-800 bg-white hover:bg-amber-50"
+                      title="Filter the row table to calls that produced this discovered label"
+                    >
+                      <Filter className="h-3 w-3" /> View calls
+                    </button>
+                  )}
+                  {others.length > 0 && (
+                    <label className="inline-flex items-center gap-1 text-[10px] text-gray-700">
+                      <Merge className="h-3 w-3" />
+                      <select
+                        className="border border-gray-300 rounded px-1 py-0.5 text-[10px] bg-white"
+                        defaultValue=""
+                        disabled={mergeMutation.isPending}
+                        onChange={(e) => {
+                          const target = e.target.value
+                          if (!target) return
+                          mergeMutation.mutate({
+                            from_key: item.key,
+                            to_key: target,
+                          })
+                          e.target.value = ''
+                        }}
+                      >
+                        <option value="">Merge into…</option>
+                        {others.map((o) => (
+                          <option key={o.key} value={o.key}>
+                            {o.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                  {confirmKey === item.key ? (
+                    <span className="inline-flex items-center gap-1 text-[10px]">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          deleteMutation.mutate(item.key)
+                          setConfirmKey(null)
+                        }}
+                        disabled={deleteMutation.isPending}
+                        className="inline-flex items-center gap-1 font-medium rounded px-1.5 py-0.5 bg-red-600 text-white hover:bg-red-700 disabled:opacity-60"
+                        title="Permanently remove this candidate from the evaluation"
+                      >
+                        <Trash2 className="h-3 w-3" /> Confirm delete
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmKey(null)}
+                        className="inline-flex items-center px-1.5 py-0.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50"
+                      >
+                        Cancel
+                      </button>
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setConfirmKey(item.key)}
+                      disabled={deleteMutation.isPending}
+                      className="inline-flex items-center gap-1 text-[10px] font-medium rounded px-1.5 py-0.5 border border-red-200 text-red-700 hover:bg-red-50 disabled:opacity-60"
+                      title="Delete this LLM-discovered candidate (use for gibberish or irrelevant suggestions)"
+                    >
+                      <Trash2 className="h-3 w-3" /> Delete
+                    </button>
+                  )}
+                </div>
+              </li>
+            )
+          })}
+        </ul>
       )}
-    </div>
+      {(promoteMutation.isError ||
+        mergeMutation.isError ||
+        deleteMutation.isError) && (
+        <p className="text-[10px] text-red-700 mt-1">
+          {String(
+            (promoteMutation.error as any)?.message ||
+              (mergeMutation.error as any)?.message ||
+              (deleteMutation.error as any)?.message ||
+              'Action failed.',
+          )}
+        </p>
+      )}
+    </aside>
   )
 }
 

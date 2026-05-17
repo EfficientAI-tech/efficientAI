@@ -11,12 +11,18 @@ from uuid import uuid4
 from app.workers.tasks.helpers import llm_evaluation
 
 
-def _make_parent(*, name="Call Outcome", selection_mode="single_choice"):
+def _make_parent(
+    *,
+    name="Call Outcome",
+    selection_mode="single_choice",
+    allow_discovery=False,
+):
     return SimpleNamespace(
         id=uuid4(),
         name=name,
         description=f"Category covering {name}.",
         selection_mode=selection_mode,
+        allow_discovery=allow_discovery,
         metric_type="boolean",
         custom_data_type=None,
         custom_config=None,
@@ -200,3 +206,140 @@ def test_map_filters_unknown_sequence_keys():
         evaluation_data, [a, b], parent_metric=parent
     )
     assert scores[str(parent.id)]["sequence"] == ["connected", "hung_up"]
+
+
+# ---------------------------------------------------------------------------
+# Discovery prompt + parsing
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_omits_discovery_block_when_allow_discovery_is_false():
+    parent = _make_parent(selection_mode="multi_label", allow_discovery=False)
+    children = [_make_child(name="connected")]
+    prompt = llm_evaluation.build_evaluation_prompt(
+        transcription="hi",
+        llm_metrics=children,
+        parent_metric=parent,
+    )
+    assert "DISCOVERY ENABLED" not in prompt
+    assert "__discovered" not in prompt
+
+
+def test_prompt_includes_discovery_block_only_for_multi_label():
+    # single_choice + allow_discovery is rejected by the route validator
+    # before we ever reach the prompt builder, but defensively the
+    # prompt itself must also not invite discovery for single_choice.
+    sc = _make_parent(selection_mode="single_choice", allow_discovery=True)
+    ml = _make_parent(
+        selection_mode="multi_label",
+        allow_discovery=True,
+        name="Call Flow",
+    )
+    children = [_make_child(name="connected"), _make_child(name="hung_up")]
+
+    sc_prompt = llm_evaluation.build_evaluation_prompt(
+        transcription="hi",
+        llm_metrics=children,
+        parent_metric=sc,
+    )
+    ml_prompt = llm_evaluation.build_evaluation_prompt(
+        transcription="hi",
+        llm_metrics=children,
+        parent_metric=ml,
+    )
+
+    assert "DISCOVERY ENABLED" not in sc_prompt
+    assert "DISCOVERY ENABLED" in ml_prompt
+    assert "call_flow__discovered" in ml_prompt
+
+
+def test_prompt_lists_running_discovered_labels_with_reuse_wording():
+    parent = _make_parent(selection_mode="multi_label", allow_discovery=True)
+    children = [_make_child(name="connected")]
+    running = [
+        {
+            "key": "customer_on_hold",
+            "name": "Customer put on hold",
+            "description": "agent placed the caller on hold",
+            "count": 3,
+        }
+    ]
+    prompt = llm_evaluation.build_evaluation_prompt(
+        transcription="hi",
+        llm_metrics=children,
+        parent_metric=parent,
+        running_discovered=running,
+    )
+    assert "REUSE" in prompt
+    assert '"customer_on_hold"' in prompt
+
+
+def test_map_parses_discovered_labels_and_lets_them_flow_through_sequence():
+    parent = _make_parent(
+        selection_mode="multi_label",
+        allow_discovery=True,
+        name="Call Outcome",
+    )
+    a = _make_child(name="connected")
+    b = _make_child(name="hung_up")
+    evaluation_data = {
+        "connected": True,
+        "hung_up": False,
+        "call_outcome__sequence": [
+            "connected",
+            "customer_on_hold",
+            "hung_up",
+        ],
+        "call_outcome__discovered": [
+            {
+                "key": "Customer On Hold",
+                "name": "Customer put on hold",
+                "description": "caller waited while agent paused",
+                "rationale": "Agent: please hold for a moment.",
+            },
+            # Duplicate slug in-response must be deduped.
+            {
+                "key": "customer_on_hold",
+                "name": "Dup",
+                "description": "",
+            },
+            # Collision with an existing child slug is dropped — the
+            # model should have just set the boolean true instead.
+            {"key": "connected", "name": "Connected"},
+        ],
+    }
+    scores = llm_evaluation._map_evaluation_to_metrics(
+        evaluation_data, [a, b], parent_metric=parent
+    )
+    parent_entry = scores[str(parent.id)]
+    assert parent_entry["sequence"] == [
+        "connected",
+        "customer_on_hold",
+        "hung_up",
+    ]
+    discovered = parent_entry["discovered_labels"]
+    assert len(discovered) == 1
+    assert discovered[0]["key"] == "customer_on_hold"
+    assert discovered[0]["name"] == "Customer put on hold"
+    assert discovered[0]["rationale"].startswith("Agent: please hold")
+
+
+def test_map_drops_discovered_labels_for_single_choice_parent():
+    # Even if the model rebelliously returns __discovered, single_choice
+    # parents must not produce discovered_labels — the invariant is too
+    # easy to violate with an injected fake "true" label.
+    parent = _make_parent(
+        selection_mode="single_choice",
+        allow_discovery=True,
+        name="Call Outcome",
+    )
+    a = _make_child(name="connected")
+    evaluation_data = {
+        "connected": True,
+        "call_outcome": "connected",
+        "call_outcome__discovered": [{"key": "x", "name": "X"}],
+    }
+    scores = llm_evaluation._map_evaluation_to_metrics(
+        evaluation_data, [a], parent_metric=parent
+    )
+    assert "discovered_labels" not in scores[str(parent.id)]

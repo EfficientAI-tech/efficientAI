@@ -730,6 +730,9 @@ export interface CallImportMetricSummary {
   description: string | null
   parent_metric_id?: string | null
   selection_mode?: MetricSelectionMode | null
+  /** Only meaningful on multi_label parents; gates the Discovered
+   *  Labels panel on the Flow tab. Defaults to false. */
+  allow_discovery?: boolean
 }
 
 /** Per-metric LLM override (provider+model+optional credential). */
@@ -909,6 +912,7 @@ export interface MetricSummary {
   capture_rationale: boolean
   parent_metric_id: string | null
   selection_mode: MetricSelectionMode | null
+  allow_discovery?: boolean
   children?: MetricSummary[]
   created_at: string
   updated_at: string
@@ -931,6 +935,7 @@ export interface MetricCreateWithChildrenPayload {
   supported_surfaces?: string[]
   enabled_surfaces?: string[]
   tags?: string[] | null
+  allow_discovery?: boolean
   children: MetricChildDraft[]
 }
 
@@ -939,6 +944,7 @@ export interface MetricFlowNode {
   label: string
   count: number
   is_terminal: boolean
+  is_discovered?: boolean
 }
 
 export interface MetricFlowEdge {
@@ -955,4 +961,17 @@ export interface MetricFlowResponse {
   edges: MetricFlowEdge[]
   total_rows: number
   rows_with_sequence: number
+}
+
+export interface DiscoveredLabel {
+  key: string
+  name: string
+  description?: string | null
+  sample_rationale?: string | null
+  count: number
+}
+
+export interface DiscoveredLabelsResponse {
+  parent_metric_id: string
+  items: DiscoveredLabel[]
 }

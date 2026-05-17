@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import get_api_key, get_organization_id
+from app.dependencies import get_api_key, get_organization_id, require_enterprise_feature
 from app.models.database import CallImportTag
 from app.models.schemas import (
     CallImportTagCreate,
@@ -25,7 +25,11 @@ from app.models.schemas import (
 )
 
 
-router = APIRouter(prefix="/call-import-tags", tags=["Call Imports"])
+router = APIRouter(
+    prefix="/call-import-tags",
+    tags=["Call Imports"],
+    dependencies=[Depends(require_enterprise_feature("call_imports"))],
+)
 
 
 @router.get(

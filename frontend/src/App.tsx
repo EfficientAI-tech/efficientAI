@@ -166,12 +166,12 @@ function App() {
           <Route path="voice-playground" element={<EnterpriseGate feature="voice_playground"><VoicePlayground /></EnterpriseGate>} />
           <Route path="cron-jobs" element={<CronJobs />} />
           <Route path="prompt-partials" element={<PromptPartials />} />
-          <Route path="call-imports" element={<CallImports />} />
-          <Route path="call-imports/tags" element={<CallImportTagsPage />} />
-          <Route path="call-imports/:id" element={<CallImportDetail />} />
+          <Route path="call-imports" element={<EnterpriseGate feature="call_imports"><CallImports /></EnterpriseGate>} />
+          <Route path="call-imports/tags" element={<EnterpriseGate feature="call_imports"><CallImportTagsPage /></EnterpriseGate>} />
+          <Route path="call-imports/:id" element={<EnterpriseGate feature="call_imports"><CallImportDetail /></EnterpriseGate>} />
           <Route
             path="call-imports/:id/evaluations/:evalId"
-            element={<CallImportEvaluationDetail />}
+            element={<EnterpriseGate feature="call_imports"><CallImportEvaluationDetail /></EnterpriseGate>}
           />
           <Route path="prompt-optimization" element={<EnterpriseGate feature="gepa_optimization"><PromptOptimization /></EnterpriseGate>} />
           <Route path="judge-alignment" element={<JudgeAlignment />} />

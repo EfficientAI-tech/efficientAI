@@ -19,6 +19,7 @@ from app.models.schemas import (
     MetricChildDraft,
     MetricUpdate,
     MetricResponse,
+    PromoteDiscoveredChildRequest,
 )
 
 router = APIRouter(prefix="/metrics", tags=["metrics"])
@@ -48,12 +49,14 @@ def _validate_hierarchy_fields(
     parent_metric_id: Optional[UUID],
     selection_mode: Optional[str],
     metric_type: Optional[Any] = None,
+    allow_discovery: Optional[bool] = None,
 ) -> None:
     """Enforce the invariants documented on ``Metric``.
 
     Raises ``HTTPException`` (400) when the caller mixes parent and
     child semantics on the same row, references a non-existent parent,
-    or tries to nest a child under another child (max depth = 2).
+    tries to nest a child under another child (max depth = 2), or sets
+    ``allow_discovery`` on anything other than a ``multi_label`` parent.
     """
 
     if selection_mode and parent_metric_id:
@@ -73,6 +76,19 @@ def _validate_hierarchy_fields(
                 f"{', '.join(sorted(_VALID_SELECTION_MODES))}."
             ),
         )
+
+    # allow_discovery only makes sense on a multi_label parent. On
+    # single_choice parents it would silently break the exactly-one-true
+    # invariant; on children / standalone metrics it has nothing to act on.
+    if allow_discovery:
+        if parent_metric_id is not None or selection_mode != "multi_label":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "allow_discovery can only be enabled on a multi_label "
+                    "parent metric."
+                ),
+            )
 
     if parent_metric_id is None:
         return
@@ -144,6 +160,7 @@ def _serialize_metric_tree(metric: Metric) -> Dict[str, Any]:
         "capture_rationale": bool(metric.capture_rationale),
         "parent_metric_id": metric.parent_metric_id,
         "selection_mode": metric.selection_mode,
+        "allow_discovery": bool(getattr(metric, "allow_discovery", False)),
         "children": children_payload,
         "created_at": metric.created_at,
         "updated_at": metric.updated_at,
@@ -171,6 +188,7 @@ def create_metric(
         parent_metric_id=metric_data.parent_metric_id,
         selection_mode=metric_data.selection_mode,
         metric_type=metric_data.metric_type,
+        allow_discovery=metric_data.allow_discovery,
     )
 
     existing = (
@@ -221,6 +239,7 @@ def create_metric(
         capture_rationale=bool(metric_data.capture_rationale),
         parent_metric_id=metric_data.parent_metric_id,
         selection_mode=metric_data.selection_mode,
+        allow_discovery=bool(metric_data.allow_discovery),
     )
     db.add(metric)
     db.commit()
@@ -297,6 +316,16 @@ def create_metric_with_children(
         else (payload.supported_surfaces or ["agent"]) if payload.enabled else []
     )
 
+    # Reject allow_discovery on non-multi_label parents before any write.
+    if payload.allow_discovery and payload.selection_mode != "multi_label":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "allow_discovery can only be enabled on a multi_label "
+                "parent metric."
+            ),
+        )
+
     parent = Metric(
         organization_id=organization_id,
         name=payload.name,
@@ -315,6 +344,7 @@ def create_metric_with_children(
         tags=payload.tags,
         capture_rationale=False,
         selection_mode=payload.selection_mode,
+        allow_discovery=bool(payload.allow_discovery),
     )
     db.add(parent)
     db.flush()
@@ -418,6 +448,137 @@ def add_metric_child(
         custom_config={},
         tags=child_draft.tags,
         capture_rationale=bool(child_draft.capture_rationale),
+        parent_metric_id=parent.id,
+    )
+    db.add(child)
+    db.commit()
+    db.refresh(child)
+    # Returning the freshly-created child (rather than the parent
+    # subtree) gives the caller direct access to the new id +
+    # parent_metric_id, which is what API consumers — and the
+    # endpoint contract test — expect from a 201 on a creation
+    # endpoint. Use the bare serializer so we don't materialize
+    # phantom ``children`` on what is itself a leaf.
+    return _serialize_metric_tree(child)
+
+
+def _slug_label(value: Optional[str]) -> str:
+    """Slug helper local to this module (mirrors the worker convention)."""
+    if value is None:
+        return ""
+    return "_".join(str(value).strip().lower().split())
+
+
+@router.post(
+    "/{metric_id}/children/from-discovered",
+    response_model=MetricResponse,
+    status_code=201,
+    operation_id="promoteDiscoveredChild",
+)
+def promote_discovered_child(
+    metric_id: UUID,
+    body: PromoteDiscoveredChildRequest,
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+):
+    """Promote an LLM-discovered candidate label into a real child metric.
+
+    Mirrors ``add_metric_child`` but:
+      * Only works on multi_label parents with ``allow_discovery=true``.
+      * The new child's name is normalized so that ``slug(name)`` equals
+        the supplied ``key``. This is critical — without it, the
+        already-scored rows' ``sequence`` arrays would not resolve
+        against the promoted child once the candidate disappears from
+        ``discovered_labels``.
+    """
+
+    parent = (
+        db.query(Metric)
+        .filter(
+            Metric.id == metric_id,
+            Metric.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not parent:
+        raise HTTPException(status_code=404, detail="Parent metric not found")
+    if parent.parent_metric_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot promote a discovered label on a child metric.",
+        )
+    if (parent.selection_mode or "").lower() != "multi_label":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Discovered-label promotion is only supported on "
+                "multi_label parent metrics."
+            ),
+        )
+    if not bool(getattr(parent, "allow_discovery", False)):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This parent metric does not have allow_discovery "
+                "enabled; nothing to promote."
+            ),
+        )
+
+    key = _slug_label(body.key)
+    name_slug = _slug_label(body.name)
+    if not key:
+        raise HTTPException(
+            status_code=400, detail="Discovered key must be a non-empty slug."
+        )
+    if name_slug != key:
+        # Either the caller mis-typed the name or they intentionally
+        # picked a friendlier display name. The frontend should send a
+        # name whose slug matches the key, but to keep the contract
+        # explicit we reject the mismatch rather than silently mutate
+        # the user's typed name.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "name must slugify to the supplied key so already-scored "
+                f"rows' sequence arrays keep resolving. Got key='{key}' "
+                f"but slug(name)='{name_slug}'."
+            ),
+        )
+
+    existing = (
+        db.query(Metric)
+        .filter(
+            Metric.name == body.name,
+            Metric.organization_id == organization_id,
+            Metric.parent_metric_id == parent.id,
+        )
+        .first()
+    )
+    if existing:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"A child named '{body.name}' already exists under this "
+                "parent."
+            ),
+        )
+
+    enabled_surfaces = parent.enabled_surfaces or []
+    child = Metric(
+        organization_id=organization_id,
+        name=body.name,
+        description=body.description,
+        metric_type=MetricType.BOOLEAN,
+        trigger=MetricTrigger.ALWAYS,
+        enabled=len(enabled_surfaces) > 0,
+        is_default=False,
+        metric_origin="custom",
+        supported_surfaces=parent.supported_surfaces or ["agent"],
+        enabled_surfaces=enabled_surfaces,
+        custom_data_type="boolean",
+        custom_config={},
+        tags=None,
+        capture_rationale=False,
         parent_metric_id=parent.id,
     )
     db.add(child)
@@ -610,6 +771,28 @@ def update_metric(
             )
         metric.selection_mode = metric_data.selection_mode
 
+    if metric_data.allow_discovery is not None:
+        # allow_discovery only valid on multi_label parents. Use the
+        # value already on the row, or the one being updated in this
+        # same PATCH if the caller is flipping both fields.
+        effective_mode = metric.selection_mode
+        if metric.parent_metric_id is not None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "allow_discovery cannot be set on a child sub-metric."
+                ),
+            )
+        if bool(metric_data.allow_discovery) and effective_mode != "multi_label":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "allow_discovery can only be enabled on a multi_label "
+                    "parent metric."
+                ),
+            )
+        metric.allow_discovery = bool(metric_data.allow_discovery)
+
     db.commit()
     db.refresh(metric)
 
@@ -645,6 +828,16 @@ def delete_metric(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot delete default metrics"
         )
+
+    # Explicitly remove children before the parent. The FK declares
+    # ``ON DELETE CASCADE`` so PostgreSQL would handle this for us,
+    # but SQLite (used by the in-memory test harness) doesn't enforce
+    # FK constraints by default and the SQLAlchemy relationship
+    # doesn't carry a cascade rule. Going through the ORM keeps the
+    # session's identity map consistent on either engine.
+    if metric.parent_metric_id is None:
+        for child in list(metric.children or []):
+            db.delete(child)
 
     db.delete(metric)
     db.commit()

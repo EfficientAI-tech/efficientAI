@@ -299,6 +299,7 @@ def make_metric(db_session, org_id, seed_org):
             capture_rationale=overrides.get("capture_rationale", False),
             parent_metric_id=overrides.get("parent_metric_id"),
             selection_mode=overrides.get("selection_mode"),
+            allow_discovery=overrides.get("allow_discovery", False),
         )
         db_session.add(metric)
         db_session.commit()
