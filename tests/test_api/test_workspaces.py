@@ -120,6 +120,12 @@ def test_call_imports_scope_to_active_workspace(
         is_default=False,
     )
     db_session.add(workspace_b)
+    # Commit the workspace before adding child rows that reference it.
+    # SQLAlchemy's dependency sort can emit the CallImport insertmany
+    # batch ahead of the Workspace insert in the same flush; Postgres
+    # (CI) enforces the FK immediately and rejects it, whereas SQLite
+    # (local) silently allows the orphan reference.
+    db_session.commit()
 
     db_session.add(
         CallImport(
