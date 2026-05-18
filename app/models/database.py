@@ -302,6 +302,11 @@ class Integration(Base):
     api_key = Column(String, nullable=False)  # Encrypted Private API key for the platform
     public_key = Column(String, nullable=True)  # Optional Public API key (e.g. for Vapi)
     is_active = Column(Boolean, default=True, nullable=False)
+    # Multiple credentials per (org, platform) are allowed. is_default marks
+    # the row used when a caller does not explicitly select a credential.
+    # A partial unique index in migration 028 enforces at most one default
+    # per (org, platform) at the DB level.
+    is_default = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     last_tested_at = Column(DateTime(timezone=True), nullable=True)  # When API key was last validated
@@ -369,14 +374,13 @@ class AIProvider(Base):
     api_key = Column(String, nullable=False)  # Encrypted API key
     name = Column(String, nullable=True)  # Optional friendly name
     is_active = Column(Boolean, default=True, nullable=False)
+    # Multiple AIProvider rows per (org, provider) are allowed. is_default
+    # marks the row resolved when no explicit credential id is selected.
+    # A partial unique index in migration 028 enforces at most one default.
+    is_default = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     last_tested_at = Column(DateTime(timezone=True), nullable=True)  # When API key was last validated
-    
-    # Unique constraint: one active provider per organization
-    __table_args__ = (
-        UniqueConstraint('organization_id', 'provider', name='unique_org_provider'),
-    )
 
 
 # Enums moved to enums.py
@@ -398,11 +402,16 @@ class VoiceBundle(Base):
     
     # STT Configuration (references AIProvider via provider name) - required for STT_LLM_TTS, optional for S2S
     stt_provider = Column(String, nullable=True)
+    # Optional explicit credential row (aiproviders.id or integrations.id).
+    # When NULL the credential resolver picks the default row for the
+    # provider. No FK is set because the target table varies by provider.
+    stt_credential_id = Column(UUID(as_uuid=True), nullable=True)
 
     stt_model = Column(String, nullable=True)  # e.g., "whisper-1", "google-speech-v2"
     
     # LLM Configuration (references AIProvider via provider name) - required for STT_LLM_TTS, optional for S2S
     llm_provider = Column(String, nullable=True)
+    llm_credential_id = Column(UUID(as_uuid=True), nullable=True)
 
     llm_model = Column(String, nullable=True)  # e.g., "gpt-4", "claude-3-opus"
     llm_temperature = Column(Float, nullable=True, default=0.7)
@@ -411,6 +420,7 @@ class VoiceBundle(Base):
     
     # TTS Configuration (references AIProvider via provider name) - required for STT_LLM_TTS, optional for S2S
     tts_provider = Column(String, nullable=True)
+    tts_credential_id = Column(UUID(as_uuid=True), nullable=True)
 
     tts_model = Column(String, nullable=True)  # e.g., "tts-1", "neural-voice"
     tts_voice = Column(String, nullable=True)  # Voice selection if applicable
@@ -418,6 +428,7 @@ class VoiceBundle(Base):
     
     # S2S Configuration - required for S2S type, optional for STT_LLM_TTS
     s2s_provider = Column(String, nullable=True)
+    s2s_credential_id = Column(UUID(as_uuid=True), nullable=True)
 
 
 
@@ -507,7 +518,15 @@ class Evaluator(Base):
 
 
 class Metric(Base):
-    """Metric - Configuration for evaluation metrics."""
+    """Metric - Configuration for evaluation metrics.
+
+    Supports a 2-level hierarchy via ``parent_metric_id``: a "category"
+    parent metric (e.g. "Call Outcome") owns N child sub-metric labels
+    (e.g. "happy_completion", "angry_hangup"). ``selection_mode`` is set
+    only on parents and controls how the LLM scores children together
+    (``single_choice`` = pick exactly one; ``multi_label`` = independent
+    yes/no with logical consistency). Children are always boolean.
+    """
     __tablename__ = "metrics"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -527,6 +546,40 @@ class Metric(Base):
     custom_config = Column(JSON, nullable=True)  # enum options / number range config
     tags = Column(JSON, nullable=True)  # ["tone", "latency", ...]
 
+    # Hierarchy: NULL = standalone or parent. When set, this row is a
+    # child sub-metric of the referenced parent. ON DELETE CASCADE so
+    # deleting a category removes its children atomically.
+    parent_metric_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("metrics.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    # Set only on parent rows (``parent_metric_id IS NULL``). Either
+    # ``single_choice`` or ``multi_label``. NULL = legacy / non-hierarchical
+    # metric (no children).
+    selection_mode = Column(String(20), nullable=True)
+
+    # When true on a ``multi_label`` parent, the LLM is invited during
+    # call-import evaluation to emit additional candidate sub-labels
+    # beyond the user-defined children. The candidates surface in a
+    # "Discovered labels" panel where the user manually promotes them
+    # into real child Metric rows. Ignored on standalone metrics and
+    # on ``single_choice`` parents (the validator rejects mixing them).
+    allow_discovery = Column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+
+    parent = relationship(
+        "Metric",
+        remote_side=[id],
+        backref="children",
+    )
+
+    # When true, the LLM-judge is asked to also return a short free-form
+    # rationale alongside the value (stored under ``metric_scores[id].rationale``).
+    # Adds a second "<Name> - LLM Rationale" column in the call-import CSV export.
+    capture_rationale = Column(Boolean, nullable=False, default=False)
 
     enabled = Column(Boolean, nullable=False, default=True)
     
@@ -1056,16 +1109,21 @@ class PromptOptimizationCandidate(Base):
 
 
 class TelephonyIntegration(Base):
-    """Per-organization telephony provider credentials and configuration."""
+    """Per-organization telephony provider credentials and configuration.
+
+    Multiple rows per (organization_id, provider) are allowed so that an
+    organization can keep several Plivo / Exotel accounts side-by-side.
+    A partial unique index in migration 028 enforces at most one row with
+    is_default = TRUE per (org, provider); resolution falls back to that
+    default row when the caller does not pin a specific credential.
+    """
 
     __tablename__ = "telephony_integrations"
-    __table_args__ = (
-        UniqueConstraint("organization_id", "provider", name="uq_telephony_integration_org_provider"),
-    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
     provider = Column(String(50), nullable=False, default="plivo")
+    name = Column(String(255), nullable=True)  # Optional friendly name to disambiguate multiple credentials
 
     auth_id = Column(String(255), nullable=False)
     auth_token = Column(String(512), nullable=False)
@@ -1076,6 +1134,7 @@ class TelephonyIntegration(Base):
     masking_config = Column(JSON, nullable=True)
 
     is_active = Column(Boolean, default=True, nullable=False)
+    is_default = Column(Boolean, default=False, nullable=False)
     last_tested_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -1170,7 +1229,33 @@ class CallImport(Base):
     created_by_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
 
     provider = Column(String(50), nullable=False, default="exotel")
+    # Pin a specific telephony credential for this batch so the worker
+    # downloads recordings using *that* row instead of the org default.
+    # NULL preserves legacy behavior (resolve by provider + default).
+    telephony_integration_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("telephony_integrations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     original_filename = Column(String(512), nullable=True)
+
+    # Free-text high-level segregation label. Powers the "Dataset" filter
+    # at the top of the imports page; multiple imports can share a value.
+    dataset = Column(String(255), nullable=True, index=True)
+
+    # JSON describing how the uploader's CSV headers map to system fields.
+    # Keys: external_call_id (required), transcript, recording_url.
+    # Values: original CSV header strings (preserve user casing for export).
+    column_mapping = Column(JSON, nullable=False, default=dict)
+    # Ordered list of additional CSV header strings the uploader wants
+    # preserved verbatim into the evaluation export CSV.
+    extra_columns = Column(JSON, nullable=False, default=list)
+    # User-defined ``{custom_field_name: csv_header}`` mappings on top of
+    # the three system fields above. Cells from the mapped CSV columns are
+    # preserved per row (keyed by the CSV header in ``raw_columns``) and
+    # surface in the evaluation export under the uploader-chosen name.
+    custom_column_mapping = Column(JSON, nullable=False, default=dict)
 
     total_rows = Column(Integer, nullable=False, default=0)
     completed_rows = Column(Integer, nullable=False, default=0)
@@ -1192,6 +1277,17 @@ class CallImport(Base):
         back_populates="call_import",
         cascade="all, delete-orphan",
         order_by="CallImportRow.row_index",
+    )
+    tags = relationship(
+        "CallImportTag",
+        secondary="call_import_tag_assignments",
+        backref="call_imports",
+        lazy="selectin",
+    )
+    evaluations = relationship(
+        "CallImportEvaluation",
+        back_populates="call_import",
+        cascade="all, delete-orphan",
     )
 
 
@@ -1218,6 +1314,32 @@ class CallImportRow(Base):
     # absent and writes the resolved URL back here so retries are cheap.
     recording_url = Column(Text, nullable=True)
     transcript = Column(Text, nullable=True)
+    # Snapshot of the original CSV row keyed by the user's headers so the
+    # evaluation export can reproduce every column the uploader supplied
+    # (mapped + extra). NULL on legacy rows imported before this column.
+    raw_columns = Column(JSON, nullable=True)
+
+    # Where the value in ``transcript`` came from. ``csv`` = supplied via
+    # the upload mapping, ``diarized`` = produced by the post-hoc
+    # transcription/diarization worker, ``edited`` = manually changed in
+    # the UI. NULL on legacy rows / rows that have never had a transcript.
+    transcript_source = Column(String(20), nullable=True)
+    # When the transcript was diarized, which AI provider/model was used.
+    # Lets the UI surface a "Diarized via deepgram/nova-2" badge and
+    # makes auditing/debugging much easier. Both NULL when source != 'diarized'.
+    transcript_provider = Column(String(50), nullable=True)
+    transcript_model = Column(String(100), nullable=True)
+    # Lifecycle status for the diarization workflow itself, independent
+    # of the row's recording-fetch ``status``. ``idle`` = no transcribe
+    # task has run; ``pending``/``running`` = a Celery task is queued or
+    # in flight; ``completed``/``failed`` = terminal.
+    transcript_status = Column(
+        String(20),
+        nullable=False,
+        default="idle",
+    )
+    transcript_error = Column(Text, nullable=True)
+    transcribed_at = Column(DateTime(timezone=True), nullable=True)
 
     status = Column(
         Enum(CallImportRowStatus, values_callable=get_enum_values),
@@ -1238,6 +1360,198 @@ class CallImportRow(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     call_import = relationship("CallImport", back_populates="rows")
+
+
+class CallImportTag(Base):
+    """User-defined tag that can be attached to one or more call imports.
+
+    Tags coexist with the free-text ``CallImport.dataset`` column: dataset
+    is the primary high-level segregation, tags are an optional secondary
+    classification (an import can have many tags).
+    """
+
+    __tablename__ = "call_import_tags"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "name", name="uq_call_import_tag_org_name"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(
+        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    name = Column(String(255), nullable=False)
+    color = Column(String(32), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CallImportTagAssignment(Base):
+    """Many-to-many join table between CallImport and CallImportTag."""
+
+    __tablename__ = "call_import_tag_assignments"
+
+    call_import_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_imports.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    tag_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_import_tags.id", ondelete="CASCADE"),
+        primary_key=True,
+        index=True,
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class CallImportEvaluation(Base):
+    """Parent record for an evaluation run over a CallImport batch.
+
+    A user picks a subset of org ``Metric`` rows and triggers an evaluation;
+    we fan out one ``CallImportEvaluationRow`` per source row and roll up
+    counters as workers finish. Status mirrors ``CallImportStatus`` plus a
+    ``RUNNING`` value so the UI can distinguish "queued" from "in flight".
+    """
+
+    __tablename__ = "call_import_evaluations"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    call_import_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_imports.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    organization_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id"),
+        nullable=False,
+        index=True,
+    )
+    created_by_user_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+
+    # Optional user-supplied label for this run. Lets the UI surface
+    # something more meaningful than the UUID prefix (e.g. "March QA pass").
+    name = Column(String(255), nullable=True)
+
+    # JSON list of Metric UUID strings selected for this run. Stored as text
+    # in JSON so we don't have to deal with PG arrays of UUIDs / cascade
+    # delete policies when metrics are removed; the loader filters for
+    # still-existing org metrics at run time.
+    selected_metric_ids = Column(JSON, nullable=False, default=list)
+    # Hierarchy grouping snapshot: ``{parent_id_str: [child_id_str, ...]}``.
+    # Captures which children belong to which parent for THIS run so the UI
+    # / aggregator can reconstruct the tree even when the user selected
+    # only a subset of children, or after metrics are deleted / renamed.
+    # NULL on legacy rows means "no hierarchy" → fall back to flat
+    # ``selected_metric_ids`` semantics.
+    selected_metric_groups = Column(JSON, nullable=True)
+    # User-driven merges of LLM-discovered candidate sub-labels for
+    # ``allow_discovery`` parents. Shape:
+    # ``{"<parent_metric_id>": {"<from_slug>": "<to_slug>", ...}}``.
+    # Populated via ``POST .../discovered-labels/merge``; consulted by
+    # the discovered-labels aggregator, the flow graph builder, and the
+    # worker so that rows finishing AFTER a merge cannot reintroduce
+    # the merged-away slug. Empty dict on fresh rows.
+    discovered_label_aliases = Column(
+        JSON, nullable=False, default=dict, server_default="{}"
+    )
+
+    # Run-level LLM config picked from the Run Evaluation modal. NULL on
+    # legacy rows means "use the historical OpenAI/gpt-4o default" — the
+    # worker checks for this and falls back accordingly. ``llm_credential_id``
+    # pins a specific AIProvider row when the org has multiple credentials
+    # for the same provider.
+    llm_provider = Column(String(50), nullable=True)
+    llm_model = Column(String(100), nullable=True)
+    llm_credential_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("aiproviders.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # Optional per-metric LLM override:
+    # ``{"<metric_id>": {"provider": "...", "model": "...", "credential_id": "..."}}``.
+    # Each entry overrides the run-level default for that metric only;
+    # missing keys = use run-level default. Stored as JSON so the UI can
+    # round-trip arbitrary {provider, model} pairs without migrations.
+    metric_llm_overrides = Column(JSON, nullable=True)
+
+    # When ``auto_transcribe`` was set on the create payload, record the
+    # STT provider/model used so the UI can show "Auto-transcribed via
+    # deepgram/nova-2" on the evaluation header. ``stt_credential_id`` is
+    # untyped (no FK) because STT keys may live in either ``aiproviders``
+    # (OpenAI) or ``integrations`` (Deepgram, ElevenLabs) — the
+    # transcription service handles the lookup.
+    stt_provider = Column(String(50), nullable=True)
+    stt_model = Column(String(100), nullable=True)
+    stt_credential_id = Column(UUID(as_uuid=True), nullable=True)
+
+    status = Column(String(20), nullable=False, default="pending", index=True)
+
+    total_rows = Column(Integer, nullable=False, default=0)
+    completed_rows = Column(Integer, nullable=False, default=0)
+    failed_rows = Column(Integer, nullable=False, default=0)
+    error_message = Column(Text, nullable=True)
+    celery_group_id = Column(String(255), nullable=True)
+
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    call_import = relationship("CallImport", back_populates="evaluations")
+    row_results = relationship(
+        "CallImportEvaluationRow",
+        back_populates="evaluation",
+        cascade="all, delete-orphan",
+    )
+
+
+class CallImportEvaluationRow(Base):
+    """Per-source-row scoring output for a CallImportEvaluation parent."""
+
+    __tablename__ = "call_import_evaluation_rows"
+    __table_args__ = (
+        UniqueConstraint(
+            "evaluation_id", "call_import_row_id", name="uq_call_import_evaluation_row"
+        ),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    evaluation_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_import_evaluations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    call_import_row_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_import_rows.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    # Same shape as EvaluatorResult.metric_scores: {metric_id_str: {value, type, metric_name, ...}}
+    metric_scores = Column(JSON, nullable=False, default=dict)
+    error_message = Column(Text, nullable=True)
+    celery_task_id = Column(String(255), nullable=True)
+
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    evaluation = relationship("CallImportEvaluation", back_populates="row_results")
+    source_row = relationship("CallImportRow")
 
 
 # ---------------------------------------------------------------------------

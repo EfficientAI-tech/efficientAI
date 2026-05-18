@@ -1,9 +1,9 @@
-import { useQuery, useMutation, useQueryClient, useQueries } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../lib/api'
-import type { TelephonyPhoneNumberResponse } from '../../lib/api'
+import type { TelephonyIntegrationResponse } from '../../lib/api'
 import { useState, useEffect, useRef, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { Plus, Trash2, X, AlertCircle, Plug, Edit, Brain, ChevronDown, Phone, RefreshCw, ShieldCheck, CheckCircle2 } from 'lucide-react'
+import { Plus, Trash2, X, AlertCircle, Plug, Edit, Brain, ChevronDown, Phone, Star } from 'lucide-react'
 import { IntegrationCreate, IntegrationPlatform, Integration, AIProvider, AIProviderCreate, ModelProvider, TelephonyProvider } from '../../types/api'
 import Button from '../../components/Button'
 import { useToast } from '../../hooks/useToast'
@@ -13,7 +13,7 @@ import {
   getProviderDescription,
   TELEPHONY_PROVIDER_CONFIG,
   getTelephonyProviderLabel,
-  getTelephonyProviderDescription,
+  getTelephonyProviderLogo,
 } from '../../config/providers'
 import WalkthroughToggleButton from '../../components/walkthrough/WalkthroughToggleButton'
 
@@ -64,7 +64,6 @@ export default function Integrations() {
   const [telephonyVerifyAppUuid, setTelephonyVerifyAppUuid] = useState('')
   const [telephonyVoiceAppId, setTelephonyVoiceAppId] = useState('')
   const [telephonySipDomain, setTelephonySipDomain] = useState('')
-  const [expandedTelephony, setExpandedTelephony] = useState<string | null>(null)
   const [telephonyProviderFilter, setTelephonyProviderFilter] = useState<TelephonyProvider>(TelephonyProvider.PLIVO)
 
   const renderModal = (content: ReactNode) => {
@@ -82,40 +81,29 @@ export default function Integrations() {
     queryFn: () => apiClient.listAIProviders(),
   })
 
-  const telephonyConfigQueries = useQueries({
-    queries: Object.values(TelephonyProvider).map((provider) => ({
-      queryKey: ['telephony-config', provider],
-      queryFn: () => apiClient.getTelephonyConfig(provider),
-      retry: false,
-    })),
+  const { data: allTelephonyConfigs = [] } = useQuery<TelephonyIntegrationResponse[]>({
+    queryKey: ['telephony-configs'],
+    queryFn: () => apiClient.listTelephonyConfigs(),
+    retry: false,
   })
 
-  const telephonyConfigs = telephonyConfigQueries
-    .map((query, index) => ({
-      provider: Object.values(TelephonyProvider)[index],
-      config: query.data,
-    }))
-    .filter((entry): entry is { provider: TelephonyProvider; config: NonNullable<typeof entry.config> } => Boolean(entry.config))
+  // Pick the visible config: default-row preferred, then any row, scoped to
+  // the dropdown filter at the top of the section.
+  const telephonyConfigsForFilter = allTelephonyConfigs.filter(
+    (cfg) => cfg.provider === telephonyProviderFilter,
+  )
+  const telephonyConfig: TelephonyIntegrationResponse | undefined =
+    telephonyConfigsForFilter.find((c) => c.is_default) ||
+    telephonyConfigsForFilter[0] ||
+    allTelephonyConfigs[0]
 
-  const telephonyConfig = telephonyConfigs.find((entry) => entry.provider === telephonyProviderFilter)?.config
-    || telephonyConfigs[0]?.config
-
-  const activeTelephonyProvider = (telephonyConfig?.provider as TelephonyProvider | undefined) || telephonyProviderFilter
-  const hasTelephony = telephonyConfigs.length > 0 && Boolean(telephonyConfig)
-  const telephonyStatus = telephonyConfig?.is_active ? 'Active' : 'Inactive'
+  const hasTelephony = allTelephonyConfigs.length > 0 && Boolean(telephonyConfig)
 
   useEffect(() => {
-    if (!telephonyConfig && telephonyConfigs.length > 0) {
-      setTelephonyProviderFilter(telephonyConfigs[0].provider)
+    if (!telephonyConfig && allTelephonyConfigs.length > 0) {
+      setTelephonyProviderFilter(allTelephonyConfigs[0].provider as TelephonyProvider)
     }
-  }, [telephonyConfig, telephonyConfigs])
-
-  const { data: telephonyNumbers = [], isLoading: telephonyNumbersLoading } = useQuery({
-    queryKey: ['telephony-numbers', activeTelephonyProvider],
-    queryFn: () => apiClient.listTelephonyNumbers(activeTelephonyProvider),
-    retry: false,
-    enabled: !!telephonyConfig,
-  })
+  }, [telephonyConfig, allTelephonyConfigs])
 
   const createIntegrationMutation = useMutation({
     mutationFn: (data: IntegrationCreate) => apiClient.createIntegration(data),
@@ -157,45 +145,61 @@ export default function Integrations() {
     onError: (error: any) => { showToast(`Failed to delete provider: ${error.response?.data?.detail || error.message}`, 'error') },
   })
 
+  // Track which existing telephony config we are editing (vs creating new).
+  const [editingTelephonyConfigId, setEditingTelephonyConfigId] = useState<string | null>(null)
+  const [telephonyName, setTelephonyName] = useState<string>('')
+
   const saveTelephonyConfigMutation = useMutation({
     mutationFn: async () => {
       const payload: Record<string, any> = { provider: selectedTelephonyProvider || 'plivo' }
+      if (telephonyName.trim()) payload.name = telephonyName.trim()
       if (telephonyAuthId.trim()) payload.auth_id = telephonyAuthId.trim()
       if (telephonyAuthToken.trim()) payload.auth_token = telephonyAuthToken.trim()
       if (telephonyVerifyAppUuid.trim()) payload.verify_app_uuid = telephonyVerifyAppUuid.trim()
       if (telephonyVoiceAppId.trim()) payload.voice_app_id = telephonyVoiceAppId.trim()
       if (telephonySipDomain.trim()) payload.sip_domain = telephonySipDomain.trim()
-      if (telephonyConfig) return apiClient.updateTelephonyConfig(payload)
-      if (!payload.auth_id || !payload.auth_token) throw new Error('Auth ID and Auth Token are required for first-time setup')
+      if (editingTelephonyConfigId) {
+        return apiClient.updateTelephonyConfig({ ...payload, id: editingTelephonyConfigId })
+      }
+      // Creating a new credential row. First-time setup requires both halves.
+      if (!payload.auth_id || !payload.auth_token) {
+        throw new Error('Auth ID and Auth Token are required when adding a new credential')
+      }
       if (payload.provider === 'exotel' && !payload.voice_app_id) {
-        throw new Error('Account SID is required for first-time Exotel setup')
+        throw new Error('Account SID is required for Exotel')
       }
       return apiClient.createTelephonyConfig(payload as any)
     },
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['telephony-config'] }); showToast('Telephony configuration saved successfully!', 'success'); resetForm() },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['telephony-configs'] })
+      showToast('Telephony configuration saved successfully!', 'success')
+      resetForm()
+    },
     onError: (error: any) => { showToast(error?.response?.data?.detail || error?.message || 'Failed to save telephony config', 'error') },
   })
 
-  const testTelephonyMutation = useMutation({
-    mutationFn: () => apiClient.testTelephonyConfig(
-      (selectedTelephonyProvider || activeTelephonyProvider || 'plivo') as string,
-    ),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['telephony-config'] }); showToast('Telephony connection test succeeded!', 'success') },
-    onError: (error: any) => { showToast(error?.response?.data?.detail || error?.message || 'Connection test failed', 'error') },
+  const setDefaultIntegrationMutation = useMutation({
+    mutationFn: (id: string) => apiClient.setDefaultIntegration(id),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['integrations'] }); showToast('Default integration updated', 'success') },
+    onError: (error: any) => { showToast(error?.response?.data?.detail || error?.message || 'Failed to set default', 'error') },
   })
 
-  const syncNumbersMutation = useMutation({
-    mutationFn: () => apiClient.syncTelephonyNumbers(
-      (selectedTelephonyProvider || activeTelephonyProvider || 'plivo') as string,
-    ),
-    onSuccess: (synced) => { queryClient.invalidateQueries({ queryKey: ['telephony-numbers'] }); showToast(`Synced ${synced.length} number(s) from provider.`, 'success') },
-    onError: (error: any) => { showToast(error?.response?.data?.detail || error?.message || 'Failed to sync numbers', 'error') },
+  const setDefaultAIProviderMutation = useMutation({
+    mutationFn: (id: string) => apiClient.setDefaultAIProvider(id),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['aiproviders'] }); showToast('Default AI provider updated', 'success') },
+    onError: (error: any) => { showToast(error?.response?.data?.detail || error?.message || 'Failed to set default', 'error') },
   })
 
-  const updateNumberMutation = useMutation({
-    mutationFn: ({ id, is_masking_pool }: { id: string; is_masking_pool: boolean }) => apiClient.updateTelephonyNumber(id, { is_masking_pool }),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['telephony-numbers'] }); showToast('Number settings updated.', 'success') },
-    onError: (error: any) => { showToast(error?.response?.data?.detail || error?.message || 'Failed to update number', 'error') },
+  const setDefaultTelephonyMutation = useMutation({
+    mutationFn: (id: string) => apiClient.setDefaultTelephonyConfig(id),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['telephony-configs'] }); showToast('Default telephony provider updated', 'success') },
+    onError: (error: any) => { showToast(error?.response?.data?.detail || error?.message || 'Failed to set default', 'error') },
+  })
+
+  const deleteTelephonyMutation = useMutation({
+    mutationFn: (id: string) => apiClient.deleteTelephonyConfig(id),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['telephony-configs'] }); showToast('Telephony credential deleted', 'success') },
+    onError: (error: any) => { showToast(error?.response?.data?.detail || error?.message || 'Failed to delete', 'error') },
   })
 
   useEffect(() => {
@@ -212,6 +216,7 @@ export default function Integrations() {
     setSelectedPlatform(null); setSelectedProvider(null); setShowProviderDropdown(false); setShowPlatformDropdown(false)
     setApiKey(''); setPublicKey(''); setName('')
     setSelectedTelephonyProvider(null); setTelephonyAuthId(''); setTelephonyAuthToken(''); setTelephonyVerifyAppUuid(''); setTelephonyVoiceAppId(''); setTelephonySipDomain('')
+    setEditingTelephonyConfigId(null); setTelephonyName('')
   }
 
   const handleEdit = (integration: Integration) => {
@@ -230,12 +235,15 @@ export default function Integrations() {
     setName(provider.name || ''); setApiKey(''); setShowProviderDropdown(false); setIsEditMode(true); setShowModal(true)
   }
 
-  const handleEditTelephony = () => {
+  const handleEditTelephony = (config?: TelephonyIntegrationResponse) => {
+    const target = config || telephonyConfig
     setIntegrationType('telephony_provider')
-    setSelectedTelephonyProvider((telephonyConfig?.provider as TelephonyProvider) || telephonyProviderFilter)
-    setTelephonyVerifyAppUuid(telephonyConfig?.verify_app_uuid || '')
-    setTelephonyVoiceAppId(telephonyConfig?.voice_app_id || '')
-    setTelephonySipDomain(telephonyConfig?.sip_domain || '')
+    setSelectedTelephonyProvider((target?.provider as TelephonyProvider) || telephonyProviderFilter)
+    setEditingTelephonyConfigId(target?.id || null)
+    setTelephonyName(target?.name || '')
+    setTelephonyVerifyAppUuid(target?.verify_app_uuid || '')
+    setTelephonyVoiceAppId(target?.voice_app_id || '')
+    setTelephonySipDomain(target?.sip_domain || '')
     setTelephonyAuthId(''); setTelephonyAuthToken(''); setIsEditMode(true); setShowModal(true)
   }
 
@@ -255,8 +263,11 @@ export default function Integrations() {
       }
     } else if (integrationType === 'ai_provider') {
       if (isEditMode && selectedAIProvider) {
-        if (!apiKey.trim()) { showToast('Please enter an API key', 'error'); return }
-        updateAIProviderMutation.mutate({ id: selectedAIProvider.id, data: { api_key: apiKey, name: name || null } })
+        const updateData: Partial<AIProviderCreate> = {}
+        if (apiKey.trim()) updateData.api_key = apiKey
+        if (name !== (selectedAIProvider.name || '')) updateData.name = name || null
+        if (Object.keys(updateData).length === 0) { resetForm(); return }
+        updateAIProviderMutation.mutate({ id: selectedAIProvider.id, data: updateData })
       } else {
         if (!selectedProvider || !apiKey.trim()) { showToast('Please select a provider and enter an API key', 'error'); return }
         createAIProviderMutation.mutate({ provider: selectedProvider, api_key: apiKey, name: name || null })
@@ -328,8 +339,10 @@ export default function Integrations() {
     },
   ]
 
-  const configuredPlatforms = new Set(integrations.map((i: Integration) => i.platform))
-  const availablePlatforms = platforms.filter(p => !configuredPlatforms.has(p.id))
+  // Multiple credentials per platform are supported. When editing we lock
+  // the platform field; when creating we always show every platform so the
+  // user can add additional keys for an already-configured platform.
+  const availablePlatforms = platforms
 
   // AI Integration section should only show LLM providers.
   // Voice vendors belong under Voice Platform integrations.
@@ -378,26 +391,50 @@ export default function Integrations() {
                     const platformInfo = getPlatformInfo(integration.platform)
                     return (
                       <div key={integration.id} className="px-6 py-4 hover:bg-gray-50 transition-colors">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-4 flex-1">
+                        <div className="flex items-center gap-4">
+                          {/* Name */}
+                          <div className="flex flex-col min-w-[160px] max-w-[240px] flex-shrink-0">
+                            <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Name</span>
+                            <span className={`text-sm mt-0.5 truncate ${integration.name ? 'font-semibold text-gray-900' : 'text-gray-400 italic'}`} title={integration.name || ''}>
+                              {integration.name || '—'}
+                            </span>
+                          </div>
+                          {/* Type */}
+                          <div className="flex-shrink-0 min-w-[120px]">
+                            <span className="px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded-full whitespace-nowrap">Voice Platform</span>
+                          </div>
+                          {/* Logo + Provider */}
+                          <div className="flex items-center gap-3 flex-1 min-w-0">
                             <div className="flex-shrink-0">
                               {platformInfo?.image ? (
-                                <div className="w-12 h-12 bg-white rounded-lg flex items-center justify-center border border-gray-200 p-2"><img src={platformInfo.image} alt={platformInfo.name} className="w-full h-full object-contain" /></div>
+                                <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center border border-gray-200 p-1.5"><img src={platformInfo.image} alt={platformInfo.name} className="w-full h-full object-contain" /></div>
                               ) : (
-                                <div className="w-12 h-12 bg-gradient-to-br from-primary-100 to-primary-200 rounded-lg flex items-center justify-center"><Plug className="h-6 w-6 text-primary-600" /></div>
+                                <div className="w-10 h-10 bg-gradient-to-br from-primary-100 to-primary-200 rounded-lg flex items-center justify-center"><Plug className="h-5 w-5 text-primary-600" /></div>
                               )}
                             </div>
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <h3 className="text-lg font-semibold text-gray-900">{platformInfo?.name || integration.platform}</h3>
-                                <span className="px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded-full">Voice Platform</span>
-                                {integration.name && <span className="text-sm text-gray-500">({integration.name})</span>}
-                                {!integration.is_active && <span className="px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-600 rounded">Inactive</span>}
-                              </div>
-                              <p className="text-sm text-gray-600 mt-1">{platformInfo?.description || 'Voice AI platform integration'}</p>
+                            <div className="flex items-center gap-2 flex-wrap min-w-0">
+                              <h3 className="text-base font-semibold text-gray-900 truncate">{platformInfo?.name || integration.platform}</h3>
+                              {integration.is_default && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-700 rounded">
+                                  <Star className="h-3 w-3 fill-current" /> Default
+                                </span>
+                              )}
+                              {!integration.is_active && <span className="px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-600 rounded">Inactive</span>}
                             </div>
                           </div>
-                          <div className="flex items-center gap-2">
+                          {/* Actions */}
+                          <div className="flex items-center gap-2 flex-shrink-0">
+                            {!integration.is_default && integration.is_active && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => setDefaultIntegrationMutation.mutate(integration.id)}
+                                isLoading={setDefaultIntegrationMutation.isPending && setDefaultIntegrationMutation.variables === integration.id}
+                                leftIcon={<Star className="h-4 w-4" />}
+                              >
+                                Set Default
+                              </Button>
+                            )}
                             <Button variant="ghost" size="sm" onClick={() => handleEdit(integration)} leftIcon={<Edit className="h-4 w-4" />}>Edit</Button>
                             <Button variant="ghost" size="sm" onClick={() => handleDelete(integration)} leftIcon={<Trash2 className="h-4 w-4" />} className="text-red-600 hover:text-red-700 hover:bg-red-50">Delete</Button>
                           </div>
@@ -427,26 +464,50 @@ export default function Integrations() {
                       key={provider.id}
                       className="px-6 py-4 hover:bg-gray-50 transition-colors"
                     >
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-4 flex-1">
+                      <div className="flex items-center gap-4">
+                        {/* Name */}
+                        <div className="flex flex-col min-w-[160px] max-w-[240px] flex-shrink-0">
+                          <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Name</span>
+                          <span className={`text-sm mt-0.5 truncate ${provider.name ? 'font-semibold text-gray-900' : 'text-gray-400 italic'}`} title={provider.name || ''}>
+                            {provider.name || '—'}
+                          </span>
+                        </div>
+                        {/* Type */}
+                        <div className="flex-shrink-0 min-w-[120px]">
+                          <span className="px-2 py-0.5 text-xs font-medium bg-purple-100 text-purple-700 rounded-full whitespace-nowrap">AI Provider</span>
+                        </div>
+                        {/* Logo + Provider */}
+                        <div className="flex items-center gap-3 flex-1 min-w-0">
                           <div className="flex-shrink-0">
                             {getProviderLogo(provider.provider) ? (
-                              <div className="w-12 h-12 bg-white rounded-lg flex items-center justify-center border border-gray-200 p-2"><img src={getProviderLogo(provider.provider)!} alt={getProviderLabel(provider.provider)} className="w-full h-full object-contain" /></div>
+                              <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center border border-gray-200 p-1.5"><img src={getProviderLogo(provider.provider)!} alt={getProviderLabel(provider.provider)} className="w-full h-full object-contain" /></div>
                             ) : (
-                              <div className="w-12 h-12 bg-gradient-to-br from-primary-100 to-primary-200 rounded-lg flex items-center justify-center"><Brain className="h-6 w-6 text-primary-600" /></div>
+                              <div className="w-10 h-10 bg-gradient-to-br from-primary-100 to-primary-200 rounded-lg flex items-center justify-center"><Brain className="h-5 w-5 text-primary-600" /></div>
                             )}
                           </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <h3 className="text-lg font-semibold text-gray-900">{getProviderLabel(provider.provider)}</h3>
-                              <span className="px-2 py-0.5 text-xs font-medium bg-purple-100 text-purple-700 rounded-full">AI Provider</span>
-                              {provider.name && <span className="text-sm text-gray-500">({provider.name})</span>}
-                              {!provider.is_active && <span className="px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-600 rounded">Inactive</span>}
-                            </div>
-                            <p className="text-sm text-gray-600 mt-1">{getProviderDescription(provider.provider)}</p>
+                          <div className="flex items-center gap-2 flex-wrap min-w-0">
+                            <h3 className="text-base font-semibold text-gray-900 truncate">{getProviderLabel(provider.provider)}</h3>
+                            {provider.is_default && (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-700 rounded">
+                                <Star className="h-3 w-3 fill-current" /> Default
+                              </span>
+                            )}
+                            {!provider.is_active && <span className="px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-600 rounded">Inactive</span>}
                           </div>
                         </div>
-                        <div className="flex items-center gap-2">
+                        {/* Actions */}
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          {!provider.is_default && provider.is_active && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => setDefaultAIProviderMutation.mutate(provider.id)}
+                              isLoading={setDefaultAIProviderMutation.isPending && setDefaultAIProviderMutation.variables === provider.id}
+                              leftIcon={<Star className="h-4 w-4" />}
+                            >
+                              Set Default
+                            </Button>
+                          )}
                           <Button variant="ghost" size="sm" onClick={() => handleEditAIProvider(provider)} leftIcon={<Edit className="h-4 w-4" />}>Edit</Button>
                           <Button variant="ghost" size="sm" onClick={() => handleDeleteAIProvider(provider)} leftIcon={<Trash2 className="h-4 w-4" />} className="text-red-600 hover:text-red-700 hover:bg-red-50">Delete</Button>
                         </div>
@@ -463,84 +524,80 @@ export default function Integrations() {
                   <div className="flex items-center gap-2">
                     <Phone className="h-4 w-4 text-green-600" />
                     <h3 className="text-sm font-semibold text-green-900">Telephony Providers</h3>
-                    <span className="px-2 py-0.5 text-xs font-medium bg-green-100 text-green-700 rounded-full">{telephonyConfigs.length}</span>
-                    <div className="ml-auto">
-                      <select
-                        value={telephonyProviderFilter}
-                        onChange={(e) => setTelephonyProviderFilter(e.target.value as TelephonyProvider)}
-                        className="text-xs border border-gray-300 rounded px-2 py-1 bg-white"
-                      >
-                        {Object.values(TelephonyProvider).map((tp) => (
-                          <option key={tp} value={tp}>{getTelephonyProviderLabel(tp)}</option>
-                        ))}
-                      </select>
-                    </div>
+                    <span className="px-2 py-0.5 text-xs font-medium bg-green-100 text-green-700 rounded-full">{allTelephonyConfigs.length}</span>
                   </div>
                 </div>
-                <div>
-                  <div className="px-6 py-4 hover:bg-gray-50 transition-colors">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-4 flex-1">
+                <div className="divide-y divide-gray-200">
+                  {allTelephonyConfigs.map((cfg) => (
+                  <div key={cfg.id} className="px-6 py-4 hover:bg-gray-50 transition-colors">
+                    <div className="flex items-center gap-4">
+                      {/* Name */}
+                      <div className="flex flex-col min-w-[160px] max-w-[240px] flex-shrink-0">
+                        <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Name</span>
+                        <span className={`text-sm mt-0.5 truncate ${cfg.name ? 'font-semibold text-gray-900' : 'text-gray-400 italic'}`} title={cfg.name || ''}>
+                          {cfg.name || '—'}
+                        </span>
+                      </div>
+                      {/* Type */}
+                      <div className="flex-shrink-0 min-w-[120px]">
+                        <span className="px-2 py-0.5 text-xs font-medium bg-green-100 text-green-700 rounded-full whitespace-nowrap">Telephony</span>
+                      </div>
+                      {/* Logo + Provider */}
+                      <div className="flex items-center gap-3 flex-1 min-w-0">
                         <div className="flex-shrink-0">
-                          <div className="w-12 h-12 bg-gradient-to-br from-green-100 to-green-200 rounded-lg flex items-center justify-center"><Phone className="h-6 w-6 text-green-600" /></div>
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <h3 className="text-lg font-semibold text-gray-900">{getTelephonyProviderLabel(telephonyConfig!.provider as TelephonyProvider)}</h3>
-                            <span className="px-2 py-0.5 text-xs font-medium bg-green-100 text-green-700 rounded-full">Telephony</span>
-                            <span className={`px-2 py-0.5 text-xs font-medium rounded ${telephonyConfig!.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>{telephonyStatus}</span>
-                          </div>
-                          <p className="text-sm text-gray-600 mt-1">{getTelephonyProviderDescription(telephonyConfig!.provider as TelephonyProvider)}</p>
-                          {((telephonyConfig!.provider as TelephonyProvider) === TelephonyProvider.EXOTEL) && (
-                            <div className="mt-2 flex flex-wrap gap-2 text-xs text-gray-600">
-                              {telephonyConfig!.voice_app_id && (
-                                <span className="rounded bg-gray-100 px-2 py-1">Account SID: {telephonyConfig!.voice_app_id}</span>
-                              )}
-                              {telephonyConfig!.sip_domain && (
-                                <span className="rounded bg-gray-100 px-2 py-1">API Host: {telephonyConfig!.sip_domain}</span>
-                              )}
+                          {getTelephonyProviderLogo(cfg.provider as TelephonyProvider) ? (
+                            <div className="w-12 h-12 bg-white rounded-lg flex items-center justify-center border border-gray-200 p-2">
+                              <img
+                                src={getTelephonyProviderLogo(cfg.provider as TelephonyProvider)!}
+                                alt={getTelephonyProviderLabel(cfg.provider as TelephonyProvider)}
+                                className="w-full h-full object-contain"
+                              />
                             </div>
+                          ) : (
+                            <div className="w-12 h-12 bg-gradient-to-br from-green-100 to-green-200 rounded-lg flex items-center justify-center"><Phone className="h-6 w-6 text-green-600" /></div>
                           )}
-                          {telephonyConfig!.last_tested_at && (
-                            <div className="flex items-center gap-1 mt-1 text-xs text-green-700"><CheckCircle2 className="h-3 w-3" />Last tested: {new Date(telephonyConfig!.last_tested_at).toLocaleString()}</div>
+                        </div>
+                        <div className="flex items-center gap-2 flex-wrap min-w-0">
+                          <h3 className="text-base font-semibold text-gray-900 truncate">{getTelephonyProviderLabel(cfg.provider as TelephonyProvider)}</h3>
+                          {cfg.is_default && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium bg-amber-100 text-amber-700 rounded">
+                              <Star className="h-3 w-3 fill-current" /> Default
+                            </span>
                           )}
+                          <span className={`px-2 py-0.5 text-xs font-medium rounded ${cfg.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>{cfg.is_active ? 'Active' : 'Inactive'}</span>
                         </div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <Button variant="ghost" size="sm" onClick={() => testTelephonyMutation.mutate()} isLoading={testTelephonyMutation.isPending} leftIcon={!testTelephonyMutation.isPending ? <ShieldCheck className="h-4 w-4" /> : undefined}>Test</Button>
-                        <Button variant="ghost" size="sm" onClick={() => setExpandedTelephony(expandedTelephony ? null : telephonyConfig!.id)} leftIcon={<Phone className="h-4 w-4" />}>Numbers</Button>
-                        <Button variant="ghost" size="sm" onClick={handleEditTelephony} leftIcon={<Edit className="h-4 w-4" />}>Edit</Button>
+                      {/* Actions */}
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        {!cfg.is_default && cfg.is_active && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setDefaultTelephonyMutation.mutate(cfg.id)}
+                            isLoading={setDefaultTelephonyMutation.isPending && setDefaultTelephonyMutation.variables === cfg.id}
+                            leftIcon={<Star className="h-4 w-4" />}
+                          >
+                            Set Default
+                          </Button>
+                        )}
+                        <Button variant="ghost" size="sm" onClick={() => handleEditTelephony(cfg)} leftIcon={<Edit className="h-4 w-4" />}>Edit</Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            if (window.confirm(`Delete this ${getTelephonyProviderLabel(cfg.provider as TelephonyProvider)} credential?`)) {
+                              deleteTelephonyMutation.mutate(cfg.id)
+                            }
+                          }}
+                          leftIcon={<Trash2 className="h-4 w-4" />}
+                          className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                        >
+                          Delete
+                        </Button>
                       </div>
                     </div>
-                    {expandedTelephony === telephonyConfig!.id && (
-                      <div className="mt-4 border-t border-gray-100 pt-4">
-                        <div className="flex items-center justify-between mb-3">
-                          <h4 className="text-sm font-semibold text-gray-800">Phone Numbers</h4>
-                          <Button variant="secondary" size="sm" onClick={() => syncNumbersMutation.mutate()} isLoading={syncNumbersMutation.isPending} leftIcon={!syncNumbersMutation.isPending ? <RefreshCw className="h-4 w-4" /> : undefined}>Sync Numbers</Button>
-                        </div>
-                        {telephonyNumbersLoading ? (
-                          <p className="text-sm text-gray-500">Loading numbers...</p>
-                        ) : telephonyNumbers.length === 0 ? (
-                          <p className="text-sm text-gray-500">No numbers synced yet. Click <strong>Sync Numbers</strong> to pull from your provider.</p>
-                        ) : (
-                          <div className="divide-y divide-gray-100 border border-gray-200 rounded-lg">
-                            {telephonyNumbers.map((num: TelephonyPhoneNumberResponse) => (
-                              <div key={num.id} className="px-4 py-3 flex items-center justify-between">
-                                <div>
-                                  <div className="text-sm font-semibold text-gray-900">{num.phone_number}</div>
-                                  <div className="text-xs text-gray-500">{num.country_iso2 || 'N/A'} &bull; {num.region || 'Unknown'} &bull; {num.number_type || 'Unknown'}</div>
-                                </div>
-                                <label className="flex items-center gap-2 text-sm text-gray-700">
-                                  <input type="checkbox" checked={num.is_masking_pool} onChange={(e) => updateNumberMutation.mutate({ id: num.id, is_masking_pool: e.target.checked })} />
-                                  Masking Pool
-                                </label>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    )}
                   </div>
+                  ))}
                 </div>
               </div>
             )}
@@ -693,9 +750,11 @@ export default function Integrations() {
                     <input type="text" value={name} onChange={(e) => setName(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500" placeholder="e.g., OpenAI Production Key" />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">API Key *</label>
-                    <input type="password" required value={apiKey} onChange={(e) => setApiKey(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
-                      placeholder={isEditMode ? "Enter new API key" : "Enter API key"} />
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      API Key {isEditMode ? <span className="text-gray-500 font-normal">(leave empty to keep current)</span> : '*'}
+                    </label>
+                    <input type="password" required={!isEditMode} value={apiKey} onChange={(e) => setApiKey(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                      placeholder={isEditMode ? "Enter new API key (optional)" : "Enter API key"} />
                     <p className="mt-1 text-xs text-gray-500">Your API key will be encrypted and stored securely</p>
                   </div>
                 </>
@@ -711,7 +770,14 @@ export default function Integrations() {
                         return (
                           <button key={tp} type="button" disabled={isEditMode} onClick={() => setSelectedTelephonyProvider(tp)}
                             className={`text-left rounded-lg border p-3 transition ${selectedTelephonyProvider === tp ? 'border-green-500 bg-green-50' : 'border-gray-200 hover:border-gray-300'} ${isEditMode ? 'opacity-75 cursor-not-allowed' : ''}`}>
-                            <div className="flex items-center gap-2"><Phone className="h-4 w-4 text-green-600" /><span className="font-medium text-gray-900">{meta?.label || tp}</span></div>
+                            <div className="flex items-center gap-2">
+                              {meta?.logo ? (
+                                <img src={meta.logo} alt={meta.label} className="w-5 h-5 object-contain" />
+                              ) : (
+                                <Phone className="h-4 w-4 text-green-600" />
+                              )}
+                              <span className="font-medium text-gray-900">{meta?.label || tp}</span>
+                            </div>
                             <p className="text-xs text-gray-600 mt-1">{meta?.description}</p>
                           </button>
                         )
@@ -721,6 +787,16 @@ export default function Integrations() {
                   {selectedTelephonyProvider && (
                     <>
                       <div className="grid grid-cols-1 gap-4">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Name (Optional)</label>
+                          <input
+                            type="text"
+                            value={telephonyName}
+                            onChange={(e) => setTelephonyName(e.target.value)}
+                            placeholder="Friendly name to distinguish multiple keys"
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500"
+                          />
+                        </div>
                         <div>
                           <label className="block text-sm font-medium text-gray-700 mb-1">
                             {selectedTelephonyProvider === TelephonyProvider.EXOTEL ? 'API Key' : 'Auth ID'} {isEditMode && <span className="text-gray-500 font-normal">(leave blank to keep current)</span>}

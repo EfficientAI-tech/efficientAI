@@ -23,15 +23,19 @@ export default function VoiceBundles() {
     bundle_type: VoiceBundleType.STT_LLM_TTS,
     stt_provider: ModelProvider.OPENAI,
     stt_model: 'whisper-1',
+    stt_credential_id: null,
     llm_provider: ModelProvider.OPENAI,
     llm_model: 'gpt-4',
     llm_temperature: 0.7,
     llm_max_tokens: null,
+    llm_credential_id: null,
     tts_provider: ModelProvider.OPENAI,
     tts_model: 'tts-1',
     tts_voice: '',
+    tts_credential_id: null,
     s2s_provider: null,
     s2s_model: null,
+    s2s_credential_id: null,
   })
 
   const renderModal = (content: ReactNode) => {
@@ -84,6 +88,72 @@ export default function VoiceBundles() {
 
   const mapIntegrationToProvider = (platform: IntegrationPlatform | string): ModelProvider | null =>
     mapIntegrationToModelProvider(platform as IntegrationPlatform)
+
+  /**
+   * Return every credential row (from AIProvider + Integration tables) that
+   * matches the given ModelProvider. Used to drive a per-leg API key picker
+   * when a provider has more than one credential configured.
+   */
+  const getCredentialsForProvider = (
+    provider: ModelProvider | null | undefined,
+  ): Array<{ id: string; label: string; is_default?: boolean }> => {
+    if (!provider) return []
+    const fromAi = (aiproviders as AIProvider[])
+      .filter((p) => (p.provider as ModelProvider) === provider)
+      .map((p) => ({
+        id: p.id,
+        label: p.name || `${getProviderLabel(provider)} key`,
+        is_default: Boolean(p.is_default),
+      }))
+    const fromIntegration = (integrations as Integration[])
+      .filter((i) => mapIntegrationToProvider(i.platform) === provider)
+      .map((i) => ({
+        id: i.id,
+        label: i.name || `${getProviderLabel(provider)} key`,
+        is_default: Boolean(i.is_default),
+      }))
+    return [...fromAi, ...fromIntegration]
+  }
+
+  /**
+   * Render an "API Key" sub-dropdown for a leg of the voice bundle. We only
+   * show it when 2+ credentials exist for the chosen provider — a single
+   * credential is implicitly the default and doesn't need a picker.
+   */
+  const renderCredentialPicker = (
+    leg: 'stt' | 'llm' | 'tts' | 's2s',
+    provider: ModelProvider | null | undefined,
+    selectedId: string | null | undefined,
+    onChange: (id: string | null) => void,
+  ) => {
+    const options = getCredentialsForProvider(provider)
+    if (options.length < 2) return null
+    return (
+      <div className="md:col-span-2">
+        <label className="block text-sm font-medium text-gray-700 mb-1">
+          API Key
+        </label>
+        <select
+          value={selectedId || ''}
+          onChange={(e) => onChange(e.target.value || null)}
+          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+        >
+          <option value="">Use default credential</option>
+          {options.map((opt) => (
+            <option key={opt.id} value={opt.id}>
+              {opt.label}
+              {opt.is_default ? ' (default)' : ''}
+            </option>
+          ))}
+        </select>
+        <p className="mt-1 text-xs text-gray-500">
+          Multiple {getProviderLabel(provider as ModelProvider)} credentials are
+          configured. Pick one to pin to this {leg.toUpperCase()} leg, or leave
+          on default.
+        </p>
+      </div>
+    )
+  }
 
   // Get configured providers (union of active AI providers and integrations)
   const configuredProviders = Array.from(
@@ -184,15 +254,19 @@ export default function VoiceBundles() {
       bundle_type: VoiceBundleType.STT_LLM_TTS,
       stt_provider: defaultSttProvider,
       stt_model: defaultSttModel,
+      stt_credential_id: null,
       llm_provider: defaultLlmProvider,
       llm_model: defaultLlmModel,
       llm_temperature: 0.7,
       llm_max_tokens: null,
+      llm_credential_id: null,
       tts_provider: defaultTtsProvider,
       tts_model: defaultTtsModel,
       tts_voice: '',
+      tts_credential_id: null,
       s2s_provider: null,
       s2s_model: null,
+      s2s_credential_id: null,
     })
   }
 
@@ -209,15 +283,19 @@ export default function VoiceBundles() {
       bundle_type: bundle.bundle_type || VoiceBundleType.STT_LLM_TTS,
       stt_provider: bundle.stt_provider ? getDefaultProvider(bundle.stt_provider as ModelProvider, 'stt') : null,
       stt_model: bundle.stt_model || null,
+      stt_credential_id: bundle.stt_credential_id || null,
       llm_provider: bundle.llm_provider ? getDefaultProvider(bundle.llm_provider as ModelProvider, 'llm') : null,
       llm_model: bundle.llm_model || null,
       llm_temperature: bundle.llm_temperature || 0.7,
       llm_max_tokens: bundle.llm_max_tokens || null,
+      llm_credential_id: bundle.llm_credential_id || null,
       tts_provider: bundle.tts_provider ? getDefaultProvider(bundle.tts_provider as ModelProvider, 'tts') : null,
       tts_model: bundle.tts_model || null,
       tts_voice: bundle.tts_voice || '',
+      tts_credential_id: bundle.tts_credential_id || null,
       s2s_provider: bundle.s2s_provider ? getDefaultProvider(bundle.s2s_provider as ModelProvider, 's2s') : null,
       s2s_model: bundle.s2s_model || null,
+      s2s_credential_id: bundle.s2s_credential_id || null,
     })
     setShowEditModal(true)
   }
@@ -258,16 +336,15 @@ export default function VoiceBundles() {
     const models = options[type]
     if (models.length > 0) {
       if (type === 'stt') {
-        setFormData({ ...formData, stt_provider: provider, stt_model: models[0] })
+        setFormData({ ...formData, stt_provider: provider, stt_model: models[0], stt_credential_id: null })
       } else if (type === 'llm') {
-        setFormData({ ...formData, llm_provider: provider, llm_model: models[0] })
+        setFormData({ ...formData, llm_provider: provider, llm_model: models[0], llm_credential_id: null })
       } else if (type === 'tts') {
-        // Auto-select first voice if the new model has voice data
         const firstModel = models[0]
         const voices = options.tts_voices?.[firstModel] || []
-        setFormData({ ...formData, tts_provider: provider, tts_model: firstModel, tts_voice: voices.length > 0 ? voices[0].id : '' })
+        setFormData({ ...formData, tts_provider: provider, tts_model: firstModel, tts_voice: voices.length > 0 ? voices[0].id : '', tts_credential_id: null })
       } else if (type === 's2s') {
-        setFormData({ ...formData, s2s_provider: provider, s2s_model: models[0] })
+        setFormData({ ...formData, s2s_provider: provider, s2s_model: models[0], s2s_credential_id: null })
       }
     }
   }
@@ -522,6 +599,7 @@ export default function VoiceBundles() {
           configuredProviders={configuredProviders}
           getModelOptions={getModelOptions}
           modelConfigs={modelConfigs}
+          renderCredentialPicker={renderCredentialPicker}
         />
       )}
 
@@ -542,6 +620,7 @@ export default function VoiceBundles() {
           configuredProviders={configuredProviders}
           getModelOptions={getModelOptions}
           modelConfigs={modelConfigs}
+          renderCredentialPicker={renderCredentialPicker}
         />
       )}
 
@@ -659,6 +738,7 @@ function VoiceBundleModal({
   updateModelOptions,
   configuredProviders,
   getModelOptions,
+  renderCredentialPicker,
 }: {
   title: string
   formData: VoiceBundleCreate
@@ -670,6 +750,12 @@ function VoiceBundleModal({
   configuredProviders: ModelProvider[]
   getModelOptions: (provider: ModelProvider) => { stt: string[]; llm: string[]; tts: string[]; s2s: string[]; tts_voices: Record<string, { id: string; name: string; gender?: string }[]> }
   modelConfigs: Record<string, any>
+  renderCredentialPicker: (
+    leg: 'stt' | 'llm' | 'tts' | 's2s',
+    provider: ModelProvider | null | undefined,
+    selectedId: string | null | undefined,
+    onChange: (id: string | null) => void,
+  ) => ReactNode
 }) {
   const [showSttDropdown, setShowSttDropdown] = useState(false)
   const [showLlmDropdown, setShowLlmDropdown] = useState(false)
@@ -922,6 +1008,12 @@ function VoiceBundleModal({
                     )}
                   </select>
                 </div>
+                {renderCredentialPicker(
+                  'stt',
+                  formData.stt_provider,
+                  formData.stt_credential_id,
+                  (id) => setFormData({ ...formData, stt_credential_id: id }),
+                )}
               </div>
             </div>
           )}
@@ -1041,6 +1133,12 @@ function VoiceBundleModal({
                     placeholder="Leave empty for default"
                   />
                 </div>
+                {renderCredentialPicker(
+                  'llm',
+                  formData.llm_provider,
+                  formData.llm_credential_id,
+                  (id) => setFormData({ ...formData, llm_credential_id: id }),
+                )}
               </div>
             </div>
           )}
@@ -1184,6 +1282,12 @@ function VoiceBundleModal({
                     )
                   })()}
                 </div>
+                {renderCredentialPicker(
+                  'tts',
+                  formData.tts_provider,
+                  formData.tts_credential_id,
+                  (id) => setFormData({ ...formData, tts_credential_id: id }),
+                )}
               </div>
             </div>
           )}
@@ -1285,6 +1389,12 @@ function VoiceBundleModal({
                     </select>
                   )}
                 </div>
+                {renderCredentialPicker(
+                  's2s',
+                  formData.s2s_provider,
+                  formData.s2s_credential_id,
+                  (id) => setFormData({ ...formData, s2s_credential_id: id }),
+                )}
               </div>
             </div>
           )}

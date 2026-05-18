@@ -191,6 +191,8 @@ export interface Integration {
   name?: string | null
   public_key?: string | null
   is_active: boolean
+  /** True if this row is the default credential for (org, platform). */
+  is_default?: boolean
   created_at: string
   updated_at: string
   last_tested_at?: string | null
@@ -201,6 +203,8 @@ export interface IntegrationCreate {
   api_key: string
   public_key?: string
   name?: string | null
+  /** Mark the new credential as the default for (org, platform). */
+  is_default?: boolean
 }
 
 // VoiceBundle Types
@@ -233,6 +237,8 @@ export interface AIProvider {
   api_key?: string | null
   name?: string | null
   is_active: boolean
+  /** True if this row is the default credential for (org, provider). */
+  is_default?: boolean
   created_at: string
   updated_at: string
   last_tested_at?: string | null
@@ -242,6 +248,8 @@ export interface AIProviderCreate {
   provider: ModelProvider
   api_key: string
   name?: string | null
+  /** Mark the new credential as the default for (org, provider). */
+  is_default?: boolean
 }
 
 export interface AIProviderUpdate {
@@ -262,18 +270,26 @@ export interface VoiceBundle {
   bundle_type: VoiceBundleType
   stt_provider?: ModelProvider | null
   stt_model?: string | null
+  /**
+   * Optional explicit AIProvider/Integration row id for STT. When null the
+   * runtime resolver picks the default credential for stt_provider.
+   */
+  stt_credential_id?: string | null
   llm_provider?: ModelProvider | null
   llm_model?: string | null
   llm_temperature?: number | null
   llm_max_tokens?: number | null
   llm_config?: Record<string, any> | null
+  llm_credential_id?: string | null
   tts_provider?: ModelProvider | null
   tts_model?: string | null
   tts_voice?: string | null
   tts_config?: Record<string, any> | null
+  tts_credential_id?: string | null
   s2s_provider?: ModelProvider | null
   s2s_model?: string | null
   s2s_config?: Record<string, any> | null
+  s2s_credential_id?: string | null
   extra_metadata?: Record<string, any> | null
   is_active: boolean
   created_at: string
@@ -287,18 +303,22 @@ export interface VoiceBundleCreate {
   bundle_type?: VoiceBundleType
   stt_provider?: ModelProvider | null
   stt_model?: string | null
+  stt_credential_id?: string | null
   llm_provider?: ModelProvider | null
   llm_model?: string | null
   llm_temperature?: number | null
   llm_max_tokens?: number | null
   llm_config?: Record<string, any> | null
+  llm_credential_id?: string | null
   tts_provider?: ModelProvider | null
   tts_model?: string | null
   tts_voice?: string | null
   tts_config?: Record<string, any> | null
+  tts_credential_id?: string | null
   s2s_provider?: ModelProvider | null
   s2s_model?: string | null
   s2s_config?: Record<string, any> | null
+  s2s_credential_id?: string | null
   extra_metadata?: Record<string, any> | null
 }
 
@@ -366,15 +386,22 @@ export interface VoiceBundleUpdate {
   description?: string | null
   stt_provider?: ModelProvider
   stt_model?: string
+  stt_credential_id?: string | null
   llm_provider?: ModelProvider
   llm_model?: string
   llm_temperature?: number | null
   llm_max_tokens?: number | null
   llm_config?: Record<string, any> | null
+  llm_credential_id?: string | null
   tts_provider?: ModelProvider
   tts_model?: string
   tts_voice?: string | null
   tts_config?: Record<string, any> | null
+  tts_credential_id?: string | null
+  s2s_provider?: ModelProvider | null
+  s2s_model?: string | null
+  s2s_config?: Record<string, any> | null
+  s2s_credential_id?: string | null
   extra_metadata?: Record<string, any> | null
   is_active?: boolean
 }
@@ -598,12 +625,36 @@ export type CallImportRowStatus =
   | 'completed'
   | 'failed'
 
+/** Where the value in `transcript` came from. */
+export type CallImportTranscriptSource =
+  | 'csv'
+  | 'transcribed'
+  | 'edited'
+  | null
+/** Lifecycle status for the post-hoc transcription workflow itself. */
+export type CallImportTranscriptStatus =
+  | 'idle'
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | null
+
 export interface CallImportRow {
   id: string
   row_index: number
   external_call_id: string
   recording_url: string | null
   transcript: string | null
+  /** Provenance of the stored transcript (csv = CSV upload, transcribed = post-hoc STT). */
+  transcript_source: CallImportTranscriptSource
+  /** Provider used by the post-hoc transcription worker (e.g. "deepgram"). */
+  transcript_provider: string | null
+  transcript_model: string | null
+  transcript_status: CallImportTranscriptStatus
+  transcript_error: string | null
+  transcribed_at: string | null
+  raw_columns: Record<string, string> | null
   status: CallImportRowStatus
   recording_s3_key: string | null
   recording_content_type: string | null
@@ -614,11 +665,27 @@ export interface CallImportRow {
   updated_at: string
 }
 
+export interface CallImportTag {
+  id: string
+  name: string
+  color: string | null
+  created_at: string
+  updated_at: string
+}
+
 export interface CallImport {
   id: string
   organization_id: string
   provider: string
+  telephony_integration_id: string | null
   original_filename: string | null
+  /** Optional free-text dataset label (high-level segregation filter). */
+  dataset: string | null
+  /** Tags currently attached to this import. Empty array if untagged. */
+  tags: CallImportTag[]
+  column_mapping: Record<string, string | null>
+  extra_columns: string[]
+  custom_column_mapping: Record<string, string>
   total_rows: number
   completed_rows: number
   failed_rows: number
@@ -630,6 +697,12 @@ export interface CallImport {
 
 export interface CallImportDetail extends CallImport {
   rows: CallImportRow[]
+  /**
+   * Total row count *after* applying the optional ``q`` search filter.
+   * ``null`` when no filter is active — paginate against ``total_rows``
+   * in that case.
+   */
+  filtered_total_rows: number | null
 }
 
 export interface CallImportListResponse {
@@ -643,5 +716,262 @@ export interface CallImportUploadResponse {
   id: string
   total_rows: number
   status: CallImportStatus
+  dataset: string | null
+  tags: CallImportTag[]
   message: string
+}
+
+export type MetricSelectionMode = 'single_choice' | 'multi_label'
+
+export interface CallImportMetricSummary {
+  id: string
+  name: string
+  metric_type: string | null
+  description: string | null
+  parent_metric_id?: string | null
+  selection_mode?: MetricSelectionMode | null
+  /** Only meaningful on multi_label parents; gates the Discovered
+   *  Labels panel on the Flow tab. Defaults to false. */
+  allow_discovery?: boolean
+}
+
+/** Per-metric LLM override (provider+model+optional credential). */
+export interface CallImportEvaluationLLMOverride {
+  provider?: string | null
+  model?: string | null
+  credential_id?: string | null
+}
+
+export interface CallImportEvaluation {
+  id: string
+  call_import_id: string
+  organization_id: string
+  /** User-supplied label for the run; null when not named. */
+  name: string | null
+  selected_metric_ids: string[]
+  /** parent_id -> [child_id, ...] snapshot captured at run time. */
+  selected_metric_groups?: Record<string, string[]> | null
+  metrics: CallImportMetricSummary[]
+  status: 'pending' | 'running' | 'completed' | 'partial' | 'failed'
+  total_rows: number
+  completed_rows: number
+  failed_rows: number
+  error_message: string | null
+  /** Run-level LLM provider chosen by the user (null = legacy default). */
+  llm_provider: string | null
+  llm_model: string | null
+  llm_credential_id: string | null
+  metric_llm_overrides: Record<string, CallImportEvaluationLLMOverride> | null
+  stt_provider: string | null
+  stt_model: string | null
+  stt_credential_id: string | null
+  started_at: string | null
+  finished_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CallImportEvaluationListResponse {
+  items: CallImportEvaluation[]
+  total: number
+}
+
+export interface CallImportEvaluationRow {
+  id: string
+  evaluation_id: string
+  call_import_row_id: string
+  row_index: number | null
+  external_call_id: string | null
+  transcript: string | null
+  raw_columns: Record<string, any> | null
+  recording_url: string | null
+  /**
+   * S3 object key for the downloaded recording. Prefer this over
+   * ``recording_url`` for playback — we resolve it to a presigned URL
+   * so audio plays from our storage instead of the (often expired)
+   * provider URL.
+   */
+  recording_s3_key: string | null
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
+  metric_scores: Record<string, any>
+  error_message: string | null
+  started_at: string | null
+  finished_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CallImportEvaluationRowListResponse {
+  items: CallImportEvaluationRow[]
+  total: number
+  page: number
+  page_size: number
+}
+
+// --- Diarization / transcription ---
+
+export interface CallImportTranscribeRequest {
+  stt_provider: string
+  stt_model: string
+  credential_id?: string | null
+  language?: string | null
+  only_missing?: boolean
+  overwrite_existing?: boolean
+  row_ids?: string[]
+}
+
+export interface CallImportTranscribeResponse {
+  queued: number
+  skipped_rows: number
+  skipped_reason_counts: Record<string, number>
+}
+
+// --- Aggregation / visualization payloads ---
+
+export interface CallImportMetricHistogramBucket {
+  x0: number
+  x1: number
+  count: number
+}
+
+export interface CallImportMetricValueCount {
+  label: string
+  count: number
+}
+
+export interface CallImportMetricAggregate {
+  metric_id: string
+  metric_name: string
+  metric_type: string | null
+  count: number
+  skipped_count: number
+  error_count: number
+  mean: number | null
+  median: number | null
+  p25: number | null
+  p75: number | null
+  p95: number | null
+  min: number | null
+  max: number | null
+  stddev: number | null
+  histogram_buckets: CallImportMetricHistogramBucket[]
+  value_counts: CallImportMetricValueCount[]
+}
+
+export interface CallImportEvaluationAggregateResponse {
+  evaluation_id: string
+  total_rows: number
+  completed_rows: number
+  failed_rows: number
+  metrics: CallImportMetricAggregate[]
+}
+
+export interface CallImportInsightsRunPoint {
+  evaluation_id: string
+  name: string | null
+  created_at: string
+  mean: number | null
+  completed_rows: number
+}
+
+export interface CallImportInsightsMetric {
+  metric_id: string
+  metric_name: string
+  metric_type: string | null
+  latest: CallImportMetricAggregate | null
+  trend: CallImportInsightsRunPoint[]
+}
+
+export interface CallImportInsightsResponse {
+  call_import_id: string
+  total_rows: number
+  rows_with_transcript: number
+  rows_without_transcript: number
+  transcript_source_counts: Record<string, number>
+  evaluation_count: number
+  metrics: CallImportInsightsMetric[]
+}
+
+// --- Metrics hierarchy + flow visualization ---
+
+export interface MetricSummary {
+  id: string
+  organization_id: string
+  name: string
+  description: string | null
+  metric_type: string
+  trigger: string
+  enabled: boolean
+  is_default: boolean
+  metric_origin: string
+  supported_surfaces: string[]
+  enabled_surfaces: string[]
+  custom_data_type: string | null
+  custom_config: Record<string, any> | null
+  tags: string[] | null
+  capture_rationale: boolean
+  parent_metric_id: string | null
+  selection_mode: MetricSelectionMode | null
+  allow_discovery?: boolean
+  children?: MetricSummary[]
+  created_at: string
+  updated_at: string
+  created_by: string | null
+}
+
+export interface MetricChildDraft {
+  name: string
+  description?: string | null
+  enabled?: boolean
+  capture_rationale?: boolean | null
+  tags?: string[] | null
+}
+
+export interface MetricCreateWithChildrenPayload {
+  name: string
+  description?: string | null
+  selection_mode: MetricSelectionMode
+  enabled?: boolean
+  supported_surfaces?: string[]
+  enabled_surfaces?: string[]
+  tags?: string[] | null
+  allow_discovery?: boolean
+  children: MetricChildDraft[]
+}
+
+export interface MetricFlowNode {
+  id: string
+  label: string
+  count: number
+  is_terminal: boolean
+  is_discovered?: boolean
+}
+
+export interface MetricFlowEdge {
+  source: string
+  target: string
+  count: number
+}
+
+export interface MetricFlowResponse {
+  parent_metric_id: string
+  parent_metric_name: string
+  selection_mode: MetricSelectionMode | null
+  nodes: MetricFlowNode[]
+  edges: MetricFlowEdge[]
+  total_rows: number
+  rows_with_sequence: number
+}
+
+export interface DiscoveredLabel {
+  key: string
+  name: string
+  description?: string | null
+  sample_rationale?: string | null
+  count: number
+}
+
+export interface DiscoveredLabelsResponse {
+  parent_metric_id: string
+  items: DiscoveredLabel[]
 }

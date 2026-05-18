@@ -300,17 +300,25 @@ export default function VoiceAgent({ personaId, scenarioId, agentId, customEndpo
         }
       }
 
-      // Get API key and set it as a cookie for startBotAndConnect
+      // Resolve credentials. The backend `/connect` and websocket endpoints
+      // accept either a Bearer access token (email/password / SSO login) or
+      // an API key (legacy / machine access). We pass whichever the user has.
+      const accessToken = localStorage.getItem('accessToken')
       const apiKey = localStorage.getItem('apiKey')
-      if (!apiKey) {
-        throw new Error('API key not found. Please log in first.')
+      if (!accessToken && !apiKey) {
+        throw new Error('Not authenticated. Please log in first.')
       }
 
       if (!customEndpoint) {
-        // Set API key as a cookie so startBotAndConnect can send it
-        // The backend /connect endpoint checks cookies first
-        document.cookie = `api_key=${apiKey}; path=/; SameSite=Lax`
-        log('API key set as cookie for authentication', 'system')
+        // Cookies are set as a fallback - we also pass the credential as a
+        // header below, which is more reliable in cross-origin dev setups.
+        if (accessToken) {
+          document.cookie = `access_token=${accessToken}; path=/; SameSite=Lax`
+        }
+        if (apiKey) {
+          document.cookie = `api_key=${apiKey}; path=/; SameSite=Lax`
+        }
+        log('Auth credentials set for /connect', 'system')
       } else {
         log('Using custom endpoint, skipping backend API cookie flow', 'system')
       }
@@ -417,8 +425,21 @@ export default function VoiceAgent({ personaId, scenarioId, agentId, customEndpo
         log('✅ WebSocket transport connected', 'system')
       } else {
         log('Using startBotAndConnect() - this will handle RTVI protocol handshake...', 'system')
+        // Pass credentials via headers in addition to cookies so /connect
+        // works even when the API is on a different origin (e.g. dev mode
+        // with frontend on :3000 and API on :8000 where cookies aren't shared).
+        const authHeaders = new Headers()
+        if (!customEndpoint) {
+          if (accessToken) {
+            authHeaders.set('Authorization', `Bearer ${accessToken}`)
+          }
+          if (apiKey) {
+            authHeaders.set('X-API-Key', apiKey)
+          }
+        }
         await pcClient.startBotAndConnect({
           endpoint: endpointUrl,
+          headers: authHeaders,
         })
         log('✅ Connection established and RTVI handshake complete!', 'system')
       }

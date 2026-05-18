@@ -558,7 +558,15 @@ export default function EvaluatorResultDetailPage() {
       
       return <span className="text-2xl font-bold text-gray-900 tabular-nums">{numValue.toFixed(1)}</span>
     }
-    
+
+    if (normalizedType === 'text') {
+      return (
+        <p className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap break-words">
+          {String(value)}
+        </p>
+      )
+    }
+
     return <span className="text-2xl font-bold text-gray-900">{String(value)}</span>
   }
 

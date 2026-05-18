@@ -21,10 +21,20 @@ import type {
   S3ListFilesResponse,
   S3BrowseResponse,
   S3Status,
+  CallImport,
   CallImportDetail,
   CallImportListResponse,
   CallImportStatus,
+  CallImportTag,
   CallImportUploadResponse,
+  CallImportEvaluation,
+  CallImportEvaluationLLMOverride,
+  CallImportEvaluationListResponse,
+  CallImportEvaluationRowListResponse,
+  CallImportEvaluationAggregateResponse,
+  CallImportInsightsResponse,
+  CallImportTranscribeRequest,
+  CallImportTranscribeResponse,
 } from '../types/api'
 
 export interface EnterpriseFeatureMeta {
@@ -110,11 +120,14 @@ export interface TelephonyIntegrationResponse {
   id: string
   organization_id: string
   provider: string
+  name?: string | null
   verify_app_uuid?: string | null
   voice_app_id?: string | null
   sip_domain?: string | null
   masking_config?: Record<string, any> | null
   is_active: boolean
+  /** True if this row is the default credential for (org, provider). */
+  is_default?: boolean
   last_tested_at?: string | null
   created_at: string
   updated_at: string
@@ -122,16 +135,22 @@ export interface TelephonyIntegrationResponse {
 
 export interface TelephonyIntegrationCreatePayload {
   provider?: string
+  name?: string
   auth_id: string
   auth_token: string
   verify_app_uuid?: string
   voice_app_id?: string
   sip_domain?: string
   masking_config?: Record<string, any>
+  /** Mark the new credential as the default for (org, provider). */
+  is_default?: boolean
 }
 
 export interface TelephonyIntegrationUpdatePayload {
+  /** When set, update this specific credential row instead of the legacy single-row flow. */
+  id?: string
   provider?: string
+  name?: string
   auth_id?: string
   auth_token?: string
   verify_app_uuid?: string
@@ -712,6 +731,13 @@ class ApiClient {
     await this.client.delete(`/api/v1/aiproviders/${aiproviderId}`)
   }
 
+  async setDefaultAIProvider(aiproviderId: string): Promise<any> {
+    const response = await this.client.post(
+      `/api/v1/aiproviders/${aiproviderId}/set-default`,
+    )
+    return response.data
+  }
+
   async testAIProvider(aiproviderId: string): Promise<any> {
     const response = await this.client.post(`/api/v1/aiproviders/${aiproviderId}/test`)
     return response.data
@@ -830,6 +856,13 @@ class ApiClient {
     return response.data
   }
 
+  async setDefaultIntegration(integrationId: string): Promise<Integration> {
+    const response = await this.client.post(
+      `/api/v1/integrations/${integrationId}/set-default`,
+    )
+    return response.data
+  }
+
   async getIntegrationApiKey(integrationId: string): Promise<{ api_key: string; public_key?: string | null }> {
     const response = await this.client.get(`/api/v1/integrations/${integrationId}/api-key`)
     return response.data
@@ -846,35 +879,33 @@ class ApiClient {
     return response.data
   }
 
+  async listTelephonyConfigs(provider?: string): Promise<TelephonyIntegrationResponse[]> {
+    const response = await this.client.get('/api/v1/telephony/configs', {
+      params: provider ? { provider } : undefined,
+    })
+    return response.data
+  }
+
   async updateTelephonyConfig(data: TelephonyIntegrationUpdatePayload): Promise<TelephonyIntegrationResponse> {
     const response = await this.client.put('/api/v1/telephony/config', data)
     return response.data
   }
 
-  async testTelephonyConfig(provider: string = 'plivo'): Promise<{ success: boolean }> {
-    const response = await this.client.post('/api/v1/telephony/config/test', null, { params: { provider } })
+  async setDefaultTelephonyConfig(integrationId: string): Promise<TelephonyIntegrationResponse> {
+    const response = await this.client.post(
+      `/api/v1/telephony/config/${integrationId}/set-default`,
+    )
     return response.data
   }
 
-  async syncTelephonyNumbers(provider: string = 'plivo'): Promise<TelephonyPhoneNumberResponse[]> {
-    const response = await this.client.post('/api/v1/telephony/numbers/sync', null, {
-      params: { provider },
-    })
-    return response.data
+  async deleteTelephonyConfig(integrationId: string): Promise<void> {
+    await this.client.delete(`/api/v1/telephony/config/${integrationId}`)
   }
 
   async listTelephonyNumbers(provider?: string): Promise<TelephonyPhoneNumberResponse[]> {
     const response = await this.client.get('/api/v1/telephony/numbers', {
       params: provider ? { provider } : undefined,
     })
-    return response.data
-  }
-
-  async updateTelephonyNumber(
-    numberId: string,
-    data: { is_masking_pool?: boolean; agent_id?: string | null; is_active?: boolean }
-  ): Promise<TelephonyPhoneNumberResponse> {
-    const response = await this.client.patch(`/api/v1/telephony/numbers/${numberId}`, data)
     return response.data
   }
 
@@ -945,9 +976,40 @@ class ApiClient {
   }
 
   // Call Imports endpoints
-  async uploadCallImport(file: File): Promise<CallImportUploadResponse> {
+  async uploadCallImport(
+    file: File,
+    options: {
+      provider: string
+      telephonyIntegrationId: string
+      columnMapping: {
+        external_call_id: string
+        transcript?: string | null
+        recording_url?: string | null
+      }
+      extraColumns?: string[]
+      customColumnMapping?: Record<string, string>
+      dataset?: string | null
+      tagIds?: string[]
+    }
+  ): Promise<CallImportUploadResponse> {
     const formData = new FormData()
     formData.append('file', file)
+    formData.append('provider', options.provider)
+    formData.append('telephony_integration_id', options.telephonyIntegrationId)
+    formData.append('column_mapping', JSON.stringify(options.columnMapping))
+    formData.append('extra_columns', JSON.stringify(options.extraColumns || []))
+    formData.append(
+      'custom_column_mapping',
+      JSON.stringify(options.customColumnMapping || {}),
+    )
+    if (options.dataset !== undefined && options.dataset !== null) {
+      formData.append('dataset', options.dataset)
+    }
+    if (options.tagIds && options.tagIds.length > 0) {
+      for (const tagId of options.tagIds) {
+        formData.append('tag_ids', tagId)
+      }
+    }
     const response = await this.client.post('/api/v1/call-imports/upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
@@ -955,17 +1017,43 @@ class ApiClient {
   }
 
   async listCallImports(
-    params: { page?: number; page_size?: number; status?: CallImportStatus } = {}
+    params: {
+      page?: number
+      page_size?: number
+      status?: CallImportStatus
+      dataset?: string
+      tag_id?: string[]
+    } = {}
   ): Promise<CallImportListResponse> {
-    const response = await this.client.get('/api/v1/call-imports', { params })
+    // Send tag_id repeated rather than as a JSON array.
+    const search = new URLSearchParams()
+    if (params.page !== undefined) search.set('page', String(params.page))
+    if (params.page_size !== undefined) search.set('page_size', String(params.page_size))
+    if (params.status) search.set('status', params.status)
+    if (params.dataset !== undefined) search.set('dataset', params.dataset)
+    for (const tag of params.tag_id || []) search.append('tag_id', tag)
+    const response = await this.client.get('/api/v1/call-imports', { params: search })
+    return response.data
+  }
+
+  async listCallImportDatasets(): Promise<string[]> {
+    const response = await this.client.get('/api/v1/call-imports/datasets')
     return response.data
   }
 
   async getCallImport(
     id: string,
-    params: { row_limit?: number; row_offset?: number } = {}
+    params: { row_limit?: number; row_offset?: number; q?: string } = {}
   ): Promise<CallImportDetail> {
     const response = await this.client.get(`/api/v1/call-imports/${id}`, { params })
+    return response.data
+  }
+
+  async updateCallImport(
+    id: string,
+    payload: { dataset?: string | null; tag_ids?: string[] }
+  ): Promise<CallImport> {
+    const response = await this.client.patch(`/api/v1/call-imports/${id}`, payload)
     return response.data
   }
 
@@ -975,6 +1063,304 @@ class ApiClient {
 
   async deleteCallImportRow(id: string, rowId: string): Promise<void> {
     await this.client.delete(`/api/v1/call-imports/${id}/rows/${rowId}`)
+  }
+
+  async bulkDeleteCallImportRows(
+    id: string,
+    rowIds: string[],
+  ): Promise<{ deleted: number }> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${id}/rows/bulk-delete`,
+      { row_ids: rowIds },
+    )
+    return response.data
+  }
+
+  async createCallImportEvaluation(
+    callImportId: string,
+    payload: {
+      metric_ids: string[]
+      name?: string | null
+      /** Run-level LLM provider key. Leave undefined for legacy default. */
+      llm_provider?: string | null
+      llm_model?: string | null
+      llm_credential_id?: string | null
+      /** Per-metric LLM override map keyed by metric UUID. */
+      metric_llm_overrides?: Record<string, CallImportEvaluationLLMOverride> | null
+      /** When true, diarize rows missing transcripts before evaluation. */
+      auto_transcribe?: boolean
+      transcribe_overwrite?: boolean
+      stt_provider?: string | null
+      stt_model?: string | null
+      stt_credential_id?: string | null
+      stt_language?: string | null
+    },
+  ): Promise<CallImportEvaluation> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/evaluations`,
+      payload,
+    )
+    return response.data
+  }
+
+  /** Aggregated metric distributions for a single evaluation run. */
+  async getCallImportEvaluationAggregate(
+    callImportId: string,
+    evaluationId: string,
+  ): Promise<CallImportEvaluationAggregateResponse> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/aggregate`,
+    )
+    return response.data
+  }
+
+  /**
+   * Aggregate flow chart for a parent metric: returns nodes/edges built
+   * from per-row LLM-inferred ``sequence`` arrays. Used by the React
+   * Flow visualisation on the evaluation overview.
+   */
+  async getCallImportEvaluationFlow(
+    callImportId: string,
+    evaluationId: string,
+    parentMetricId: string,
+  ): Promise<import('../types/api').MetricFlowResponse> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/flow`,
+      { params: { parent_metric_id: parentMetricId } },
+    )
+    return response.data
+  }
+
+  /**
+   * List LLM-discovered candidate sub-labels for a parent metric in an
+   * evaluation. Returned items power the Discovered Labels panel where
+   * users decide which candidates to promote or merge.
+   */
+  async getCallImportEvaluationDiscoveredLabels(
+    callImportId: string,
+    evaluationId: string,
+    parentMetricId: string,
+  ): Promise<import('../types/api').DiscoveredLabelsResponse> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/discovered-labels`,
+      { params: { parent_metric_id: parentMetricId } },
+    )
+    return response.data
+  }
+
+  /**
+   * Merge a discovered slug into another within an evaluation. Rewrites
+   * every row's discovered_labels and sequence array so the panel +
+   * flow chart converge on the surviving slug.
+   */
+  async mergeCallImportEvaluationDiscoveredLabels(
+    callImportId: string,
+    evaluationId: string,
+    body: { parent_metric_id: string; from_key: string; to_key: string },
+  ): Promise<import('../types/api').DiscoveredLabelsResponse> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/discovered-labels/merge`,
+      body,
+    )
+    return response.data
+  }
+
+  /**
+   * Delete (tombstone) an LLM-discovered candidate. Strips the slug
+   * from every row's discovered_labels + sequence and records a
+   * deletion alias on the evaluation so workers finishing later don't
+   * resurrect it. Use for gibberish candidates the LLM proposed.
+   */
+  async deleteCallImportEvaluationDiscoveredLabel(
+    callImportId: string,
+    evaluationId: string,
+    body: { parent_metric_id: string; key: string },
+  ): Promise<import('../types/api').DiscoveredLabelsResponse> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/discovered-labels/delete`,
+      body,
+    )
+    return response.data
+  }
+
+  /**
+   * Promote an LLM-discovered candidate into a real child Metric under
+   * the given parent. ``key`` must equal ``slugify(name)`` so existing
+   * rows' sequence arrays auto-resolve against the new child.
+   */
+  async promoteDiscoveredChild(
+    parentMetricId: string,
+    body: { key: string; name: string; description?: string | null },
+  ): Promise<import('../types/api').MetricSummary> {
+    const response = await this.client.post(
+      `/api/v1/metrics/${parentMetricId}/children/from-discovered`,
+      body,
+    )
+    return response.data
+  }
+
+  /** Cross-run insights for the call import detail page. */
+  async getCallImportInsights(
+    callImportId: string,
+  ): Promise<CallImportInsightsResponse> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/insights`,
+    )
+    return response.data
+  }
+
+  /** Fan out diarization tasks for a batch of rows. */
+  async transcribeCallImport(
+    callImportId: string,
+    payload: CallImportTranscribeRequest,
+  ): Promise<CallImportTranscribeResponse> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/transcribe`,
+      payload,
+    )
+    return response.data
+  }
+
+  /** Diarize a single row's recording. */
+  async transcribeCallImportRow(
+    callImportId: string,
+    rowId: string,
+    payload: CallImportTranscribeRequest,
+  ): Promise<CallImportTranscribeResponse> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/rows/${rowId}/transcribe`,
+      payload,
+    )
+    return response.data
+  }
+
+  async updateCallImportEvaluation(
+    callImportId: string,
+    evaluationId: string,
+    payload: { name?: string | null },
+  ): Promise<CallImportEvaluation> {
+    const response = await this.client.patch(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}`,
+      payload,
+    )
+    return response.data
+  }
+
+  async bulkDeleteCallImportEvaluations(
+    callImportId: string,
+    evaluationIds: string[],
+  ): Promise<{ deleted: number }> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/evaluations/bulk-delete`,
+      { evaluation_ids: evaluationIds },
+    )
+    return response.data
+  }
+
+  async deleteCallImportEvaluationRow(
+    callImportId: string,
+    evaluationId: string,
+    evalRowId: string,
+  ): Promise<void> {
+    await this.client.delete(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/rows/${evalRowId}`,
+    )
+  }
+
+  async listCallImportEvaluations(callImportId: string): Promise<CallImportEvaluationListResponse> {
+    const response = await this.client.get(`/api/v1/call-imports/${callImportId}/evaluations`)
+    return response.data
+  }
+
+  async getCallImportEvaluation(
+    callImportId: string,
+    evaluationId: string,
+  ): Promise<CallImportEvaluation> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}`,
+    )
+    return response.data
+  }
+
+  async listCallImportEvaluationRows(
+    callImportId: string,
+    evaluationId: string,
+    params: {
+      page?: number
+      page_size?: number
+      q?: string
+      metric_id?: string
+      metric_value?: string
+      status?: string
+      // Flow-chart drilldown: filter to rows whose sequence under the
+      // given parent contains ``flow_node`` (and optionally is
+      // immediately followed by ``flow_edge_target`` for edge clicks).
+      // Accepts a child UUID, a ``disc:<slug>`` discovered id, or a
+      // raw slug.
+      flow_parent_id?: string
+      flow_node?: string
+      flow_edge_target?: string
+      // Discovered-label filters: either pin to a specific discovered
+      // slug or surface every row that produced any candidate under
+      // ``discovered_parent_id``.
+      discovered_parent_id?: string
+      discovered_label_key?: string
+      has_discovered?: boolean
+    } = {},
+  ): Promise<CallImportEvaluationRowListResponse> {
+    const cleaned: Record<string, any> = {}
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null && v !== '') cleaned[k] = v
+    }
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/rows`,
+      { params: cleaned },
+    )
+    return response.data
+  }
+
+  async exportCallImportEvaluation(
+    callImportId: string,
+    evaluationId: string,
+  ): Promise<Blob> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/export`,
+      { responseType: 'blob' },
+    )
+    return response.data
+  }
+
+  async deleteCallImportEvaluation(callImportId: string, evaluationId: string): Promise<void> {
+    await this.client.delete(`/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}`)
+  }
+
+  // Call Import Tags endpoints
+  async listCallImportTags(): Promise<CallImportTag[]> {
+    const response = await this.client.get('/api/v1/call-import-tags')
+    return response.data
+  }
+
+  async createCallImportTag(payload: {
+    name: string
+    color?: string | null
+  }): Promise<CallImportTag> {
+    const response = await this.client.post('/api/v1/call-import-tags', payload)
+    return response.data
+  }
+
+  async updateCallImportTag(
+    tagId: string,
+    payload: { name?: string; color?: string | null },
+  ): Promise<CallImportTag> {
+    const response = await this.client.patch(
+      `/api/v1/call-import-tags/${tagId}`,
+      payload,
+    )
+    return response.data
+  }
+
+  async deleteCallImportTag(tagId: string): Promise<void> {
+    await this.client.delete(`/api/v1/call-import-tags/${tagId}`)
   }
 
   // Model Config endpoints
@@ -1399,7 +1785,7 @@ class ApiClient {
   async createMetric(data: {
     name: string
     description?: string
-    metric_type: 'number' | 'boolean' | 'rating'
+    metric_type: 'number' | 'boolean' | 'rating' | 'text'
     trigger?: 'always'
     enabled?: boolean
     metric_origin?: 'default' | 'custom'
@@ -1408,14 +1794,63 @@ class ApiClient {
     custom_data_type?: 'boolean' | 'enum' | 'number_range'
     custom_config?: Record<string, any>
     tags?: string[]
+    capture_rationale?: boolean
+    parent_metric_id?: string | null
+    selection_mode?: 'single_choice' | 'multi_label' | null
   }): Promise<any> {
     const response = await this.client.post('/api/v1/metrics', data)
     return response.data
   }
 
-  async listMetrics(surface?: string): Promise<any[]> {
+  /**
+   * Atomically create a parent (category) metric + N children, used by
+   * the "Create category" flow on the Metrics page and by the
+   * /parse-bulk → save path when a hierarchy was requested.
+   */
+  async createMetricWithChildren(data: {
+    name: string
+    description?: string | null
+    selection_mode: 'single_choice' | 'multi_label'
+    enabled?: boolean
+    supported_surfaces?: string[]
+    enabled_surfaces?: string[]
+    tags?: string[] | null
+    allow_discovery?: boolean
+    children: Array<{
+      name: string
+      description?: string | null
+      enabled?: boolean
+      capture_rationale?: boolean | null
+      tags?: string[] | null
+    }>
+  }): Promise<any> {
+    const response = await this.client.post(
+      '/api/v1/metrics/with-children',
+      data,
+    )
+    return response.data
+  }
+
+  async addMetricChild(parentMetricId: string, data: {
+    name: string
+    description?: string | null
+    enabled?: boolean
+    capture_rationale?: boolean | null
+    tags?: string[] | null
+  }): Promise<any> {
+    const response = await this.client.post(
+      `/api/v1/metrics/${parentMetricId}/children`,
+      data,
+    )
+    return response.data
+  }
+
+  async listMetrics(surface?: string, includeChildren: boolean = true): Promise<any[]> {
     const response = await this.client.get('/api/v1/metrics', {
-      params: surface ? { surface } : undefined,
+      params: {
+        ...(surface ? { surface } : {}),
+        include_children: includeChildren,
+      },
     })
     return response.data
   }
@@ -1481,7 +1916,7 @@ class ApiClient {
   async updateMetric(metricId: string, data: {
     name?: string
     description?: string
-    metric_type?: 'number' | 'boolean' | 'rating'
+    metric_type?: 'number' | 'boolean' | 'rating' | 'text'
     trigger?: 'always'
     enabled?: boolean
     metric_origin?: 'default' | 'custom'
@@ -1490,6 +1925,10 @@ class ApiClient {
     custom_data_type?: 'boolean' | 'enum' | 'number_range'
     custom_config?: Record<string, any>
     tags?: string[]
+    capture_rationale?: boolean
+    selection_mode?: 'single_choice' | 'multi_label' | null
+    /** Only honored on multi_label parents; backend 400s otherwise. */
+    allow_discovery?: boolean
   }): Promise<any> {
     const response = await this.client.put(`/api/v1/metrics/${metricId}`, data)
     return response.data
@@ -1512,14 +1951,46 @@ class ApiClient {
   }): Promise<{
     name: string
     description: string
-    metric_type: 'rating' | 'boolean' | 'number'
-    custom_data_type: 'boolean' | 'enum' | 'number_range'
+    metric_type: 'rating' | 'boolean' | 'number' | 'text'
+    custom_data_type: 'boolean' | 'enum' | 'number_range' | null
     custom_config: Record<string, any>
     supported_surfaces: string[]
     enabled_surfaces: string[]
     suggested_tags: string[]
   }> {
     const response = await this.client.post('/api/v1/metrics/generate', data)
+    return response.data
+  }
+
+  async parseBulkMetric(data: {
+    prompt: string
+    surface: 'agent' | 'voice_playground' | 'blind_test'
+    /** When set, the response includes a ``parent`` block + all labels are children. */
+    parent_name?: string
+    parent_description?: string
+    selection_mode?: 'single_choice' | 'multi_label'
+  }): Promise<{
+    metrics: Array<{
+      name: string
+      description: string
+      metric_type: 'rating' | 'boolean' | 'number' | 'text'
+      custom_data_type: 'boolean' | 'enum' | 'number_range' | null
+      custom_config: Record<string, any>
+      supported_surfaces: string[]
+      enabled_surfaces: string[]
+      capture_rationale: boolean
+      suggested_tags: string[]
+      source_label: { label_name: string; definition: string; examples: string }
+    }>
+    parent?: {
+      name: string
+      description: string | null
+      selection_mode: 'single_choice' | 'multi_label'
+      supported_surfaces: string[]
+      enabled_surfaces: string[]
+    } | null
+  }> {
+    const response = await this.client.post('/api/v1/metrics/parse-bulk', data)
     return response.data
   }
 

@@ -9,8 +9,9 @@ import {
   Trash2,
   Upload,
 } from 'lucide-react'
+import { Tag as TagIcon } from 'lucide-react'
 import { apiClient } from '../../lib/api'
-import type { CallImport, CallImportStatus } from '../../types/api'
+import type { CallImport, CallImportStatus, CallImportTag } from '../../types/api'
 import Button from '../../components/Button'
 import ConfirmModal from '../../components/ConfirmModal'
 import StatusBadge from '../../components/shared/StatusBadge'
@@ -33,9 +34,21 @@ export default function CallImports() {
   const queryClient = useQueryClient()
   const [page, setPage] = useState(1)
   const [statusFilter, setStatusFilter] = useState<'' | CallImportStatus>('')
+  const [datasetFilter, setDatasetFilter] = useState<string>('')
+  const [tagFilter, setTagFilter] = useState<string[]>([])
   const [showUpload, setShowUpload] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<CallImport | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+
+  const { data: datasets = [] } = useQuery({
+    queryKey: ['call-import-datasets'],
+    queryFn: () => apiClient.listCallImportDatasets(),
+  })
+
+  const { data: allTags = [] } = useQuery({
+    queryKey: ['call-import-tags'],
+    queryFn: () => apiClient.listCallImportTags(),
+  })
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => apiClient.deleteCallImport(id),
@@ -56,8 +69,10 @@ export default function CallImports() {
       page,
       page_size: PAGE_SIZE,
       ...(statusFilter ? { status: statusFilter } : {}),
+      ...(datasetFilter ? { dataset: datasetFilter } : {}),
+      ...(tagFilter.length > 0 ? { tag_id: tagFilter } : {}),
     }),
-    [page, statusFilter],
+    [page, statusFilter, datasetFilter, tagFilter],
   )
 
   const { data, isLoading, isFetching, refetch } = useQuery({
@@ -87,6 +102,14 @@ export default function CallImports() {
           </p>
         </div>
         <div className="flex gap-3">
+          <Link to="/call-imports/tags">
+            <Button
+              variant="ghost"
+              leftIcon={<TagIcon className="h-5 w-5" />}
+            >
+              Manage Tags
+            </Button>
+          </Link>
           <Button
             variant="primary"
             onClick={() => setShowUpload(true)}
@@ -105,27 +128,108 @@ export default function CallImports() {
         </div>
       </div>
 
+      {/*
+        High-level dataset segregation lives at the top of the page so users can
+        scope all filtering/searching that follows to a specific dataset. We
+        intentionally render this above the main card to make it visually
+        distinct from the in-card status/tag filters.
+      */}
+      <div className="bg-white shadow rounded-lg p-4 flex items-center gap-3 flex-wrap">
+        <label htmlFor="dataset-filter" className="text-sm font-medium text-gray-700">
+          Dataset:
+        </label>
+        <select
+          id="dataset-filter"
+          value={datasetFilter}
+          onChange={(e) => {
+            setDatasetFilter(e.target.value)
+            setPage(1)
+          }}
+          className="px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-transparent min-w-[12rem]"
+        >
+          <option value="">All datasets</option>
+          {datasets.map((d) => (
+            <option key={d} value={d}>
+              {d}
+            </option>
+          ))}
+        </select>
+        {datasetFilter && (
+          <span className="text-xs text-gray-500">
+            Showing imports tagged with dataset “{datasetFilter}”.
+          </span>
+        )}
+      </div>
+
       <div className="bg-white shadow rounded-lg p-6">
         <div className="flex items-center justify-between mb-4 gap-4 flex-wrap">
-          <div className="flex items-center gap-2">
-            <label htmlFor="status-filter" className="text-sm text-gray-600">
-              Filter by status:
-            </label>
-            <select
-              id="status-filter"
-              value={statusFilter}
-              onChange={(e) => {
-                setStatusFilter(e.target.value as '' | CallImportStatus)
-                setPage(1)
-              }}
-              className="px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-            >
-              {STATUS_OPTIONS.map((opt) => (
-                <option key={opt.value || 'all'} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
+          <div className="flex items-center gap-4 flex-wrap">
+            <div className="flex items-center gap-2">
+              <label htmlFor="status-filter" className="text-sm text-gray-600">
+                Status:
+              </label>
+              <select
+                id="status-filter"
+                value={statusFilter}
+                onChange={(e) => {
+                  setStatusFilter(e.target.value as '' | CallImportStatus)
+                  setPage(1)
+                }}
+                className="px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+              >
+                {STATUS_OPTIONS.map((opt) => (
+                  <option key={opt.value || 'all'} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {allTags.length > 0 && (
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-sm text-gray-600">Tags:</span>
+                {allTags.map((tag: CallImportTag) => {
+                  const active = tagFilter.includes(tag.id)
+                  return (
+                    <button
+                      key={tag.id}
+                      type="button"
+                      onClick={() => {
+                        setTagFilter((prev) =>
+                          prev.includes(tag.id)
+                            ? prev.filter((t) => t !== tag.id)
+                            : [...prev, tag.id],
+                        )
+                        setPage(1)
+                      }}
+                      className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${
+                        active
+                          ? 'bg-primary-600 border-primary-600 text-white'
+                          : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'
+                      }`}
+                      style={
+                        !active && tag.color
+                          ? { borderColor: tag.color, color: tag.color }
+                          : undefined
+                      }
+                    >
+                      {tag.name}
+                    </button>
+                  )
+                })}
+                {tagFilter.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTagFilter([])
+                      setPage(1)
+                    }}
+                    className="text-xs text-gray-500 hover:text-gray-700 underline"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+            )}
           </div>
           <p className="text-sm text-gray-500">
             {total} import{total === 1 ? '' : 's'}
@@ -165,6 +269,9 @@ export default function CallImports() {
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Provider
                   </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Dataset / Tags
+                  </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-64">
                     Progress
                   </th>
@@ -196,6 +303,35 @@ export default function CallImports() {
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700 capitalize">
                       {item.provider}
+                    </td>
+                    <td className="px-6 py-4 align-top">
+                      <div className="flex flex-col gap-1">
+                        {item.dataset ? (
+                          <span className="inline-flex items-center text-xs font-medium text-gray-800 bg-gray-100 rounded px-2 py-0.5 self-start">
+                            {item.dataset}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-gray-400 italic">
+                            no dataset
+                          </span>
+                        )}
+                        {item.tags.length > 0 && (
+                          <div className="flex flex-wrap gap-1">
+                            {item.tags.map((tag) => (
+                              <span
+                                key={tag.id}
+                                className="inline-flex items-center text-[10px] uppercase tracking-wide rounded-full px-2 py-0.5 border"
+                                style={{
+                                  borderColor: tag.color || '#d1d5db',
+                                  color: tag.color || '#4b5563',
+                                }}
+                              >
+                                {tag.name}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <CallImportProgressBar

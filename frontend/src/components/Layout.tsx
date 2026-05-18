@@ -62,7 +62,6 @@ const navigationSections: NavSection[] = [
       { name: 'Agents', href: '/agents', icon: Bot },
       { name: 'Personas', href: '/personas', icon: Users },
       { name: 'Scenarios', href: '/scenarios', icon: FileText },
-      { name: 'Metrics', href: '/metrics-management', icon: BarChart3 },
     ],
   },
   {
@@ -80,6 +79,7 @@ const navigationSections: NavSection[] = [
       { name: 'Evaluators', href: '/evaluate-test-agents', icon: Mic },
       { name: 'Evaluation Results', href: '/results', icon: BarChart3 },
       { name: 'Judge Alignment', href: '/judge-alignment', icon: Sparkles },
+      { name: 'Call Imports', href: '/call-imports', icon: Upload, enterpriseFeature: 'call_imports' },
     ],
   },
   {
@@ -121,7 +121,7 @@ const navigationSections: NavSection[] = [
 
 const otherNavigation: NavItem[] = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
-  { name: 'Call Imports', href: '/call-imports', icon: Upload },
+  { name: 'Metrics', href: '/metrics-management', icon: BarChart3 },
 ]
 
 const bottomNavigation = [

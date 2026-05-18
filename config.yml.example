@@ -139,7 +139,8 @@ judge_alignment:
   csv_max_rows: 5000       # safety limit for CSV uploads
 
 # Enterprise License (JWT signed with RS256). Unlocks gated features like
-# oidc_sso, mfa_enforce, audit_export, voice_playground, gepa_optimization.
+# oidc_sso, mfa_enforce, audit_export, voice_playground, gepa_optimization,
+# call_imports.
 # license:
 #   key: "eyJhbGciOi..."
 

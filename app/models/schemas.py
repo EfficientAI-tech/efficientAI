@@ -1,7 +1,7 @@
 """Pydantic schemas for request/response validation."""
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, validator
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 from datetime import datetime
 from uuid import UUID
 from app.models.enums import (
@@ -555,6 +555,13 @@ class IntegrationCreate(BaseModel):
     api_key: str = Field(..., description="Private API key for the platform")
     public_key: Optional[str] = Field(None, description="Optional public API key (e.g. for Vapi)")
     name: Optional[str] = Field(None, description="Optional friendly name for the integration")
+    is_default: Optional[bool] = Field(
+        None,
+        description=(
+            "Mark this credential as the default for the (org, platform). "
+            "If omitted and no default exists yet, this row becomes the default."
+        ),
+    )
 
 
 class IntegrationUpdate(BaseModel):
@@ -573,6 +580,7 @@ class IntegrationResponse(BaseModel):
     name: Optional[str]
     public_key: Optional[str] = None
     is_active: bool
+    is_default: bool = False
     created_at: datetime
     updated_at: datetime
     last_tested_at: Optional[datetime] = None
@@ -663,6 +671,13 @@ class AIProviderCreate(BaseModel):
     provider: ModelProvider
     api_key: str = Field(..., min_length=1)
     name: Optional[str] = None
+    is_default: Optional[bool] = Field(
+        None,
+        description=(
+            "Mark this credential as the default for the (org, provider). "
+            "If omitted and no default exists yet, this row becomes the default."
+        ),
+    )
 
 
 class AIProviderUpdate(BaseModel):
@@ -679,6 +694,7 @@ class AIProviderResponse(BaseModel):
     api_key: Optional[str] = None  # Will be None in response for security
     name: Optional[str]
     is_active: bool
+    is_default: bool = False
     created_at: datetime
     updated_at: datetime
     last_tested_at: Optional[datetime]
@@ -715,6 +731,13 @@ class VoiceBundleCreate(BaseModel):
     # STT Configuration - required for STT_LLM_TTS, optional for S2S
     stt_provider: Optional[ModelProvider] = None
     stt_model: Optional[str] = Field(None, min_length=1)
+    stt_credential_id: Optional[UUID] = Field(
+        None,
+        description=(
+            "Optional explicit AIProvider/Integration row id to use for STT. "
+            "When omitted the resolver picks the default credential for stt_provider."
+        ),
+    )
     
     # LLM Configuration - required for STT_LLM_TTS, optional for S2S
     llm_provider: Optional[ModelProvider] = None
@@ -722,17 +745,20 @@ class VoiceBundleCreate(BaseModel):
     llm_temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
     llm_max_tokens: Optional[int] = Field(None, gt=0)
     llm_config: Optional[Dict[str, Any]] = None
+    llm_credential_id: Optional[UUID] = None
     
     # TTS Configuration - required for STT_LLM_TTS, optional for S2S
     tts_provider: Optional[ModelProvider] = None
     tts_model: Optional[str] = Field(None, min_length=1)
     tts_voice: Optional[str] = None
     tts_config: Optional[Dict[str, Any]] = None
+    tts_credential_id: Optional[UUID] = None
     
     # S2S Configuration - required for S2S, optional for STT_LLM_TTS
     s2s_provider: Optional[ModelProvider] = None
     s2s_model: Optional[str] = Field(None, min_length=1)
     s2s_config: Optional[Dict[str, Any]] = None
+    s2s_credential_id: Optional[UUID] = None
     
     # Additional metadata
     extra_metadata: Optional[Dict[str, Any]] = None
@@ -764,6 +790,7 @@ class VoiceBundleUpdate(BaseModel):
     # STT Configuration
     stt_provider: Optional[ModelProvider] = None
     stt_model: Optional[str] = Field(None, min_length=1)
+    stt_credential_id: Optional[UUID] = None
     
     # LLM Configuration
     llm_provider: Optional[ModelProvider] = None
@@ -771,17 +798,20 @@ class VoiceBundleUpdate(BaseModel):
     llm_temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
     llm_max_tokens: Optional[int] = Field(None, gt=0)
     llm_config: Optional[Dict[str, Any]] = None
+    llm_credential_id: Optional[UUID] = None
     
     # TTS Configuration
     tts_provider: Optional[ModelProvider] = None
     tts_model: Optional[str] = Field(None, min_length=1)
     tts_voice: Optional[str] = None
     tts_config: Optional[Dict[str, Any]] = None
+    tts_credential_id: Optional[UUID] = None
     
     # S2S Configuration
     s2s_provider: Optional[ModelProvider] = None
     s2s_model: Optional[str] = Field(None, min_length=1)
     s2s_config: Optional[Dict[str, Any]] = None
+    s2s_credential_id: Optional[UUID] = None
     
     # Additional metadata
     extra_metadata: Optional[Dict[str, Any]] = None
@@ -834,6 +864,7 @@ class VoiceBundleResponse(BaseModel):
     # STT Configuration
     stt_provider: Optional[ModelProvider]
     stt_model: Optional[str]
+    stt_credential_id: Optional[UUID] = None
     
     # LLM Configuration
     llm_provider: Optional[ModelProvider]
@@ -841,17 +872,20 @@ class VoiceBundleResponse(BaseModel):
     llm_temperature: Optional[float]
     llm_max_tokens: Optional[int]
     llm_config: Optional[Dict[str, Any]]
+    llm_credential_id: Optional[UUID] = None
     
     # TTS Configuration
     tts_provider: Optional[ModelProvider]
     tts_model: Optional[str]
     tts_voice: Optional[str]
     tts_config: Optional[Dict[str, Any]]
+    tts_credential_id: Optional[UUID] = None
     
     # S2S Configuration
     s2s_provider: Optional[ModelProvider]
     s2s_model: Optional[str]
     s2s_config: Optional[Dict[str, Any]]
+    s2s_credential_id: Optional[UUID] = None
     
     # Additional metadata
     extra_metadata: Optional[Dict[str, Any]]
@@ -1055,8 +1089,18 @@ class RunEvaluatorsResponse(BaseModel):
 
 
 # Metric Schemas
+SelectionMode = Literal["single_choice", "multi_label"]
+
+
 class MetricCreate(BaseModel):
-    """Schema for creating a metric."""
+    """Schema for creating a metric.
+
+    Hierarchy:
+    - ``parent_metric_id`` set => this is a child sub-metric. ``metric_type``
+      is forced to ``boolean`` server-side; ``selection_mode`` must be None.
+    - ``selection_mode`` set => this is a parent category metric.
+      ``parent_metric_id`` must be None (max depth = 2).
+    """
     name: str
     description: Optional[str] = None
     metric_type: MetricType = MetricType.RATING
@@ -1068,7 +1112,14 @@ class MetricCreate(BaseModel):
     custom_data_type: Optional[str] = None
     custom_config: Optional[Dict[str, Any]] = None
     tags: Optional[List[str]] = None
-    
+    capture_rationale: Optional[bool] = False
+    parent_metric_id: Optional[UUID] = None
+    selection_mode: Optional[SelectionMode] = None
+    # Only meaningful on multi_label parents; ignored everywhere else.
+    # When true, the LLM is invited during call-import evaluation to emit
+    # additional candidate sub-labels beyond the user-defined children.
+    allow_discovery: bool = False
+
     model_config = ConfigDict(json_schema_extra={
             "example": {
                 "name": "Professionalism",
@@ -1078,6 +1129,42 @@ class MetricCreate(BaseModel):
                 "enabled": True
             }
         })
+
+
+class MetricChildDraft(BaseModel):
+    """One child sub-metric in a parent + children atomic create body."""
+
+    name: str = Field(..., max_length=120)
+    description: Optional[str] = Field(default=None, max_length=4000)
+    enabled: bool = True
+    capture_rationale: Optional[bool] = True
+    tags: Optional[List[str]] = None
+
+
+class MetricCreateWithChildren(BaseModel):
+    """One-shot create body: a parent metric + N children, atomically.
+
+    Children are persisted as full ``Metric`` rows with
+    ``parent_metric_id`` set to the new parent. ``metric_type`` on every
+    child is forced to ``boolean`` server-side regardless of what's
+    passed in the parent body.
+    """
+
+    name: str = Field(..., max_length=120)
+    description: Optional[str] = Field(default=None, max_length=4000)
+    selection_mode: SelectionMode
+    enabled: bool = True
+    supported_surfaces: List[str] = Field(default_factory=lambda: ["agent"])
+    enabled_surfaces: Optional[List[str]] = None
+    tags: Optional[List[str]] = None
+    # When true on a multi_label parent, allow the LLM to emit candidate
+    # labels beyond the listed children at evaluation time. Validator
+    # rejects allow_discovery=True on single_choice parents.
+    allow_discovery: bool = False
+    children: List[MetricChildDraft] = Field(
+        default_factory=list,
+        description="Child sub-metric labels under this parent.",
+    )
 
 
 class MetricUpdate(BaseModel):
@@ -1093,10 +1180,19 @@ class MetricUpdate(BaseModel):
     custom_data_type: Optional[str] = None
     custom_config: Optional[Dict[str, Any]] = None
     tags: Optional[List[str]] = None
+    capture_rationale: Optional[bool] = None
+    selection_mode: Optional[SelectionMode] = None
+    allow_discovery: Optional[bool] = None
 
 
 class MetricResponse(BaseModel):
-    """Schema for metric response."""
+    """Schema for metric response.
+
+    ``children`` is populated for parent metrics (those with
+    ``selection_mode`` set) and is otherwise an empty list. The list is
+    built once at serialization time so callers get a single tree
+    structure without follow-up requests.
+    """
     id: UUID
     organization_id: UUID
     name: str
@@ -1111,6 +1207,11 @@ class MetricResponse(BaseModel):
     custom_data_type: Optional[str]
     custom_config: Optional[Dict[str, Any]]
     tags: Optional[List[str]]
+    capture_rationale: bool = False
+    parent_metric_id: Optional[UUID] = None
+    selection_mode: Optional[SelectionMode] = None
+    allow_discovery: bool = False
+    children: List["MetricResponse"] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
     created_by: Optional[str]
@@ -1166,6 +1267,9 @@ class MetricResponse(BaseModel):
         return str(v).lower()
     
     model_config = ConfigDict(from_attributes=True)
+
+
+MetricResponse.model_rebuild()
 
 
 # Evaluator Result Schemas
@@ -1643,18 +1747,28 @@ class TelephonyIntegrationCreate(BaseModel):
     """Schema for creating a telephony provider integration."""
 
     provider: str = "plivo"
+    name: Optional[str] = None
     auth_id: str
     auth_token: str
     verify_app_uuid: Optional[str] = None
     voice_app_id: Optional[str] = None
     sip_domain: Optional[str] = None
     masking_config: Optional[Dict[str, Any]] = None
+    is_default: Optional[bool] = Field(
+        None,
+        description=(
+            "Mark this credential as the default for the (org, provider). "
+            "If omitted and no default exists yet, this row becomes the default."
+        ),
+    )
 
 
 class TelephonyIntegrationUpdate(BaseModel):
     """Schema for partial updates to a telephony provider integration."""
 
+    id: Optional[UUID] = None
     provider: Optional[str] = None
+    name: Optional[str] = None
     auth_id: Optional[str] = None
     auth_token: Optional[str] = None
     verify_app_uuid: Optional[str] = None
@@ -1670,11 +1784,13 @@ class TelephonyIntegrationResponse(BaseModel):
     id: UUID
     organization_id: UUID
     provider: str
+    name: Optional[str] = None
     verify_app_uuid: Optional[str]
     voice_app_id: Optional[str]
     sip_domain: Optional[str]
     masking_config: Optional[Dict[str, Any]]
     is_active: bool
+    is_default: bool = False
     last_tested_at: Optional[datetime]
     created_at: datetime
     updated_at: datetime
@@ -1788,16 +1904,61 @@ class CallImportRowResponse(BaseModel):
     external_call_id: str
     recording_url: Optional[str] = None
     transcript: Optional[str] = None
+    transcript_source: Optional[str] = None
+    transcript_provider: Optional[str] = None
+    transcript_model: Optional[str] = None
+    transcript_status: Optional[str] = None
+    transcript_error: Optional[str] = None
+    transcribed_at: Optional[datetime] = None
     status: CallImportRowStatus
     recording_s3_key: Optional[str] = None
     recording_content_type: Optional[str] = None
     recording_size_bytes: Optional[int] = None
     error_message: Optional[str] = None
     attempts: int
+    raw_columns: Optional[Dict[str, Any]] = None
     created_at: datetime
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class CallImportColumnMapping(BaseModel):
+    """Maps system fields to CSV header strings (case preserved as uploaded).
+
+    ``external_call_id`` is required so the worker can identify each row;
+    the other two are optional. Values must be unique across the mapping.
+    """
+
+    external_call_id: str = Field(..., min_length=1, max_length=255)
+    transcript: Optional[str] = Field(None, max_length=255)
+    recording_url: Optional[str] = Field(None, max_length=255)
+
+
+class CallImportTagResponse(BaseModel):
+    """Tag attached to call import batches."""
+
+    id: UUID
+    name: str
+    color: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CallImportTagCreate(BaseModel):
+    """Create a new call-import tag for the organization."""
+
+    name: str = Field(..., min_length=1, max_length=255)
+    color: Optional[str] = Field(None, max_length=32)
+
+
+class CallImportTagUpdate(BaseModel):
+    """Partial update for a call-import tag."""
+
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    color: Optional[str] = Field(None, max_length=32)
 
 
 class CallImportResponse(BaseModel):
@@ -1806,7 +1967,13 @@ class CallImportResponse(BaseModel):
     id: UUID
     organization_id: UUID
     provider: str
+    telephony_integration_id: Optional[UUID] = None
     original_filename: Optional[str] = None
+    dataset: Optional[str] = None
+    tags: List[CallImportTagResponse] = Field(default_factory=list)
+    column_mapping: Dict[str, Optional[str]] = Field(default_factory=dict)
+    extra_columns: List[str] = Field(default_factory=list)
+    custom_column_mapping: Dict[str, str] = Field(default_factory=dict)
     total_rows: int
     completed_rows: int
     failed_rows: int
@@ -1819,9 +1986,15 @@ class CallImportResponse(BaseModel):
 
 
 class CallImportDetailResponse(CallImportResponse):
-    """A call-import batch with its rows expanded."""
+    """A call-import batch with its rows expanded.
+
+    ``filtered_total_rows`` is only set when the caller passed a ``q``
+    search term — it lets the UI paginate against the filtered subset
+    while still showing the unfiltered ``total_rows`` in the header.
+    """
 
     rows: List[CallImportRowResponse] = Field(default_factory=list)
+    filtered_total_rows: Optional[int] = None
 
 
 class CallImportListResponse(BaseModel):
@@ -1839,4 +2012,554 @@ class CallImportUploadResponse(BaseModel):
     id: UUID
     total_rows: int
     status: CallImportStatus
+    dataset: Optional[str] = None
+    tags: List[CallImportTagResponse] = Field(default_factory=list)
     message: str
+
+
+class CallImportUpdate(BaseModel):
+    """Partial update of a call-import batch (currently dataset/tags)."""
+
+    dataset: Optional[str] = Field(
+        None,
+        description=(
+            "Free-text dataset label. Pass an empty string to clear the dataset."
+        ),
+    )
+    tag_ids: Optional[List[UUID]] = Field(
+        None,
+        description=(
+            "Replace the full set of tag assignments. Pass an empty list to clear all tags."
+        ),
+    )
+
+
+# --- Call Import Evaluation Schemas ---
+
+
+class CallImportEvaluationLLMOverride(BaseModel):
+    """Per-metric LLM override used on top of the run-level default.
+
+    Any field left ``None`` falls back to the run-level value (which
+    itself falls back to the historical OpenAI/gpt-4o default). This
+    lets users pick a specific provider/model for a single metric (e.g.
+    a stronger Anthropic model for a tricky qualitative metric) without
+    re-typing the rest of the metrics in the run.
+    """
+
+    provider: Optional[str] = Field(
+        default=None,
+        max_length=50,
+        description="Override LLM provider key, e.g. 'openai' or 'anthropic'.",
+    )
+    model: Optional[str] = Field(
+        default=None,
+        max_length=100,
+        description="Override LLM model name, e.g. 'gpt-4o' or 'claude-3-opus'.",
+    )
+    credential_id: Optional[UUID] = Field(
+        default=None,
+        description="Optional AIProvider id when the org has multiple credentials.",
+    )
+
+
+class CallImportEvaluationCreate(BaseModel):
+    """Request body for triggering an evaluation over a call-import batch."""
+
+    metric_ids: List[UUID] = Field(
+        ...,
+        min_length=1,
+        description="Org Metric ids to score every completed row against.",
+    )
+    name: Optional[str] = Field(
+        default=None,
+        max_length=255,
+        description=(
+            "Optional human-readable label for the run. Shown in the UI "
+            "instead of the UUID prefix."
+        ),
+    )
+    # --- Run-level LLM config ---
+    llm_provider: Optional[str] = Field(
+        default=None,
+        max_length=50,
+        description=(
+            "Run-level LLM provider key (e.g. 'openai', 'anthropic'). NULL "
+            "preserves the historical OpenAI/gpt-4o default."
+        ),
+    )
+    llm_model: Optional[str] = Field(
+        default=None,
+        max_length=100,
+        description="Run-level LLM model name. Required when llm_provider is set.",
+    )
+    llm_credential_id: Optional[UUID] = Field(
+        default=None,
+        description="Optional AIProvider row to pin for the run-level LLM.",
+    )
+    metric_llm_overrides: Optional[
+        Dict[str, CallImportEvaluationLLMOverride]
+    ] = Field(
+        default=None,
+        description=(
+            "Optional per-metric LLM overrides keyed by metric UUID. Each "
+            "entry overrides the run-level default for that metric only."
+        ),
+    )
+    # --- Auto-transcribe / diarization hook ---
+    auto_transcribe: bool = Field(
+        default=False,
+        description=(
+            "If true, run diarization/transcription on every selected row "
+            "before evaluation. ``stt_provider`` + ``stt_model`` are "
+            "required when this flag is set."
+        ),
+    )
+    transcribe_overwrite: bool = Field(
+        default=False,
+        description=(
+            "When auto_transcribe is on, overwrite existing transcripts "
+            "instead of skipping rows that already have one."
+        ),
+    )
+    stt_provider: Optional[str] = Field(
+        default=None,
+        max_length=50,
+        description="STT provider key, e.g. 'deepgram', 'openai'.",
+    )
+    stt_model: Optional[str] = Field(
+        default=None,
+        max_length=100,
+        description="STT model name, e.g. 'nova-2', 'whisper-1'.",
+    )
+    stt_credential_id: Optional[UUID] = Field(
+        default=None,
+        description="Optional AIProvider/Integration row to pin for STT.",
+    )
+    stt_language: Optional[str] = Field(
+        default=None,
+        max_length=20,
+        description="ISO language hint for the STT provider, e.g. 'en'.",
+    )
+
+
+class CallImportEvaluationUpdate(BaseModel):
+    """Patch body for editing a previously-created evaluation run."""
+
+    name: Optional[str] = Field(
+        default=None,
+        max_length=255,
+        description="New name for the evaluation. Empty string clears it.",
+    )
+
+
+class CallImportEvaluationBulkDelete(BaseModel):
+    """Request body for deleting multiple evaluation runs in one call."""
+
+    evaluation_ids: List[UUID] = Field(
+        ...,
+        min_length=1,
+        description="Evaluation ids to delete.",
+    )
+
+
+class CallImportMetricSummary(BaseModel):
+    """Lightweight metric descriptor returned alongside an evaluation."""
+
+    id: UUID
+    name: str
+    metric_type: Optional[str] = None
+    description: Optional[str] = None
+    parent_metric_id: Optional[UUID] = None
+    selection_mode: Optional[SelectionMode] = None
+    # Surfaced so the Flow tab can decide whether to render the
+    # Discovered Labels panel next to a multi_label parent. Defaults to
+    # False to keep legacy clients (and standalone metrics) unaffected.
+    allow_discovery: bool = False
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CallImportEvaluationResponse(BaseModel):
+    """Parent record describing one evaluation run over a batch."""
+
+    id: UUID
+    call_import_id: UUID
+    organization_id: UUID
+    name: Optional[str] = None
+    selected_metric_ids: List[UUID] = Field(default_factory=list)
+    # Parent UUID string -> [child UUID string]. Captured at run creation
+    # so the UI can rebuild the parent/child tree even after metrics are
+    # renamed or deleted. Empty / NULL = no hierarchy was used.
+    selected_metric_groups: Optional[Dict[str, List[str]]] = None
+    metrics: List[CallImportMetricSummary] = Field(default_factory=list)
+    status: str
+    total_rows: int
+    completed_rows: int
+    failed_rows: int
+    error_message: Optional[str] = None
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+    llm_credential_id: Optional[UUID] = None
+    metric_llm_overrides: Optional[Dict[str, Any]] = None
+    stt_provider: Optional[str] = None
+    stt_model: Optional[str] = None
+    stt_credential_id: Optional[UUID] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CallImportEvaluationListResponse(BaseModel):
+    """Wrapper for listing evaluations on a single batch."""
+
+    items: List[CallImportEvaluationResponse]
+    total: int
+
+
+class CallImportEvaluationRowResponse(BaseModel):
+    """Per-source-row evaluation output (one Metric set applied to one row).
+
+    ``raw_columns``, ``recording_url`` and ``recording_s3_key`` come from
+    the parent ``CallImportRow`` so the row-detail panel can show the
+    full CSV row metadata + audio without a second round-trip. The UI
+    prefers ``recording_s3_key`` (resolved via a presigned URL) over
+    ``recording_url`` so playback uses our downloaded copy instead of
+    the raw provider URL, which is often expired/auth-gated.
+    """
+
+    id: UUID
+    evaluation_id: UUID
+    call_import_row_id: UUID
+    row_index: Optional[int] = None
+    external_call_id: Optional[str] = None
+    transcript: Optional[str] = None
+    raw_columns: Optional[Dict[str, Any]] = None
+    recording_url: Optional[str] = None
+    recording_s3_key: Optional[str] = None
+    status: str
+    metric_scores: Dict[str, Any] = Field(default_factory=dict)
+    error_message: Optional[str] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CallImportEvaluationRowListResponse(BaseModel):
+    """Paginated per-row evaluation results."""
+
+    items: List[CallImportEvaluationRowResponse]
+    total: int
+    page: int
+    page_size: int
+
+
+class CallImportRowBulkDelete(BaseModel):
+    """Request body for deleting multiple rows from a call-import batch."""
+
+    row_ids: List[UUID] = Field(
+        ...,
+        min_length=1,
+        description="Row ids to delete (must belong to the same call import).",
+    )
+
+
+class CallImportRowBulkDeleteResponse(BaseModel):
+    """Response after a bulk-delete pass over ``CallImportRow`` rows."""
+
+    deleted: int = Field(
+        ...,
+        description="How many rows were actually removed (unknown ids are skipped).",
+    )
+
+
+# --- Diarization / Transcription request/response shapes ---
+
+
+class CallImportTranscribeRequest(BaseModel):
+    """Body for kicking off diarization for one or many call-import rows.
+
+    The same shape powers both the per-row endpoint (where ``row_ids``
+    is ignored) and the batch-level endpoint. ``only_missing`` is the
+    safe default — rows with an existing transcript are skipped unless
+    ``overwrite_existing`` is set.
+    """
+
+    stt_provider: str = Field(
+        ...,
+        max_length=50,
+        description="STT provider key, e.g. 'deepgram' or 'openai'.",
+    )
+    stt_model: str = Field(
+        ...,
+        max_length=100,
+        description="STT model name, e.g. 'nova-2' or 'whisper-1'.",
+    )
+    credential_id: Optional[UUID] = Field(
+        default=None,
+        description="Optional AIProvider/Integration row to pin for this run.",
+    )
+    language: Optional[str] = Field(
+        default=None,
+        max_length=20,
+        description="Optional ISO language hint, e.g. 'en'.",
+    )
+    only_missing: bool = Field(
+        default=True,
+        description=(
+            "When true, rows with an existing transcript are skipped (the "
+            "default safe behavior)."
+        ),
+    )
+    overwrite_existing: bool = Field(
+        default=False,
+        description=(
+            "When true, existing transcripts are replaced. Mutually "
+            "exclusive with only_missing."
+        ),
+    )
+    row_ids: Optional[List[UUID]] = Field(
+        default=None,
+        description=(
+            "Restrict the run to a specific subset of rows. NULL = every "
+            "row in the import (subject to only_missing)."
+        ),
+    )
+
+
+class CallImportTranscribeResponse(BaseModel):
+    """Summary of a transcribe fan-out request."""
+
+    queued: int = Field(
+        ...,
+        description=(
+            "How many rows were enqueued for diarization. Skipped rows "
+            "(missing recording, transcript already present, etc.) are "
+            "not counted."
+        ),
+    )
+    skipped_rows: int = Field(
+        default=0,
+        description="Rows excluded by only_missing or because they had no recording.",
+    )
+    skipped_reason_counts: Dict[str, int] = Field(
+        default_factory=dict,
+        description="Per-reason breakdown of skipped rows for the UI to surface.",
+    )
+
+
+# --- Per-run aggregation / visualization payloads ---
+
+
+class CallImportMetricHistogramBucket(BaseModel):
+    """One bin of a numeric metric histogram."""
+
+    x0: float
+    x1: float
+    count: int
+
+
+class CallImportMetricValueCount(BaseModel):
+    """One row of a categorical metric's value frequency table."""
+
+    label: str
+    count: int
+
+
+class CallImportMetricAggregate(BaseModel):
+    """Per-metric aggregate computed from an evaluation run's rows.
+
+    Numeric metrics return summary statistics + histogram buckets;
+    categorical / pass-fail / text metrics return the top value counts.
+    Both shapes can coexist if a metric mixes types — the UI prefers
+    histogram when present, falls back to value_counts otherwise.
+    """
+
+    metric_id: str
+    metric_name: str
+    metric_type: Optional[str] = None
+    count: int = 0
+    skipped_count: int = 0
+    error_count: int = 0
+    # Numeric stats (None when no numeric values were observed)
+    mean: Optional[float] = None
+    median: Optional[float] = None
+    p25: Optional[float] = None
+    p75: Optional[float] = None
+    p95: Optional[float] = None
+    min: Optional[float] = None
+    max: Optional[float] = None
+    stddev: Optional[float] = None
+    histogram_buckets: List[CallImportMetricHistogramBucket] = Field(
+        default_factory=list
+    )
+    value_counts: List[CallImportMetricValueCount] = Field(default_factory=list)
+
+
+class CallImportEvaluationAggregateResponse(BaseModel):
+    """Aggregated metric distributions for a single evaluation run."""
+
+    evaluation_id: UUID
+    total_rows: int
+    completed_rows: int
+    failed_rows: int
+    metrics: List[CallImportMetricAggregate] = Field(default_factory=list)
+
+
+# --- Cross-run insights for a CallImport batch ---
+
+
+class CallImportInsightsRunPoint(BaseModel):
+    """One run's mean for a metric, used to render trend lines."""
+
+    evaluation_id: UUID
+    name: Optional[str] = None
+    created_at: datetime
+    mean: Optional[float] = None
+    completed_rows: int = 0
+
+
+class CallImportInsightsMetric(BaseModel):
+    """Per-metric history across every evaluation run on this import."""
+
+    metric_id: str
+    metric_name: str
+    metric_type: Optional[str] = None
+    latest: Optional[CallImportMetricAggregate] = None
+    trend: List[CallImportInsightsRunPoint] = Field(default_factory=list)
+
+
+class CallImportInsightsResponse(BaseModel):
+    """Aggregated cross-run signals for a single call-import batch."""
+
+    call_import_id: UUID
+    total_rows: int
+    rows_with_transcript: int
+    rows_without_transcript: int
+    transcript_source_counts: Dict[str, int] = Field(default_factory=dict)
+    evaluation_count: int = 0
+    metrics: List[CallImportInsightsMetric] = Field(default_factory=list)
+
+
+# --- Flow chart visualization for hierarchical metrics ---
+
+
+class MetricFlowNode(BaseModel):
+    """One step in the LLM-inferred temporal flow for a parent metric.
+
+    Represents a child sub-metric label. ``count`` is the number of rows
+    in the evaluation where this child appears anywhere in its
+    ``sequence`` array. ``is_terminal`` is set when the child is the
+    last entry in a meaningful fraction of those sequences.
+
+    ``is_discovered`` is set when the node represents an LLM-discovered
+    candidate (parent has ``allow_discovery=true``) rather than a
+    user-defined child. The id of a discovered node is prefixed with
+    ``disc:`` so it can't collide with real child UUIDs.
+    """
+
+    id: str
+    label: str
+    count: int = 0
+    is_terminal: bool = False
+    is_discovered: bool = False
+
+
+class MetricFlowEdge(BaseModel):
+    """One directed transition between two children across all rows.
+
+    ``count`` is the number of rows where ``source`` immediately
+    precedes ``target`` in the sequence. The synthetic ``START`` node
+    is used as the ``source`` for the first child in every sequence.
+    """
+
+    source: str
+    target: str
+    count: int = 0
+
+
+class MetricFlowResponse(BaseModel):
+    """Aggregate flow diagram payload for a single parent metric."""
+
+    parent_metric_id: str
+    parent_metric_name: str
+    selection_mode: Optional[SelectionMode] = None
+    nodes: List[MetricFlowNode] = Field(default_factory=list)
+    edges: List[MetricFlowEdge] = Field(default_factory=list)
+    total_rows: int = 0
+    rows_with_sequence: int = 0
+
+
+class DiscoveredLabelItem(BaseModel):
+    """One LLM-discovered candidate sub-label aggregated across rows.
+
+    ``key`` is the slugified label identifier (matches what appears in
+    ``sequence`` entries). ``count`` is the number of rows in the
+    evaluation that emitted this slug. ``sample_rationale`` is the
+    first non-empty rationale captured from any row, suitable for the
+    user to read in the Discovered Labels panel before clicking
+    Promote.
+    """
+
+    key: str
+    name: str
+    description: Optional[str] = None
+    sample_rationale: Optional[str] = None
+    count: int = 0
+
+
+class DiscoveredLabelsResponse(BaseModel):
+    """List of discovered candidate sub-labels for a parent metric."""
+
+    parent_metric_id: str
+    items: List[DiscoveredLabelItem] = Field(default_factory=list)
+
+
+class DiscoveredLabelMergeRequest(BaseModel):
+    """Body for POST /evaluations/{eval_id}/discovered-labels/merge.
+
+    Rewrites every row's ``metric_scores[parent_id].discovered_labels``
+    entries whose key is ``from_key`` to use ``to_key`` instead, so the
+    user can collapse near-duplicate candidates ("On Hold" / "Customer
+    Put On Hold") into a single promoted child.
+    """
+
+    parent_metric_id: UUID
+    from_key: str = Field(..., min_length=1, max_length=120)
+    to_key: str = Field(..., min_length=1, max_length=120)
+
+
+class DiscoveredLabelDeleteRequest(BaseModel):
+    """Body for POST /evaluations/{eval_id}/discovered-labels/delete.
+
+    Strips a candidate sub-label from every row's
+    ``discovered_labels`` list AND from each row's ``sequence`` array,
+    then tombstones the slug at the evaluation level so workers
+    finishing later can't re-introduce it. Use for gibberish or
+    irrelevant candidates the LLM proposed; for near-duplicates that
+    you want to keep but unify, use the merge endpoint instead.
+    """
+
+    parent_metric_id: UUID
+    key: str = Field(..., min_length=1, max_length=120)
+
+
+class PromoteDiscoveredChildRequest(BaseModel):
+    """Body for POST /metrics/{parent_id}/children/from-discovered.
+
+    ``key`` is the slug under which the candidate is currently stored
+    on per-row ``metric_scores``. The newly-created child Metric's
+    name is normalized so ``slugify(name) == key``, which keeps every
+    already-scored row's ``sequence`` array resolvable against the
+    promoted child without a backfill.
+    """
+
+    key: str = Field(..., min_length=1, max_length=120)
+    name: str = Field(..., min_length=1, max_length=120)
+    description: Optional[str] = Field(default=None, max_length=4000)

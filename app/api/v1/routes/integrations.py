@@ -16,6 +16,7 @@ from app.models.schemas import (
     IntegrationCreate, IntegrationUpdate, IntegrationResponse
 )
 from app.core.encryption import encrypt_api_key, decrypt_api_key
+from app.services.credentials.resolver import clear_other_defaults
 from app.services.voice_providers import get_voice_provider
 
 router = APIRouter(prefix="/integrations", tags=["Integrations"])
@@ -44,47 +45,40 @@ async def create_integration(
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db)
 ):
-    """
-    Create a new integration with an external platform.
+    """Create a new credential row for a voice AI platform.
+
+    Multiple credentials per platform are now supported. The first row
+    created for a given (org, platform) automatically becomes the
+    default; subsequent rows can be promoted via
+    ``POST /integrations/{id}/set-default``. ``integration_data.is_default``
+    can also be set explicitly to mark the new row as the default at
+    creation time.
     Requires at least WRITER role.
     """
-    # Check if integration already exists for this platform
-    # Handle both string and enum comparisons for platform
     from sqlalchemy import func
     platform_value = integration_data.platform.value if hasattr(integration_data.platform, 'value') else integration_data.platform
-    
-    existing = db.query(Integration).filter(
-        Integration.organization_id == organization_id,
-        Integration.platform == platform_value,
-        Integration.is_active == True
-    ).first()
-    
-    # If not found, try case-insensitive match
-    if not existing:
-        existing = db.query(Integration).filter(
-            Integration.organization_id == organization_id,
-            func.lower(Integration.platform) == platform_value.lower(),
-            Integration.is_active == True
-        ).first()
-    
-    if existing:
-        raise HTTPException(
-            status_code=400,
-            detail=f"An active integration for {platform_value} already exists"
-        )
 
     user_details = None
     if platform_value.lower() == IntegrationPlatform.SMALLEST.value:
         user_details = _validate_smallest_connection(integration_data.api_key)
 
-    # Encrypt the API key before storing
     encrypted_api_key = encrypt_api_key(integration_data.api_key)
     integration_name = integration_data.name
     if not integration_name and isinstance(user_details, dict):
         email = user_details.get("email") or user_details.get("userEmail")
         if email:
             integration_name = f"Smallest ({email})"
-    
+
+    existing_default = db.query(Integration).filter(
+        Integration.organization_id == organization_id,
+        func.lower(Integration.platform) == platform_value.lower(),
+        Integration.is_default.is_(True),
+        Integration.is_active.is_(True),
+    ).first()
+
+    requested_default = bool(integration_data.is_default)
+    will_be_default = requested_default or existing_default is None
+
     integration = Integration(
         organization_id=organization_id,
         platform=platform_value,
@@ -92,13 +86,76 @@ async def create_integration(
         api_key=encrypted_api_key,
         public_key=integration_data.public_key,
         is_active=True,
+        is_default=will_be_default,
         last_tested_at=datetime.now(timezone.utc) if user_details is not None else None,
     )
-    
+
     db.add(integration)
+    db.flush()
+
+    if will_be_default:
+        clear_other_defaults(
+            Integration,
+            db,
+            organization_id,
+            keep_id=integration.id,
+            provider_field="platform",
+            provider_value=platform_value,
+        )
+
     db.commit()
     db.refresh(integration)
-    
+
+    return integration
+
+
+@router.post(
+    "/{integration_id}/set-default",
+    response_model=IntegrationResponse,
+    operation_id="setDefaultIntegration",
+)
+async def set_default_integration(
+    integration_id: UUID,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """Mark this integration as the default for its (org, platform).
+
+    Atomically clears the default flag on every other row for the same
+    (org, platform) so the partial unique index in migration 028 holds.
+    """
+    integration = db.query(Integration).filter(
+        Integration.id == integration_id,
+        Integration.organization_id == organization_id,
+    ).first()
+
+    if not integration:
+        raise HTTPException(status_code=404, detail="Integration not found")
+
+    if not integration.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot mark an inactive integration as default",
+        )
+
+    platform_value = (
+        integration.platform.value
+        if hasattr(integration.platform, "value")
+        else integration.platform
+    )
+
+    clear_other_defaults(
+        Integration,
+        db,
+        organization_id,
+        keep_id=integration.id,
+        provider_field="platform",
+        provider_value=platform_value,
+    )
+    integration.is_default = True
+    db.commit()
+    db.refresh(integration)
     return integration
 
 
@@ -256,7 +313,32 @@ async def delete_integration(
             synchronize_session=False,
         )
 
+    was_default = bool(integration.is_default)
+    platform_value = (
+        integration.platform.value
+        if hasattr(integration.platform, "value")
+        else integration.platform
+    )
     db.delete(integration)
+    db.flush()
+
+    # If we just removed the default credential, promote the next active
+    # row (most recently updated) so resolution-by-default keeps working.
+    if was_default:
+        from sqlalchemy import func, desc
+        replacement = (
+            db.query(Integration)
+            .filter(
+                Integration.organization_id == organization_id,
+                func.lower(Integration.platform) == platform_value.lower(),
+                Integration.is_active.is_(True),
+            )
+            .order_by(desc(Integration.updated_at), desc(Integration.created_at))
+            .first()
+        )
+        if replacement:
+            replacement.is_default = True
+
     db.commit()
 
     if dependencies:
