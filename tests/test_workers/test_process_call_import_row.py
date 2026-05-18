@@ -11,6 +11,7 @@ from app.models.database import (
     CallImportRow,
     Organization,
     TelephonyIntegration,
+    Workspace,
 )
 from app.models.enums import (
     CallImportRowStatus,
@@ -26,6 +27,14 @@ class RetryCalled(Exception):
 def _seed(db_session, *, row_count: int = 1):
     org = Organization(id=uuid4(), name="Imports Test Org")
     db_session.add(org)
+    workspace = Workspace(
+        id=uuid4(),
+        organization_id=org.id,
+        name="Default",
+        slug="default",
+        is_default=True,
+    )
+    db_session.add(workspace)
     db_session.commit()
 
     integration = TelephonyIntegration(
@@ -41,6 +50,7 @@ def _seed(db_session, *, row_count: int = 1):
 
     call_import = CallImport(
         organization_id=org.id,
+        workspace_id=workspace.id,
         provider=TelephonyProvider.EXOTEL.value,
         original_filename="batch.csv",
         total_rows=row_count,

@@ -1195,6 +1195,7 @@ class MetricResponse(BaseModel):
     """
     id: UUID
     organization_id: UUID
+    workspace_id: UUID
     name: str
     description: Optional[str]
     metric_type: MetricType
@@ -1966,6 +1967,7 @@ class CallImportResponse(BaseModel):
 
     id: UUID
     organization_id: UUID
+    workspace_id: UUID
     provider: str
     telephony_integration_id: Optional[UUID] = None
     original_filename: Optional[str] = None
@@ -2209,6 +2211,11 @@ class CallImportEvaluationResponse(BaseModel):
     finished_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
+    # Cached LLM-generated TLDR for the Visualizations tab. Lazily
+    # populated by ``POST /evaluations/{eval_id}/insights``; ``None``
+    # for runs the user has not summarised yet. ``is_stale`` on the
+    # nested object is set by the route, not the model.
+    tldr_summary: Optional["EvaluationTldrSummary"] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -2384,6 +2391,13 @@ class CallImportMetricAggregate(BaseModel):
     metric_id: str
     metric_name: str
     metric_type: Optional[str] = None
+    # True when this aggregate represents a multi-label parent metric
+    # (selection_mode == "multi_label" with no parent_metric_id). For
+    # those, ``value_counts`` lists per-child label tallies and the
+    # rows scored != sum(value_counts.count). The UI uses this flag to
+    # force a horizontal bar layout (slices wouldn't sum to 100%) and
+    # to label the n-badge as rows scored, not label occurrences.
+    is_multi_label_parent: bool = False
     count: int = 0
     skipped_count: int = 0
     error_count: int = 0
@@ -2410,6 +2424,49 @@ class CallImportEvaluationAggregateResponse(BaseModel):
     completed_rows: int
     failed_rows: int
     metrics: List[CallImportMetricAggregate] = Field(default_factory=list)
+
+
+# --- LLM-generated TLDR for the Visualizations tab ---
+
+
+class EvaluationTldrSummary(BaseModel):
+    """Cached LLM-generated narrative + bullet patterns for an eval run.
+
+    Persisted on ``CallImportEvaluation.tldr_summary`` (JSONB) and
+    rendered above the per-metric charts. ``generated_at_completed_rows``
+    is the snapshot of ``completed_rows`` at the time the summary was
+    written; the API compares it against the current count to flag
+    ``is_stale`` so the UI can prompt for a regenerate.
+    """
+
+    narrative: str
+    patterns: List[str] = Field(default_factory=list)
+    generated_at: datetime
+    generated_at_completed_rows: int = 0
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    is_stale: bool = False
+
+
+class EvaluationInsightsRequest(BaseModel):
+    """Body for ``POST /evaluations/{eval_id}/insights``.
+
+    All fields are optional. When ``provider``/``model`` are unset the
+    backend resolves the org's first active OpenAI/Anthropic/Google
+    provider (mirroring the Prompt Partials AI-generate flow) so
+    callers that don't care can simply post ``{}``.
+    """
+
+    regenerate: bool = False
+    provider: Optional[str] = None
+    model: Optional[str] = Field(default=None, min_length=1)
+
+
+# Resolve the forward reference on ``CallImportEvaluationResponse``
+# (defined further up the file) now that ``EvaluationTldrSummary``
+# exists. Without this Pydantic raises at first ``.model_validate``
+# because the string annotation can't be evaluated.
+CallImportEvaluationResponse.model_rebuild()
 
 
 # --- Cross-run insights for a CallImport batch ---
@@ -2502,15 +2559,18 @@ class DiscoveredLabelItem(BaseModel):
     ``key`` is the slugified label identifier (matches what appears in
     ``sequence`` entries). ``count`` is the number of rows in the
     evaluation that emitted this slug. ``sample_rationale`` is the
-    first non-empty rationale captured from any row, suitable for the
-    user to read in the Discovered Labels panel before clicking
-    Promote.
+    first non-empty rationale captured from any row (back-compat
+    field, identical to ``examples[0]`` when present). ``examples``
+    holds up to 3 distinct rationales — the UI surfaces 2 of them as
+    ``Examples:`` in the rubric on Promote, with the third kept as
+    headroom in case the first is unhelpful.
     """
 
     key: str
     name: str
     description: Optional[str] = None
     sample_rationale: Optional[str] = None
+    examples: List[str] = Field(default_factory=list, max_length=3)
     count: int = 0
 
 
@@ -2563,3 +2623,48 @@ class PromoteDiscoveredChildRequest(BaseModel):
     key: str = Field(..., min_length=1, max_length=120)
     name: str = Field(..., min_length=1, max_length=120)
     description: Optional[str] = Field(default=None, max_length=4000)
+    # Default True: when promoting a discovered label we want the new
+    # sub-metric to always capture rationales going forward, since the
+    # candidate was itself proposed *with* a rationale and the user
+    # almost always wants to see why future rows hit it. Explicit False
+    # keeps the original opt-in behavior available for callers that
+    # don't care about rationales.
+    capture_rationale: bool = True
+
+
+# --- Workspace Schemas ---
+
+
+class WorkspaceBase(BaseModel):
+    """Shared fields for workspace create/update payloads."""
+
+    name: str = Field(..., min_length=1, max_length=255)
+
+
+class WorkspaceCreate(WorkspaceBase):
+    """Body for POST /workspaces."""
+
+    # Optional: derived from name when omitted; uniqueness is per-org.
+    slug: Optional[str] = Field(
+        default=None, min_length=1, max_length=255
+    )
+
+
+class WorkspaceUpdate(BaseModel):
+    """Body for PATCH /workspaces/{id} (rename only in v1)."""
+
+    name: str = Field(..., min_length=1, max_length=255)
+
+
+class WorkspaceResponse(BaseModel):
+    """Response schema for a single workspace."""
+
+    id: UUID
+    organization_id: UUID
+    name: str
+    slug: str
+    is_default: bool
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)

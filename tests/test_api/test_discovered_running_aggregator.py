@@ -17,6 +17,7 @@ from app.models.database import (
     CallImportEvaluation,
     CallImportEvaluationRow,
     CallImportRow,
+    Workspace,
 )
 from app.models.enums import (
     CallImportRowStatus,
@@ -24,10 +25,27 @@ from app.models.enums import (
 )
 
 
+def _ensure_default_workspace(db_session, org_id):
+    ws = (
+        db_session.query(Workspace)
+        .filter(Workspace.organization_id == org_id, Workspace.is_default.is_(True))
+        .first()
+    )
+    if ws is None:
+        ws = Workspace(
+            organization_id=org_id, name="Default", slug="default", is_default=True
+        )
+        db_session.add(ws)
+        db_session.commit()
+    return ws
+
+
 def _seed_call_import_and_eval(db_session, org_id):
+    workspace = _ensure_default_workspace(db_session, org_id)
     ci = CallImport(
         id=uuid4(),
         organization_id=org_id,
+        workspace_id=workspace.id,
         provider="exotel",
         column_mapping={},
         extra_columns=[],
@@ -40,6 +58,7 @@ def _seed_call_import_and_eval(db_session, org_id):
         id=uuid4(),
         call_import_id=ci.id,
         organization_id=org_id,
+        workspace_id=workspace.id,
         name="Run 1",
         selected_metric_ids=[],
         status="completed",
@@ -188,3 +207,85 @@ def test_aggregator_returns_empty_when_no_discovered_payload(
         db_session, evaluation.id, parent_id
     )
     assert items == []
+
+
+def test_aggregator_collects_up_to_three_distinct_rationales(
+    db_session, org_id, seed_org
+):
+    """Multiple rows producing the same discovered slug should fold their
+    rationales into ``examples`` (capped at 3, de-duplicated, preserving
+    order). Powers the Promote auto-fill flow that pre-populates the
+    new sub-metric's rubric with concrete examples.
+    """
+
+    parent_id = uuid4()
+    call_import, evaluation = _seed_call_import_and_eval(db_session, org_id)
+
+    rationales = [
+        "Customer asked to be put on hold",
+        "  customer asked to be put on hold  ",  # duplicate by trim/case
+        "Hold music played",
+        "Agent asked them to wait",
+        # Fifth distinct rationale -- should be dropped (cap is 3).
+        "Caller said 'please hold'",
+    ]
+    for rationale in rationales:
+        _add_eval_row(
+            db_session,
+            evaluation=evaluation,
+            call_import=call_import,
+            metric_scores={
+                str(parent_id): {
+                    "discovered_labels": [
+                        {
+                            "key": "customer_on_hold",
+                            "name": "Customer on hold",
+                            "rationale": rationale,
+                        }
+                    ]
+                }
+            },
+        )
+
+    items = _get_running_discovered_labels(
+        db_session, evaluation.id, parent_id
+    )
+    by_key = {item["key"]: item for item in items}
+    entry = by_key["customer_on_hold"]
+    examples = entry["examples"]
+
+    assert entry["count"] == 5
+    assert len(examples) == 3
+    # First three distinct rationales are kept in order; the
+    # whitespace/case duplicate of #1 is dropped.
+    assert examples[0] == "Customer asked to be put on hold"
+    assert examples[1] == "Hold music played"
+    assert examples[2] == "Agent asked them to wait"
+    # The aggregator-level back-compat field still points at the
+    # first non-empty rationale.
+    assert entry["sample_rationale"] == "Customer asked to be put on hold"
+
+
+def test_aggregator_omits_examples_when_no_rationales(db_session, org_id, seed_org):
+    parent_id = uuid4()
+    call_import, evaluation = _seed_call_import_and_eval(db_session, org_id)
+
+    _add_eval_row(
+        db_session,
+        evaluation=evaluation,
+        call_import=call_import,
+        metric_scores={
+            str(parent_id): {
+                "discovered_labels": [
+                    {"key": "no_rationale_label", "name": "Quiet label"}
+                ]
+            }
+        },
+    )
+
+    items = _get_running_discovered_labels(
+        db_session, evaluation.id, parent_id
+    )
+    entry = next(i for i in items if i["key"] == "no_rationale_label")
+    assert entry["examples"] == []
+    assert entry["sample_rationale"] is None

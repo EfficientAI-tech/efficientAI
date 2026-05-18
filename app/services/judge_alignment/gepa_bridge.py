@@ -141,6 +141,7 @@ def start_gepa_for_dataset(
 
     run = PromptOptimizationRun(
         organization_id=dataset.organization_id,
+        workspace_id=dataset.workspace_id,
         agent_id=agent_uuid,
         evaluator_id=evaluator.id,
         seed_prompt=evaluator.custom_prompt,
@@ -370,6 +371,7 @@ def execute_judge_gepa(run_id: str, db: Session) -> Dict[str, Any]:
         db.add(
             PromptOptimizationCandidate(
                 optimization_run_id=run.id,
+                workspace_id=run.workspace_id,
                 prompt_text=prompt_text,
                 score=result.val_aggregate_scores[i]
                 if i < len(result.val_aggregate_scores)

@@ -16,7 +16,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 from loguru import logger
 
-from app.dependencies import get_db, get_organization_id, get_api_key, require_enterprise_feature
+from app.dependencies import get_db, get_organization_id, get_workspace_id, get_api_key, require_enterprise_feature
 from app.models.database import (
     AIProvider,
     CallImport,
@@ -852,6 +852,7 @@ def _build_benchmark_side_samples(
     sample_texts: List[str],
     num_runs: int,
     organization_id: UUID,
+    workspace_id: UUID,
     db: Session,
 ) -> None:
     """Create TTSSample rows for one benchmark side.
@@ -859,6 +860,9 @@ def _build_benchmark_side_samples(
     For source_type='tts': one sample per voice/text/run with status PENDING
     (worker will synthesize). For source_type='recording'/'upload': samples
     are pre-resolved with audio_s3_key and marked COMPLETED.
+
+    All sample rows inherit ``workspace_id`` from the parent comparison
+    so downstream listings can filter without a join.
     """
     if cfg.source_type == "tts":
         provider = (cfg.provider or "").strip()
@@ -883,6 +887,7 @@ def _build_benchmark_side_samples(
                         TTSSample(
                             comparison_id=comparison.id,
                             organization_id=organization_id,
+                            workspace_id=workspace_id,
                             provider=provider,
                             model=model,
                             voice_id=vid,
@@ -919,6 +924,7 @@ def _build_benchmark_side_samples(
                     TTSSample(
                         comparison_id=comparison.id,
                         organization_id=organization_id,
+                        workspace_id=workspace_id,
                         provider=None,
                         model=None,
                         voice_id=f"call:{row.external_call_id}",
@@ -951,6 +957,7 @@ def _build_benchmark_side_samples(
                     TTSSample(
                         comparison_id=comparison.id,
                         organization_id=organization_id,
+                        workspace_id=workspace_id,
                         provider=None,
                         model=None,
                         voice_id="upload",
@@ -1090,10 +1097,15 @@ async def upload_voice_playground_audio(
 async def create_comparison(
     data: TTSComparisonCreate,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
-    """Create a Voice Playground comparison (benchmark or blind_test_only)."""
+    """Create a Voice Playground comparison stamped with the active workspace.
+
+    Children (samples, report jobs, blind test shares) inherit the same
+    ``workspace_id``.
+    """
     num_runs = max(1, min(data.num_runs, 10))
     simulation_id = _generate_unique_simulation_id(db)
 
@@ -1107,6 +1119,7 @@ async def create_comparison(
 
         comparison = TTSComparison(
             organization_id=organization_id,
+            workspace_id=workspace_id,
             simulation_id=simulation_id,
             name=data.name or "Blind test",
             status=TTSComparisonStatus.PENDING.value,
@@ -1135,6 +1148,7 @@ async def create_comparison(
                     TTSSample(
                         comparison_id=comparison.id,
                         organization_id=organization_id,
+                        workspace_id=workspace_id,
                         provider=info["provider"],
                         model=info["model"],
                         voice_id=info["voice_id"],
@@ -1188,6 +1202,7 @@ async def create_comparison(
 
     comparison = TTSComparison(
         organization_id=organization_id,
+        workspace_id=workspace_id,
         simulation_id=simulation_id,
         name=name,
         status=TTSComparisonStatus.PENDING.value,
@@ -1225,6 +1240,7 @@ async def create_comparison(
         sample_texts=data.sample_texts,
         num_runs=num_runs,
         organization_id=organization_id,
+        workspace_id=workspace_id,
         db=db,
     )
     if side_b_cfg is not None:
@@ -1235,6 +1251,7 @@ async def create_comparison(
             sample_texts=data.sample_texts,
             num_runs=num_runs,
             organization_id=organization_id,
+            workspace_id=workspace_id,
             db=db,
         )
 
@@ -1262,12 +1279,17 @@ async def list_comparisons(
     skip: int = 0,
     limit: int = 50,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
+    """List Voice Playground comparisons in the active workspace."""
     comparisons = (
         db.query(TTSComparison)
-        .filter(TTSComparison.organization_id == organization_id)
+        .filter(
+            TTSComparison.organization_id == organization_id,
+            TTSComparison.workspace_id == workspace_id,
+        )
         .order_by(TTSComparison.created_at.desc())
         .offset(skip)
         .limit(limit)
@@ -1313,10 +1335,11 @@ async def list_comparisons(
 async def get_comparison(
     comparison_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
-    comparison = _get_comparison_or_404(comparison_id, organization_id, db)
+    comparison = _get_comparison_or_404(comparison_id, organization_id, db, workspace_id)
     return _serialize_comparison(comparison, db)
 
 
@@ -1324,6 +1347,7 @@ async def get_comparison(
 async def generate_comparison(
     comparison_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
@@ -1333,7 +1357,7 @@ async def generate_comparison(
     are pre-resolved to existing recordings/uploads/past TTS samples and were
     marked COMPLETED at create time, so we no-op here.
     """
-    comparison = _get_comparison_or_404(comparison_id, organization_id, db)
+    comparison = _get_comparison_or_404(comparison_id, organization_id, db, workspace_id)
 
     if (comparison.mode or "benchmark") == "blind_test_only":
         if comparison.status not in (
@@ -1397,10 +1421,11 @@ async def submit_blind_test(
     comparison_id: UUID,
     data: BlindTestSubmit,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
-    comparison = _get_comparison_or_404(comparison_id, organization_id, db)
+    comparison = _get_comparison_or_404(comparison_id, organization_id, db, workspace_id)
     comparison.blind_test_results = data.results
     db.commit()
 
@@ -1419,13 +1444,14 @@ async def create_blind_test_share(
     comparison_id: UUID,
     data: BlindTestShareCreate,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
     """Create (or replace) a public blind test share for a comparison."""
     import secrets
 
-    comparison = _get_comparison_or_404(comparison_id, organization_id, db)
+    comparison = _get_comparison_or_404(comparison_id, organization_id, db, workspace_id)
 
     # Audio generation must be done; evaluation can still be running in the background.
     audio_ready_states = {
@@ -1475,6 +1501,7 @@ async def create_blind_test_share(
         share = TTSBlindTestShare(
             comparison_id=comparison.id,
             organization_id=organization_id,
+            workspace_id=workspace_id,
             share_token=secrets.token_urlsafe(16),
             title=title,
             description=data.description,
@@ -1496,11 +1523,12 @@ async def create_blind_test_share(
 async def get_blind_test_share(
     comparison_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
     """Fetch the share for a comparison (or 404 if none yet)."""
-    comparison = _get_comparison_or_404(comparison_id, organization_id, db)
+    comparison = _get_comparison_or_404(comparison_id, organization_id, db, workspace_id)
     share = db.query(TTSBlindTestShare).filter(
         TTSBlindTestShare.comparison_id == comparison.id,
     ).first()
@@ -1514,10 +1542,11 @@ async def update_blind_test_share(
     share_id: UUID,
     data: BlindTestSharePatch,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
-    share = _get_share_or_404(share_id, organization_id, db)
+    share = _get_share_or_404(share_id, organization_id, db, workspace_id)
 
     if data.title is not None:
         title = data.title.strip()
@@ -1572,10 +1601,11 @@ async def update_blind_test_share(
 async def delete_blind_test_share(
     share_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
-    share = _get_share_or_404(share_id, organization_id, db)
+    share = _get_share_or_404(share_id, organization_id, db, workspace_id)
     comparison_id = share.comparison_id
     db.delete(share)
     db.commit()
@@ -1592,10 +1622,11 @@ async def list_blind_test_responses(
     skip: int = 0,
     limit: int = 100,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
-    share = _get_share_or_404(share_id, organization_id, db)
+    share = _get_share_or_404(share_id, organization_id, db, workspace_id)
     rows = (
         db.query(TTSBlindTestResponse)
         .filter(TTSBlindTestResponse.share_id == share.id)
@@ -1615,14 +1646,16 @@ async def get_sample(
     comparison_id: UUID,
     sample_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
     """Get a single TTS sample with full metrics (useful for analytics / future reference)."""
-    _get_comparison_or_404(comparison_id, organization_id, db)
+    _get_comparison_or_404(comparison_id, organization_id, db, workspace_id)
     sample = db.query(TTSSample).filter(
         TTSSample.id == sample_id,
         TTSSample.comparison_id == comparison_id,
+        TTSSample.workspace_id == workspace_id,
     ).first()
     if not sample:
         raise HTTPException(404, "TTS sample not found")
@@ -1661,10 +1694,11 @@ async def get_sample(
 async def delete_comparison(
     comparison_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
-    comparison = _get_comparison_or_404(comparison_id, organization_id, db)
+    comparison = _get_comparison_or_404(comparison_id, organization_id, db, workspace_id)
     db.delete(comparison)
     db.commit()
     return {"message": "Comparison deleted"}
@@ -1673,16 +1707,18 @@ async def delete_comparison(
 @router.get("/analytics", operation_id="getTTSAnalytics")
 async def get_tts_analytics(
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
-    """Aggregate TTS sample metrics across all comparisons, grouped by provider/model/voice."""
+    """Aggregate TTS sample metrics in the active workspace, grouped by provider/model/voice."""
     from collections import defaultdict
 
     samples = (
         db.query(TTSSample)
         .filter(
             TTSSample.organization_id == organization_id,
+            TTSSample.workspace_id == workspace_id,
             TTSSample.status == TTSSampleStatus.COMPLETED.value,
             TTSSample.evaluation_metrics.isnot(None),
         )
@@ -1786,11 +1822,12 @@ async def download_tts_comparison_report(
     include_unfinished_samples: bool = False,
     report_options: Optional[str] = None,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
     """Generate and return a PDF benchmark report for a comparison."""
-    comparison = _get_comparison_or_404(comparison_id, organization_id, db)
+    comparison = _get_comparison_or_404(comparison_id, organization_id, db, workspace_id)
 
     sample_query = db.query(TTSSample).filter(TTSSample.comparison_id == comparison.id)
     if not include_unfinished_samples:
@@ -1831,14 +1868,16 @@ async def create_tts_comparison_report_job(
     comparison_id: UUID,
     data: Optional[TTSReportJobCreate] = None,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
     """Queue asynchronous PDF report generation for a comparison."""
-    comparison = _get_comparison_or_404(comparison_id, organization_id, db)
+    comparison = _get_comparison_or_404(comparison_id, organization_id, db, workspace_id)
 
     report_job = TTSReportJob(
         organization_id=organization_id,
+        workspace_id=workspace_id,
         comparison_id=comparison.id,
         status=TTSReportJobStatus.PENDING.value,
         format="pdf",
@@ -1881,6 +1920,7 @@ async def create_tts_comparison_report_job(
 async def get_tts_comparison_report_job(
     report_job_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
@@ -1890,6 +1930,7 @@ async def get_tts_comparison_report_job(
         .filter(
             TTSReportJob.id == report_job_id,
             TTSReportJob.organization_id == organization_id,
+            TTSReportJob.workspace_id == workspace_id,
         )
         .first()
     )
@@ -1988,21 +2029,43 @@ def _parse_report_options(report_options_raw: Optional[str]) -> Dict[str, Any]:
     return validated.model_dump(exclude_none=True)
 
 
-def _get_comparison_or_404(comparison_id: UUID, organization_id: UUID, db: Session) -> TTSComparison:
-    c = db.query(TTSComparison).filter(
+def _get_comparison_or_404(
+    comparison_id: UUID,
+    organization_id: UUID,
+    db: Session,
+    workspace_id: Optional[UUID] = None,
+) -> TTSComparison:
+    """Fetch a comparison scoped to organization (and optionally workspace).
+
+    ``workspace_id`` is optional so a small number of internal callers that
+    don't have a workspace dependency in scope can still resolve a row;
+    HTTP routes should always pass it.
+    """
+    query = db.query(TTSComparison).filter(
         TTSComparison.id == comparison_id,
         TTSComparison.organization_id == organization_id,
-    ).first()
+    )
+    if workspace_id is not None:
+        query = query.filter(TTSComparison.workspace_id == workspace_id)
+    c = query.first()
     if not c:
         raise HTTPException(404, "TTS comparison not found")
     return c
 
 
-def _get_share_or_404(share_id: UUID, organization_id: UUID, db: Session) -> TTSBlindTestShare:
-    s = db.query(TTSBlindTestShare).filter(
+def _get_share_or_404(
+    share_id: UUID,
+    organization_id: UUID,
+    db: Session,
+    workspace_id: Optional[UUID] = None,
+) -> TTSBlindTestShare:
+    query = db.query(TTSBlindTestShare).filter(
         TTSBlindTestShare.id == share_id,
         TTSBlindTestShare.organization_id == organization_id,
-    ).first()
+    )
+    if workspace_id is not None:
+        query = query.filter(TTSBlindTestShare.workspace_id == workspace_id)
+    s = query.first()
     if not s:
         raise HTTPException(404, "Blind test share not found")
     return s

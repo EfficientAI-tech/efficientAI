@@ -12,7 +12,7 @@ from uuid import UUID
 from pydantic import BaseModel
 from loguru import logger
 
-from app.dependencies import get_db, get_organization_id
+from app.dependencies import get_db, get_organization_id, get_workspace_id
 from app.models.database import (
     Persona, Evaluator, EvaluatorResult, TestAgentConversation, CustomTTSVoice,
     PromptOptimizationRun, CallRecording,
@@ -170,12 +170,14 @@ def _is_valid_persona_row(persona: Persona) -> bool:
 async def create_persona(
     persona: PersonaCreate,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db)
 ):
-    """Create a new persona"""
+    """Create a new persona stamped with the active workspace."""
     try:
         db_persona = Persona(
             organization_id=organization_id,
+            workspace_id=workspace_id,
             name=persona.name,
             gender=persona.gender,
             tts_provider=persona.tts_provider,
@@ -222,12 +224,14 @@ async def list_personas(
     skip: int = 0,
     limit: int = 100,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db)
 ):
-    """Get list of all personas for the organization"""
+    """List personas for the active workspace."""
     try:
         personas = db.query(Persona).filter(
-            Persona.organization_id == organization_id
+            Persona.organization_id == organization_id,
+            Persona.workspace_id == workspace_id,
         ).offset(skip).limit(limit).all()
         valid_personas: List[Persona] = []
         for persona in personas:
@@ -471,13 +475,15 @@ async def delete_custom_voice(
 async def get_persona(
     persona_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db)
 ):
-    """Get a specific persona by ID"""
+    """Get a specific persona within the active workspace."""
     try:
         persona = db.query(Persona).filter(
             Persona.id == persona_id,
-            Persona.organization_id == organization_id
+            Persona.organization_id == organization_id,
+            Persona.workspace_id == workspace_id,
         ).first()
         if not persona:
             raise HTTPException(status_code=404, detail=f"Persona {persona_id} not found")
@@ -503,13 +509,15 @@ async def update_persona(
     persona_id: UUID,
     persona_update: PersonaUpdate,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db)
 ):
-    """Update an existing persona"""
+    """Update a persona within the active workspace."""
     try:
         db_persona = db.query(Persona).filter(
             Persona.id == persona_id,
-            Persona.organization_id == organization_id
+            Persona.organization_id == organization_id,
+            Persona.workspace_id == workspace_id,
         ).first()
         if not db_persona:
             raise HTTPException(status_code=404, detail=f"Persona {persona_id} not found")
@@ -553,12 +561,14 @@ async def delete_persona(
     persona_id: UUID,
     force: bool = Query(False, description="Force delete with all dependent records"),
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db)
 ):
-    """Delete a persona. Returns 409 if dependent records exist unless force=true."""
+    """Delete a persona within the active workspace. Returns 409 if dependent records exist unless force=true."""
     db_persona = db.query(Persona).filter(
         Persona.id == persona_id,
-        Persona.organization_id == organization_id
+        Persona.organization_id == organization_id,
+        Persona.workspace_id == workspace_id,
     ).first()
     if not db_persona:
         raise HTTPException(status_code=404, detail=f"Persona {persona_id} not found")
@@ -672,19 +682,22 @@ async def clone_persona(
     persona_id: UUID,
     clone_request: PersonaCloneRequest,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db)
 ):
-    """Clone an existing persona to create a new one"""
+    """Clone an existing persona within the active workspace."""
     try:
         source_persona = db.query(Persona).filter(
             Persona.id == persona_id,
-            Persona.organization_id == organization_id
+            Persona.organization_id == organization_id,
+            Persona.workspace_id == workspace_id,
         ).first()
         if not source_persona:
             raise HTTPException(status_code=404, detail=f"Persona {persona_id} not found")
         
         new_persona = Persona(
             organization_id=organization_id,
+            workspace_id=workspace_id,
             name=clone_request.name if clone_request.name else f"{source_persona.name} (Copy)",
             gender=source_persona.gender,
             tts_provider=source_persona.tts_provider,
@@ -735,9 +748,10 @@ async def clone_persona(
 @router.post("/seed-data", status_code=status.HTTP_201_CREATED)
 async def seed_demo_data(
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db)
 ):
-    """Seed database with example personas and scenarios for the organization"""
+    """Seed database with example personas and scenarios for the active workspace."""
     from app.models.database import Scenario
     
     try:
@@ -749,16 +763,21 @@ async def seed_demo_data(
             {"name": "Angry Caller", "gender": "male", "tts_provider": "elevenlabs", "tts_voice_id": "TxGEqnHWrfWFTfGW9XjX", "tts_voice_name": "Josh"},
         ]
         
-        # Check if personas already exist to avoid duplicates
+        # Check if personas already exist to avoid duplicates (within the active workspace)
         existing_persona_names = {p.name for p in db.query(Persona).filter(
             Persona.organization_id == organization_id,
+            Persona.workspace_id == workspace_id,
             Persona.name.in_([p["name"] for p in personas_data])
         ).all()}
         
         personas_created = 0
         for persona_data in personas_data:
             if persona_data["name"] not in existing_persona_names:
-                persona = Persona(organization_id=organization_id, **persona_data)
+                persona = Persona(
+                    organization_id=organization_id,
+                    workspace_id=workspace_id,
+                    **persona_data,
+                )
                 db.add(persona)
                 personas_created += 1
         
@@ -771,16 +790,21 @@ async def seed_demo_data(
             {"name": "Product Inquiry", "description": "Ask about product", "required_info": {"product_category": "string"}},
         ]
         
-        # Check if scenarios already exist to avoid duplicates
+        # Check if scenarios already exist to avoid duplicates (within the active workspace)
         existing_scenario_names = {s.name for s in db.query(Scenario).filter(
             Scenario.organization_id == organization_id,
+            Scenario.workspace_id == workspace_id,
             Scenario.name.in_([s["name"] for s in scenarios_data])
         ).all()}
         
         scenarios_created = 0
         for scenario_data in scenarios_data:
             if scenario_data["name"] not in existing_scenario_names:
-                scenario = Scenario(organization_id=organization_id, **scenario_data)
+                scenario = Scenario(
+                    organization_id=organization_id,
+                    workspace_id=workspace_id,
+                    **scenario_data,
+                )
                 db.add(scenario)
                 scenarios_created += 1
         

@@ -24,7 +24,12 @@ from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import get_api_key, get_organization_id, require_enterprise_feature
+from app.dependencies import (
+    get_api_key,
+    get_organization_id,
+    get_workspace_id,
+    require_enterprise_feature,
+)
 from app.models.database import (
     CallImport,
     CallImportRow,
@@ -322,6 +327,7 @@ async def upload_call_import_csv(
     ),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ) -> CallImportUploadResponse:
     """Accept a CSV + column mapping and queue per-row import jobs.
@@ -330,6 +336,9 @@ async def upload_call_import_csv(
     *that* row to fetch recordings) and provides a column mapping so any
     CSV layout works. Unmapped headers can be preserved via ``extra_columns``
     so they ride along into the eventual evaluation export.
+
+    The new batch is stamped with the active workspace (from the
+    ``X-Workspace-Id`` header, falling back to the org's Default).
     """
     del api_key
 
@@ -459,6 +468,7 @@ async def upload_call_import_csv(
 
     call_import = CallImport(
         organization_id=organization_id,
+        workspace_id=workspace_id,
         provider=integration.provider,
         telephony_integration_id=integration.id,
         original_filename=file.filename,
@@ -554,16 +564,25 @@ async def list_call_imports(
     ),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ) -> CallImportListResponse:
-    """List call-import batches for the organization, newest first.
+    """List call-import batches for the active workspace, newest first.
 
-    Supports a high-level ``dataset`` filter (powers the segregation
-    dropdown at the top of the imports page) plus an AND-style multi-tag
-    filter via repeated ``tag_id`` parameters.
+    Scoped to (organization_id, workspace_id) so users only see imports
+    for the workspace they're currently in. Supports a high-level
+    ``dataset`` filter (powers the segregation dropdown at the top of
+    the imports page) plus an AND-style multi-tag filter via repeated
+    ``tag_id`` parameters.
     """
 
-    query = db.query(CallImport).filter(CallImport.organization_id == organization_id)
+    query = (
+        db.query(CallImport)
+        .filter(
+            CallImport.organization_id == organization_id,
+            CallImport.workspace_id == workspace_id,
+        )
+    )
     if status_filter is not None:
         query = query.filter(CallImport.status == status_filter)
 
@@ -610,17 +629,20 @@ async def list_call_imports(
 async def list_call_import_datasets(
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ) -> List[str]:
-    """Return the distinct, non-null dataset labels in use for this org.
+    """Return the distinct, non-null dataset labels in use for the active
+    workspace.
 
-    Powers the high-level Dataset dropdown at the top of the call imports
-    page.
+    Scoped per-workspace so each workspace's Dataset dropdown only shows
+    its own segregation labels.
     """
     rows = (
         db.query(CallImport.dataset)
         .filter(
             CallImport.organization_id == organization_id,
+            CallImport.workspace_id == workspace_id,
             CallImport.dataset.isnot(None),
             CallImport.dataset != "",
         )

@@ -673,9 +673,26 @@ export interface CallImportTag {
   updated_at: string
 }
 
+/**
+ * In-org Workspace - the active workspace scopes call imports and
+ * metrics in the UI. The org's Default workspace is auto-seeded by
+ * migration 033 and cannot be deleted.
+ */
+export interface Workspace {
+  id: string
+  organization_id: string
+  name: string
+  slug: string
+  is_default: boolean
+  created_at: string
+  updated_at: string
+}
+
 export interface CallImport {
   id: string
   organization_id: string
+  /** Workspace this import belongs to. */
+  workspace_id: string
   provider: string
   telephony_integration_id: string | null
   original_filename: string | null
@@ -769,6 +786,29 @@ export interface CallImportEvaluation {
   finished_at: string | null
   created_at: string
   updated_at: string
+  /**
+   * Cached LLM-generated TLDR rendered above the Visualizations tab.
+   * Populated lazily via ``POST /evaluations/{id}/insights``; null on
+   * runs the user has not summarised yet.
+   */
+  tldr_summary?: EvaluationTldrSummary | null
+}
+
+/**
+ * LLM-generated narrative + bullet patterns for a single evaluation
+ * run. Cached on the evaluation row so re-opening the Visualizations
+ * tab doesn't auto-burn LLM tokens. ``is_stale`` is computed by the
+ * backend at read time when ``completed_rows`` has grown since the
+ * summary was generated.
+ */
+export interface EvaluationTldrSummary {
+  narrative: string
+  patterns: string[]
+  generated_at: string
+  generated_at_completed_rows: number
+  provider?: string | null
+  model?: string | null
+  is_stale: boolean
 }
 
 export interface CallImportEvaluationListResponse {
@@ -843,6 +883,14 @@ export interface CallImportMetricAggregate {
   metric_id: string
   metric_name: string
   metric_type: string | null
+  /**
+   * True when the metric is a multi-label classifier parent.
+   * ``value_counts`` then lists per-child label tallies and one row
+   * may contribute to several labels, so the chart layout has to
+   * ignore the pie toggle (slices wouldn't sum to 100%) and the
+   * n-badge represents rows scored, not label occurrences.
+   */
+  is_multi_label_parent?: boolean
   count: number
   skipped_count: number
   error_count: number
@@ -968,6 +1016,13 @@ export interface DiscoveredLabel {
   name: string
   description?: string | null
   sample_rationale?: string | null
+  /**
+   * Up to 3 distinct LLM rationales captured for this candidate
+   * across rows. The Discovered Labels promote flow surfaces the
+   * first 2 as an ``Examples:`` block on the new sub-metric's
+   * rubric so the user starts with concrete cases in the prompt.
+   */
+  examples?: string[]
   count: number
 }
 

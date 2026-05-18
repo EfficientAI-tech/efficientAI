@@ -15,6 +15,7 @@ import {
   Edit3,
   ExternalLink,
   Filter,
+  Loader2,
   Merge,
   PieChart as PieChartIcon,
   Plus,
@@ -43,7 +44,9 @@ import type {
   CallImportEvaluation,
   CallImportEvaluationRow,
   CallImportMetricAggregate,
+  EvaluationTldrSummary,
 } from '../../types/api'
+import AIProviderModelPicker from '../../components/AIProviderModelPicker'
 import Button from '../../components/Button'
 import ConfirmModal from '../../components/ConfirmModal'
 import StatusBadge from '../../components/shared/StatusBadge'
@@ -946,6 +949,7 @@ export default function CallImportEvaluationDetail() {
           ) : (
             <>
               <EvaluationTLDR
+                callImportId={id!}
                 evaluation={evaluation}
                 aggregate={aggregateQuery.data}
               />
@@ -986,27 +990,77 @@ export default function CallImportEvaluationDetail() {
                 </div>
               </div>
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                {aggregateQuery.data.metrics.map((m) => (
-                  <MetricVisualization
-                    key={m.metric_id}
-                    metric={m}
-                    categoricalChartType={categoricalChartType}
-                    isActive={metricFilter?.metricId === m.metric_id}
-                    activeValue={
-                      metricFilter?.metricId === m.metric_id
-                        ? metricFilter.value
-                        : null
-                    }
-                    onValueClick={(value) => {
-                      setMetricFilter({
-                        metricId: m.metric_id,
-                        metricName: m.metric_name,
-                        value,
-                      })
-                      setResultsTab('table')
-                    }}
-                  />
-                ))}
+                {aggregateQuery.data.metrics.map((m) => {
+                  // For multi-label parents, the visualization "active"
+                  // state is driven by the flowFilter (we route bar
+                  // clicks through it because the parent's stored
+                  // ``value`` is a comma-joined string and never
+                  // matches a single bar label). For single-value
+                  // metrics it stays driven by metricFilter.
+                  const isMultiLabelActive =
+                    m.is_multi_label_parent === true &&
+                    flowFilter?.parentId === m.metric_id &&
+                    !flowFilter?.targetNodeId
+                  const isActive = isMultiLabelActive
+                    ? true
+                    : metricFilter?.metricId === m.metric_id
+                  const activeValue = isMultiLabelActive
+                    ? flowFilter?.nodeLabel ?? null
+                    : metricFilter?.metricId === m.metric_id
+                      ? metricFilter.value
+                      : null
+                  return (
+                    <div
+                      key={m.metric_id}
+                      // Multi-label parents pack a tall horizontal bar
+                      // chart with long labels; spanning the full row
+                      // keeps the y-axis labels readable instead of
+                      // clipping inside a half-column.
+                      className={
+                        m.is_multi_label_parent ? 'lg:col-span-2' : ''
+                      }
+                    >
+                      <MetricVisualization
+                        metric={m}
+                        categoricalChartType={categoricalChartType}
+                        isActive={isActive}
+                        activeValue={activeValue}
+                        onValueClick={(value) => {
+                          if (m.is_multi_label_parent) {
+                            // Re-use the Flow tab's drilldown filter so
+                            // the SQL path (``metric_scores[parent]
+                            // .sequence`` contains slug(label)) handles
+                            // both promoted children AND LLM-discovered
+                            // labels uniformly. A plain metric_id +
+                            // metric_value filter would never match
+                            // here because the parent stores a
+                            // comma-joined value, not the clicked
+                            // label.
+                            setFlowFilter({
+                              parentId: m.metric_id,
+                              parentName: m.metric_name,
+                              nodeId: value,
+                              nodeLabel: value,
+                              targetNodeId: null,
+                              targetNodeLabel: null,
+                            })
+                            setMetricFilter(null)
+                            setDiscoveredFilter(null)
+                          } else {
+                            setMetricFilter({
+                              metricId: m.metric_id,
+                              metricName: m.metric_name,
+                              value,
+                            })
+                            setFlowFilter(null)
+                            setDiscoveredFilter(null)
+                          }
+                          setResultsTab('table')
+                        }}
+                      />
+                    </div>
+                  )
+                })}
               </div>
             </>
           )
@@ -1761,14 +1815,18 @@ function MetricVisualization({
   const hasNumeric = histogram.length > 0 || metric.mean != null
   const hasCategorical = valueCounts.length > 0
   const totalCategorical = valueCounts.reduce((sum, v) => sum + v.count, 0)
+  const isMultiLabelParent = metric.is_multi_label_parent === true
 
   // Render mode: numeric histogram, categorical pie/bar, or empty state.
   // Numeric metrics always render as a histogram (richer than counts).
   // Categorical pies are capped to a low-cardinality threshold (<=8) so
   // they stay readable — beyond that we always fall back to bars.
+  // Multi-label parents NEVER render as pie because their slices
+  // wouldn't sum to 100% (each row votes for >=1 label) — a pie would
+  // misleadingly suggest exclusive proportions.
   const wideCategorical = valueCounts.length > 8
   const usePieForCategorical =
-    categoricalChartType === 'pie' && !wideCategorical
+    categoricalChartType === 'pie' && !wideCategorical && !isMultiLabelParent
   let chart: ReactNodeLike = null
   if (histogram.length > 0) {
     const data = histogram.map((b) => ({
@@ -1856,7 +1914,14 @@ function MetricVisualization({
     // Vertical bar chart when ``categoricalChartType === 'bar'`` and
     // the category list is short; otherwise horizontal so long labels
     // (e.g. "Failed to extract") don't get truncated on the X axis.
-    const useVertical = categoricalChartType === 'bar' && valueCounts.length <= 6
+    // Multi-label parents are forced horizontal regardless of the
+    // toggle because their child labels are typically multi-word
+    // sentences ("Pitch done with data (personalized growth)") that
+    // would never fit on a vertical axis.
+    const useVertical =
+      !isMultiLabelParent &&
+      categoricalChartType === 'bar' &&
+      valueCounts.length <= 6
     chart = useVertical ? (
       <ResponsiveContainer width="100%" height={220}>
         <BarChart
@@ -1910,11 +1975,21 @@ function MetricVisualization({
         </BarChart>
       </ResponsiveContainer>
     ) : (
-      <ResponsiveContainer width="100%" height={Math.min(260, 32 + valueCounts.length * 26)}>
+      // Horizontal bar layout for wide categorical / multi-label
+      // metrics. Each row gets ~36px of vertical space (single-line
+      // label + breathing room) so the recharts auto-wrapped ticks
+      // never collide with the next row's label. The y-axis is wide
+      // enough (180px) for typical multi-word labels; anything
+      // longer is truncated with an ellipsis at ~28 chars and the
+      // tooltip surfaces the full text on hover.
+      <ResponsiveContainer
+        width="100%"
+        height={Math.max(180, 36 + valueCounts.length * 36)}
+      >
         <BarChart
           data={valueCounts}
           layout="vertical"
-          margin={{ top: 4, right: 16, left: 0, bottom: 4 }}
+          margin={{ top: 8, right: 32, left: 0, bottom: 8 }}
         >
           <defs>
             <linearGradient id={`bar-cat-${metric.metric_id}`} x1="0" y1="0" x2="1" y2="0">
@@ -1936,7 +2011,13 @@ function MetricVisualization({
             tick={{ fontSize: 11, fill: '#334155' }}
             axisLine={false}
             tickLine={false}
-            width={120}
+            width={180}
+            interval={0}
+            tickFormatter={(value: string) =>
+              typeof value === 'string' && value.length > 28
+                ? `${value.slice(0, 27)}…`
+                : value
+            }
           />
           <Tooltip
             contentStyle={CHART_TOOLTIP_STYLE}
@@ -1986,8 +2067,16 @@ function MetricVisualization({
             {metric.metric_name}
           </p>
           <div className="mt-1 flex items-center gap-1.5 flex-wrap">
-            <span className="inline-flex items-center text-[10px] font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-700">
+            <span
+              className="inline-flex items-center text-[10px] font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-700"
+              title={
+                isMultiLabelParent
+                  ? 'Rows scored. Each row may contribute to several labels.'
+                  : 'Number of rows that produced a score for this metric.'
+              }
+            >
               n = {metric.count}
+              {isMultiLabelParent ? ' rows' : ''}
             </span>
             {metric.skipped_count > 0 && (
               <span className="inline-flex items-center text-[10px] font-medium px-2 py-0.5 rounded-full bg-amber-50 text-amber-700">
@@ -1999,10 +2088,16 @@ function MetricVisualization({
                 {metric.error_count} errors
               </span>
             )}
-            {metric.metric_type && (
-              <span className="inline-flex items-center text-[10px] font-medium px-2 py-0.5 rounded-full bg-primary-50 text-primary-700 capitalize">
-                {metric.metric_type}
+            {isMultiLabelParent ? (
+              <span className="inline-flex items-center text-[10px] font-medium px-2 py-0.5 rounded-full bg-primary-50 text-primary-700">
+                Multi-label
               </span>
+            ) : (
+              metric.metric_type && (
+                <span className="inline-flex items-center text-[10px] font-medium px-2 py-0.5 rounded-full bg-primary-50 text-primary-700 capitalize">
+                  {metric.metric_type}
+                </span>
+              )
             )}
           </div>
         </div>
@@ -2098,23 +2193,6 @@ type ReactNodeLike = React.ReactNode
 
 type TldrTone = 'good' | 'warn' | 'info'
 
-type TldrItem = {
-  metricName: string
-  text: string
-  tone: TldrTone
-}
-
-/**
- * Format a numeric value compactly for the TLDR line — integers stay
- * integers, floats are clipped to two decimals so card text doesn't
- * stretch absurdly wide for high-precision metrics.
- */
-function formatTldrNumber(value: number): string {
-  if (!Number.isFinite(value)) return '—'
-  if (Number.isInteger(value)) return value.toString()
-  return value.toFixed(2)
-}
-
 /**
  * Convert a 0-1 ratio into a percentage label rounded to the nearest
  * integer; falls back to "—" for non-finite inputs.
@@ -2124,80 +2202,69 @@ function formatPct(ratio: number): string {
   return `${Math.round(ratio * 100)}%`
 }
 
-/**
- * Build a one-line summary for a single metric aggregate.
- *
- * Heuristics:
- *  * If we have numeric stats, lead with mean ± stddev plus the range
- *    so the user immediately knows whether scores cluster or spread.
- *  * If only categorical counts exist, surface the dominant value and
- *    its share so the dominant outcome (e.g. "78% pass") is obvious
- *    at a glance.
- *  * Append any non-trivial error/skipped counts on the end and bump
- *    the tone to ``warn`` so noisy metrics stand out.
- */
-function buildMetricTldr(metric: CallImportMetricAggregate): TldrItem | null {
-  const totalScored = metric.count + metric.skipped_count + metric.error_count
-  if (totalScored === 0) {
-    return {
-      metricName: metric.metric_name,
-      text: 'No rows scored yet.',
-      tone: 'info',
-    }
-  }
-
-  let text: string = ''
-  let tone: TldrTone = 'info'
-
-  if (metric.mean != null) {
-    const stddev = metric.stddev != null ? metric.stddev : 0
-    const min = metric.min != null ? formatTldrNumber(metric.min) : '—'
-    const max = metric.max != null ? formatTldrNumber(metric.max) : '—'
-    text = `Avg ${formatTldrNumber(metric.mean)} · σ ${formatTldrNumber(
-      stddev,
-    )} · range ${min}–${max}`
-    tone = 'good'
-  } else if (metric.value_counts.length > 0) {
-    const total = metric.value_counts.reduce((s, v) => s + v.count, 0)
-    const top = metric.value_counts[0]
-    const share = total > 0 ? top.count / total : 0
-    if (metric.value_counts.length === 1) {
-      text = `Every scored row → "${top.label}"`
-      tone = 'good'
-    } else {
-      text = `Most common: "${top.label}" (${formatPct(share)} of ${total})`
-      // Strongly skewed outcomes are interesting in both directions:
-      // a 95% pass rate is good news, a 95% fail rate is bad news.
-      // We keep tone neutral here because we don't know which is
-      // which — the user has the label right there.
-      tone = share >= 0.8 ? 'good' : 'info'
-    }
-  }
-
-  const notes: string[] = []
-  if (metric.error_count > 0) notes.push(`${metric.error_count} error`)
-  if (metric.skipped_count > 0) notes.push(`${metric.skipped_count} skipped`)
-  if (notes.length > 0) {
-    text = text ? `${text} · ${notes.join(', ')}` : notes.join(', ')
-    if (metric.error_count > 0) tone = 'warn'
-  }
-
-  if (!text) {
-    text = `${metric.count} row${metric.count === 1 ? '' : 's'} scored.`
-  }
-
-  return { metricName: metric.metric_name, text, tone }
+const PROVIDER_DISPLAY: Record<string, string> = {
+  openai: 'OpenAI',
+  anthropic: 'Anthropic',
+  google: 'Google',
+  deepseek: 'DeepSeek',
+  groq: 'Groq',
 }
 
 /**
- * High-level TLDR card pinned above the Visualizations charts. Renders
- * an aggregated headline (rows scored / completed / failed) followed by
- * one bullet per metric so a reviewer can size up a run in a glance.
+ * Compact stat tile used in the TLDR header strip. Rendered four to a
+ * row on >=sm screens, two on mobile. ``tone`` shifts the value color
+ * so warnings (failed runs) and successes (>=80% completion) stand
+ * out without needing extra layout surface.
+ */
+function TldrStat({
+  label,
+  value,
+  sub,
+  tone = 'info',
+}: {
+  label: string
+  value: number | string
+  sub?: string | null
+  tone?: TldrTone
+}) {
+  const valueClass =
+    tone === 'good'
+      ? 'text-green-700'
+      : tone === 'warn'
+      ? 'text-amber-700'
+      : 'text-gray-900'
+  return (
+    <div className="rounded-lg border border-gray-100 bg-white/80 px-3 py-2 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+      <p className="text-[10px] uppercase tracking-wider text-gray-500 truncate">
+        {label}
+      </p>
+      <p className={`text-lg font-semibold leading-tight ${valueClass}`}>
+        {value}
+      </p>
+      {sub ? (
+        <p className="text-[11px] text-gray-500 truncate">{sub}</p>
+      ) : null}
+    </div>
+  )
+}
+
+/**
+ * High-level TLDR card pinned above the Visualizations charts.
+ *
+ * Layout:
+ *   1. Header pill - completion percent, status tone.
+ *   2. Stat strip  - rows scored / top-level metrics / sub-labels / failed.
+ *   3. Body        - LLM-generated narrative + bullet patterns. Hidden
+ *                    behind an explicit "Generate summary" CTA so we
+ *                    never auto-burn LLM tokens, with a Regenerate
+ *                    affordance once a cached summary exists.
  */
 function EvaluationTLDR({
+  callImportId,
   evaluation,
   aggregate,
 }: {
+  callImportId: string
   evaluation: CallImportEvaluation
   aggregate: {
     total_rows: number
@@ -2206,10 +2273,6 @@ function EvaluationTLDR({
     metrics: CallImportMetricAggregate[]
   }
 }) {
-  const items = aggregate.metrics
-    .map(buildMetricTldr)
-    .filter((item): item is TldrItem => item !== null)
-
   const totalRows = aggregate.total_rows
   const completed = aggregate.completed_rows
   const failed = aggregate.failed_rows
@@ -2217,10 +2280,10 @@ function EvaluationTLDR({
     totalRows > 0 ? completed / totalRows : null
   const failureRate = totalRows > 0 ? failed / totalRows : null
 
-  // Pick an overall mood for the headline pill — green when ≥80% of
+  // Pick an overall mood for the headline pill - green when >=80% of
   // rows completed cleanly, amber when failures are non-trivial, gray
   // before any rows finish.
-  let statusTone: 'good' | 'warn' | 'info' = 'info'
+  let statusTone: TldrTone = 'info'
   if (completionRate != null && completionRate >= 0.8 && (failureRate ?? 0) < 0.1) {
     statusTone = 'good'
   } else if ((failureRate ?? 0) >= 0.1) {
@@ -2233,6 +2296,29 @@ function EvaluationTLDR({
       : statusTone === 'warn'
       ? 'bg-amber-100 text-amber-800 border-amber-200'
       : 'bg-gray-100 text-gray-700 border-gray-200'
+
+  // Split aggregate metrics into top-level vs sub-labels using
+  // ``parent_metric_id`` from the evaluation summary. The aggregate
+  // payload itself is flat (one row per metric_id, parents and
+  // promoted children mixed together) so the previous "Metrics: N"
+  // pill misled users by counting children as separate metrics.
+  const childIdSet = new Set(
+    (evaluation.metrics ?? [])
+      .filter((m) => (m as any).parent_metric_id)
+      .map((m) => m.id),
+  )
+  const topLevelCount = aggregate.metrics.filter(
+    (m) => !childIdSet.has(m.metric_id),
+  ).length
+  const subLabelCount = Math.max(
+    0,
+    aggregate.metrics.length - topLevelCount,
+  )
+
+  const completionLabel =
+    completionRate != null
+      ? `${formatPct(completionRate)} completed`
+      : 'In progress'
 
   return (
     <section
@@ -2253,37 +2339,43 @@ function EvaluationTLDR({
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-2 flex-wrap text-[11px]">
-          <span
-            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border font-medium ${statusToneClass}`}
-          >
-            {statusTone === 'good' ? (
-              <CheckCircle2 className="h-3 w-3" />
-            ) : statusTone === 'warn' ? (
-              <AlertTriangle className="h-3 w-3" />
-            ) : (
-              <Sparkles className="h-3 w-3" />
-            )}
-            {completionRate != null
-              ? `${formatPct(completionRate)} completed`
-              : 'In progress'}
-          </span>
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-gray-200 bg-white text-gray-700">
-            <span className="text-gray-500">Rows:</span>
-            <span className="font-semibold">{totalRows}</span>
-          </span>
-          {failed > 0 && (
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-red-200 bg-red-50 text-red-700">
-              <AlertCircle className="h-3 w-3" />
-              {failed} failed
-            </span>
+        <span
+          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border font-medium text-[11px] ${statusToneClass}`}
+        >
+          {statusTone === 'good' ? (
+            <CheckCircle2 className="h-3 w-3" />
+          ) : statusTone === 'warn' ? (
+            <AlertTriangle className="h-3 w-3" />
+          ) : (
+            <Sparkles className="h-3 w-3" />
           )}
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-gray-200 bg-white text-gray-700">
-            <span className="text-gray-500">Metrics:</span>
-            <span className="font-semibold">{aggregate.metrics.length}</span>
-          </span>
-        </div>
+          {completionLabel}
+        </span>
       </header>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
+        <TldrStat
+          label="Rows scored"
+          value={completed}
+          sub={`of ${totalRows}`}
+          tone={statusTone}
+        />
+        <TldrStat
+          label="Top-level metrics"
+          value={topLevelCount}
+          sub={topLevelCount === 1 ? 'metric' : 'metrics'}
+        />
+        <TldrStat
+          label="Sub-labels"
+          value={subLabelCount}
+          sub={subLabelCount === 1 ? 'discovered' : 'discovered'}
+        />
+        <TldrStat
+          label="Failed"
+          value={failed}
+          tone={failed > 0 ? 'warn' : 'info'}
+        />
+      </div>
 
       {evaluation.status === 'pending' || evaluation.status === 'running' ? (
         <p className="text-xs text-gray-500 inline-flex items-center gap-1.5 mb-3">
@@ -2292,45 +2384,263 @@ function EvaluationTLDR({
         </p>
       ) : null}
 
-      {items.length === 0 ? (
-        <p className="text-xs text-gray-500 italic">
-          Metric breakdown will appear here once scoring completes.
-        </p>
-      ) : (
-        <ul className="grid grid-cols-1 md:grid-cols-2 gap-2">
-          {items.map((item) => {
-            const toneRingClass =
-              item.tone === 'good'
-                ? 'bg-green-500'
-                : item.tone === 'warn'
-                ? 'bg-amber-500'
-                : 'bg-primary-400'
-            return (
-              <li
-                key={item.metricName}
-                className="flex items-start gap-2 rounded-lg border border-gray-100 bg-white/80 px-3 py-2 shadow-[0_1px_2px_rgba(15,23,42,0.04)]"
-              >
-                <span
-                  className={`mt-1 h-2 w-2 rounded-full shrink-0 ${toneRingClass}`}
-                  aria-hidden="true"
-                />
-                <div className="min-w-0">
-                  <p
-                    className="text-xs font-semibold text-gray-900 truncate"
-                    title={item.metricName}
-                  >
-                    {item.metricName}
-                  </p>
-                  <p className="text-[11px] text-gray-600 leading-snug">
-                    {item.text}
-                  </p>
-                </div>
-              </li>
-            )
-          })}
+      <EvaluationTLDRInsights
+        callImportId={callImportId}
+        evaluationId={evaluation.id}
+        completedRows={completed}
+        totalRows={totalRows}
+      />
+    </section>
+  )
+}
+
+/**
+ * LLM-driven body of the TLDR card. Owns the picker state + generate
+ * mutation and renders one of three variants:
+ *
+ *   * empty -> "Get an AI-written summary..." CTA + provider/model
+ *     picker + "Generate summary" button.
+ *   * cached + fresh -> narrative paragraph, bulleted patterns,
+ *     small footer with the model used + Regenerate text button.
+ *   * cached + stale -> same as above plus an amber banner that
+ *     explains how many newer rows have arrived since generation.
+ */
+function EvaluationTLDRInsights({
+  callImportId,
+  evaluationId,
+  completedRows,
+  totalRows,
+}: {
+  callImportId: string
+  evaluationId: string
+  completedRows: number
+  totalRows: number
+}) {
+  const queryClient = useQueryClient()
+  const [pickerProvider, setPickerProvider] = useState<string>('')
+  const [pickerModel, setPickerModel] = useState<string>('')
+  const [showPicker, setShowPicker] = useState<boolean>(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const insightsQuery = useQuery<EvaluationTldrSummary | null>({
+    queryKey: ['call-import-evaluation-insights', callImportId, evaluationId],
+    queryFn: () =>
+      apiClient.getCallImportEvaluationInsights(callImportId, evaluationId),
+    // Single shot per page-load. We refetch only after a successful
+    // mutation; auto-refetching here would be misleading because the
+    // backend never auto-generates the summary.
+    refetchOnWindowFocus: false,
+    refetchInterval: false,
+  })
+
+  const cached = insightsQuery.data ?? null
+
+  // Re-seed the picker with the previously-used provider/model so a
+  // single click on Regenerate gives the user the same model again.
+  useEffect(() => {
+    if (cached?.provider && !pickerProvider) {
+      setPickerProvider(cached.provider)
+    }
+    if (cached?.model && !pickerModel) {
+      setPickerModel(cached.model)
+    }
+  }, [cached?.provider, cached?.model, pickerProvider, pickerModel])
+
+  const generateMutation = useMutation({
+    mutationFn: (regenerate: boolean) =>
+      apiClient.generateCallImportEvaluationInsights(
+        callImportId,
+        evaluationId,
+        {
+          regenerate,
+          provider: pickerProvider || undefined,
+          model: pickerModel || undefined,
+        },
+      ),
+    onSuccess: (summary) => {
+      queryClient.setQueryData(
+        ['call-import-evaluation-insights', callImportId, evaluationId],
+        summary,
+      )
+      setShowPicker(false)
+      setError(null)
+    },
+    onError: (err: any) => {
+      setError(err?.response?.data?.detail || 'Could not generate summary')
+    },
+  })
+
+  const isLoading = insightsQuery.isLoading
+  const isPending = generateMutation.isPending
+
+  if (isLoading) {
+    return (
+      <p className="text-xs text-gray-500 inline-flex items-center gap-1.5">
+        <Loader2 className="h-3 w-3 animate-spin" />
+        Loading summary…
+      </p>
+    )
+  }
+
+  // Empty-state CTA: never-summarised yet OR an explicit "regenerate"
+  // request landed us here without a cached value.
+  if (!cached) {
+    return (
+      <div className="rounded-lg border border-dashed border-primary-200 bg-white/70 p-3">
+        <div className="flex items-start gap-2 mb-2">
+          <Sparkles className="h-4 w-4 text-primary-600 mt-0.5 shrink-0" />
+          <div className="min-w-0">
+            <p className="text-xs font-semibold text-gray-900">
+              Get an AI-written summary of patterns across these calls
+            </p>
+            <p className="text-[11px] text-gray-500 leading-snug">
+              We feed the per-metric numbers + a sample of rationales
+              to an LLM and surface the cross-call patterns it finds.
+            </p>
+          </div>
+        </div>
+        <div className="mt-2 mb-3">
+          <AIProviderModelPicker
+            provider={pickerProvider}
+            model={pickerModel}
+            onProviderChange={setPickerProvider}
+            onModelChange={setPickerModel}
+            disabled={isPending}
+            size="sm"
+          />
+        </div>
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <p className="text-[10px] text-gray-400">
+            Tokens are only spent when you click Generate.
+          </p>
+          <button
+            type="button"
+            onClick={() => generateMutation.mutate(false)}
+            disabled={isPending}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 disabled:opacity-60"
+          >
+            {isPending ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Sparkles className="h-3.5 w-3.5" />
+            )}
+            Generate summary
+          </button>
+        </div>
+        {error && (
+          <p className="mt-2 text-[11px] text-red-600">{error}</p>
+        )}
+      </div>
+    )
+  }
+
+  // Cached summary - render narrative + bullets, plus a stale banner
+  // and Regenerate affordance when more rows have completed since the
+  // summary was written.
+  const providerLabel = cached.provider
+    ? PROVIDER_DISPLAY[cached.provider] || cached.provider
+    : null
+
+  return (
+    <div className="rounded-lg border border-gray-100 bg-white/80 p-3 shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+      {cached.is_stale && (
+        <div className="mb-3 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5">
+          <AlertTriangle className="h-3.5 w-3.5 text-amber-600 mt-0.5 shrink-0" />
+          <div className="min-w-0 flex-1">
+            <p className="text-[11px] text-amber-800">
+              Generated when {cached.generated_at_completed_rows}/{totalRows}{' '}
+              row{cached.generated_at_completed_rows === 1 ? '' : 's'} had
+              finished. {completedRows - cached.generated_at_completed_rows}{' '}
+              new row
+              {completedRows - cached.generated_at_completed_rows === 1
+                ? ' has'
+                : 's have'}{' '}
+              completed since.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowPicker((v) => !v)}
+            className="text-[11px] font-medium text-amber-800 hover:text-amber-900 underline underline-offset-2 shrink-0"
+          >
+            {showPicker ? 'Cancel' : 'Regenerate'}
+          </button>
+        </div>
+      )}
+
+      <p className="text-xs text-gray-700 leading-relaxed whitespace-pre-line">
+        {cached.narrative}
+      </p>
+
+      {cached.patterns.length > 0 && (
+        <ul className="mt-2 space-y-1">
+          {cached.patterns.map((pattern, i) => (
+            <li
+              key={`${i}-${pattern.slice(0, 24)}`}
+              className="flex items-start gap-2 text-[11px] text-gray-700 leading-snug"
+            >
+              <span
+                className="mt-1 h-1.5 w-1.5 rounded-full bg-primary-400 shrink-0"
+                aria-hidden="true"
+              />
+              <span className="min-w-0">{pattern}</span>
+            </li>
+          ))}
         </ul>
       )}
-    </section>
+
+      <div className="mt-3 flex items-center justify-between gap-2 flex-wrap">
+        <p className="text-[10px] text-gray-400 truncate">
+          {providerLabel || cached.model
+            ? `Generated by ${providerLabel ?? '—'}${
+                cached.model ? ` · ${cached.model}` : ''
+              }`
+            : 'Generated by AI'}
+        </p>
+        {!cached.is_stale && (
+          <button
+            type="button"
+            onClick={() => setShowPicker((v) => !v)}
+            disabled={isPending}
+            className="text-[11px] font-medium text-primary-700 hover:text-primary-800 underline underline-offset-2 disabled:opacity-50"
+          >
+            {showPicker ? 'Cancel' : 'Regenerate'}
+          </button>
+        )}
+      </div>
+
+      {showPicker && (
+        <div className="mt-3 rounded-md border border-gray-200 bg-gray-50 p-2.5">
+          <AIProviderModelPicker
+            provider={pickerProvider}
+            model={pickerModel}
+            onProviderChange={setPickerProvider}
+            onModelChange={setPickerModel}
+            disabled={isPending}
+            size="sm"
+          />
+          <div className="mt-2 flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => generateMutation.mutate(true)}
+              disabled={isPending}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium text-white bg-primary-600 rounded-md hover:bg-primary-700 disabled:opacity-60"
+            >
+              {isPending ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Sparkles className="h-3 w-3" />
+              )}
+              Regenerate
+            </button>
+          </div>
+        </div>
+      )}
+
+      {error && (
+        <p className="mt-2 text-[11px] text-red-600">{error}</p>
+      )}
+    </div>
   )
 }
 
@@ -2505,8 +2815,12 @@ function DiscoveredLabelsPanel({
   }
 
   const promoteMutation = useMutation({
-    mutationFn: (entry: { key: string; name: string; description?: string | null }) =>
-      apiClient.promoteDiscoveredChild(parent.id, entry),
+    mutationFn: (entry: {
+      key: string
+      name: string
+      description?: string | null
+      capture_rationale?: boolean
+    }) => apiClient.promoteDiscoveredChild(parent.id, entry),
     onSuccess: invalidateAll,
   })
 
@@ -2630,13 +2944,42 @@ function DiscoveredLabelsPanel({
                   <button
                     type="button"
                     disabled={promoteMutation.isPending}
-                    onClick={() =>
+                    onClick={() => {
+                      // Pull up to 2 distinct rationales captured for
+                      // this candidate, append them as an Examples
+                      // block to the new sub-metric's rubric, and
+                      // turn on capture_rationale so future rows that
+                      // hit this label keep producing rationales.
+                      // Older payloads (before the backend learned to
+                      // collect ``examples``) only carry
+                      // ``sample_rationale`` — fall back to that so
+                      // promote still works against legacy evals.
+                      const examplesArr =
+                        item.examples && item.examples.length > 0
+                          ? item.examples
+                          : item.sample_rationale
+                            ? [item.sample_rationale]
+                            : []
+                      const exampleSlice = examplesArr.slice(0, 2)
+                      const baseDescription = (item.description || '').trim()
+                      const description =
+                        exampleSlice.length > 0
+                          ? [
+                              baseDescription,
+                              'Examples:',
+                              ...exampleSlice.map((ex) => `- "${ex}"`),
+                            ]
+                              .filter((part) => part.length > 0)
+                              .join('\n\n')
+                              .replace(/\n{3,}/g, '\n\n')
+                          : baseDescription || null
                       promoteMutation.mutate({
                         key: item.key,
                         name: item.key.replace(/_/g, ' '),
-                        description: item.description ?? null,
+                        description,
+                        capture_rationale: true,
                       })
-                    }
+                    }}
                     className="inline-flex items-center gap-1 text-[10px] font-medium rounded px-1.5 py-0.5 bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-60"
                   >
                     <Plus className="h-3 w-3" /> Promote

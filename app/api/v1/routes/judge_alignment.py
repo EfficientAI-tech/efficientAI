@@ -23,7 +23,12 @@ from sqlalchemy.orm import Session
 
 from app.config import settings as app_settings
 from app.database import get_db
-from app.dependencies import get_organization_id, get_principal, Principal
+from app.dependencies import (
+    get_organization_id,
+    get_principal,
+    get_workspace_id,
+    Principal,
+)
 from app.models.database import (
     Agent,
     Evaluator,
@@ -215,16 +220,23 @@ def _serialize_dataset(dataset: JudgeDataset, db: Session) -> JudgeDatasetRespon
 
 
 def _get_dataset_or_404(
-    dataset_id: UUID, organization_id: UUID, db: Session
+    dataset_id: UUID,
+    organization_id: UUID,
+    db: Session,
+    workspace_id: Optional[UUID] = None,
 ) -> JudgeDataset:
-    dataset = (
-        db.query(JudgeDataset)
-        .filter(
-            JudgeDataset.id == dataset_id,
-            JudgeDataset.organization_id == organization_id,
-        )
-        .first()
+    """Fetch a dataset scoped to organization (and optionally workspace).
+
+    All HTTP routes pass ``workspace_id``; internal callers without a request
+    context can omit it and fall back to org-level isolation.
+    """
+    query = db.query(JudgeDataset).filter(
+        JudgeDataset.id == dataset_id,
+        JudgeDataset.organization_id == organization_id,
     )
+    if workspace_id is not None:
+        query = query.filter(JudgeDataset.workspace_id == workspace_id)
+    dataset = query.first()
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
     return dataset
@@ -278,12 +290,17 @@ def get_available_models(
 @router.get("/datasets", response_model=List[JudgeDatasetResponse])
 def list_datasets(
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
+    """List judge datasets in the active workspace."""
     _ensure_enabled()
     rows = (
         db.query(JudgeDataset)
-        .filter(JudgeDataset.organization_id == organization_id)
+        .filter(
+            JudgeDataset.organization_id == organization_id,
+            JudgeDataset.workspace_id == workspace_id,
+        )
         .order_by(JudgeDataset.created_at.desc())
         .all()
     )
@@ -298,8 +315,10 @@ def list_datasets(
 def create_dataset(
     body: JudgeDatasetCreate,
     principal: Principal = Depends(get_principal),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
+    """Create a judge dataset stamped with the active workspace."""
     _ensure_enabled()
 
     if body.source_type not in ALLOWED_SOURCE_TYPES:
@@ -321,6 +340,7 @@ def create_dataset(
 
     dataset = JudgeDataset(
         organization_id=principal.organization_id,
+        workspace_id=workspace_id,
         name=body.name,
         description=body.description,
         source_type=body.source_type,
@@ -362,9 +382,10 @@ async def upload_csv_dataset(
     name: str = Form(...),
     description: Optional[str] = Form(None),
     principal: Principal = Depends(get_principal),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """Upload an AlignEval-style CSV (columns: id, input, output[, label])."""
+    """Upload an AlignEval-style CSV (columns: id, input, output[, label]) into the active workspace."""
     _ensure_enabled()
 
     if not file.filename or not file.filename.lower().endswith(".csv"):
@@ -376,6 +397,7 @@ async def upload_csv_dataset(
 
     dataset = JudgeDataset(
         organization_id=principal.organization_id,
+        workspace_id=workspace_id,
         name=name,
         description=description,
         source_type="csv",
@@ -411,10 +433,11 @@ async def upload_csv_dataset(
 def get_dataset(
     dataset_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
     _ensure_enabled()
-    dataset = _get_dataset_or_404(dataset_id, organization_id, db)
+    dataset = _get_dataset_or_404(dataset_id, organization_id, db, workspace_id)
     return _serialize_dataset(dataset, db)
 
 
@@ -422,10 +445,11 @@ def get_dataset(
 def delete_dataset(
     dataset_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
     _ensure_enabled()
-    dataset = _get_dataset_or_404(dataset_id, organization_id, db)
+    dataset = _get_dataset_or_404(dataset_id, organization_id, db, workspace_id)
     db.delete(dataset)
     db.commit()
 
@@ -442,13 +466,14 @@ def delete_dataset(
 def list_samples(
     dataset_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
     only_labeled: Optional[bool] = None,
     skip: int = 0,
     limit: int = 500,
 ):
     _ensure_enabled()
-    _get_dataset_or_404(dataset_id, organization_id, db)
+    _get_dataset_or_404(dataset_id, organization_id, db, workspace_id)
 
     q = db.query(JudgeSample).filter(JudgeSample.dataset_id == dataset_id)
     if only_labeled is True:
@@ -470,8 +495,10 @@ def update_sample_label(
     sample_id: UUID,
     body: SampleLabelUpdate,
     principal: Principal = Depends(get_principal),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
+    """Label a judge sample whose parent dataset lives in the active workspace."""
     _ensure_enabled()
     sample = (
         db.query(JudgeSample)
@@ -479,6 +506,7 @@ def update_sample_label(
         .filter(
             JudgeSample.id == sample_id,
             JudgeDataset.organization_id == principal.organization_id,
+            JudgeDataset.workspace_id == workspace_id,
         )
         .first()
     )
@@ -512,11 +540,12 @@ def bulk_label_samples(
     dataset_id: UUID,
     body: BulkLabelUpdate,
     principal: Principal = Depends(get_principal),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
     """Apply labels to multiple samples in one call (keyboard-driven flow)."""
     _ensure_enabled()
-    _get_dataset_or_404(dataset_id, principal.organization_id, db)
+    _get_dataset_or_404(dataset_id, principal.organization_id, db, workspace_id)
 
     sample_ids = [item.sample_id for item in body.items]
     rows = (
@@ -566,10 +595,11 @@ def bulk_label_samples(
 def list_runs(
     dataset_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
     _ensure_enabled()
-    _get_dataset_or_404(dataset_id, organization_id, db)
+    _get_dataset_or_404(dataset_id, organization_id, db, workspace_id)
     rows = (
         db.query(JudgeRun)
         .filter(JudgeRun.dataset_id == dataset_id)
@@ -588,18 +618,20 @@ def trigger_judge_run(
     dataset_id: UUID,
     body: JudgeRunCreate,
     principal: Principal = Depends(get_principal),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
     """Spawn a Celery task to score a (possibly subset of) dataset with a judge."""
     _ensure_enabled()
     organization_id = principal.organization_id
-    dataset = _get_dataset_or_404(dataset_id, organization_id, db)
+    dataset = _get_dataset_or_404(dataset_id, organization_id, db, workspace_id)
 
     evaluator = (
         db.query(Evaluator)
         .filter(
             Evaluator.id == body.evaluator_id,
             Evaluator.organization_id == organization_id,
+            Evaluator.workspace_id == workspace_id,
         )
         .first()
     )
@@ -633,6 +665,7 @@ def trigger_judge_run(
     judge_run = JudgeRun(
         dataset_id=dataset.id,
         organization_id=organization_id,
+        workspace_id=workspace_id,
         evaluator_id=evaluator.id,
         split=body.split,
         llm_provider=evaluator.llm_provider,
@@ -672,6 +705,7 @@ def trigger_judge_run(
 def get_run(
     run_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
     _ensure_enabled()
@@ -680,6 +714,7 @@ def get_run(
         .filter(
             JudgeRun.id == run_id,
             JudgeRun.organization_id == organization_id,
+            JudgeRun.workspace_id == workspace_id,
         )
         .first()
     )
@@ -692,6 +727,7 @@ def get_run(
 def delete_run(
     run_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
     """Delete a single judge run. In-flight runs cannot be deleted."""
@@ -701,6 +737,7 @@ def delete_run(
         .filter(
             JudgeRun.id == run_id,
             JudgeRun.organization_id == organization_id,
+            JudgeRun.workspace_id == workspace_id,
         )
         .first()
     )
@@ -735,18 +772,20 @@ def optimize_judge(
     dataset_id: UUID,
     body: JudgeOptimizeCreate,
     principal: Principal = Depends(get_principal),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
     """Kick off a GEPA optimisation of the judge prompt against this dataset."""
     _ensure_enabled()
     organization_id = principal.organization_id
-    dataset = _get_dataset_or_404(dataset_id, organization_id, db)
+    dataset = _get_dataset_or_404(dataset_id, organization_id, db, workspace_id)
 
     evaluator = (
         db.query(Evaluator)
         .filter(
             Evaluator.id == body.evaluator_id,
             Evaluator.organization_id == organization_id,
+            Evaluator.workspace_id == workspace_id,
         )
         .first()
     )
@@ -769,7 +808,10 @@ def optimize_judge(
     if not agent_uuid:
         any_agent = (
             db.query(Agent)
-            .filter(Agent.organization_id == organization_id)
+            .filter(
+                Agent.organization_id == organization_id,
+                Agent.workspace_id == workspace_id,
+            )
             .order_by(Agent.created_at.asc())
             .first()
         )
@@ -836,15 +878,17 @@ def optimize_judge(
 def recompute_metrics(
     run_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """Recompute metrics for an existing run (e.g. after labels were edited)."""
+    """Recompute metrics for an existing run in the active workspace."""
     _ensure_enabled()
     run = (
         db.query(JudgeRun)
         .filter(
             JudgeRun.id == run_id,
             JudgeRun.organization_id == organization_id,
+            JudgeRun.workspace_id == workspace_id,
         )
         .first()
     )

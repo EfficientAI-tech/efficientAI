@@ -13,6 +13,7 @@ from app.models.database import (
     CallImportRow,
     Metric,
     Organization,
+    Workspace,
 )
 from app.models.enums import CallImportRowStatus, CallImportStatus
 
@@ -35,6 +36,14 @@ class _NonClosingSession:
 def _seed(db_session, *, row_count: int = 1, metric_count: int = 1):
     org = Organization(id=uuid4(), name="Eval Test Org")
     db_session.add(org)
+    workspace = Workspace(
+        id=uuid4(),
+        organization_id=org.id,
+        name="Default",
+        slug="default",
+        is_default=True,
+    )
+    db_session.add(workspace)
     db_session.commit()
 
     metrics = []
@@ -42,6 +51,7 @@ def _seed(db_session, *, row_count: int = 1, metric_count: int = 1):
         metric = Metric(
             id=uuid4(),
             organization_id=org.id,
+            workspace_id=workspace.id,
             name=f"Metric{i}",
             description=f"Metric {i}",
             metric_type="rating",
@@ -56,6 +66,7 @@ def _seed(db_session, *, row_count: int = 1, metric_count: int = 1):
     call_import = CallImport(
         id=uuid4(),
         organization_id=org.id,
+        workspace_id=workspace.id,
         provider="exotel",
         original_filename="batch.csv",
         total_rows=row_count,
@@ -84,6 +95,7 @@ def _seed(db_session, *, row_count: int = 1, metric_count: int = 1):
         id=uuid4(),
         call_import_id=call_import.id,
         organization_id=org.id,
+        workspace_id=workspace.id,
         selected_metric_ids=[str(m.id) for m in metrics],
         status="pending",
         total_rows=row_count,

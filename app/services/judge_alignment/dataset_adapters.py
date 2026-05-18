@@ -530,6 +530,7 @@ def _insert_unique(
         labeled_at = now if row.get("label") else None
         sample = JudgeSample(
             dataset_id=dataset.id,
+            workspace_id=dataset.workspace_id,
             external_id=row.get("external_id"),
             input_text=row["input_text"],
             output_text=row["output_text"],

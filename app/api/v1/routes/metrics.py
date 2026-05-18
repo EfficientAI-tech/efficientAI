@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from loguru import logger
 
 from app.database import get_db
-from app.dependencies import get_organization_id, get_api_key
+from app.dependencies import get_organization_id, get_api_key, get_workspace_id
 from app.models.database import Metric, MetricType, MetricTrigger, ModelProvider
 from app.models.schemas import (
     MetricCreate,
@@ -145,6 +145,7 @@ def _serialize_metric_tree(metric: Metric) -> Dict[str, Any]:
     return {
         "id": metric.id,
         "organization_id": metric.organization_id,
+        "workspace_id": metric.workspace_id,
         "name": metric.name,
         "description": metric.description,
         "metric_type": metric.metric_type,
@@ -172,6 +173,7 @@ def _serialize_metric_tree(metric: Metric) -> Dict[str, Any]:
 def create_metric(
     metric_data: MetricCreate,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
     """Create a new metric.
@@ -179,8 +181,12 @@ def create_metric(
     Supports flat metrics, parent "category" metrics (set
     ``selection_mode``), and child sub-metrics (set
     ``parent_metric_id``). Name uniqueness is scoped to
-    ``(organization_id, parent_metric_id)`` so a child label like
-    "happy" can coexist under multiple parents.
+    ``(organization_id, workspace_id, parent_metric_id)`` so the same
+    label can exist in multiple workspaces (and under multiple parents).
+
+    Children always inherit their parent's workspace - we override the
+    request's workspace when ``parent_metric_id`` is set so a stale UI
+    can't accidentally split a tree across workspaces.
     """
     _validate_hierarchy_fields(
         organization_id,
@@ -191,11 +197,28 @@ def create_metric(
         allow_discovery=metric_data.allow_discovery,
     )
 
+    effective_workspace_id = workspace_id
+    if metric_data.parent_metric_id is not None:
+        parent_row = (
+            db.query(Metric)
+            .filter(
+                Metric.id == metric_data.parent_metric_id,
+                Metric.organization_id == organization_id,
+            )
+            .first()
+        )
+        if parent_row is None:
+            raise HTTPException(
+                status_code=400, detail="Parent metric not found."
+            )
+        effective_workspace_id = parent_row.workspace_id
+
     existing = (
         db.query(Metric)
         .filter(
             Metric.name == metric_data.name,
             Metric.organization_id == organization_id,
+            Metric.workspace_id == effective_workspace_id,
             Metric.parent_metric_id.is_(metric_data.parent_metric_id)
             if metric_data.parent_metric_id is None
             else Metric.parent_metric_id == metric_data.parent_metric_id,
@@ -224,6 +247,7 @@ def create_metric(
 
     metric = Metric(
         organization_id=organization_id,
+        workspace_id=effective_workspace_id,
         name=metric_data.name,
         description=metric_data.description,
         metric_type=effective_metric_type,
@@ -257,6 +281,7 @@ def create_metric(
 def create_metric_with_children(
     payload: MetricCreateWithChildren,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
     """Atomically create a parent category metric plus its children.
@@ -264,7 +289,8 @@ def create_metric_with_children(
     The parent gets ``metric_type=text`` (it's a category label, not a
     score) and ``selection_mode`` from the payload. Every child is
     forced to ``boolean`` so the LLM-evaluation path treats them as
-    yes/no labels.
+    yes/no labels. Both the parent and all children are stamped with
+    the active workspace.
     """
     if payload.selection_mode not in _VALID_SELECTION_MODES:
         raise HTTPException(
@@ -280,6 +306,7 @@ def create_metric_with_children(
         .filter(
             Metric.name == payload.name,
             Metric.organization_id == organization_id,
+            Metric.workspace_id == workspace_id,
             Metric.parent_metric_id.is_(None),
         )
         .first()
@@ -328,6 +355,7 @@ def create_metric_with_children(
 
     parent = Metric(
         organization_id=organization_id,
+        workspace_id=workspace_id,
         name=payload.name,
         description=payload.description,
         # The parent itself stores no numeric value — its "result" is the
@@ -352,6 +380,7 @@ def create_metric_with_children(
     for child_draft in payload.children:
         child = Metric(
             organization_id=organization_id,
+            workspace_id=workspace_id,
             name=child_draft.name,
             description=child_draft.description,
             metric_type=MetricType.BOOLEAN,
@@ -435,6 +464,12 @@ def add_metric_child(
     enabled_surfaces = parent.enabled_surfaces or []
     child = Metric(
         organization_id=organization_id,
+        # Children always inherit the parent's workspace - this keeps
+        # the tree atomic across a single workspace and avoids the
+        # surprise of a child living in a different workspace than its
+        # parent (which would otherwise be possible if the caller is
+        # in a different active workspace at add-child time).
+        workspace_id=parent.workspace_id,
         name=child_draft.name,
         description=child_draft.description,
         metric_type=MetricType.BOOLEAN,
@@ -566,6 +601,11 @@ def promote_discovered_child(
     enabled_surfaces = parent.enabled_surfaces or []
     child = Metric(
         organization_id=organization_id,
+        # Children always live in the parent's workspace; users who
+        # have switched workspaces in the UI between viewing the
+        # discovered-labels panel and clicking Promote still get a
+        # consistent tree.
+        workspace_id=parent.workspace_id,
         name=body.name,
         description=body.description,
         metric_type=MetricType.BOOLEAN,
@@ -578,7 +618,12 @@ def promote_discovered_child(
         custom_data_type="boolean",
         custom_config={},
         tags=None,
-        capture_rationale=False,
+        # Default behavior on promote: capture rationale on the new
+        # child so future rows that hit it explain themselves. The
+        # frontend sends ``true`` explicitly; older callers that
+        # don't pass the field also get ``true`` via the schema
+        # default.
+        capture_rationale=bool(body.capture_rationale),
         parent_metric_id=parent.id,
     )
     db.add(child)
@@ -600,11 +645,18 @@ def list_metrics(
         ),
     ),
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """List metrics with optional nesting for the parent/child hierarchy."""
+    """List metrics with optional nesting for the parent/child hierarchy.
+
+    Scoped to (organization_id, workspace_id) so each workspace shows
+    only its own metric library. Switching workspace in the UI is the
+    canonical way to see a different metric set.
+    """
     query = db.query(Metric).filter(
         Metric.organization_id == organization_id,
+        Metric.workspace_id == workspace_id,
         ~Metric.name.in_(REMOVED_DEFAULT_METRICS),
     )
     metrics = (
@@ -848,9 +900,15 @@ def delete_metric(
 @router.post("/seed-defaults", response_model=List[MetricResponse], status_code=201)
 def seed_default_metrics(
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """Seed default metrics for an organization."""
+    """Seed default metrics for an organization (in the active workspace).
+
+    Default metrics live in the workspace the caller is currently in;
+    this matches the rest of the metrics surface and lets a user seed
+    the same defaults independently per workspace if they want to.
+    """
     default_metrics = [
         # =========================================================================
         # LLM-Evaluated Metrics (Subjective assessments from conversation text)
@@ -1015,17 +1073,22 @@ def seed_default_metrics(
 
     created_metrics = []
     for metric_data in default_metrics:
-        # Check if metric already exists
+        # Per-workspace seeding: a default that already exists in this
+        # workspace is left alone, but the same default in a sibling
+        # workspace is created fresh. Match on
+        # (organization_id, workspace_id, name).
         existing = db.query(Metric).filter(
             and_(
                 Metric.name == metric_data["name"],
-                Metric.organization_id == organization_id
+                Metric.organization_id == organization_id,
+                Metric.workspace_id == workspace_id,
             )
         ).first()
 
         if not existing:
             metric = Metric(
                 organization_id=organization_id,
+                workspace_id=workspace_id,
                 name=metric_data["name"],
                 description=metric_data["description"],
                 metric_type=metric_data["metric_type"],
@@ -1055,10 +1118,13 @@ def seed_default_metrics(
                     existing.enabled_surfaces = enabled_surfaces
                     existing.enabled = True
 
-    # Ensure removed defaults are disabled for existing orgs.
+    # Ensure removed defaults are disabled in the active workspace
+    # (a sibling workspace's data is left alone; users who want the
+    # cleanup applied org-wide can run seed-defaults in each workspace).
     removed_metrics = db.query(Metric).filter(
         and_(
             Metric.organization_id == organization_id,
+            Metric.workspace_id == workspace_id,
             Metric.name.in_(REMOVED_DEFAULT_METRICS),
             Metric.enabled == True,
         )

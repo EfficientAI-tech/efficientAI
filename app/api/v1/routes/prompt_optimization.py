@@ -14,7 +14,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 from loguru import logger
 
-from app.dependencies import get_db, get_organization_id, get_api_key, require_enterprise_feature
+from app.dependencies import (
+    get_db,
+    get_organization_id,
+    get_workspace_id,
+    get_api_key,
+    require_enterprise_feature,
+)
 from app.models.database import (
     Agent,
     Evaluator,
@@ -94,13 +100,19 @@ class CandidateResponse(BaseModel):
 def create_optimization_run(
     data: OptimizationRunCreate,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
-    """Start a new GEPA prompt optimization run for an agent."""
+    """Start a new GEPA prompt optimization run for an agent in the active workspace.
+
+    All referenced resources (agent, evaluator) must live in the same workspace
+    so candidate pushes don't accidentally leak prompts across workspaces.
+    """
     agent = db.query(Agent).filter(
         Agent.id == data.agent_id,
         Agent.organization_id == organization_id,
+        Agent.workspace_id == workspace_id,
     ).first()
     if not agent:
         raise HTTPException(404, "Agent not found")
@@ -113,6 +125,7 @@ def create_optimization_run(
         evaluator = db.query(Evaluator).filter(
             Evaluator.id == data.evaluator_id,
             Evaluator.organization_id == organization_id,
+            Evaluator.workspace_id == workspace_id,
         ).first()
         if not evaluator:
             raise HTTPException(404, "Evaluator not found")
@@ -125,6 +138,7 @@ def create_optimization_run(
 
     run = PromptOptimizationRun(
         organization_id=organization_id,
+        workspace_id=workspace_id,
         agent_id=agent.id,
         evaluator_id=data.evaluator_id,
         voice_bundle_id=voice_bundle_id,
@@ -150,12 +164,14 @@ def create_optimization_run(
 def list_optimization_runs(
     agent_id: Optional[UUID] = None,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
-    """List prompt optimization runs, optionally filtered by agent."""
+    """List prompt optimization runs in the active workspace, optionally filtered by agent."""
     query = db.query(PromptOptimizationRun).filter(
         PromptOptimizationRun.organization_id == organization_id,
+        PromptOptimizationRun.workspace_id == workspace_id,
     )
     if agent_id:
         query = query.filter(PromptOptimizationRun.agent_id == agent_id)
@@ -167,13 +183,15 @@ def list_optimization_runs(
 def get_optimization_run(
     run_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
-    """Get details for a specific optimization run."""
+    """Get details for an optimization run in the active workspace."""
     run = db.query(PromptOptimizationRun).filter(
         PromptOptimizationRun.id == run_id,
         PromptOptimizationRun.organization_id == organization_id,
+        PromptOptimizationRun.workspace_id == workspace_id,
     ).first()
     if not run:
         raise HTTPException(404, "Optimization run not found")
@@ -184,13 +202,15 @@ def get_optimization_run(
 def delete_optimization_run(
     run_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
-    """Delete an optimization run and all its candidates."""
+    """Delete an optimization run (and its candidates) from the active workspace."""
     run = db.query(PromptOptimizationRun).filter(
         PromptOptimizationRun.id == run_id,
         PromptOptimizationRun.organization_id == organization_id,
+        PromptOptimizationRun.workspace_id == workspace_id,
     ).first()
     if not run:
         raise HTTPException(404, "Optimization run not found")
@@ -208,13 +228,15 @@ def delete_optimization_run(
 def list_run_candidates(
     run_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
-    """List all candidates for an optimization run."""
+    """List all candidates for an optimization run in the active workspace."""
     run = db.query(PromptOptimizationRun).filter(
         PromptOptimizationRun.id == run_id,
         PromptOptimizationRun.organization_id == organization_id,
+        PromptOptimizationRun.workspace_id == workspace_id,
     ).first()
     if not run:
         raise HTTPException(404, "Optimization run not found")
@@ -232,11 +254,12 @@ def accept_candidate(
     run_id: UUID,
     candidate_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
-    """Accept a candidate prompt for deployment."""
-    candidate = _get_candidate(db, run_id, candidate_id, organization_id)
+    """Accept a candidate prompt in the active workspace for deployment."""
+    candidate = _get_candidate(db, run_id, candidate_id, organization_id, workspace_id)
 
     db.query(PromptOptimizationCandidate).filter(
         PromptOptimizationCandidate.optimization_run_id == run_id,
@@ -252,17 +275,24 @@ def push_candidate_to_provider(
     run_id: UUID,
     candidate_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
-    """Push an accepted candidate prompt to the voice provider (Vapi/Retell/ElevenLabs)."""
-    candidate = _get_candidate(db, run_id, candidate_id, organization_id)
+    """Push an accepted candidate prompt to the voice provider (Vapi/Retell/ElevenLabs).
+
+    The candidate, run, and target agent must all live in the active workspace.
+    """
+    candidate = _get_candidate(db, run_id, candidate_id, organization_id, workspace_id)
 
     if not candidate.is_accepted:
         raise HTTPException(400, "Candidate must be accepted before pushing to provider")
 
     run = candidate.optimization_run
-    agent = db.query(Agent).filter(Agent.id == run.agent_id).first()
+    agent = db.query(Agent).filter(
+        Agent.id == run.agent_id,
+        Agent.workspace_id == workspace_id,
+    ).first()
     if not agent:
         raise HTTPException(404, "Agent not found")
 
@@ -316,11 +346,19 @@ def _get_candidate(
     run_id: UUID,
     candidate_id: UUID,
     organization_id: UUID,
+    workspace_id: Optional[UUID] = None,
 ) -> PromptOptimizationCandidate:
-    run = db.query(PromptOptimizationRun).filter(
+    """Fetch a candidate scoped to organization and (optionally) workspace.
+
+    Internal callers without a request context can omit ``workspace_id``.
+    """
+    run_query = db.query(PromptOptimizationRun).filter(
         PromptOptimizationRun.id == run_id,
         PromptOptimizationRun.organization_id == organization_id,
-    ).first()
+    )
+    if workspace_id is not None:
+        run_query = run_query.filter(PromptOptimizationRun.workspace_id == workspace_id)
+    run = run_query.first()
     if not run:
         raise HTTPException(404, "Optimization run not found")
 

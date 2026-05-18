@@ -167,19 +167,36 @@ class TestAgentService:
         voice_bundle_id: UUID,
         organization_id: UUID,
         db: Session,
+        workspace_id: UUID,
         conversation_metadata: Optional[Dict[str, Any]] = None,
     ) -> TestAgentConversation:
-        """Create a new test agent conversation."""
-        # Verify all entities exist
-        agent = db.query(Agent).filter(Agent.id == agent_id, Agent.organization_id == organization_id).first()
+        """Create a new test agent conversation stamped with the active workspace.
+
+        Agent / persona / scenario must all belong to the same workspace
+        as the conversation; cross-workspace lookups fail with 404 from
+        the caller's perspective.
+        """
+        agent = db.query(Agent).filter(
+            Agent.id == agent_id,
+            Agent.organization_id == organization_id,
+            Agent.workspace_id == workspace_id,
+        ).first()
         if not agent:
             raise ValueError(f"Agent {agent_id} not found")
 
-        persona = db.query(Persona).filter(Persona.id == persona_id, Persona.organization_id == organization_id).first()
+        persona = db.query(Persona).filter(
+            Persona.id == persona_id,
+            Persona.organization_id == organization_id,
+            Persona.workspace_id == workspace_id,
+        ).first()
         if not persona:
             raise ValueError(f"Persona {persona_id} not found")
 
-        scenario = db.query(Scenario).filter(Scenario.id == scenario_id, Scenario.organization_id == organization_id).first()
+        scenario = db.query(Scenario).filter(
+            Scenario.id == scenario_id,
+            Scenario.organization_id == organization_id,
+            Scenario.workspace_id == workspace_id,
+        ).first()
         if not scenario:
             raise ValueError(f"Scenario {scenario_id} not found")
 
@@ -198,6 +215,7 @@ class TestAgentService:
         # Create conversation
         conversation = TestAgentConversation(
             organization_id=organization_id,
+            workspace_id=workspace_id,
             agent_id=agent_id,
             persona_id=persona_id,
             scenario_id=scenario_id,

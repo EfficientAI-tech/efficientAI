@@ -129,6 +129,7 @@ def run_prompt_optimization_task(self, optimization_run_id: str):
         for i, cand in enumerate(result.get("candidates", [])):
             db.add(PromptOptimizationCandidate(
                 optimization_run_id=run.id,
+                workspace_id=run.workspace_id,
                 prompt_text=cand["prompt_text"],
                 score=cand.get("score"),
                 reflection_summary=cand.get("reflection_summary"),
