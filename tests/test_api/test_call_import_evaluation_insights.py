@@ -154,6 +154,12 @@ def _seed_eval_with_data(
         is_default=True,
     )
     db_session.add(integration)
+    # Flush the integration before adding the CallImport that references
+    # it. SQLAlchemy's dependency sort isn't guaranteed to place this
+    # parent before the child when no ORM relationship is declared, and
+    # Postgres (CI) enforces the FK immediately even on the same flush
+    # - SQLite (local) silently lets it through.
+    db_session.flush()
 
     metric = Metric(
         id=uuid4(),
