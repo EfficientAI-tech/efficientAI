@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from app.core.auth import Principal, get_principal  # noqa: F401 - re-exported
 from app.core.license import is_feature_enabled
 from app.database import get_db
+from app.models.database import Workspace
 
 
 def get_api_key(
@@ -50,6 +51,70 @@ def get_organization_id(
     because both paths produce a `Principal`.
     """
     return principal.organization_id
+
+
+def get_workspace_id(
+    x_workspace_id: Optional[str] = Header(None, alias="X-Workspace-Id"),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> UUID:
+    """Return the active workspace UUID for the authenticated caller.
+
+    Resolution order:
+      1. ``X-Workspace-Id`` header. The referenced workspace must belong
+         to the caller's organization, otherwise we 404 (don't leak the
+         existence of another org's workspace).
+      2. The organization's Default workspace (``is_default = True``).
+         This is the back-compat path for existing API-key consumers
+         that don't know about workspaces yet - migration 033 seeds a
+         Default for every org so this always resolves.
+
+    A 500 is raised if step 2 fails because the migration didn't run;
+    callers should never see that in healthy deployments.
+    """
+
+    if x_workspace_id:
+        try:
+            ws_id = UUID(x_workspace_id)
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=400,
+                detail="X-Workspace-Id must be a valid UUID.",
+            )
+        ws = (
+            db.query(Workspace)
+            .filter(
+                Workspace.id == ws_id,
+                Workspace.organization_id == organization_id,
+            )
+            .first()
+        )
+        if ws is None:
+            raise HTTPException(
+                status_code=404, detail="Workspace not found in this organization."
+            )
+        return ws.id
+
+    default_ws = (
+        db.query(Workspace)
+        .filter(
+            Workspace.organization_id == organization_id,
+            Workspace.is_default.is_(True),
+        )
+        .first()
+    )
+    if default_ws is None:
+        # Should never happen post-migration. Raising 500 is preferable
+        # to silently writing rows with a NULL workspace_id and tripping
+        # the NOT NULL constraint downstream.
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "No default workspace exists for this organization. "
+                "Please contact support; migration 033 may not have run."
+            ),
+        )
+    return default_ws.id
 
 
 def get_db_session() -> Session:

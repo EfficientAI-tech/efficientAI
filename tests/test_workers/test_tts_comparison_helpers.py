@@ -9,7 +9,7 @@ Covers:
 
 from uuid import uuid4
 
-from app.models.database import Metric, Organization
+from app.models.database import Metric, Organization, Workspace
 from app.workers.tasks import tts_comparison
 
 
@@ -88,14 +88,33 @@ def test_filter_qualitative_metrics_preserves_unknown_keys():
 def _seed_org(db_session):
     org = Organization(id=uuid4(), name="VP Helpers Org")
     db_session.add(org)
+    db_session.add(
+        Workspace(
+            id=uuid4(),
+            organization_id=org.id,
+            name="Default",
+            slug="default",
+            is_default=True,
+        )
+    )
     db_session.commit()
     return org
+
+
+def _default_workspace_id(db_session, org_id):
+    return (
+        db_session.query(Workspace)
+        .filter(Workspace.organization_id == org_id, Workspace.is_default.is_(True))
+        .first()
+        .id
+    )
 
 
 def _add_metric(db_session, org_id, *, name, enabled, surfaces):
     metric = Metric(
         id=uuid4(),
         organization_id=org_id,
+        workspace_id=_default_workspace_id(db_session, org_id),
         name=name,
         metric_type="rating",
         trigger="always",
@@ -130,6 +149,15 @@ def test_load_enabled_voice_metric_names_is_scoped_per_org(db_session):
     org_a = _seed_org(db_session)
     org_b = Organization(id=uuid4(), name="Other Org")
     db_session.add(org_b)
+    db_session.add(
+        Workspace(
+            id=uuid4(),
+            organization_id=org_b.id,
+            name="Default",
+            slug="default",
+            is_default=True,
+        )
+    )
     db_session.commit()
 
     _add_metric(db_session, org_a.id, name="MOS Score", enabled=True,

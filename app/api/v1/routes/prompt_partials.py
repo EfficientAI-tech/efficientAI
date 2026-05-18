@@ -11,7 +11,7 @@ from uuid import UUID
 from pydantic import BaseModel
 from loguru import logger
 
-from app.dependencies import get_db, get_organization_id, get_api_key
+from app.dependencies import get_db, get_organization_id, get_workspace_id, get_api_key
 from app.models.database import PromptPartial, PromptPartialVersion
 from app.models.schemas import (
     PromptPartialCreate,
@@ -67,41 +67,14 @@ IMPROVE_PROMPT_SYSTEM = (
 )
 
 
-def _get_llm_provider_and_model(
-    organization_id: UUID,
-    db: Session,
-    provider: Optional[str] = None,
-    model: Optional[str] = None,
-):
-    """Resolve the LLM provider and model to use, falling back to org defaults."""
-    from app.models.database import AIProvider
-    from app.models.enums import ModelProvider
-
-    if provider and model:
-        try:
-            provider_enum = ModelProvider(provider.lower())
-        except ValueError:
-            raise HTTPException(400, f"Unsupported LLM provider: {provider}")
-        return provider_enum, model
-
-    for prov in [ModelProvider.OPENAI, ModelProvider.ANTHROPIC, ModelProvider.GOOGLE]:
-        ai_prov = db.query(AIProvider).filter(
-            AIProvider.organization_id == organization_id,
-            AIProvider.is_active == True,
-            AIProvider.provider == prov.value,
-        ).first()
-        if ai_prov:
-            default_models = {
-                ModelProvider.OPENAI: "gpt-5-mini",
-                ModelProvider.ANTHROPIC: "claude-sonnet-4-20250514",
-                ModelProvider.GOOGLE: "gemini-2.0-flash",
-            }
-            return prov, model or default_models.get(prov, "gpt-5-mini")
-
-    raise HTTPException(
-        400,
-        "No active AI provider configured. Add an OpenAI, Anthropic, or Google provider in AI Providers settings.",
-    )
+# Resolver moved to app/services/ai/llm_resolver.py so the call-import
+# evaluation insights endpoint can share the exact same auto-detect /
+# default-model behavior as the prompt-partials AI flows. We re-export
+# under the original name for backwards compatibility with any external
+# patches in tests.
+from app.services.ai.llm_resolver import (
+    get_llm_provider_and_model as _get_llm_provider_and_model,
+)
 
 
 @router.post("/generate")
@@ -196,12 +169,14 @@ async def improve_prompt_with_ai(
 async def create_prompt_partial(
     data: PromptPartialCreate,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """Create a new prompt partial with its initial version."""
+    """Create a prompt partial in the active workspace with its initial version."""
     try:
         partial = PromptPartial(
             organization_id=organization_id,
+            workspace_id=workspace_id,
             name=data.name,
             description=data.description,
             content=data.content,
@@ -213,6 +188,7 @@ async def create_prompt_partial(
 
         version = PromptPartialVersion(
             prompt_partial_id=partial.id,
+            workspace_id=workspace_id,
             version=1,
             content=data.content,
             change_summary="Initial version",
@@ -240,11 +216,15 @@ async def list_prompt_partials(
     limit: int = 100,
     search: str = Query(None, description="Search by name or description"),
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """List all prompt partials for the organization."""
+    """List prompt partials in the active workspace."""
     try:
-        query = db.query(PromptPartial).filter(PromptPartial.organization_id == organization_id)
+        query = db.query(PromptPartial).filter(
+            PromptPartial.organization_id == organization_id,
+            PromptPartial.workspace_id == workspace_id,
+        )
         if search:
             query = query.filter(
                 PromptPartial.name.ilike(f"%{search}%") | PromptPartial.description.ilike(f"%{search}%")
@@ -259,13 +239,18 @@ async def list_prompt_partials(
 async def get_prompt_partial(
     partial_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """Get a specific prompt partial with its version history."""
+    """Get a prompt partial (and its version history) from the active workspace."""
     try:
         partial = (
             db.query(PromptPartial)
-            .filter(PromptPartial.id == partial_id, PromptPartial.organization_id == organization_id)
+            .filter(
+                PromptPartial.id == partial_id,
+                PromptPartial.organization_id == organization_id,
+                PromptPartial.workspace_id == workspace_id,
+            )
             .first()
         )
         if not partial:
@@ -282,13 +267,18 @@ async def update_prompt_partial(
     partial_id: UUID,
     data: PromptPartialUpdate,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """Update a prompt partial. If content changes, a new version is automatically created."""
+    """Update a prompt partial in the active workspace. New versions inherit the workspace."""
     try:
         partial = (
             db.query(PromptPartial)
-            .filter(PromptPartial.id == partial_id, PromptPartial.organization_id == organization_id)
+            .filter(
+                PromptPartial.id == partial_id,
+                PromptPartial.organization_id == organization_id,
+                PromptPartial.workspace_id == workspace_id,
+            )
             .first()
         )
         if not partial:
@@ -305,6 +295,7 @@ async def update_prompt_partial(
             new_version_num = partial.current_version + 1
             version = PromptPartialVersion(
                 prompt_partial_id=partial.id,
+                workspace_id=partial.workspace_id,
                 version=new_version_num,
                 content=update_data["content"],
                 change_summary=change_summary or f"Updated to version {new_version_num}",
@@ -331,12 +322,17 @@ async def update_prompt_partial(
 async def delete_prompt_partial(
     partial_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """Delete a prompt partial and all its versions."""
+    """Delete a prompt partial (and its versions) from the active workspace."""
     partial = (
         db.query(PromptPartial)
-        .filter(PromptPartial.id == partial_id, PromptPartial.organization_id == organization_id)
+        .filter(
+            PromptPartial.id == partial_id,
+            PromptPartial.organization_id == organization_id,
+            PromptPartial.workspace_id == workspace_id,
+        )
         .first()
     )
     if not partial:
@@ -351,12 +347,17 @@ async def delete_prompt_partial(
 async def list_prompt_partial_versions(
     partial_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """List all versions of a prompt partial."""
+    """List all versions of a prompt partial in the active workspace."""
     partial = (
         db.query(PromptPartial)
-        .filter(PromptPartial.id == partial_id, PromptPartial.organization_id == organization_id)
+        .filter(
+            PromptPartial.id == partial_id,
+            PromptPartial.organization_id == organization_id,
+            PromptPartial.workspace_id == workspace_id,
+        )
         .first()
     )
     if not partial:
@@ -376,12 +377,17 @@ async def get_prompt_partial_version(
     partial_id: UUID,
     version_number: int,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """Get a specific version of a prompt partial."""
+    """Get a specific version of a prompt partial in the active workspace."""
     partial = (
         db.query(PromptPartial)
-        .filter(PromptPartial.id == partial_id, PromptPartial.organization_id == organization_id)
+        .filter(
+            PromptPartial.id == partial_id,
+            PromptPartial.organization_id == organization_id,
+            PromptPartial.workspace_id == workspace_id,
+        )
         .first()
     )
     if not partial:
@@ -405,13 +411,18 @@ async def revert_prompt_partial(
     partial_id: UUID,
     version_number: int,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """Revert a prompt partial to a specific version. Creates a new version with the old content."""
+    """Revert a prompt partial (in the active workspace) to a specific version."""
     try:
         partial = (
             db.query(PromptPartial)
-            .filter(PromptPartial.id == partial_id, PromptPartial.organization_id == organization_id)
+            .filter(
+                PromptPartial.id == partial_id,
+                PromptPartial.organization_id == organization_id,
+                PromptPartial.workspace_id == workspace_id,
+            )
             .first()
         )
         if not partial:
@@ -434,6 +445,7 @@ async def revert_prompt_partial(
         new_version_num = partial.current_version + 1
         version = PromptPartialVersion(
             prompt_partial_id=partial.id,
+            workspace_id=partial.workspace_id,
             version=new_version_num,
             content=target_version.content,
             change_summary=f"Reverted to version {version_number}",
@@ -456,13 +468,18 @@ async def revert_prompt_partial(
 async def clone_prompt_partial(
     partial_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """Clone a prompt partial."""
+    """Clone a prompt partial within the active workspace."""
     try:
         source = (
             db.query(PromptPartial)
-            .filter(PromptPartial.id == partial_id, PromptPartial.organization_id == organization_id)
+            .filter(
+                PromptPartial.id == partial_id,
+                PromptPartial.organization_id == organization_id,
+                PromptPartial.workspace_id == workspace_id,
+            )
             .first()
         )
         if not source:
@@ -470,6 +487,7 @@ async def clone_prompt_partial(
 
         clone = PromptPartial(
             organization_id=organization_id,
+            workspace_id=workspace_id,
             name=f"{source.name} (Copy)",
             description=source.description,
             content=source.content,
@@ -481,6 +499,7 @@ async def clone_prompt_partial(
 
         version = PromptPartialVersion(
             prompt_partial_id=clone.id,
+            workspace_id=workspace_id,
             version=1,
             content=source.content,
             change_summary=f"Cloned from '{source.name}'",

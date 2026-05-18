@@ -332,6 +332,7 @@ async def submit_public_blind_test_response(
 
     record = TTSBlindTestResponse(
         share_id=share.id,
+        workspace_id=share.workspace_id,
         rater_name=name[:255],
         rater_email=email[:320],
         responses=cleaned_entries,

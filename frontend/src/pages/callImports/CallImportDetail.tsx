@@ -37,6 +37,7 @@ import {
   YAxis,
 } from 'recharts'
 import { apiClient } from '../../lib/api'
+import { useWorkspaceStore } from '../../store/workspaceStore'
 import type {
   CallImportEvaluation,
   CallImportEvaluationLLMOverride,
@@ -87,6 +88,7 @@ export default function CallImportDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
   const [rowOffset, setRowOffset] = useState(0)
   const [expandedRowIds, setExpandedRowIds] = useState<Set<string>>(new Set())
   // Row search: debounce keystrokes so we don't refire the rows fetch on
@@ -169,13 +171,13 @@ export default function CallImportDetail() {
   const [draftTagIds, setDraftTagIds] = useState<string[]>([])
 
   const { data: existingDatasets = [] } = useQuery({
-    queryKey: ['call-import-datasets'],
+    queryKey: ['call-import-datasets', activeWorkspaceId],
     queryFn: () => apiClient.listCallImportDatasets(),
     enabled: editingMeta,
   })
 
   const { data: allTags = [] } = useQuery({
-    queryKey: ['call-import-tags'],
+    queryKey: ['call-import-tags', activeWorkspaceId],
     queryFn: () => apiClient.listCallImportTags(),
   })
 
@@ -292,7 +294,7 @@ export default function CallImportDetail() {
   })
 
   const { data: metrics = [] } = useQuery({
-    queryKey: ['metrics', 'agent'],
+    queryKey: ['metrics', activeWorkspaceId, 'agent'],
     queryFn: () => apiClient.listMetrics('agent'),
     enabled: !!id,
   })

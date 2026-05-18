@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 import { Tag as TagIcon } from 'lucide-react'
 import { apiClient } from '../../lib/api'
+import { useWorkspaceStore } from '../../store/workspaceStore'
 import type { CallImport, CallImportStatus, CallImportTag } from '../../types/api'
 import Button from '../../components/Button'
 import ConfirmModal from '../../components/ConfirmModal'
@@ -32,6 +33,10 @@ const STATUS_OPTIONS: Array<{ label: string; value: '' | CallImportStatus }> = [
 export default function CallImports() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  // Active workspace is part of every workspace-scoped queryKey so a
+  // workspace switch produces a clean cache miss instead of leaking
+  // rows from the previously-active workspace.
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
   const [page, setPage] = useState(1)
   const [statusFilter, setStatusFilter] = useState<'' | CallImportStatus>('')
   const [datasetFilter, setDatasetFilter] = useState<string>('')
@@ -41,12 +46,12 @@ export default function CallImports() {
   const [deleteError, setDeleteError] = useState<string | null>(null)
 
   const { data: datasets = [] } = useQuery({
-    queryKey: ['call-import-datasets'],
+    queryKey: ['call-import-datasets', activeWorkspaceId],
     queryFn: () => apiClient.listCallImportDatasets(),
   })
 
   const { data: allTags = [] } = useQuery({
-    queryKey: ['call-import-tags'],
+    queryKey: ['call-import-tags', activeWorkspaceId],
     queryFn: () => apiClient.listCallImportTags(),
   })
 
@@ -76,7 +81,7 @@ export default function CallImports() {
   )
 
   const { data, isLoading, isFetching, refetch } = useQuery({
-    queryKey: ['call-imports', queryParams],
+    queryKey: ['call-imports', activeWorkspaceId, queryParams],
     queryFn: () => apiClient.listCallImports(queryParams),
     refetchInterval: (query) => {
       const items = query.state.data?.items ?? []

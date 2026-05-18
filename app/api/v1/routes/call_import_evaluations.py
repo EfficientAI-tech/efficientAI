@@ -10,7 +10,9 @@ import statistics
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
 from loguru import logger
 from sqlalchemy import desc, func, or_, text
@@ -44,6 +46,8 @@ from app.models.schemas import (
     DiscoveredLabelItem,
     DiscoveredLabelMergeRequest,
     DiscoveredLabelsResponse,
+    EvaluationInsightsRequest,
+    EvaluationTldrSummary,
     MetricFlowEdge,
     MetricFlowNode,
     MetricFlowResponse,
@@ -298,6 +302,7 @@ def _serialize_eval(db: Session, row: CallImportEvaluation) -> CallImportEvaluat
         finished_at=row.finished_at,
         created_at=row.created_at,
         updated_at=row.updated_at,
+        tldr_summary=_tldr_summary_payload(row),
     )
 
 
@@ -592,6 +597,9 @@ async def create_call_import_evaluation(
     evaluation = CallImportEvaluation(
         call_import_id=call_import.id,
         organization_id=organization_id,
+        # Mirror the parent CallImport's workspace so listings can
+        # filter on workspace_id directly without joining.
+        workspace_id=call_import.workspace_id,
         name=_normalize_name(payload.name),
         selected_metric_ids=[str(metric_id) for metric_id in leaf_metric_ids],
         selected_metric_groups=selected_metric_groups or None,
@@ -1598,6 +1606,10 @@ def _compute_metric_aggregates(
         meta = metric_meta.get(metric_id_str)
         numeric_values: List[float] = []
         category_counts: Dict[str, int] = {}
+        # For multi-label parents we still need to know how many rows
+        # were scored (each row votes for >=1 label) so the n-badge in
+        # the UI shows "n=50" instead of the misleading "n=208" sum.
+        multi_label_rows_scored = 0
         skipped = 0
         errored = 0
         observed_metric_type: Optional[str] = None
@@ -1640,6 +1652,7 @@ def _compute_metric_aggregates(
             if is_multi_label_parent:
                 selected = entry.get("selected_child_names")
                 if isinstance(selected, list) and selected:
+                    multi_label_rows_scored += 1
                     for label in selected:
                         text_label = str(label).strip() or None
                         if text_label:
@@ -1657,6 +1670,18 @@ def _compute_metric_aggregates(
             if category is not None:
                 category_counts[category] = category_counts.get(category, 0) + 1
 
+        # ``count`` is "rows scored". For numeric / single-choice
+        # metrics that's the same as ``len(numeric) + sum(categories)``
+        # because each scored row contributes exactly one observation.
+        # Multi-label parents however contribute one observation per
+        # selected child, so summing ``category_counts`` over-counts —
+        # we tracked rows-scored separately above and use it here.
+        rows_scored = (
+            multi_label_rows_scored
+            if is_multi_label_parent
+            else len(numeric_values) + sum(category_counts.values())
+        )
+
         # Build numeric stats first, then categorical (both can coexist).
         agg = CallImportMetricAggregate(
             metric_id=metric_id_str,
@@ -1666,7 +1691,8 @@ def _compute_metric_aggregates(
             metric_type=(
                 meta.metric_type if meta else observed_metric_type
             ),
-            count=len(numeric_values) + sum(category_counts.values()),
+            is_multi_label_parent=is_multi_label_parent,
+            count=rows_scored,
             skipped_count=skipped,
             error_count=errored,
         )
@@ -1695,7 +1721,41 @@ def _compute_metric_aggregates(
 
         results.append(agg)
 
-    return results
+    # Sort so each parent metric immediately precedes its children.
+    # The Visualizations grid renders metrics top-to-bottom in this
+    # order, so multi-label parents (the "summary" chart) sit above
+    # the per-child boolean histograms that drill into them. Metrics
+    # whose ``meta`` row was deleted mid-run (``meta is None``) sink
+    # to the bottom but keep their relative order.
+    enumerated = list(enumerate(results))
+
+    def _sort_key(item: Tuple[int, CallImportMetricAggregate]):
+        original_idx, agg = item
+        meta = metric_meta.get(agg.metric_id)
+        if meta is None:
+            return (1, "", 1, "", original_idx)
+        parent_id = getattr(meta, "parent_metric_id", None)
+        # Group key: a child shares its parent's UUID; a parent
+        # uses its own UUID. Within a group, depth=0 (parent) sorts
+        # before depth=1 (child); ties break alphabetically by name
+        # so children render in a stable order regardless of which
+        # row scored which label first.
+        if parent_id is None:
+            group_key = str(meta.id)
+            depth = 0
+        else:
+            group_key = str(parent_id)
+            depth = 1
+        return (
+            0,
+            group_key,
+            depth,
+            (getattr(meta, "name", "") or "").lower(),
+            original_idx,
+        )
+
+    enumerated.sort(key=_sort_key)
+    return [agg for _idx, agg in enumerated]
 
 
 @router.get(
@@ -1750,6 +1810,444 @@ async def get_call_import_evaluation_aggregate(
         failed_rows=evaluation.failed_rows,
         metrics=metrics,
     )
+
+
+# ---------------------------------------------------------------------------
+# TLDR insights: LLM-generated narrative + bullet patterns rendered above
+# the Visualizations charts. Cached on ``CallImportEvaluation.tldr_summary``
+# so the page never auto-burns LLM tokens; the user explicitly clicks
+# "Generate summary" or "Regenerate" from the empty-state CTA.
+# ---------------------------------------------------------------------------
+
+
+_INSIGHTS_SYSTEM_PROMPT = (
+    "You are a senior conversation-analytics reviewer. You will be "
+    "given aggregated metric statistics + a sample of rationales for "
+    "the rows of a single call-import evaluation. Identify the most "
+    "useful PATTERNS that hold ACROSS the calls -- not just per-metric "
+    "numbers. Look for combinations (e.g. `when X happens, Y also "
+    "tends to happen`), notable outliers, frequent failure modes, and "
+    "any signal that would change how a reviewer triages the run.\n\n"
+    "Return STRICT JSON only, with this shape and no extra keys:\n"
+    "{\n"
+    '  "narrative": "<2-4 sentence prose summary>",\n'
+    '  "patterns": ["<bullet 1>", "<bullet 2>", ...]\n'
+    "}\n\n"
+    "Constraints:\n"
+    "- 3 to 5 bullets, each <= 200 characters, no markdown.\n"
+    "- Avoid restating raw counts unless they reveal a pattern.\n"
+    "- Use neutral, factual language ('frustration appeared in...') "
+    "rather than judgemental ('the agents failed to...')."
+)
+
+
+def _tldr_summary_payload(
+    evaluation: CallImportEvaluation,
+) -> Optional[EvaluationTldrSummary]:
+    """Return the cached TLDR (with ``is_stale`` set) or ``None``.
+
+    ``CallImportEvaluation.tldr_summary`` is a ``JSON`` column so we
+    have to validate shape defensively -- a half-written or hand-edited
+    blob should not break the aggregate response. Returns ``None`` when
+    no cached summary exists.
+    """
+    raw = evaluation.tldr_summary
+    if not isinstance(raw, dict):
+        return None
+    narrative = raw.get("narrative")
+    if not isinstance(narrative, str) or not narrative.strip():
+        return None
+    patterns_raw = raw.get("patterns")
+    patterns = (
+        [str(p) for p in patterns_raw if isinstance(p, str) and p.strip()]
+        if isinstance(patterns_raw, list)
+        else []
+    )
+    generated_at_raw = raw.get("generated_at")
+    try:
+        generated_at = (
+            datetime.fromisoformat(generated_at_raw)
+            if isinstance(generated_at_raw, str)
+            else evaluation.updated_at or datetime.now(timezone.utc)
+        )
+    except ValueError:
+        generated_at = evaluation.updated_at or datetime.now(timezone.utc)
+    snapshot = raw.get("generated_at_completed_rows")
+    snapshot_int = int(snapshot) if isinstance(snapshot, (int, float)) else 0
+    return EvaluationTldrSummary(
+        narrative=narrative.strip(),
+        patterns=patterns,
+        generated_at=generated_at,
+        generated_at_completed_rows=snapshot_int,
+        provider=raw.get("provider") if isinstance(raw.get("provider"), str) else None,
+        model=raw.get("model") if isinstance(raw.get("model"), str) else None,
+        is_stale=evaluation.completed_rows > snapshot_int,
+    )
+
+
+def _sample_rationales_per_metric(
+    eval_rows: List[CallImportEvaluationRow],
+    *,
+    per_metric_cap: int = 3,
+    rationale_char_cap: int = 600,
+) -> Dict[str, List[str]]:
+    """Collect up to ``per_metric_cap`` distinct rationales per metric.
+
+    Distinctness is case- and whitespace-insensitive. We truncate each
+    rationale to ``rationale_char_cap`` so a few unusually verbose rows
+    can't dominate the prompt budget. Empty / non-string rationales are
+    skipped.
+    """
+    out: Dict[str, List[str]] = {}
+    seen: Dict[str, set[str]] = {}
+    for row in eval_rows:
+        scores = row.metric_scores if isinstance(row.metric_scores, dict) else {}
+        for metric_id, entry in scores.items():
+            if not isinstance(entry, dict):
+                continue
+            rationale = entry.get("rationale")
+            if not isinstance(rationale, str):
+                continue
+            text = rationale.strip()
+            if not text:
+                continue
+            bucket = out.setdefault(metric_id, [])
+            if len(bucket) >= per_metric_cap:
+                continue
+            key = " ".join(text.lower().split())
+            seen_set = seen.setdefault(metric_id, set())
+            if key in seen_set:
+                continue
+            seen_set.add(key)
+            bucket.append(text[:rationale_char_cap])
+    return out
+
+
+def _build_insights_messages(
+    evaluation: CallImportEvaluation,
+    aggregate: List[CallImportMetricAggregate],
+    rationale_samples: Dict[str, List[str]],
+    metric_meta: Dict[str, Metric],
+) -> List[Dict[str, str]]:
+    """Render the user prompt fed to the LLM.
+
+    The shape is plain markdown-ish text instead of JSON so the LLM can
+    skim it without us spending tokens on verbose schema delimiters.
+    Parent metrics surface their child metrics nested underneath so the
+    model sees the hierarchy and can talk about "X often co-occurred
+    with Y" rather than treating sub-labels as standalone metrics.
+    """
+    name = evaluation.name or f"Run {str(evaluation.id)[:8]}"
+    lines: List[str] = [
+        f"Evaluation: {name}",
+        (
+            f"Rows: total={evaluation.total_rows} "
+            f"completed={evaluation.completed_rows} "
+            f"failed={evaluation.failed_rows}"
+        ),
+        "",
+        "## Per-metric aggregate",
+    ]
+
+    # Group metrics by parent so the prompt mirrors the hierarchy. Any
+    # aggregate row whose ``metric_id`` is missing from ``metric_meta``
+    # is rendered as a leaf at the top-level list (handles renamed /
+    # deleted parents).
+    children_by_parent: Dict[str, List[CallImportMetricAggregate]] = {}
+    top_level: List[CallImportMetricAggregate] = []
+    for agg in aggregate:
+        meta = metric_meta.get(agg.metric_id)
+        parent_id = (
+            str(meta.parent_metric_id)
+            if meta is not None and getattr(meta, "parent_metric_id", None)
+            else None
+        )
+        if parent_id:
+            children_by_parent.setdefault(parent_id, []).append(agg)
+        else:
+            top_level.append(agg)
+
+    def _format_metric_block(agg: CallImportMetricAggregate, indent: int) -> List[str]:
+        prefix = "  " * indent + "- "
+        bits: List[str] = [f"{prefix}{agg.metric_name} (n={agg.count}"]
+        if agg.skipped_count:
+            bits.append(f", skipped={agg.skipped_count}")
+        if agg.error_count:
+            bits.append(f", errors={agg.error_count}")
+        bits.append(")")
+        if agg.mean is not None:
+            mean_s = f"{agg.mean:.2f}"
+            stddev_s = f"{agg.stddev:.2f}" if agg.stddev is not None else "-"
+            bits.append(f" | mean={mean_s} stddev={stddev_s}")
+            if agg.min is not None and agg.max is not None:
+                bits.append(f" range=[{agg.min:.2f}, {agg.max:.2f}]")
+        if agg.value_counts:
+            total = sum(v.count for v in agg.value_counts) or 1
+            top = agg.value_counts[:3]
+            shares = ", ".join(
+                f'"{v.label}"={v.count}/{total}' for v in top
+            )
+            bits.append(f" | top={shares}")
+        result = ["".join(bits)]
+        rationales = rationale_samples.get(agg.metric_id, [])
+        for r in rationales:
+            result.append("  " * (indent + 1) + f"- rationale: {r}")
+        return result
+
+    for agg in top_level:
+        lines.extend(_format_metric_block(agg, indent=0))
+        meta = metric_meta.get(agg.metric_id)
+        children = children_by_parent.get(str(meta.id), []) if meta else []
+        for child in children:
+            lines.extend(_format_metric_block(child, indent=1))
+
+    lines.append("")
+    lines.append(
+        "Write the JSON object as instructed. Do not include "
+        "preamble, code fences, or trailing commentary."
+    )
+
+    return [
+        {"role": "system", "content": _INSIGHTS_SYSTEM_PROMPT},
+        {"role": "user", "content": "\n".join(lines)},
+    ]
+
+
+def _parse_insights_response(text: str) -> EvaluationTldrSummary:
+    """Coerce the LLM response into ``narrative`` + ``patterns``.
+
+    Matches the JSON-with-fallback pattern used by
+    ``app.api.v1.routes.metrics._parse_metric_generation_response``: try
+    ``json.loads`` first, then fall back to regex extraction of the
+    first ``{...}`` block. Raises ``HTTPException`` with a 502 when the
+    response can't be parsed at all.
+    """
+    cleaned = (text or "").strip()
+    if not cleaned:
+        raise HTTPException(
+            status_code=502, detail="LLM returned an empty insights response"
+        )
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError:
+        import re
+
+        match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+        if not match:
+            raise HTTPException(
+                status_code=502,
+                detail="Could not parse LLM insights response as JSON",
+            )
+        try:
+            parsed = json.loads(match.group(0))
+        except json.JSONDecodeError as e:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Could not parse LLM insights response: {e}",
+            )
+
+    if not isinstance(parsed, dict):
+        raise HTTPException(
+            status_code=502, detail="LLM insights JSON was not an object"
+        )
+
+    narrative = parsed.get("narrative")
+    if not isinstance(narrative, str) or not narrative.strip():
+        raise HTTPException(
+            status_code=502,
+            detail="LLM insights JSON missing 'narrative' string",
+        )
+
+    patterns_raw = parsed.get("patterns")
+    if patterns_raw is None:
+        patterns: List[str] = []
+    elif isinstance(patterns_raw, list):
+        patterns = [
+            str(p).strip()
+            for p in patterns_raw
+            if isinstance(p, str) and p.strip()
+        ]
+    else:
+        raise HTTPException(
+            status_code=502,
+            detail="LLM insights JSON 'patterns' must be a list of strings",
+        )
+
+    return EvaluationTldrSummary(
+        narrative=narrative.strip(),
+        patterns=patterns,
+        generated_at=datetime.now(timezone.utc),
+        generated_at_completed_rows=0,  # filled in by caller
+        is_stale=False,
+    )
+
+
+@router.get(
+    "/{eval_id}/insights",
+    response_model=Optional[EvaluationTldrSummary],
+    operation_id="getCallImportEvaluationInsights",
+)
+async def get_call_import_evaluation_insights(
+    call_import_id: UUID,
+    eval_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> Optional[EvaluationTldrSummary]:
+    """Return the cached TLDR (or ``null``) without contacting the LLM.
+
+    Used by the Visualizations tab on first paint so the empty-state
+    CTA can show up before the user opts into generation.
+    """
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation not found"
+        )
+    return _tldr_summary_payload(evaluation)
+
+
+@router.post(
+    "/{eval_id}/insights",
+    response_model=EvaluationTldrSummary,
+    operation_id="generateCallImportEvaluationInsights",
+)
+async def generate_call_import_evaluation_insights(
+    call_import_id: UUID,
+    eval_id: UUID,
+    body: EvaluationInsightsRequest = Body(default_factory=EvaluationInsightsRequest),
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> EvaluationTldrSummary:
+    """Generate (or return-cached) the LLM TLDR for an evaluation run.
+
+    Behavior:
+
+    * ``body.regenerate=False`` and a cached summary at the current
+      ``completed_rows`` watermark exists -> return it as-is.
+    * ``body.regenerate=False`` and a stale cached summary exists
+      (``generated_at_completed_rows < completed_rows``) -> return it
+      with ``is_stale=True``; the UI prompts the user to regenerate.
+    * Otherwise -> resolve provider+model (auto-detect when omitted),
+      call the LLM, persist the new summary, return it.
+    """
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation not found"
+        )
+
+    if not body.regenerate:
+        cached = _tldr_summary_payload(evaluation)
+        if cached is not None:
+            return cached
+
+    # Generation path. Reuse the existing aggregate computation so the
+    # prompt sees identical numbers to the charts on the same page.
+    eval_rows = (
+        db.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == eval_id)
+        .all()
+    )
+    aggregate = _compute_metric_aggregates(db, evaluation, eval_rows)
+    if not aggregate:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No metric data yet. Wait for at least one row to "
+                "finish scoring before generating a summary."
+            ),
+        )
+
+    # Pull every metric the aggregate references so we can map
+    # parent->child relationships in the prompt.
+    metric_ids: List[UUID] = []
+    for agg in aggregate:
+        try:
+            metric_ids.append(UUID(agg.metric_id))
+        except (TypeError, ValueError):
+            continue
+    metrics = _metrics_for_ids(db, organization_id, metric_ids)
+    metric_meta: Dict[str, Metric] = {str(m.id): m for m in metrics}
+
+    rationale_samples = _sample_rationales_per_metric(eval_rows)
+    messages = _build_insights_messages(
+        evaluation, aggregate, rationale_samples, metric_meta
+    )
+
+    # Imported lazily so the route module stays importable in tests
+    # that stub out ``app.workers.tasks`` (which transitively imports
+    # ``llm_service`` via the worker registry).
+    from app.services.ai.llm_resolver import get_llm_provider_and_model
+    from app.services.ai.llm_service import llm_service
+
+    provider_enum, model_str = get_llm_provider_and_model(
+        organization_id, db, body.provider, body.model
+    )
+
+    try:
+        llm_result = llm_service.generate_response(
+            messages=messages,
+            llm_provider=provider_enum,
+            llm_model=model_str,
+            organization_id=organization_id,
+            db=db,
+            temperature=0.4,
+            max_tokens=700,
+        )
+    except Exception as e:
+        logger.error(f"[CallImportInsights] LLM call failed: {e}")
+        raise HTTPException(
+            status_code=502, detail=f"LLM call failed: {e}"
+        )
+
+    summary = _parse_insights_response(llm_result.get("text", ""))
+    summary.generated_at_completed_rows = evaluation.completed_rows
+    summary.provider = provider_enum.value
+    summary.model = model_str
+    summary.is_stale = False
+
+    evaluation.tldr_summary = {
+        "narrative": summary.narrative,
+        "patterns": summary.patterns,
+        "generated_at": summary.generated_at.isoformat(),
+        "generated_at_completed_rows": summary.generated_at_completed_rows,
+        "provider": summary.provider,
+        "model": summary.model,
+    }
+    # ``JSON`` columns aren't auto-tracked when the same dict is mutated
+    # in place; reassigning is the safest pattern, but we also flag the
+    # attribute so SQLAlchemy schedules the UPDATE either way.
+    from sqlalchemy.orm.attributes import flag_modified
+
+    flag_modified(evaluation, "tldr_summary")
+    db.commit()
+    db.refresh(evaluation)
+
+    return summary
 
 
 # ---------------------------------------------------------------------------
@@ -2059,11 +2557,19 @@ def _get_running_discovered_labels(
 
             existing = by_key.get(key)
             if existing is None:
+                # Track up to N=3 distinct rationales per candidate so
+                # the Promote-to-child flow can pre-fill the new
+                # sub-metric's rubric with concrete LLM examples
+                # without the user copy-pasting from the row table.
+                # ``sample_rationale`` is preserved for back-compat
+                # with older clients; ``examples`` is the new field.
+                examples = [sample] if sample else []
                 by_key[key] = {
                     "key": key,
                     "name": name,
                     "description": description,
                     "sample_rationale": sample,
+                    "examples": examples,
                     "count": 1,
                 }
                 continue
@@ -2073,6 +2579,16 @@ def _get_running_discovered_labels(
                 existing["description"] = description
             if not existing["sample_rationale"] and sample:
                 existing["sample_rationale"] = sample
+            # Append distinct rationales (case-insensitive trim) up
+            # to a small cap. Headroom is intentionally one above
+            # what the UI surfaces (2) so we have a backup when the
+            # first rationale is unhelpful.
+            if sample:
+                ex_list: List[str] = existing.setdefault("examples", [])
+                if len(ex_list) < 3 and not any(
+                    s.strip().lower() == sample.strip().lower() for s in ex_list
+                ):
+                    ex_list.append(sample)
 
     return sorted(
         by_key.values(),

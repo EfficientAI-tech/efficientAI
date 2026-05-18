@@ -11,7 +11,7 @@ from loguru import logger
 
 from app.database import get_db
 from app.dependencies import get_organization_id, get_api_key
-from app.models.database import AIProvider, ModelProvider, Integration, IntegrationPlatform
+from app.models.database import AIProvider, ModelProvider, Integration, IntegrationPlatform, Workspace
 from app.core.encryption import decrypt_api_key
 from app.services.voice_agent.bot_fast_api import run_bot
 from app.services.voice_agent.voice_bundle import run_voice_bundle_fastapi
@@ -106,6 +106,20 @@ async def websocket_endpoint(
                     ).first()
         except ValueError:
             pass
+
+        # Resolve workspace_id: derive from agent when available, otherwise fall
+        # back to the organization's default workspace so created records remain
+        # workspace-scoped.
+        workspace_id: Optional[UUID] = None
+        if agent and getattr(agent, "workspace_id", None):
+            workspace_id = agent.workspace_id
+        else:
+            default_ws = db.query(Workspace).filter(
+                Workspace.organization_id == organization_id,
+                Workspace.is_default == True,  # noqa: E712
+            ).first()
+            if default_ws:
+                workspace_id = default_ws.id
 
         use_voice_bundle_pipeline = bool(voice_bundle and voice_bundle.bundle_type == "stt_llm_tts")
 
@@ -259,10 +273,13 @@ async def websocket_endpoint(
         if persona_id:
             try:
                 persona_uuid = UUID(persona_id)
-                persona = db.query(Persona).filter(
+                persona_query = db.query(Persona).filter(
                     Persona.id == persona_uuid,
                     Persona.organization_id == organization_id
-                ).first()
+                )
+                if workspace_id is not None:
+                    persona_query = persona_query.filter(Persona.workspace_id == workspace_id)
+                persona = persona_query.first()
                 if persona:
                     persona_parts = []
                     persona_parts.append(f"\n\nPersona: {persona.name}")
@@ -283,10 +300,13 @@ async def websocket_endpoint(
         if scenario_id:
             try:
                 scenario_uuid = UUID(scenario_id)
-                scenario = db.query(Scenario).filter(
+                scenario_query = db.query(Scenario).filter(
                     Scenario.id == scenario_uuid,
                     Scenario.organization_id == organization_id
-                ).first()
+                )
+                if workspace_id is not None:
+                    scenario_query = scenario_query.filter(Scenario.workspace_id == workspace_id)
+                scenario = scenario_query.first()
                 if scenario:
                     scenario_parts = []
                     scenario_parts.append(f"\n\nScenario: {scenario.name}")
@@ -341,12 +361,15 @@ async def websocket_endpoint(
                 import random
                 
                 # Find evaluator by agent, persona, scenario
-                evaluator = db.query(Evaluator).filter(
+                evaluator_query = db.query(Evaluator).filter(
                     Evaluator.agent_id == UUID(agent_id),
                     Evaluator.persona_id == UUID(persona_id),
                     Evaluator.scenario_id == UUID(scenario_id),
                     Evaluator.organization_id == organization_id
-                ).first()
+                )
+                if workspace_id is not None:
+                    evaluator_query = evaluator_query.filter(Evaluator.workspace_id == workspace_id)
+                evaluator = evaluator_query.first()
                 
                 # If no evaluator exists, create one automatically for test voice agent calls
                 if not evaluator:
@@ -355,6 +378,7 @@ async def websocket_endpoint(
                     evaluator = Evaluator(
                         evaluator_id=evaluator_id,
                         organization_id=organization_id,
+                        workspace_id=workspace_id,
                         agent_id=UUID(agent_id),
                         persona_id=UUID(persona_id),
                         scenario_id=UUID(scenario_id),
@@ -367,7 +391,10 @@ async def websocket_endpoint(
                 
                 if evaluator:
                     # Get scenario name
-                    scenario = db.query(Scenario).filter(Scenario.id == UUID(scenario_id)).first()
+                    scenario_name_query = db.query(Scenario).filter(Scenario.id == UUID(scenario_id))
+                    if workspace_id is not None:
+                        scenario_name_query = scenario_name_query.filter(Scenario.workspace_id == workspace_id)
+                    scenario = scenario_name_query.first()
                     scenario_name = scenario.name if scenario else "Unknown Scenario"
             except Exception as e:
                 logger.warning(f"Error finding/creating evaluator or generating result_id: {e}")
@@ -483,18 +510,22 @@ async def websocket_endpoint(
                     from app.api.v1.routes.evaluators import generate_unique_evaluator_id
                     import random
                     
-                    evaluator = db.query(Evaluator).filter(
+                    fallback_eval_query = db.query(Evaluator).filter(
                         Evaluator.agent_id == UUID(agent_id),
                         Evaluator.persona_id == UUID(persona_id),
                         Evaluator.scenario_id == UUID(scenario_id),
                         Evaluator.organization_id == organization_id
-                    ).first()
+                    )
+                    if workspace_id is not None:
+                        fallback_eval_query = fallback_eval_query.filter(Evaluator.workspace_id == workspace_id)
+                    evaluator = fallback_eval_query.first()
                     
                     if not evaluator:
                         evaluator_id = generate_unique_evaluator_id(db)
                         evaluator = Evaluator(
                             evaluator_id=evaluator_id,
                             organization_id=organization_id,
+                            workspace_id=workspace_id,
                             agent_id=UUID(agent_id),
                             persona_id=UUID(persona_id),
                             scenario_id=UUID(scenario_id),
@@ -504,7 +535,10 @@ async def websocket_endpoint(
                         db.commit()
                         db.refresh(evaluator)
                     
-                    scenario = db.query(Scenario).filter(Scenario.id == UUID(scenario_id)).first()
+                    fallback_scenario_query = db.query(Scenario).filter(Scenario.id == UUID(scenario_id))
+                    if workspace_id is not None:
+                        fallback_scenario_query = fallback_scenario_query.filter(Scenario.workspace_id == workspace_id)
+                    scenario = fallback_scenario_query.first()
                     scenario_name = scenario.name if scenario else "Unknown Scenario"
                     
                     # Generate result_id
@@ -540,6 +574,7 @@ async def websocket_endpoint(
                     evaluator_result = EvaluatorResult(
                         result_id=result_id,
                         organization_id=organization_id,
+                        workspace_id=workspace_id,
                         evaluator_id=evaluator.id if evaluator else None,  # Optional
                         agent_id=UUID(agent_id),
                         persona_id=UUID(persona_id) if persona_id else None,  # Optional

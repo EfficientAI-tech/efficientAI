@@ -21,8 +21,24 @@ from app.models.database import (
     Metric,
     Organization,
     TelephonyIntegration,
+    Workspace,
 )
 from app.models.enums import CallImportRowStatus, CallImportStatus
+
+
+def _ensure_default_workspace(db_session, org_id):
+    ws = (
+        db_session.query(Workspace)
+        .filter(Workspace.organization_id == org_id, Workspace.is_default.is_(True))
+        .first()
+    )
+    if ws is None:
+        ws = Workspace(
+            organization_id=org_id, name="Default", slug="default", is_default=True
+        )
+        db_session.add(ws)
+        db_session.commit()
+    return ws
 
 
 @pytest.fixture(autouse=True)
@@ -71,9 +87,11 @@ def stub_workers(monkeypatch):
 
 
 def _make_metric(db_session, org_id, name="Politeness"):
+    workspace = _ensure_default_workspace(db_session, org_id)
     metric = Metric(
         id=uuid4(),
         organization_id=org_id,
+        workspace_id=workspace.id,
         name=name,
         description=f"{name} description",
         metric_type="rating",
@@ -110,9 +128,11 @@ def _make_call_import(
         db_session.add(integration)
         db_session.commit()
 
+    workspace = _ensure_default_workspace(db_session, org_id)
     call_import = CallImport(
         id=uuid4(),
         organization_id=org_id,
+        workspace_id=workspace.id,
         provider="exotel",
         telephony_integration_id=integration.id,
         original_filename="batch.csv",
@@ -179,10 +199,14 @@ def test_create_evaluation_rejects_foreign_metric(
     db_session.add(other_org)
     db_session.commit()
 
+    # Foreign org needs its own workspace so the metric FK to workspaces
+    # is satisfied.
+    other_workspace = _ensure_default_workspace(db_session, other_org.id)
     # Metric owned by a *different* org -> rejected.
     other_org_metric = Metric(
         id=uuid4(),
         organization_id=other_org.id,
+        workspace_id=other_workspace.id,
         name="ForeignMetric",
         metric_type="rating",
         trigger="always",

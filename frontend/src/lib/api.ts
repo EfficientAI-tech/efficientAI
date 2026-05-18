@@ -35,6 +35,7 @@ import type {
   CallImportInsightsResponse,
   CallImportTranscribeRequest,
   CallImportTranscribeResponse,
+  Workspace,
 } from '../types/api'
 
 export interface EnterpriseFeatureMeta {
@@ -214,10 +215,13 @@ class ApiClient {
       },
     })
 
-    // Add request interceptor to add API key to headers
+    // Add request interceptor to add API key + active workspace to headers.
+    // Workspace selection is read directly from localStorage to avoid a
+    // circular import between this module and the workspace store.
     this.client.interceptors.request.use((config) => {
       const accessToken = localStorage.getItem('accessToken')
       const apiKey = localStorage.getItem('apiKey')
+      const workspaceId = localStorage.getItem('activeWorkspaceId')
       if (accessToken) {
         config.headers.Authorization = `Bearer ${accessToken}`
       } else if (config.headers.Authorization) {
@@ -227,6 +231,15 @@ class ApiClient {
         config.headers['X-API-Key'] = apiKey
       } else if (config.headers['X-API-Key']) {
         delete config.headers['X-API-Key']
+      }
+      // Send X-Workspace-Id so the backend's get_workspace_id dep scopes
+      // listings to the active workspace. When absent (e.g. a brand-new
+      // session that hasn't called listWorkspaces yet) the backend
+      // falls back to the org's Default workspace.
+      if (workspaceId) {
+        config.headers['X-Workspace-Id'] = workspaceId
+      } else if (config.headers['X-Workspace-Id']) {
+        delete config.headers['X-Workspace-Id']
       }
       return config
     })
@@ -261,6 +274,35 @@ class ApiClient {
 
   clearAccessToken() {
     localStorage.removeItem('accessToken')
+  }
+
+  // Workspace endpoints (in-org isolation boundary for call imports + metrics).
+  async listWorkspaces(): Promise<Workspace[]> {
+    const response = await this.client.get('/api/v1/workspaces')
+    return response.data
+  }
+
+  async createWorkspace(payload: {
+    name: string
+    slug?: string
+  }): Promise<Workspace> {
+    const response = await this.client.post('/api/v1/workspaces', payload)
+    return response.data
+  }
+
+  async updateWorkspace(
+    workspaceId: string,
+    payload: { name: string },
+  ): Promise<Workspace> {
+    const response = await this.client.patch(
+      `/api/v1/workspaces/${workspaceId}`,
+      payload,
+    )
+    return response.data
+  }
+
+  async deleteWorkspace(workspaceId: string): Promise<void> {
+    await this.client.delete(`/api/v1/workspaces/${workspaceId}`)
   }
 
   // Auth endpoints
@@ -1115,6 +1157,51 @@ class ApiClient {
   }
 
   /**
+   * Read the cached LLM TLDR for an evaluation. Returns ``null`` when
+   * the user has never generated one (the empty-state CTA renders
+   * this case).
+   */
+  async getCallImportEvaluationInsights(
+    callImportId: string,
+    evaluationId: string,
+  ): Promise<import('../types/api').EvaluationTldrSummary | null> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/insights`,
+    )
+    return response.data ?? null
+  }
+
+  /**
+   * Generate (or return cached) the LLM TLDR for an evaluation run.
+   *
+   * - Pass ``regenerate: true`` to force a fresh LLM call even when a
+   *   cached summary exists at the current ``completed_rows`` watermark.
+   * - Pass ``provider`` + ``model`` to pin a specific LLM. Omit both to
+   *   let the backend auto-detect the org's first active OpenAI /
+   *   Anthropic / Google credential (mirroring Prompt Partials).
+   */
+  async generateCallImportEvaluationInsights(
+    callImportId: string,
+    evaluationId: string,
+    options?: {
+      regenerate?: boolean
+      provider?: string | null
+      model?: string | null
+    },
+  ): Promise<import('../types/api').EvaluationTldrSummary> {
+    const body: Record<string, unknown> = {
+      regenerate: Boolean(options?.regenerate),
+    }
+    if (options?.provider) body.provider = options.provider
+    if (options?.model) body.model = options.model
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/insights`,
+      body,
+    )
+    return response.data
+  }
+
+  /**
    * Aggregate flow chart for a parent metric: returns nodes/edges built
    * from per-row LLM-inferred ``sequence`` arrays. Used by the React
    * Flow visualisation on the evaluation overview.
@@ -1187,10 +1274,20 @@ class ApiClient {
    * Promote an LLM-discovered candidate into a real child Metric under
    * the given parent. ``key`` must equal ``slugify(name)`` so existing
    * rows' sequence arrays auto-resolve against the new child.
+   *
+   * ``capture_rationale`` defaults to true on the backend (matches the
+   * Discovered Labels UX: candidates are LLM-suggested with rationales,
+   * so the user almost always wants future rows that hit them to keep
+   * capturing rationales).
    */
   async promoteDiscoveredChild(
     parentMetricId: string,
-    body: { key: string; name: string; description?: string | null },
+    body: {
+      key: string
+      name: string
+      description?: string | null
+      capture_rationale?: boolean
+    },
   ): Promise<import('../types/api').MetricSummary> {
     const response = await this.client.post(
       `/api/v1/metrics/${parentMetricId}/children/from-discovered`,

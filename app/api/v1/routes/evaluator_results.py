@@ -7,7 +7,7 @@ from uuid import UUID
 from typing import List, Optional, Dict, Any
 
 from app.database import get_db
-from app.dependencies import get_organization_id, get_api_key
+from app.dependencies import get_organization_id, get_workspace_id, get_api_key
 from app.models.database import EvaluatorResult, Evaluator, Metric, EvaluatorResultStatus, Scenario
 from app.workers.celery_app import process_evaluator_result_task
 import random
@@ -174,17 +174,18 @@ def list_evaluator_results(
     playground: Optional[bool] = Query(None, description="If true, only return playground test results (evaluator_id is NULL). If false, exclude playground results. If not provided, exclude playground results by default."),
     test_agents_only: Optional[bool] = Query(None, description="If true, only return Test Agent results (no provider_platform). If false, include all playground results."),
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """
-    List evaluator results for the organization.
-    
+    """List evaluator results within the active workspace.
+
     By default, excludes playground test results (where evaluator_id is NULL).
     Use playground=true to get only playground results, or playground=false to explicitly exclude them.
     Use test_agents_only=true to filter out Voice AI Agent results (those with provider_platform set).
     """
     query = db.query(EvaluatorResult).filter(
-        EvaluatorResult.organization_id == organization_id
+        EvaluatorResult.organization_id == organization_id,
+        EvaluatorResult.workspace_id == workspace_id,
     )
     
     # Handle playground filter
@@ -274,27 +275,28 @@ def get_evaluator_result(
     id: str,
     include_relations: bool = True,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """Get a specific evaluator result by ID (UUID) or result_id (6-digit)."""
+    """Get a specific evaluator result in the active workspace by UUID or result_id (6-digit)."""
     from app.models.database import Agent, Persona, Scenario, Evaluator
     from app.models.schemas import AgentResponse, PersonaResponse, ScenarioResponse, EvaluatorResponse
     
     try:
-        # Try as UUID first
         result_uuid = UUID(id)
         result = db.query(EvaluatorResult).filter(
             and_(
                 EvaluatorResult.id == result_uuid,
-                EvaluatorResult.organization_id == organization_id
+                EvaluatorResult.organization_id == organization_id,
+                EvaluatorResult.workspace_id == workspace_id,
             )
         ).first()
     except ValueError:
-        # Try as 6-digit ID
         result = db.query(EvaluatorResult).filter(
             and_(
                 EvaluatorResult.result_id == id,
-                EvaluatorResult.organization_id == organization_id
+                EvaluatorResult.organization_id == organization_id,
+                EvaluatorResult.workspace_id == workspace_id,
             )
         ).first()
     
@@ -383,24 +385,25 @@ def get_evaluator_result(
 def delete_evaluator_result(
     id: str,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """Delete a specific evaluator result by ID (UUID) or result_id (6-digit)."""
+    """Delete a specific evaluator result in the active workspace by UUID or result_id."""
     try:
-        # Try as UUID first
         result_uuid = UUID(id)
         result = db.query(EvaluatorResult).filter(
             and_(
                 EvaluatorResult.id == result_uuid,
-                EvaluatorResult.organization_id == organization_id
+                EvaluatorResult.organization_id == organization_id,
+                EvaluatorResult.workspace_id == workspace_id,
             )
         ).first()
     except ValueError:
-        # Try as 6-digit ID
         result = db.query(EvaluatorResult).filter(
             and_(
                 EvaluatorResult.result_id == id,
-                EvaluatorResult.organization_id == organization_id
+                EvaluatorResult.organization_id == organization_id,
+                EvaluatorResult.workspace_id == workspace_id,
             )
         ).first()
     
@@ -416,27 +419,28 @@ def delete_evaluator_result(
 def delete_evaluator_results_bulk(
     result_ids: List[str] = Query(...),
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """Delete multiple evaluator results by their IDs."""
+    """Delete multiple evaluator results in the active workspace by their IDs."""
     deleted_count = 0
     
     for result_id in result_ids:
         try:
-            # Try as UUID first
             result_uuid = UUID(result_id)
             result = db.query(EvaluatorResult).filter(
                 and_(
                     EvaluatorResult.id == result_uuid,
-                    EvaluatorResult.organization_id == organization_id
+                    EvaluatorResult.organization_id == organization_id,
+                    EvaluatorResult.workspace_id == workspace_id,
                 )
             ).first()
         except ValueError:
-            # Try as 6-digit ID
             result = db.query(EvaluatorResult).filter(
                 and_(
                     EvaluatorResult.result_id == result_id,
-                    EvaluatorResult.organization_id == organization_id
+                    EvaluatorResult.organization_id == organization_id,
+                    EvaluatorResult.workspace_id == workspace_id,
                 )
             ).first()
         
@@ -452,22 +456,25 @@ def delete_evaluator_results_bulk(
 def get_evaluator_result_metrics(
     id: str,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """Get metric scores for an evaluator result with metric details."""
+    """Get metric scores for an evaluator result in the active workspace."""
     try:
         result_uuid = UUID(id)
         result = db.query(EvaluatorResult).filter(
             and_(
                 EvaluatorResult.id == result_uuid,
-                EvaluatorResult.organization_id == organization_id
+                EvaluatorResult.organization_id == organization_id,
+                EvaluatorResult.workspace_id == workspace_id,
             )
         ).first()
     except ValueError:
         result = db.query(EvaluatorResult).filter(
             and_(
                 EvaluatorResult.result_id == id,
-                EvaluatorResult.organization_id == organization_id
+                EvaluatorResult.organization_id == organization_id,
+                EvaluatorResult.workspace_id == workspace_id,
             )
         ).first()
     
@@ -503,15 +510,17 @@ def get_evaluator_result_metrics(
 def create_evaluator_result_manual(
     result_data: EvaluatorResultCreateManual,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """
-    Manually create an evaluator result from an existing audio file.
-    This will trigger transcription and metric evaluation automatically.
+    """Manually create an evaluator result in the active workspace from an existing audio file.
+
+    The referenced evaluator must already belong to the active workspace.
     """
     evaluator = db.query(Evaluator).filter(
         Evaluator.id == result_data.evaluator_id,
-        Evaluator.organization_id == organization_id
+        Evaluator.organization_id == organization_id,
+        Evaluator.workspace_id == workspace_id,
     ).first()
     
     if not evaluator:
@@ -540,6 +549,7 @@ def create_evaluator_result_manual(
     evaluator_result = EvaluatorResult(
         result_id=result_id,
         organization_id=organization_id,
+        workspace_id=workspace_id,
         evaluator_id=evaluator.id,
         agent_id=evaluator.agent_id,
         persona_id=evaluator.persona_id,
@@ -572,6 +582,7 @@ def create_evaluator_result_manual(
 def re_evaluate_result(
     id: str,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
     """
@@ -589,11 +600,19 @@ def re_evaluate_result(
     try:
         result_uuid = UUID(id)
         result = db.query(EvaluatorResult).filter(
-            and_(EvaluatorResult.id == result_uuid, EvaluatorResult.organization_id == organization_id)
+            and_(
+                EvaluatorResult.id == result_uuid,
+                EvaluatorResult.organization_id == organization_id,
+                EvaluatorResult.workspace_id == workspace_id,
+            )
         ).first()
     except ValueError:
         result = db.query(EvaluatorResult).filter(
-            and_(EvaluatorResult.result_id == id, EvaluatorResult.organization_id == organization_id)
+            and_(
+                EvaluatorResult.result_id == id,
+                EvaluatorResult.organization_id == organization_id,
+                EvaluatorResult.workspace_id == workspace_id,
+            )
         ).first()
 
     if not result:

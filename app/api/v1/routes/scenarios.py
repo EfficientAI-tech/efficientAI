@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from typing import List
 from uuid import UUID
 
-from app.dependencies import get_db, get_organization_id
+from app.dependencies import get_db, get_organization_id, get_workspace_id
 from app.models.database import Scenario, Agent, Evaluator, EvaluatorResult, TestAgentConversation
 from app.models.schemas import (
     ScenarioCreate, ScenarioUpdate, ScenarioResponse
@@ -21,19 +21,23 @@ router = APIRouter(prefix="/scenarios", tags=["scenarios"])
 async def create_scenario(
     scenario: ScenarioCreate,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db)
 ):
-    """Create a new scenario"""
+    """Create a new scenario stamped with the active workspace."""
     if scenario.agent_id is not None:
+        # Agent must belong to the same workspace as the scenario.
         linked_agent = db.query(Agent).filter(
             Agent.id == scenario.agent_id,
             Agent.organization_id == organization_id,
+            Agent.workspace_id == workspace_id,
         ).first()
         if not linked_agent:
             raise HTTPException(status_code=404, detail=f"Agent {scenario.agent_id} not found")
 
     db_scenario = Scenario(
         organization_id=organization_id,
+        workspace_id=workspace_id,
         agent_id=scenario.agent_id,
         name=scenario.name,
         description=scenario.description,
@@ -50,11 +54,13 @@ async def list_scenarios(
     skip: int = 0,
     limit: int = 100,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db)
 ):
-    """Get list of all scenarios for the organization"""
+    """List scenarios for the active workspace."""
     scenarios = db.query(Scenario).filter(
-        Scenario.organization_id == organization_id
+        Scenario.organization_id == organization_id,
+        Scenario.workspace_id == workspace_id,
     ).offset(skip).limit(limit).all()
     return scenarios
 
@@ -63,12 +69,14 @@ async def list_scenarios(
 async def get_scenario(
     scenario_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db)
 ):
-    """Get a specific scenario by ID"""
+    """Get a specific scenario within the active workspace."""
     scenario = db.query(Scenario).filter(
         Scenario.id == scenario_id,
-        Scenario.organization_id == organization_id
+        Scenario.organization_id == organization_id,
+        Scenario.workspace_id == workspace_id,
     ).first()
     if not scenario:
         raise HTTPException(status_code=404, detail=f"Scenario {scenario_id} not found")
@@ -80,12 +88,14 @@ async def update_scenario(
     scenario_id: UUID,
     scenario_update: ScenarioUpdate,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db)
 ):
-    """Update an existing scenario"""
+    """Update a scenario within the active workspace."""
     db_scenario = db.query(Scenario).filter(
         Scenario.id == scenario_id,
-        Scenario.organization_id == organization_id
+        Scenario.organization_id == organization_id,
+        Scenario.workspace_id == workspace_id,
     ).first()
     if not db_scenario:
         raise HTTPException(status_code=404, detail=f"Scenario {scenario_id} not found")
@@ -94,6 +104,7 @@ async def update_scenario(
         linked_agent = db.query(Agent).filter(
             Agent.id == scenario_update.agent_id,
             Agent.organization_id == organization_id,
+            Agent.workspace_id == workspace_id,
         ).first()
         if not linked_agent:
             raise HTTPException(status_code=404, detail=f"Agent {scenario_update.agent_id} not found")
@@ -112,12 +123,14 @@ async def delete_scenario(
     scenario_id: UUID,
     force: bool = Query(False, description="Force delete with all dependent records"),
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db)
 ):
-    """Delete a scenario. Returns 409 if dependent records exist unless force=true."""
+    """Delete a scenario within the active workspace. Returns 409 if dependent records exist unless force=true."""
     db_scenario = db.query(Scenario).filter(
         Scenario.id == scenario_id,
-        Scenario.organization_id == organization_id
+        Scenario.organization_id == organization_id,
+        Scenario.workspace_id == workspace_id,
     ).first()
     if not db_scenario:
         raise HTTPException(status_code=404, detail=f"Scenario {scenario_id} not found")

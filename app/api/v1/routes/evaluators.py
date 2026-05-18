@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from loguru import logger
 
 from app.database import get_db
-from app.dependencies import get_organization_id, get_api_key
+from app.dependencies import get_organization_id, get_workspace_id, get_api_key
 from app.models.database import Evaluator, Agent, Persona, Scenario, EvaluatorResult, EvaluatorResultStatus, VoiceBundle
 from app.models.schemas import (
     EvaluatorCreate,
@@ -109,9 +109,14 @@ def format_custom_prompt(
 def create_evaluator(
     evaluator_data: EvaluatorCreate,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """Create a new evaluator. Supports standard (agent+persona+scenario) or custom (custom_prompt) mode."""
+    """Create an evaluator stamped with the active workspace.
+
+    Standard evaluators (agent + persona + scenario) require all three
+    referenced resources to live in the *same* workspace as the caller.
+    """
     is_custom = bool(evaluator_data.custom_prompt)
     
     if is_custom:
@@ -125,19 +130,31 @@ def create_evaluator(
             )
         
         agent = db.query(Agent).filter(
-            and_(Agent.id == evaluator_data.agent_id, Agent.organization_id == organization_id)
+            and_(
+                Agent.id == evaluator_data.agent_id,
+                Agent.organization_id == organization_id,
+                Agent.workspace_id == workspace_id,
+            )
         ).first()
         if not agent:
             raise HTTPException(status_code=404, detail="Agent not found")
 
         persona = db.query(Persona).filter(
-            and_(Persona.id == evaluator_data.persona_id, Persona.organization_id == organization_id)
+            and_(
+                Persona.id == evaluator_data.persona_id,
+                Persona.organization_id == organization_id,
+                Persona.workspace_id == workspace_id,
+            )
         ).first()
         if not persona:
             raise HTTPException(status_code=404, detail="Persona not found")
 
         scenario = db.query(Scenario).filter(
-            and_(Scenario.id == evaluator_data.scenario_id, Scenario.organization_id == organization_id)
+            and_(
+                Scenario.id == evaluator_data.scenario_id,
+                Scenario.organization_id == organization_id,
+                Scenario.workspace_id == workspace_id,
+            )
         ).first()
         if not scenario:
             raise HTTPException(status_code=404, detail="Scenario not found")
@@ -162,6 +179,7 @@ def create_evaluator(
     evaluator = Evaluator(
         evaluator_id=evaluator_id,
         organization_id=organization_id,
+        workspace_id=workspace_id,
         name=evaluator_data.name,
         agent_id=evaluator_data.agent_id if not is_custom else None,
         persona_id=evaluator_data.persona_id if not is_custom else None,
@@ -182,26 +200,36 @@ def create_evaluator(
 def create_evaluators_bulk(
     bulk_data: EvaluatorBulkCreate,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """Create multiple evaluators for a scenario with multiple personas."""
-    # Verify agent exists and belongs to organization
+    """Create multiple evaluators in the active workspace for the same agent/scenario."""
     agent = db.query(Agent).filter(
-        and_(Agent.id == bulk_data.agent_id, Agent.organization_id == organization_id)
+        and_(
+            Agent.id == bulk_data.agent_id,
+            Agent.organization_id == organization_id,
+            Agent.workspace_id == workspace_id,
+        )
     ).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    # Verify scenario exists and belongs to organization
     scenario = db.query(Scenario).filter(
-        and_(Scenario.id == bulk_data.scenario_id, Scenario.organization_id == organization_id)
+        and_(
+            Scenario.id == bulk_data.scenario_id,
+            Scenario.organization_id == organization_id,
+            Scenario.workspace_id == workspace_id,
+        )
     ).first()
     if not scenario:
         raise HTTPException(status_code=404, detail="Scenario not found")
 
-    # Verify all personas exist and belong to organization
     personas = db.query(Persona).filter(
-        and_(Persona.id.in_(bulk_data.persona_ids), Persona.organization_id == organization_id)
+        and_(
+            Persona.id.in_(bulk_data.persona_ids),
+            Persona.organization_id == organization_id,
+            Persona.workspace_id == workspace_id,
+        )
     ).all()
     if len(personas) != len(bulk_data.persona_ids):
         raise HTTPException(status_code=404, detail="One or more personas not found")
@@ -232,6 +260,7 @@ def create_evaluators_bulk(
         evaluator = Evaluator(
             evaluator_id=evaluator_id,
             organization_id=organization_id,
+            workspace_id=workspace_id,
             name=bulk_data.name,
             agent_id=bulk_data.agent_id,
             persona_id=persona_id,
@@ -251,11 +280,13 @@ def create_evaluators_bulk(
 @router.get("", response_model=List[EvaluatorResponse])
 def list_evaluators(
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """List all evaluators for the organization."""
+    """List evaluators in the active workspace."""
     evaluators = db.query(Evaluator).filter(
-        Evaluator.organization_id == organization_id
+        Evaluator.organization_id == organization_id,
+        Evaluator.workspace_id == workspace_id,
     ).order_by(Evaluator.created_at.desc()).all()
     return evaluators
 
@@ -264,24 +295,25 @@ def list_evaluators(
 def get_evaluator(
     evaluator_id: str,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """Get a specific evaluator by ID (UUID) or evaluator_id (6-digit)."""
-    # Try UUID first
+    """Get an evaluator in the active workspace by UUID or evaluator_id (6-digit)."""
     try:
         evaluator_uuid = UUID(evaluator_id)
         evaluator = db.query(Evaluator).filter(
             and_(
                 Evaluator.id == evaluator_uuid,
-                Evaluator.organization_id == organization_id
+                Evaluator.organization_id == organization_id,
+                Evaluator.workspace_id == workspace_id,
             )
         ).first()
     except ValueError:
-        # Not a UUID, try 6-digit ID
         evaluator = db.query(Evaluator).filter(
             and_(
                 Evaluator.evaluator_id == evaluator_id,
-                Evaluator.organization_id == organization_id
+                Evaluator.organization_id == organization_id,
+                Evaluator.workspace_id == workspace_id,
             )
         ).first()
 
@@ -296,34 +328,41 @@ def update_evaluator(
     evaluator_id: str,
     evaluator_data: EvaluatorUpdate,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """Update an evaluator."""
-    # Try UUID first
+    """Update an evaluator within the active workspace."""
     try:
         evaluator_uuid = UUID(evaluator_id)
         evaluator = db.query(Evaluator).filter(
             and_(
                 Evaluator.id == evaluator_uuid,
-                Evaluator.organization_id == organization_id
+                Evaluator.organization_id == organization_id,
+                Evaluator.workspace_id == workspace_id,
             )
         ).first()
     except ValueError:
-        # Not a UUID, try 6-digit ID
         evaluator = db.query(Evaluator).filter(
             and_(
                 Evaluator.evaluator_id == evaluator_id,
-                Evaluator.organization_id == organization_id
+                Evaluator.organization_id == organization_id,
+                Evaluator.workspace_id == workspace_id,
             )
         ).first()
 
     if not evaluator:
         raise HTTPException(status_code=404, detail="Evaluator not found")
 
-    # Update fields if provided
+    # Re-validate any newly-referenced resources against the active workspace
+    # to prevent cross-workspace pointer attacks (assigning a foreign workspace's
+    # agent to this evaluator).
     if evaluator_data.agent_id is not None:
         agent = db.query(Agent).filter(
-            and_(Agent.id == evaluator_data.agent_id, Agent.organization_id == organization_id)
+            and_(
+                Agent.id == evaluator_data.agent_id,
+                Agent.organization_id == organization_id,
+                Agent.workspace_id == workspace_id,
+            )
         ).first()
         if not agent:
             raise HTTPException(status_code=404, detail="Agent not found")
@@ -331,7 +370,11 @@ def update_evaluator(
 
     if evaluator_data.persona_id is not None:
         persona = db.query(Persona).filter(
-            and_(Persona.id == evaluator_data.persona_id, Persona.organization_id == organization_id)
+            and_(
+                Persona.id == evaluator_data.persona_id,
+                Persona.organization_id == organization_id,
+                Persona.workspace_id == workspace_id,
+            )
         ).first()
         if not persona:
             raise HTTPException(status_code=404, detail="Persona not found")
@@ -339,7 +382,11 @@ def update_evaluator(
 
     if evaluator_data.scenario_id is not None:
         scenario = db.query(Scenario).filter(
-            and_(Scenario.id == evaluator_data.scenario_id, Scenario.organization_id == organization_id)
+            and_(
+                Scenario.id == evaluator_data.scenario_id,
+                Scenario.organization_id == organization_id,
+                Scenario.workspace_id == workspace_id,
+            )
         ).first()
         if not scenario:
             raise HTTPException(status_code=404, detail="Scenario not found")
@@ -371,22 +418,25 @@ def delete_evaluator(
     evaluator_id: str,
     force: bool = Query(False, description="Deprecated: evaluator deletion keeps dependent results"),
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """Delete an evaluator while preserving dependent evaluator results."""
+    """Delete an evaluator in the active workspace while preserving dependent results."""
     try:
         evaluator_uuid = UUID(evaluator_id)
         evaluator = db.query(Evaluator).filter(
             and_(
                 Evaluator.id == evaluator_uuid,
-                Evaluator.organization_id == organization_id
+                Evaluator.organization_id == organization_id,
+                Evaluator.workspace_id == workspace_id,
             )
         ).first()
     except ValueError:
         evaluator = db.query(Evaluator).filter(
             and_(
                 Evaluator.evaluator_id == evaluator_id,
-                Evaluator.organization_id == organization_id
+                Evaluator.organization_id == organization_id,
+                Evaluator.workspace_id == workspace_id,
             )
         ).first()
 
@@ -424,10 +474,11 @@ def delete_evaluator(
 def run_evaluators(
     request: RunEvaluatorsRequest,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """Run multiple evaluators in parallel using Celery workers.
-    
+    """Run multiple evaluators in the active workspace in parallel using Celery workers.
+
     The same evaluator ID can appear multiple times in the request to run
     the same evaluator multiple times in parallel.
     """
@@ -442,11 +493,12 @@ def run_evaluators(
     # Get unique evaluator IDs for validation
     unique_evaluator_ids = list(set(request.evaluator_ids))
     
-    # Validate all unique evaluators exist and belong to organization
+    # Validate all unique evaluators exist and belong to organization + workspace
     evaluators = db.query(Evaluator).filter(
         and_(
             Evaluator.id.in_(unique_evaluator_ids),
-            Evaluator.organization_id == organization_id
+            Evaluator.organization_id == organization_id,
+            Evaluator.workspace_id == workspace_id,
         )
     ).all()
     
@@ -490,6 +542,7 @@ def run_evaluators(
             evaluator_result = EvaluatorResult(
                 result_id=result_id,
                 organization_id=organization_id,
+                workspace_id=workspace_id,
                 evaluator_id=evaluator.id,
                 agent_id=evaluator.agent_id,
                 persona_id=evaluator.persona_id,

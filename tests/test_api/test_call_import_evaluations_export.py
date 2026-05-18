@@ -17,14 +17,34 @@ from app.models.database import (
     CallImportEvaluationRow,
     CallImportRow,
     Metric,
+    Workspace,
 )
 from app.models.enums import CallImportRowStatus, CallImportStatus, MetricType, MetricTrigger
 
 
+def _ensure_default_workspace(db_session, org_id):
+    """Tests bypass the migration, so seed the per-org Default workspace
+    on demand. The first call creates it; subsequent calls reuse it."""
+    ws = (
+        db_session.query(Workspace)
+        .filter(Workspace.organization_id == org_id, Workspace.is_default.is_(True))
+        .first()
+    )
+    if ws is None:
+        ws = Workspace(
+            organization_id=org_id, name="Default", slug="default", is_default=True
+        )
+        db_session.add(ws)
+        db_session.commit()
+    return ws
+
+
 def _make_call_import(db_session, org_id, *, custom_columns=None):
+    workspace = _ensure_default_workspace(db_session, org_id)
     call_import = CallImport(
         id=uuid4(),
         organization_id=org_id,
+        workspace_id=workspace.id,
         provider="exotel",
         original_filename="test.csv",
         column_mapping={
@@ -76,9 +96,11 @@ def _make_metric(
     custom_config=None,
     metric_type=MetricType.RATING.value,
 ):
+    workspace = _ensure_default_workspace(db_session, org_id)
     metric = Metric(
         id=uuid4(),
         organization_id=org_id,
+        workspace_id=workspace.id,
         name=name,
         description=f"Evaluate {name}",
         metric_type=metric_type,
@@ -106,6 +128,7 @@ def _make_evaluation_with_row(
         id=uuid4(),
         call_import_id=call_import.id,
         organization_id=call_import.organization_id,
+        workspace_id=call_import.workspace_id,
         name="QA pass",
         selected_metric_ids=[str(m.id) for m in metrics],
         status="completed",

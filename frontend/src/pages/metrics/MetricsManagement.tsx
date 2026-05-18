@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../lib/api'
 import Button from '../../components/Button'
 import { useToast } from '../../hooks/useToast'
+import { useWorkspaceStore } from '../../store/workspaceStore'
 import {
   Edit,
   Trash2,
@@ -87,6 +88,10 @@ const SURFACE_LABELS: Record<MetricSurface, string> = {
 
 export default function MetricsManagement() {
   const queryClient = useQueryClient()
+  // Adding the active workspace id to every metrics queryKey so a
+  // workspace switch produces a clean cache miss instead of showing
+  // the previously-loaded metric library.
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
   const { showToast, ToastContainer } = useToast()
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [isCustomMetricMode, setIsCustomMetricMode] = useState(false)
@@ -250,7 +255,7 @@ export default function MetricsManagement() {
   })
 
   const { data: metrics = [], isLoading } = useQuery({
-    queryKey: ['metrics', surfaceFilter],
+    queryKey: ['metrics', activeWorkspaceId, surfaceFilter],
     queryFn: () => apiClient.listMetrics(surfaceFilter === 'all' ? undefined : surfaceFilter),
   })
 

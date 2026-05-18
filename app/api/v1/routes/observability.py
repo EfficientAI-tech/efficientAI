@@ -9,10 +9,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
-from app.dependencies import get_api_key, get_db, get_organization_id
+from app.dependencies import get_api_key, get_db, get_organization_id, get_workspace_id
 from app.models.database import (
     Agent, APIKey, CallRecording, CallRecordingStatus, CallRecordingSource,
-    Evaluator, EvaluatorResult, EvaluatorResultStatus, Scenario,
+    Evaluator, EvaluatorResult, EvaluatorResultStatus, Scenario, Workspace,
 )
 from app.utils.call_recordings import generate_unique_call_short_id
 from app.workers.celery_app import process_evaluator_result_task
@@ -82,10 +82,36 @@ def _serialize_call_recording(call_recording: CallRecording, include_data: bool 
     return payload
 
 
+def _resolve_default_workspace_id(db: Session, organization_id: UUID) -> UUID:
+    """Return the org's Default workspace_id.
+
+    Used by webhook ingestion paths where there is no authenticated session
+    to supply an ``X-Workspace-Id`` header.
+    """
+    default_ws = (
+        db.query(Workspace)
+        .filter(
+            Workspace.organization_id == organization_id,
+            Workspace.is_default.is_(True),
+        )
+        .first()
+    )
+    if default_ws is None:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "No default workspace exists for this organization. "
+                "Migration 033 may not have run."
+            ),
+        )
+    return default_ws.id
+
+
 def _upsert_call_recording(
     *,
     db: Session,
     organization_id: UUID,
+    workspace_id: UUID,
     provider_platform: str,
     provider_call_id: str,
     call_data_payload: Dict[str, Any],
@@ -94,7 +120,11 @@ def _upsert_call_recording(
     call_event: Optional[str] = None,
     source: CallRecordingSource = CallRecordingSource.WEBHOOK,
 ) -> Dict[str, Any]:
-    """Create/update a call recording for an organization."""
+    """Create/update a call recording for an organization + workspace.
+
+    If the referenced agent lives in a different workspace, prefer the agent's
+    workspace so the recording stays co-located with its agent for filtering.
+    """
     # Attempt to link to an internal agent when a UUID is provided (unless explicit agent provided)
     agent_id: Optional[UUID] = explicit_agent_id
     if not agent_id and agent_ref_raw:
@@ -107,6 +137,8 @@ def _upsert_call_recording(
             )
             if agent:
                 agent_id = agent.id
+                if agent.workspace_id and agent.workspace_id != workspace_id:
+                    workspace_id = agent.workspace_id
         except ValueError:
             # Not a UUID; treat as external reference only
             agent_id = None
@@ -139,6 +171,7 @@ def _upsert_call_recording(
     else:
         call_recording = CallRecording(
             organization_id=organization_id,
+            workspace_id=workspace_id,
             call_short_id=generate_unique_call_short_id(db),
             status=CallRecordingStatus.UPDATED,
             call_event=call_event,
@@ -174,7 +207,7 @@ def _validate_webhook_api_key(api_key: str, db: Session) -> UUID:
 
 
 def _process_flat_payload(body: Dict[str, Any], organization_id: UUID, db: Session) -> Dict[str, Any]:
-    """Process a flat CallIngestionPayload-style body."""
+    """Process a flat CallIngestionPayload-style body in the org's default workspace."""
     payload = CallIngestionPayload.model_validate(body)
 
     provider_call_id = payload.id
@@ -200,9 +233,12 @@ def _process_flat_payload(body: Dict[str, Any], organization_id: UUID, db: Sessi
     elif payload.startedAt:
         call_event = "call_started"
 
+    workspace_id = _resolve_default_workspace_id(db, organization_id)
+
     return _upsert_call_recording(
         db=db,
         organization_id=organization_id,
+        workspace_id=workspace_id,
         provider_platform=provider_platform,
         provider_call_id=provider_call_id,
         call_data_payload=call_data_payload,
@@ -213,7 +249,7 @@ def _process_flat_payload(body: Dict[str, Any], organization_id: UUID, db: Sessi
 
 
 def _process_provider_payload(body: Dict[str, Any], organization_id: UUID, db: Session) -> Dict[str, Any]:
-    """Process a provider webhook payload (Retell / Vapi / generic with call or call_data key)."""
+    """Process a provider webhook payload in the org's default workspace."""
     call_payload = body.get("call") or body.get("call_data")
     if not call_payload:
         raise HTTPException(
@@ -242,9 +278,12 @@ def _process_provider_payload(body: Dict[str, Any], organization_id: UUID, db: S
     call_data_payload = dict(call_payload)
     call_event = body.get("event") or call_data_payload.pop("_event", None)
 
+    workspace_id = _resolve_default_workspace_id(db, organization_id)
+
     return _upsert_call_recording(
         db=db,
         organization_id=organization_id,
+        workspace_id=workspace_id,
         provider_platform=provider_platform,
         provider_call_id=provider_call_id,
         call_data_payload=call_data_payload,
@@ -298,16 +337,18 @@ async def list_calls(
     skip: int = 0,
     limit: int = 100,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ) -> List[Dict[str, Any]]:
-    """List ingested call records for the organization."""
+    """List ingested call records in the active workspace."""
     del api_key  # Dependency enforcement only
 
     call_recordings = (
         db.query(CallRecording)
         .filter(
             CallRecording.organization_id == organization_id,
+            CallRecording.workspace_id == workspace_id,
             CallRecording.source == CallRecordingSource.WEBHOOK,
         )
         .order_by(CallRecording.created_at.desc())
@@ -323,10 +364,11 @@ async def list_calls(
 async def get_call(
     call_short_id: str,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
-    """Retrieve a specific call by its short ID, including stored payload."""
+    """Retrieve a specific call in the active workspace by its short ID."""
     del api_key  # Dependency enforcement only
 
     call_recording = (
@@ -334,6 +376,7 @@ async def get_call(
         .filter(
             CallRecording.call_short_id == call_short_id,
             CallRecording.organization_id == organization_id,
+            CallRecording.workspace_id == workspace_id,
             CallRecording.source == CallRecordingSource.WEBHOOK,
         )
         .first()
@@ -352,10 +395,11 @@ async def get_call(
 async def delete_call(
     call_short_id: str,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
-    """Delete a webhook ingested call recording by its short ID."""
+    """Delete a webhook ingested call recording in the active workspace."""
     del api_key  # Dependency enforcement only
 
     call_recording = (
@@ -363,6 +407,7 @@ async def delete_call(
         .filter(
             CallRecording.call_short_id == call_short_id,
             CallRecording.organization_id == organization_id,
+            CallRecording.workspace_id == workspace_id,
             CallRecording.source == CallRecordingSource.WEBHOOK,
         )
         .first()
@@ -422,14 +467,14 @@ async def evaluate_call(
     call_short_id: str,
     payload: EvaluateCallPayload,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
-    """
-    Trigger an LLM evaluation on an ingested call using the specified evaluator.
+    """Trigger an LLM evaluation on an ingested call in the active workspace.
 
-    The call must have messages in its call_data. A transcript is built from those
-    messages and an EvaluatorResult is created and queued for evaluation.
+    Both the call recording and the evaluator must already live in the same
+    workspace as the caller.
     """
     del api_key
 
@@ -438,6 +483,7 @@ async def evaluate_call(
         .filter(
             CallRecording.call_short_id == call_short_id,
             CallRecording.organization_id == organization_id,
+            CallRecording.workspace_id == workspace_id,
             CallRecording.source == CallRecordingSource.WEBHOOK,
         )
         .first()
@@ -460,7 +506,11 @@ async def evaluate_call(
 
     evaluator = (
         db.query(Evaluator)
-        .filter(Evaluator.id == evaluator_uuid, Evaluator.organization_id == organization_id)
+        .filter(
+            Evaluator.id == evaluator_uuid,
+            Evaluator.organization_id == organization_id,
+            Evaluator.workspace_id == workspace_id,
+        )
         .first()
     )
     if not evaluator:
@@ -495,6 +545,7 @@ async def evaluate_call(
     evaluator_result = EvaluatorResult(
         result_id=result_id,
         organization_id=organization_id,
+        workspace_id=workspace_id,
         evaluator_id=evaluator.id,
         agent_id=evaluator.agent_id,
         persona_id=evaluator.persona_id,

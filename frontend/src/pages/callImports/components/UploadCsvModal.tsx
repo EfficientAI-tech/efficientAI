@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 import { apiClient } from '../../../lib/api'
 import Button from '../../../components/Button'
+import { useWorkspaceStore } from '../../../store/workspaceStore'
 import type { CallImportTag } from '../../../types/api'
 
 interface UploadCsvModalProps {
@@ -148,6 +149,7 @@ function buildInitialColumnRows(headers: string[]): ColumnRow[] {
 export default function UploadCsvModal({ open, onClose }: UploadCsvModalProps) {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
   const [step, setStep] = useState(1)
   const [file, setFile] = useState<File | null>(null)
   const [headers, setHeaders] = useState<string[]>([])
@@ -167,13 +169,13 @@ export default function UploadCsvModal({ open, onClose }: UploadCsvModalProps) {
   })
 
   const { data: existingDatasets = [] } = useQuery({
-    queryKey: ['call-import-datasets'],
+    queryKey: ['call-import-datasets', activeWorkspaceId],
     queryFn: () => apiClient.listCallImportDatasets(),
     enabled: open,
   })
 
   const { data: allTags = [] } = useQuery({
-    queryKey: ['call-import-tags'],
+    queryKey: ['call-import-tags', activeWorkspaceId],
     queryFn: () => apiClient.listCallImportTags(),
     enabled: open,
   })

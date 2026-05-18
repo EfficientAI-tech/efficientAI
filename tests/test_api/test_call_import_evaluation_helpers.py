@@ -22,8 +22,10 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from app.api.v1.routes import call_import_evaluations as routes_module
 from app.api.v1.routes.call_import_evaluations import (
     _build_flow_graph,
+    _compute_metric_aggregates,
     _resolve_alias,
     _slug_label,
     normalize_scores_with_aliases,
@@ -46,12 +48,14 @@ def _metric(
     name: str,
     selection_mode: Optional[str] = None,
     parent_id: Optional[UUID] = None,
+    metric_type: str = "text",
 ) -> SimpleNamespace:
     return SimpleNamespace(
         id=uuid4(),
         name=name,
         selection_mode=selection_mode,
         parent_metric_id=parent_id,
+        metric_type=metric_type,
     )
 
 
@@ -342,3 +346,145 @@ def test_normalize_scores_ignores_non_parent_entries():
 )
 def test_slug_label(raw, expected):
     assert _slug_label(raw) == expected
+
+
+# ---------------------------------------------------------------------------
+# _compute_metric_aggregates: focused on the multi-label parent fixes
+# (rows-scored count, ``is_multi_label_parent`` flag, parent-before-child
+# sort order) and the regression where the parent's n was the sum of all
+# child label occurrences instead of the number of rows.
+# ---------------------------------------------------------------------------
+
+
+def _aggregate_eval_stub(selected_ids):
+    """Tiny stand-in for ``CallImportEvaluation`` used by the helper."""
+    return SimpleNamespace(
+        organization_id=uuid4(),
+        selected_metric_ids=[str(mid) for mid in selected_ids],
+        selected_metric_groups=None,
+    )
+
+
+def test_aggregate_multi_label_parent_count_is_rows_scored(monkeypatch):
+    parent = _metric(name="Wrapup Path", selection_mode="multi_label")
+    child_a = _metric(name="Confirmed", parent_id=parent.id)
+    child_b = _metric(name="Escalated", parent_id=parent.id)
+
+    # Patch ``_metrics_for_ids`` so we don't need a DB session.
+    monkeypatch.setattr(
+        routes_module,
+        "_metrics_for_ids",
+        lambda db, org_id, ids: [parent, child_a, child_b],
+    )
+
+    # Three rows, each contributing >=2 labels to the parent and one
+    # boolean to each child. Total label-occurrences on the parent =
+    # 3+3 = 6, but only 3 rows were scored.
+    eval_rows = []
+    for _ in range(3):
+        eval_rows.append(
+            _FakeRow(
+                {
+                    str(parent.id): {
+                        "type": "category",
+                        "metric_name": parent.name,
+                        "selected_child_names": [child_a.name, child_b.name],
+                    },
+                    str(child_a.id): {
+                        "type": "boolean",
+                        "value": True,
+                        "metric_name": child_a.name,
+                    },
+                    str(child_b.id): {
+                        "type": "boolean",
+                        "value": True,
+                        "metric_name": child_b.name,
+                    },
+                }
+            )
+        )
+
+    evaluation = _aggregate_eval_stub([parent.id, child_a.id, child_b.id])
+    aggregates = _compute_metric_aggregates(MagicMock(), evaluation, eval_rows)
+
+    by_id = {agg.metric_id: agg for agg in aggregates}
+    parent_agg = by_id[str(parent.id)]
+    assert parent_agg.is_multi_label_parent is True
+    # The bug we're fixing: previously ``count`` was sum(child counts) = 6.
+    assert parent_agg.count == 3, (
+        "Parent count should be rows scored, not sum of child label counts"
+    )
+    # Per-child label tallies still match the boolean histograms.
+    label_counts = {vc.label: vc.count for vc in parent_agg.value_counts}
+    assert label_counts[child_a.name] == 3
+    assert label_counts[child_b.name] == 3
+
+
+def test_aggregate_sort_places_parent_before_children(monkeypatch):
+    parent = _metric(name="Wrapup Path", selection_mode="multi_label")
+    child_a = _metric(name="Confirmed", parent_id=parent.id)
+    child_b = _metric(name="Escalated", parent_id=parent.id)
+    standalone = _metric(name="Politeness")
+
+    # Returned in a deliberately scrambled order so we exercise the
+    # sort, not just iteration order.
+    monkeypatch.setattr(
+        routes_module,
+        "_metrics_for_ids",
+        lambda db, org_id, ids: [child_b, standalone, parent, child_a],
+    )
+
+    eval_rows = [
+        _FakeRow(
+            {
+                str(parent.id): {
+                    "type": "category",
+                    "selected_child_names": [child_a.name],
+                },
+                str(child_a.id): {"type": "boolean", "value": True},
+                str(child_b.id): {"type": "boolean", "value": False},
+                str(standalone.id): {"type": "rating", "value": 4},
+            }
+        )
+    ]
+
+    evaluation = _aggregate_eval_stub(
+        [parent.id, child_a.id, child_b.id, standalone.id]
+    )
+    aggregates = _compute_metric_aggregates(MagicMock(), evaluation, eval_rows)
+    order = [agg.metric_id for agg in aggregates]
+
+    parent_idx = order.index(str(parent.id))
+    child_a_idx = order.index(str(child_a.id))
+    child_b_idx = order.index(str(child_b.id))
+    standalone_idx = order.index(str(standalone.id))
+
+    assert parent_idx < child_a_idx, "Parent must precede its children"
+    assert parent_idx < child_b_idx, "Parent must precede its children"
+    # Children should sort alphabetically within their group.
+    assert child_a_idx < child_b_idx, "Children should sort by name"
+    # Standalone metric goes wherever its UUID lands in the sort, but
+    # must sit cleanly outside the parent->children block (i.e. either
+    # entirely before parent or entirely after the last child).
+    assert standalone_idx < parent_idx or standalone_idx > child_b_idx
+
+
+def test_aggregate_non_multi_label_metric_keeps_legacy_count(monkeypatch):
+    metric = _metric(name="Politeness")  # no selection_mode -> plain rating
+
+    monkeypatch.setattr(
+        routes_module, "_metrics_for_ids", lambda db, org_id, ids: [metric]
+    )
+
+    eval_rows = [
+        _FakeRow({str(metric.id): {"type": "rating", "value": 4}}),
+        _FakeRow({str(metric.id): {"type": "rating", "value": 5}}),
+        _FakeRow({str(metric.id): {"type": "rating", "value": 3}}),
+    ]
+
+    evaluation = _aggregate_eval_stub([metric.id])
+    aggregates = _compute_metric_aggregates(MagicMock(), evaluation, eval_rows)
+    assert len(aggregates) == 1
+    agg = aggregates[0]
+    assert agg.is_multi_label_parent is False
+    assert agg.count == 3

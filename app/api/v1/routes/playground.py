@@ -14,7 +14,7 @@ import json
 import uuid as _uuid
 from datetime import datetime
 
-from app.dependencies import get_db, get_organization_id, get_api_key
+from app.dependencies import get_db, get_organization_id, get_workspace_id, get_api_key
 from app.models.database import (
     Agent,
     Integration,
@@ -424,10 +424,13 @@ def poll_call_metrics(
                 # Generate unique result ID
                 result_id = generate_unique_result_id(db)
                 
-                # Create EvaluatorResult
+                # Create EvaluatorResult. Background-task path: inherit the
+                # workspace from the call recording rather than the header
+                # (this task runs without a request context).
                 evaluator_result = EvaluatorResult(
                     result_id=result_id,
                     organization_id=call_recording.organization_id,
+                    workspace_id=call_recording.workspace_id,
                     evaluator_id=None,
                     agent_id=call_recording.agent_id,
                     persona_id=None,
@@ -481,16 +484,18 @@ async def update_call_recording(
     update_data: CallRecordingUpdate,
     background_tasks: BackgroundTasks,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db)
 ):
     """
-    Update a call recording, typically to set the provider_call_id.
+    Update a call recording within the active workspace, typically to set the provider_call_id.
     Triggers polling.
     """
     call_recording = db.query(CallRecording).filter(
         CallRecording.call_short_id == call_short_id,
-        CallRecording.organization_id == organization_id
+        CallRecording.organization_id == organization_id,
+        CallRecording.workspace_id == workspace_id,
     ).first()
     
     if not call_recording:
@@ -544,19 +549,22 @@ async def create_web_call(
     web_call_data: WebCallCreate,
     background_tasks: BackgroundTasks,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db)
 ):
     """
-    Create a web call with a voice AI agent.
-    This endpoint handles the creation of web calls for different voice providers (Retell, Vapi, etc.)
+    Create a web call with a voice AI agent within the active workspace.
+    The agent must belong to the same workspace; the resulting call recording
+    is stamped with the same workspace_id.
     """
     try:
-        # Get the agent
+        # Get the agent (scoped to the active workspace)
         agent_uuid = UUID(web_call_data.agent_id)
         agent = db.query(Agent).filter(
             Agent.id == agent_uuid,
-            Agent.organization_id == organization_id
+            Agent.organization_id == organization_id,
+            Agent.workspace_id == workspace_id,
         ).first()
         
         if not agent:
@@ -651,6 +659,7 @@ async def create_web_call(
             
             call_recording = CallRecording(
                 organization_id=organization_id,
+                workspace_id=workspace_id,
                 call_short_id=call_short_id,
                 status=CallRecordingStatus.PENDING,
                 source=CallRecordingSource.PLAYGROUND,
@@ -719,15 +728,17 @@ async def list_call_recordings(
     skip: int = 0,
     limit: int = 100,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db)
 ):
     """
-    List all call recordings for the organization.
+    List playground call recordings in the active workspace.
     Includes evaluator_result_id, evaluation status, and metric_scores if evaluation has been run.
     """
     call_recordings = db.query(CallRecording).filter(
         CallRecording.organization_id == organization_id,
+        CallRecording.workspace_id == workspace_id,
         CallRecording.source == CallRecordingSource.PLAYGROUND,
     ).order_by(CallRecording.created_at.desc()).offset(skip).limit(limit).all()
     
@@ -773,11 +784,12 @@ async def create_custom_websocket_session(
     ended_at: Optional[str] = Form(None),
     audio_file: Optional[UploadFile] = File(None),
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
     """
-    Save a custom websocket test session for later evaluation.
+    Save a custom websocket test session for later evaluation (scoped to the active workspace).
     Stores transcript in call_data and uploads optional audio recording to S3.
     """
     try:
@@ -788,6 +800,7 @@ async def create_custom_websocket_session(
     agent = db.query(Agent).filter(
         Agent.id == agent_uuid,
         Agent.organization_id == organization_id,
+        Agent.workspace_id == workspace_id,
     ).first()
     if not agent:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
@@ -876,6 +889,7 @@ async def create_custom_websocket_session(
 
     call_recording = CallRecording(
         organization_id=organization_id,
+        workspace_id=workspace_id,
         call_short_id=call_short_id,
         status=CallRecordingStatus.UPDATED,
         source=CallRecordingSource.PLAYGROUND,
@@ -900,15 +914,17 @@ async def create_custom_websocket_session(
 async def evaluate_custom_websocket_session(
     call_short_id: str,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
     """
-    Queue evaluation for a saved custom websocket test session.
+    Queue evaluation for a saved custom websocket test session in the active workspace.
     """
     call_recording = db.query(CallRecording).filter(
         CallRecording.call_short_id == call_short_id,
         CallRecording.organization_id == organization_id,
+        CallRecording.workspace_id == workspace_id,
         CallRecording.source == CallRecordingSource.PLAYGROUND,
         CallRecording.provider_platform == "custom_websocket",
     ).first()
@@ -926,6 +942,7 @@ async def evaluate_custom_websocket_session(
         existing_result = db.query(EvaluatorResult).filter(
             EvaluatorResult.id == call_recording.evaluator_result_id,
             EvaluatorResult.organization_id == organization_id,
+            EvaluatorResult.workspace_id == workspace_id,
         ).first()
 
     speaker_segments = call_data.get("speaker_segments") or []
@@ -951,6 +968,7 @@ async def evaluate_custom_websocket_session(
         evaluator_result = EvaluatorResult(
             result_id=result_id,
             organization_id=organization_id,
+            workspace_id=workspace_id,
             evaluator_id=None,
             agent_id=call_recording.agent_id,
             persona_id=None,
@@ -993,16 +1011,18 @@ async def evaluate_custom_websocket_session(
 async def get_call_recording(
     call_short_id: str,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db)
 ):
     """
-    Get a specific call recording by its 6-digit short ID.
+    Get a specific playground call recording within the active workspace.
     Returns the full JSON data stored for the call and evaluation information.
     """
     call_recording = db.query(CallRecording).filter(
         CallRecording.call_short_id == call_short_id,
         CallRecording.organization_id == organization_id,
+        CallRecording.workspace_id == workspace_id,
         CallRecording.source == CallRecordingSource.PLAYGROUND,
     ).first()
     
@@ -1047,15 +1067,17 @@ async def refresh_call_recording(
     call_short_id: str,
     background_tasks: BackgroundTasks,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db)
 ):
     """
-    Manually trigger a refresh of call metrics for a specific call recording.
+    Manually trigger a refresh of call metrics for a specific call recording in the active workspace.
     """
     call_recording = db.query(CallRecording).filter(
         CallRecording.call_short_id == call_short_id,
         CallRecording.organization_id == organization_id,
+        CallRecording.workspace_id == workspace_id,
         CallRecording.source == CallRecordingSource.PLAYGROUND,
     ).first()
     
@@ -1114,15 +1136,17 @@ async def refresh_call_recording(
 async def delete_call_recording(
     call_short_id: str,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db)
 ):
     """
-    Delete a call recording by its 6-digit short ID.
+    Delete a call recording within the active workspace.
     """
     call_recording = db.query(CallRecording).filter(
         CallRecording.call_short_id == call_short_id,
-        CallRecording.organization_id == organization_id
+        CallRecording.organization_id == organization_id,
+        CallRecording.workspace_id == workspace_id,
     ).first()
     
     if not call_recording:
@@ -1142,11 +1166,12 @@ async def re_evaluate_call_recording(
     call_short_id: str,
     background_tasks: BackgroundTasks,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
     """
-    Re-evaluate a call recording with full audio analysis.
+    Re-evaluate a playground call recording within the active workspace.
 
     Reuses the S3 audio if it was already downloaded during the first
     evaluation. If no audio exists in S3, downloads from the provider,
@@ -1160,6 +1185,7 @@ async def re_evaluate_call_recording(
     call_recording = db.query(CallRecording).filter(
         CallRecording.call_short_id == call_short_id,
         CallRecording.organization_id == organization_id,
+        CallRecording.workspace_id == workspace_id,
         CallRecording.source == CallRecordingSource.PLAYGROUND,
     ).first()
 
@@ -1308,6 +1334,7 @@ async def re_evaluate_call_recording(
         evaluator_result = EvaluatorResult(
             result_id=result_id,
             organization_id=call_recording.organization_id,
+            workspace_id=call_recording.workspace_id,
             evaluator_id=None,
             agent_id=call_recording.agent_id,
             persona_id=None,
@@ -1353,11 +1380,12 @@ async def re_evaluate_call_recording(
 async def stream_call_audio(
     call_short_id: str,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
     """
-    Proxy endpoint to stream call recording audio.
+    Proxy endpoint to stream playground call recording audio in the active workspace.
     Required for providers like ElevenLabs whose audio URLs need auth headers.
     """
     import requests as http_requests
@@ -1365,6 +1393,7 @@ async def stream_call_audio(
     call_recording = db.query(CallRecording).filter(
         CallRecording.call_short_id == call_short_id,
         CallRecording.organization_id == organization_id,
+        CallRecording.workspace_id == workspace_id,
         CallRecording.source == CallRecordingSource.PLAYGROUND,
     ).first()
 
@@ -1787,6 +1816,7 @@ def _format_entries_as_transcript(entries: List[Dict[str, Any]]) -> str:
 async def summarize_transcript(
     payload: SummarizeTranscriptRequest = Body(...),
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
@@ -1820,6 +1850,7 @@ async def summarize_transcript(
         call_rec = db.query(CallRecording).filter(
             CallRecording.call_short_id == payload.call_short_id,
             CallRecording.organization_id == organization_id,
+            CallRecording.workspace_id == workspace_id,
         ).first()
 
     # Cache hit: serve the previously generated summary without re-calling the LLM.

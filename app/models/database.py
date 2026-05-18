@@ -44,6 +44,51 @@ class Organization(Base):
     api_keys = relationship("APIKey", back_populates="organization")
     members = relationship("OrganizationMember", back_populates="organization", cascade="all, delete-orphan")
     invitations = relationship("Invitation", back_populates="organization", cascade="all, delete-orphan")
+    workspaces = relationship(
+        "Workspace",
+        back_populates="organization",
+        cascade="all, delete-orphan",
+    )
+
+
+class Workspace(Base):
+    """Workspace - in-org isolation boundary for call imports and metrics.
+
+    Every organization has at least one workspace (``is_default = True``,
+    seeded by migration 033). Users pick an "active workspace" in the UI;
+    list endpoints filter by it so users only see calls/metrics from the
+    project they're currently working in. There's no per-workspace ACL in
+    v1 - every org member can switch into any of their org's workspaces.
+    """
+
+    __tablename__ = "workspaces"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "slug", name="uq_workspaces_org_slug"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    name = Column(String(255), nullable=False)
+    slug = Column(String(255), nullable=False)
+    # At most one default per org (enforced by partial unique index in
+    # the migration). The default workspace can never be deleted; it's
+    # the safety net for newly-created data when the caller didn't pick
+    # a workspace.
+    is_default = Column(Boolean, nullable=False, default=False, server_default="false")
+    created_by_user_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    organization = relationship("Organization", back_populates="workspaces")
 
 
 class User(Base):
@@ -169,6 +214,15 @@ class Evaluation(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    # Workspace isolation: every legacy audio evaluation belongs to a
+    # workspace within its org. Stamped from the X-Workspace-Id header
+    # (falling back to the org's Default workspace).
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     audio_id = Column(UUID(as_uuid=True), ForeignKey("audio_files.id"), nullable=False)
     reference_text = Column(String, nullable=True)  # For WER calculation
     evaluation_type = Column(String, nullable=False)
@@ -195,6 +249,14 @@ class EvaluationResult(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     evaluation_id = Column(UUID(as_uuid=True), ForeignKey("evaluations.id"), nullable=False, unique=True)
+    # Workspace isolation: mirrors the parent Evaluation's workspace.
+    # Denormalized for fast filter-by-workspace listings without a join.
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     transcript = Column(String, nullable=True)
     metrics = Column(JSON, nullable=False)  # {"wer": 0.05, "latency_ms": 1250, ...}
     raw_output = Column(JSON, nullable=True)  # Full model output
@@ -220,6 +282,15 @@ class Agent(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     agent_id = Column(String(6), unique=True, nullable=True, index=True)  # 6-digit ID
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    # Workspace isolation: every agent belongs to a workspace within its
+    # org. Stamped from the X-Workspace-Id header (falling back to the
+    # org's Default workspace).
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     name = Column(String, nullable=False)
     phone_number = Column(String, nullable=True)  # Optional, required only for phone_call
     language = Column(String, nullable=False, default=LanguageEnum.ENGLISH.value)
@@ -257,6 +328,15 @@ class Persona(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    # Workspace isolation: every persona belongs to a workspace within
+    # its org. Stamped from the X-Workspace-Id header (falling back to
+    # the org's Default workspace).
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     name = Column(String, nullable=False)
     gender = Column(String, nullable=False, default=GenderEnum.NEUTRAL.value)
     tts_provider = Column(String(100), nullable=True)
@@ -275,6 +355,15 @@ class Scenario(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    # Workspace isolation: every scenario belongs to a workspace within
+    # its org. Stamped from the X-Workspace-Id header (falling back to
+    # the org's Default workspace).
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id", ondelete="SET NULL"), nullable=True, index=True)
     name = Column(String, nullable=False)
     description = Column(String)
@@ -453,6 +542,15 @@ class TestAgentConversation(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    # Workspace isolation: every playground conversation belongs to a
+    # workspace within its org. Stamped from the X-Workspace-Id header
+    # (falling back to the org's Default workspace).
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     
     # Configuration
     agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False)
@@ -489,6 +587,15 @@ class Evaluator(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     evaluator_id = Column(String(6), unique=True, nullable=False, index=True)  # 6-digit ID
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    # Workspace isolation: every evaluator belongs to a workspace within
+    # its org. Stamped from the X-Workspace-Id header (falling back to
+    # the org's Default workspace).
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     
     # Display name (required for custom evaluators, optional for standard)
     name = Column(String, nullable=True)
@@ -531,7 +638,16 @@ class Metric(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
-    
+    # Workspace isolation: every metric belongs to exactly one workspace
+    # within its org. Children inherit their parent's workspace_id (the
+    # promote/add-child endpoints enforce this).
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+
     # Basic information
     name = Column(String, nullable=False)
     description = Column(String, nullable=True)
@@ -597,6 +713,15 @@ class EvaluatorResult(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     result_id = Column(String(6), unique=True, nullable=False, index=True)  # 6-digit ID
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    # Workspace isolation: every evaluator result belongs to a workspace
+    # within its org. Stamped from the active workspace at creation time
+    # (either the X-Workspace-Id header or the org's Default workspace).
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     
     # References
     evaluator_id = Column(UUID(as_uuid=True), ForeignKey("evaluators.id"), nullable=True, index=True)  # Optional - can be None for test calls without persona/scenario
@@ -653,6 +778,16 @@ class CallRecording(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    # Workspace isolation: every recording belongs to a workspace within
+    # its org. For playground-origin rows this is stamped from the active
+    # workspace at creation time; for webhook-origin rows the worker
+    # looks up the recording's agent and inherits its workspace_id.
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     call_short_id = Column(String(6), unique=True, nullable=False, index=True)  # 6-digit ID
     status = Column(Enum(CallRecordingStatus), nullable=False, default=CallRecordingStatus.PENDING, index=True)
     call_event = Column(String, nullable=True, index=True)  # Latest webhook event (e.g., call_started, call_ended)
@@ -805,6 +940,15 @@ class TTSComparison(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    # Workspace isolation: every voice playground comparison belongs to
+    # a workspace within its org. Children (samples, report jobs, blind
+    # test shares) inherit this workspace_id.
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     simulation_id = Column(String(6), unique=True, index=True, nullable=True)
 
     name = Column(String(255), nullable=True)
@@ -849,6 +993,14 @@ class TTSSample(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     comparison_id = Column(UUID(as_uuid=True), ForeignKey("tts_comparisons.id", ondelete="CASCADE"), nullable=False, index=True)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    # Workspace isolation: mirrors the parent TTSComparison's workspace.
+    # Denormalized for fast filter-by-workspace listings without a join.
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
 
     provider = Column(String(100), nullable=True)
     model = Column(String(100), nullable=True)
@@ -890,6 +1042,13 @@ class TTSReportJob(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    # Workspace isolation: mirrors the parent TTSComparison's workspace.
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     comparison_id = Column(UUID(as_uuid=True), ForeignKey("tts_comparisons.id", ondelete="CASCADE"), nullable=False, index=True)
 
     status = Column(String(50), nullable=False, default=TTSReportJobStatus.PENDING.value)
@@ -930,6 +1089,13 @@ class TTSBlindTestShare(Base):
         index=True,
     )
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    # Workspace isolation: mirrors the parent TTSComparison's workspace.
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
 
     share_token = Column(String(64), unique=True, nullable=False, index=True)
 
@@ -973,6 +1139,13 @@ class TTSBlindTestResponse(Base):
         nullable=False,
         index=True,
     )
+    # Workspace isolation: mirrors the parent TTSBlindTestShare's workspace.
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
 
     rater_name = Column(String(255), nullable=False)
     rater_email = Column(String(320), nullable=False, index=True)
@@ -1002,6 +1175,14 @@ class PromptPartial(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    # Workspace isolation: every prompt partial belongs to a workspace
+    # within its org. Versions inherit this workspace_id.
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     name = Column(String(255), nullable=False)
     description = Column(String, nullable=True)
     content = Column(Text, nullable=False)
@@ -1021,6 +1202,13 @@ class PromptPartialVersion(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     prompt_partial_id = Column(UUID(as_uuid=True), ForeignKey("prompt_partials.id", ondelete="CASCADE"), nullable=False, index=True)
+    # Workspace isolation: mirrors the parent PromptPartial's workspace.
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     version = Column(Integer, nullable=False)
     content = Column(Text, nullable=False)
     change_summary = Column(String, nullable=True)
@@ -1060,6 +1248,14 @@ class PromptOptimizationRun(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    # Workspace isolation: every optimization run belongs to a workspace
+    # within its org. Candidates inherit this workspace_id.
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
     evaluator_id = Column(UUID(as_uuid=True), ForeignKey("evaluators.id"), nullable=True)
     voice_bundle_id = Column(UUID(as_uuid=True), ForeignKey("voicebundles.id"), nullable=True)
@@ -1092,6 +1288,13 @@ class PromptOptimizationCandidate(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     optimization_run_id = Column(UUID(as_uuid=True), ForeignKey("prompt_optimization_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    # Workspace isolation: mirrors the parent PromptOptimizationRun's workspace.
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
 
     prompt_text = Column(Text, nullable=False)
     score = Column(Float, nullable=True)
@@ -1226,6 +1429,15 @@ class CallImport(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    # Workspace isolation: every imported batch belongs to a workspace
+    # within its org. The /upload endpoint stamps it from the active
+    # workspace header (or the org's Default if absent).
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     created_by_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
 
     provider = Column(String(50), nullable=False, default="exotel")
@@ -1430,6 +1642,14 @@ class CallImportEvaluation(Base):
         nullable=False,
         index=True,
     )
+    # Workspace isolation: mirrors the parent CallImport's workspace.
+    # Denormalized for fast filter-by-workspace listings without a join.
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     created_by_user_id = Column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
@@ -1489,6 +1709,15 @@ class CallImportEvaluation(Base):
     stt_provider = Column(String(50), nullable=True)
     stt_model = Column(String(100), nullable=True)
     stt_credential_id = Column(UUID(as_uuid=True), nullable=True)
+
+    # Cached LLM-generated TLDR rendered above the Visualizations charts.
+    # Populated lazily by ``POST /evaluations/{eval_id}/insights`` so we
+    # never auto-burn LLM tokens on page load. Shape::
+    #   {"narrative": str, "patterns": [str, ...],
+    #    "generated_at": iso8601, "generated_at_completed_rows": int,
+    #    "provider": str, "model": str}
+    # NULL on rows that have never been summarised.
+    tldr_summary = Column(JSON, nullable=True)
 
     status = Column(String(20), nullable=False, default="pending", index=True)
 
@@ -1582,6 +1811,14 @@ class JudgeDataset(Base):
     organization_id = Column(
         UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True
     )
+    # Workspace isolation: every judge dataset belongs to a workspace
+    # within its org. Samples and runs inherit this workspace_id.
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
 
     name = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
@@ -1633,6 +1870,13 @@ class JudgeSample(Base):
         nullable=False,
         index=True,
     )
+    # Workspace isolation: mirrors the parent JudgeDataset's workspace.
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
 
     # Stable identifier within the source (e.g. transcription UUID, CSV row id).
     # Used to dedupe re-imports and link back to the originating record.
@@ -1670,6 +1914,13 @@ class JudgeRun(Base):
     )
     organization_id = Column(
         UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    # Workspace isolation: mirrors the parent JudgeDataset's workspace.
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
     )
 
     # Reuses the existing Evaluator row (its custom_prompt + llm_provider + llm_model

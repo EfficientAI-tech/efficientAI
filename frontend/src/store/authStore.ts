@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { apiClient } from '../lib/api'
+import { useWorkspaceStore } from './workspaceStore'
 
 /**
  * Auth store for the EfficientAI frontend.
@@ -86,6 +87,11 @@ export const useAuthStore = create<AuthState>((set) => {
       apiClient.setAccessToken(access_token)
       localStorage.setItem(STORAGE_ACCESS_TOKEN, access_token)
       localStorage.setItem(STORAGE_USER, JSON.stringify(user))
+      // Workspaces are per-org. The previous selection points at the
+      // OLD org's workspace; clear it so the next request falls back
+      // to the new org's Default workspace and the WorkspaceSwitcher
+      // UI re-resolves to a valid id.
+      useWorkspaceStore.getState().clearActiveWorkspaceId()
       set({ accessToken: access_token, user })
       return user
     },
@@ -99,6 +105,7 @@ export const useAuthStore = create<AuthState>((set) => {
       localStorage.removeItem(STORAGE_API_KEY)
       localStorage.removeItem(STORAGE_ACCESS_TOKEN)
       localStorage.removeItem(STORAGE_USER)
+      useWorkspaceStore.getState().clearActiveWorkspaceId()
       set({ apiKey: null, accessToken: null, user: null })
     },
 
