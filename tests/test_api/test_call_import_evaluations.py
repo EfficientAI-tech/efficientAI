@@ -19,6 +19,7 @@ from app.models.database import (
     CallImportEvaluationRow,
     CallImportRow,
     Metric,
+    Organization,
     TelephonyIntegration,
 )
 from app.models.enums import CallImportRowStatus, CallImportStatus
@@ -172,10 +173,16 @@ def test_create_evaluation_happy_path(authenticated_client, db_session, org_id, 
 def test_create_evaluation_rejects_foreign_metric(
     authenticated_client, db_session, org_id, seed_org
 ):
+    # A real "other" organization is needed so the metric's FK to
+    # organizations is satisfied on engines that enforce FKs (e.g. Postgres).
+    other_org = Organization(id=uuid4(), name="Other Org")
+    db_session.add(other_org)
+    db_session.commit()
+
     # Metric owned by a *different* org -> rejected.
     other_org_metric = Metric(
         id=uuid4(),
-        organization_id=uuid4(),
+        organization_id=other_org.id,
         name="ForeignMetric",
         metric_type="rating",
         trigger="always",
