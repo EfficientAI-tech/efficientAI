@@ -225,11 +225,18 @@ def test_prompt_omits_discovery_block_when_allow_discovery_is_false():
     assert "__discovered" not in prompt
 
 
-def test_prompt_includes_discovery_block_only_for_multi_label():
-    # single_choice + allow_discovery is rejected by the route validator
-    # before we ever reach the prompt builder, but defensively the
-    # prompt itself must also not invite discovery for single_choice.
-    sc = _make_parent(selection_mode="single_choice", allow_discovery=True)
+def test_prompt_includes_discovery_block_for_any_parent_with_allow_discovery():
+    """``allow_discovery`` works on both single_choice and multi_label
+    parents now. For single_choice the prompt explicitly clarifies that
+    discovered labels are supplemental — the chosen child still has to
+    come from the predefined children, so the exactly-one-true
+    invariant is preserved.
+    """
+    sc = _make_parent(
+        selection_mode="single_choice",
+        allow_discovery=True,
+        name="Call Outcome",
+    )
     ml = _make_parent(
         selection_mode="multi_label",
         allow_discovery=True,
@@ -248,9 +255,16 @@ def test_prompt_includes_discovery_block_only_for_multi_label():
         parent_metric=ml,
     )
 
-    assert "DISCOVERY ENABLED" not in sc_prompt
+    # Both parents now invite discovery.
+    assert "DISCOVERY ENABLED" in sc_prompt
     assert "DISCOVERY ENABLED" in ml_prompt
+    assert "call_outcome__discovered" in sc_prompt
     assert "call_flow__discovered" in ml_prompt
+    # Single-choice prompt must reinforce the supplemental rule so the
+    # LLM does not silently violate the exactly-one-true invariant by
+    # treating a discovered entry as the chosen child.
+    assert "SUPPLEMENTAL" in sc_prompt
+    assert "SUPPLEMENTAL" not in ml_prompt
 
 
 def test_prompt_lists_running_discovered_labels_with_reuse_wording():
@@ -324,13 +338,46 @@ def test_map_parses_discovered_labels_and_lets_them_flow_through_sequence():
     assert discovered[0]["rationale"].startswith("Agent: please hold")
 
 
-def test_map_drops_discovered_labels_for_single_choice_parent():
-    # Even if the model rebelliously returns __discovered, single_choice
-    # parents must not produce discovered_labels — the invariant is too
-    # easy to violate with an injected fake "true" label.
+def test_map_keeps_discovered_labels_supplemental_for_single_choice_parent():
+    # Single_choice parents with ``allow_discovery=True`` keep the
+    # exactly-one-true invariant via the *chosen child* still being one
+    # of the predefined children — discovered labels are surfaced as
+    # supplemental info (so users can promote them later) but never
+    # replace the chosen child. This mirrors the per-mode prompt
+    # instruction added in ``_render_parent_block``.
     parent = _make_parent(
         selection_mode="single_choice",
         allow_discovery=True,
+        name="Call Outcome",
+    )
+    a = _make_child(name="connected")
+    evaluation_data = {
+        "connected": True,
+        "call_outcome": "connected",
+        "call_outcome__discovered": [{"key": "x", "name": "X"}],
+    }
+    scores = llm_evaluation._map_evaluation_to_metrics(
+        evaluation_data, [a], parent_metric=parent
+    )
+    parent_entry = scores[str(parent.id)]
+    # The chosen child is still locked to a predefined option — the
+    # invariant the old test was guarding is preserved here, just at
+    # the choice level rather than by suppressing discovery wholesale.
+    assert parent_entry["chosen_child_name"] == "connected"
+    # Discovered labels survive as supplemental info.
+    discovered = parent_entry.get("discovered_labels") or []
+    assert [d["key"] for d in discovered] == ["x"]
+    assert discovered[0]["name"] == "X"
+
+
+def test_map_drops_discovered_labels_when_allow_discovery_false():
+    # Discovery is gated entirely by ``allow_discovery`` on the parent.
+    # Even on a single_choice parent, when the flag is off any
+    # ``__discovered`` payload from a rebellious model must be
+    # ignored so users don't start seeing labels they never opted into.
+    parent = _make_parent(
+        selection_mode="single_choice",
+        allow_discovery=False,
         name="Call Outcome",
     )
     a = _make_child(name="connected")

@@ -719,13 +719,50 @@ class Metric(Base):
     # metric (no children).
     selection_mode = Column(String(20), nullable=True)
 
-    # When true on a ``multi_label`` parent, the LLM is invited during
-    # call-import evaluation to emit additional candidate sub-labels
-    # beyond the user-defined children. The candidates surface in a
-    # "Discovered labels" panel where the user manually promotes them
-    # into real child Metric rows. Ignored on standalone metrics and
-    # on ``single_choice`` parents (the validator rejects mixing them).
+    # When true on a parent metric (any selection_mode), the LLM is
+    # invited during call-import evaluation to emit additional
+    # candidate sub-labels beyond the user-defined children. The
+    # candidates surface in a "Discovered labels" panel where the user
+    # manually promotes them into real child Metric rows. For
+    # ``single_choice`` parents the discovered entries are
+    # supplemental — the chosen child is still picked from the
+    # predefined children so the exactly-one-true invariant holds.
+    # The validator rejects this flag on standalone / child metrics.
     allow_discovery = Column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+
+    # When non-empty, this metric is a "column-input judge": the
+    # call-import evaluator looks up each entry in
+    # ``call_import_rows.raw_columns`` for each row and feeds the
+    # values to the LLM as "Context inputs" instead of the transcript.
+    # Each entry is either a verbatim CSV header (from the import's
+    # ``extra_columns``) or a friendly name the uploader gave a column
+    # via ``CallImport.custom_column_mapping`` — the worker resolves
+    # both via ``_resolve_column_value`` so a metric storing
+    # ``customer_intent`` keeps working across imports that map that
+    # name to different underlying CSV headers.
+    # Empty list = today's behavior (transcript-based judge).
+    input_columns = Column(
+        JSON, nullable=False, default=list, server_default="[]"
+    )
+
+    # When True, this metric is a "transcript-compare judge": the
+    # call-import evaluator feeds BOTH the production transcript
+    # (``call_import_rows.transcript``, CSV-supplied) and the diarised
+    # transcript (``call_import_rows.diarised_transcript``, worker-
+    # produced by the STT/diarisation pipeline) to the LLM as a
+    # labeled pair instead of feeding one transcript. The parent
+    # evaluation's ``CallImportEvaluation.transcript_source`` is
+    # ignored for these metrics — they always read both columns.
+    # Rows where either transcript is missing are skipped per-metric
+    # with ``skipped="comparison_missing_transcript"`` so the rest of
+    # the row's metrics still produce scores. v1 keeps these metrics
+    # standalone: the Pydantic validator rejects ``compare_transcripts``
+    # combined with ``input_columns``, ``parent_metric_id`` or
+    # ``selection_mode`` (i.e. they can't simultaneously be a
+    # column-input judge or part of a parent/child hierarchy).
+    compare_transcripts = Column(
         Boolean, nullable=False, default=False, server_default="false"
     )
 
@@ -1494,6 +1531,10 @@ class CallImport(Base):
         index=True,
     )
     original_filename = Column(String(512), nullable=True)
+    # When the source file was a multi-sheet Excel workbook, this records
+    # the worksheet the rows came from (one batch per sheet). NULL for CSV
+    # uploads since CSV has no sheet concept.
+    sheet_name = Column(String(255), nullable=True)
 
     # Free-text high-level segregation label. Powers the "Dataset" filter
     # at the top of the imports page; multiple imports can share a value.
@@ -1568,6 +1609,10 @@ class CallImportRow(Base):
     # Optional at upload time; the worker resolves it via Exotel's Calls API when
     # absent and writes the resolved URL back here so retries are cheap.
     recording_url = Column(Text, nullable=True)
+    # The "production" transcript: the value supplied via the CSV
+    # upload mapping. Never overwritten by the diarisation worker —
+    # the worker writes its output into ``diarised_transcript`` so
+    # the user keeps both versions side by side.
     transcript = Column(Text, nullable=True)
     # Snapshot of the original CSV row keyed by the user's headers so the
     # evaluation export can reproduce every column the uploader supplied
@@ -1575,19 +1620,22 @@ class CallImportRow(Base):
     raw_columns = Column(JSON, nullable=True)
 
     # Where the value in ``transcript`` came from. ``csv`` = supplied via
-    # the upload mapping, ``diarized`` = produced by the post-hoc
-    # transcription/diarization worker, ``edited`` = manually changed in
-    # the UI. NULL on legacy rows / rows that have never had a transcript.
+    # the upload mapping, ``edited`` = manually changed in the UI. NULL
+    # on rows that have never had a production transcript.
+    # (Worker-produced transcripts now live in ``diarised_transcript``
+    # and are tracked via ``diarised_transcript_*`` metadata below.)
     transcript_source = Column(String(20), nullable=True)
-    # When the transcript was diarized, which AI provider/model was used.
-    # Lets the UI surface a "Diarized via deepgram/nova-2" badge and
-    # makes auditing/debugging much easier. Both NULL when source != 'diarized'.
+    # Provider/model recorded by the (legacy) post-hoc transcription
+    # worker. New worker runs leave these NULL and write into the
+    # ``diarised_transcript_*`` columns instead; kept on the model for
+    # backwards compatibility with pre-split rows that still carry the
+    # original transcription metadata here.
     transcript_provider = Column(String(50), nullable=True)
     transcript_model = Column(String(100), nullable=True)
-    # Lifecycle status for the diarization workflow itself, independent
-    # of the row's recording-fetch ``status``. ``idle`` = no transcribe
-    # task has run; ``pending``/``running`` = a Celery task is queued or
-    # in flight; ``completed``/``failed`` = terminal.
+    # Lifecycle status for the legacy transcription workflow itself,
+    # independent of the row's recording-fetch ``status``. ``idle`` =
+    # no transcribe task has touched this column. New diarisation runs
+    # update ``diarised_transcript_status`` instead.
     transcript_status = Column(
         String(20),
         nullable=False,
@@ -1595,6 +1643,31 @@ class CallImportRow(Base):
     )
     transcript_error = Column(Text, nullable=True)
     transcribed_at = Column(DateTime(timezone=True), nullable=True)
+
+    # The "diarised" transcript: produced by the post-hoc
+    # transcription/diarisation worker. Stored separately so a manual
+    # diarisation run never clobbers the production transcript above.
+    # Evaluations can be configured to score against either column
+    # (see ``CallImportEvaluation.transcript_source``).
+    diarised_transcript = Column(Text, nullable=True)
+    # Provider/model the diarisation worker used. Surfaced in the UI
+    # as "Diarised via deepgram/nova-2" next to the diarised
+    # transcript section.
+    diarised_transcript_provider = Column(String(50), nullable=True)
+    diarised_transcript_model = Column(String(100), nullable=True)
+    # Lifecycle status for the diarisation workflow.
+    # ``idle`` = no diarisation task has run; ``pending``/``running`` =
+    # a Celery task is queued or in flight; ``completed``/``failed`` =
+    # terminal. Independent of ``transcript_status`` so the two
+    # transcripts can be in different lifecycle states.
+    diarised_transcript_status = Column(
+        String(20),
+        nullable=False,
+        default="idle",
+        server_default="idle",
+    )
+    diarised_transcript_error = Column(Text, nullable=True)
+    diarised_at = Column(DateTime(timezone=True), nullable=True)
 
     status = Column(
         Enum(CallImportRowStatus, values_callable=get_enum_values),
@@ -1752,6 +1825,22 @@ class CallImportEvaluation(Base):
     stt_provider = Column(String(50), nullable=True)
     stt_model = Column(String(100), nullable=True)
     stt_credential_id = Column(UUID(as_uuid=True), nullable=True)
+
+    # Which of the two transcripts on each ``CallImportRow`` this run
+    # scored against. ``'production'`` reads ``CallImportRow.transcript``
+    # (the CSV-supplied value); ``'diarised'`` reads
+    # ``CallImportRow.diarised_transcript`` (the worker output). When
+    # the user ticks both checkboxes in the Run Evaluation modal we
+    # create two ``CallImportEvaluation`` rows — one per source — so
+    # the two scorings can be compared side-by-side. Defaults to
+    # ``'production'`` so legacy runs (which always read the single
+    # historical ``transcript`` column) keep their semantics.
+    transcript_source = Column(
+        String(20),
+        nullable=False,
+        default="production",
+        server_default="production",
+    )
 
     # Cached LLM-generated TLDR rendered above the Visualizations charts.
     # Populated lazily by ``POST /evaluations/{eval_id}/insights`` so we

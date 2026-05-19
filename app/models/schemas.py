@@ -1119,6 +1119,58 @@ class MetricCreate(BaseModel):
     # When true, the LLM is invited during call-import evaluation to emit
     # additional candidate sub-labels beyond the user-defined children.
     allow_discovery: bool = False
+    # When non-empty, this metric is a "column-input judge": at
+    # call-import evaluation time the worker reads the listed entries
+    # from each row's ``raw_columns`` and feeds those values to the
+    # LLM as "Context inputs" instead of the transcript. Entries can
+    # be either a verbatim CSV header (from the import's
+    # ``extra_columns``) or the friendly key the uploader gave a
+    # column in ``custom_column_mapping`` — the worker resolves both.
+    # Empty list preserves the default transcript-based behavior.
+    input_columns: List[str] = Field(default_factory=list)
+    # When true, this metric is a "transcript-compare judge": at
+    # call-import evaluation time the worker feeds BOTH the production
+    # transcript (``call_import_rows.transcript``, CSV-supplied) and
+    # the diarised transcript (``call_import_rows.diarised_transcript``,
+    # worker-produced) to the LLM as a labeled pair. The parent
+    # evaluation's ``transcript_source`` is ignored for these metrics.
+    # Mutually exclusive with ``input_columns`` (column-input judge),
+    # ``parent_metric_id`` and ``selection_mode`` — v1 keeps comparison
+    # metrics standalone so the LLM grouping logic doesn't have to
+    # second-guess which prompt template to use within a hierarchy.
+    compare_transcripts: bool = False
+
+    @model_validator(mode='after')
+    def validate_compare_transcripts_exclusions(self):
+        """Reject body combinations that don't make sense for a
+        transcript-compare judge.
+
+        The Metric ORM column accepts the value; the validator just
+        prevents the user from accidentally requesting an incoherent
+        metric shape (e.g. "compare two transcripts but also read
+        columns instead of the transcript" — those are contradictory
+        prompt templates).
+        """
+        if not self.compare_transcripts:
+            return self
+        if self.input_columns:
+            raise ValueError(
+                "A metric can be either a column-input judge "
+                "(input_columns) or a transcript-compare judge "
+                "(compare_transcripts), not both."
+            )
+        if self.parent_metric_id is not None:
+            raise ValueError(
+                "Transcript-compare metrics must be standalone: "
+                "they cannot be a child sub-metric in this version."
+            )
+        if self.selection_mode is not None:
+            raise ValueError(
+                "Transcript-compare metrics must be standalone: "
+                "they cannot own children (selection_mode must be "
+                "unset) in this version."
+            )
+        return self
 
     model_config = ConfigDict(json_schema_extra={
             "example": {
@@ -1183,6 +1235,42 @@ class MetricUpdate(BaseModel):
     capture_rationale: Optional[bool] = None
     selection_mode: Optional[SelectionMode] = None
     allow_discovery: Optional[bool] = None
+    # See ``MetricCreate.input_columns``. ``None`` here means "leave
+    # unchanged"; an empty list explicitly clears any previously
+    # configured column inputs.
+    input_columns: Optional[List[str]] = None
+    # See ``MetricCreate.compare_transcripts``. ``None`` here means
+    # "leave unchanged". The route layer enforces mutual exclusion
+    # against the row's existing ``input_columns`` /
+    # ``parent_metric_id`` / ``selection_mode`` when this is set to
+    # True, because the patch body alone doesn't have enough context
+    # to validate cross-state.
+    compare_transcripts: Optional[bool] = None
+
+    @model_validator(mode='after')
+    def validate_compare_transcripts_exclusions(self):
+        """Reject patch bodies that flip compare_transcripts on while
+        ALSO trying to set a conflicting field in the same request.
+
+        Cross-state validation against the persisted row (e.g. "the
+        existing metric already has input_columns") is done in the
+        update route since the schema doesn't have the row in hand.
+        """
+        if self.compare_transcripts is not True:
+            return self
+        if self.input_columns:
+            raise ValueError(
+                "A metric can be either a column-input judge "
+                "(input_columns) or a transcript-compare judge "
+                "(compare_transcripts), not both."
+            )
+        if self.selection_mode is not None:
+            raise ValueError(
+                "Transcript-compare metrics must be standalone: "
+                "selection_mode must be cleared before enabling "
+                "compare_transcripts."
+            )
+        return self
 
 
 class MetricResponse(BaseModel):
@@ -1212,6 +1300,11 @@ class MetricResponse(BaseModel):
     parent_metric_id: Optional[UUID] = None
     selection_mode: Optional[SelectionMode] = None
     allow_discovery: bool = False
+    input_columns: List[str] = Field(default_factory=list)
+    # See ``MetricCreate.compare_transcripts``. Surfaced so the UI can
+    # render a "Compare transcripts" badge in the metric picker and
+    # know to skip the run's transcript_source toggle for this metric.
+    compare_transcripts: bool = False
     children: List["MetricResponse"] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
@@ -1266,7 +1359,15 @@ class MetricResponse(BaseModel):
         if v is None:
             return "custom"
         return str(v).lower()
-    
+
+    @validator('input_columns', pre=True)
+    def normalize_input_columns(cls, v):
+        if v is None:
+            return []
+        if isinstance(v, (list, tuple)):
+            return [str(item) for item in v if item is not None and str(item).strip() != ""]
+        return []
+
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -1904,6 +2005,7 @@ class CallImportRowResponse(BaseModel):
     row_index: int
     external_call_id: str
     recording_url: Optional[str] = None
+    # Production transcript: the value supplied via the CSV upload.
     transcript: Optional[str] = None
     transcript_source: Optional[str] = None
     transcript_provider: Optional[str] = None
@@ -1911,6 +2013,15 @@ class CallImportRowResponse(BaseModel):
     transcript_status: Optional[str] = None
     transcript_error: Optional[str] = None
     transcribed_at: Optional[datetime] = None
+    # Diarised transcript: produced by the post-hoc diarisation
+    # worker. Independent of ``transcript`` so manual diarisation
+    # never overwrites the CSV-supplied production value.
+    diarised_transcript: Optional[str] = None
+    diarised_transcript_provider: Optional[str] = None
+    diarised_transcript_model: Optional[str] = None
+    diarised_transcript_status: Optional[str] = None
+    diarised_transcript_error: Optional[str] = None
+    diarised_at: Optional[datetime] = None
     status: CallImportRowStatus
     recording_s3_key: Optional[str] = None
     recording_content_type: Optional[str] = None
@@ -1971,6 +2082,7 @@ class CallImportResponse(BaseModel):
     provider: str
     telephony_integration_id: Optional[UUID] = None
     original_filename: Optional[str] = None
+    sheet_name: Optional[str] = None
     dataset: Optional[str] = None
     tags: List[CallImportTagResponse] = Field(default_factory=list)
     column_mapping: Dict[str, Optional[str]] = Field(default_factory=dict)
@@ -2019,6 +2131,32 @@ class CallImportUploadResponse(BaseModel):
     message: str
 
 
+class CallImportPreviewSheet(BaseModel):
+    """One worksheet (or one CSV file synthesized as a single sheet)."""
+
+    name: str = Field(..., description="Sheet name for xlsx; filename for csv.")
+    headers: List[str] = Field(
+        default_factory=list,
+        description="Column headers from the first non-empty row.",
+    )
+    row_count: int = Field(
+        ...,
+        description="Approximate count of data rows (excluding the header row).",
+    )
+
+
+class CallImportPreviewResponse(BaseModel):
+    """Sheets/headers extracted from an uploaded CSV or Excel workbook.
+
+    The frontend uses this to drive the column-mapping UI without doing
+    its own parsing — keeps client and server in lockstep on quoted
+    fields, encodings, and Excel cell coercion.
+    """
+
+    format: str = Field(..., description="One of 'csv' or 'xlsx'.")
+    sheets: List[CallImportPreviewSheet] = Field(default_factory=list)
+
+
 class CallImportUpdate(BaseModel):
     """Partial update of a call-import batch (currently dataset/tags)."""
 
@@ -2065,6 +2203,9 @@ class CallImportEvaluationLLMOverride(BaseModel):
     )
 
 
+CallImportEvaluationTranscriptSource = Literal["production", "diarised"]
+
+
 class CallImportEvaluationCreate(BaseModel):
     """Request body for triggering an evaluation over a call-import batch."""
 
@@ -2079,6 +2220,20 @@ class CallImportEvaluationCreate(BaseModel):
         description=(
             "Optional human-readable label for the run. Shown in the UI "
             "instead of the UUID prefix."
+        ),
+    )
+    transcript_sources: List[CallImportEvaluationTranscriptSource] = Field(
+        default_factory=lambda: ["production"],
+        min_length=1,
+        max_length=2,
+        description=(
+            "Which transcript(s) to score against. ``production`` reads "
+            "the CSV-supplied transcript; ``diarised`` reads the "
+            "worker-produced transcript. Passing both values triggers two "
+            "evaluation runs (one per source) so the user can compare "
+            "scores side-by-side. Defaults to ``['production']`` for "
+            "backwards compatibility with clients that don't pass this "
+            "field."
         ),
     )
     # --- Run-level LLM config ---
@@ -2207,6 +2362,17 @@ class CallImportEvaluationResponse(BaseModel):
     stt_provider: Optional[str] = None
     stt_model: Optional[str] = None
     stt_credential_id: Optional[UUID] = None
+    # Which transcript column this run scored against. See the
+    # ``CallImportEvaluation.transcript_source`` model docstring for
+    # the semantics. Defaults to ``'production'`` on legacy rows.
+    transcript_source: CallImportEvaluationTranscriptSource = "production"
+    # Sibling evaluation ids created in the same Run Evaluation request.
+    # Populated only on the POST response (and only when the user ticked
+    # both Production and Diarised in the modal — the backend creates
+    # one ``CallImportEvaluation`` per source and links them via this
+    # field so the frontend can deep-link to either run). Empty for all
+    # other reads.
+    sibling_evaluation_ids: List[UUID] = Field(default_factory=list)
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
     created_at: datetime

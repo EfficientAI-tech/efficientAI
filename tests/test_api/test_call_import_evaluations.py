@@ -228,6 +228,58 @@ def test_create_evaluation_rejects_foreign_metric(
     assert "do not exist" in response.json()["detail"].lower()
 
 
+def test_create_evaluation_with_both_sources_creates_two_runs(
+    authenticated_client, db_session, org_id, seed_org
+):
+    """Ticking both Production and Diarised in the modal must create two
+    separate evaluation runs and the response should link them via
+    ``sibling_evaluation_ids`` so the frontend can navigate to either."""
+    metric = _make_metric(db_session, org_id)
+    call_import, _rows = _make_call_import(db_session, org_id, rows=1)
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json={
+            "metric_ids": [str(metric.id)],
+            "transcript_sources": ["production", "diarised"],
+        },
+    )
+    assert response.status_code == 202, response.text
+    body = response.json()
+    # Primary run is the first requested source (production) and it knows
+    # about its diarised sibling.
+    assert body["transcript_source"] == "production"
+    assert len(body["sibling_evaluation_ids"]) == 1
+
+    # Both runs persisted to the DB under the same call import.
+    all_runs = (
+        db_session.query(CallImportEvaluation)
+        .filter(CallImportEvaluation.call_import_id == call_import.id)
+        .all()
+    )
+    assert len(all_runs) == 2
+    sources = {row.transcript_source for row in all_runs}
+    assert sources == {"production", "diarised"}
+
+
+def test_create_evaluation_defaults_to_production_source(
+    authenticated_client, db_session, org_id, seed_org
+):
+    """Legacy clients that omit transcript_sources still get exactly ONE
+    evaluation run scored against the production transcript."""
+    metric = _make_metric(db_session, org_id)
+    call_import, _ = _make_call_import(db_session, org_id, rows=1)
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json={"metric_ids": [str(metric.id)]},
+    )
+    assert response.status_code == 202
+    body = response.json()
+    assert body["transcript_source"] == "production"
+    assert body["sibling_evaluation_ids"] == []
+
+
 def test_create_evaluation_marks_completed_when_no_rows(
     authenticated_client, db_session, org_id, seed_org
 ):

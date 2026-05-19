@@ -607,6 +607,23 @@ export default function CallImportEvaluationDetail() {
             </div>
             <div className="mt-3 flex items-center gap-3 flex-wrap">
               <StatusBadge status={evaluation.status} />
+              <span
+                className={
+                  'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ' +
+                  (evaluation.transcript_source === 'diarised'
+                    ? 'bg-purple-50 text-purple-700'
+                    : 'bg-gray-100 text-gray-700')
+                }
+                title={
+                  evaluation.transcript_source === 'diarised'
+                    ? 'Scored against the worker-produced diarised transcript.'
+                    : 'Scored against the CSV-supplied production transcript.'
+                }
+              >
+                {evaluation.transcript_source === 'diarised'
+                  ? 'Evaluated on Diarised transcript'
+                  : 'Evaluated on Production transcript'}
+              </span>
               <span className="text-sm text-gray-600">
                 Created: {formatDateTime(evaluation.created_at)}
               </span>
@@ -2680,7 +2697,7 @@ function FlowDiagramForParent({
   })
 
   const showDiscoveryPanel =
-    parent.selection_mode === 'multi_label' && parent.allow_discovery
+    !!parent.selection_mode && parent.allow_discovery
 
   return (
     <div className="border border-gray-200 rounded-lg p-3 bg-white">

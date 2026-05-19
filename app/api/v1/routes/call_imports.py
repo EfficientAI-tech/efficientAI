@@ -14,7 +14,8 @@ from __future__ import annotations
 import csv
 import io
 import json
-from typing import Any, Dict, List, Optional
+from datetime import date, datetime, time, timedelta
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
@@ -48,6 +49,8 @@ from app.models.schemas import (
     CallImportInsightsRunPoint,
     CallImportListResponse,
     CallImportMetricAggregate,
+    CallImportPreviewResponse,
+    CallImportPreviewSheet,
     CallImportResponse,
     CallImportRowBulkDelete,
     CallImportRowBulkDeleteResponse,
@@ -101,7 +104,25 @@ def _resolve_tags(
     return rows
 
 
-MAX_CSV_BYTES = 10 * 1024 * 1024  # 10 MB CSV cap
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB upload cap (CSV or Excel)
+
+# File extensions accepted by the upload + preview endpoints. Keep in
+# lockstep with the frontend ``accept`` attribute on the file picker.
+CSV_EXTENSIONS = (".csv",)
+XLSX_EXTENSIONS = (".xlsx", ".xlsm")
+ALLOWED_EXTENSIONS = CSV_EXTENSIONS + XLSX_EXTENSIONS
+
+
+def _file_format(filename: Optional[str]) -> Optional[str]:
+    """Classify ``filename`` as ``'csv'`` / ``'xlsx'`` or ``None`` if unsupported."""
+    if not filename:
+        return None
+    name = filename.lower()
+    if name.endswith(CSV_EXTENSIONS):
+        return "csv"
+    if name.endswith(XLSX_EXTENSIONS):
+        return "xlsx"
+    return None
 
 
 def _normalize_header(name: str) -> str:
@@ -118,23 +139,61 @@ def _resolve_mapped_header(
 ) -> Optional[str]:
     """Translate a user-supplied CSV header into the actual column key.
 
-    The frontend sends headers exactly as they appear in the CSV, but we
-    still normalize on the server so trailing whitespace / casing doesn't
-    break matching. Returns the canonical fieldname or ``None`` if not
-    present in the CSV.
+    The frontend sends headers exactly as they appear in the source file,
+    but we still normalize on the server so trailing whitespace / casing
+    doesn't break matching. Returns the canonical fieldname or ``None``
+    if not present in the file.
     """
     if not mapping_value:
         return None
     return header_lookup.get(_normalize_header(mapping_value))
 
 
-def _parse_csv(
-    file_bytes: bytes,
+def _xlsx_cell_to_str(value: Any) -> str:
+    """Coerce an openpyxl cell value to the string the rest of the
+    pipeline expects.
+
+    openpyxl returns native Python types (int, float, datetime, bool,
+    None). The CSV path always works with strings, so we mirror that:
+    integers stringify cleanly (no ``.0`` suffix on whole-number floats),
+    datetimes use ISO-8601, booleans use SQL-style ``TRUE`` / ``FALSE``.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if value.is_integer():
+            return str(int(value))
+        return str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, time):
+        return value.isoformat()
+    if isinstance(value, timedelta):
+        return str(value)
+    return str(value)
+
+
+def _apply_mapping(
+    fieldnames: List[str],
+    rows_iter: Iterable[Dict[str, str]],
     mapping: CallImportColumnMapping,
     extra_columns: List[str],
     custom_column_mapping: Optional[Dict[str, str]] = None,
+    *,
+    source_label: str = "CSV",
 ) -> List[Dict[str, Any]]:
-    """Parse the CSV using ``mapping`` to find each system field.
+    """Validate ``mapping`` against ``fieldnames`` and project each row.
+
+    Shared between the CSV and XLSX parse paths. Each input row in
+    ``rows_iter`` is a dict whose keys are the original (case-preserved)
+    headers from ``fieldnames`` and whose values are strings (already
+    coerced from native Excel types for the xlsx path).
 
     The returned list has one entry per non-empty row with:
       * ``external_call_id`` (str, required - row dropped with 400 if blank)
@@ -143,56 +202,38 @@ def _parse_csv(
       * ``raw_columns`` (Dict[str, str]) of the original row keyed by the
         uploader's headers, restricted to mapped + ``extra_columns``.
     """
-    if not file_bytes:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Uploaded CSV is empty.",
-        )
-
-    try:
-        text_stream = io.StringIO(file_bytes.decode("utf-8-sig"))
-    except UnicodeDecodeError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="CSV must be UTF-8 encoded.",
-        )
-
-    reader = csv.DictReader(text_stream)
-    if not reader.fieldnames:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="CSV is missing a header row.",
-        )
-
-    header_lookup = _header_lookup(list(reader.fieldnames))
+    header_lookup = _header_lookup(list(fieldnames))
     callid_h = _resolve_mapped_header(mapping.external_call_id, header_lookup)
     if not callid_h:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                f"CSV does not contain the column '{mapping.external_call_id}' "
-                "mapped to External Call ID."
+                f"{source_label} does not contain the column "
+                f"'{mapping.external_call_id}' mapped to External Call ID."
             ),
         )
     transcript_h = _resolve_mapped_header(mapping.transcript, header_lookup)
     if mapping.transcript and transcript_h is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"CSV does not contain the column '{mapping.transcript}' mapped to Transcript.",
+            detail=(
+                f"{source_label} does not contain the column "
+                f"'{mapping.transcript}' mapped to Transcript."
+            ),
         )
     url_h = _resolve_mapped_header(mapping.recording_url, header_lookup)
     if mapping.recording_url and url_h is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                f"CSV does not contain the column '{mapping.recording_url}' "
-                "mapped to Recording URL."
+                f"{source_label} does not contain the column "
+                f"'{mapping.recording_url}' mapped to Recording URL."
             ),
         )
 
     # Headers we must capture in raw_columns (mapped + extras + custom),
-    # keyed by the canonical CSV fieldname so reads always work regardless
-    # of case. Custom-mapped CSV headers are validated the same way as the
+    # keyed by the canonical fieldname so reads always work regardless
+    # of case. Custom-mapped headers are validated the same way as the
     # system fields so a typo surfaces as a 400 rather than a silent drop.
     custom_mapping = custom_column_mapping or {}
     for custom_name, custom_header in custom_mapping.items():
@@ -201,8 +242,8 @@ def _parse_csv(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
-                    f"CSV does not contain the column '{custom_header}' "
-                    f"mapped to custom field '{custom_name}'."
+                    f"{source_label} does not contain the column "
+                    f"'{custom_header}' mapped to custom field '{custom_name}'."
                 ),
             )
 
@@ -220,11 +261,12 @@ def _parse_csv(
             keep_canonical[canonical] = raw_header  # type: ignore[assignment]
 
     parsed: List[Dict[str, Any]] = []
-    for idx, row in enumerate(reader):
+    for idx, row in enumerate(rows_iter):
         call_id = (row.get(callid_h) or "").strip()
         url = (row.get(url_h) or "").strip() if url_h else ""
         transcript = (row.get(transcript_h) or "").strip() if transcript_h else ""
-        # Fully blank line — skip silently to allow trailing newlines.
+        # Fully blank line — skip silently to allow trailing newlines /
+        # phantom empty rows that openpyxl sometimes yields.
         if not any((row.get(h) or "").strip() for h in (callid_h, url_h, transcript_h) if h):
             continue
         if not call_id:
@@ -250,10 +292,266 @@ def _parse_csv(
     if not parsed:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="CSV did not contain any data rows.",
+            detail=f"{source_label} did not contain any data rows.",
         )
 
     return parsed
+
+
+def _parse_csv(
+    file_bytes: bytes,
+    mapping: CallImportColumnMapping,
+    extra_columns: List[str],
+    custom_column_mapping: Optional[Dict[str, str]] = None,
+) -> List[Dict[str, Any]]:
+    """Parse the CSV using ``mapping`` to find each system field.
+
+    Thin wrapper that runs ``csv.DictReader`` and delegates the mapping /
+    validation / row-projection logic to :func:`_apply_mapping`.
+    """
+    if not file_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Uploaded CSV is empty.",
+        )
+
+    try:
+        text_stream = io.StringIO(file_bytes.decode("utf-8-sig"))
+    except UnicodeDecodeError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="CSV must be UTF-8 encoded.",
+        )
+
+    reader = csv.DictReader(text_stream)
+    if not reader.fieldnames:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="CSV is missing a header row.",
+        )
+
+    return _apply_mapping(
+        list(reader.fieldnames),
+        reader,
+        mapping,
+        extra_columns,
+        custom_column_mapping,
+        source_label="CSV",
+    )
+
+
+def _open_xlsx_workbook(file_bytes: bytes):
+    """Open an xlsx/xlsm workbook from in-memory bytes (read-only stream).
+
+    Imports openpyxl lazily so the module loads even in environments that
+    haven't installed the optional dep yet (e.g. lightweight tooling
+    images). Surfaces a clean 400 if openpyxl is missing or the file is
+    not a valid Office Open XML workbook.
+    """
+    if not file_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Uploaded Excel file is empty.",
+        )
+    try:
+        from openpyxl import load_workbook  # type: ignore
+        from openpyxl.utils.exceptions import InvalidFileException  # type: ignore
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                "Excel uploads require the 'openpyxl' package which is "
+                "not installed in this environment."
+            ),
+        ) from exc
+
+    try:
+        return load_workbook(
+            io.BytesIO(file_bytes),
+            read_only=True,
+            data_only=True,
+        )
+    except InvalidFileException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"File is not a valid .xlsx workbook: {exc}",
+        ) from exc
+    except Exception as exc:  # zipfile.BadZipFile etc.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Could not open Excel workbook: {exc}",
+        ) from exc
+
+
+def _xlsx_sheet_headers_and_rows(
+    worksheet,
+) -> Tuple[List[str], List[Dict[str, str]]]:
+    """Read row 1 as headers and the rest as dicts of stringified cells.
+
+    Empty trailing header cells are dropped. Duplicate headers preserve
+    the first occurrence (matches ``csv.DictReader`` behavior, which
+    silently drops duplicates).
+    """
+    iterator = worksheet.iter_rows(values_only=True)
+    try:
+        header_row = next(iterator)
+    except StopIteration:
+        return [], []
+
+    headers: List[str] = []
+    seen: set[str] = set()
+    for cell in header_row:
+        name = _xlsx_cell_to_str(cell).strip()
+        if not name:
+            # Stop at the first blank header — treats trailing empty
+            # columns as not part of the table (matches typical Excel
+            # workbook conventions).
+            break
+        norm = name.lower()
+        if norm in seen:
+            continue
+        seen.add(norm)
+        headers.append(name)
+
+    rows: List[Dict[str, str]] = []
+    for row in iterator:
+        if row is None:
+            continue
+        # Pad / truncate to the header length so dict construction is
+        # stable even when a row has fewer / extra cells than the header.
+        cells = list(row[: len(headers)])
+        if len(cells) < len(headers):
+            cells.extend([None] * (len(headers) - len(cells)))
+        if not any(_xlsx_cell_to_str(c).strip() for c in cells):
+            # Skip fully-blank rows (openpyxl read_only routinely yields
+            # trailing empties when the worksheet's used range exceeds
+            # the actual data).
+            continue
+        rows.append(
+            {
+                header: _xlsx_cell_to_str(value)
+                for header, value in zip(headers, cells)
+            }
+        )
+
+    return headers, rows
+
+
+def _parse_xlsx(
+    file_bytes: bytes,
+    sheet_name: Optional[str],
+    mapping: CallImportColumnMapping,
+    extra_columns: List[str],
+    custom_column_mapping: Optional[Dict[str, str]] = None,
+) -> List[Dict[str, Any]]:
+    """Parse a single worksheet from an xlsx/xlsm workbook.
+
+    ``sheet_name`` must match one of the workbook's sheets (case
+    insensitive whitespace-trimmed match). Returns the same shape as
+    :func:`_parse_csv` so the upload handler can persist either format
+    through the same code path.
+    """
+    if not sheet_name or not sheet_name.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="sheet_name is required when uploading an Excel workbook.",
+        )
+
+    workbook = _open_xlsx_workbook(file_bytes)
+    try:
+        sheet_names = list(workbook.sheetnames)
+        target_norm = sheet_name.strip().lower()
+        match = next(
+            (s for s in sheet_names if s.strip().lower() == target_norm),
+            None,
+        )
+        if match is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Sheet '{sheet_name}' not found in workbook. "
+                    f"Available sheets: {sheet_names}"
+                ),
+            )
+        worksheet = workbook[match]
+        headers, rows = _xlsx_sheet_headers_and_rows(worksheet)
+    finally:
+        workbook.close()
+
+    if not headers:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Sheet '{sheet_name}' is missing a header row.",
+        )
+
+    return _apply_mapping(
+        headers,
+        rows,
+        mapping,
+        extra_columns,
+        custom_column_mapping,
+        source_label=f"Sheet '{sheet_name}'",
+    )
+
+
+def _csv_preview_sheets(
+    file_bytes: bytes, filename: Optional[str]
+) -> List[CallImportPreviewSheet]:
+    """Build the synthetic single-sheet preview entry for a CSV upload."""
+    if not file_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Uploaded CSV is empty.",
+        )
+    try:
+        text_stream = io.StringIO(file_bytes.decode("utf-8-sig"))
+    except UnicodeDecodeError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="CSV must be UTF-8 encoded.",
+        )
+    reader = csv.DictReader(text_stream)
+    if not reader.fieldnames:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="CSV is missing a header row.",
+        )
+    headers = list(reader.fieldnames)
+    row_count = 0
+    for row in reader:
+        # Match the parse-time skip: ignore fully blank rows so the
+        # count the user sees lines up with what /upload will ingest.
+        if any((v or "").strip() for v in row.values()):
+            row_count += 1
+
+    sheet_label = (filename or "sheet1").rsplit("/", 1)[-1] or "sheet1"
+    return [
+        CallImportPreviewSheet(
+            name=sheet_label,
+            headers=headers,
+            row_count=row_count,
+        )
+    ]
+
+
+def _xlsx_preview_sheets(file_bytes: bytes) -> List[CallImportPreviewSheet]:
+    """List every worksheet in the workbook with its headers and row count."""
+    workbook = _open_xlsx_workbook(file_bytes)
+    sheets: List[CallImportPreviewSheet] = []
+    try:
+        for name in workbook.sheetnames:
+            worksheet = workbook[name]
+            headers, rows = _xlsx_sheet_headers_and_rows(worksheet)
+            sheets.append(
+                CallImportPreviewSheet(
+                    name=name,
+                    headers=headers,
+                    row_count=len(rows),
+                )
+            )
+    finally:
+        workbook.close()
+    return sheets
 
 
 def _parse_json_form_field(name: str, raw: Optional[str], default):
@@ -267,6 +565,53 @@ def _parse_json_form_field(name: str, raw: Optional[str], default):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"{name} must be valid JSON: {exc}",
         )
+
+
+@router.post(
+    "/preview",
+    response_model=CallImportPreviewResponse,
+    operation_id="previewCallImportFile",
+)
+async def preview_call_import_file(
+    file: UploadFile = File(...),
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+) -> CallImportPreviewResponse:
+    """Inspect an uploaded CSV / Excel file and return its sheets + headers.
+
+    Drives the column-mapping UI without forcing the frontend to parse
+    CSV / xlsx itself — keeps client and server in lockstep on quoted
+    fields, encodings, and Excel cell coercion. CSVs return a single
+    synthetic sheet named after the filename; Excel workbooks return one
+    entry per worksheet (in workbook order).
+    """
+    del api_key, organization_id, workspace_id, db  # auth only
+
+    fmt = _file_format(file.filename)
+    if fmt is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Unsupported file format. Allowed extensions: "
+                f"{', '.join(ALLOWED_EXTENSIONS)}."
+            ),
+        )
+
+    file_bytes = await file.read()
+    if len(file_bytes) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File exceeds {MAX_UPLOAD_BYTES} bytes",
+        )
+
+    if fmt == "csv":
+        sheets = _csv_preview_sheets(file_bytes, file.filename)
+    else:
+        sheets = _xlsx_preview_sheets(file_bytes)
+
+    return CallImportPreviewResponse(format=fmt, sheets=sheets)
 
 
 @router.post(
@@ -294,22 +639,22 @@ async def upload_call_import_csv(
     column_mapping: str = Form(
         ...,
         description=(
-            "JSON-encoded mapping from system fields to CSV header strings. "
+            "JSON-encoded mapping from system fields to source header strings. "
             "Required key: external_call_id. Optional: transcript, recording_url."
         ),
     ),
     extra_columns: Optional[str] = Form(
         None,
         description=(
-            "JSON-encoded list of additional CSV header strings to preserve "
+            "JSON-encoded list of additional source header strings to preserve "
             "verbatim into raw_columns for export."
         ),
     ),
     custom_column_mapping: Optional[str] = Form(
         None,
         description=(
-            "JSON-encoded ``{custom_field_name: csv_header}`` map for "
-            "uploader-defined columns. The CSV cells under each mapped "
+            "JSON-encoded ``{custom_field_name: source_header}`` map for "
+            "uploader-defined columns. The source cells under each mapped "
             "header are preserved per row and surface under the chosen "
             "custom name in the evaluation export."
         ),
@@ -325,34 +670,63 @@ async def upload_call_import_csv(
         None,
         description="Optional list of CallImportTag ids to attach to the new batch.",
     ),
+    sheet_name: Optional[str] = Form(
+        None,
+        description=(
+            "Worksheet to import when the file is an Excel workbook "
+            "(.xlsx / .xlsm). REQUIRED for Excel uploads. Ignored for CSV "
+            "uploads (rejected with 400 if non-empty so typos surface "
+            "instead of silently importing the wrong source)."
+        ),
+    ),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ) -> CallImportUploadResponse:
-    """Accept a CSV + column mapping and queue per-row import jobs.
+    """Accept a CSV / Excel file + column mapping and queue per-row jobs.
 
     The caller selects a specific telephony credential (so the worker uses
     *that* row to fetch recordings) and provides a column mapping so any
-    CSV layout works. Unmapped headers can be preserved via ``extra_columns``
+    layout works. Unmapped headers can be preserved via ``extra_columns``
     so they ride along into the eventual evaluation export.
+
+    For multi-sheet Excel workbooks, the caller picks one sheet per upload
+    via ``sheet_name`` — to import N sheets, send N separate uploads (one
+    CallImport batch is created per sheet).
 
     The new batch is stamped with the active workspace (from the
     ``X-Workspace-Id`` header, falling back to the org's Default).
     """
     del api_key
 
-    if not file.filename or not file.filename.lower().endswith(".csv"):
+    fmt = _file_format(file.filename)
+    if fmt is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="File must be a .csv",
+            detail=(
+                "Unsupported file format. Allowed extensions: "
+                f"{', '.join(ALLOWED_EXTENSIONS)}."
+            ),
+        )
+
+    sheet_name_clean = (sheet_name or "").strip() or None
+    if fmt == "csv" and sheet_name_clean is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="sheet_name is not applicable to CSV uploads.",
+        )
+    if fmt == "xlsx" and sheet_name_clean is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="sheet_name is required when uploading an Excel workbook.",
         )
 
     file_bytes = await file.read()
-    if len(file_bytes) > MAX_CSV_BYTES:
+    if len(file_bytes) > MAX_UPLOAD_BYTES:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"CSV exceeds {MAX_CSV_BYTES} bytes",
+            detail=f"File exceeds {MAX_UPLOAD_BYTES} bytes",
         )
 
     mapping_payload = _parse_json_form_field("column_mapping", column_mapping, {})
@@ -456,7 +830,12 @@ async def upload_call_import_csv(
             detail="Selected telephony credential is inactive.",
         )
 
-    rows = _parse_csv(file_bytes, mapping, extras_clean, custom_clean)
+    if fmt == "csv":
+        rows = _parse_csv(file_bytes, mapping, extras_clean, custom_clean)
+    else:
+        rows = _parse_xlsx(
+            file_bytes, sheet_name_clean, mapping, extras_clean, custom_clean
+        )
 
     tag_rows = _resolve_tags(db, organization_id, tag_ids)
 
@@ -472,6 +851,7 @@ async def upload_call_import_csv(
         provider=integration.provider,
         telephony_integration_id=integration.id,
         original_filename=file.filename,
+        sheet_name=sheet_name_clean,
         dataset=_normalize_dataset(dataset),
         column_mapping=stored_mapping,
         extra_columns=extras_clean,
@@ -488,13 +868,21 @@ async def upload_call_import_csv(
 
     row_models: List[CallImportRow] = []
     for idx, row in enumerate(rows):
+        # Stamp ``transcript_source='csv'`` when the upload actually
+        # provided a transcript so the UI badge ("From CSV") works
+        # from day one. Blank cells stay NULL so the row reads as
+        # "no production transcript yet".
+        csv_transcript = row["transcript"]
         row_model = CallImportRow(
             call_import_id=call_import.id,
             organization_id=organization_id,
             row_index=idx,
             external_call_id=row["external_call_id"],
             recording_url=row["recording_url"],
-            transcript=row["transcript"],
+            transcript=csv_transcript,
+            transcript_source=(
+                "csv" if csv_transcript and csv_transcript.strip() else None
+            ),
             raw_columns=row["raw_columns"] or None,
             status=CallImportRowStatus.PENDING,
         )
@@ -1127,7 +1515,7 @@ def _select_rows_for_transcription(
     payload: CallImportTranscribeRequest,
     requested_row_ids: Optional[List[UUID]] = None,
 ) -> tuple[List[CallImportRow], Dict[str, int]]:
-    """Pick which rows to enqueue for diarization.
+    """Pick which rows to enqueue for diarisation.
 
     Centralises the "should this row be touched?" decision so both the
     batch endpoint and the per-row endpoint apply the same rules:
@@ -1135,7 +1523,10 @@ def _select_rows_for_transcription(
     * row must exist on the import,
     * row must have an S3 recording (otherwise nothing to transcribe),
     * if ``only_missing`` is set and ``overwrite_existing`` is not, rows
-      with a non-empty transcript are skipped.
+      with a non-empty ``diarised_transcript`` are skipped (the
+      production ``transcript`` is intentionally ignored here — it
+      lives in a separate column and is never overwritten by this
+      worker).
 
     Returns the list of rows to enqueue plus a per-reason skip count
     that the response can surface so the user knows why a "no-op"
@@ -1169,7 +1560,7 @@ def _select_rows_for_transcription(
         if not recording:
             skip_counts["no_recording"] = skip_counts.get("no_recording", 0) + 1
             continue
-        existing = (row.transcript or "").strip()
+        existing = (row.diarised_transcript or "").strip()
         if existing and payload.only_missing and not payload.overwrite_existing:
             skip_counts["transcript_present"] = (
                 skip_counts.get("transcript_present", 0) + 1
@@ -1222,12 +1613,12 @@ async def transcribe_call_import(
     )
 
     # Mark the about-to-be-enqueued rows as ``pending`` so the UI can
-    # show a "Queued for transcription" badge immediately, even before
+    # show a "Queued for diarisation" badge immediately, even before
     # the worker picks the row up. The worker flips it to ``running``
     # on entry.
     for row in rows:
-        row.transcript_status = "pending"
-        row.transcript_error = None
+        row.diarised_transcript_status = "pending"
+        row.diarised_transcript_error = None
     db.commit()
 
     if not rows:
@@ -1257,8 +1648,8 @@ async def transcribe_call_import(
             logger.exception(
                 "Failed to enqueue transcribe for row {}: {}", row.id, exc
             )
-            row.transcript_status = "failed"
-            row.transcript_error = f"Failed to enqueue: {exc}"
+            row.diarised_transcript_status = "failed"
+            row.diarised_transcript_error = f"Failed to enqueue: {exc}"
     db.commit()
 
     return CallImportTranscribeResponse(
@@ -1310,8 +1701,8 @@ async def transcribe_call_import_row(
     )
 
     for row in rows:
-        row.transcript_status = "pending"
-        row.transcript_error = None
+        row.diarised_transcript_status = "pending"
+        row.diarised_transcript_error = None
     db.commit()
 
     if not rows:
@@ -1344,8 +1735,8 @@ async def transcribe_call_import_row(
         logger.exception(
             "Failed to enqueue transcribe for row {}: {}", target.id, exc
         )
-        target.transcript_status = "failed"
-        target.transcript_error = f"Failed to enqueue: {exc}"
+        target.diarised_transcript_status = "failed"
+        target.diarised_transcript_error = f"Failed to enqueue: {exc}"
         db.commit()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1406,16 +1797,26 @@ async def get_call_import_insights(
         .filter(CallImportRow.call_import_id == call_import_id)
         .all()
     )
+    # A row "has a transcript" if EITHER the production (CSV) or the
+    # diarised (worker) column is populated — the insights tile reports
+    # the union so users see total coverage regardless of which source
+    # produced the value.
     rows_with_transcript = sum(
-        1 for r in rows if (r.transcript or "").strip()
+        1
+        for r in rows
+        if (r.transcript or "").strip()
+        or (r.diarised_transcript or "").strip()
     )
     rows_without_transcript = len(rows) - rows_with_transcript
     source_counts: Dict[str, int] = {}
     for r in rows:
-        if not (r.transcript or "").strip():
-            continue
-        key = r.transcript_source or "unknown"
-        source_counts[key] = source_counts.get(key, 0) + 1
+        has_production = bool((r.transcript or "").strip())
+        has_diarised = bool((r.diarised_transcript or "").strip())
+        if has_production:
+            key = r.transcript_source or "csv"
+            source_counts[key] = source_counts.get(key, 0) + 1
+        if has_diarised:
+            source_counts["diarised"] = source_counts.get("diarised", 0) + 1
 
     evaluations = (
         db.query(CallImportEvaluation)

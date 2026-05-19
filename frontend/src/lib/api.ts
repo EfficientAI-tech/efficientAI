@@ -27,6 +27,7 @@ import type {
   CallImportStatus,
   CallImportTag,
   CallImportUploadResponse,
+  CallImportPreviewResponse,
   CallImportEvaluation,
   CallImportEvaluationLLMOverride,
   CallImportEvaluationListResponse,
@@ -1018,6 +1019,25 @@ class ApiClient {
   }
 
   // Call Imports endpoints
+
+  /**
+   * Inspect an uploaded CSV / Excel file and get its sheets + headers.
+   *
+   * Drives the column-mapping UI without forcing the frontend to parse
+   * CSV / xlsx itself. CSV files come back as a single synthetic sheet;
+   * Excel workbooks come back with one entry per worksheet.
+   */
+  async previewCallImportFile(file: File): Promise<CallImportPreviewResponse> {
+    const formData = new FormData()
+    formData.append('file', file)
+    const response = await this.client.post(
+      '/api/v1/call-imports/preview',
+      formData,
+      { headers: { 'Content-Type': 'multipart/form-data' } },
+    )
+    return response.data
+  }
+
   async uploadCallImport(
     file: File,
     options: {
@@ -1032,6 +1052,12 @@ class ApiClient {
       customColumnMapping?: Record<string, string>
       dataset?: string | null
       tagIds?: string[]
+      /**
+       * Worksheet name to import when the file is an Excel workbook.
+       * Required for .xlsx / .xlsm uploads; must be left undefined / null
+       * for CSV uploads (the backend rejects a non-empty value for CSV).
+       */
+      sheetName?: string | null
     }
   ): Promise<CallImportUploadResponse> {
     const formData = new FormData()
@@ -1051,6 +1077,9 @@ class ApiClient {
       for (const tagId of options.tagIds) {
         formData.append('tag_ids', tagId)
       }
+    }
+    if (options.sheetName) {
+      formData.append('sheet_name', options.sheetName)
     }
     const response = await this.client.post('/api/v1/call-imports/upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
@@ -1123,6 +1152,12 @@ class ApiClient {
     payload: {
       metric_ids: string[]
       name?: string | null
+      /**
+       * Which transcript(s) to score against. Passing both values triggers
+       * two evaluation runs (one per source). Defaults server-side to
+       * `['production']` for backwards compatibility.
+       */
+      transcript_sources?: Array<'production' | 'diarised'>
       /** Run-level LLM provider key. Leave undefined for legacy default. */
       llm_provider?: string | null
       llm_model?: string | null
@@ -1894,6 +1929,12 @@ class ApiClient {
     capture_rationale?: boolean
     parent_metric_id?: string | null
     selection_mode?: 'single_choice' | 'multi_label' | null
+    /**
+     * CSV header names from imported call rows that this metric should
+     * read instead of the transcript. Empty / omitted means today's
+     * transcript-based behavior.
+     */
+    input_columns?: string[]
   }): Promise<any> {
     const response = await this.client.post('/api/v1/metrics', data)
     return response.data
@@ -2026,6 +2067,12 @@ class ApiClient {
     selection_mode?: 'single_choice' | 'multi_label' | null
     /** Only honored on multi_label parents; backend 400s otherwise. */
     allow_discovery?: boolean
+    /**
+     * Pass an empty array to clear; ``null`` / omit to leave unchanged.
+     * Sending a non-empty list switches this metric to a column-input
+     * judge for the next call-import evaluation run.
+     */
+    input_columns?: string[] | null
   }): Promise<any> {
     const response = await this.client.put(`/api/v1/metrics/${metricId}`, data)
     return response.data

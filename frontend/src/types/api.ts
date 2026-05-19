@@ -640,20 +640,36 @@ export type CallImportTranscriptStatus =
   | 'failed'
   | null
 
+/**
+ * Which transcript an evaluation run scored against.
+ *  - `production`: the CSV-supplied value on `CallImportRow.transcript`.
+ *  - `diarised`: the worker-produced value on `CallImportRow.diarised_transcript`.
+ */
+export type CallImportEvaluationTranscriptSource = 'production' | 'diarised'
+
 export interface CallImportRow {
   id: string
   row_index: number
   external_call_id: string
   recording_url: string | null
+  /** Production transcript — the value supplied via the CSV upload. */
   transcript: string | null
-  /** Provenance of the stored transcript (csv = CSV upload, transcribed = post-hoc STT). */
+  /** Provenance of the stored production transcript (csv = CSV upload, edited = manual edit). */
   transcript_source: CallImportTranscriptSource
-  /** Provider used by the post-hoc transcription worker (e.g. "deepgram"). */
+  /** Legacy: provider recorded by the original transcription worker before the split. */
   transcript_provider: string | null
   transcript_model: string | null
   transcript_status: CallImportTranscriptStatus
   transcript_error: string | null
   transcribed_at: string | null
+  /** Diarised transcript — produced by the post-hoc diarisation worker. */
+  diarised_transcript: string | null
+  /** Provider used by the diarisation worker (e.g. "deepgram"). */
+  diarised_transcript_provider: string | null
+  diarised_transcript_model: string | null
+  diarised_transcript_status: CallImportTranscriptStatus
+  diarised_transcript_error: string | null
+  diarised_at: string | null
   raw_columns: Record<string, string> | null
   status: CallImportRowStatus
   recording_s3_key: string | null
@@ -696,6 +712,12 @@ export interface CallImport {
   provider: string
   telephony_integration_id: string | null
   original_filename: string | null
+  /**
+   * For Excel uploads, which worksheet this batch came from. ``null``
+   * for CSV uploads (CSV files have no sheet concept) and for any
+   * imports created before multi-sheet support landed.
+   */
+  sheet_name: string | null
   /** Optional free-text dataset label (high-level segregation filter). */
   dataset: string | null
   /** Tags currently attached to this import. Empty array if untagged. */
@@ -736,6 +758,27 @@ export interface CallImportUploadResponse {
   dataset: string | null
   tags: CallImportTag[]
   message: string
+}
+
+/** One worksheet (or one CSV file synthesized as a single sheet). */
+export interface CallImportPreviewSheet {
+  /** Sheet name for xlsx; filename for csv. */
+  name: string
+  /** Column headers from the first non-empty row. */
+  headers: string[]
+  /** Approximate count of data rows (excludes the header row). */
+  row_count: number
+}
+
+/**
+ * Sheets / headers extracted server-side from an uploaded CSV or Excel
+ * workbook. Drives the modal's column-mapping UI without forcing the
+ * frontend to parse the file itself.
+ */
+export interface CallImportPreviewResponse {
+  /** ``'csv'`` or ``'xlsx'``. */
+  format: 'csv' | 'xlsx'
+  sheets: CallImportPreviewSheet[]
 }
 
 export type MetricSelectionMode = 'single_choice' | 'multi_label'
@@ -782,6 +825,17 @@ export interface CallImportEvaluation {
   stt_provider: string | null
   stt_model: string | null
   stt_credential_id: string | null
+  /**
+   * Which transcript column this run scored against.
+   * Defaults to `production` on legacy runs.
+   */
+  transcript_source: CallImportEvaluationTranscriptSource
+  /**
+   * Other evaluation ids created in the same Run Evaluation request.
+   * Populated only on the POST response when the user ticked both
+   * Production and Diarised. Empty array on all other reads.
+   */
+  sibling_evaluation_ids: string[]
   started_at: string | null
   finished_at: string | null
   created_at: string
@@ -961,6 +1015,22 @@ export interface MetricSummary {
   parent_metric_id: string | null
   selection_mode: MetricSelectionMode | null
   allow_discovery?: boolean
+  /**
+   * CSV header names this metric reads from a call import row's
+   * ``raw_columns`` JSON. Empty array (the default) means the metric
+   * scores the transcript like before; a non-empty list switches the
+   * metric to a "column-input judge" at evaluation time.
+   */
+  input_columns?: string[]
+  /**
+   * When true, this metric is a "transcript-compare judge": at
+   * call-import evaluation time the worker feeds BOTH the production
+   * transcript and the diarised transcript to the LLM as a labeled
+   * pair, and the run's transcript_source toggle is ignored for this
+   * metric. Mutually exclusive with input_columns, parent_metric_id
+   * and selection_mode — v1 keeps comparison metrics standalone.
+   */
+  compare_transcripts?: boolean
   children?: MetricSummary[]
   created_at: string
   updated_at: string
