@@ -28,8 +28,9 @@ from fastapi import HTTPException
 # ---------------------------------------------------------------------------
 
 
-def test_transcribe_worker_calls_service_with_diarization_disabled():
-    """The worker should request a plain transcript, never run pyannote."""
+def test_transcribe_worker_writes_into_diarised_transcript():
+    """Worker output should land in ``diarised_transcript``, never overwrite
+    the CSV-supplied ``transcript`` column."""
     from app.workers.tasks import transcribe_call_import_row as task_module
 
     captured: dict = {}
@@ -47,13 +48,20 @@ def test_transcribe_worker_calls_service_with_diarization_disabled():
         id=uuid4(),
         organization_id=uuid4(),
         recording_s3_key="s3://bucket/key.wav",
-        transcript=None,
+        # Pre-existing production transcript that must be left untouched.
+        transcript="production value from CSV",
+        transcript_source="csv",
         transcript_status="idle",
         transcript_error=None,
-        transcript_source=None,
         transcript_provider=None,
         transcript_model=None,
         transcribed_at=None,
+        diarised_transcript=None,
+        diarised_transcript_status="idle",
+        diarised_transcript_error=None,
+        diarised_transcript_provider=None,
+        diarised_transcript_model=None,
+        diarised_at=None,
         celery_task_id=None,
     )
 
@@ -80,13 +88,14 @@ def test_transcribe_worker_calls_service_with_diarization_disabled():
     assert result["status"] == "completed"
     # Diarization must be off — that's the whole point of the simplification.
     assert captured.get("enable_speaker_diarization") is False
-    # Plain transcript is stored, stripped, with the right provenance fields.
-    assert fake_row.transcript == "hello world"
-    assert fake_row.transcript_source == "transcribed"
-    assert fake_row.transcript_provider == "deepgram"
-    assert fake_row.transcript_model == "nova-2"
-    assert fake_row.transcript_status == "completed"
-    assert fake_row.transcript_error is None
+    # Production transcript untouched, diarised transcript populated.
+    assert fake_row.transcript == "production value from CSV"
+    assert fake_row.transcript_source == "csv"
+    assert fake_row.diarised_transcript == "hello world"
+    assert fake_row.diarised_transcript_provider == "deepgram"
+    assert fake_row.diarised_transcript_model == "nova-2"
+    assert fake_row.diarised_transcript_status == "completed"
+    assert fake_row.diarised_transcript_error is None
 
 
 def test_transcribe_worker_marks_failed_on_empty_transcript():
@@ -103,6 +112,12 @@ def test_transcribe_worker_marks_failed_on_empty_transcript():
         transcript=None,
         transcript_status="idle",
         transcript_error=None,
+        diarised_transcript=None,
+        diarised_transcript_status="idle",
+        diarised_transcript_error=None,
+        diarised_transcript_provider=None,
+        diarised_transcript_model=None,
+        diarised_at=None,
         celery_task_id=None,
     )
 
@@ -127,8 +142,8 @@ def test_transcribe_worker_marks_failed_on_empty_transcript():
         )
 
     assert result == {"status": "failed", "reason": "empty_transcript"}
-    assert fake_row.transcript_status == "failed"
-    assert "empty" in (fake_row.transcript_error or "").lower()
+    assert fake_row.diarised_transcript_status == "failed"
+    assert "empty" in (fake_row.diarised_transcript_error or "").lower()
 
 
 # ---------------------------------------------------------------------------
@@ -292,30 +307,47 @@ def test_create_evaluation_payload_validates_llm_provider_and_model_pair():
 
 
 def test_select_rows_for_transcription_skips_rows_with_existing_transcripts():
-    """``only_missing=True`` (default) keeps existing transcripts."""
+    """``only_missing=True`` (default) keeps rows that already have a
+    diarised transcript; the production transcript is irrelevant — it
+    lives in a separate column the worker never touches."""
     from app.api.v1.routes.call_imports import _select_rows_for_transcription
     from app.models.schemas import CallImportTranscribeRequest
 
     call_import = SimpleNamespace(id=uuid4())
 
     fake_rows = [
+        # Already diarised → skip.
         SimpleNamespace(
             id=uuid4(),
             recording_s3_key="s3-1",
-            transcript="present",
+            transcript=None,
+            diarised_transcript="present",
             row_index=0,
         ),
+        # No diarised transcript, has recording → selected.
         SimpleNamespace(
             id=uuid4(),
             recording_s3_key="s3-2",
             transcript=None,
+            diarised_transcript=None,
             row_index=1,
         ),
+        # No recording → skipped regardless.
         SimpleNamespace(
             id=uuid4(),
-            recording_s3_key=None,  # no recording -> skip
+            recording_s3_key=None,
             transcript=None,
+            diarised_transcript=None,
             row_index=2,
+        ),
+        # Production transcript present but no diarised yet → selected
+        # (production transcript is ignored by the diarisation worker).
+        SimpleNamespace(
+            id=uuid4(),
+            recording_s3_key="s3-4",
+            transcript="csv production",
+            diarised_transcript=None,
+            row_index=3,
         ),
     ]
 
@@ -337,9 +369,11 @@ def test_select_rows_for_transcription_skips_rows_with_existing_transcripts():
         fake_db, call_import, payload
     )
 
-    # Only the row with no transcript and a recording should be selected.
-    assert len(selected) == 1
-    assert selected[0].recording_s3_key == "s3-2"
+    # Two rows selected: the bare row, and the one with only a production
+    # transcript.
+    assert len(selected) == 2
+    selected_keys = {r.recording_s3_key for r in selected}
+    assert selected_keys == {"s3-2", "s3-4"}
     assert skip_counts.get("transcript_present") == 1
     assert skip_counts.get("no_recording") == 1
 
@@ -354,7 +388,8 @@ def test_select_rows_for_transcription_overwrite_replaces_existing():
         SimpleNamespace(
             id=uuid4(),
             recording_s3_key="s3-1",
-            transcript="present",
+            transcript=None,
+            diarised_transcript="present",
             row_index=0,
         ),
     ]

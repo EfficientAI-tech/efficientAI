@@ -10,6 +10,8 @@ from app.models.schemas import (
     AgentCreate,
     AgentResponse,
     EvaluationCreate,
+    MetricCreate,
+    MetricUpdate,
     VoiceBundleResponse,
 )
 
@@ -101,3 +103,117 @@ def test_voice_bundle_response_converts_provider_enum_from_uppercase_name():
     assert response.stt_provider.value == "openai"
     assert response.llm_provider.value == "anthropic"
     assert response.tts_provider.value == "elevenlabs"
+
+
+# ---------------------------------------------------------------------------
+# MetricCreate / MetricUpdate: compare_transcripts mutual-exclusion validator
+# ---------------------------------------------------------------------------
+
+
+def test_metric_create_allows_compare_transcripts_on_standalone_metric():
+    """The happy path: a standalone metric with compare_transcripts=True
+    and no conflicting fields validates cleanly."""
+    payload = MetricCreate(
+        name="Transcript Fidelity",
+        description="Score how well the diarised transcript matches production.",
+        metric_type="rating",
+        compare_transcripts=True,
+    )
+    assert payload.compare_transcripts is True
+    assert payload.input_columns == []
+    assert payload.parent_metric_id is None
+    assert payload.selection_mode is None
+
+
+def test_metric_create_rejects_compare_transcripts_with_input_columns():
+    """Comparison + column-input judge are mutually exclusive prompt
+    templates — combining them would feed both a transcript pair AND a
+    column dictionary to the LLM, with no defined precedence."""
+    with pytest.raises(ValidationError, match="column-input"):
+        MetricCreate(
+            name="Hybrid",
+            metric_type="rating",
+            compare_transcripts=True,
+            input_columns=["customer_intent"],
+        )
+
+
+def test_metric_create_rejects_compare_transcripts_on_child_submetric():
+    """v1 keeps comparison metrics standalone — a child sub-metric
+    cannot carry the flag because the parent-block prompt template
+    doesn't yet know how to render the transcript pair."""
+    with pytest.raises(ValidationError, match="standalone"):
+        MetricCreate(
+            name="Comparison child",
+            metric_type="boolean",
+            compare_transcripts=True,
+            parent_metric_id=uuid4(),
+        )
+
+
+def test_metric_create_rejects_compare_transcripts_on_parent_with_selection_mode():
+    """The other half of the standalone rule: a parent category metric
+    (selection_mode set) cannot also be a transcript-compare judge."""
+    with pytest.raises(ValidationError, match="standalone"):
+        MetricCreate(
+            name="Comparison parent",
+            metric_type="text",
+            compare_transcripts=True,
+            selection_mode="single_choice",
+        )
+
+
+def test_metric_create_accepts_default_compare_transcripts_false():
+    """Backwards compat: omitting the flag preserves today's
+    transcript-based judge behavior (input_columns / parent / selection_mode
+    remain free to use as before)."""
+    payload = MetricCreate(
+        name="Old style",
+        metric_type="rating",
+        input_columns=["customer_intent"],
+    )
+    assert payload.compare_transcripts is False
+    assert payload.input_columns == ["customer_intent"]
+
+
+def test_metric_update_rejects_compare_transcripts_with_input_columns_in_same_patch():
+    """Patch-body level mutual-exclusion: sending the two conflicting
+    fields in the same PATCH is rejected up-front so the user gets a
+    schema error instead of a route-level 400."""
+    with pytest.raises(ValidationError, match="column-input"):
+        MetricUpdate(
+            compare_transcripts=True,
+            input_columns=["agent_response"],
+        )
+
+
+def test_metric_update_rejects_compare_transcripts_with_selection_mode_in_same_patch():
+    """Setting selection_mode in the same PATCH that enables
+    compare_transcripts contradicts the standalone-only rule."""
+    with pytest.raises(ValidationError, match="standalone"):
+        MetricUpdate(
+            compare_transcripts=True,
+            selection_mode="multi_label",
+        )
+
+
+def test_metric_update_allows_compare_transcripts_alone():
+    """Standalone PATCH that just sets the flag is fine — cross-state
+    validation against the persisted row happens in the update route,
+    which has the existing Metric in hand."""
+    payload = MetricUpdate(compare_transcripts=True)
+    assert payload.compare_transcripts is True
+    assert payload.input_columns is None
+    assert payload.selection_mode is None
+
+
+def test_metric_update_allows_clearing_compare_transcripts_while_setting_input_columns():
+    """The validator only fires when compare_transcripts is being set
+    to True, so the inverse PATCH ("turn the flag off and become a
+    column-input judge") is accepted in one round-trip."""
+    payload = MetricUpdate(
+        compare_transcripts=False,
+        input_columns=["customer_intent"],
+    )
+    assert payload.compare_transcripts is False
+    assert payload.input_columns == ["customer_intent"]

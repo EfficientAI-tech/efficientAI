@@ -136,21 +136,28 @@ def _sequence_key(parent_metric) -> str:
 def _discovered_key(parent_metric) -> str:
     """LLM JSON key carrying candidate sub-labels discovered for a parent.
 
-    Only emitted/parsed when the parent has ``allow_discovery=True`` and
-    is in ``multi_label`` mode. Discovered keys can also appear in the
-    sequence array so they show up in the flow chart.
+    Emitted/parsed when the parent has ``allow_discovery=True`` (works
+    for both single_choice and multi_label parents). Discovered keys
+    can also appear in the sequence array so they show up in the flow
+    chart.
     """
     return f"{_parent_key(parent_metric)}__discovered"
 
 
 def _discovery_enabled(parent_metric) -> bool:
-    """True only on multi_label parents that opted into discovery."""
+    """True on any parent metric that opted into discovery.
+
+    Both single_choice and multi_label parents can carry
+    ``allow_discovery=True``; the prompt instructions vary slightly
+    between modes so the single-choice "exactly one true" invariant
+    stays intact (discovered labels are supplemental for single_choice).
+    """
     if parent_metric is None:
         return False
     mode = (getattr(parent_metric, "selection_mode", None) or "").lower()
     return (
         bool(getattr(parent_metric, "allow_discovery", False))
-        and mode == "multi_label"
+        and mode in {"single_choice", "multi_label"}
     )
 
 
@@ -227,18 +234,20 @@ def _render_parent_block(
         "element (the chosen child) or the path leading up to it.\n"
     )
 
-    # Discovery section: only added for multi_label parents that opted in.
-    # We deliberately do NOT enable discovery for single_choice parents
-    # because an invented "true" label would silently break the exactly-
-    # one-true invariant.
+    # Discovery section: emitted on any parent (single_choice or
+    # multi_label) that opted in via ``allow_discovery``. The wording
+    # is intentionally assertive ("list EVERY distinct behavior", "aim
+    # for 2-5 entries"). When a user has explicitly opted into
+    # discovery they want the LLM to expand their taxonomy, so the
+    # default failure mode should be over-discovery (which they can
+    # merge / discard via the panel) rather than under-discovery
+    # (silently empty arrays that look like discovery is broken).
     #
-    # The wording here is intentionally assertive ("list EVERY distinct
-    # behavior", "aim for 2-5 entries"). When a user has explicitly opted
-    # into discovery they want the LLM to expand their taxonomy, so the
-    # default failure mode should be over-discovery (which they can merge
-    # / discard via the panel) rather than under-discovery (silently
-    # empty arrays that look like discovery is broken). Reuse pressure
-    # for previously-discovered labels is still applied below.
+    # Important: for single_choice parents the discovered labels are
+    # SUPPLEMENTAL — they do not break the "exactly one child true"
+    # invariant. The chosen child still has to come from the predefined
+    # children list; discovered entries surface as analytics-only
+    # candidates the user can later promote into real children.
     if _discovery_enabled(parent_metric):
         discovered_key = _discovered_key(parent_metric)
         block += (
@@ -260,6 +269,16 @@ def _render_parent_block(
             '"rationale": "exact transcript line"}. '
             "Discovered keys may also appear in the sequence array.\n"
         )
+        if selection_mode == "single_choice":
+            block += (
+                "  IMPORTANT for single-choice mode: discovered entries "
+                "are SUPPLEMENTAL — they do NOT replace the chosen "
+                "child. You MUST still mark exactly one of the "
+                "predefined children above as true and reflect that "
+                "choice in the parent_key field. Discovered labels are "
+                "captured separately for the user to promote into real "
+                "children later.\n"
+            )
         if running_discovered:
             block += (
                 "\nPreviously discovered labels in this evaluation — "
@@ -288,6 +307,8 @@ def build_evaluation_prompt(
     scenario=None,
     parent_metric=None,
     running_discovered: list | None = None,
+    extra_context: str | None = None,
+    comparison_pair: tuple[str, str] | None = None,
 ) -> str:
     """
     Build the evaluation prompt for LLM-based metric evaluation.
@@ -303,11 +324,67 @@ def build_evaluation_prompt(
             children of the same parent. When set, the metrics block is
             rendered as a single hierarchical category instead of N
             independent metric lines.
+        extra_context: Optional pre-formatted block of additional inputs
+            (e.g. selected CSV column values from a call import row).
+            When set, it is injected as a "Context Inputs" section before
+            the transcript so column-input judge metrics can score named
+            columns instead of (or in addition to) the transcript.
+        comparison_pair: Optional ``(production, diarised)`` transcript
+            pair. When set, the single ``## Conversation Transcript``
+            section is replaced by a labeled ``## Transcripts to
+            Compare`` block with ``### Production Transcript`` and
+            ``### Diarised Transcript`` subsections, and ``transcription``
+            is ignored. Used by transcript-compare judge metrics
+            (``Metric.compare_transcripts=True``) so the LLM scores the
+            metric based on the relationship between the two transcripts
+            rather than the content of one. ``parent_metric`` is not
+            supported in this mode — v1 keeps comparison metrics
+            standalone.
 
     Returns:
         Complete evaluation prompt string
     """
     is_custom_evaluator = evaluator and bool(evaluator.custom_prompt)
+    is_comparison = comparison_pair is not None
+
+    context_block = ""
+    if extra_context and extra_context.strip():
+        context_block = (
+            "\n## Context Inputs\n"
+            "The following named values come from the source row's imported "
+            "columns. Treat them as authoritative inputs for the metrics below.\n\n"
+            f"{extra_context.strip()}\n"
+        )
+
+    # Build the transcript section once so the custom-evaluator and
+    # default branches stay in sync. For comparison metrics we emit a
+    # labeled pair instead of a single transcript and include a
+    # one-line framing so the LLM knows the two texts describe the
+    # SAME call (production = CSV-supplied, diarised = STT output).
+    if is_comparison:
+        production_text, diarised_text = comparison_pair
+        production_text = (production_text or "").strip() or "(empty)"
+        diarised_text = (diarised_text or "").strip() or "(empty)"
+        transcript_section = (
+            "## Transcripts to Compare\n"
+            "You are comparing two transcripts of the SAME call. The "
+            "PRODUCTION transcript was supplied with the call import "
+            "(typically the customer's existing system). The DIARISED "
+            "transcript was generated by our STT / diarisation worker. "
+            "Score the metrics below based on the RELATIONSHIP between "
+            "the two transcripts (agreement, fidelity, missing turns, "
+            "speaker-attribution differences, etc.) rather than the "
+            "content of either one alone.\n\n"
+            "### Production Transcript\n"
+            f"{production_text}\n\n"
+            "### Diarised Transcript\n"
+            f"{diarised_text}\n"
+        )
+    else:
+        transcript_section = (
+            "## Conversation Transcript\n"
+            f"{transcription}\n"
+        )
 
     if is_custom_evaluator:
         prompt = f"""You are evaluating a conversation transcript against the agent's system prompt. You MUST evaluate ONLY the specific metrics listed below and use the EXACT metric keys provided.
@@ -316,10 +393,8 @@ def build_evaluation_prompt(
 The following is the system prompt / instructions that the agent was configured with. Use this to understand the agent's goals, rules, and expected behavior when evaluating the conversation.
 
 {evaluator.custom_prompt}
-
-## Conversation Transcript
-{transcription}
-
+{context_block}
+{transcript_section}
 ## Metrics to Evaluate (use EXACT keys below)
 """
     else:
@@ -354,10 +429,8 @@ The following is the system prompt / instructions that the agent was configured 
 - Name: {scenario.name if scenario else 'Unknown'}
 - Description: {scenario_context}
 - Required Information: {json.dumps(scenario_goals) if scenario_goals else 'N/A'}
-
-## Conversation Transcript
-{transcription}
-
+{context_block}
+{transcript_section}
 ## Metrics to Evaluate (use EXACT keys below)
 """
 
@@ -691,6 +764,8 @@ def evaluate_with_llm(
     scenario=None,
     parent_metric=None,
     running_discovered: list | None = None,
+    extra_context: str | None = None,
+    comparison_pair: tuple[str, str] | None = None,
 ) -> tuple[dict[str, dict[str, Any]], float | None]:
     """
     Evaluate metrics using LLM.
@@ -709,6 +784,14 @@ def evaluate_with_llm(
         parent_metric: Optional parent Metric when ``llm_metrics`` are all
             children of the same hierarchical group. The prompt is then
             rendered as one category block + sequence array.
+        extra_context: Optional pre-formatted block of additional inputs
+            (e.g. selected CSV column values for a call-import row) that
+            is injected into the prompt as a "Context Inputs" section.
+        comparison_pair: Optional ``(production, diarised)`` transcript
+            pair. When set, the prompt builder swaps the single
+            transcript section for a labeled production/diarised pair
+            and ``transcription`` is ignored. Used by transcript-compare
+            judge metrics (``Metric.compare_transcripts=True``).
 
     Returns:
         Tuple of (metric_scores dict, evaluation_time in seconds)
@@ -724,6 +807,8 @@ def evaluate_with_llm(
         scenario=scenario,
         parent_metric=parent_metric,
         running_discovered=running_discovered,
+        extra_context=extra_context,
+        comparison_pair=comparison_pair,
     )
 
     evaluator_llm_provider = getattr(evaluator, "llm_provider", None) if evaluator else None

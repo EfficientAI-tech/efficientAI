@@ -1007,13 +1007,17 @@ async def list_voice_playground_call_import_rows(
 
     items = []
     for row, original_filename in rows:
+        # Prefer the production (CSV) transcript and fall back to the
+        # diarised one so picking a call-import row as a sample text
+        # source still works even when the user only ran diarisation.
+        sample_transcript = row.transcript or row.diarised_transcript
         items.append(
             {
                 "id": str(row.id),
                 "call_import_id": str(row.call_import_id),
                 "call_import_filename": original_filename,
                 "external_call_id": row.external_call_id,
-                "transcript": row.transcript,
+                "transcript": sample_transcript,
                 "recording_s3_key": row.recording_s3_key,
                 "has_recording": bool(row.recording_s3_key),
                 "status": row.status.value if hasattr(row.status, "value") else row.status,

@@ -57,6 +57,7 @@ dependencies = [
     "typing-extensions>=4.9.0",
     "onnxruntime>=1.17.0",
     "plivo>=4.47.0",
+    "openpyxl>=3.1.0",
 ]
 
 [project.optional-dependencies]

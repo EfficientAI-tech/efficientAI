@@ -219,7 +219,12 @@ def _expand_metric_selection(
     return effective, parent_to_children
 
 
-def _serialize_eval(db: Session, row: CallImportEvaluation) -> CallImportEvaluationResponse:
+def _serialize_eval(
+    db: Session,
+    row: CallImportEvaluation,
+    *,
+    sibling_evaluation_ids: Optional[List[UUID]] = None,
+) -> CallImportEvaluationResponse:
     selected_ids = _serialize_selected_metric_ids(row.selected_metric_ids)
 
     # Pull every metric referenced anywhere in the run's grouping (leaves,
@@ -298,6 +303,8 @@ def _serialize_eval(db: Session, row: CallImportEvaluation) -> CallImportEvaluat
         stt_provider=row.stt_provider,
         stt_model=row.stt_model,
         stt_credential_id=row.stt_credential_id,
+        transcript_source=(row.transcript_source or "production"),
+        sibling_evaluation_ids=list(sibling_evaluation_ids or []),
         started_at=row.started_at,
         finished_at=row.finished_at,
         created_at=row.created_at,
@@ -594,73 +601,100 @@ async def create_call_import_evaluation(
         .all()
     )
 
-    evaluation = CallImportEvaluation(
-        call_import_id=call_import.id,
-        organization_id=organization_id,
-        # Mirror the parent CallImport's workspace so listings can
-        # filter on workspace_id directly without joining.
-        workspace_id=call_import.workspace_id,
-        name=_normalize_name(payload.name),
-        selected_metric_ids=[str(metric_id) for metric_id in leaf_metric_ids],
-        selected_metric_groups=selected_metric_groups or None,
-        status="pending",
-        total_rows=len(completed_rows),
-        completed_rows=0,
-        failed_rows=0,
-        llm_provider=llm_provider_norm,
-        llm_model=llm_model_norm,
-        llm_credential_id=payload.llm_credential_id,
-        metric_llm_overrides=metric_overrides_payload,
-        stt_provider=stt_provider_norm,
-        stt_model=stt_model_norm,
-        stt_credential_id=payload.stt_credential_id if auto_transcribe else None,
-    )
-    db.add(evaluation)
-    db.flush()
+    # Deduplicate ``transcript_sources`` while preserving order so that
+    # ``['production','production']`` doesn't create two identical runs
+    # and ``['diarised','production']`` keeps the user's pick order
+    # (the first source becomes the "primary" returned in the response).
+    requested_sources: List[str] = []
+    for src in payload.transcript_sources or []:
+        if src not in requested_sources:
+            requested_sources.append(src)
+    if not requested_sources:
+        requested_sources = ["production"]
 
-    eval_rows: List[Tuple[CallImportEvaluationRow, CallImportRow]] = []
-    for source_row in completed_rows:
-        eval_row = CallImportEvaluationRow(
-            evaluation_id=evaluation.id,
-            call_import_row_id=source_row.id,
+    base_name = _normalize_name(payload.name)
+
+    def _name_for_source(source: str) -> Optional[str]:
+        if len(requested_sources) == 1:
+            return base_name
+        suffix = "Production" if source == "production" else "Diarised"
+        if base_name:
+            return f"{base_name} ({suffix})"
+        return f"({suffix})"
+
+    created_evaluations: List[CallImportEvaluation] = []
+    eval_row_buckets: Dict[
+        UUID, List[Tuple[CallImportEvaluationRow, CallImportRow]]
+    ] = {}
+
+    for source in requested_sources:
+        evaluation = CallImportEvaluation(
+            call_import_id=call_import.id,
+            organization_id=organization_id,
+            # Mirror the parent CallImport's workspace so listings can
+            # filter on workspace_id directly without joining.
+            workspace_id=call_import.workspace_id,
+            name=_name_for_source(source),
+            selected_metric_ids=[
+                str(metric_id) for metric_id in leaf_metric_ids
+            ],
+            selected_metric_groups=selected_metric_groups or None,
             status="pending",
-            metric_scores={},
+            total_rows=len(completed_rows),
+            completed_rows=0,
+            failed_rows=0,
+            llm_provider=llm_provider_norm,
+            llm_model=llm_model_norm,
+            llm_credential_id=payload.llm_credential_id,
+            metric_llm_overrides=metric_overrides_payload,
+            stt_provider=stt_provider_norm,
+            stt_model=stt_model_norm,
+            stt_credential_id=(
+                payload.stt_credential_id if auto_transcribe else None
+            ),
+            transcript_source=source,
         )
-        db.add(eval_row)
-        eval_rows.append((eval_row, source_row))
+        db.add(evaluation)
+        db.flush()
+        created_evaluations.append(evaluation)
+
+        bucket: List[Tuple[CallImportEvaluationRow, CallImportRow]] = []
+        for source_row in completed_rows:
+            eval_row = CallImportEvaluationRow(
+                evaluation_id=evaluation.id,
+                call_import_row_id=source_row.id,
+                status="pending",
+                metric_scores={},
+            )
+            db.add(eval_row)
+            bucket.append((eval_row, source_row))
+        eval_row_buckets[evaluation.id] = bucket
 
     db.commit()
-    db.refresh(evaluation)
-
-    if not eval_rows:
-        evaluation.status = "completed"
-        db.commit()
+    for evaluation in created_evaluations:
         db.refresh(evaluation)
-        return _serialize_eval(db, evaluation)
+
+    primary_evaluation = created_evaluations[0]
+    sibling_ids = [e.id for e in created_evaluations[1:]]
+
+    if not completed_rows:
+        for evaluation in created_evaluations:
+            evaluation.status = "completed"
+        db.commit()
+        for evaluation in created_evaluations:
+            db.refresh(evaluation)
+        return _serialize_eval(
+            db, primary_evaluation, sibling_evaluation_ids=sibling_ids
+        )
 
     # ------------------------------------------------------------------
-    # Decide per-row whether to chain transcribe -> evaluate, or just
-    # enqueue evaluate immediately. We prefer chaining over a single
-    # ``chord`` because some rows already have transcripts and shouldn't
-    # be transcribed again — chaining lets each row pick its own path
-    # without one slow / failed transcription holding up the rest.
+    # Auto-transcribe scheduling is shared across every requested
+    # source: we only enqueue ONE diarisation per call_import_row
+    # (keyed by row id), then fan that diarisation completion out to
+    # every "diarised" evaluation row that's waiting for it. Production
+    # evaluations skip the diarisation path entirely — they read the
+    # CSV transcript which is already on the row.
     # ------------------------------------------------------------------
-
-    transcribe_targets: List[Tuple[CallImportEvaluationRow, CallImportRow]] = []
-    eval_only_rows: List[CallImportEvaluationRow] = []
-    if auto_transcribe:
-        for eval_row, source_row in eval_rows:
-            existing = (source_row.transcript or "").strip()
-            has_recording = bool((source_row.recording_s3_key or "").strip())
-            if not has_recording:
-                eval_only_rows.append(eval_row)
-                continue
-            if existing and not payload.transcribe_overwrite:
-                eval_only_rows.append(eval_row)
-                continue
-            transcribe_targets.append((eval_row, source_row))
-    else:
-        eval_only_rows = [er for er, _ in eval_rows]
 
     # Lazy imports keep test setup simple — tests stub the worker module so
     # importing the route never reaches into Celery's broker config.
@@ -670,17 +704,61 @@ async def create_call_import_evaluation(
     from celery import group
 
     try:
-        if auto_transcribe and transcribe_targets:
+        # Per-evaluation: figure out which eval rows can run immediately
+        # vs which need to wait for diarisation. Production runs always
+        # run immediately; diarised runs wait for diarisation when
+        # ``auto_transcribe`` is set and the diarised transcript is
+        # missing/being overwritten.
+        eval_only_row_ids: List[str] = []
+        # row_id -> list of (eval_row, source_row) waiting on its diarisation
+        deferred_by_row: Dict[
+            UUID, List[Tuple[CallImportEvaluationRow, CallImportRow]]
+        ] = {}
+
+        for evaluation in created_evaluations:
+            bucket = eval_row_buckets[evaluation.id]
+            is_diarised_run = evaluation.transcript_source == "diarised"
+            for eval_row, source_row in bucket:
+                if (
+                    auto_transcribe
+                    and is_diarised_run
+                    and bool((source_row.recording_s3_key or "").strip())
+                ):
+                    existing_dia = (
+                        source_row.diarised_transcript or ""
+                    ).strip()
+                    needs_diarise = (
+                        not existing_dia or payload.transcribe_overwrite
+                    )
+                    if needs_diarise:
+                        deferred_by_row.setdefault(
+                            source_row.id, []
+                        ).append((eval_row, source_row))
+                        continue
+                eval_only_row_ids.append(str(eval_row.id))
+
+        # Kick off the diarisation worker once per unique row. Each call
+        # carries the *first* deferred eval row id so the worker can
+        # chain it on completion; remaining deferred eval rows on the
+        # same source row are enqueued immediately for evaluation
+        # because they'll re-read ``diarised_transcript`` once the
+        # worker writes it.
+        if deferred_by_row:
             from app.workers.tasks.transcribe_call_import_row import (
                 transcribe_call_import_row_task,
             )
 
-            for eval_row, source_row in transcribe_targets:
-                source_row.transcript_status = "pending"
-                source_row.transcript_error = None
+            # Mark the source rows as pending so the UI's diarisation
+            # badge flips immediately, before Celery picks them up.
+            for source_row_id, waiting in deferred_by_row.items():
+                source_row = waiting[0][1]
+                source_row.diarised_transcript_status = "pending"
+                source_row.diarised_transcript_error = None
             db.commit()
 
-            for eval_row, source_row in transcribe_targets:
+            for source_row_id, waiting in deferred_by_row.items():
+                primary_eval_row = waiting[0][0]
+                source_row = waiting[0][1]
                 transcribe_call_import_row_task.delay(
                     str(source_row.id),
                     stt_provider_norm,
@@ -690,29 +768,40 @@ async def create_call_import_evaluation(
                     else None,
                     payload.stt_language,
                     payload.transcribe_overwrite,
-                    str(eval_row.id),
+                    str(primary_eval_row.id),
                 )
+                # Any sibling diarised evals on the same row enqueue
+                # immediately — they will read the same
+                # ``diarised_transcript`` once the worker finishes.
+                for eval_row, _ in waiting[1:]:
+                    eval_only_row_ids.append(str(eval_row.id))
 
-        if eval_only_rows:
+        if eval_only_row_ids:
             group(
                 [
-                    evaluate_call_import_row_task.s(str(eval_row.id))
-                    for eval_row in eval_only_rows
+                    evaluate_call_import_row_task.s(eval_row_id)
+                    for eval_row_id in eval_only_row_ids
                 ]
             ).apply_async()
 
-        evaluation.status = "running"
+        for evaluation in created_evaluations:
+            evaluation.status = "running"
     except Exception as exc:  # noqa: BLE001 — surface but don't 500
         logger.exception(
-            "Failed to enqueue evaluation {} for call import {}",
-            evaluation.id,
+            "Failed to enqueue evaluation(s) for call import {}",
             call_import.id,
         )
-        evaluation.status = "failed"
-        evaluation.error_message = f"Failed to enqueue evaluation: {exc}"
+        for evaluation in created_evaluations:
+            evaluation.status = "failed"
+            evaluation.error_message = (
+                f"Failed to enqueue evaluation: {exc}"
+            )
     db.commit()
-    db.refresh(evaluation)
-    return _serialize_eval(db, evaluation)
+    for evaluation in created_evaluations:
+        db.refresh(evaluation)
+    return _serialize_eval(
+        db, primary_evaluation, sibling_evaluation_ids=sibling_ids
+    )
 
 
 @router.get(
@@ -883,10 +972,14 @@ async def list_call_import_evaluation_rows(
     # --- Filters ----------------------------------------------------------
     if q and q.strip():
         needle = f"%{q.strip()}%"
+        # Search across both transcript columns so a hit in either the
+        # production or the diarised version surfaces the row,
+        # independent of which source the evaluation actually scored.
         query = query.filter(
             or_(
                 CallImportRow.external_call_id.ilike(needle),
                 CallImportRow.transcript.ilike(needle),
+                CallImportRow.diarised_transcript.ilike(needle),
             )
         )
 
@@ -1093,6 +1186,23 @@ async def list_call_import_evaluation_rows(
     total = query.count()
     rows = query.offset((page - 1) * page_size).limit(page_size).all()
 
+    # Pick the transcript that matches the parent evaluation's
+    # ``transcript_source`` so the row-detail drawer naturally shows
+    # the value that was actually scored. Falls back to the other
+    # transcript if the chosen one is missing so the user still sees
+    # context instead of an empty panel.
+    eval_transcript_source = (
+        (eval_row.transcript_source or "production").strip().lower()
+    )
+
+    def _pick_transcript(source_row: CallImportRow) -> Optional[str]:
+        if eval_transcript_source == "diarised":
+            return (
+                source_row.diarised_transcript
+                or source_row.transcript
+            )
+        return source_row.transcript or source_row.diarised_transcript
+
     items: List[CallImportEvaluationRowResponse] = []
     for eval_row_obj, source_row in rows:
         items.append(
@@ -1102,7 +1212,7 @@ async def list_call_import_evaluation_rows(
                 call_import_row_id=eval_row_obj.call_import_row_id,
                 row_index=source_row.row_index,
                 external_call_id=source_row.external_call_id,
-                transcript=source_row.transcript,
+                transcript=_pick_transcript(source_row),
                 raw_columns=source_row.raw_columns,
                 recording_url=source_row.recording_url,
                 recording_s3_key=source_row.recording_s3_key,
@@ -1234,9 +1344,23 @@ async def export_call_import_evaluation_csv(
             continue
         _add_metric_column(metric)
 
+    # Three new fixed columns surface the two transcript fields and the
+    # evaluation's transcript_source as live values pulled from the
+    # ``CallImportRow`` (not from the frozen ``raw_columns`` snapshot).
+    # The user can now compare "what was in the CSV" vs "what the
+    # diarisation worker produced" without round-tripping through the
+    # UI, and downstream tools can verify which transcript the metrics
+    # were computed against.
+    PRODUCTION_TRANSCRIPT_HEADER = "Production Transcript"
+    DIARISED_TRANSCRIPT_HEADER = "Diarised Transcript"
+    EVAL_SOURCE_HEADER = "Evaluated Transcript Source"
+
     fieldnames = [
         *standard_export_headers,
         *[h for h, _ in custom_export],
+        PRODUCTION_TRANSCRIPT_HEADER,
+        DIARISED_TRANSCRIPT_HEADER,
+        EVAL_SOURCE_HEADER,
         *metric_headers,
     ]
 
@@ -1252,6 +1376,12 @@ async def export_call_import_evaluation_csv(
         .all()
     )
 
+    evaluated_source_label = (
+        "Diarised"
+        if (evaluation.transcript_source or "production") == "diarised"
+        else "Production"
+    )
+
     for eval_row, source_row in rows:
         row_out: Dict[str, str] = {}
         raw = source_row.raw_columns if isinstance(source_row.raw_columns, dict) else {}
@@ -1261,6 +1391,14 @@ async def export_call_import_evaluation_csv(
         for export_header, csv_header in custom_export:
             value = raw.get(csv_header)
             row_out[export_header] = "" if value is None else str(value)
+
+        # Live transcripts pulled from the row, NOT from raw_columns,
+        # so re-diarised values are always reflected in the export.
+        row_out[PRODUCTION_TRANSCRIPT_HEADER] = source_row.transcript or ""
+        row_out[DIARISED_TRANSCRIPT_HEADER] = (
+            source_row.diarised_transcript or ""
+        )
+        row_out[EVAL_SOURCE_HEADER] = evaluated_source_label
 
         scores = eval_row.metric_scores if isinstance(eval_row.metric_scores, dict) else {}
         for metric in metrics:

@@ -527,19 +527,46 @@ def test_create_multi_label_parent_with_allow_discovery(authenticated_client):
     assert body["selection_mode"] == "multi_label"
 
 
-def test_reject_allow_discovery_on_single_choice_parent(authenticated_client):
+def test_allow_discovery_accepted_on_single_choice_parent(authenticated_client):
+    """Single_choice parents can opt into LLM discovery too.
+
+    Discovered labels for single_choice are supplemental — the worker
+    + prompt builder keep the "exactly one true" invariant intact and
+    surface the discovered entries as analytics-only candidates the
+    user can later promote into real children.
+    """
     response = authenticated_client.post(
         "/api/v1/metrics/with-children",
         json={
-            "name": "Bad Mix",
+            "name": "Outcome Pickone",
             "description": "...",
             "selection_mode": "single_choice",
             "allow_discovery": True,
             "children": [{"name": "leaf", "description": "..."}],
         },
     )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["allow_discovery"] is True
+    assert body["selection_mode"] == "single_choice"
+
+
+def test_reject_allow_discovery_on_standalone_metric(authenticated_client):
+    """``allow_discovery`` still requires a parent (selection_mode set)."""
+    response = authenticated_client.post(
+        "/api/v1/metrics",
+        json={
+            "name": "Lonely",
+            "description": "...",
+            "metric_type": "boolean",
+            "trigger": "always",
+            "enabled": True,
+            "allow_discovery": True,
+        },
+    )
     assert response.status_code == 400
-    assert "multi_label" in response.json()["detail"]
+    detail = response.json()["detail"]
+    assert "selection_mode" in detail or "parent" in detail
 
 
 def test_promote_discovered_child_creates_real_metric(authenticated_client):
@@ -596,29 +623,33 @@ def test_promote_discovered_child_rejects_slug_mismatch(authenticated_client):
     assert "slugify" in detail or "slug" in detail
 
 
-def test_promote_discovered_child_rejects_non_multi_label_parent(
+def test_promote_discovered_child_works_on_single_choice_parent(
     authenticated_client,
 ):
+    """Single_choice parents with allow_discovery can still promote
+    discovered candidates into real children."""
     parent = authenticated_client.post(
         "/api/v1/metrics/with-children",
         json={
             "name": "Pickone",
             "description": "...",
             "selection_mode": "single_choice",
+            "allow_discovery": True,
             "children": [{"name": "first_label", "description": "..."}],
         },
     ).json()
     response = authenticated_client.post(
         f"/api/v1/metrics/{parent['id']}/children/from-discovered",
         json={
-            "key": "x",
-            "name": "x",
-            "description": "...",
+            "key": "another_outcome",
+            "name": "another outcome",
+            "description": "newly discovered single-choice candidate",
         },
     )
-    assert response.status_code == 400
-    detail = response.json()["detail"]
-    assert "multi_label" in detail
+    assert response.status_code == 201, response.text
+    body = response.json()
+    child_names = {c["name"] for c in body["children"]}
+    assert "another outcome" in child_names
 
 
 def test_promote_discovered_child_rejects_when_discovery_disabled(
@@ -644,3 +675,136 @@ def test_promote_discovered_child_rejects_when_discovery_disabled(
     )
     assert response.status_code == 400
     assert "allow_discovery" in response.json()["detail"]
+
+
+# =============================================================================
+# input_columns: column-input judge metric round-trips and validation
+# =============================================================================
+
+
+def test_create_metric_with_input_columns_round_trip(authenticated_client):
+    """A non-empty ``input_columns`` is persisted and returned by the API."""
+    payload = {
+        "name": "Column-Input Judge",
+        "description": "Score the customer_intent + agent_response columns",
+        "metric_type": "rating",
+        "input_columns": ["customer_intent", "agent_response"],
+    }
+    response = authenticated_client.post("/api/v1/metrics", json=payload)
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["input_columns"] == ["customer_intent", "agent_response"]
+
+    list_response = authenticated_client.get("/api/v1/metrics")
+    assert list_response.status_code == 200
+    [created] = [m for m in list_response.json() if m["name"] == "Column-Input Judge"]
+    assert created["input_columns"] == ["customer_intent", "agent_response"]
+
+
+def test_create_metric_input_columns_defaults_to_empty_list(authenticated_client):
+    """Omitting ``input_columns`` leaves the metric in transcript-judge mode."""
+    payload = {
+        "name": "Plain Transcript Judge",
+        "description": "...",
+        "metric_type": "rating",
+    }
+    response = authenticated_client.post("/api/v1/metrics", json=payload)
+    assert response.status_code == 201, response.text
+    assert response.json()["input_columns"] == []
+
+
+def test_create_metric_rejects_blank_input_column_entry(authenticated_client):
+    response = authenticated_client.post(
+        "/api/v1/metrics",
+        json={
+            "name": "Blank Header",
+            "description": "...",
+            "metric_type": "rating",
+            "input_columns": ["customer_intent", "   "],
+        },
+    )
+    assert response.status_code == 400
+    assert "input_columns" in response.json()["detail"]
+
+
+def test_create_metric_input_columns_dedupes_case_insensitively(
+    authenticated_client,
+):
+    """Duplicate entries differing only in case collapse to a single value."""
+    response = authenticated_client.post(
+        "/api/v1/metrics",
+        json={
+            "name": "Dedupe Headers",
+            "description": "...",
+            "metric_type": "rating",
+            "input_columns": ["Customer_Intent", "customer_intent", "agent_response"],
+        },
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    # First-occurrence wins; duplicates are dropped.
+    assert body["input_columns"] == ["Customer_Intent", "agent_response"]
+
+
+def test_create_child_metric_with_input_columns_is_rejected(authenticated_client):
+    """Child sub-metrics cannot opt into the column-input feature."""
+    parent = authenticated_client.post(
+        "/api/v1/metrics/with-children",
+        json={
+            "name": "Outcome Buckets",
+            "description": "...",
+            "selection_mode": "single_choice",
+            "children": [{"name": "happy_path", "description": "..."}],
+        },
+    ).json()
+
+    response = authenticated_client.post(
+        "/api/v1/metrics",
+        json={
+            "name": "Bad Child",
+            "description": "...",
+            "metric_type": "boolean",
+            "parent_metric_id": parent["id"],
+            "input_columns": ["customer_intent"],
+        },
+    )
+    assert response.status_code == 400
+    assert "input_columns" in response.json()["detail"]
+
+
+def test_update_metric_input_columns(authenticated_client, make_metric):
+    """PUT with a list rewrites ``input_columns``; an empty list clears it."""
+    metric = make_metric(name="Rewriteable Inputs")
+
+    set_response = authenticated_client.put(
+        f"/api/v1/metrics/{metric.id}",
+        json={"input_columns": ["customer_intent"]},
+    )
+    assert set_response.status_code == 200, set_response.text
+    assert set_response.json()["input_columns"] == ["customer_intent"]
+
+    clear_response = authenticated_client.put(
+        f"/api/v1/metrics/{metric.id}",
+        json={"input_columns": []},
+    )
+    assert clear_response.status_code == 200, clear_response.text
+    assert clear_response.json()["input_columns"] == []
+
+
+def test_update_metric_input_columns_omitted_leaves_value_unchanged(
+    authenticated_client, make_metric
+):
+    """Sending ``None`` (i.e. omitting the field) preserves the existing list."""
+    metric = make_metric(name="Sticky Inputs")
+
+    authenticated_client.put(
+        f"/api/v1/metrics/{metric.id}",
+        json={"input_columns": ["foo", "bar"]},
+    )
+
+    response = authenticated_client.put(
+        f"/api/v1/metrics/{metric.id}",
+        json={"description": "unrelated change"},
+    )
+    assert response.status_code == 200
+    assert response.json()["input_columns"] == ["foo", "bar"]

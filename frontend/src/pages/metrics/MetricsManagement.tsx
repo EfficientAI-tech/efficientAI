@@ -1,4 +1,5 @@
-import { Fragment, useState, useEffect, useMemo } from 'react'
+import { Fragment, useState, useEffect, useMemo, useRef } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../lib/api'
 import Button from '../../components/Button'
@@ -18,8 +19,11 @@ import {
   MoreVertical,
   ChevronRight,
   ChevronDown,
+  ChevronLeft,
   Layers,
   AlertTriangle,
+  FileText,
+  Database,
 } from 'lucide-react'
 
 interface Metric {
@@ -42,6 +46,22 @@ interface Metric {
   parent_metric_id?: string | null
   selection_mode?: 'single_choice' | 'multi_label' | null
   allow_discovery?: boolean
+  /**
+   * CSV header names this metric reads from a call import row's
+   * ``raw_columns`` instead of the transcript. Empty / missing means
+   * today's transcript-based judge behavior. Children of a parent
+   * category metric never carry this list (server enforces it).
+   */
+  input_columns?: string[]
+  /**
+   * When true, this metric is a "transcript-compare judge": at
+   * call-import evaluation time the worker feeds BOTH the production
+   * and diarised transcripts to the LLM as a labeled pair and the
+   * run's transcript_source toggle is ignored for this metric.
+   * Mutually exclusive with input_columns, parent_metric_id, and
+   * selection_mode (server enforces).
+   */
+  compare_transcripts?: boolean
   children?: Metric[]
 }
 
@@ -86,6 +106,16 @@ const SURFACE_LABELS: Record<MetricSurface, string> = {
   blind_test: 'Blind Test',
 }
 
+// Shared "modernized" form-control styling used across the Create /
+// Edit Metric modal. Lighter border, larger padding, smooth focus
+// transition, translucent ring — applied uniformly to text inputs,
+// selects, and textareas so the modal feels like one consistent form
+// rather than a collection of differently-aged widgets.
+const MODERN_INPUT_CLASS =
+  'w-full rounded-lg border border-gray-200 bg-white px-3.5 py-2.5 text-sm text-gray-900 placeholder-gray-400 shadow-sm transition focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 disabled:bg-gray-50 disabled:text-gray-500'
+const MODERN_INPUT_SM_CLASS =
+  'w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 placeholder-gray-400 shadow-sm transition focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 disabled:bg-gray-50 disabled:text-gray-500'
+
 export default function MetricsManagement() {
   const queryClient = useQueryClient()
   // Adding the active workspace id to every metrics queryKey so a
@@ -96,11 +126,11 @@ export default function MetricsManagement() {
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [isCustomMetricMode, setIsCustomMetricMode] = useState(false)
   const [showEnableModal, setShowEnableModal] = useState(false)
-  // The unified "Create Metric" modal now hosts three different forms
-  // — pick the active flow with these tabs. Default is 'single' which
-  // reproduces the legacy single-metric-create experience; the other
-  // two replace what used to be standalone modals.
-  type CreateMode = 'single' | 'bulk' | 'category'
+  // The unified "Create Metric" modal hosts two flows — pick the
+  // active one with these tabs. Default is 'single' (the legacy
+  // single-metric experience); 'category' opens the parent + sub-labels
+  // builder.
+  type CreateMode = 'single' | 'category'
   const [createMode, setCreateMode] = useState<CreateMode>('single')
   const [categoryForm, setCategoryForm] = useState<{
     name: string
@@ -198,34 +228,6 @@ export default function MetricsManagement() {
   const [aiExamples, setAIExamples] = useState<Array<{ transcript: string; rating: string; notes: string }>>([
     { transcript: '', rating: '', notes: '' },
   ])
-  // Bulk-import-from-labels state. Each parsed label becomes its
-  // own *independent* draft row that the user can configure (type,
-  // rationale, name) before we create them all in one click. Driven
-  // by the unified Create Metric modal via createMode === 'bulk'.
-  const [bulkPrompt, setBulkPrompt] = useState('')
-  const [bulkSurface, setBulkSurface] = useState<MetricSurface>('agent')
-  type BulkMetricDraft = {
-    // Local-only id used as React key + for row updates / removal.
-    local_id: string
-    name: string
-    description: string
-    metric_type: 'number' | 'boolean' | 'rating' | 'text'
-    custom_data_type: CustomDataType
-    enum_options_csv: string
-    number_min: number
-    number_max: number
-    number_step: number
-    capture_rationale: boolean
-    supported_surfaces: MetricSurface[]
-    enabled_surfaces: MetricSurface[]
-    source_label?: { label_name: string; definition: string; examples: string }
-    // Per-row save state.
-    status: 'idle' | 'saving' | 'saved' | 'error'
-    error?: string
-    // Whether the rubric (definition + examples) is expanded.
-    expanded: boolean
-  }
-  const [bulkDrafts, setBulkDrafts] = useState<BulkMetricDraft[]>([])
   const [surfaceFilter, setSurfaceFilter] = useState<'all' | MetricSurface>('all')
   const [editingMetric, setEditingMetric] = useState<Metric | null>(null)
   const [sortField, setSortField] = useState<'type' | 'method'>('type')
@@ -238,7 +240,11 @@ export default function MetricsManagement() {
     metric_origin: 'custom' as 'default' | 'custom',
     supported_surfaces: ['agent'] as MetricSurface[],
     enabled_surfaces: ['agent'] as MetricSurface[],
-    custom_data_type: 'boolean' as CustomDataType,
+    // ``custom_data_type`` must match ``metric_type`` so the unified
+    // "Type" dropdown and the sub-config renderer agree on first
+    // paint. ``rating`` ↔ ``enum`` is the default because that is what
+    // the unified select shows out of the box.
+    custom_data_type: 'enum' as CustomDataType,
     enum_options_csv: '',
     number_min: 0,
     number_max: 10,
@@ -252,12 +258,57 @@ export default function MetricsManagement() {
     // true on anything else, so leaving it false everywhere else is
     // the safe default.
     allow_discovery: false,
+    // CSV header names this metric reads from a call import row's
+    // ``raw_columns`` instead of the transcript. Empty array (the
+    // default) preserves today's transcript-based judge behavior.
+    input_columns: [] as string[],
+    // When true, the worker scores this metric against BOTH the
+    // production and diarised transcripts on each call-import row.
+    // Mutually exclusive with ``input_columns`` and unavailable on
+    // parent / child metrics. The Run Evaluation transcript_source
+    // toggle is ignored for these metrics — they always read both.
+    compare_transcripts: false,
   })
+  // Draft string for the "Input columns" tag input — kept outside
+  // ``formData`` so a half-typed header doesn't get persisted on Save.
+  const [inputColumnDraft, setInputColumnDraft] = useState('')
+  // UI-only toggle that gates the "Call Imports" sub-section of the
+  // metric editor. Both ``input_columns`` (column-input judge) and
+  // ``compare_transcripts`` (transcript-compare judge) only make sense
+  // for metrics that score CSV-imported call rows, so we hide them
+  // behind a single header check to keep the form scan-friendly for
+  // people authoring plain live-call metrics. The state is purely
+  // visual: when the user toggles it off we clear both underlying
+  // fields so the saved metric matches what the user sees.
+  const [isForCallImports, setIsForCallImports] = useState(false)
+  // Visibility of the "Browse imported columns" popover that hangs
+  // under the input. Toggled by the picker button and by click-outside
+  // on the wrapping container.
+  const [columnPickerOpen, setColumnPickerOpen] = useState(false)
+  // Which call import the user is currently looking at inside the
+  // popover. ``null`` means the popover shows the import list view;
+  // a string id means we're showing that import's column groupings.
+  const [columnPickerImportId, setColumnPickerImportId] = useState<
+    string | null
+  >(null)
+  const columnPickerRef = useRef<HTMLDivElement | null>(null)
 
   const { data: metrics = [], isLoading } = useQuery({
     queryKey: ['metrics', activeWorkspaceId, surfaceFilter],
     queryFn: () => apiClient.listMetrics(surfaceFilter === 'all' ? undefined : surfaceFilter),
   })
+
+  // Recent call imports for the active workspace — the user picks
+  // input columns by drilling into a specific batch instead of
+  // browsing a workspace-wide flat list. We pull a generous page so a
+  // typical workspace's recent imports all fit without pagination
+  // complexity inside the popover.
+  const { data: recentImportsResponse } = useQuery({
+    queryKey: ['call-imports-for-metric-picker', activeWorkspaceId],
+    queryFn: () => apiClient.listCallImports({ page: 1, page_size: 50 }),
+    staleTime: 60_000,
+  })
+  const recentImports = recentImportsResponse?.items ?? []
 
   // Seed default metrics on first load if none exist
   const seedMutation = useMutation({
@@ -280,6 +331,85 @@ export default function MetricsManagement() {
       seedMutation.mutate()
     }
   }, [metrics.length, isLoading])
+
+  // Close the "Browse imported columns" popover when the user clicks
+  // anywhere outside the picker container. We attach the listener only
+  // while the popover is open so it doesn't add overhead to every
+  // page render.
+  useEffect(() => {
+    if (!columnPickerOpen) return
+    const handlePointerDown = (event: MouseEvent | TouchEvent) => {
+      const target = event.target as Node | null
+      if (
+        columnPickerRef.current &&
+        target &&
+        !columnPickerRef.current.contains(target)
+      ) {
+        setColumnPickerOpen(false)
+        // Reset the drill-in state so reopening starts fresh on the
+        // import list rather than the last-viewed import's columns.
+        setColumnPickerImportId(null)
+      }
+    }
+    document.addEventListener('mousedown', handlePointerDown)
+    document.addEventListener('touchstart', handlePointerDown)
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown)
+      document.removeEventListener('touchstart', handlePointerDown)
+    }
+  }, [columnPickerOpen])
+
+  // When another page navigates here with `state.prefillInputColumns`
+  // (e.g. the "Create metric from columns…" action on the call import
+  // detail page), auto-open the single-metric create modal with the
+  // headers pre-populated. We then clear the state so a refresh / nav
+  // back doesn't keep re-triggering the modal.
+  const location = useLocation()
+  const navigate = useNavigate()
+  useEffect(() => {
+    const state = (location.state || {}) as {
+      prefillInputColumns?: string[]
+    }
+    const headers = Array.isArray(state.prefillInputColumns)
+      ? state.prefillInputColumns
+          .map((h) => String(h || '').trim())
+          .filter(Boolean)
+      : []
+    if (headers.length === 0) return
+    setIsCustomMetricMode(true)
+    setEditingMetric(null)
+    setCreateMode('single')
+    setFormData({
+      name: '',
+      description: '',
+      metric_origin: 'custom',
+      metric_type: 'rating',
+      custom_data_type: 'enum',
+      enum_options_csv: '',
+      number_min: 0,
+      number_max: 10,
+      number_step: 1,
+      tags_csv: '',
+      supported_surfaces: ['agent'],
+      enabled_surfaces: ['agent'],
+      trigger: 'always',
+      enabled: true,
+      capture_rationale: false,
+      allow_discovery: false,
+      input_columns: Array.from(new Set(headers)),
+      // Pre-seeded column-input judge from a CSV import — compare-
+      // transcripts is mutually exclusive so it stays off here.
+      compare_transcripts: false,
+    })
+    setInputColumnDraft('')
+    // The user arrived here from a CSV import's "Create metric" CTA,
+    // so the Call Imports sub-section is the whole point — keep it
+    // expanded on first paint.
+    setIsForCallImports(true)
+    setShowCreateModal(true)
+    navigate(location.pathname, { replace: true, state: null })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.state])
 
   const createMutation = useMutation({
     mutationFn: (data: typeof formData) => apiClient.createMetric(data),
@@ -464,168 +594,6 @@ export default function MetricsManagement() {
     },
   })
 
-  const parseBulkMutation = useMutation({
-    mutationFn: (payload: { prompt: string; surface: MetricSurface }) =>
-      apiClient.parseBulkMetric(payload),
-    onSuccess: ({ metrics: drafts }) => {
-      const newRows: BulkMetricDraft[] = drafts.map((d, idx) => {
-        const dataType: CustomDataType =
-          (d.custom_data_type as CustomDataType) ||
-          (d.metric_type === 'boolean'
-            ? 'boolean'
-            : d.metric_type === 'number'
-              ? 'number_range'
-              : 'enum')
-        const cfg = d.custom_config || {}
-        return {
-          local_id: `parsed-${Date.now()}-${idx}`,
-          name: d.name,
-          description: d.description,
-          metric_type: d.metric_type,
-          custom_data_type: dataType,
-          enum_options_csv: Array.isArray(cfg.options)
-            ? (cfg.options as string[]).join(', ')
-            : '',
-          number_min: Number(cfg.min ?? 0),
-          number_max: Number(cfg.max ?? 10),
-          number_step: Number(cfg.step ?? 1),
-          capture_rationale: d.capture_rationale,
-          supported_surfaces: d.supported_surfaces as MetricSurface[],
-          enabled_surfaces: d.enabled_surfaces as MetricSurface[],
-          source_label: d.source_label,
-          status: 'idle',
-          expanded: false,
-        }
-      })
-      setBulkDrafts(newRows)
-      showToast(
-        `Parsed ${newRows.length} ${newRows.length === 1 ? 'metric' : 'metrics'}. Review and save.`,
-        'success',
-      )
-    },
-    onError: (err: any) => {
-      const detail =
-        err?.response?.data?.detail ||
-        'Could not parse the prompt. Please check the Label #N format.'
-      showToast(detail, 'error')
-    },
-  })
-
-  const updateBulkDraft = (
-    local_id: string,
-    patch: Partial<BulkMetricDraft>,
-  ) => {
-    setBulkDrafts((prev) =>
-      prev.map((row) => (row.local_id === local_id ? { ...row, ...patch } : row)),
-    )
-  }
-
-  const buildBulkDraftPayload = (row: BulkMetricDraft) => {
-    let custom_config: Record<string, any> = {}
-    if (row.metric_type !== 'text') {
-      if (row.custom_data_type === 'enum') {
-        custom_config = {
-          options: row.enum_options_csv
-            .split(',')
-            .map((opt) => opt.trim())
-            .filter(Boolean),
-        }
-      } else if (row.custom_data_type === 'number_range') {
-        custom_config = {
-          min: Number(row.number_min),
-          max: Number(row.number_max),
-          step: Number(row.number_step),
-        }
-      }
-    }
-    const useCustomConfig = row.metric_type !== 'text'
-    return {
-      name: row.name.trim(),
-      description: row.description,
-      metric_type: row.metric_type,
-      trigger: 'always' as const,
-      enabled: true,
-      metric_origin: 'custom' as const,
-      supported_surfaces: row.supported_surfaces,
-      enabled_surfaces: row.enabled_surfaces,
-      custom_data_type: useCustomConfig ? row.custom_data_type : undefined,
-      custom_config: useCustomConfig ? custom_config : undefined,
-      capture_rationale:
-        row.metric_type !== 'text' ? row.capture_rationale : false,
-    }
-  }
-
-  // Save *all* unsaved drafts in parallel; per-row status flags drive the
-  // UI badges so partial failures stay obvious to the user.
-  const createAllBulkMetricsMutation = useMutation({
-    mutationFn: async () => {
-      const drafts = bulkDrafts.filter((d) => d.status !== 'saved')
-      const results = await Promise.all(
-        drafts.map(async (row) => {
-          if (!row.name.trim()) {
-            return { row, ok: false as const, error: 'Name is required' }
-          }
-          if (
-            row.metric_type !== 'text' &&
-            row.custom_data_type === 'enum' &&
-            row.enum_options_csv
-              .split(',')
-              .map((s) => s.trim())
-              .filter(Boolean).length < 2
-          ) {
-            return {
-              row,
-              ok: false as const,
-              error: 'Enum metrics need at least 2 options',
-            }
-          }
-          updateBulkDraft(row.local_id, { status: 'saving', error: undefined })
-          try {
-            await apiClient.createMetric(buildBulkDraftPayload(row) as any)
-            return { row, ok: true as const }
-          } catch (err: any) {
-            const detail =
-              err?.response?.data?.detail ||
-              err?.message ||
-              'Failed to create metric'
-            return { row, ok: false as const, error: String(detail) }
-          }
-        }),
-      )
-      return results
-    },
-    onSuccess: (results) => {
-      // Apply per-row status flags so the user can see exactly which
-      // rows succeeded and which still need attention.
-      setBulkDrafts((prev) =>
-        prev.map((row) => {
-          const result = results.find((r) => r.row.local_id === row.local_id)
-          if (!result) return row
-          if (result.ok) {
-            return { ...row, status: 'saved', error: undefined }
-          }
-          return { ...row, status: 'error', error: result.error }
-        }),
-      )
-      const successCount = results.filter((r) => r.ok).length
-      const failCount = results.length - successCount
-      queryClient.invalidateQueries({ queryKey: ['metrics'] })
-      if (failCount === 0) {
-        showToast(
-          `Created ${successCount} metric${successCount > 1 ? 's' : ''}`,
-          'success',
-        )
-      } else if (successCount === 0) {
-        showToast(`Failed to create ${failCount} metrics`, 'error')
-      } else {
-        showToast(
-          `Created ${successCount}, ${failCount} failed (see rows)`,
-          'error',
-        )
-      }
-    },
-  })
-
   const generateMetricMutation = useMutation({
     mutationFn: (payload: {
       mode: 'description' | 'examples'
@@ -681,12 +649,6 @@ export default function MetricsManagement() {
     },
   })
 
-  const resetBulkForm = () => {
-    setBulkPrompt('')
-    setBulkSurface('agent')
-    setBulkDrafts([])
-  }
-
   const resetCategoryForm = () => {
     setCategoryForm({
       name: '',
@@ -699,49 +661,6 @@ export default function MetricsManagement() {
         { local_id: 'c2', name: '', description: '', capture_rationale: true },
       ],
     })
-  }
-
-  const handleParseBulk = () => {
-    if (!bulkPrompt.trim()) {
-      showToast('Paste a labels prompt to parse', 'error')
-      return
-    }
-    parseBulkMutation.mutate({ prompt: bulkPrompt, surface: bulkSurface })
-  }
-
-  const handleAddBlankBulkRow = () => {
-    setBulkDrafts((prev) => [
-      ...prev,
-      {
-        local_id: `manual-${Date.now()}-${prev.length}`,
-        name: '',
-        description: '',
-        metric_type: 'boolean',
-        custom_data_type: 'boolean',
-        enum_options_csv: '',
-        number_min: 0,
-        number_max: 10,
-        number_step: 1,
-        capture_rationale: true,
-        supported_surfaces: [bulkSurface],
-        enabled_surfaces: [bulkSurface],
-        status: 'idle',
-        expanded: true,
-      },
-    ])
-  }
-
-  const handleRemoveBulkRow = (local_id: string) => {
-    setBulkDrafts((prev) => prev.filter((row) => row.local_id !== local_id))
-  }
-
-  const handleSaveAllBulk = () => {
-    const unsaved = bulkDrafts.filter((d) => d.status !== 'saved')
-    if (unsaved.length === 0) {
-      showToast('Nothing to save', 'success')
-      return
-    }
-    createAllBulkMetricsMutation.mutate()
   }
 
   const handleToggleSurface = (metric: Metric, surface: MetricSurface) => {
@@ -804,7 +723,7 @@ export default function MetricsManagement() {
       metric_origin: 'custom',
       supported_surfaces: ['agent'],
       enabled_surfaces: ['agent'],
-      custom_data_type: 'boolean',
+      custom_data_type: 'enum',
       enum_options_csv: '',
       number_min: 0,
       number_max: 10,
@@ -814,7 +733,11 @@ export default function MetricsManagement() {
       enabled: true,
       capture_rationale: false,
       allow_discovery: false,
+      input_columns: [],
+      compare_transcripts: false,
     })
+    setInputColumnDraft('')
+    setIsForCallImports(false)
   }
 
   const getCustomConfigFromForm = () => {
@@ -846,13 +769,10 @@ export default function MetricsManagement() {
     // clean (no stale enum/number_range hints attached to text metrics).
     const useCustomConfig =
       formData.metric_origin === 'custom' && formData.metric_type !== 'text'
-    // ``allow_discovery`` is only valid on multi_label parents
-    // (server enforces this). We only forward the field when editing
-    // an actual parent metric — sending it on create or on a
-    // standalone metric would risk a 400 if the user toggled it true
-    // before realising the field doesn't apply to their shape. When
-    // editing a non-parent we silently omit the field, so the
-    // server-side value is left untouched.
+    // ``allow_discovery`` is valid on any parent (single_choice or
+    // multi_label) but is meaningless on standalone or child metrics.
+    // We only forward the field when editing an actual parent metric
+    // so the server-side value on non-parents stays untouched.
     const isParentBeingEdited =
       !!editingMetric &&
       !!editingMetric.selection_mode &&
@@ -876,6 +796,26 @@ export default function MetricsManagement() {
         formData.metric_type !== 'text' ? formData.capture_rationale : false,
       ...(isParentBeingEdited
         ? { allow_discovery: !!formData.allow_discovery }
+        : {}),
+      // Backend rejects ``input_columns`` on child sub-metrics with
+      // a 400. Children have no parent_metric_id at create time
+      // (only set explicitly elsewhere), so the only way the field
+      // can leak there is via edit — gate on the row's
+      // ``parent_metric_id`` to be safe.
+      ...((!editingMetric || !editingMetric.parent_metric_id)
+        ? { input_columns: formData.input_columns }
+        : {}),
+      // Transcript-compare judge metrics live alongside column-input
+      // judges and standalone transcript metrics. The server rejects
+      // the flag on child sub-metrics and parents (selection_mode
+      // set), so we only forward it for standalone rows where the
+      // toggle could legitimately be on. ``buildPayload`` is also
+      // used by the create flow (no editingMetric yet) — there the
+      // flag is always forwarded since the body is a fresh row.
+      ...((!editingMetric
+        || (!editingMetric.parent_metric_id
+          && !editingMetric.selection_mode))
+        ? { compare_transcripts: !!formData.compare_transcripts }
         : {}),
     }
   }
@@ -916,7 +856,16 @@ export default function MetricsManagement() {
       metric_origin: metric.metric_origin || 'custom',
       supported_surfaces: (metric.supported_surfaces?.length ? metric.supported_surfaces : ['agent']) as MetricSurface[],
       enabled_surfaces: (metric.enabled_surfaces?.length ? metric.enabled_surfaces : ['agent']) as MetricSurface[],
-      custom_data_type: (metric.custom_data_type || 'boolean') as CustomDataType,
+      // If the stored row has no ``custom_data_type`` (older default
+      // metrics, edge migrations, etc.), derive a value from
+      // ``metric_type`` so the unified Type dropdown and the
+      // sub-config renderer stay aligned on the very first paint.
+      custom_data_type: (metric.custom_data_type ||
+        (metric.metric_type === 'rating'
+          ? 'enum'
+          : metric.metric_type === 'number'
+            ? 'number_range'
+            : 'boolean')) as CustomDataType,
       enum_options_csv: Array.isArray(metric.custom_config?.options) ? metric.custom_config.options.join(', ') : '',
       number_min: Number(metric.custom_config?.min ?? 0),
       number_max: Number(metric.custom_config?.max ?? 10),
@@ -926,7 +875,20 @@ export default function MetricsManagement() {
       enabled: metric.enabled,
       capture_rationale: !!metric.capture_rationale,
       allow_discovery: !!metric.allow_discovery,
+      input_columns: Array.isArray(metric.input_columns)
+        ? [...metric.input_columns]
+        : [],
+      compare_transcripts: !!metric.compare_transcripts,
     })
+    setInputColumnDraft('')
+    // The Call Imports sub-section auto-expands when the metric we're
+    // opening has either call-import-specific knob configured —
+    // otherwise it stays collapsed so the form reads as a plain
+    // live-call metric editor by default.
+    setIsForCallImports(
+      (Array.isArray(metric.input_columns) && metric.input_columns.length > 0)
+        || !!metric.compare_transcripts,
+    )
     setIsCustomMetricMode(metric.metric_origin === 'custom')
     setShowCreateModal(true)
   }
@@ -1014,10 +976,7 @@ export default function MetricsManagement() {
       parent: {
         name: editCategoryForm.name.trim(),
         description: editCategoryForm.description.trim() || null,
-        allow_discovery:
-          editCategoryForm.selection_mode === 'multi_label'
-            ? editCategoryForm.allow_discovery
-            : false,
+        allow_discovery: editCategoryForm.allow_discovery,
         supported_surfaces: editCategoryForm.surfaces,
         enabled_surfaces: editCategoryForm.surfaces,
       },
@@ -1059,7 +1018,6 @@ export default function MetricsManagement() {
     setCreateMode('single')
     resetForm()
     resetAIForm()
-    resetBulkForm()
     resetCategoryForm()
   }
 
@@ -1178,13 +1136,16 @@ export default function MetricsManagement() {
                 enabled: true,
                 capture_rationale: false,
                 allow_discovery: false,
+                input_columns: [],
+                compare_transcripts: false,
               })
-              resetBulkForm()
+              setInputColumnDraft('')
+              setIsForCallImports(false)
               resetCategoryForm()
               setShowCreateModal(true)
             }}
             leftIcon={<Plus className="w-4 h-4" />}
-            title="Create a single custom metric, bulk-import metrics from a rubric, or create a parent category with sub-labels — switch flows from inside the modal"
+            title="Create a single custom metric or a parent category with sub-labels — switch flows from inside the modal"
           >
             Create Custom Metric
           </Button>
@@ -1353,16 +1314,14 @@ export default function MetricsManagement() {
                                 </span>
                               </span>
                             )}
-                            {isParent &&
-                              metric.selection_mode === 'multi_label' &&
-                              metric.allow_discovery && (
-                                <span
-                                  className="px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-amber-50 text-amber-700 border border-amber-200 rounded"
-                                  title="LLM may discover and propose additional sub-labels for this category during call-import evaluations."
-                                >
-                                  Auto-discover
-                                </span>
-                              )}
+                            {isParent && metric.allow_discovery && (
+                              <span
+                                className="px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-amber-50 text-amber-700 border border-amber-200 rounded"
+                                title="LLM may discover and propose additional sub-labels for this category during call-import evaluations."
+                              >
+                                Auto-discover
+                              </span>
+                            )}
                           </div>
                         </td>
                         <td className="px-6 py-4">
@@ -1567,16 +1526,14 @@ export default function MetricsManagement() {
               onClick={closeModal}
             />
             <div
-              className={`relative bg-white rounded-lg shadow-xl ${
+              className={`relative bg-white rounded-2xl shadow-2xl ring-1 ring-gray-100 ${
                 editingMetric
                   ? isEditingCategory
-                    ? 'max-w-3xl'
-                    : 'max-w-2xl'
-                  : createMode === 'bulk'
-                    ? 'max-w-4xl'
-                    : createMode === 'category'
-                      ? 'max-w-3xl'
-                      : 'max-w-2xl'
+                    ? 'max-w-5xl'
+                    : 'max-w-4xl'
+                  : createMode === 'category'
+                    ? 'max-w-5xl'
+                    : 'max-w-4xl'
               } w-full p-6 max-h-[90vh] overflow-y-auto`}
             >
               <div className="flex items-center justify-between mb-4">
@@ -1585,13 +1542,11 @@ export default function MetricsManagement() {
                     ? isEditingCategory
                       ? `Edit category · ${editingMetric.name}`
                       : 'Edit Metric'
-                    : createMode === 'bulk'
-                      ? 'Bulk create metrics'
-                      : createMode === 'category'
-                        ? 'Create a category metric'
-                        : isCustomMetricMode
-                          ? 'Create Custom Metric'
-                          : 'Create Metric'}
+                    : createMode === 'category'
+                      ? 'Create a category metric'
+                      : isCustomMetricMode
+                        ? 'Create Custom Metric'
+                        : 'Create Metric'}
                 </h2>
                 <button
                   onClick={closeModal}
@@ -1601,16 +1556,16 @@ export default function MetricsManagement() {
                 </button>
               </div>
 
-              {/* Mode switcher: lets the user pick between single, bulk,
-                  and category flows without leaving this modal. Hidden
-                  during edit because edit always targets one row. */}
+              {/* Mode switcher: lets the user pick between the single
+                  metric and the parent category flow without leaving
+                  this modal. Hidden during edit because edit always
+                  targets one row. */}
               {!editingMetric && (
                 <div className="mb-4">
                   <div className="inline-flex rounded-md border border-gray-200 bg-gray-50 p-1 text-xs font-medium">
                     {(
                       [
                         { id: 'single', label: 'Single metric' },
-                        { id: 'bulk', label: 'Bulk import' },
                         { id: 'category', label: 'Category with sub-labels' },
                       ] as Array<{ id: CreateMode; label: string }>
                     ).map((tab) => (
@@ -1631,18 +1586,16 @@ export default function MetricsManagement() {
                   <p className="mt-2 text-[11px] text-gray-500">
                     {createMode === 'single'
                       ? 'Configure one custom metric end-to-end.'
-                      : createMode === 'bulk'
-                        ? 'Paste a rubric or labels prompt; each label becomes its own draft metric you can edit and save together.'
-                        : 'A parent metric groups N sub-label children that the LLM scores together. Pick a selection mode to control how children relate (one-of vs. independent yes/no).'}
+                      : 'A parent metric groups N sub-label children that the LLM scores together. Pick a selection mode to control how children relate (one-of vs. independent yes/no).'}
                   </p>
                 </div>
               )}
 
               {((createMode === 'single' && !editingMetric) ||
                 (editingMetric && !isEditingCategory)) && (
-              <div className="space-y-4">
+              <div className="space-y-5">
                 {isCustomMetricMode && !editingMetric && (
-                  <div className="border border-purple-200 rounded-lg bg-purple-50/40">
+                  <div className="border border-purple-200 rounded-xl bg-purple-50/40">
                     <button
                       type="button"
                       onClick={() => setShowAIAssist((v) => !v)}
@@ -1695,12 +1648,12 @@ export default function MetricsManagement() {
                             onChange={(e) => setAIDescription(e.target.value)}
                             rows={4}
                             placeholder="e.g. Measure whether the agent confirmed the customer's booking date and time before ending the call."
-                            className="w-full px-3 py-2 text-sm border border-purple-200 rounded-md shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"
+                            className="w-full rounded-lg border border-purple-200 bg-white px-3.5 py-2.5 text-sm text-gray-900 placeholder-gray-400 shadow-sm transition focus:border-purple-500 focus:outline-none focus:ring-2 focus:ring-purple-500/20"
                           />
                         ) : (
                           <div className="space-y-2">
                             {aiExamples.map((ex, idx) => (
-                              <div key={idx} className="border border-purple-200 rounded-md p-2 bg-white space-y-2">
+                              <div key={idx} className="border border-purple-200 rounded-lg p-2 bg-white space-y-2">
                                 <div className="flex items-center justify-between">
                                   <span className="text-[11px] font-medium text-purple-700">Example {idx + 1}</span>
                                   {aiExamples.length > 1 && (
@@ -1724,7 +1677,7 @@ export default function MetricsManagement() {
                                   }
                                   rows={2}
                                   placeholder="Transcript snippet..."
-                                  className="w-full px-2 py-1 text-xs border border-gray-300 rounded shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"
+                                  className="w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs text-gray-900 placeholder-gray-400 shadow-sm transition focus:border-purple-500 focus:outline-none focus:ring-2 focus:ring-purple-500/20"
                                 />
                                 <div className="grid grid-cols-2 gap-2">
                                   <input
@@ -1736,7 +1689,7 @@ export default function MetricsManagement() {
                                       )
                                     }
                                     placeholder="Rating (e.g. 0.8, true, Excellent)"
-                                    className="px-2 py-1 text-xs border border-gray-300 rounded shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"
+                                    className="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs text-gray-900 placeholder-gray-400 shadow-sm transition focus:border-purple-500 focus:outline-none focus:ring-2 focus:ring-purple-500/20"
                                   />
                                   <input
                                     type="text"
@@ -1747,7 +1700,7 @@ export default function MetricsManagement() {
                                       )
                                     }
                                     placeholder="Notes (optional)"
-                                    className="px-2 py-1 text-xs border border-gray-300 rounded shadow-sm focus:outline-none focus:ring-purple-500 focus:border-purple-500"
+                                    className="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs text-gray-900 placeholder-gray-400 shadow-sm transition focus:border-purple-500 focus:outline-none focus:ring-2 focus:ring-purple-500/20"
                                   />
                                 </div>
                               </div>
@@ -1780,280 +1733,869 @@ export default function MetricsManagement() {
                   </div>
                 )}
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Name *
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.name}
-                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                    disabled={editingMetric?.is_default}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
-                    placeholder="Enter metric name"
-                  />
-                </div>
+                {/* Two-column layout: text-y "what" fields on the left,
+                    configuration "how" controls on the right. Some
+                    fields (Description, Custom Data Type group, Surfaces,
+                    Discovery, Enable) span both columns because they
+                    benefit from the full canvas; everything else picks
+                    up the responsive grid columns automatically. */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-6 gap-y-5">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Name *
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.name}
+                      onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                      disabled={editingMetric?.is_default}
+                      className={MODERN_INPUT_CLASS}
+                      placeholder="e.g. Booking Confirmation"
+                    />
+                  </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Description
-                  </label>
-                  <textarea
-                    value={formData.description}
-                    onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                    rows={3}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
-                    placeholder="Enter metric description"
-                  />
-                </div>
+                  {/* Unified "Type" select — replaces the older split
+                      between "Metric Type" and "Custom Data Type". The
+                      four options below cover every shape the LLM
+                      judge can produce; the handler keeps both
+                      ``metric_type`` (the storage shape on the
+                      backend) and ``custom_data_type`` (the UI/config
+                      shape) in sync so existing payload logic in
+                      ``buildPayload`` keeps working unchanged. */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Type *
+                    </label>
+                    {(() => {
+                      // Derive the unified value from formData. We read
+                      // both fields so an existing metric whose
+                      // ``custom_data_type`` is set takes priority over
+                      // the legacy ``metric_type`` (the two were almost
+                      // always stored together via the old form).
+                      type UnifiedType =
+                        | 'boolean'
+                        | 'enum'
+                        | 'number_range'
+                        | 'text'
+                      const unifiedValue: UnifiedType =
+                        formData.metric_type === 'text'
+                          ? 'text'
+                          : formData.metric_type === 'boolean'
+                            ? 'boolean'
+                            : formData.custom_data_type === 'enum' ||
+                                formData.metric_type === 'rating'
+                              ? 'enum'
+                              : formData.custom_data_type === 'number_range' ||
+                                  formData.metric_type === 'number'
+                                ? 'number_range'
+                                : 'boolean'
+                      return (
+                        <select
+                          value={unifiedValue}
+                          onChange={(e) => {
+                            const next = e.target.value as UnifiedType
+                            setFormData((prev) => {
+                              if (next === 'text') {
+                                return { ...prev, metric_type: 'text' }
+                              }
+                              if (next === 'boolean') {
+                                return {
+                                  ...prev,
+                                  metric_type: 'boolean',
+                                  custom_data_type: 'boolean',
+                                }
+                              }
+                              if (next === 'enum') {
+                                return {
+                                  ...prev,
+                                  metric_type: 'rating',
+                                  custom_data_type: 'enum',
+                                }
+                              }
+                              return {
+                                ...prev,
+                                metric_type: 'number',
+                                custom_data_type: 'number_range',
+                              }
+                            })
+                          }}
+                          disabled={editingMetric?.is_default}
+                          className={MODERN_INPUT_CLASS}
+                        >
+                          <option value="boolean">Boolean (true / false)</option>
+                          <option value="enum">Enum (pick from a list)</option>
+                          <option value="number_range">
+                            Number range (min / max / step)
+                          </option>
+                          <option value="text">Text (LLM summary)</option>
+                        </select>
+                      )
+                    })()}
+                    {formData.metric_type === 'text' && (
+                      <p className="mt-1.5 text-xs text-gray-500">
+                        The LLM returns a free-form sentence / summary instead
+                        of a score. Use the Description field to tell the
+                        model what to summarize. Text metrics are not
+                        aggregated in numeric dashboards.
+                      </p>
+                    )}
+                    {editingMetric?.is_default && (
+                      <p className="mt-1.5 text-xs text-gray-500">
+                        The type of a built-in default metric cannot be changed.
+                      </p>
+                    )}
+                  </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Metric Type *
-                  </label>
-                  <select
-                    value={formData.metric_type}
-                    onChange={(e) => {
-                      const next = e.target.value as 'number' | 'boolean' | 'rating' | 'text'
-                      setFormData((prev) => ({
-                        ...prev,
-                        metric_type: next,
-                        // Picking Text means the custom_data_type / custom_config
-                        // form fields are no longer relevant; we still keep their
-                        // local state so toggling back restores the user's input,
-                        // but `buildPayload` will drop them from the request.
-                      }))
-                    }}
-                    disabled={editingMetric?.is_default}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
-                  >
-                    <option value="number">Number</option>
-                    <option value="boolean">Boolean</option>
-                    <option value="rating">Rating</option>
-                    <option value="text">Text (LLM summary)</option>
-                  </select>
-                  {formData.metric_type === 'text' && (
-                    <p className="mt-1 text-xs text-gray-500">
-                      The LLM returns a free-form sentence/summary instead of a
-                      numeric score. Use the Description field to tell the model
-                      what to summarize. Text metrics are not aggregated in
-                      numeric dashboards.
-                    </p>
-                  )}
-                  {editingMetric?.is_default && (
-                    <p className="mt-1 text-xs text-gray-500">
-                      The type of a built-in default metric cannot be changed.
-                    </p>
-                  )}
-                </div>
+                  <div className="lg:col-span-2">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Description
+                    </label>
+                    <textarea
+                      value={formData.description}
+                      onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                      rows={4}
+                      className={MODERN_INPUT_CLASS}
+                      placeholder="Tell the LLM what to look for. Be specific — e.g. 'True when the agent reads back the appointment date and time exactly as the customer said it.'"
+                    />
+                  </div>
 
-                {formData.metric_type !== 'text' && (
-                  <div className="rounded-md border border-gray-200 bg-gray-50 p-3">
-                    <label className="flex items-start gap-2">
-                      <input
-                        type="checkbox"
-                        checked={formData.capture_rationale}
-                        onChange={(e) =>
-                          setFormData({ ...formData, capture_rationale: e.target.checked })
-                        }
-                        className="mt-0.5 h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
-                      />
-                      <span className="text-sm text-gray-800">
-                        <span className="font-medium">Capture LLM Rationale</span>
-                        <span className="block text-xs text-gray-500 mt-0.5">
-                          Ask the LLM to also return a 1-2 sentence reason
-                          alongside the value. Adds a{' '}
-                          <code className="px-1 py-0.5 bg-white border border-gray-200 rounded text-[11px]">
-                            &lt;Name&gt; - LLM Rationale
-                          </code>{' '}
-                          column to the call-import CSV export.
+                  {formData.metric_type !== 'text' && (
+                    <div className="rounded-xl border border-gray-200 bg-gray-50/70 p-3.5">
+                      <label className="flex items-start gap-2.5">
+                        <input
+                          type="checkbox"
+                          checked={formData.capture_rationale}
+                          onChange={(e) =>
+                            setFormData({ ...formData, capture_rationale: e.target.checked })
+                          }
+                          className="mt-0.5 h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
+                        />
+                        <span className="text-sm text-gray-800">
+                          <span className="font-medium">Capture LLM Rationale</span>
+                          <span className="block text-xs text-gray-500 mt-0.5">
+                            Ask the LLM to also return a 1-2 sentence reason
+                            alongside the value. Adds a{' '}
+                            <code className="px-1 py-0.5 bg-white border border-gray-200 rounded text-[11px]">
+                              &lt;Name&gt; - LLM Rationale
+                            </code>{' '}
+                            column to the call-import CSV export.
+                          </span>
                         </span>
-                      </span>
+                      </label>
+                    </div>
+                  )}
+
+                  {/*
+                    Call Imports configuration: ``input_columns``
+                    (column-input judge) and ``compare_transcripts``
+                    (transcript-compare judge) are knobs that ONLY
+                    affect call-import evaluation runs (the CSV /
+                    Excel "Call Imports" upload flow). Grouping them
+                    behind a single "is this metric for Call Imports?"
+                    toggle keeps the form scan-friendly for people
+                    authoring plain live-call metrics, who don't need
+                    to know either flag exists. Hidden for child
+                    sub-metrics because the backend rejects either
+                    field on rows with a parent.
+                  */}
+                  {!editingMetric?.parent_metric_id && (
+                    <div className="rounded-xl border border-gray-200 bg-white p-3.5 space-y-3.5">
+                      <label className="flex items-start gap-2.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={isForCallImports}
+                          onChange={(e) => {
+                            const next = e.target.checked
+                            setIsForCallImports(next)
+                            // Collapsing the section also clears both
+                            // fields so the saved metric exactly
+                            // mirrors what the user can see in the
+                            // form — no hidden state lingering after a
+                            // user changed their mind about routing
+                            // this metric through Call Imports.
+                            if (!next) {
+                              setFormData({
+                                ...formData,
+                                input_columns: [],
+                                compare_transcripts: false,
+                              })
+                              setInputColumnDraft('')
+                            }
+                          }}
+                          className="mt-0.5 h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
+                        />
+                        <span className="text-sm text-gray-800">
+                          <span className="font-medium">
+                            This metric is for Call Imports
+                          </span>
+                          <span className="block text-xs text-gray-500 mt-0.5">
+                            Configure how this metric scores rows from a
+                            CSV / Excel call-import batch — pick specific
+                            columns to judge, or compare the production
+                            and diarised transcripts side-by-side.
+                            Live-call evaluations are unaffected by
+                            either option below.
+                          </span>
+                        </span>
+                      </label>
+
+                      {isForCallImports && (
+                        <div className="ml-7 pl-3.5 border-l-2 border-gray-100 space-y-3.5">
+                  {/*
+                    Compare-transcripts judge: the metric reads BOTH
+                    the production and diarised transcripts on each
+                    call-import row and the Run Evaluation
+                    transcript_source toggle is ignored. Hidden for
+                    parent categories (server rejects the flag on
+                    rows with ``selection_mode``); also disabled when
+                    the metric is configured as a column-input judge
+                    (the two prompt templates are mutually exclusive).
+                    Toggling this flag on clears ``input_columns`` so
+                    the user can't end up with an incoherent metric
+                    shape on Save.
+                  */}
+                  {!editingMetric?.selection_mode
+                    && (() => {
+                      const hasInputColumns =
+                        (formData.input_columns?.length ?? 0) > 0
+                      const disabledByInputColumns =
+                        hasInputColumns && !formData.compare_transcripts
+                      const onToggle = (next: boolean) => {
+                        // Enabling compare_transcripts wipes
+                        // ``input_columns`` so the schema validator's
+                        // mutual-exclusion rule is satisfied in one
+                        // round-trip.
+                        setFormData({
+                          ...formData,
+                          compare_transcripts: next,
+                          input_columns: next ? [] : formData.input_columns,
+                        })
+                        if (next) setInputColumnDraft('')
+                      }
+                      return (
+                        <div className="rounded-xl border border-gray-200 bg-gray-50/70 p-3.5">
+                          <label
+                            className={`flex items-start gap-2.5 ${
+                              disabledByInputColumns
+                                ? 'cursor-not-allowed opacity-60'
+                                : 'cursor-pointer'
+                            }`}
+                            title={
+                              disabledByInputColumns
+                                ? 'Clear Input columns first — a metric can be either a column-input judge or a transcript-compare judge, not both.'
+                                : undefined
+                            }
+                          >
+                            <input
+                              type="checkbox"
+                              checked={!!formData.compare_transcripts}
+                              disabled={disabledByInputColumns}
+                              onChange={(e) => onToggle(e.target.checked)}
+                              className="mt-0.5 h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded disabled:opacity-60"
+                            />
+                            <span className="text-sm text-gray-800">
+                              <span className="font-medium">
+                                Compare transcripts (Production vs Diarised)
+                              </span>
+                              <span className="block text-xs text-gray-500 mt-0.5">
+                                When on, this metric reads BOTH transcripts
+                                on each row and the judge scores based on
+                                the relationship between them. The Run
+                                Evaluation transcript_source setting is
+                                ignored for this metric.
+                              </span>
+                            </span>
+                          </label>
+                        </div>
+                      )
+                    })()}
+
+                  {/*
+                    Input columns: when one or more entries are listed
+                    here the metric becomes a "column-input judge" — at
+                    call-import evaluation time the worker reads each
+                    entry from the row's ``raw_columns`` (with a
+                    fallback through the parent CallImport's
+                    ``custom_column_mapping`` when the entry is a
+                    friendly name) and feeds the values to the LLM as
+                    Context Inputs instead of the transcript. The
+                    child-sub-metric guard lives on the outer Call
+                    Imports wrapper now; here we just hide the chip
+                    input when the metric is configured as a
+                    transcript-compare judge (the two prompt
+                    templates are mutually exclusive).
+                  */}
+                  {!formData.compare_transcripts
+                    && (() => {
+                    // Helpers scoped to the picker so they close over
+                    // the latest formData / draft without us threading
+                    // them through props.
+                    const isAlreadySelected = (entry: string) =>
+                      formData.input_columns.some(
+                        (h) => h.toLowerCase() === entry.toLowerCase(),
+                      )
+                    const addEntry = (entry: string) => {
+                      const trimmed = entry.trim()
+                      if (!trimmed || isAlreadySelected(trimmed)) return
+                      setFormData({
+                        ...formData,
+                        input_columns: [...formData.input_columns, trimmed],
+                      })
+                    }
+                    const removeEntry = (entry: string) => {
+                      setFormData({
+                        ...formData,
+                        input_columns: formData.input_columns.filter(
+                          (h) => h !== entry,
+                        ),
+                      })
+                    }
+
+                    // The drilled-in CallImport (if any). When the
+                    // popover is at the import-list step this is
+                    // undefined and the popover renders the list view.
+                    const drilledImport = columnPickerImportId
+                      ? recentImports.find(
+                          (ci) => ci.id === columnPickerImportId,
+                        )
+                      : undefined
+
+                    // Build the column groups for the drilled-in
+                    // import. Custom-mapped columns expose the
+                    // friendly name (key of ``custom_column_mapping``)
+                    // because that's what the rest of the call-import
+                    // UI surfaces — the worker resolves it back to the
+                    // CSV header at evaluation time. Extra columns
+                    // expose their CSV header verbatim because that's
+                    // already the user-visible identifier.
+                    const customMappingEntries = drilledImport
+                      ? Object.entries(drilledImport.custom_column_mapping || {})
+                          .filter(([key]) => typeof key === 'string' && key.trim())
+                          .sort(([a], [b]) =>
+                            a.toLowerCase().localeCompare(b.toLowerCase()),
+                          )
+                      : []
+                    const extraColumnEntries = drilledImport
+                      ? (drilledImport.extra_columns || [])
+                          .filter((h) => typeof h === 'string' && h.trim())
+                          .slice()
+                          .sort((a, b) =>
+                            a.toLowerCase().localeCompare(b.toLowerCase()),
+                          )
+                      : []
+                    const drilledImportColumnCount =
+                      customMappingEntries.length + extraColumnEntries.length
+
+                    const importLabel = (
+                      ci: (typeof recentImports)[number],
+                    ) => ci.original_filename || `Import ${ci.id.slice(0, 8)}`
+
+                    const importColumnCount = (
+                      ci: (typeof recentImports)[number],
+                    ): number => {
+                      const customCount = Object.keys(
+                        ci.custom_column_mapping || {},
+                      ).filter((k) => typeof k === 'string' && k.trim()).length
+                      const extraCount = (ci.extra_columns || []).filter(
+                        (h) => typeof h === 'string' && h.trim(),
+                      ).length
+                      return customCount + extraCount
+                    }
+
+                    return (
+                      <div ref={columnPickerRef}>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          Input columns (optional)
+                        </label>
+                        <p className="text-xs text-gray-500 mb-2">
+                          Pick from a specific imported CSV's columns —
+                          either the friendly names you assigned during
+                          import or the extra columns you preserved
+                          verbatim. The next evaluation run will judge
+                          those values (instead of the transcript) and
+                          the verdict becomes a new column in the
+                          export. Leave empty to keep the default
+                          transcript-based behavior.
+                        </p>
+                        {/* Chip-input + popover wrapper. ``relative``
+                            anchors the absolute-positioned popover. */}
+                        <div className="relative">
+                          <div className="flex flex-wrap items-center gap-2 px-3 py-2 rounded-lg border border-gray-200 bg-white shadow-sm transition focus-within:border-primary-500 focus-within:ring-2 focus-within:ring-primary-500/20">
+                            {formData.input_columns.map((entry) => (
+                              <span
+                                key={entry}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded-full bg-primary-50 text-primary-700 border border-primary-200"
+                              >
+                                {entry}
+                                <button
+                                  type="button"
+                                  aria-label={`Remove ${entry}`}
+                                  onClick={() => removeEntry(entry)}
+                                  className="hover:text-primary-900"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              </span>
+                            ))}
+                            <input
+                              type="text"
+                              value={inputColumnDraft}
+                              onChange={(e) =>
+                                setInputColumnDraft(e.target.value)
+                              }
+                              onKeyDown={(e) => {
+                                // Free-text Enter / comma is the
+                                // forward-compat escape hatch — useful
+                                // when authoring a metric before the
+                                // first matching CSV is uploaded.
+                                if (e.key === 'Enter' || e.key === ',') {
+                                  e.preventDefault()
+                                  const trimmed = inputColumnDraft.trim()
+                                  if (trimmed) {
+                                    addEntry(trimmed)
+                                    setInputColumnDraft('')
+                                  }
+                                  return
+                                }
+                                if (
+                                  e.key === 'Backspace' &&
+                                  !inputColumnDraft &&
+                                  formData.input_columns.length > 0
+                                ) {
+                                  setFormData({
+                                    ...formData,
+                                    input_columns:
+                                      formData.input_columns.slice(0, -1),
+                                  })
+                                }
+                              }}
+                              onBlur={() => {
+                                const trimmed = inputColumnDraft.trim()
+                                if (trimmed) {
+                                  addEntry(trimmed)
+                                  setInputColumnDraft('')
+                                }
+                              }}
+                              placeholder={
+                                formData.input_columns.length === 0
+                                  ? 'Type a column name and press Enter, or use the picker →'
+                                  : ''
+                              }
+                              className="flex-1 min-w-[10rem] text-sm text-gray-900 placeholder-gray-400 focus:outline-none bg-transparent"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setColumnPickerOpen((prev) => !prev)
+                                setColumnPickerImportId(null)
+                              }}
+                              className="ml-auto inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md bg-gray-100 hover:bg-gray-200 text-gray-700 transition"
+                              title="Browse columns from a specific imported CSV"
+                            >
+                              <Layers className="h-3.5 w-3.5" />
+                              Browse imports
+                              <ChevronDown
+                                className={`h-3 w-3 transition-transform ${
+                                  columnPickerOpen ? 'rotate-180' : ''
+                                }`}
+                              />
+                            </button>
+                          </div>
+
+                          {columnPickerOpen && (
+                            <div className="absolute z-20 left-0 right-0 mt-1 max-h-80 overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg ring-1 ring-black/5">
+                              {/* IMPORT LIST VIEW — shown when no
+                                  specific import is drilled into. */}
+                              {!drilledImport && (
+                                <div>
+                                  <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-gray-500 bg-gray-50 border-b border-gray-100 flex items-center justify-between">
+                                    <span>Pick a call import</span>
+                                    {recentImports.length > 0 && (
+                                      <span className="text-[10px] font-normal normal-case text-gray-400">
+                                        {recentImports.length} most recent
+                                      </span>
+                                    )}
+                                  </div>
+                                  {recentImports.length === 0 && (
+                                    <div className="px-3 py-3 text-xs text-gray-500">
+                                      No call imports in this workspace
+                                      yet. Type a column name in the
+                                      field above and press Enter to add
+                                      it manually — the metric will
+                                      start judging it as soon as a
+                                      matching column shows up in an
+                                      upload.
+                                    </div>
+                                  )}
+                                  {recentImports.map((ci) => {
+                                    const cols = importColumnCount(ci)
+                                    return (
+                                      <button
+                                        key={ci.id}
+                                        type="button"
+                                        onClick={() =>
+                                          setColumnPickerImportId(ci.id)
+                                        }
+                                        disabled={cols === 0}
+                                        className={`w-full flex items-center justify-between gap-3 px-3 py-2.5 text-left transition border-b border-gray-50 last:border-b-0 ${
+                                          cols === 0
+                                            ? 'opacity-50 cursor-not-allowed'
+                                            : 'hover:bg-gray-50'
+                                        }`}
+                                      >
+                                        <div className="min-w-0 flex-1">
+                                          <div className="flex items-center gap-1.5">
+                                            <FileText className="h-3.5 w-3.5 text-gray-400 shrink-0" />
+                                            <span className="truncate text-sm font-medium text-gray-800">
+                                              {importLabel(ci)}
+                                            </span>
+                                          </div>
+                                          <div className="mt-0.5 flex items-center gap-2 text-[11px] text-gray-500">
+                                            {ci.dataset && (
+                                              <span className="inline-flex items-center gap-0.5">
+                                                <Database className="h-3 w-3" />
+                                                {ci.dataset}
+                                              </span>
+                                            )}
+                                            <span>
+                                              {ci.total_rows} row
+                                              {ci.total_rows === 1 ? '' : 's'}
+                                            </span>
+                                            <span>
+                                              {cols} mappable column
+                                              {cols === 1 ? '' : 's'}
+                                            </span>
+                                          </div>
+                                        </div>
+                                        {cols > 0 && (
+                                          <ChevronRight className="h-4 w-4 text-gray-400 shrink-0" />
+                                        )}
+                                      </button>
+                                    )
+                                  })}
+                                </div>
+                              )}
+
+                              {/* COLUMN VIEW — shown after the user
+                                  picks an import. Friendly-mapped
+                                  columns and extra (verbatim) columns
+                                  are split into clearly labeled
+                                  groups. */}
+                              {drilledImport && (
+                                <div>
+                                  <div className="px-3 py-2 bg-gray-50 border-b border-gray-100 flex items-center gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setColumnPickerImportId(null)
+                                      }
+                                      className="inline-flex items-center gap-1 text-[11px] font-medium text-gray-600 hover:text-gray-900"
+                                    >
+                                      <ChevronLeft className="h-3.5 w-3.5" />
+                                      Imports
+                                    </button>
+                                    <span className="text-[11px] text-gray-400">
+                                      /
+                                    </span>
+                                    <span className="text-[11px] font-semibold text-gray-700 truncate">
+                                      {importLabel(drilledImport)}
+                                    </span>
+                                  </div>
+
+                                  {drilledImportColumnCount === 0 && (
+                                    <div className="px-3 py-3 text-xs text-gray-500">
+                                      This import didn't preserve any
+                                      extra columns or define custom
+                                      mappings, so there's nothing for a
+                                      column-input metric to read. Pick
+                                      a different import or upload one
+                                      that includes the columns you
+                                      want to score.
+                                    </div>
+                                  )}
+
+                                  {customMappingEntries.length > 0 && (
+                                    <div>
+                                      <div className="px-3 pt-2.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+                                        Custom-mapped columns
+                                      </div>
+                                      {customMappingEntries.map(
+                                        ([friendlyName, csvHeader]) => {
+                                          const already =
+                                            isAlreadySelected(friendlyName)
+                                          return (
+                                            <button
+                                              key={`custom-${friendlyName}`}
+                                              type="button"
+                                              onClick={() => {
+                                                addEntry(friendlyName)
+                                              }}
+                                              disabled={already}
+                                              className={`w-full flex items-start justify-between gap-2 px-3 py-2 text-left transition ${
+                                                already
+                                                  ? 'opacity-50 cursor-not-allowed'
+                                                  : 'hover:bg-primary-50'
+                                              }`}
+                                            >
+                                              <div className="min-w-0 flex-1">
+                                                <div className="text-sm text-gray-800 truncate font-mono text-[12px]">
+                                                  {friendlyName}
+                                                </div>
+                                                <div className="text-[10px] text-gray-500 truncate">
+                                                  CSV column:{' '}
+                                                  <span className="font-mono">
+                                                    {csvHeader}
+                                                  </span>
+                                                </div>
+                                              </div>
+                                              {already ? (
+                                                <span className="text-[10px] text-gray-400">
+                                                  added
+                                                </span>
+                                              ) : (
+                                                <Plus className="h-3.5 w-3.5 text-primary-600 shrink-0 mt-0.5" />
+                                              )}
+                                            </button>
+                                          )
+                                        },
+                                      )}
+                                    </div>
+                                  )}
+
+                                  {extraColumnEntries.length > 0 && (
+                                    <div>
+                                      <div className="px-3 pt-2.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-gray-500 border-t border-gray-100 mt-1">
+                                        Extra preserved columns
+                                      </div>
+                                      {extraColumnEntries.map((header) => {
+                                        const already =
+                                          isAlreadySelected(header)
+                                        return (
+                                          <button
+                                            key={`extra-${header}`}
+                                            type="button"
+                                            onClick={() => addEntry(header)}
+                                            disabled={already}
+                                            className={`w-full flex items-center justify-between gap-2 px-3 py-2 text-left transition ${
+                                              already
+                                                ? 'opacity-50 cursor-not-allowed'
+                                                : 'hover:bg-primary-50'
+                                            }`}
+                                          >
+                                            <span className="truncate font-mono text-[12px] text-gray-800">
+                                              {header}
+                                            </span>
+                                            {already ? (
+                                              <span className="text-[10px] text-gray-400">
+                                                added
+                                              </span>
+                                            ) : (
+                                              <Plus className="h-3.5 w-3.5 text-primary-600 shrink-0" />
+                                            )}
+                                          </button>
+                                        )
+                                      })}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })()}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Per-shape sub-config that the unified Type select
+                      drives. Only renders for custom metrics where the
+                      shape needs extra inputs (enum options, or
+                      min/max/step for number range). Boolean and Text
+                      have no extra config. */}
+                  {isCustomMetricMode &&
+                    formData.metric_type !== 'text' &&
+                    (formData.custom_data_type === 'enum' ||
+                      formData.custom_data_type === 'number_range') && (
+                      <div className="lg:col-span-2 rounded-xl border border-gray-200 bg-gray-50/70 p-4">
+                        {formData.custom_data_type === 'enum' && (
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">
+                              Enum options (comma separated) *
+                            </label>
+                            <input
+                              type="text"
+                              value={formData.enum_options_csv}
+                              onChange={(e) => setFormData({ ...formData, enum_options_csv: e.target.value })}
+                              className={MODERN_INPUT_SM_CLASS}
+                              placeholder="Excellent, Good, Neutral, Poor"
+                            />
+                            <p className="mt-1.5 text-xs text-gray-500">
+                              The LLM judge must pick exactly one of these
+                              labels for every evaluated row. Order is
+                              preserved in dashboards and CSV exports.
+                            </p>
+                          </div>
+                        )}
+
+                        {formData.custom_data_type === 'number_range' && (
+                          <div className="grid grid-cols-3 gap-3">
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-2">Min</label>
+                              <input
+                                type="number"
+                                value={formData.number_min}
+                                onChange={(e) => setFormData({ ...formData, number_min: Number(e.target.value) })}
+                                className={MODERN_INPUT_SM_CLASS}
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-2">Max</label>
+                              <input
+                                type="number"
+                                value={formData.number_max}
+                                onChange={(e) => setFormData({ ...formData, number_max: Number(e.target.value) })}
+                                className={MODERN_INPUT_SM_CLASS}
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-2">Step</label>
+                              <input
+                                type="number"
+                                value={formData.number_step}
+                                onChange={(e) => setFormData({ ...formData, number_step: Number(e.target.value) })}
+                                className={MODERN_INPUT_SM_CLASS}
+                              />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                  <div className="lg:col-span-2">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Supported Surfaces
+                    </label>
+                    <div className="flex flex-wrap gap-3">
+                      {ALL_SURFACES.map((surface) => {
+                        const checked = formData.supported_surfaces.includes(surface)
+                        return (
+                          <label
+                            key={surface}
+                            className={`inline-flex items-center gap-2 text-sm cursor-pointer rounded-lg border px-3 py-2 transition ${
+                              checked
+                                ? 'border-primary-300 bg-primary-50 text-primary-800'
+                                : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(e) => {
+                                const supported = e.target.checked
+                                  ? [...new Set([...formData.supported_surfaces, surface])]
+                                  : formData.supported_surfaces.filter((s) => s !== surface)
+                                const enabledSurfaces = e.target.checked
+                                  ? [...new Set([...formData.enabled_surfaces, surface])]
+                                  : formData.enabled_surfaces.filter((s) => supported.includes(s))
+                                setFormData({ ...formData, supported_surfaces: supported, enabled_surfaces: enabledSurfaces })
+                              }}
+                              className="h-4 w-4 text-primary-600 border-gray-300 rounded"
+                            />
+                            {SURFACE_LABELS[surface]}
+                          </label>
+                        )
+                      })}
+                    </div>
+                    <p className="mt-1.5 text-xs text-gray-500">
+                      Custom metrics on Agent / Voice Playground are evaluated by an LLM judge using the conversation transcript.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Tags (comma separated)
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.tags_csv}
+                      onChange={(e) => setFormData({ ...formData, tags_csv: e.target.value })}
+                      className={MODERN_INPUT_CLASS}
+                      placeholder="quality, compliance, friendliness"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Trigger
+                    </label>
+                    <select
+                      value={formData.trigger}
+                      onChange={(e) => setFormData({ ...formData, trigger: e.target.value as any })}
+                      className={MODERN_INPUT_CLASS}
+                    >
+                      <option value="always">Always</option>
+                    </select>
+                  </div>
+
+                  {/* Discovery toggle: surfaces in the edit form so a
+                      user who forgot to tick the box during Create
+                      Category can flip it on later without having to
+                      delete + recreate the category. The backend now
+                      accepts allow_discovery on both single_choice and
+                      multi_label parents. */}
+                  {editingMetric &&
+                    !editingMetric.parent_metric_id &&
+                    !!editingMetric.selection_mode && (
+                      <div className="lg:col-span-2 border border-amber-200 bg-amber-50/40 rounded-xl p-3.5">
+                        <label className="flex items-start gap-2.5 text-sm text-gray-800">
+                          <input
+                            type="checkbox"
+                            checked={formData.allow_discovery}
+                            onChange={(e) =>
+                              setFormData({
+                                ...formData,
+                                allow_discovery: e.target.checked,
+                              })
+                            }
+                            className="mt-0.5 h-4 w-4 text-amber-600 focus:ring-amber-500 border-gray-300 rounded"
+                          />
+                          <span>
+                            <span className="font-medium">
+                              Allow LLM-discovered labels
+                            </span>
+                            <span className="block text-xs text-gray-600 mt-0.5">
+                              Lets the LLM emit candidate sub-labels beyond
+                              the children below during call-import
+                              evaluation. Promote useful candidates from
+                              the Discovered Labels panel on each
+                              evaluation.
+                              {editingMetric.selection_mode === 'single_choice'
+                                ? ' For single-choice categories the discovered labels are supplemental — the existing children still control the picked outcome.'
+                                : ''}
+                            </span>
+                          </span>
+                        </label>
+                      </div>
+                    )}
+
+                  <div className="lg:col-span-2 flex items-center">
+                    <input
+                      type="checkbox"
+                      id="enabled"
+                      checked={formData.enabled}
+                      onChange={(e) => setFormData({ ...formData, enabled: e.target.checked })}
+                      className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
+                    />
+                    <label htmlFor="enabled" className="ml-2 block text-sm text-gray-900">
+                      Enable this metric
                     </label>
                   </div>
-                )}
-
-                {isCustomMetricMode && formData.metric_type !== 'text' && (
-                  <>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Custom Data Type *
-                      </label>
-                      <select
-                        value={formData.custom_data_type}
-                        onChange={(e) => {
-                          const next = e.target.value as CustomDataType
-                          setFormData({
-                            ...formData,
-                            custom_data_type: next,
-                            metric_type: next === 'boolean' ? 'boolean' : next === 'number_range' ? 'number' : 'rating',
-                          })
-                        }}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
-                      >
-                        <option value="boolean">Boolean</option>
-                        <option value="enum">Enum</option>
-                        <option value="number_range">Number Range</option>
-                      </select>
-                    </div>
-
-                    {formData.custom_data_type === 'enum' && (
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Enum Options (comma separated) *
-                        </label>
-                        <input
-                          type="text"
-                          value={formData.enum_options_csv}
-                          onChange={(e) => setFormData({ ...formData, enum_options_csv: e.target.value })}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
-                          placeholder="Excellent, Good, Neutral, Poor"
-                        />
-                      </div>
-                    )}
-
-                    {formData.custom_data_type === 'number_range' && (
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-2">Min</label>
-                          <input
-                            type="number"
-                            value={formData.number_min}
-                            onChange={(e) => setFormData({ ...formData, number_min: Number(e.target.value) })}
-                            className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-2">Max</label>
-                          <input
-                            type="number"
-                            value={formData.number_max}
-                            onChange={(e) => setFormData({ ...formData, number_max: Number(e.target.value) })}
-                            className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-2">Step</label>
-                          <input
-                            type="number"
-                            value={formData.number_step}
-                            onChange={(e) => setFormData({ ...formData, number_step: Number(e.target.value) })}
-                            className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
-                          />
-                        </div>
-                      </div>
-                    )}
-                  </>
-                )}
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Supported Surfaces
-                  </label>
-                  <div className="flex flex-wrap gap-4">
-                    {ALL_SURFACES.map((surface) => (
-                      <label key={surface} className="inline-flex items-center gap-2 text-sm text-gray-700">
-                        <input
-                          type="checkbox"
-                          checked={formData.supported_surfaces.includes(surface)}
-                          onChange={(e) => {
-                            const supported = e.target.checked
-                              ? [...new Set([...formData.supported_surfaces, surface])]
-                              : formData.supported_surfaces.filter((s) => s !== surface)
-                            const enabledSurfaces = e.target.checked
-                              ? [...new Set([...formData.enabled_surfaces, surface])]
-                              : formData.enabled_surfaces.filter((s) => supported.includes(s))
-                            setFormData({ ...formData, supported_surfaces: supported, enabled_surfaces: enabledSurfaces })
-                          }}
-                          className="h-4 w-4 text-primary-600 border-gray-300 rounded"
-                        />
-                        {SURFACE_LABELS[surface]}
-                      </label>
-                    ))}
-                  </div>
-                  <p className="mt-1 text-xs text-gray-500">
-                    Custom metrics on Agent / Voice Playground are evaluated by an LLM judge using the conversation transcript.
-                  </p>
                 </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Tags (comma separated)
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.tags_csv}
-                    onChange={(e) => setFormData({ ...formData, tags_csv: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
-                    placeholder="quality, compliance, friendliness"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Trigger
-                  </label>
-                  <select
-                    value={formData.trigger}
-                    onChange={(e) => setFormData({ ...formData, trigger: e.target.value as any })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
-                  >
-                    <option value="always">Always</option>
-                  </select>
-                </div>
-
-                {/* Discovery toggle: only meaningful (and accepted by
-                    the API) for multi_label parents. We surface it here
-                    in the edit form so a user who forgot to tick the
-                    box during Create Category can flip it on later
-                    without having to delete + recreate the category. */}
-                {editingMetric &&
-                  !editingMetric.parent_metric_id &&
-                  editingMetric.selection_mode === 'multi_label' && (
-                    <div className="border border-amber-200 bg-amber-50/40 rounded-md p-3">
-                      <label className="flex items-start gap-2 text-sm text-gray-800">
-                        <input
-                          type="checkbox"
-                          checked={formData.allow_discovery}
-                          onChange={(e) =>
-                            setFormData({
-                              ...formData,
-                              allow_discovery: e.target.checked,
-                            })
-                          }
-                          className="mt-0.5 h-4 w-4 text-amber-600 focus:ring-amber-500 border-gray-300 rounded"
-                        />
-                        <span>
-                          <span className="font-medium">
-                            Allow LLM-discovered labels
-                          </span>
-                          <span className="block text-xs text-gray-600 mt-0.5">
-                            Lets the LLM emit candidate sub-labels beyond
-                            the children below during call-import
-                            evaluation. Promote useful candidates from
-                            the Discovered Labels panel on each
-                            evaluation. Only available for multi-label
-                            parents.
-                          </span>
-                        </span>
-                      </label>
-                    </div>
-                  )}
-
-                <div className="flex items-center">
-                  <input
-                    type="checkbox"
-                    id="enabled"
-                    checked={formData.enabled}
-                    onChange={(e) => setFormData({ ...formData, enabled: e.target.checked })}
-                    className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
-                  />
-                  <label htmlFor="enabled" className="ml-2 block text-sm text-gray-900">
-                    Enable this metric
-                  </label>
-                </div>
-
-                <div className="flex justify-end space-x-3 pt-4">
+                <div className="flex justify-end space-x-3 pt-2 border-t border-gray-100">
                   <Button variant="ghost" onClick={closeModal}>
                     Cancel
                   </Button>
@@ -2068,299 +2610,11 @@ export default function MetricsManagement() {
               </div>
               )}
 
-              {!editingMetric && createMode === 'bulk' && (
-                <div>
-                  <p className="text-sm text-gray-600 mb-5">
-                    Paste a rubric (e.g. <code>Label #1 / Label Name / Label
-                    Definition / Example (Optional)</code> blocks). Each label
-                    becomes its own draft metric below — pick the type and the
-                    rationale flag per metric, then save them all in one click.
-                  </p>
-
-                  <div className="space-y-4">
-                    <div className="grid grid-cols-1 md:grid-cols-[200px_1fr_auto] gap-3 items-start">
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Default surface
-                        </label>
-                        <select
-                          value={bulkSurface}
-                          onChange={(e) =>
-                            setBulkSurface(e.target.value as MetricSurface)
-                          }
-                          className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
-                        >
-                          {ALL_SURFACES.map((surface) => (
-                            <option key={surface} value={surface}>
-                              {SURFACE_LABELS[surface]}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Labels prompt
-                        </label>
-                        <textarea
-                          value={bulkPrompt}
-                          onChange={(e) => setBulkPrompt(e.target.value)}
-                          rows={6}
-                          placeholder={
-                            'Label #1\n\nLabel Name\nLanguage Adherence\nLabel Definition\n...\n'
-                          }
-                          className="w-full px-3 py-2 text-sm font-mono border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500"
-                        />
-                      </div>
-                      <div className="md:pt-7">
-                        <Button
-                          variant="primary"
-                          onClick={handleParseBulk}
-                          isLoading={parseBulkMutation.isPending}
-                          leftIcon={<Sparkles className="w-4 h-4" />}
-                        >
-                          Parse
-                        </Button>
-                      </div>
-                    </div>
-
-                    <div className="border-t border-gray-200 pt-4">
-                      <div className="flex items-center justify-between mb-2">
-                        <h3 className="text-sm font-semibold text-gray-900">
-                          Drafts ({bulkDrafts.length})
-                        </h3>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={handleAddBlankBulkRow}
-                          leftIcon={<Plus className="w-3.5 h-3.5" />}
-                        >
-                          Add metric
-                        </Button>
-                      </div>
-
-                      {bulkDrafts.length === 0 ? (
-                        <div className="border border-dashed border-gray-300 rounded-md p-6 text-center text-sm text-gray-500">
-                          Parse a labels prompt above, or click <span className="font-medium">Add metric</span> to start with a blank row.
-                        </div>
-                      ) : (
-                        <div className="space-y-3">
-                          {bulkDrafts.map((row) => {
-                            const statusBadge =
-                              row.status === 'saved' ? (
-                                <span className="px-2 py-0.5 text-[11px] font-medium rounded-full bg-emerald-100 text-emerald-800">
-                                  Saved
-                                </span>
-                              ) : row.status === 'saving' ? (
-                                <span className="px-2 py-0.5 text-[11px] font-medium rounded-full bg-blue-100 text-blue-800">
-                                  Saving…
-                                </span>
-                              ) : row.status === 'error' ? (
-                                <span
-                                  className="px-2 py-0.5 text-[11px] font-medium rounded-full bg-red-100 text-red-800"
-                                  title={row.error}
-                                >
-                                  Error
-                                </span>
-                              ) : null
-                            const isLocked = row.status === 'saved' || row.status === 'saving'
-                            return (
-                              <div
-                                key={row.local_id}
-                                className={`border rounded-md p-3 space-y-3 ${
-                                  row.status === 'saved'
-                                    ? 'border-emerald-200 bg-emerald-50/40'
-                                    : row.status === 'error'
-                                      ? 'border-red-200 bg-red-50/40'
-                                      : 'border-gray-200 bg-gray-50'
-                                }`}
-                              >
-                                <div className="grid grid-cols-1 md:grid-cols-[1fr_140px_auto_auto] gap-2 items-start">
-                                  <input
-                                    type="text"
-                                    value={row.name}
-                                    disabled={isLocked}
-                                    onChange={(e) =>
-                                      updateBulkDraft(row.local_id, { name: e.target.value })
-                                    }
-                                    placeholder="Metric name"
-                                    className="px-2 py-1.5 text-sm font-medium border border-gray-300 rounded focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
-                                  />
-                                  <select
-                                    value={row.metric_type}
-                                    disabled={isLocked}
-                                    onChange={(e) => {
-                                      const next = e.target.value as
-                                        | 'boolean' | 'rating' | 'number' | 'text'
-                                      updateBulkDraft(row.local_id, {
-                                        metric_type: next,
-                                        custom_data_type:
-                                          next === 'boolean'
-                                            ? 'boolean'
-                                            : next === 'number'
-                                              ? 'number_range'
-                                              : 'enum',
-                                      })
-                                    }}
-                                    className="px-2 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
-                                  >
-                                    <option value="boolean">Boolean</option>
-                                    <option value="rating">Rating (enum)</option>
-                                    <option value="number">Number (range)</option>
-                                    <option value="text">Text (LLM summary)</option>
-                                  </select>
-                                  <label
-                                    className="inline-flex items-center gap-1.5 text-xs text-gray-700 px-2 py-1.5 border border-gray-300 rounded bg-white"
-                                    title="Ask the LLM to also return a 1-2 sentence reason"
-                                  >
-                                    <input
-                                      type="checkbox"
-                                      checked={row.capture_rationale}
-                                      disabled={isLocked || row.metric_type === 'text'}
-                                      onChange={(e) =>
-                                        updateBulkDraft(row.local_id, {
-                                          capture_rationale: e.target.checked,
-                                        })
-                                      }
-                                      className="h-3.5 w-3.5 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
-                                    />
-                                    Rationale
-                                  </label>
-                                  <div className="flex items-center gap-2">
-                                    {statusBadge}
-                                    <button
-                                      type="button"
-                                      onClick={() => handleRemoveBulkRow(row.local_id)}
-                                      disabled={row.status === 'saving'}
-                                      className="text-xs text-red-600 hover:text-red-800 disabled:text-gray-400"
-                                      title="Remove this draft"
-                                    >
-                                      Remove
-                                    </button>
-                                  </div>
-                                </div>
-
-                                {row.metric_type !== 'text' && row.custom_data_type === 'enum' && (
-                                  <input
-                                    type="text"
-                                    value={row.enum_options_csv}
-                                    disabled={isLocked}
-                                    onChange={(e) =>
-                                      updateBulkDraft(row.local_id, {
-                                        enum_options_csv: e.target.value,
-                                      })
-                                    }
-                                    placeholder="Enum options, comma separated (e.g. Excellent, Good, Poor)"
-                                    className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
-                                  />
-                                )}
-
-                                {row.metric_type !== 'text' && row.custom_data_type === 'number_range' && (
-                                  <div className="grid grid-cols-3 gap-2">
-                                    <input
-                                      type="number"
-                                      value={row.number_min}
-                                      disabled={isLocked}
-                                      onChange={(e) =>
-                                        updateBulkDraft(row.local_id, {
-                                          number_min: Number(e.target.value),
-                                        })
-                                      }
-                                      placeholder="Min"
-                                      className="px-2 py-1.5 text-xs border border-gray-300 rounded focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
-                                    />
-                                    <input
-                                      type="number"
-                                      value={row.number_max}
-                                      disabled={isLocked}
-                                      onChange={(e) =>
-                                        updateBulkDraft(row.local_id, {
-                                          number_max: Number(e.target.value),
-                                        })
-                                      }
-                                      placeholder="Max"
-                                      className="px-2 py-1.5 text-xs border border-gray-300 rounded focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
-                                    />
-                                    <input
-                                      type="number"
-                                      value={row.number_step}
-                                      disabled={isLocked}
-                                      onChange={(e) =>
-                                        updateBulkDraft(row.local_id, {
-                                          number_step: Number(e.target.value),
-                                        })
-                                      }
-                                      placeholder="Step"
-                                      className="px-2 py-1.5 text-xs border border-gray-300 rounded focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
-                                    />
-                                  </div>
-                                )}
-
-                                <div>
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      updateBulkDraft(row.local_id, { expanded: !row.expanded })
-                                    }
-                                    className="text-[11px] font-medium text-gray-600 hover:text-gray-800"
-                                  >
-                                    {row.expanded ? '▾ Hide rubric' : '▸ Edit rubric / description'}
-                                  </button>
-                                  {row.expanded && (
-                                    <textarea
-                                      value={row.description}
-                                      disabled={isLocked}
-                                      onChange={(e) =>
-                                        updateBulkDraft(row.local_id, {
-                                          description: e.target.value,
-                                        })
-                                      }
-                                      rows={5}
-                                      placeholder="Judging rubric the LLM-judge will see"
-                                      className="mt-1 w-full px-2 py-1.5 text-xs border border-gray-300 rounded focus:outline-none focus:ring-primary-500 focus:border-primary-500 disabled:bg-gray-100"
-                                    />
-                                  )}
-                                </div>
-
-                                {row.error && (
-                                  <p className="text-xs text-red-700">{row.error}</p>
-                                )}
-                              </div>
-                            )
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-between pt-5">
-                    <p className="text-xs text-gray-500">
-                      {bulkDrafts.filter((d) => d.status === 'saved').length} saved · {bulkDrafts.filter((d) => d.status !== 'saved').length} pending
-                    </p>
-                    <div className="flex space-x-3">
-                      <Button variant="ghost" onClick={closeModal}>
-                        Close
-                      </Button>
-                      <Button
-                        variant="primary"
-                        onClick={handleSaveAllBulk}
-                        isLoading={createAllBulkMetricsMutation.isPending}
-                        disabled={
-                          bulkDrafts.length === 0 ||
-                          bulkDrafts.every((d) => d.status === 'saved')
-                        }
-                      >
-                        Save all ({bulkDrafts.filter((d) => d.status !== 'saved').length})
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              )}
-
               {!editingMetric && createMode === 'category' && (
-                <div className="space-y-4">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="space-y-5">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-5">
                     <div>
-                      <label className="block text-xs font-medium text-gray-700 mb-1">
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
                         Category name *
                       </label>
                       <input
@@ -2370,11 +2624,11 @@ export default function MetricsManagement() {
                           setCategoryForm((s) => ({ ...s, name: e.target.value }))
                         }
                         placeholder="e.g. Call Outcome"
-                        className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
+                        className={MODERN_INPUT_CLASS}
                       />
                     </div>
                     <div>
-                      <label className="block text-xs font-medium text-gray-700 mb-1">
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
                         Selection mode *
                       </label>
                       <select
@@ -2386,67 +2640,63 @@ export default function MetricsManagement() {
                           setCategoryForm((s) => ({
                             ...s,
                             selection_mode: next,
-                            // allow_discovery is only valid on multi_label
-                            // parents — flipping to single_choice should
-                            // immediately disable it so the submit invariant
-                            // stays satisfied.
-                            allow_discovery:
-                              next === 'multi_label' ? s.allow_discovery : false,
                           }))
                         }}
-                        className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
+                        className={MODERN_INPUT_CLASS}
                       >
                         <option value="single_choice">Single choice (exactly one true)</option>
                         <option value="multi_label">Multi-label (each child independent)</option>
                       </select>
                     </div>
-                  </div>
 
-                  {categoryForm.selection_mode === 'multi_label' && (
-                    <label className="flex items-start gap-2 text-xs text-gray-700">
-                      <input
-                        type="checkbox"
-                        checked={categoryForm.allow_discovery}
-                        onChange={(e) =>
-                          setCategoryForm((s) => ({
-                            ...s,
-                            allow_discovery: e.target.checked,
-                          }))
-                        }
-                        className="mt-0.5"
-                      />
-                      <span>
-                        <span className="font-medium">Allow LLM-discovered labels</span>
-                        <span className="block text-gray-500 mt-0.5">
-                          Lets the LLM emit candidate sub-labels beyond the
-                          ones below during call-import evaluation. You can
-                          promote useful candidates into real sub-labels
-                          afterwards. Only available for multi-label
-                          categories.
+                    <div className="md:col-span-2 rounded-xl border border-amber-200 bg-amber-50/40 p-3.5">
+                      <label className="flex items-start gap-2.5 text-sm text-gray-800">
+                        <input
+                          type="checkbox"
+                          checked={categoryForm.allow_discovery}
+                          onChange={(e) =>
+                            setCategoryForm((s) => ({
+                              ...s,
+                              allow_discovery: e.target.checked,
+                            }))
+                          }
+                          className="mt-0.5 h-4 w-4 text-amber-600 focus:ring-amber-500 border-gray-300 rounded"
+                        />
+                        <span>
+                          <span className="font-medium">Allow LLM-discovered labels</span>
+                          <span className="block text-xs text-gray-600 mt-0.5">
+                            Lets the LLM emit candidate sub-labels beyond
+                            the ones below during call-import evaluation.
+                            You can promote useful candidates into real
+                            sub-labels afterwards.
+                            {categoryForm.selection_mode === 'single_choice'
+                              ? ' For single-choice categories the discovered labels are supplemental — the existing children still control the picked outcome.'
+                              : ''}
+                          </span>
                         </span>
-                      </span>
-                    </label>
-                  )}
+                      </label>
+                    </div>
 
-                  <div>
-                    <label className="block text-xs font-medium text-gray-700 mb-1">
-                      Description / context for the LLM
-                    </label>
-                    <textarea
-                      value={categoryForm.description}
-                      onChange={(e) =>
-                        setCategoryForm((s) => ({ ...s, description: e.target.value }))
-                      }
-                      rows={2}
-                      placeholder="e.g. Outcomes for an outbound survey call. The LLM uses this as context when scoring sub-labels below."
-                      className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
-                    />
+                    <div className="md:col-span-2">
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Description / context for the LLM
+                      </label>
+                      <textarea
+                        value={categoryForm.description}
+                        onChange={(e) =>
+                          setCategoryForm((s) => ({ ...s, description: e.target.value }))
+                        }
+                        rows={3}
+                        placeholder="e.g. Outcomes for an outbound survey call. The LLM uses this as context when scoring sub-labels below."
+                        className={MODERN_INPUT_CLASS}
+                      />
+                    </div>
                   </div>
 
                   <div>
                     <div className="flex items-center justify-between mb-2">
-                      <label className="block text-xs font-medium text-gray-700">
-                        Children ({categoryForm.children.length})
+                      <label className="block text-sm font-medium text-gray-700">
+                        Sub-labels ({categoryForm.children.length})
                       </label>
                       <Button
                         variant="ghost"
@@ -2467,14 +2717,14 @@ export default function MetricsManagement() {
                         }
                         leftIcon={<Plus className="w-3 h-3" />}
                       >
-                        Add child
+                        Add sub-label
                       </Button>
                     </div>
-                    <div className="space-y-2">
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
                       {categoryForm.children.map((child, idx) => (
                         <div
                           key={child.local_id}
-                          className="border border-gray-200 rounded p-3 space-y-2 bg-gray-50"
+                          className="border border-gray-200 rounded-xl p-3 space-y-2 bg-gray-50/60"
                         >
                           <div className="flex items-start gap-2">
                             <div className="flex-1">
@@ -2489,11 +2739,11 @@ export default function MetricsManagement() {
                                     ),
                                   }))
                                 }
-                                placeholder="child name (e.g. happy_completion)"
-                                className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm"
+                                placeholder="sub-label name (e.g. happy_completion)"
+                                className={MODERN_INPUT_SM_CLASS}
                               />
                             </div>
-                            <label className="inline-flex items-center gap-1.5 text-xs text-gray-700 px-2 py-1.5 border border-gray-300 rounded bg-white">
+                            <label className="inline-flex items-center gap-1.5 text-xs text-gray-700 px-2.5 py-2 rounded-lg border border-gray-200 bg-white whitespace-nowrap">
                               <input
                                 type="checkbox"
                                 checked={child.capture_rationale}
@@ -2519,8 +2769,8 @@ export default function MetricsManagement() {
                                     children: s.children.filter((_, i) => i !== idx),
                                   }))
                                 }
-                                className="text-gray-400 hover:text-red-600 px-2 py-1.5"
-                                title="Remove child"
+                                className="text-gray-400 hover:text-red-600 px-2 py-1.5 rounded-lg hover:bg-red-50 transition-colors"
+                                title="Remove sub-label"
                               >
                                 <Trash2 className="w-4 h-4" />
                               </button>
@@ -2538,16 +2788,16 @@ export default function MetricsManagement() {
                                 ),
                               }))
                             }
-                            rows={2}
+                            rows={3}
                             placeholder="Rubric: when should the LLM mark this child true?"
-                            className="w-full px-2 py-1.5 border border-gray-300 rounded text-xs"
+                            className={MODERN_INPUT_SM_CLASS}
                           />
                         </div>
                       ))}
                     </div>
                   </div>
 
-                  <div className="flex items-center justify-end gap-3 pt-2 border-t">
+                  <div className="flex items-center justify-end gap-3 pt-2 border-t border-gray-100">
                     <Button variant="ghost" onClick={closeModal}>
                       Cancel
                     </Button>
@@ -2572,10 +2822,7 @@ export default function MetricsManagement() {
                           description:
                             categoryForm.description.trim() || null,
                           selection_mode: categoryForm.selection_mode,
-                          allow_discovery:
-                            categoryForm.selection_mode === 'multi_label'
-                              ? categoryForm.allow_discovery
-                              : false,
+                          allow_discovery: categoryForm.allow_discovery,
                           supported_surfaces: categoryForm.surfaces,
                           enabled_surfaces: categoryForm.surfaces,
                           children: cleanedChildren,
@@ -2606,10 +2853,10 @@ export default function MetricsManagement() {
                       save handler can issue the DELETE.
               ------------------------------------------------------------------ */}
               {editingMetric && isEditingCategory && (
-                <div className="space-y-4">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="space-y-5">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-5">
                     <div>
-                      <label className="block text-xs font-medium text-gray-700 mb-1">
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
                         Category name *
                       </label>
                       <input
@@ -2621,14 +2868,14 @@ export default function MetricsManagement() {
                             name: e.target.value,
                           }))
                         }
-                        className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
+                        className={MODERN_INPUT_CLASS}
                       />
                     </div>
                     <div>
-                      <label className="block text-xs font-medium text-gray-700 mb-1">
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
                         Selection mode
                       </label>
-                      <div className="inline-flex items-center gap-2 px-3 py-2 border border-gray-200 bg-gray-50 rounded text-sm text-gray-700">
+                      <div className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-lg border border-gray-200 bg-gray-50 text-sm text-gray-700 shadow-sm">
                         <Layers className="w-4 h-4 text-purple-600" />
                         <span className="font-medium">
                           {editCategoryForm.selection_mode === 'single_choice'
@@ -2643,56 +2890,59 @@ export default function MetricsManagement() {
                         </span>
                       </div>
                     </div>
-                  </div>
 
-                  {editCategoryForm.selection_mode === 'multi_label' && (
-                    <label className="flex items-start gap-2 text-xs text-gray-700">
-                      <input
-                        type="checkbox"
-                        checked={editCategoryForm.allow_discovery}
+                    <div className="md:col-span-2 rounded-xl border border-amber-200 bg-amber-50/40 p-3.5">
+                      <label className="flex items-start gap-2.5 text-sm text-gray-800">
+                        <input
+                          type="checkbox"
+                          checked={editCategoryForm.allow_discovery}
+                          onChange={(e) =>
+                            setEditCategoryForm((s) => ({
+                              ...s,
+                              allow_discovery: e.target.checked,
+                            }))
+                          }
+                          className="mt-0.5 h-4 w-4 text-amber-600 focus:ring-amber-500 border-gray-300 rounded"
+                        />
+                        <span>
+                          <span className="font-medium">
+                            Allow LLM-discovered labels
+                          </span>
+                          <span className="block text-xs text-gray-600 mt-0.5">
+                            Lets the LLM emit candidate sub-labels beyond
+                            the ones below during call-import evaluation.
+                            You can promote useful candidates into real
+                            sub-labels afterwards.
+                            {editCategoryForm.selection_mode === 'single_choice'
+                              ? ' For single-choice categories the discovered labels are supplemental — the existing children still control the picked outcome.'
+                              : ''}
+                          </span>
+                        </span>
+                      </label>
+                    </div>
+
+                    <div className="md:col-span-2">
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Description / context for the LLM
+                      </label>
+                      <textarea
+                        value={editCategoryForm.description}
                         onChange={(e) =>
                           setEditCategoryForm((s) => ({
                             ...s,
-                            allow_discovery: e.target.checked,
+                            description: e.target.value,
                           }))
                         }
-                        className="mt-0.5"
+                        rows={3}
+                        placeholder="The LLM uses this as context when scoring sub-labels below."
+                        className={MODERN_INPUT_CLASS}
                       />
-                      <span>
-                        <span className="font-medium">
-                          Allow LLM-discovered labels
-                        </span>
-                        <span className="block text-gray-500 mt-0.5">
-                          Lets the LLM emit candidate sub-labels beyond
-                          the ones below during call-import evaluation.
-                          You can promote useful candidates into real
-                          sub-labels afterwards.
-                        </span>
-                      </span>
-                    </label>
-                  )}
-
-                  <div>
-                    <label className="block text-xs font-medium text-gray-700 mb-1">
-                      Description / context for the LLM
-                    </label>
-                    <textarea
-                      value={editCategoryForm.description}
-                      onChange={(e) =>
-                        setEditCategoryForm((s) => ({
-                          ...s,
-                          description: e.target.value,
-                        }))
-                      }
-                      rows={2}
-                      placeholder="The LLM uses this as context when scoring sub-labels below."
-                      className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
-                    />
+                    </div>
                   </div>
 
                   <div>
                     <div className="flex items-center justify-between mb-2">
-                      <label className="block text-xs font-medium text-gray-700">
+                      <label className="block text-sm font-medium text-gray-700">
                         Sub-labels ({editCategoryForm.children.length})
                       </label>
                       <Button
@@ -2719,18 +2969,18 @@ export default function MetricsManagement() {
                         Add sub-label
                       </Button>
                     </div>
-                    <div className="space-y-2">
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
                       {editCategoryForm.children.map((child, idx) => (
                         <div
                           key={child.local_id}
-                          className={`border rounded p-3 space-y-2 ${
+                          className={`rounded-xl border p-3 space-y-2 ${
                             child.server_id
-                              ? 'border-gray-200 bg-gray-50'
+                              ? 'border-gray-200 bg-gray-50/60'
                               : 'border-emerald-200 bg-emerald-50/30'
                           }`}
                         >
-                          <div className="flex items-start gap-2">
-                            <div className="flex-1">
+                          <div className="flex items-start gap-2 flex-wrap">
+                            <div className="flex-1 min-w-[12rem]">
                               <input
                                 type="text"
                                 value={child.name}
@@ -2745,10 +2995,10 @@ export default function MetricsManagement() {
                                   }))
                                 }
                                 placeholder="Sub-label name (e.g. happy_completion)"
-                                className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm"
+                                className={MODERN_INPUT_SM_CLASS}
                               />
                             </div>
-                            <label className="inline-flex items-center gap-1.5 text-xs text-gray-700 px-2 py-1.5 border border-gray-300 rounded bg-white">
+                            <label className="inline-flex items-center gap-1.5 text-xs text-gray-700 px-2.5 py-2 rounded-lg border border-gray-200 bg-white whitespace-nowrap">
                               <input
                                 type="checkbox"
                                 checked={child.capture_rationale}
@@ -2770,7 +3020,7 @@ export default function MetricsManagement() {
                               />
                               Rationale
                             </label>
-                            <label className="inline-flex items-center gap-1.5 text-xs text-gray-700 px-2 py-1.5 border border-gray-300 rounded bg-white">
+                            <label className="inline-flex items-center gap-1.5 text-xs text-gray-700 px-2.5 py-2 rounded-lg border border-gray-200 bg-white whitespace-nowrap">
                               <input
                                 type="checkbox"
                                 checked={child.enabled}
@@ -2822,7 +3072,7 @@ export default function MetricsManagement() {
                                   }
                                 })
                               }
-                              className="text-gray-400 hover:text-red-600 px-2 py-1.5"
+                              className="text-gray-400 hover:text-red-600 px-2 py-1.5 rounded-lg hover:bg-red-50 transition-colors"
                               title="Remove this sub-label"
                             >
                               <Trash2 className="w-4 h-4" />
@@ -2840,9 +3090,9 @@ export default function MetricsManagement() {
                                 ),
                               }))
                             }
-                            rows={2}
+                            rows={3}
                             placeholder="Rubric: when should the LLM mark this sub-label true?"
-                            className="w-full px-2 py-1.5 border border-gray-300 rounded text-xs"
+                            className={MODERN_INPUT_SM_CLASS}
                           />
                         </div>
                       ))}
@@ -2860,7 +3110,7 @@ export default function MetricsManagement() {
                     )}
                   </div>
 
-                  <div className="flex items-center justify-end gap-3 pt-2 border-t">
+                  <div className="flex items-center justify-end gap-3 pt-2 border-t border-gray-100">
                     <Button variant="ghost" onClick={closeModal}>
                       Cancel
                     </Button>
@@ -2959,13 +3209,11 @@ export default function MetricsManagement() {
                         Default
                       </span>
                     )}
-                    {isParent &&
-                      m.selection_mode === 'multi_label' &&
-                      m.allow_discovery && (
-                        <span className="px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-amber-50 text-amber-700 border border-amber-200 rounded">
-                          Auto-discover
-                        </span>
-                      )}
+                    {isParent && m.allow_discovery && (
+                      <span className="px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-amber-50 text-amber-700 border border-amber-200 rounded">
+                        Auto-discover
+                      </span>
+                    )}
                   </div>
                   {m.description && (
                     <p className="text-sm text-gray-600 line-clamp-3">

@@ -1,12 +1,13 @@
-"""Celery task: transcribe one CallImport row's audio recording.
+"""Celery task: diarise one CallImport row's audio recording.
 
 The call-import pipeline historically relied on the uploader to provide
 transcripts via a CSV column. This task lets users fill that gap (or
-overwrite a noisy CSV transcript) by running the existing
-:class:`TranscriptionService` over the row's S3 recording and storing
-the resulting plain-text transcript back on ``CallImportRow.transcript``
-so every downstream piece (LLM-based metrics, exports, the UI's
-``TranscriptView``) just keeps working without any code changes.
+add a second transcript next to one already supplied by the CSV) by
+running the existing :class:`TranscriptionService` over the row's S3
+recording and storing the resulting plain-text transcript on
+``CallImportRow.diarised_transcript`` — a *separate* column from the
+CSV-supplied production transcript so the two values coexist and can
+be evaluated/exported side by side.
 
 Speaker diarization (pyannote) is intentionally **disabled** here —
 users only need a single transcript per row, not speaker turns. This
@@ -91,12 +92,14 @@ def transcribe_call_import_row_task(
     overwrite_existing: bool = False,
     run_eval_row_id: Optional[str] = None,
 ):
-    """Transcribe a single row's recording (plain text, no diarization).
+    """Diarise a single row's recording (plain text, no speaker turns).
 
-    Skips rows with no S3 recording, or with an existing transcript when
-    ``overwrite_existing`` is False. Errors are recorded on the row
-    (``transcript_status='failed'`` + ``transcript_error``) so the UI can
-    surface a per-row diagnostic without polling Celery directly.
+    Skips rows with no S3 recording, or with an existing diarised
+    transcript when ``overwrite_existing`` is False. Errors are recorded
+    on the row (``diarised_transcript_status='failed'`` +
+    ``diarised_transcript_error``) so the UI can surface a per-row
+    diagnostic without polling Celery directly. The CSV-supplied
+    production ``transcript`` is never touched by this task.
     """
 
     from app.models.database import CallImportRow
@@ -113,9 +116,9 @@ def transcribe_call_import_row_task(
             )
             return {"status": "skipped", "reason": "row_not_found"}
 
-        existing_transcript = (row.transcript or "").strip()
-        if existing_transcript and not overwrite_existing:
-            row.transcript_status = "completed"
+        existing_diarised = (row.diarised_transcript or "").strip()
+        if existing_diarised and not overwrite_existing:
+            row.diarised_transcript_status = "completed"
             db.commit()
             return {
                 "status": "skipped",
@@ -125,9 +128,9 @@ def transcribe_call_import_row_task(
 
         recording_key = (row.recording_s3_key or "").strip()
         if not recording_key:
-            row.transcript_status = "failed"
-            row.transcript_error = (
-                "No recording available for this row; cannot diarize."
+            row.diarised_transcript_status = "failed"
+            row.diarised_transcript_error = (
+                "No recording available for this row; cannot diarise."
             )
             db.commit()
             return {"status": "skipped", "reason": "no_recording"}
@@ -135,19 +138,21 @@ def transcribe_call_import_row_task(
         try:
             provider_enum = ModelProvider(stt_provider.lower())
         except ValueError:
-            row.transcript_status = "failed"
-            row.transcript_error = f"Unknown STT provider '{stt_provider}'."
+            row.diarised_transcript_status = "failed"
+            row.diarised_transcript_error = (
+                f"Unknown STT provider '{stt_provider}'."
+            )
             db.commit()
             return {"status": "failed", "reason": "unknown_provider"}
 
-        row.transcript_status = "running"
-        row.transcript_error = None
+        row.diarised_transcript_status = "running"
+        row.diarised_transcript_error = None
         # Record which provider/model the user asked for *now* (rather
         # than only on success) so the per-row error banner can show
         # "Failed on deepgram/deepgram-nova-3" without the user having
         # to remember what they picked in the modal.
-        row.transcript_provider = provider_enum.value
-        row.transcript_model = stt_model
+        row.diarised_transcript_provider = provider_enum.value
+        row.diarised_transcript_model = stt_model
         row.celery_task_id = self.request.id
         db.commit()
 
@@ -180,27 +185,30 @@ def transcribe_call_import_row_task(
             logger.exception(
                 "transcribe_call_import_row failed for row {}", row_id
             )
-            row.transcript_status = "failed"
-            row.transcript_error = _summarize_exc(exc)
+            row.diarised_transcript_status = "failed"
+            row.diarised_transcript_error = _summarize_exc(exc)
             db.commit()
             return {"status": "failed", "reason": "transcription_error"}
 
         plain_text = (result.get("transcript") or "").strip() or None
         if not plain_text:
-            row.transcript_status = "failed"
-            row.transcript_error = (
+            row.diarised_transcript_status = "failed"
+            row.diarised_transcript_error = (
                 "Transcription returned an empty result."
             )
             db.commit()
             return {"status": "failed", "reason": "empty_transcript"}
 
-        row.transcript = plain_text
-        row.transcript_source = "transcribed"
-        row.transcript_provider = provider_enum.value
-        row.transcript_model = stt_model
-        row.transcript_status = "completed"
-        row.transcript_error = None
-        row.transcribed_at = _now()
+        # Write into ``diarised_transcript`` so the CSV-supplied
+        # production ``transcript`` is preserved as-is. The UI shows
+        # both columns side-by-side and evaluations can be configured
+        # to score against either source.
+        row.diarised_transcript = plain_text
+        row.diarised_transcript_provider = provider_enum.value
+        row.diarised_transcript_model = stt_model
+        row.diarised_transcript_status = "completed"
+        row.diarised_transcript_error = None
+        row.diarised_at = _now()
         db.commit()
 
         # If this transcribe run was kicked off by the auto-transcribe

@@ -18,6 +18,7 @@ import {
   MessageSquare,
   Pause,
   Play,
+  Plus,
   RefreshCw,
   Search,
   Trash2,
@@ -139,6 +140,11 @@ export default function CallImportDetail() {
   // to run two flows back-to-back when the CSV is missing transcripts.
   const [autoTranscribe, setAutoTranscribe] = useState(false)
   const [transcribeOverwrite, setTranscribeOverwrite] = useState(false)
+  // Which transcript(s) to score against. Ticking both creates two
+  // evaluation runs (one per source) so the user can compare scores
+  // side-by-side. At least one must stay checked.
+  const [evalUseProduction, setEvalUseProduction] = useState(true)
+  const [evalUseDiarised, setEvalUseDiarised] = useState(false)
   const [evalSTT, setEvalSTT] = useState<ProviderModelValue>({
     provider: null,
     model: null,
@@ -285,9 +291,14 @@ export default function CallImportDetail() {
       if (status === 'pending' || status === 'processing') return 5000
       const rows = query.state.data?.rows ?? []
       const hasActiveTranscript = rows.some(
-        (r: { transcript_status?: string | null }) =>
+        (r: {
+          transcript_status?: string | null
+          diarised_transcript_status?: string | null
+        }) =>
           r.transcript_status === 'pending' ||
-          r.transcript_status === 'running',
+          r.transcript_status === 'running' ||
+          r.diarised_transcript_status === 'pending' ||
+          r.diarised_transcript_status === 'running',
       )
       return hasActiveTranscript ? 4000 : false
     },
@@ -343,9 +354,20 @@ export default function CallImportDetail() {
       setShowAdvancedLLM(false)
       setAutoTranscribe(false)
       setTranscribeOverwrite(false)
+      setEvalUseProduction(true)
+      setEvalUseDiarised(false)
       setEvalSTT({ provider: null, model: null, credential_id: null })
       setEvalSTTLanguage('')
       setActiveTab('evaluations')
+      // When the user picked both Production and Diarised the backend
+      // creates two runs and returns the primary one; the second eval
+      // id is in ``sibling_evaluation_ids``. Drop the user on the
+      // evaluations tab so both runs are visible side-by-side instead
+      // of deep-linking into just one.
+      const siblings = created.sibling_evaluation_ids ?? []
+      if (siblings.length > 0) {
+        return
+      }
       // Land directly on the dedicated detail page for the new run.
       navigate(`/call-imports/${id}/evaluations/${created.id}`)
     },
@@ -626,8 +648,8 @@ export default function CallImportDetail() {
   const transcribeReadySelection = selectedOnPage.filter(
     (r) =>
       !!r.recording_s3_key &&
-      r.transcript_status !== 'pending' &&
-      r.transcript_status !== 'running',
+      r.diarised_transcript_status !== 'pending' &&
+      r.diarised_transcript_status !== 'running',
   )
 
   return (
@@ -1193,19 +1215,19 @@ export default function CallImportDetail() {
                             type="button"
                             onClick={() => openTranscribeModal([row])}
                             disabled={
-                              row.transcript_status === 'pending' ||
-                              row.transcript_status === 'running'
+                              row.diarised_transcript_status === 'pending' ||
+                              row.diarised_transcript_status === 'running'
                             }
                             title={
-                              row.transcript_status === 'pending' ||
-                              row.transcript_status === 'running'
-                                ? 'Transcription in progress'
-                                : 'Transcribe this row'
+                              row.diarised_transcript_status === 'pending' ||
+                              row.diarised_transcript_status === 'running'
+                                ? 'Diarisation in progress'
+                                : 'Diarise this row'
                             }
                             className="p-1.5 rounded text-gray-500 hover:text-purple-600 hover:bg-purple-50 transition-colors disabled:opacity-40"
                           >
-                            {row.transcript_status === 'pending' ||
-                            row.transcript_status === 'running' ? (
+                            {row.diarised_transcript_status === 'pending' ||
+                            row.diarised_transcript_status === 'running' ? (
                               <RefreshCw className="h-4 w-4 animate-spin" />
                             ) : (
                               <Mic className="h-4 w-4" />
@@ -1253,86 +1275,139 @@ export default function CallImportDetail() {
                   {isExpanded && (
                     <div className="border-t border-gray-200 px-4 py-4 bg-gray-100 space-y-3">
                       <div className="grid grid-cols-1 lg:grid-cols-5 gap-3">
-                        <section className="lg:col-span-3 min-w-0 bg-white border border-gray-200 rounded-lg shadow-sm">
-                          <header className="px-3 py-2 border-b border-gray-100 flex items-center justify-between gap-2">
-                            <div className="flex items-center gap-1.5 min-w-0">
-                              <MessageSquare className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />
-                              <h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wider">
-                                Conversation
-                              </h4>
-                              {row.transcript_source === 'transcribed' && (
-                                <span className="ml-1 inline-flex items-center gap-1 rounded-full bg-purple-50 text-purple-700 px-2 py-0.5 text-[10px] font-medium">
-                                  <AudioLines className="h-3 w-3" />
-                                  Transcribed
-                                  {row.transcript_provider && (
-                                    <span className="font-mono">
-                                      · {row.transcript_provider}
-                                      {row.transcript_model
-                                        ? `/${row.transcript_model}`
-                                        : ''}
-                                    </span>
-                                  )}
-                                </span>
-                              )}
-                              {row.transcript_source === 'csv' && (
-                                <span className="ml-1 inline-flex items-center rounded-full bg-gray-100 text-gray-700 px-2 py-0.5 text-[10px] font-medium">
-                                  From CSV
-                                </span>
-                              )}
-                              {(row.transcript_status === 'pending' ||
-                                row.transcript_status === 'running') && (
-                                <span className="ml-1 inline-flex items-center gap-1 rounded-full bg-blue-50 text-blue-700 px-2 py-0.5 text-[10px] font-medium">
-                                  <RefreshCw className="h-3 w-3 animate-spin" />
-                                  Transcribing…
-                                </span>
-                              )}
-                              {row.transcript_status === 'failed' && (
-                                <span
-                                  className="ml-1 inline-flex items-center gap-1 rounded-full bg-red-50 text-red-700 px-2 py-0.5 text-[10px] font-medium"
-                                  title={row.transcript_error || ''}
-                                >
-                                  <AlertCircle className="h-3 w-3" />
-                                  Transcribe failed
-                                </span>
+                        <section className="lg:col-span-3 min-w-0 space-y-3">
+                          {/* Production transcript (from CSV upload). */}
+                          <div className="bg-white border border-gray-200 rounded-lg shadow-sm">
+                            <header className="px-3 py-2 border-b border-gray-100 flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <MessageSquare className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />
+                                <h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                                  Production Transcript
+                                </h4>
+                                {row.transcript ? (
+                                  <span className="ml-1 inline-flex items-center rounded-full bg-gray-100 text-gray-700 px-2 py-0.5 text-[10px] font-medium">
+                                    From CSV
+                                  </span>
+                                ) : (
+                                  <span className="ml-1 inline-flex items-center rounded-full bg-gray-50 text-gray-500 px-2 py-0.5 text-[10px] font-medium">
+                                    Not provided
+                                  </span>
+                                )}
+                              </div>
+                            </header>
+                            <div className="p-3">
+                              {row.transcript ? (
+                                <TranscriptView
+                                  transcript={row.transcript}
+                                  compact
+                                />
+                              ) : (
+                                <p className="text-xs text-gray-500 italic">
+                                  No production transcript was uploaded for
+                                  this row. Map a CSV column to "Transcript"
+                                  next time, or run diarisation below.
+                                </p>
                               )}
                             </div>
-                            {hasRecording && (
-                              <button
-                                type="button"
-                                onClick={() => openTranscribeModal([row])}
-                                disabled={
-                                  row.transcript_status === 'pending' ||
-                                  row.transcript_status === 'running'
-                                }
-                                className="text-[11px] font-medium text-purple-700 hover:text-purple-900 disabled:opacity-50"
-                              >
-                                {row.transcript ? 'Re-transcribe' : 'Transcribe'}
-                              </button>
-                            )}
-                          </header>
-                          {row.transcript_status === 'failed' &&
-                            row.transcript_error && (
-                              <div className="border-b border-red-100 bg-red-50 px-3 py-2 text-xs text-red-800 flex items-start gap-2">
-                                <AlertCircle className="h-3.5 w-3.5 text-red-600 flex-shrink-0 mt-0.5" />
-                                <div className="min-w-0 flex-1 break-words">
-                                  <span className="font-medium">
-                                    Transcription failed:
-                                  </span>{' '}
-                                  {row.transcript_error}
-                                  {row.transcript_provider && (
-                                    <span className="ml-1 text-[10px] text-red-700/80 font-mono">
-                                      ({row.transcript_provider}
-                                      {row.transcript_model
-                                        ? `/${row.transcript_model}`
-                                        : ''}
-                                      )
-                                    </span>
-                                  )}
-                                </div>
+                          </div>
+
+                          {/* Diarised transcript (from the diarisation worker). */}
+                          <div className="bg-white border border-gray-200 rounded-lg shadow-sm">
+                            <header className="px-3 py-2 border-b border-gray-100 flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <AudioLines className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />
+                                <h4 className="text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                                  Diarised Transcript
+                                </h4>
+                                {row.diarised_transcript && (
+                                  <span className="ml-1 inline-flex items-center gap-1 rounded-full bg-purple-50 text-purple-700 px-2 py-0.5 text-[10px] font-medium">
+                                    <AudioLines className="h-3 w-3" />
+                                    Diarised
+                                    {row.diarised_transcript_provider && (
+                                      <span className="font-mono">
+                                        · {row.diarised_transcript_provider}
+                                        {row.diarised_transcript_model
+                                          ? `/${row.diarised_transcript_model}`
+                                          : ''}
+                                      </span>
+                                    )}
+                                  </span>
+                                )}
+                                {(row.diarised_transcript_status ===
+                                  'pending' ||
+                                  row.diarised_transcript_status ===
+                                    'running') && (
+                                  <span className="ml-1 inline-flex items-center gap-1 rounded-full bg-blue-50 text-blue-700 px-2 py-0.5 text-[10px] font-medium">
+                                    <RefreshCw className="h-3 w-3 animate-spin" />
+                                    Diarising…
+                                  </span>
+                                )}
+                                {row.diarised_transcript_status ===
+                                  'failed' && (
+                                  <span
+                                    className="ml-1 inline-flex items-center gap-1 rounded-full bg-red-50 text-red-700 px-2 py-0.5 text-[10px] font-medium"
+                                    title={
+                                      row.diarised_transcript_error || ''
+                                    }
+                                  >
+                                    <AlertCircle className="h-3 w-3" />
+                                    Diarisation failed
+                                  </span>
+                                )}
                               </div>
-                            )}
-                          <div className="p-3">
-                            <TranscriptView transcript={row.transcript} compact />
+                              {hasRecording && (
+                                <button
+                                  type="button"
+                                  onClick={() => openTranscribeModal([row])}
+                                  disabled={
+                                    row.diarised_transcript_status ===
+                                      'pending' ||
+                                    row.diarised_transcript_status ===
+                                      'running'
+                                  }
+                                  className="text-[11px] font-medium text-purple-700 hover:text-purple-900 disabled:opacity-50"
+                                >
+                                  {row.diarised_transcript
+                                    ? 'Re-diarise'
+                                    : 'Diarise'}
+                                </button>
+                              )}
+                            </header>
+                            {row.diarised_transcript_status === 'failed' &&
+                              row.diarised_transcript_error && (
+                                <div className="border-b border-red-100 bg-red-50 px-3 py-2 text-xs text-red-800 flex items-start gap-2">
+                                  <AlertCircle className="h-3.5 w-3.5 text-red-600 flex-shrink-0 mt-0.5" />
+                                  <div className="min-w-0 flex-1 break-words">
+                                    <span className="font-medium">
+                                      Diarisation failed:
+                                    </span>{' '}
+                                    {row.diarised_transcript_error}
+                                    {row.diarised_transcript_provider && (
+                                      <span className="ml-1 text-[10px] text-red-700/80 font-mono">
+                                        ({row.diarised_transcript_provider}
+                                        {row.diarised_transcript_model
+                                          ? `/${row.diarised_transcript_model}`
+                                          : ''}
+                                        )
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+                            <div className="p-3">
+                              {row.diarised_transcript ? (
+                                <TranscriptView
+                                  transcript={row.diarised_transcript}
+                                  compact
+                                />
+                              ) : (
+                                <p className="text-xs text-gray-500 italic">
+                                  {hasRecording
+                                    ? 'No diarised transcript yet. Click Diarise to run STT on this recording.'
+                                    : 'No recording available for this row, so diarisation cannot run.'}
+                                </p>
+                              )}
+                            </div>
                           </div>
                         </section>
 
@@ -1417,6 +1492,27 @@ export default function CallImportDetail() {
                             <span className="ml-1 inline-flex items-center justify-center rounded-full bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-600">
                               {rawColumnEntries.length}
                             </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                // Hand the column header names to the
+                                // metric editor through router state.
+                                // The user can prune unwanted ones in
+                                // the resulting modal before saving.
+                                navigate('/metrics-management', {
+                                  state: {
+                                    prefillInputColumns: rawColumnEntries.map(
+                                      ([key]) => key,
+                                    ),
+                                  },
+                                })
+                              }}
+                              className="ml-auto inline-flex items-center gap-1 text-[11px] font-medium text-primary-700 hover:text-primary-900"
+                              title="Open the metric editor with these column headers pre-filled. The next evaluation run will judge those columns and add a new column to the results."
+                            >
+                              <Plus className="h-3 w-3" />
+                              Create metric from columns
+                            </button>
                           </header>
                           <dl className="p-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 text-xs">
                             {rawColumnEntries.map(([key, value]) => (
@@ -1912,7 +2008,7 @@ export default function CallImportDetail() {
               : null
             return (
               <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]">
-                <div className="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4">
+                <div className="bg-white rounded-lg shadow-xl max-w-5xl w-full mx-4">
                   <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
                     <h3 className="text-lg font-semibold">Run Evaluation</h3>
                     <button
@@ -1925,13 +2021,13 @@ export default function CallImportDetail() {
                       <X className="h-5 w-5" />
                     </button>
                   </div>
-                  <div className="p-6 space-y-3 max-h-[70vh] overflow-y-auto">
+                  <div className="p-6 space-y-4 max-h-[80vh] overflow-y-auto">
                     <div className="flex items-start justify-between gap-3">
                       <p className="text-sm text-gray-600">
                         Pick the metrics to run against every completed row in this batch.
                       </p>
                       <Link
-                        to="/metrics"
+                        to="/metrics-management"
                         className="text-xs font-medium text-primary-700 hover:text-primary-900 whitespace-nowrap"
                       >
                         Manage metrics →
@@ -1983,7 +2079,7 @@ export default function CallImportDetail() {
                           <p>You don't have any metrics yet — create one in Metrics first.</p>
                         )}
                         <Link
-                          to="/metrics"
+                          to="/metrics-management"
                           className="inline-block font-medium text-amber-900 underline hover:text-amber-700"
                         >
                           Open Metrics →
@@ -1991,6 +2087,8 @@ export default function CallImportDetail() {
                       </div>
                     ) : (
                       <>
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+                        <div className="space-y-3">
                         <div className="space-y-2">
                           <p className="text-xs uppercase tracking-wide font-semibold text-gray-500">
                             Enabled metrics ({enabledMetrics.length})
@@ -2114,14 +2212,16 @@ export default function CallImportDetail() {
                               ))}
                             </ul>
                             <Link
-                              to="/metrics"
+                              to="/metrics-management"
                               className="mt-2 inline-block text-xs font-medium text-primary-700 hover:text-primary-900"
                             >
                               Enable them in Metrics →
                             </Link>
                           </details>
                         )}
+                        </div>
 
+                        <div className="space-y-3">
                         {/* Run-level LLM config */}
                         <div className="rounded-md border border-gray-200 bg-gray-50 p-3 space-y-2">
                           <p className="text-xs uppercase tracking-wide font-semibold text-gray-500">
@@ -2205,6 +2305,61 @@ export default function CallImportDetail() {
                           )}
                         </div>
 
+                        {/* Transcript source selector — ticking both
+                            creates two evaluation runs (one per source). */}
+                        <div className="rounded-md border border-gray-200 bg-gray-50 p-3 space-y-2">
+                          <p className="text-sm font-medium text-gray-900">
+                            Run evaluation on
+                          </p>
+                          <p className="text-[11px] text-gray-500 -mt-1">
+                            Tick both to run the evaluation twice — once
+                            per transcript — so the two scorings can be
+                            compared side-by-side. At least one is required.
+                          </p>
+                          <label className="flex items-start gap-2 text-sm cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={evalUseProduction}
+                              onChange={(e) =>
+                                setEvalUseProduction(e.target.checked)
+                              }
+                              className="mt-0.5"
+                            />
+                            <span>
+                              <span className="font-medium text-gray-900">
+                                Production transcript
+                              </span>
+                              <span className="block text-[11px] text-gray-500">
+                                The transcript supplied via the CSV upload.
+                              </span>
+                            </span>
+                          </label>
+                          <label className="flex items-start gap-2 text-sm cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={evalUseDiarised}
+                              onChange={(e) =>
+                                setEvalUseDiarised(e.target.checked)
+                              }
+                              className="mt-0.5"
+                            />
+                            <span>
+                              <span className="font-medium text-gray-900">
+                                Diarised transcript
+                              </span>
+                              <span className="block text-[11px] text-gray-500">
+                                The transcript produced by running
+                                diarisation on the recording.
+                              </span>
+                            </span>
+                          </label>
+                          {!evalUseProduction && !evalUseDiarised && (
+                            <p className="text-[11px] text-red-600">
+                              Select at least one transcript to evaluate.
+                            </p>
+                          )}
+                        </div>
+
                         {/* Auto-transcribe hook */}
                         <div className="rounded-md border border-gray-200 bg-gray-50 p-3 space-y-2">
                           <label className="flex items-start gap-2 text-sm cursor-pointer">
@@ -2218,12 +2373,14 @@ export default function CallImportDetail() {
                             />
                             <span>
                               <span className="font-medium text-gray-900">
-                                Auto-transcribe rows missing transcripts
+                                Auto-diarise rows missing a diarised transcript
                               </span>
                               <span className="block text-[11px] text-gray-500">
-                                Runs the STT provider first, then evaluates.
-                                Rows that already have a transcript are reused
-                                unless overwrite is enabled.
+                                Runs the STT/diarisation worker first, then
+                                evaluates. Only applies to the Diarised
+                                transcript source — rows that already have a
+                                diarised transcript are reused unless overwrite
+                                is enabled.
                               </span>
                             </span>
                           </label>
@@ -2259,6 +2416,8 @@ export default function CallImportDetail() {
                             </div>
                           )}
                         </div>
+                        </div>
+                        </div>
                       </>
                     )}
 
@@ -2267,7 +2426,7 @@ export default function CallImportDetail() {
                         <p>{runError}</p>
                         {/metric/i.test(runError) ? (
                           <Link
-                            to="/metrics"
+                            to="/metrics-management"
                             className="font-medium text-red-700 underline hover:text-red-900"
                           >
                             Check your metrics setup →
@@ -2295,7 +2454,8 @@ export default function CallImportDetail() {
                           (autoTranscribe &&
                             (!evalSTT.provider || !evalSTT.model)) ||
                           (Boolean(runLLM.provider) !==
-                            Boolean(runLLM.model))
+                            Boolean(runLLM.model)) ||
+                          (!evalUseProduction && !evalUseDiarised)
                         }
                         onClick={() => {
                           // Build a clean overrides payload — drop any
@@ -2317,9 +2477,17 @@ export default function CallImportDetail() {
                               }
                             }
                           }
+                          const transcriptSources: Array<
+                            'production' | 'diarised'
+                          > = []
+                          if (evalUseProduction)
+                            transcriptSources.push('production')
+                          if (evalUseDiarised)
+                            transcriptSources.push('diarised')
                           runEvaluationMutation.mutate({
                             metric_ids: selectedMetricIds,
                             name: runDraftName.trim() || null,
+                            transcript_sources: transcriptSources,
                             llm_provider: runLLM.provider || null,
                             llm_model: runLLM.model || null,
                             llm_credential_id: runLLM.credential_id || null,

@@ -412,8 +412,13 @@ function SidebarContent({
       </div>
       {/* Workspace switcher - sits above the Dashboard nav so the
           active workspace context is always visible in the sidebar
-          (and not buried in the top header). */}
+          (and not buried in the top header). The small label above
+          the switcher makes it explicit that the dropdown scopes
+          the whole left-nav to a workspace, not just an org. */}
       <div className="flex-shrink-0 px-3 py-3 border-b border-gray-200">
+        <div className="px-1 mb-1.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">
+          Workspace
+        </div>
         <WorkspaceSwitcher />
       </div>
       <div className="flex-1 flex flex-col min-h-0 overflow-y-auto">

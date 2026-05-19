@@ -16,6 +16,7 @@ from fastapi import HTTPException
 from app.api.v1.routes.call_imports import (
     _delete_s3_objects,
     _parse_csv,
+    _parse_xlsx,
     _revoke_pending_tasks,
 )
 from app.models.schemas import CallImportColumnMapping
@@ -574,6 +575,13 @@ def test_upload_persists_raw_columns_and_mapping(
         "Transcript": "hello a",
         "Recording URL": "https://x/a.mp3",
     }
+    # Production transcripts supplied via CSV must be stamped with
+    # ``transcript_source='csv'`` on upload so the UI badge ("From CSV")
+    # renders without waiting for any worker to run.
+    assert rows[0].transcript == "hello a"
+    assert rows[0].transcript_source == "csv"
+    # The diarised transcript column starts empty for every fresh upload.
+    assert rows[0].diarised_transcript is None
 
 
 def test_upload_preserves_extra_columns_in_raw_snapshot(
@@ -609,3 +617,402 @@ def test_upload_preserves_extra_columns_in_raw_snapshot(
         "Recording URL": "https://x/a.mp3",
         "AgentName": "alice",
     }
+
+
+# ---------------------------------------------------------------------------
+# Excel (.xlsx) parser unit tests
+# ---------------------------------------------------------------------------
+
+
+def _xlsx_bytes(sheets: dict[str, list[list]]) -> bytes:
+    """Build an in-memory .xlsx workbook from ``{sheet_name: rows}``.
+
+    The first inner list is treated as the header row; subsequent lists
+    are data rows. No disk I/O — uses ``BytesIO`` so each test is hermetic
+    and fast. Cells preserve their native Python type (str / int / float /
+    datetime / None) so we can also exercise the cell coercion path.
+
+    Skips the calling test when openpyxl isn't installed so the bulk of
+    this module's CSV-only tests still run on a minimal install.
+    """
+    openpyxl = pytest.importorskip(
+        "openpyxl", reason="openpyxl required for Excel-flavored tests"
+    )
+    workbook = openpyxl.Workbook()
+    # ``Workbook()`` ships with a default sheet named "Sheet"; rename or
+    # remove it so the test specifies all sheets explicitly.
+    default = workbook.active
+    workbook.remove(default)
+    for sheet_name, rows in sheets.items():
+        ws = workbook.create_sheet(title=sheet_name)
+        for row in rows:
+            ws.append(row)
+    buf = io.BytesIO()
+    workbook.save(buf)
+    return buf.getvalue()
+
+
+def test_parse_xlsx_accepts_canonical_headers():
+    blob = _xlsx_bytes(
+        {
+            "Calls": [
+                ["CallID", "Recording URL", "Transcript"],
+                ["abc-1", "https://x/recording.mp3", "Hello world"],
+                ["abc-2", "https://x/2.mp3", "Another call"],
+            ]
+        }
+    )
+    rows = _parse_xlsx(blob, "Calls", _mapping(), [])
+    assert len(rows) == 2
+    assert rows[0]["external_call_id"] == "abc-1"
+    assert rows[0]["recording_url"].endswith("recording.mp3")
+    assert rows[0]["transcript"] == "Hello world"
+
+
+def test_parse_xlsx_coerces_numeric_call_ids_without_decimal_suffix():
+    # openpyxl returns int values for whole-number cells; the parser must
+    # not stringify them as "123.0" or downstream lookups break.
+    blob = _xlsx_bytes(
+        {
+            "Calls": [
+                ["CallID", "Recording URL", "Transcript"],
+                [12345, "https://x/r.mp3", "hi"],
+            ]
+        }
+    )
+    rows = _parse_xlsx(blob, "Calls", _mapping(), [])
+    assert rows[0]["external_call_id"] == "12345"
+
+
+def test_parse_xlsx_skips_fully_blank_rows():
+    blob = _xlsx_bytes(
+        {
+            "Calls": [
+                ["CallID", "Recording URL", "Transcript"],
+                ["abc-1", "https://x/r.mp3", "hi"],
+                [None, None, None],
+                ["abc-2", "https://x/r2.mp3", "hi 2"],
+            ]
+        }
+    )
+    rows = _parse_xlsx(blob, "Calls", _mapping(), [])
+    assert [r["external_call_id"] for r in rows] == ["abc-1", "abc-2"]
+
+
+def test_parse_xlsx_rejects_unknown_sheet():
+    blob = _xlsx_bytes({"Calls": [["CallID"], ["abc-1"]]})
+    with pytest.raises(HTTPException) as exc:
+        _parse_xlsx(blob, "Nope", _mapping(external_call_id="CallID", transcript=None, recording_url=None), [])
+    assert exc.value.status_code == 400
+    assert "not found" in exc.value.detail.lower()
+
+
+def test_parse_xlsx_requires_sheet_name():
+    blob = _xlsx_bytes({"Calls": [["CallID"], ["abc-1"]]})
+    with pytest.raises(HTTPException) as exc:
+        _parse_xlsx(blob, None, _mapping(transcript=None, recording_url=None), [])
+    assert exc.value.status_code == 400
+    assert "sheet_name" in exc.value.detail.lower()
+
+
+def test_parse_xlsx_rejects_missing_mapped_column():
+    blob = _xlsx_bytes(
+        {
+            "Calls": [
+                ["ConversationID", "Transcript"],
+                ["conv-1", "hi"],
+            ]
+        }
+    )
+    with pytest.raises(HTTPException) as exc:
+        _parse_xlsx(
+            blob,
+            "Calls",
+            _mapping(
+                external_call_id="ConversationID",
+                transcript="Transcript",
+                recording_url="Bajaj_url",
+            ),
+            [],
+        )
+    assert exc.value.status_code == 400
+    assert "bajaj_url" in exc.value.detail.lower()
+
+
+def test_parse_xlsx_supports_custom_mapping_and_raw_columns_snapshot():
+    blob = _xlsx_bytes(
+        {
+            "Calls": [
+                ["ConversationID", "Bajaj_url", "CallTranscipt", "AgentName"],
+                ["conv-1", "https://x/r1.mp3", "hello there", "alice"],
+            ]
+        }
+    )
+    rows = _parse_xlsx(
+        blob,
+        "Calls",
+        _mapping(
+            external_call_id="ConversationID",
+            transcript="CallTranscipt",
+            recording_url="Bajaj_url",
+        ),
+        ["AgentName"],
+    )
+    assert len(rows) == 1
+    assert rows[0]["raw_columns"] == {
+        "ConversationID": "conv-1",
+        "CallTranscipt": "hello there",
+        "Bajaj_url": "https://x/r1.mp3",
+        "AgentName": "alice",
+    }
+
+
+def test_parse_xlsx_rejects_empty_workbook():
+    with pytest.raises(HTTPException) as exc:
+        _parse_xlsx(b"", "Calls", _mapping(), [])
+    assert exc.value.status_code == 400
+    assert "empty" in exc.value.detail.lower()
+
+
+def test_parse_xlsx_matches_sheet_name_case_insensitively():
+    blob = _xlsx_bytes(
+        {
+            "Calls": [
+                ["CallID", "Recording URL", "Transcript"],
+                ["abc-1", "https://x/r.mp3", "hi"],
+            ]
+        }
+    )
+    rows = _parse_xlsx(blob, "calls", _mapping(), [])
+    assert len(rows) == 1
+
+
+# ---------------------------------------------------------------------------
+# /preview endpoint
+# ---------------------------------------------------------------------------
+
+
+def test_preview_returns_single_synthetic_sheet_for_csv(
+    authenticated_client, db_session, org_id, seed_org
+):
+    csv_bytes = (
+        b"CallID,Recording URL,Transcript\n"
+        b"abc-1,https://x/r.mp3,hi\n"
+        b"abc-2,https://x/r2.mp3,hi 2\n"
+    )
+    response = authenticated_client.post(
+        "/api/v1/call-imports/preview",
+        files={"file": ("rows.csv", csv_bytes, "text/csv")},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["format"] == "csv"
+    assert len(body["sheets"]) == 1
+    sheet = body["sheets"][0]
+    assert sheet["name"] == "rows.csv"
+    assert sheet["headers"] == ["CallID", "Recording URL", "Transcript"]
+    assert sheet["row_count"] == 2
+
+
+def test_preview_returns_all_worksheets_for_xlsx(
+    authenticated_client, db_session, org_id, seed_org
+):
+    blob = _xlsx_bytes(
+        {
+            "Sheet1": [
+                ["CallID", "Recording URL", "Transcript"],
+                ["abc-1", "https://x/r.mp3", "hi"],
+            ],
+            "Sheet2": [
+                ["ConversationID", "AudioLink"],
+                ["conv-1", "https://x/r2.mp3"],
+                ["conv-2", "https://x/r3.mp3"],
+            ],
+        }
+    )
+    response = authenticated_client.post(
+        "/api/v1/call-imports/preview",
+        files={"file": ("data.xlsx", blob, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["format"] == "xlsx"
+    sheet_names = [s["name"] for s in body["sheets"]]
+    assert sheet_names == ["Sheet1", "Sheet2"]
+    sheets_by_name = {s["name"]: s for s in body["sheets"]}
+    assert sheets_by_name["Sheet1"]["headers"] == [
+        "CallID",
+        "Recording URL",
+        "Transcript",
+    ]
+    assert sheets_by_name["Sheet1"]["row_count"] == 1
+    assert sheets_by_name["Sheet2"]["headers"] == ["ConversationID", "AudioLink"]
+    assert sheets_by_name["Sheet2"]["row_count"] == 2
+
+
+def test_preview_rejects_unsupported_extension(
+    authenticated_client, db_session, org_id, seed_org
+):
+    response = authenticated_client.post(
+        "/api/v1/call-imports/preview",
+        files={"file": ("data.txt", b"hello", "text/plain")},
+    )
+    assert response.status_code == 400
+    assert "unsupported" in response.json()["detail"].lower()
+
+
+# ---------------------------------------------------------------------------
+# /upload route — Excel variants
+# ---------------------------------------------------------------------------
+
+
+def test_upload_xlsx_with_sheet_name_persists_rows(
+    authenticated_client, db_session, org_id, seed_org
+):
+    integration = _seed_integration(db_session, org_id)
+    blob = _xlsx_bytes(
+        {
+            "Sheet1": [["CallID"], ["wrong"]],
+            "Calls": [
+                ["CallID", "Recording URL", "Transcript"],
+                ["xls-1", "https://x/a.mp3", "from xlsx"],
+                ["xls-2", "https://x/b.mp3", "second xlsx row"],
+            ],
+        }
+    )
+    payload = _upload_payload(integration)
+    payload["sheet_name"] = "Calls"
+
+    response = authenticated_client.post(
+        "/api/v1/call-imports/upload",
+        files={
+            "file": (
+                "data.xlsx",
+                blob,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data=payload,
+    )
+    assert response.status_code == 202, response.text
+    call_import_id = UUID(response.json()["id"])
+    call_import = (
+        db_session.query(CallImport).filter(CallImport.id == call_import_id).one()
+    )
+    assert call_import.sheet_name == "Calls"
+    assert call_import.original_filename == "data.xlsx"
+    rows = (
+        db_session.query(CallImportRow)
+        .filter(CallImportRow.call_import_id == call_import_id)
+        .order_by(CallImportRow.row_index)
+        .all()
+    )
+    assert [r.external_call_id for r in rows] == ["xls-1", "xls-2"]
+    assert rows[0].transcript == "from xlsx"
+    assert rows[0].transcript_source == "csv"
+
+
+def test_upload_xlsx_rejects_when_sheet_name_missing(
+    authenticated_client, db_session, org_id, seed_org
+):
+    integration = _seed_integration(db_session, org_id)
+    blob = _xlsx_bytes(
+        {
+            "Calls": [
+                ["CallID", "Recording URL", "Transcript"],
+                ["xls-1", "https://x/a.mp3", "hi"],
+            ]
+        }
+    )
+    response = authenticated_client.post(
+        "/api/v1/call-imports/upload",
+        files={
+            "file": (
+                "data.xlsx",
+                blob,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data=_upload_payload(integration),
+    )
+    assert response.status_code == 400
+    assert "sheet_name" in response.json()["detail"].lower()
+
+
+def test_upload_xlsx_rejects_unknown_sheet_name(
+    authenticated_client, db_session, org_id, seed_org
+):
+    integration = _seed_integration(db_session, org_id)
+    blob = _xlsx_bytes(
+        {
+            "Calls": [
+                ["CallID", "Recording URL", "Transcript"],
+                ["xls-1", "https://x/a.mp3", "hi"],
+            ]
+        }
+    )
+    payload = _upload_payload(integration)
+    payload["sheet_name"] = "DoesNotExist"
+
+    response = authenticated_client.post(
+        "/api/v1/call-imports/upload",
+        files={
+            "file": (
+                "data.xlsx",
+                blob,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data=payload,
+    )
+    assert response.status_code == 400
+    assert "doesnotexist" in response.json()["detail"].lower()
+
+
+def test_upload_csv_rejects_sheet_name_form_field(
+    authenticated_client, db_session, org_id, seed_org
+):
+    integration = _seed_integration(db_session, org_id)
+    payload = _upload_payload(integration)
+    # CSVs have no sheet concept; a non-empty value is a typo / wrong file.
+    payload["sheet_name"] = "Sheet1"
+
+    response = authenticated_client.post(
+        "/api/v1/call-imports/upload",
+        files={"file": _csv()},
+        data=payload,
+    )
+    assert response.status_code == 400
+    assert "sheet_name" in response.json()["detail"].lower()
+
+
+def test_upload_rejects_xls_legacy_format(
+    authenticated_client, db_session, org_id, seed_org
+):
+    integration = _seed_integration(db_session, org_id)
+    response = authenticated_client.post(
+        "/api/v1/call-imports/upload",
+        files={"file": ("legacy.xls", b"\xd0\xcf\x11\xe0fake", "application/vnd.ms-excel")},
+        data=_upload_payload(integration),
+    )
+    assert response.status_code == 400
+    assert "unsupported" in response.json()["detail"].lower()
+
+
+def test_upload_csv_still_persists_with_null_sheet_name(
+    authenticated_client, db_session, org_id, seed_org
+):
+    """Backwards-compat: existing CSV upload flow must continue to work
+    end-to-end and leave ``sheet_name`` NULL on the resulting batch."""
+    integration = _seed_integration(db_session, org_id)
+    response = authenticated_client.post(
+        "/api/v1/call-imports/upload",
+        files={"file": _csv()},
+        data=_upload_payload(integration),
+    )
+    assert response.status_code == 202, response.text
+    call_import_id = UUID(response.json()["id"])
+    call_import = (
+        db_session.query(CallImport).filter(CallImport.id == call_import_id).one()
+    )
+    assert call_import.sheet_name is None

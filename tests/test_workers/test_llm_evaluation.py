@@ -516,3 +516,148 @@ def test_handle_llm_evaluation_error_includes_null_rationale_when_flag_on():
     plain_entry = scores[str(plain.id)]
     assert plain_entry["value"] is None
     assert "rationale" not in plain_entry
+
+
+# ---------------------------------------------------------------------------
+# extra_context — column-input judge support
+# ---------------------------------------------------------------------------
+
+
+def test_build_evaluation_prompt_injects_extra_context_in_default_branch():
+    metric = _make_metric(name="Column Judge", metric_type="rating")
+    context = "- customer_intent: refund\n- agent_response: granted"
+    prompt = llm_evaluation.build_evaluation_prompt(
+        transcription="conversation goes here",
+        llm_metrics=[metric],
+        agent=SimpleNamespace(name="Agent", description=None, call_type=None),
+        scenario=SimpleNamespace(name="Sc", description=None, required_info=None),
+        persona=None,
+        extra_context=context,
+    )
+    # Header is present and the named cells are surfaced verbatim.
+    assert "## Context Inputs" in prompt
+    assert "customer_intent: refund" in prompt
+    assert "agent_response: granted" in prompt
+    # The Context Inputs block must precede the transcript so the LLM
+    # reads inputs first and isn't biased by the dialog text.
+    assert prompt.index("## Context Inputs") < prompt.index(
+        "## Conversation Transcript"
+    )
+
+
+def test_build_evaluation_prompt_injects_extra_context_in_custom_evaluator_branch():
+    metric = _make_metric(name="Column Judge", metric_type="rating")
+    prompt = llm_evaluation.build_evaluation_prompt(
+        transcription="...",
+        llm_metrics=[metric],
+        evaluator=SimpleNamespace(custom_prompt="judge it"),
+        extra_context="- col_a: value_a",
+    )
+    assert "## Context Inputs" in prompt
+    assert "col_a: value_a" in prompt
+
+
+def test_build_evaluation_prompt_omits_context_section_when_extra_context_blank():
+    metric = _make_metric(name="Plain Judge", metric_type="rating")
+    prompt = llm_evaluation.build_evaluation_prompt(
+        transcription="conversation",
+        llm_metrics=[metric],
+        agent=SimpleNamespace(name="Agent", description=None, call_type=None),
+        scenario=SimpleNamespace(name="Sc", description=None, required_info=None),
+        persona=None,
+        extra_context=None,
+    )
+    assert "## Context Inputs" not in prompt
+    # And whitespace-only context behaves the same way.
+    prompt_blank = llm_evaluation.build_evaluation_prompt(
+        transcription="conversation",
+        llm_metrics=[metric],
+        agent=SimpleNamespace(name="Agent", description=None, call_type=None),
+        scenario=SimpleNamespace(name="Sc", description=None, required_info=None),
+        persona=None,
+        extra_context="   \n  ",
+    )
+    assert "## Context Inputs" not in prompt_blank
+
+
+# ---------------------------------------------------------------------------
+# build_evaluation_prompt: comparison_pair (transcript-compare judge)
+# ---------------------------------------------------------------------------
+
+
+def test_build_evaluation_prompt_renders_dual_transcript_header_when_comparison_pair_set():
+    """A transcript-compare judge metric replaces the single
+    ``## Conversation Transcript`` block with a labeled pair so the
+    LLM is unambiguous about which text is which."""
+    metric = _make_metric(name="Transcript Fidelity", metric_type="rating")
+    prompt = llm_evaluation.build_evaluation_prompt(
+        transcription="this should NOT appear",
+        llm_metrics=[metric],
+        evaluator=SimpleNamespace(custom_prompt="judge it"),
+        comparison_pair=(
+            "Agent: How can I help?\nCustomer: Need a refund.",
+            "[00:01] Agent: How can I help?\n[00:04] Customer: Need a refund.",
+        ),
+    )
+    # Single-transcript header is suppressed.
+    assert "## Conversation Transcript" not in prompt
+    # Pair header + subsections are rendered.
+    assert "## Transcripts to Compare" in prompt
+    assert "### Production Transcript" in prompt
+    assert "### Diarised Transcript" in prompt
+    # Both texts are present verbatim.
+    assert "Agent: How can I help?" in prompt
+    assert "[00:01] Agent: How can I help?" in prompt
+    # The literal value passed via ``transcription`` is ignored.
+    assert "this should NOT appear" not in prompt
+
+
+def test_build_evaluation_prompt_renders_dual_transcript_in_default_branch():
+    """The dual-transcript section must also render in the default
+    (non-custom-evaluator) branch — it's used when the call-import
+    worker calls evaluate_with_llm without an evaluator object."""
+    metric = _make_metric(name="Transcript Fidelity", metric_type="rating")
+    prompt = llm_evaluation.build_evaluation_prompt(
+        transcription="ignored",
+        llm_metrics=[metric],
+        agent=SimpleNamespace(name="Agent", description=None, call_type=None),
+        scenario=SimpleNamespace(name="Sc", description=None, required_info=None),
+        persona=None,
+        comparison_pair=("PROD text", "DIARISED text"),
+    )
+    assert "## Conversation Transcript" not in prompt
+    assert "## Transcripts to Compare" in prompt
+    assert "### Production Transcript\nPROD text" in prompt
+    assert "### Diarised Transcript\nDIARISED text" in prompt
+
+
+def test_build_evaluation_prompt_dual_transcript_substitutes_placeholder_for_empty_side():
+    """If one transcript is an empty string the prompt still renders a
+    placeholder for that subsection so the LLM sees both labels and
+    can produce a defensible 'missing' score instead of hallucinating."""
+    metric = _make_metric(name="Comparison", metric_type="boolean")
+    prompt = llm_evaluation.build_evaluation_prompt(
+        transcription="ignored",
+        llm_metrics=[metric],
+        evaluator=SimpleNamespace(custom_prompt="judge it"),
+        comparison_pair=("only production", ""),
+    )
+    assert "### Production Transcript\nonly production" in prompt
+    # The empty diarised side is replaced by an explicit placeholder so
+    # the LLM doesn't read the next "##" header as the transcript text.
+    assert "### Diarised Transcript\n(empty)" in prompt
+
+
+def test_build_evaluation_prompt_without_comparison_pair_keeps_single_transcript_block():
+    """Backwards compatibility: when ``comparison_pair`` is omitted the
+    builder keeps emitting the historical single-transcript block."""
+    metric = _make_metric(name="Plain Judge", metric_type="rating")
+    prompt = llm_evaluation.build_evaluation_prompt(
+        transcription="hello there",
+        llm_metrics=[metric],
+        evaluator=SimpleNamespace(custom_prompt="judge it"),
+    )
+    assert "## Conversation Transcript" in prompt
+    assert "hello there" in prompt
+    assert "## Transcripts to Compare" not in prompt
+    assert "### Production Transcript" not in prompt

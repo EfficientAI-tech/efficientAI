@@ -203,9 +203,24 @@ def test_export_emits_rationale_column_for_capture_rationale_metric(
     # the user's downloaded CSV mirrors the on-screen table.
     assert headers.index("Pitch Type - LLM Rationale") == headers.index("Pitch Type") + 1
 
+    # Three new fixed columns surface both transcripts and the run's
+    # transcript_source side-by-side. They sit before the metric columns
+    # so the export reads like "context → metrics".
+    assert "Production Transcript" in headers
+    assert "Diarised Transcript" in headers
+    assert "Evaluated Transcript Source" in headers
+    assert headers.index("Production Transcript") < headers.index("Pitch Type")
+    assert headers.index("Diarised Transcript") < headers.index("Pitch Type")
+    assert headers.index("Evaluated Transcript Source") < headers.index("Pitch Type")
+
     assert len(rows) == 1
     assert rows[0]["Pitch Type"] == "WITH data"
     assert rows[0]["Pitch Type - LLM Rationale"].startswith("Agent referenced")
+    assert rows[0]["Production Transcript"] == "hello world"
+    # No diarisation has run on this fixture row.
+    assert rows[0]["Diarised Transcript"] == ""
+    # Default ``transcript_source = 'production'`` -> exported label.
+    assert rows[0]["Evaluated Transcript Source"] == "Production"
 
 
 def test_export_omits_rationale_column_when_capture_rationale_false(
@@ -355,3 +370,52 @@ def test_export_pairs_each_metrics_value_and_rationale_in_order(
     assert rows[0]["Pitch Type"] == "A"
     assert rows[0]["Pitch Type - LLM Rationale"] == "Reason A"
     assert rows[0]["Connect Plus"] == "True"
+
+
+def test_export_surfaces_both_transcripts_and_diarised_source(
+    authenticated_client, db_session, org_id, seed_org
+):
+    """When the evaluation ran against the diarised transcript, the export
+    must reflect that in the new ``Evaluated Transcript Source`` column and
+    the live ``Diarised Transcript`` column must carry the worker output —
+    independent of the frozen ``raw_columns`` snapshot."""
+    call_import = _make_call_import(db_session, org_id)
+    source_row = _make_call_import_row(db_session, call_import)
+    # Simulate the diarisation worker having run on this row.
+    source_row.diarised_transcript = "worker output text"
+    db_session.commit()
+
+    metric = _make_metric(
+        db_session, org_id, name="Quality", capture_rationale=False
+    )
+
+    evaluation = _make_evaluation_with_row(
+        db_session,
+        call_import=call_import,
+        source_row=source_row,
+        metrics=[metric],
+        metric_scores={
+            str(metric.id): {
+                "value": 0.9,
+                "type": "rating",
+                "metric_name": "Quality",
+            }
+        },
+    )
+    # Flip this evaluation's transcript_source to 'diarised' to mimic the
+    # user picking the diarised transcript in the Run Evaluation modal.
+    evaluation.transcript_source = "diarised"
+    db_session.commit()
+
+    response = authenticated_client.get(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/export"
+    )
+    assert response.status_code == 200, response.text
+    headers, rows = _parse_csv(response.content)
+
+    assert "Production Transcript" in headers
+    assert "Diarised Transcript" in headers
+    assert "Evaluated Transcript Source" in headers
+    assert rows[0]["Production Transcript"] == "hello world"
+    assert rows[0]["Diarised Transcript"] == "worker output text"
+    assert rows[0]["Evaluated Transcript Source"] == "Diarised"
