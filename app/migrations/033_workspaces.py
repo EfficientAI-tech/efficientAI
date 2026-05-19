@@ -82,35 +82,50 @@ def upgrade(db: Session):
                 """
             )
         )
-        # Partial unique: at most one default workspace per org. Lets the
-        # backfill be idempotent (a second run sees the existing default
-        # and is a no-op) and keeps "current default" lookups O(1).
-        db.execute(
-            text(
-                """
-                CREATE UNIQUE INDEX uq_workspaces_org_default
-                ON workspaces(organization_id)
-                WHERE is_default
-                """
-            )
-        )
-        db.execute(
-            text(
-                "CREATE INDEX ix_workspaces_organization_id "
-                "ON workspaces(organization_id)"
-            )
-        )
         print("Created workspaces table")
     else:
-        print("workspaces table already exists, skipping...")
+        print("workspaces table already exists, skipping CREATE...")
 
-    # 2. Seed one Default workspace per organization (idempotent on the
-    # partial unique index above).
+    # Belt-and-braces: ensure `id` has the DB-side DEFAULT even when the
+    # table was created by `Base.metadata.create_all` (init_db runs
+    # before migrations). create_all does not emit DEFAULT clauses for
+    # Python-side `default=uuid.uuid4`, which leaves the column NOT NULL
+    # but with no default, breaking the raw-SQL seed below.
+    db.execute(
+        text(
+            "ALTER TABLE workspaces ALTER COLUMN id SET DEFAULT gen_random_uuid()"
+        )
+    )
+
+    # Indexes always created with IF NOT EXISTS so they're laid down
+    # regardless of whether this migration or create_all made the table.
+    # The partial unique index encodes "at most one default workspace
+    # per org" - critical for the seed below being idempotent.
     db.execute(
         text(
             """
-            INSERT INTO workspaces (organization_id, name, slug, is_default)
-            SELECT o.id, 'Default', 'default', TRUE
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_workspaces_org_default
+            ON workspaces(organization_id)
+            WHERE is_default
+            """
+        )
+    )
+    db.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_workspaces_organization_id "
+            "ON workspaces(organization_id)"
+        )
+    )
+
+    # 2. Seed one Default workspace per organization (idempotent on the
+    # partial unique index above). `id` is supplied explicitly so this
+    # works even if the column happens to have no DEFAULT yet (e.g. an
+    # earlier deploy that ran the migration before this fix landed).
+    db.execute(
+        text(
+            """
+            INSERT INTO workspaces (id, organization_id, name, slug, is_default)
+            SELECT gen_random_uuid(), o.id, 'Default', 'default', TRUE
             FROM organizations o
             WHERE NOT EXISTS (
                 SELECT 1 FROM workspaces w
