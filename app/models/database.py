@@ -1,6 +1,21 @@
 """SQLAlchemy database models."""
 
-from sqlalchemy import Column, String, Integer, Float, DateTime, ForeignKey, Boolean, JSON, Enum, UniqueConstraint, Text
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    DDL,
+    Enum,
+    event,
+    Float,
+    ForeignKey,
+    Integer,
+    JSON,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -66,7 +81,17 @@ class Workspace(Base):
         UniqueConstraint("organization_id", "slug", name="uq_workspaces_org_slug"),
     )
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # ``server_default`` is required so that raw-SQL INSERTs (e.g. the
+    # per-org Default seed in migration 033) can omit ``id`` and let the
+    # database fill it in. Without it, ``create_all`` produces a column
+    # with NOT NULL but no DEFAULT, and the migration crashes with
+    # ``null value in column "id"``.
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
     organization_id = Column(
         UUID(as_uuid=True),
         ForeignKey("organizations.id", ondelete="CASCADE"),
@@ -75,10 +100,11 @@ class Workspace(Base):
     )
     name = Column(String(255), nullable=False)
     slug = Column(String(255), nullable=False)
-    # At most one default per org (enforced by partial unique index in
-    # the migration). The default workspace can never be deleted; it's
-    # the safety net for newly-created data when the caller didn't pick
-    # a workspace.
+    # At most one default per org. Enforced on Postgres by the partial
+    # unique index attached via the after_create event below; on
+    # SQLite (test runs) we rely on the route-level _check_slug_unique
+    # check + the Default-workspace conftest fixture instead, because
+    # SQLite doesn't support partial indexes the same way.
     is_default = Column(Boolean, nullable=False, default=False, server_default="false")
     created_by_user_id = Column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
@@ -89,6 +115,23 @@ class Workspace(Base):
     )
 
     organization = relationship("Organization", back_populates="workspaces")
+
+
+# Partial unique index: "at most one default workspace per org". This
+# is attached as an after_create event (rather than declared in
+# ``__table_args__``) because SQLAlchemy's ``Index(...,
+# postgresql_where=...)`` silently degrades to a *full* unique index on
+# SQLite - which then forbids any second workspace per org and breaks
+# the test suite. ``execute_if(dialect="postgresql")`` makes this DDL
+# a no-op on SQLite while still emitting it on Postgres (prod, CI).
+event.listen(
+    Workspace.__table__,
+    "after_create",
+    DDL(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_workspaces_org_default "
+        "ON workspaces (organization_id) WHERE is_default"
+    ).execute_if(dialect="postgresql"),
+)
 
 
 class User(Base):
