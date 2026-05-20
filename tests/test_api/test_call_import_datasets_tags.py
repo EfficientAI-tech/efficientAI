@@ -20,10 +20,14 @@ import pytest
 
 from app.models.database import (
     CallImport,
+    CallImportSchema,
+    CallImportSchemaParameter,
     CallImportTag,
     CallImportTagAssignment,
     TelephonyIntegration,
+    Workspace,
 )
+from app.models.enums import CallImportParameterType
 
 
 @pytest.fixture(autouse=True)
@@ -73,6 +77,42 @@ def exotel_integration(db_session, org_id, seed_org):
     return integration
 
 
+@pytest.fixture
+def upload_schema(db_session, org_id, seed_org):
+    """A minimal three-parameter schema in the default workspace."""
+    workspace = (
+        db_session.query(Workspace)
+        .filter(Workspace.organization_id == org_id, Workspace.is_default.is_(True))
+        .first()
+    )
+    schema = CallImportSchema(
+        organization_id=org_id,
+        workspace_id=workspace.id,
+        name="Datasets/Tags Test Schema",
+    )
+    db_session.add(schema)
+    db_session.flush()
+    for idx, (name, ptype) in enumerate(
+        [
+            ("conversation_id", CallImportParameterType.CONVERSATION_ID),
+            ("recording_url", CallImportParameterType.RECORDING_URL),
+            ("transcript", CallImportParameterType.TRANSCRIPT),
+        ]
+    ):
+        db_session.add(
+            CallImportSchemaParameter(
+                schema_id=schema.id,
+                name=name,
+                type=ptype.value,
+                is_required=(name == "conversation_id"),
+                ordering=idx,
+            )
+        )
+    db_session.commit()
+    db_session.refresh(schema)
+    return schema
+
+
 def _csv_bytes(rows=None):
     if rows is None:
         rows = [("call-1", "https://example.com/r.mp3", "hello")]
@@ -83,16 +123,22 @@ def _csv_bytes(rows=None):
     return buf.getvalue().encode("utf-8")
 
 
-def _upload(client, *, dataset=None, tag_ids=None, rows=None):
+def _upload(client, *, schema_id, dataset=None, tag_ids=None, rows=None):
     files = {"file": ("test.csv", _csv_bytes(rows), "text/csv")}
-    # New upload contract requires provider, pinned credential id, and
-    # JSON-encoded column mapping / extras.
     first_cfg = client.get("/api/v1/telephony/configs").json()[0]
+    # New upload contract: schema_id + parameter_mapping (parameter
+    # name -> CSV header). The minimal schema fixture maps the three
+    # classic system fields, which line up with the CSV headers built
+    # by ``_csv_bytes``.
     data = {
         "provider": first_cfg["provider"],
         "telephony_integration_id": first_cfg["id"],
-        "column_mapping": '{"external_call_id":"CallID","transcript":"Transcript","recording_url":"Recording URL"}',
-        "extra_columns": "[]",
+        "schema_id": str(schema_id),
+        "parameter_mapping": (
+            '{"conversation_id":"CallID","transcript":"Transcript",'
+            '"recording_url":"Recording URL"}'
+        ),
+        "skipped_columns": "[]",
     }
     if dataset is not None:
         data["dataset"] = dataset
@@ -111,12 +157,15 @@ def _create_tag(client, name, color=None):
     return response.json()
 
 
-def test_upload_persists_dataset_and_tags(authenticated_client, exotel_integration):
+def test_upload_persists_dataset_and_tags(
+    authenticated_client, exotel_integration, upload_schema
+):
     tag_a = _create_tag(authenticated_client, "high-priority", color="#ff0000")
     tag_b = _create_tag(authenticated_client, "qa")
 
     response = _upload(
         authenticated_client,
+        schema_id=upload_schema.id,
         dataset="march-2026",
         tag_ids=[tag_a["id"], tag_b["id"]],
     )
@@ -127,22 +176,30 @@ def test_upload_persists_dataset_and_tags(authenticated_client, exotel_integrati
     assert returned_tag_ids == {tag_a["id"], tag_b["id"]}
 
 
-def test_upload_blank_dataset_normalised_to_null(authenticated_client, exotel_integration):
-    response = _upload(authenticated_client, dataset="   ")
+def test_upload_blank_dataset_normalised_to_null(
+    authenticated_client, exotel_integration, upload_schema
+):
+    response = _upload(authenticated_client, schema_id=upload_schema.id, dataset="   ")
     assert response.status_code == 202
     assert response.json()["dataset"] is None
 
 
-def test_upload_unknown_tag_id_rejected(authenticated_client, exotel_integration):
-    response = _upload(authenticated_client, tag_ids=[uuid4()])
+def test_upload_unknown_tag_id_rejected(
+    authenticated_client, exotel_integration, upload_schema
+):
+    response = _upload(
+        authenticated_client, schema_id=upload_schema.id, tag_ids=[uuid4()]
+    )
     assert response.status_code == 400
     assert "Unknown call_import_tag id" in response.json()["detail"]
 
 
-def test_list_filters_by_dataset(authenticated_client, exotel_integration):
-    _upload(authenticated_client, dataset="alpha")
-    _upload(authenticated_client, dataset="beta")
-    _upload(authenticated_client)  # no dataset
+def test_list_filters_by_dataset(
+    authenticated_client, exotel_integration, upload_schema
+):
+    _upload(authenticated_client, schema_id=upload_schema.id, dataset="alpha")
+    _upload(authenticated_client, schema_id=upload_schema.id, dataset="beta")
+    _upload(authenticated_client, schema_id=upload_schema.id)  # no dataset
 
     listing = authenticated_client.get(
         "/api/v1/call-imports", params={"dataset": "alpha"}
@@ -152,14 +209,18 @@ def test_list_filters_by_dataset(authenticated_client, exotel_integration):
 
 
 def test_list_filters_by_multiple_tags_and_semantics(
-    authenticated_client, exotel_integration
+    authenticated_client, exotel_integration, upload_schema
 ):
     tag_a = _create_tag(authenticated_client, "alpha")
     tag_b = _create_tag(authenticated_client, "beta")
 
-    _upload(authenticated_client, tag_ids=[tag_a["id"]])
-    _upload(authenticated_client, tag_ids=[tag_b["id"]])
-    both = _upload(authenticated_client, tag_ids=[tag_a["id"], tag_b["id"]])
+    _upload(authenticated_client, schema_id=upload_schema.id, tag_ids=[tag_a["id"]])
+    _upload(authenticated_client, schema_id=upload_schema.id, tag_ids=[tag_b["id"]])
+    both = _upload(
+        authenticated_client,
+        schema_id=upload_schema.id,
+        tag_ids=[tag_a["id"], tag_b["id"]],
+    )
     assert both.status_code == 202
 
     response = authenticated_client.get(
@@ -173,12 +234,12 @@ def test_list_filters_by_multiple_tags_and_semantics(
 
 
 def test_datasets_endpoint_returns_distinct_sorted_labels(
-    authenticated_client, exotel_integration
+    authenticated_client, exotel_integration, upload_schema
 ):
-    _upload(authenticated_client, dataset="z-set")
-    _upload(authenticated_client, dataset="a-set")
-    _upload(authenticated_client, dataset="a-set")  # duplicate -> deduped
-    _upload(authenticated_client)  # NULL -> excluded
+    _upload(authenticated_client, schema_id=upload_schema.id, dataset="z-set")
+    _upload(authenticated_client, schema_id=upload_schema.id, dataset="a-set")
+    _upload(authenticated_client, schema_id=upload_schema.id, dataset="a-set")
+    _upload(authenticated_client, schema_id=upload_schema.id)  # NULL -> excluded
 
     response = authenticated_client.get("/api/v1/call-imports/datasets")
     assert response.status_code == 200
@@ -186,9 +247,11 @@ def test_datasets_endpoint_returns_distinct_sorted_labels(
 
 
 def test_patch_updates_dataset_and_tags(
-    authenticated_client, exotel_integration, db_session
+    authenticated_client, exotel_integration, upload_schema, db_session
 ):
-    initial = _upload(authenticated_client, dataset="old-set").json()
+    initial = _upload(
+        authenticated_client, schema_id=upload_schema.id, dataset="old-set"
+    ).json()
     tag_a = _create_tag(authenticated_client, "new-tag")
 
     response = authenticated_client.patch(

@@ -518,6 +518,7 @@ class TranscriptionService:
             transcribe_openai,
             transcribe_deepgram,
             transcribe_elevenlabs,
+            transcribe_google,
             transcribe_sarvam,
             transcribe_smallest,
         )
@@ -529,6 +530,8 @@ class TranscriptionService:
                 result = transcribe_deepgram(audio_file_path, stt_model, api_key, language)
             elif stt_provider == ModelProvider.ELEVENLABS:
                 result = transcribe_elevenlabs(audio_file_path, stt_model, api_key, language)
+            elif stt_provider == ModelProvider.GOOGLE:
+                result = transcribe_google(audio_file_path, stt_model, api_key, language)
             elif stt_provider == ModelProvider.SARVAM:
                 result = transcribe_sarvam(audio_file_path, stt_model, api_key, language)
             elif stt_provider == ModelProvider.SMALLEST:
@@ -577,6 +580,7 @@ class TranscriptionService:
                 transcribe_openai,
                 transcribe_deepgram,
                 transcribe_elevenlabs,
+                transcribe_google,
                 transcribe_sarvam,
                 transcribe_smallest,
             )
@@ -599,7 +603,12 @@ class TranscriptionService:
             elif stt_provider == ModelProvider.SMALLEST:
                 result = transcribe_smallest(temp_file_path, stt_model, api_key, language)
             elif stt_provider == ModelProvider.GOOGLE:
-                raise NotImplementedError("Google Speech-to-Text not yet implemented")
+                # Gemini STT models (``gemini-2.5-pro-stt``,
+                # ``gemini-2.5-flash-stt``, ``gemini-2.5-flash-lite-stt``)
+                # are routed through LiteLLM as multimodal completions.
+                # Legacy ``google-speech-v2`` would also land here, but
+                # we don't yet have a Cloud Speech client wired up.
+                result = transcribe_google(temp_file_path, stt_model, api_key, language)
             elif stt_provider == ModelProvider.AZURE:
                 raise NotImplementedError("Azure Speech Services not yet implemented")
             elif stt_provider == ModelProvider.AWS:

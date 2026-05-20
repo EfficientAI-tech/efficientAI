@@ -173,6 +173,140 @@ def _slug_label(value) -> str:
     return "_".join(str(value).strip().lower().split())
 
 
+# Reserved JSON key carrying top-level metric discoveries on a single
+# row's LLM response. Uses leading + trailing ``__`` so it can't
+# collide with a real metric name (slugify strips the underscores).
+# Mirrors :func:`_discovered_key` for parent → child label discovery
+# but lives at the response root, not nested under a parent key.
+DISCOVERED_METRICS_KEY = "__discovered_metrics__"
+
+# Allowed values for the LLM-suggested type on a discovered top-level
+# metric. Kept in sync with ``DiscoveredMetricSuggestedType`` in
+# ``app/models/schemas.py``. ``category`` promotes to a ``multi_label``
+# parent with no children (the user adds children later).
+_DISCOVERED_METRIC_TYPES = ("boolean", "rating", "category")
+
+
+def _render_discovered_metrics_block(
+    running_discovered_metrics: list | None,
+) -> str:
+    """Render the top-level metric-discovery instruction block.
+
+    Inserted into the prompt once per row when the user opted into
+    ``discover_new_metrics`` on the evaluation. Asks the LLM to surface
+    an array of brand-new metric candidates it noticed in the
+    transcript that the explicitly-selected metrics do NOT already
+    cover. ``running_discovered_metrics`` lists candidates already
+    discovered in this evaluation so the model reuses keys instead of
+    re-inventing near-duplicates (same pattern as label discovery).
+    """
+
+    block = (
+        f'\n\n## Discover New Metrics (REQUIRED top-level array '
+        f'`{DISCOVERED_METRICS_KEY}`)\n'
+        "DISCOVERY ENABLED for this run. In addition to scoring the "
+        "metrics above, surface brand-new TOP-LEVEL metrics you "
+        "noticed in this transcript that the listed metrics do NOT "
+        "already capture (e.g. customer_satisfaction, agent_followup_promised, "
+        "needs_human_handoff). Aim for 0-5 entries per call; only "
+        "return [] when every interesting behaviour is already covered.\n"
+        f'- "{DISCOVERED_METRICS_KEY}" (array of objects): Each entry MUST be '
+        '{"key": "snake_case_metric", "name": "Human Readable Name", '
+        '"description": "one short sentence describing what it measures", '
+        '"suggested_type": "boolean" | "rating" | "category", '
+        '"rationale": "verbatim transcript line that motivated this metric"}. '
+        "Use ``boolean`` for yes/no behaviours, ``rating`` for 0-1 quality "
+        "judgements, and ``category`` for groupings that will need their "
+        "own set of sub-labels later. Do NOT propose a metric that "
+        "duplicates one of the metrics listed earlier in this prompt.\n"
+    )
+    if running_discovered_metrics:
+        block += (
+            "\nPreviously discovered metrics in this evaluation — "
+            "REUSE the existing key (and exact name) if the metric you'd "
+            "propose is essentially identical. Reuse only applies to "
+            "genuine matches — keep emitting NEW entries for metrics "
+            "not in this list:\n"
+        )
+        for entry in running_discovered_metrics:
+            key = entry.get("key") or ""
+            name = entry.get("name") or key
+            desc = entry.get("description")
+            stype = entry.get("suggested_type") or "boolean"
+            if desc:
+                block += f'- "{key}" ({name}, {stype}) — {desc}\n'
+            else:
+                block += f'- "{key}" ({name}, {stype})\n'
+    return block
+
+
+def _parse_discovered_metrics(
+    evaluation_data: dict, llm_metrics: list
+) -> list[dict[str, Any]]:
+    """Extract + validate the LLM's top-level metric discoveries.
+
+    Reads ``evaluation_data[DISCOVERED_METRICS_KEY]``, slugifies keys,
+    drops entries that collide with the already-selected metric names
+    (the LLM is supposed to surface NEW metrics) or duplicate each
+    other within the same response, and clamps ``suggested_type`` to
+    the allowed set. Returns a list of dicts shaped for persistence in
+    ``metric_scores[DISCOVERED_METRICS_KEY]`` — exactly what the
+    aggregator and ``DiscoveredMetricItem`` schema consume.
+    """
+
+    raw = evaluation_data.get(DISCOVERED_METRICS_KEY)
+    if raw is None:
+        matched = find_matching_key(
+            DISCOVERED_METRICS_KEY, list(evaluation_data.keys())
+        )
+        if matched:
+            raw = evaluation_data.get(matched)
+    if not isinstance(raw, list):
+        return []
+
+    existing_slugs: set[str] = set()
+    for metric in llm_metrics:
+        existing_slugs.add(_slug_label(getattr(metric, "name", None)))
+
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        raw_key = entry.get("key") or entry.get("name")
+        slug = _slug_label(raw_key)
+        if not slug:
+            continue
+        # Drop collisions with already-selected metrics (the prompt
+        # asked for NEW metrics, not restatements of the selected
+        # ones) and dedup within the same response.
+        if slug in existing_slugs or slug in seen:
+            continue
+        seen.add(slug)
+
+        name_val = (entry.get("name") or "").strip() or slug.replace(
+            "_", " "
+        )
+        description_val = _coerce_text_value(entry.get("description"))
+        rationale_val = _coerce_text_value(entry.get("rationale"))
+        raw_type = str(entry.get("suggested_type") or "").strip().lower()
+        if raw_type not in _DISCOVERED_METRIC_TYPES:
+            raw_type = "boolean"
+
+        payload: dict[str, Any] = {
+            "key": slug,
+            "name": name_val,
+            "suggested_type": raw_type,
+        }
+        if description_val:
+            payload["description"] = description_val
+        if rationale_val:
+            payload["rationale"] = rationale_val
+        out.append(payload)
+
+    return out
+
+
 def _render_parent_block(
     parent_metric,
     children: list,
@@ -220,12 +354,14 @@ def _render_parent_block(
         child_key = child.name.lower().replace(" ", "_")
         child_desc = child.description or f"Detect {child.name}"
         block += f'- "{child_key}" (true/false): {child_desc}\n'
-        if _wants_rationale(child):
-            block += (
-                f'- "{_rationale_key(child_key)}" (free-form text, '
-                f'1-2 concise sentences explaining why "{child_key}" '
-                "was set): Cite a transcript line when possible.\n"
-            )
+        # When the user attached an illustrative example to this label
+        # (via the Categorization Labels editor's "Example (Optional)"
+        # field) we surface it on its own indented line so the LLM has
+        # a concrete "what does this look like in a transcript?" anchor
+        # alongside the definition.
+        child_example = (getattr(child, "example", None) or "").strip()
+        if child_example:
+            block += f"  Example: {child_example}\n"
 
     block += (
         f'- "{sequence_key}" (array of strings, ordered): the child keys '
@@ -233,6 +369,25 @@ def _render_parent_block(
         "that actually happened. For single-choice, this may be a single "
         "element (the chosen child) or the path leading up to it.\n"
     )
+
+    # Parent-level rationale: a single free-form string explaining the
+    # overall categorization (which label(s) were picked and why). The
+    # LLM is asked for one rationale per parent — never per child — so
+    # the table can render exactly one "<Parent> - LLM Rationale" cell.
+    if _wants_rationale(parent_metric):
+        parent_rationale_key = _rationale_key(parent_key)
+        if selection_mode == "single_choice":
+            block += (
+                f'- "{parent_rationale_key}" (free-form text, 1-2 concise '
+                f'sentences explaining why "{parent_key}" was set to the '
+                "chosen child key): Cite a transcript line when possible.\n"
+            )
+        else:
+            block += (
+                f'- "{parent_rationale_key}" (free-form text, 1-2 concise '
+                f"sentences explaining which children were selected and "
+                "why): Cite a transcript line when possible.\n"
+            )
 
     # Discovery section: emitted on any parent (single_choice or
     # multi_label) that opted in via ``allow_discovery``. The wording
@@ -309,6 +464,8 @@ def build_evaluation_prompt(
     running_discovered: list | None = None,
     extra_context: str | None = None,
     comparison_pair: tuple[str, str] | None = None,
+    discover_new_metrics: bool = False,
+    running_discovered_metrics: list | None = None,
 ) -> str:
     """
     Build the evaluation prompt for LLM-based metric evaluation.
@@ -443,8 +600,14 @@ The following is the system prompt / instructions that the agent was configured 
             llm_metrics,
             running_discovered=running_discovered,
         )
+        if discover_new_metrics:
+            prompt += _render_discovered_metrics_block(
+                running_discovered_metrics
+            )
         prompt += _build_response_format_instructions(
-            llm_metrics, parent_metric=parent_metric
+            llm_metrics,
+            parent_metric=parent_metric,
+            discover_new_metrics=discover_new_metrics,
         )
         return prompt
 
@@ -511,12 +674,22 @@ The following is the system prompt / instructions that the agent was configured 
                 f"behaviors from the transcript when possible."
             )
 
-    prompt += _build_response_format_instructions(llm_metrics)
+    if discover_new_metrics:
+        prompt += _render_discovered_metrics_block(
+            running_discovered_metrics
+        )
+
+    prompt += _build_response_format_instructions(
+        llm_metrics,
+        discover_new_metrics=discover_new_metrics,
+    )
     return prompt
 
 
 def _build_response_format_instructions(
-    llm_metrics: list, parent_metric=None
+    llm_metrics: list,
+    parent_metric=None,
+    discover_new_metrics: bool = False,
 ) -> str:
     """Build the response format section of the prompt.
 
@@ -567,12 +740,24 @@ Example format:
                 '"rationale": "verbatim transcript line"}\n'
                 '  ],\n'
             )
-        for metric in llm_metrics:
-            if _wants_rationale(metric):
-                rk = _rationale_key(metric.name.lower().replace(" ", "_"))
-                instructions += (
-                    f'  "{rk}": "Brief justification referencing the transcript.",\n'
-                )
+        # Parent-level rationale companion example (one per group, not
+        # per child).
+        if _wants_rationale(parent_metric):
+            parent_rationale_key = _rationale_key(parent_key)
+            instructions += (
+                f'  "{parent_rationale_key}": '
+                f'"Brief justification referencing the transcript.",\n'
+            )
+
+        if discover_new_metrics:
+            instructions += (
+                f'  "{DISCOVERED_METRICS_KEY}": [\n'
+                '    {"key": "new_metric_key", "name": "New Metric", '
+                '"description": "one short sentence", '
+                '"suggested_type": "boolean", '
+                '"rationale": "verbatim transcript line"}\n'
+                '  ],\n'
+            )
 
         discovery_rule = ""
         if _discovery_enabled(parent_metric):
@@ -589,6 +774,19 @@ Example format:
                 "may also appear inside the sequence array."
             )
 
+        metrics_discovery_rule = ""
+        if discover_new_metrics:
+            metrics_discovery_rule = (
+                f'\n8. Top-level "{DISCOVERED_METRICS_KEY}" array: '
+                "propose only BRAND-NEW metrics not already covered by "
+                "the metrics block above. Each entry MUST include a "
+                "snake_case ``key``, a human-readable ``name``, a one-line "
+                "``description``, a ``suggested_type`` from "
+                '{"boolean", "rating", "category"}, and a verbatim '
+                "``rationale`` line. Return [] only when there is "
+                "genuinely nothing new to surface."
+            )
+
         instructions += (
             "}\n\n"
             "CRITICAL RULES:\n"
@@ -599,6 +797,7 @@ Example format:
             "5. The sequence array contains the temporal order of children that actually happened (subset of the true children); use the EXACT child keys.\n"
             "6. Do NOT wrap in \"metrics\" or any other object."
             + discovery_rule
+            + metrics_discovery_rule
             + "\nN. Do NOT add comments or explanations. Return ONLY the JSON object, nothing else."
         )
 
@@ -642,33 +841,72 @@ Example format:
                 f'"Brief justification referencing the transcript.",\n'
             )
 
-    instructions += """}
+    if discover_new_metrics:
+        instructions += (
+            f'  "{DISCOVERED_METRICS_KEY}": [\n'
+            '    {"key": "new_metric_key", "name": "New Metric", '
+            '"description": "one short sentence", '
+            '"suggested_type": "boolean", '
+            '"rationale": "verbatim transcript line"}\n'
+            '  ],\n'
+        )
 
-CRITICAL RULES:
-1. Use the EXACT metric keys shown above - copy them character-for-character
-2. For numeric/boolean metrics, the value must be a SINGLE NUMBER or true/false (no nested objects)
-3. For enum metrics ("one of: ..."), the value must be EXACTLY one of the listed strings (copy verbatim, including casing)
-4. For text metrics ("free-form text"), the value must be a plain JSON string (use \\n for newlines, escape quotes); keep it concise (1-3 sentences unless the metric description asks for more)
-5. Do NOT wrap in "metrics" or any other object
-6. Do NOT add comments or explanations
-7. Return ONLY the JSON object, nothing else"""
+    metrics_discovery_rule = ""
+    if discover_new_metrics:
+        metrics_discovery_rule = (
+            f'\n8. Top-level "{DISCOVERED_METRICS_KEY}" array: propose only '
+            "BRAND-NEW metrics not already covered by the metrics above. "
+            "Each entry MUST include a snake_case ``key``, a human-readable "
+            "``name``, a one-line ``description``, a ``suggested_type`` from "
+            '{"boolean", "rating", "category"}, and a verbatim ``rationale``. '
+            "Return [] only when there is genuinely nothing new to surface."
+        )
+
+    instructions += (
+        "}\n\n"
+        "CRITICAL RULES:\n"
+        "1. Use the EXACT metric keys shown above - copy them character-for-character\n"
+        "2. For numeric/boolean metrics, the value must be a SINGLE NUMBER or true/false (no nested objects)\n"
+        "3. For enum metrics (\"one of: ...\"), the value must be EXACTLY one of the listed strings (copy verbatim, including casing)\n"
+        "4. For text metrics (\"free-form text\"), the value must be a plain JSON string (use \\n for newlines, escape quotes); keep it concise (1-3 sentences unless the metric description asks for more)\n"
+        "5. Do NOT wrap in \"metrics\" or any other object\n"
+        "6. Do NOT add comments or explanations\n"
+        "7. Return ONLY the JSON object, nothing else"
+        + metrics_discovery_rule
+    )
 
     return instructions
 
 
-def _build_system_message(llm_metrics: list, parent_metric=None) -> str:
+def _build_system_message(
+    llm_metrics: list,
+    parent_metric=None,
+    discover_new_metrics: bool = False,
+) -> str:
     """Build the system message for LLM evaluation."""
     exact_keys: list[str] = []
     if parent_metric is not None:
-        exact_keys.append(_parent_key(parent_metric))
+        parent_root_key = _parent_key(parent_metric)
+        exact_keys.append(parent_root_key)
         exact_keys.append(_sequence_key(parent_metric))
         if _discovery_enabled(parent_metric):
             exact_keys.append(_discovered_key(parent_metric))
+        # Parent-level rationale key (one per group, never per child).
+        if _wants_rationale(parent_metric):
+            exact_keys.append(_rationale_key(parent_root_key))
     for metric in llm_metrics:
         key = metric.name.lower().replace(" ", "_")
         exact_keys.append(key)
-        if _wants_rationale(metric) and get_metric_type_value(metric) != "text":
+        # In hierarchical mode children no longer emit rationale keys;
+        # the parent owns the single rationale string for the group.
+        if (
+            parent_metric is None
+            and _wants_rationale(metric)
+            and get_metric_type_value(metric) != "text"
+        ):
             exact_keys.append(_rationale_key(key))
+    if discover_new_metrics:
+        exact_keys.append(DISCOVERED_METRICS_KEY)
 
     enum_constraints: list[str] = []
     for metric in llm_metrics:
@@ -701,11 +939,18 @@ def _build_system_message(llm_metrics: list, parent_metric=None) -> str:
             + "\n".join(f'   - "{k}"' for k in text_keys)
         )
 
-    rationale_keys = [
-        _rationale_key(metric.name.lower().replace(" ", "_"))
-        for metric in llm_metrics
-        if _wants_rationale(metric) and get_metric_type_value(metric) != "text"
-    ]
+    if parent_metric is not None:
+        # Hierarchical mode: only the parent emits a rationale key (when
+        # capture_rationale is on); children never do.
+        rationale_keys: list[str] = []
+        if _wants_rationale(parent_metric):
+            rationale_keys.append(_rationale_key(_parent_key(parent_metric)))
+    else:
+        rationale_keys = [
+            _rationale_key(metric.name.lower().replace(" ", "_"))
+            for metric in llm_metrics
+            if _wants_rationale(metric) and get_metric_type_value(metric) != "text"
+        ]
     rationale_block = ""
     if rationale_keys:
         rationale_block = (
@@ -766,6 +1011,8 @@ def evaluate_with_llm(
     running_discovered: list | None = None,
     extra_context: str | None = None,
     comparison_pair: tuple[str, str] | None = None,
+    discover_new_metrics: bool = False,
+    running_discovered_metrics: list | None = None,
 ) -> tuple[dict[str, dict[str, Any]], float | None]:
     """
     Evaluate metrics using LLM.
@@ -809,6 +1056,8 @@ def evaluate_with_llm(
         running_discovered=running_discovered,
         extra_context=extra_context,
         comparison_pair=comparison_pair,
+        discover_new_metrics=discover_new_metrics,
+        running_discovered_metrics=running_discovered_metrics,
     )
 
     evaluator_llm_provider = getattr(evaluator, "llm_provider", None) if evaluator else None
@@ -837,7 +1086,9 @@ def evaluate_with_llm(
         {
             "role": "system",
             "content": _build_system_message(
-                llm_metrics, parent_metric=parent_metric
+                llm_metrics,
+                parent_metric=parent_metric,
+                discover_new_metrics=discover_new_metrics,
             ),
         },
         {"role": "user", "content": evaluation_prompt},
@@ -863,6 +1114,20 @@ def evaluate_with_llm(
     metric_scores = _map_evaluation_to_metrics(
         evaluation_data, llm_metrics, parent_metric=parent_metric
     )
+
+    # Top-level metric discovery is independent of the per-row metric
+    # mapping above — it lives at ``metric_scores["__discovered_metrics__"]``
+    # as a JSON list keyed by the reserved constant so it can't collide
+    # with a real metric UUID. We parse it here (rather than inside
+    # ``_map_evaluation_to_metrics``) so both flat and hierarchical eval
+    # paths share the same code.
+    if discover_new_metrics:
+        discovered_metrics = _parse_discovered_metrics(
+            evaluation_data, llm_metrics
+        )
+        if discovered_metrics:
+            metric_scores[DISCOVERED_METRICS_KEY] = discovered_metrics
+
     return metric_scores, evaluation_time
 
 
@@ -1016,21 +1281,11 @@ def _map_hierarchical_group(
             "parent_metric_id": str(parent_metric.id),
             "parent_metric_name": parent_metric.name,
         }
-        if _wants_rationale(child):
-            rationale_lookup = _rationale_key(child_key)
-            raw_rationale = evaluation_data.get(rationale_lookup)
-            if raw_rationale is None:
-                rationale_candidates = [
-                    k
-                    for k in response_keys
-                    if k.lower().endswith("_rationale")
-                ]
-                matched = find_matching_key(
-                    f"{child.name} rationale", rationale_candidates
-                )
-                if matched:
-                    raw_rationale = evaluation_data.get(matched)
-            entry["rationale"] = _coerce_text_value(raw_rationale)
+        # In hierarchical mode the rationale is captured ONCE at the
+        # parent level (below), not per child. Any legacy per-child
+        # rationale on the LLM response is intentionally ignored so the
+        # table only renders the parent's "<Metric> - LLM Rationale"
+        # column.
         child_results[child_key] = entry
 
     # ----- Discovered labels (multi_label + allow_discovery only) -----
@@ -1197,6 +1452,25 @@ def _map_hierarchical_group(
         parent_entry["selected_child_names"] = [
             c["child_name"] for c in selected_children
         ]
+
+    # ----- Parent-level rationale -----
+    # When the parent metric has ``capture_rationale=True`` the LLM is
+    # asked for a single rationale key alongside the category. Read it
+    # back here so the UI (and CSV export) render exactly one
+    # "<Parent> - LLM Rationale" column per categorization metric.
+    if _wants_rationale(parent_metric):
+        parent_rationale_key = _rationale_key(parent_key)
+        raw_rationale = evaluation_data.get(parent_rationale_key)
+        if raw_rationale is None:
+            rationale_candidates = [
+                k for k in response_keys if k.lower().endswith("_rationale")
+            ]
+            matched = find_matching_key(
+                f"{parent_metric.name} rationale", rationale_candidates
+            )
+            if matched:
+                raw_rationale = evaluation_data.get(matched)
+        parent_entry["rationale"] = _coerce_text_value(raw_rationale)
 
     metric_scores[str(parent_metric.id)] = parent_entry
     return metric_scores

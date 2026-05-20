@@ -20,6 +20,7 @@ from app.models.schemas import (
     MetricUpdate,
     MetricResponse,
     PromoteDiscoveredChildRequest,
+    PromoteDiscoveredMetricRequest,
 )
 
 router = APIRouter(prefix="/metrics", tags=["metrics"])
@@ -222,6 +223,7 @@ def _serialize_metric_tree(metric: Metric) -> Dict[str, Any]:
         "workspace_id": metric.workspace_id,
         "name": metric.name,
         "description": metric.description,
+        "example": getattr(metric, "example", None),
         "metric_type": metric.metric_type,
         "trigger": metric.trigger,
         "enabled": metric.enabled,
@@ -333,6 +335,7 @@ def create_metric(
         workspace_id=effective_workspace_id,
         name=metric_data.name,
         description=metric_data.description,
+        example=metric_data.example,
         metric_type=effective_metric_type,
         trigger=metric_data.trigger,
         enabled=len(enabled_surfaces) > 0,
@@ -457,7 +460,11 @@ def create_metric_with_children(
         supported_surfaces=payload.supported_surfaces or ["agent"],
         enabled_surfaces=enabled_surfaces,
         tags=payload.tags,
-        capture_rationale=False,
+        # Hierarchical mode now captures rationale at the PARENT level
+        # (the LLM emits one rationale per category, never per child),
+        # so honour the user's toggle here and force children below to
+        # capture_rationale=False.
+        capture_rationale=bool(payload.capture_rationale),
         selection_mode=payload.selection_mode,
         allow_discovery=bool(payload.allow_discovery),
     )
@@ -470,6 +477,7 @@ def create_metric_with_children(
             workspace_id=workspace_id,
             name=child_draft.name,
             description=child_draft.description,
+            example=child_draft.example,
             metric_type=MetricType.BOOLEAN,
             trigger=MetricTrigger.ALWAYS,
             enabled=bool(child_draft.enabled) and len(enabled_surfaces) > 0,
@@ -482,7 +490,12 @@ def create_metric_with_children(
             custom_data_type="boolean",
             custom_config={},
             tags=child_draft.tags,
-            capture_rationale=bool(child_draft.capture_rationale),
+            # Children in hierarchical mode never carry their own
+            # rationale — the parent owns the single rationale string
+            # for the whole group. Force false regardless of payload so
+            # legacy clients can't accidentally enable per-child
+            # rationales that the worker would then ignore.
+            capture_rationale=False,
             parent_metric_id=parent.id,
         )
         db.add(child)
@@ -559,6 +572,7 @@ def add_metric_child(
         workspace_id=parent.workspace_id,
         name=child_draft.name,
         description=child_draft.description,
+        example=child_draft.example,
         metric_type=MetricType.BOOLEAN,
         trigger=MetricTrigger.ALWAYS,
         enabled=bool(child_draft.enabled) and len(enabled_surfaces) > 0,
@@ -569,7 +583,10 @@ def add_metric_child(
         custom_data_type="boolean",
         custom_config={},
         tags=child_draft.tags,
-        capture_rationale=bool(child_draft.capture_rationale),
+        # Children in hierarchical mode never carry their own
+        # rationale — the parent owns the single rationale string
+        # for the whole group.
+        capture_rationale=False,
         parent_metric_id=parent.id,
     )
     db.add(child)
@@ -706,18 +723,141 @@ def promote_discovered_child(
         custom_data_type="boolean",
         custom_config={},
         tags=None,
-        # Default behavior on promote: capture rationale on the new
-        # child so future rows that hit it explain themselves. The
-        # frontend sends ``true`` explicitly; older callers that
-        # don't pass the field also get ``true`` via the schema
-        # default.
-        capture_rationale=bool(body.capture_rationale),
+        # Children in hierarchical mode never carry their own
+        # rationale — the parent owns the single rationale string for
+        # the whole group. Force false regardless of the body's
+        # ``capture_rationale`` so promoted labels stay consistent with
+        # the new per-parent rationale model.
+        capture_rationale=False,
         parent_metric_id=parent.id,
     )
     db.add(child)
     db.commit()
     db.refresh(parent)
     return _serialize_metric_tree(parent)
+
+
+# Map the ``DiscoveredMetricSuggestedType`` literal to the canonical
+# ``MetricType`` + ``custom_data_type``/``selection_mode`` shape we
+# persist on a real :class:`Metric` row. ``category`` promotes to a
+# ``multi_label`` parent with no children (the user adds children
+# afterwards via the existing Metrics page).
+def _resolve_discovered_metric_type(
+    requested: str,
+) -> tuple[MetricType, Optional[str], Optional[str]]:
+    requested = (requested or "").strip().lower()
+    if requested == "rating":
+        return MetricType.RATING, None, None
+    if requested == "category":
+        # Category parents store no numeric value; downstream code
+        # renders the chosen child name (or list) as the parent's
+        # "value", matching ``MetricCreateWithChildren`` semantics
+        # above.
+        return MetricType.TEXT, None, "multi_label"
+    # Default: boolean.
+    return MetricType.BOOLEAN, "boolean", None
+
+
+@router.post(
+    "/from-discovered",
+    response_model=MetricResponse,
+    status_code=201,
+    operation_id="promoteDiscoveredMetric",
+)
+def promote_discovered_metric(
+    body: PromoteDiscoveredMetricRequest,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    """Promote an LLM-discovered top-level metric into a real Metric row.
+
+    Parallel to :func:`promote_discovered_child` but creates a
+    standalone metric (``parent_metric_id=None``) instead of a child.
+    The new metric's name is normalized so ``slug(name) == key`` —
+    this keeps any already-scored rows that referenced the candidate
+    under the promoted slug resolvable without a backfill, and
+    prevents duplicate promotions from sneaking in under slightly
+    different casing.
+
+    ``metric_type`` selects how future evaluation runs will score the
+    new metric: ``boolean`` / ``rating`` are scored standalone;
+    ``category`` creates a ``multi_label`` parent with no children
+    that the user can populate via the Metrics page.
+    """
+
+    key = _slug_label(body.key)
+    name_slug = _slug_label(body.name)
+    if not key:
+        raise HTTPException(
+            status_code=400,
+            detail="Discovered key must be a non-empty slug.",
+        )
+    if name_slug != key:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "name must slugify to the supplied key so already-scored "
+                f"rows that referenced the candidate keep resolving. "
+                f"Got key='{key}' but slug(name)='{name_slug}'."
+            ),
+        )
+
+    existing = (
+        db.query(Metric)
+        .filter(
+            Metric.organization_id == organization_id,
+            Metric.workspace_id == workspace_id,
+            Metric.parent_metric_id.is_(None),
+            Metric.name == body.name,
+        )
+        .first()
+    )
+    if existing:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"A top-level metric named '{body.name}' already exists "
+                "in this workspace."
+            ),
+        )
+
+    metric_type, custom_data_type, selection_mode = (
+        _resolve_discovered_metric_type(body.metric_type)
+    )
+
+    supported_surfaces = ["agent"]
+    enabled_surfaces = ["agent"]
+
+    metric = Metric(
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        name=body.name,
+        description=body.description,
+        metric_type=metric_type,
+        trigger=MetricTrigger.ALWAYS,
+        # Newly-promoted discoveries are enabled by default; the user
+        # can disable from the Metrics page if they decide they don't
+        # want it scored on future runs.
+        enabled=True,
+        is_default=False,
+        metric_origin="custom",
+        supported_surfaces=supported_surfaces,
+        enabled_surfaces=enabled_surfaces,
+        custom_data_type=custom_data_type,
+        custom_config=body.custom_config or None,
+        tags=None,
+        # Standalone metric — rationale is per-metric (default true so
+        # the LLM keeps producing rationales for promoted candidates,
+        # matching the discovered-labels promote default).
+        capture_rationale=bool(body.capture_rationale),
+        parent_metric_id=None,
+        selection_mode=selection_mode,
+    )
+    db.add(metric)
+    db.commit()
+    db.refresh(metric)
+    return _serialize_metric_tree(metric)
 
 
 @router.get("", response_model=List[MetricResponse])
@@ -849,6 +989,12 @@ def update_metric(
     if metric_data.description is not None:
         metric.description = metric_data.description
 
+    if metric_data.example is not None:
+        # An empty string clears the stored example; ``None`` (the
+        # default) means "leave unchanged" so callers that don't know
+        # about the field can keep PATCHing without nuking it.
+        metric.example = metric_data.example or None
+
     if metric_data.metric_type is not None:
         # Children stay boolean — refuse a type change request.
         if metric.parent_metric_id is not None and metric_data.metric_type != MetricType.BOOLEAN:
@@ -890,7 +1036,14 @@ def update_metric(
         metric.tags = metric_data.tags
 
     if metric_data.capture_rationale is not None:
-        metric.capture_rationale = bool(metric_data.capture_rationale)
+        # Child sub-metrics never carry their own rationale — the parent
+        # owns the single rationale string for the whole categorization
+        # group. Silently coerce to False so legacy clients can't
+        # re-introduce per-child rationales.
+        if metric.parent_metric_id is not None:
+            metric.capture_rationale = False
+        else:
+            metric.capture_rationale = bool(metric_data.capture_rationale)
 
     if metric_data.selection_mode is not None:
         # Only parent rows can flip selection_mode. Children + standalone

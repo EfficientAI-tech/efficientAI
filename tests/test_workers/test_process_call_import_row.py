@@ -67,7 +67,7 @@ def _seed(db_session, *, row_count: int = 1):
             call_import_id=call_import.id,
             organization_id=org.id,
             row_index=idx,
-            external_call_id=f"call-{idx}",
+            conversation_id=f"call-{idx}",
             recording_url=f"https://api.exotel.com/recordings/{idx}.mp3",
             transcript=f"transcript {idx}",
             status=CallImportRowStatus.PENDING,
@@ -206,10 +206,10 @@ def test_process_call_import_row_completes_and_rolls_up_to_completed(db_session,
     assert call_import.status == CallImportStatus.COMPLETED
 
     # Even though the row had a CSV-supplied recording_url, the worker
-    # MUST authenticate via the Calls API using external_call_id first
+    # MUST authenticate via the Calls API using conversation_id first
     # and download from the freshly resolved URL.
-    expected_resolved_url = f"https://api.exotel.com/recordings/{row.external_call_id}.mp3"
-    assert fake_client.resolved_calls == [row.external_call_id]
+    expected_resolved_url = f"https://api.exotel.com/recordings/{row.conversation_id}.mp3"
+    assert fake_client.resolved_calls == [row.conversation_id]
     assert fake_client.calls == [expected_resolved_url]
     # CSV-supplied URL is preserved on the row when present (only the
     # resolver-derived URL gets persisted when the CSV had none).
@@ -325,7 +325,7 @@ def test_process_call_import_row_resolves_url_when_csv_omits_it(db_session, monk
     fake_client = _FakeExotelClient(
         audio=b"resolved-audio",
         content_type="audio/mpeg",
-        resolved_url_by_call_sid={row.external_call_id: resolved_url},
+        resolved_url_by_call_sid={row.conversation_id: resolved_url},
     )
     fake_s3 = _FakeS3(enabled=True)
     task_module = _patch_dependencies(monkeypatch, db_session, fake_client, fake_s3)
@@ -339,7 +339,7 @@ def test_process_call_import_row_resolves_url_when_csv_omits_it(db_session, monk
 
     # Worker should have resolved exactly once for this CallID and downloaded
     # using the resolved URL, then persisted that URL on the row.
-    assert fake_client.resolved_calls == [row.external_call_id]
+    assert fake_client.resolved_calls == [row.conversation_id]
     assert fake_client.calls == [resolved_url]
     assert row.recording_url == resolved_url
     assert row.status == CallImportRowStatus.COMPLETED
@@ -386,7 +386,7 @@ def test_process_call_import_row_falls_back_to_csv_url_when_lookup_fails(
 
     # Lookup attempted exactly once with the call_sid, then download from
     # the original CSV URL (no other URL was tried).
-    assert fake_client.resolved_calls == [row.external_call_id]
+    assert fake_client.resolved_calls == [row.conversation_id]
     assert fake_client.calls == [csv_url]
 
     assert row.status == CallImportRowStatus.COMPLETED
@@ -520,7 +520,7 @@ def test_process_call_import_row_recovers_via_csv_url_after_transient_lookup(
     assert result["status"] == "completed"
     db_session.refresh(row)
     db_session.refresh(call_import)
-    assert fake_client.resolved_calls == [row.external_call_id]
+    assert fake_client.resolved_calls == [row.conversation_id]
     assert fake_client.calls == [csv_url]
     assert row.status == CallImportRowStatus.COMPLETED
     assert row.recording_size_bytes == len(b"recovered-via-fallback")
@@ -567,7 +567,7 @@ def test_process_call_import_row_retries_when_both_tiers_transient(
     db_session.refresh(row)
     assert row.status == CallImportRowStatus.PENDING
     assert "Transient" in (row.error_message or "")
-    assert fake_client.resolved_calls == [row.external_call_id]
+    assert fake_client.resolved_calls == [row.conversation_id]
     # Fallback was attempted with the CSV URL before retry was scheduled.
     assert fake_client.calls == [row.recording_url]
 

@@ -22,6 +22,7 @@ pipelines. This module is for offline, single-file transcription
 
 from app.services.ai.stt_clients.deepgram import transcribe_deepgram
 from app.services.ai.stt_clients.elevenlabs import transcribe_elevenlabs
+from app.services.ai.stt_clients.google import transcribe_google
 from app.services.ai.stt_clients.openai import transcribe_openai
 from app.services.ai.stt_clients.sarvam import transcribe_sarvam
 from app.services.ai.stt_clients.smallest import transcribe_smallest
@@ -29,6 +30,7 @@ from app.services.ai.stt_clients.smallest import transcribe_smallest
 __all__ = [
     "transcribe_deepgram",
     "transcribe_elevenlabs",
+    "transcribe_google",
     "transcribe_openai",
     "transcribe_sarvam",
     "transcribe_smallest",

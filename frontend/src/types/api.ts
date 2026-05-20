@@ -612,8 +612,21 @@ export interface CronJobUpdate {
 
 // --- Call Imports ---
 
+/**
+ * Lifecycle for a call-import batch.
+ *
+ *  - ``uploaded``   : file landed in S3, no mapping yet.
+ *  - ``mapped``     : user picked a schema + sheet + column mapping; no
+ *                     rows materialised yet, no worker enqueued.
+ *  - ``processing`` : rows materialised + workers enqueued.
+ *  - ``pending``    : transient state used by the legacy one-shot
+ *                     ``POST /upload`` endpoint just before transitioning
+ *                     to ``processing``.
+ */
 export type CallImportStatus =
   | 'pending'
+  | 'uploaded'
+  | 'mapped'
   | 'processing'
   | 'completed'
   | 'partial'
@@ -650,7 +663,8 @@ export type CallImportEvaluationTranscriptSource = 'production' | 'diarised'
 export interface CallImportRow {
   id: string
   row_index: number
-  external_call_id: string
+  /** Mandatory identifier per row. Renamed from ``external_call_id``. */
+  conversation_id: string
   recording_url: string | null
   /** Production transcript — the value supplied via the CSV upload. */
   transcript: string | null
@@ -670,7 +684,14 @@ export interface CallImportRow {
   diarised_transcript_status: CallImportTranscriptStatus
   diarised_transcript_error: string | null
   diarised_at: string | null
-  raw_columns: Record<string, string> | null
+  /**
+   * Per-row preservation of the mapped source cells. Values land here
+   * as whatever type the schema parameter coerced them to —
+   * strings (text / url / conversation_id / recording_url / transcript /
+   * datetime), numbers, booleans, or ``null`` for blanks. Always
+   * coerce with ``String(value)`` before string operations.
+   */
+  raw_columns: Record<string, string | number | boolean | null> | null
   status: CallImportRowStatus
   recording_s3_key: string | null
   recording_content_type: string | null
@@ -687,6 +708,65 @@ export interface CallImportTag {
   color: string | null
   created_at: string
   updated_at: string
+}
+
+/**
+ * Parameter type tag on a Call Import schema parameter.
+ *
+ *  - ``conversation_id``: mandatory identifier (one per schema).
+ *  - ``recording_url``: feeds ``CallImportRow.recording_url``.
+ *  - ``transcript``: feeds ``CallImportRow.transcript``.
+ *  - ``text`` / ``number`` / ``boolean`` / ``datetime`` / ``url``:
+ *    generic typed fields preserved per row in ``raw_columns`` and
+ *    surfaced in the evaluation export under the parameter's name.
+ */
+export type CallImportSchemaParameterType =
+  | 'conversation_id'
+  | 'recording_url'
+  | 'transcript'
+  | 'text'
+  | 'number'
+  | 'boolean'
+  | 'datetime'
+  | 'url'
+
+export interface CallImportSchemaParameter {
+  id?: string
+  name: string
+  type: CallImportSchemaParameterType
+  description: string | null
+  is_required: boolean
+  ordering?: number
+}
+
+export interface CallImportSchema {
+  id: string
+  organization_id: string
+  workspace_id: string
+  name: string
+  description: string | null
+  parameters: CallImportSchemaParameter[]
+  /** How many CallImport batches reference this schema. */
+  usage_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface CallImportSchemaListResponse {
+  items: CallImportSchema[]
+  total: number
+}
+
+export interface CallImportSchemaCreate {
+  name: string
+  description?: string | null
+  parameters: Array<Omit<CallImportSchemaParameter, 'id' | 'ordering'>>
+}
+
+export interface CallImportSchemaUpdate {
+  name?: string
+  description?: string | null
+  parameters?: Array<Omit<CallImportSchemaParameter, 'id' | 'ordering'>>
 }
 
 /**
@@ -709,7 +789,13 @@ export interface CallImport {
   organization_id: string
   /** Workspace this import belongs to. */
   workspace_id: string
-  provider: string
+  /**
+   * Telephony provider key. ``null`` until the IMPORT stage in the
+   * staged flow (which is the first step that knows the provider).
+   * Always populated on post-import batches and on legacy one-shot
+   * uploads.
+   */
+  provider: string | null
   telephony_integration_id: string | null
   original_filename: string | null
   /**
@@ -722,9 +808,41 @@ export interface CallImport {
   dataset: string | null
   /** Tags currently attached to this import. Empty array if untagged. */
   tags: CallImportTag[]
+  /**
+   * Reusable Input Parameter schema the batch was uploaded against.
+   * NULL on legacy batches uploaded before the schema-driven flow shipped.
+   */
+  schema_id: string | null
+  /**
+   * Schema-driven mapping: ``{parameter_name: csv_header}``. Empty on
+   * legacy batches; check ``column_mapping`` / ``extra_columns`` /
+   * ``custom_column_mapping`` instead for those.
+   */
+  parameter_mapping: Record<string, string>
+  /** Legacy free-form mapping kept for batches uploaded before schemas. */
   column_mapping: Record<string, string | null>
+  /** Legacy extra-column list kept for backwards-compat. */
   extra_columns: string[]
+  /** Legacy uploader-named columns kept for backwards-compat. */
   custom_column_mapping: Record<string, string>
+  /**
+   * Source headers the uploader explicitly skipped, captured at the
+   * MAP stage. Empty for legacy one-shot uploads where the value was
+   * ephemeral.
+   */
+  skipped_columns: string[]
+  /** S3 key for the staged source file. ``null`` on legacy batches. */
+  source_s3_key: string | null
+  /** ``'csv'`` or ``'xlsx'`` of the staged source file. */
+  source_format: string | null
+  source_size_bytes: number | null
+  source_content_type: string | null
+  /**
+   * Snapshot of the file's sheets + headers captured at UPLOAD time so
+   * the MAP UI can render without re-fetching the source from S3.
+   * ``null`` on legacy batches.
+   */
+  available_sheets: CallImportPreviewSheet[] | null
   total_rows: number
   completed_rows: number
   failed_rows: number
@@ -846,6 +964,12 @@ export interface CallImportEvaluation {
    * runs the user has not summarised yet.
    */
   tldr_summary?: EvaluationTldrSummary | null
+  /**
+   * True when the user opted into top-level metric discovery on the
+   * Run Evaluation modal. Gates the Discovered metrics panel on the
+   * evaluation detail Flow tab.
+   */
+  discover_new_metrics?: boolean
 }
 
 /**
@@ -875,7 +999,8 @@ export interface CallImportEvaluationRow {
   evaluation_id: string
   call_import_row_id: string
   row_index: number | null
-  external_call_id: string | null
+  /** Mandatory identifier from the source batch (renamed from ``external_call_id``). */
+  conversation_id: string | null
   transcript: string | null
   raw_columns: Record<string, any> | null
   recording_url: string | null
@@ -900,6 +1025,64 @@ export interface CallImportEvaluationRowListResponse {
   total: number
   page: number
   page_size: number
+}
+
+// --- Retry (re-enqueue failed rows on an existing evaluation run) ---
+
+export interface CallImportEvaluationRetryRequest {
+  /**
+   * Restrict the retry to a specific subset of evaluation rows.
+   * When omitted, every row with status='failed' in this run is
+   * re-enqueued.
+   */
+  eval_row_ids?: string[]
+
+  /**
+   * Optional LLM overrides. When provided, persisted onto the run so
+   * future retries default to the new config. ``llm_provider`` and
+   * ``llm_model`` must be sent together — the backend 400s on
+   * half-configured input.
+   */
+  llm_provider?: string
+  llm_model?: string
+  llm_credential_id?: string | null
+
+  /**
+   * Optional STT overrides (only meaningful when the run scores the
+   * diarised transcript). Same paired-field rule as LLM.
+   */
+  stt_provider?: string
+  stt_model?: string
+  stt_credential_id?: string | null
+
+  /**
+   * When true, wipe the diarised transcript on every retried row so
+   * the (possibly new) STT runs from scratch. Only takes effect for
+   * diarised runs that have STT config.
+   */
+  transcribe_overwrite?: boolean
+}
+
+export interface CallImportEvaluationRetrySkippedItem {
+  eval_row_id: string
+  /**
+   * Why this row was not re-enqueued. Known values:
+   * - 'unknown' (id not in this run)
+   * - 'in_progress' (status is pending/running)
+   * - 'completed' (already successful)
+   * - 'source_row_missing'
+   */
+  reason: 'unknown' | 'in_progress' | 'completed' | 'source_row_missing'
+}
+
+export interface CallImportEvaluationRetryResponse {
+  requeued: number
+  /**
+   * Of those, how many were chained through a diarisation task first
+   * because the diarised transcript was missing.
+   */
+  transcribe_requeued: number
+  skipped: CallImportEvaluationRetrySkippedItem[]
 }
 
 // --- Diarization / transcription ---
@@ -1099,4 +1282,26 @@ export interface DiscoveredLabel {
 export interface DiscoveredLabelsResponse {
   parent_metric_id: string
   items: DiscoveredLabel[]
+}
+
+/**
+ * One LLM-discovered candidate TOP-LEVEL metric aggregated across all
+ * rows of an evaluation. Mirrors :class:`DiscoveredLabel` but adds a
+ * ``suggested_type`` field — the LLM's guess at the best shape for
+ * the new metric — that the promote modal can pre-fill the type radio
+ * with.
+ */
+export interface DiscoveredMetric {
+  key: string
+  name: string
+  description?: string | null
+  suggested_type: 'boolean' | 'rating' | 'category'
+  sample_rationale?: string | null
+  examples?: string[]
+  count: number
+}
+
+export interface DiscoveredMetricsResponse {
+  evaluation_id: string
+  items: DiscoveredMetric[]
 }

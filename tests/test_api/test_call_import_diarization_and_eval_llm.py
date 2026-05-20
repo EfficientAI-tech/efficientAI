@@ -301,6 +301,45 @@ def test_create_evaluation_payload_validates_llm_provider_and_model_pair():
     )
 
 
+def test_create_evaluation_payload_defaults_transcript_sources_to_diarised():
+    """``transcript_sources`` defaults to ``['diarised']`` so legacy
+    clients that omit the field get the new diarised-only behavior
+    without having to opt in explicitly."""
+    from app.models.schemas import CallImportEvaluationCreate
+
+    payload = CallImportEvaluationCreate(metric_ids=[uuid4()])
+    assert payload.transcript_sources == ["diarised"]
+
+
+def test_create_evaluation_payload_rejects_production_transcript_source():
+    """The legacy ``production`` transcript source is no longer accepted
+    — the schema-level validator must reject it with a clear message so
+    the route handler never even sees it."""
+    import pytest as _pytest
+    from pydantic import ValidationError
+
+    from app.models.schemas import CallImportEvaluationCreate
+
+    with _pytest.raises(ValidationError) as exc:
+        CallImportEvaluationCreate(
+            metric_ids=[uuid4()],
+            transcript_sources=["production"],
+        )
+    msg = str(exc.value)
+    assert "diarised" in msg.lower() or "production" in msg.lower()
+
+
+def test_create_evaluation_payload_accepts_explicit_diarised_source():
+    """Sending the explicit single-element ``['diarised']`` round-trips
+    cleanly — this is the shape the frontend sends on every run."""
+    from app.models.schemas import CallImportEvaluationCreate
+
+    payload = CallImportEvaluationCreate(
+        metric_ids=[uuid4()], transcript_sources=["diarised"]
+    )
+    assert payload.transcript_sources == ["diarised"]
+
+
 # ---------------------------------------------------------------------------
 # transcribe_call_import endpoint helper
 # ---------------------------------------------------------------------------

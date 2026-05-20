@@ -84,7 +84,7 @@ def _seed(db_session, *, row_count: int = 1, metric_count: int = 1):
             call_import_id=call_import.id,
             organization_id=org.id,
             row_index=idx,
-            external_call_id=f"call-{idx}",
+            conversation_id=f"call-{idx}",
             transcript=f"Hello transcript {idx}",
             status=CallImportRowStatus.COMPLETED,
         )

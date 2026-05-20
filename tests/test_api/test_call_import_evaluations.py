@@ -158,7 +158,7 @@ def _make_call_import(
             call_import_id=call_import.id,
             organization_id=org_id,
             row_index=idx,
-            external_call_id=f"ext-{idx}",
+            conversation_id=f"ext-{idx}",
             transcript=f"transcript-{idx}",
             recording_url=None,
             raw_columns={
@@ -174,13 +174,29 @@ def _make_call_import(
     return call_import, row_models
 
 
+# Every Run Evaluation request now requires STT provider+model (the
+# diarised transcript is the only supported source and auto-diarise is
+# mandatory). Centralizing the minimum-valid payload here keeps the test
+# bodies focused on the behavior under test.
+_DEFAULT_EVAL_STT = {
+    "stt_provider": "deepgram",
+    "stt_model": "nova-2",
+}
+
+
+def _eval_body(metric_ids, **overrides):
+    body = {"metric_ids": [str(mid) for mid in metric_ids], **_DEFAULT_EVAL_STT}
+    body.update(overrides)
+    return body
+
+
 def test_create_evaluation_happy_path(authenticated_client, db_session, org_id, seed_org):
     metric = _make_metric(db_session, org_id)
     call_import, _rows = _make_call_import(db_session, org_id, rows=2)
 
     response = authenticated_client.post(
         f"/api/v1/call-imports/{call_import.id}/evaluations",
-        json={"metric_ids": [str(metric.id)]},
+        json=_eval_body([metric.id]),
     )
     assert response.status_code == 202, response.text
     body = response.json()
@@ -188,6 +204,8 @@ def test_create_evaluation_happy_path(authenticated_client, db_session, org_id, 
     assert body["total_rows"] == 2
     assert body["metrics"][0]["name"] == metric.name
     assert body["selected_metric_ids"] == [str(metric.id)]
+    # Diarised is the only supported transcript source now.
+    assert body["transcript_source"] == "diarised"
 
 
 def test_create_evaluation_rejects_foreign_metric(
@@ -221,63 +239,84 @@ def test_create_evaluation_rejects_foreign_metric(
 
     response = authenticated_client.post(
         f"/api/v1/call-imports/{call_import.id}/evaluations",
-        json={"metric_ids": [str(other_org_metric.id)]},
+        json=_eval_body([other_org_metric.id]),
     )
     assert response.status_code == 400
     # Foreign-org metric => "do not exist in your organization".
     assert "do not exist" in response.json()["detail"].lower()
 
 
-def test_create_evaluation_with_both_sources_creates_two_runs(
+def test_create_evaluation_rejects_production_transcript_source(
     authenticated_client, db_session, org_id, seed_org
 ):
-    """Ticking both Production and Diarised in the modal must create two
-    separate evaluation runs and the response should link them via
-    ``sibling_evaluation_ids`` so the frontend can navigate to either."""
+    """The legacy ``production`` transcript source is no longer accepted.
+    Any request that includes it must 4xx so callers move to the new
+    diarised-only flow instead of silently producing a different run."""
     metric = _make_metric(db_session, org_id)
     call_import, _rows = _make_call_import(db_session, org_id, rows=1)
 
     response = authenticated_client.post(
         f"/api/v1/call-imports/{call_import.id}/evaluations",
-        json={
-            "metric_ids": [str(metric.id)],
-            "transcript_sources": ["production", "diarised"],
-        },
+        json=_eval_body(
+            [metric.id],
+            transcript_sources=["production"],
+        ),
     )
-    assert response.status_code == 202, response.text
-    body = response.json()
-    # Primary run is the first requested source (production) and it knows
-    # about its diarised sibling.
-    assert body["transcript_source"] == "production"
-    assert len(body["sibling_evaluation_ids"]) == 1
-
-    # Both runs persisted to the DB under the same call import.
-    all_runs = (
-        db_session.query(CallImportEvaluation)
-        .filter(CallImportEvaluation.call_import_id == call_import.id)
-        .all()
-    )
-    assert len(all_runs) == 2
-    sources = {row.transcript_source for row in all_runs}
-    assert sources == {"production", "diarised"}
+    # Pydantic's field_validator surfaces a 422 for invalid request
+    # bodies (the schema validator runs before the route handler).
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    body_text = str(detail).lower()
+    assert "diarised" in body_text or "production" in body_text
 
 
-def test_create_evaluation_defaults_to_production_source(
+def test_create_evaluation_defaults_to_diarised_source(
     authenticated_client, db_session, org_id, seed_org
 ):
-    """Legacy clients that omit transcript_sources still get exactly ONE
-    evaluation run scored against the production transcript."""
+    """Clients that omit transcript_sources get exactly ONE evaluation
+    run scored against the diarised transcript (the only supported
+    source now)."""
     metric = _make_metric(db_session, org_id)
     call_import, _ = _make_call_import(db_session, org_id, rows=1)
 
     response = authenticated_client.post(
         f"/api/v1/call-imports/{call_import.id}/evaluations",
-        json={"metric_ids": [str(metric.id)]},
+        json=_eval_body([metric.id]),
     )
     assert response.status_code == 202
     body = response.json()
-    assert body["transcript_source"] == "production"
+    assert body["transcript_source"] == "diarised"
     assert body["sibling_evaluation_ids"] == []
+
+
+def test_create_evaluation_requires_stt_provider_and_model(
+    authenticated_client, db_session, org_id, seed_org
+):
+    """Every evaluation auto-diarises rows that don't already have a
+    diarised transcript, so the STT provider+model are mandatory on
+    every request — even when auto_transcribe is not explicitly
+    passed."""
+    metric = _make_metric(db_session, org_id)
+    call_import, _ = _make_call_import(db_session, org_id, rows=1)
+
+    # Missing both STT fields -> 400 from the route validator.
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json={"metric_ids": [str(metric.id)]},
+    )
+    assert response.status_code == 400
+    assert "stt" in response.json()["detail"].lower()
+
+    # Partial config (provider without model) is still rejected.
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json={
+            "metric_ids": [str(metric.id)],
+            "stt_provider": "deepgram",
+        },
+    )
+    assert response.status_code == 400
+    assert "stt_model" in response.json()["detail"].lower()
 
 
 def test_create_evaluation_marks_completed_when_no_rows(
@@ -291,7 +330,7 @@ def test_create_evaluation_marks_completed_when_no_rows(
 
     response = authenticated_client.post(
         f"/api/v1/call-imports/{call_import.id}/evaluations",
-        json={"metric_ids": [str(metric.id)]},
+        json=_eval_body([metric.id]),
     )
     assert response.status_code == 202
     body = response.json()
@@ -307,7 +346,7 @@ def test_list_and_get_evaluations(
 
     created = authenticated_client.post(
         f"/api/v1/call-imports/{call_import.id}/evaluations",
-        json={"metric_ids": [str(metric.id)]},
+        json=_eval_body([metric.id]),
     ).json()
 
     listing = authenticated_client.get(
@@ -332,7 +371,7 @@ def test_delete_evaluation_removes_row_results(
     call_import, _ = _make_call_import(db_session, org_id, rows=1)
     created = authenticated_client.post(
         f"/api/v1/call-imports/{call_import.id}/evaluations",
-        json={"metric_ids": [str(metric.id)]},
+        json=_eval_body([metric.id]),
     ).json()
 
     response = authenticated_client.delete(
@@ -377,7 +416,7 @@ def test_export_csv_uses_raw_columns_and_metric_names(
 
     created = authenticated_client.post(
         f"/api/v1/call-imports/{call_import.id}/evaluations",
-        json={"metric_ids": [str(metric.id)]},
+        json=_eval_body([metric.id]),
     ).json()
 
     # Backfill metric_scores so the export has non-empty columns.

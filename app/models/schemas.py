@@ -10,7 +10,7 @@ from app.models.enums import (
     IntegrationPlatform, ModelProvider, VoiceBundleType, TestAgentConversationStatus,
     MetricType, MetricTrigger, CallRecordingStatus, AlertMetricType, AlertAggregation,
     AlertOperator, AlertNotifyFrequency, AlertStatus, AlertHistoryStatus, CronJobStatus,
-    CallImportStatus, CallImportRowStatus,
+    CallImportStatus, CallImportRowStatus, CallImportParameterType,
 )
 
 
@@ -1103,6 +1103,11 @@ class MetricCreate(BaseModel):
     """
     name: str
     description: Optional[str] = None
+    # Optional illustrative example surfaced alongside ``description``
+    # in the LLM judge's rubric. Today this is mainly populated on
+    # child sub-labels (one example per categorization label) but
+    # standalone metrics may carry it too without a schema change.
+    example: Optional[str] = Field(default=None, max_length=4000)
     metric_type: MetricType = MetricType.RATING
     trigger: MetricTrigger = MetricTrigger.ALWAYS
     enabled: bool = True
@@ -1188,6 +1193,10 @@ class MetricChildDraft(BaseModel):
 
     name: str = Field(..., max_length=120)
     description: Optional[str] = Field(default=None, max_length=4000)
+    # Optional illustrative example for this label. Surfaced alongside
+    # ``description`` in the LLM judge's rubric so each label can carry
+    # both its definition AND a "what does this look like?" example.
+    example: Optional[str] = Field(default=None, max_length=4000)
     enabled: bool = True
     capture_rationale: Optional[bool] = True
     tags: Optional[List[str]] = None
@@ -1213,6 +1222,11 @@ class MetricCreateWithChildren(BaseModel):
     # labels beyond the listed children at evaluation time. Validator
     # rejects allow_discovery=True on single_choice parents.
     allow_discovery: bool = False
+    # Parent-level "Enable LLM Rationale" toggle. When true the LLM
+    # judge emits a single rationale string at the parent level
+    # (children never carry rationales in hierarchical mode), which the
+    # table renders as the "<Parent> - LLM Rationale" column.
+    capture_rationale: bool = False
     children: List[MetricChildDraft] = Field(
         default_factory=list,
         description="Child sub-metric labels under this parent.",
@@ -1223,6 +1237,9 @@ class MetricUpdate(BaseModel):
     """Schema for updating a metric."""
     name: Optional[str] = None
     description: Optional[str] = None
+    # ``None`` here means "leave unchanged"; pass an empty string to
+    # clear a previously stored example.
+    example: Optional[str] = Field(default=None, max_length=4000)
     metric_type: Optional[MetricType] = None
     trigger: Optional[MetricTrigger] = None
     enabled: Optional[bool] = None
@@ -1286,6 +1303,10 @@ class MetricResponse(BaseModel):
     workspace_id: UUID
     name: str
     description: Optional[str]
+    # Optional illustrative example. Populated mainly on categorization
+    # child labels but surfaced for every metric so the UI can render
+    # it uniformly without branching on parent/child shape.
+    example: Optional[str] = None
     metric_type: MetricType
     trigger: MetricTrigger
     enabled: bool
@@ -2003,7 +2024,9 @@ class CallImportRowResponse(BaseModel):
 
     id: UUID
     row_index: int
-    external_call_id: str
+    # Renamed from ``external_call_id`` (DB column renamed in migration
+    # ``034_call_import_schemas``). Same data, same uniqueness rules.
+    conversation_id: str
     recording_url: Optional[str] = None
     # Production transcript: the value supplied via the CSV upload.
     transcript: Optional[str] = None
@@ -2035,16 +2058,171 @@ class CallImportRowResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class CallImportColumnMapping(BaseModel):
-    """Maps system fields to CSV header strings (case preserved as uploaded).
+# --- Call Import Schema (Input Parameter definitions) ---
 
-    ``external_call_id`` is required so the worker can identify each row;
-    the other two are optional. Values must be unique across the mapping.
+
+class CallImportSchemaParameterBase(BaseModel):
+    """A single typed parameter inside a Call Import schema.
+
+    Used both in request bodies (create / update) and as the building
+    block of :class:`CallImportSchemaParameterResponse`. Names are
+    case-insensitive unique within their parent schema.
     """
 
-    external_call_id: str = Field(..., min_length=1, max_length=255)
-    transcript: Optional[str] = Field(None, max_length=255)
-    recording_url: Optional[str] = Field(None, max_length=255)
+    name: str = Field(
+        ...,
+        min_length=1,
+        max_length=255,
+        description=(
+            "Parameter name as it appears in the schema editor and the "
+            "upload mapping table. Must be unique within the schema "
+            "(case-insensitive)."
+        ),
+    )
+    type: CallImportParameterType = Field(
+        ...,
+        description=(
+            "Parameter type. One of conversation_id / recording_url / "
+            "transcript / text / number / boolean / datetime / url. "
+            "Exactly one parameter of type 'conversation_id' is required."
+        ),
+    )
+    description: Optional[str] = Field(
+        default=None,
+        max_length=2048,
+        description="Free-text help shown next to the parameter in the mapping UI.",
+    )
+    is_required: bool = Field(
+        default=False,
+        description=(
+            "When True, the parameter must be mapped to a CSV column on "
+            "every upload. The ``conversation_id`` parameter is always "
+            "required and is force-set to True by the server."
+        ),
+    )
+
+
+class CallImportSchemaParameterCreate(CallImportSchemaParameterBase):
+    """Create payload for a single parameter (inside a schema CRUD body)."""
+
+
+class CallImportSchemaParameterResponse(CallImportSchemaParameterBase):
+    """Response shape including the persisted id + ordering."""
+
+    id: UUID
+    ordering: int
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+def _validate_schema_parameters(
+    parameters: List[CallImportSchemaParameterBase],
+) -> List[CallImportSchemaParameterBase]:
+    """Apply the cross-parameter invariants shared by create + update."""
+
+    if not parameters:
+        raise ValueError("Schema must define at least one parameter.")
+
+    seen_names: set[str] = set()
+    conv_count = 0
+    rec_url_count = 0
+    transcript_count = 0
+    for param in parameters:
+        norm = param.name.strip().lower()
+        if not norm:
+            raise ValueError("Parameter name must be non-empty.")
+        if norm in seen_names:
+            raise ValueError(
+                f"Duplicate parameter name '{param.name}' "
+                "(names must be unique within a schema)."
+            )
+        seen_names.add(norm)
+        if param.type == CallImportParameterType.CONVERSATION_ID:
+            conv_count += 1
+        elif param.type == CallImportParameterType.RECORDING_URL:
+            rec_url_count += 1
+        elif param.type == CallImportParameterType.TRANSCRIPT:
+            transcript_count += 1
+
+    if conv_count != 1:
+        raise ValueError(
+            "Schema must contain exactly one parameter of type "
+            "'conversation_id'."
+        )
+    if rec_url_count > 1:
+        raise ValueError(
+            "Schema may contain at most one parameter of type 'recording_url'."
+        )
+    if transcript_count > 1:
+        raise ValueError(
+            "Schema may contain at most one parameter of type 'transcript'."
+        )
+    return parameters
+
+
+class CallImportSchemaCreate(BaseModel):
+    """Create body for a new call-import schema."""
+
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = Field(default=None, max_length=2048)
+    parameters: List[CallImportSchemaParameterCreate] = Field(
+        ...,
+        description=(
+            "Ordered list of parameters. Order is preserved; the server "
+            "stamps ``ordering`` from the list index."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _check_parameters(self):
+        _validate_schema_parameters(list(self.parameters))
+        return self
+
+
+class CallImportSchemaUpdate(BaseModel):
+    """Patch body for an existing schema (full parameter replacement)."""
+
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    description: Optional[str] = Field(default=None, max_length=2048)
+    parameters: Optional[List[CallImportSchemaParameterCreate]] = Field(
+        default=None,
+        description=(
+            "If provided, REPLACES the full set of parameters on the "
+            "schema. Omit to leave parameters untouched."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _check_parameters(self):
+        if self.parameters is not None:
+            _validate_schema_parameters(list(self.parameters))
+        return self
+
+
+class CallImportSchemaResponse(BaseModel):
+    """Read response for a single schema."""
+
+    id: UUID
+    organization_id: UUID
+    workspace_id: UUID
+    name: str
+    description: Optional[str] = None
+    parameters: List[CallImportSchemaParameterResponse] = Field(default_factory=list)
+    # How many CallImport batches reference this schema. Populated by the
+    # router when listing; defaults to 0 on detail responses where the
+    # caller doesn't need it.
+    usage_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CallImportSchemaListResponse(BaseModel):
+    """Paginated list of schemas."""
+
+    items: List[CallImportSchemaResponse] = Field(default_factory=list)
+    total: int
 
 
 class CallImportTagResponse(BaseModel):
@@ -2073,21 +2251,54 @@ class CallImportTagUpdate(BaseModel):
     color: Optional[str] = Field(None, max_length=32)
 
 
+class CallImportPreviewSheet(BaseModel):
+    """One worksheet (or one CSV file synthesized as a single sheet)."""
+
+    name: str = Field(..., description="Sheet name for xlsx; filename for csv.")
+    headers: List[str] = Field(
+        default_factory=list,
+        description="Column headers from the first non-empty row.",
+    )
+    row_count: int = Field(
+        ...,
+        description="Approximate count of data rows (excluding the header row).",
+    )
+
+
 class CallImportResponse(BaseModel):
     """Summary of a call-import batch."""
 
     id: UUID
     organization_id: UUID
     workspace_id: UUID
-    provider: str
+    # Provider is optional in the new staged flow (only resolved at the
+    # IMPORT stage). Stays populated for all post-import batches.
+    provider: Optional[str] = None
     telephony_integration_id: Optional[UUID] = None
     original_filename: Optional[str] = None
     sheet_name: Optional[str] = None
     dataset: Optional[str] = None
     tags: List[CallImportTagResponse] = Field(default_factory=list)
+    # New schema-driven mapping. Empty on legacy batches; pre-schema
+    # batches keep their values in ``column_mapping`` / ``extra_columns``
+    # / ``custom_column_mapping`` below for backwards-compatibility.
+    schema_id: Optional[UUID] = None
+    parameter_mapping: Dict[str, str] = Field(default_factory=dict)
     column_mapping: Dict[str, Optional[str]] = Field(default_factory=dict)
     extra_columns: List[str] = Field(default_factory=list)
     custom_column_mapping: Dict[str, str] = Field(default_factory=dict)
+    # Persisted "drop these columns" decision captured at MAP time.
+    # Empty for legacy one-shot uploads where the value was ephemeral.
+    skipped_columns: List[str] = Field(default_factory=list)
+    # Source-file staging fields populated at UPLOAD time. ``None`` on
+    # legacy batches imported via the one-shot ``POST /upload`` endpoint.
+    source_s3_key: Optional[str] = None
+    source_format: Optional[str] = None
+    source_size_bytes: Optional[int] = None
+    source_content_type: Optional[str] = None
+    # Snapshot of the file's sheets + headers captured at UPLOAD time
+    # so the MAP UI can render without re-fetching the file from S3.
+    available_sheets: Optional[List[CallImportPreviewSheet]] = None
     total_rows: int
     completed_rows: int
     failed_rows: int
@@ -2131,20 +2342,6 @@ class CallImportUploadResponse(BaseModel):
     message: str
 
 
-class CallImportPreviewSheet(BaseModel):
-    """One worksheet (or one CSV file synthesized as a single sheet)."""
-
-    name: str = Field(..., description="Sheet name for xlsx; filename for csv.")
-    headers: List[str] = Field(
-        default_factory=list,
-        description="Column headers from the first non-empty row.",
-    )
-    row_count: int = Field(
-        ...,
-        description="Approximate count of data rows (excluding the header row).",
-    )
-
-
 class CallImportPreviewResponse(BaseModel):
     """Sheets/headers extracted from an uploaded CSV or Excel workbook.
 
@@ -2158,7 +2355,7 @@ class CallImportPreviewResponse(BaseModel):
 
 
 class CallImportUpdate(BaseModel):
-    """Partial update of a call-import batch (currently dataset/tags)."""
+    """Partial update of a call-import batch."""
 
     dataset: Optional[str] = Field(
         None,
@@ -2170,6 +2367,72 @@ class CallImportUpdate(BaseModel):
         None,
         description=(
             "Replace the full set of tag assignments. Pass an empty list to clear all tags."
+        ),
+    )
+    schema_id: Optional[UUID] = Field(
+        None,
+        description=(
+            "Reassign the Input Parameter schema. Only honoured while the "
+            "batch is in ``uploaded`` or ``mapped`` state; once the batch "
+            "has rows it's locked to its original schema."
+        ),
+    )
+
+
+class CallImportMappingUpdate(BaseModel):
+    """Mapping payload for the MAP stage (``PATCH /call-imports/{id}/mapping``).
+
+    Idempotent: callers can submit this multiple times against an
+    ``uploaded`` or ``mapped`` batch. Validation re-runs against the
+    persisted ``available_sheets`` snapshot every time so the user can
+    correct mistakes without re-uploading the file.
+    """
+
+    schema_id: UUID = Field(
+        ...,
+        description=(
+            "Reusable Input Parameter schema this batch is mapped against. "
+            "Must belong to the active workspace."
+        ),
+    )
+    sheet_name: Optional[str] = Field(
+        None,
+        description=(
+            "Worksheet to use when the staged source file is an Excel "
+            "workbook. REQUIRED for xlsx; ignored / rejected for CSV."
+        ),
+    )
+    parameter_mapping: Dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "``{schema_parameter_name: source_header}`` map covering every "
+            "required schema parameter."
+        ),
+    )
+    skipped_columns: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Source headers the uploader has explicitly skipped. Every "
+            "source header must be either mapped or appear here."
+        ),
+    )
+
+
+class CallImportStartRequest(BaseModel):
+    """Provider + credential picker for the IMPORT stage."""
+
+    provider: str = Field(
+        ...,
+        description=(
+            "Telephony provider key. Must match the "
+            "``telephony_integration_id``'s provider."
+        ),
+    )
+    telephony_integration_id: UUID = Field(
+        ...,
+        description=(
+            "Specific TelephonyIntegration credential row to use when "
+            "downloading recordings for this batch."
         ),
     )
 
@@ -2223,19 +2486,37 @@ class CallImportEvaluationCreate(BaseModel):
         ),
     )
     transcript_sources: List[CallImportEvaluationTranscriptSource] = Field(
-        default_factory=lambda: ["production"],
+        default_factory=lambda: ["diarised"],
         min_length=1,
-        max_length=2,
+        max_length=1,
         description=(
-            "Which transcript(s) to score against. ``production`` reads "
-            "the CSV-supplied transcript; ``diarised`` reads the "
-            "worker-produced transcript. Passing both values triggers two "
-            "evaluation runs (one per source) so the user can compare "
-            "scores side-by-side. Defaults to ``['production']`` for "
-            "backwards compatibility with clients that don't pass this "
-            "field."
+            "Which transcript to score against. Only ``diarised`` is "
+            "supported — every evaluation run scores the diarised "
+            "transcript. Pass ``['diarised']`` explicitly or omit the "
+            "field to take the default; any other value (including the "
+            "legacy ``'production'`` source) is rejected with a 400."
         ),
     )
+
+    @field_validator("transcript_sources")
+    @classmethod
+    def _validate_transcript_sources(
+        cls, value: List[str]
+    ) -> List["CallImportEvaluationTranscriptSource"]:
+        # The Field min_length/max_length constraints catch empty +
+        # over-long payloads; this validator's job is to reject any
+        # non-diarised source value and normalize the result to
+        # ``['diarised']`` for downstream code.
+        invalid = [src for src in value if src != "diarised"]
+        if invalid:
+            raise ValueError(
+                "Only the 'diarised' transcript source is supported "
+                "(received: "
+                + ", ".join(repr(src) for src in invalid)
+                + "). Remove 'production' from transcript_sources or "
+                "omit the field to use the default."
+            )
+        return ["diarised"]
     # --- Run-level LLM config ---
     llm_provider: Optional[str] = Field(
         default=None,
@@ -2264,12 +2545,18 @@ class CallImportEvaluationCreate(BaseModel):
         ),
     )
     # --- Auto-transcribe / diarization hook ---
+    # Every diarised run auto-diarises rows that don't already have a
+    # diarised transcript. The flag stays on the schema so legacy API
+    # callers don't 400 immediately, but the route now requires
+    # ``stt_provider`` + ``stt_model`` on every run regardless of this
+    # value.
     auto_transcribe: bool = Field(
-        default=False,
+        default=True,
         description=(
-            "If true, run diarization/transcription on every selected row "
-            "before evaluation. ``stt_provider`` + ``stt_model`` are "
-            "required when this flag is set."
+            "Auto-diarise rows missing a diarised transcript before "
+            "evaluation. Defaults to true and is effectively required: "
+            "``stt_provider`` + ``stt_model`` are mandatory on every "
+            "evaluation run."
         ),
     )
     transcribe_overwrite: bool = Field(
@@ -2298,6 +2585,18 @@ class CallImportEvaluationCreate(BaseModel):
         max_length=20,
         description="ISO language hint for the STT provider, e.g. 'en'.",
     )
+    discover_new_metrics: bool = Field(
+        default=False,
+        description=(
+            "When true, the LLM is invited to propose net-new top-level "
+            "metrics (boolean / rating / category) observed in the "
+            "transcripts in addition to scoring the selected metrics. "
+            "Candidates surface in the Discovered metrics panel on the "
+            "evaluation detail Flow tab and can be promoted into real "
+            "standalone Metric rows. Defaults to false so existing "
+            "callers retain previous behaviour."
+        ),
+    )
 
 
 class CallImportEvaluationUpdate(BaseModel):
@@ -2317,6 +2616,136 @@ class CallImportEvaluationBulkDelete(BaseModel):
         ...,
         min_length=1,
         description="Evaluation ids to delete.",
+    )
+
+
+class CallImportEvaluationRetryRequest(BaseModel):
+    """Body for retrying a subset (or all failed rows) of an evaluation run.
+
+    ``eval_row_ids`` is optional: when ``None`` the retry applies to
+    every row in the run that is currently in the ``failed`` state. The
+    selection always intersects with the run's actual rows, so unknown
+    ids are silently skipped (and surfaced in the response's
+    ``skipped`` list with reason ``unknown``).
+
+    The optional ``llm_*`` / ``metric_llm_overrides`` / ``stt_*`` fields
+    let the caller swap out the LLM or STT configuration that the
+    failed rows were originally evaluated with. When a field is left
+    ``None`` the run's existing value is preserved. When a field is
+    set, it is persisted onto the run (so a follow-up retry sees the
+    new value as the default) and used by the worker on the next
+    pass. Providing only one half of provider+model is rejected so
+    the worker never ends up with a half-configured run.
+    """
+
+    eval_row_ids: Optional[List[UUID]] = Field(
+        default=None,
+        description=(
+            "Restrict the retry to a specific subset of evaluation rows. "
+            "When omitted, every row with status='failed' in this run is "
+            "re-enqueued."
+        ),
+    )
+
+    # --- LLM overrides ---
+    llm_provider: Optional[str] = Field(
+        default=None,
+        max_length=50,
+        description=(
+            "Override the run-level LLM provider for this retry (and "
+            "future retries). Must be paired with ``llm_model``."
+        ),
+    )
+    llm_model: Optional[str] = Field(
+        default=None,
+        max_length=100,
+        description=(
+            "Override the run-level LLM model. Must be paired with "
+            "``llm_provider``."
+        ),
+    )
+    llm_credential_id: Optional[UUID] = Field(
+        default=None,
+        description=(
+            "Pin a specific AIProvider credential row for the LLM. "
+            "When omitted, the resolver falls back to the org default."
+        ),
+    )
+    metric_llm_overrides: Optional[
+        Dict[str, CallImportEvaluationLLMOverride]
+    ] = Field(
+        default=None,
+        description=(
+            "Replace the run's per-metric LLM overrides. When omitted, "
+            "the existing overrides are kept; when set, this dict "
+            "fully replaces them (pass an empty object to clear)."
+        ),
+    )
+
+    # --- STT overrides ---
+    stt_provider: Optional[str] = Field(
+        default=None,
+        max_length=50,
+        description=(
+            "Override the run-level STT provider for this retry. Must "
+            "be paired with ``stt_model``. Only meaningful when the "
+            "run is configured for the diarised transcript source."
+        ),
+    )
+    stt_model: Optional[str] = Field(
+        default=None,
+        max_length=100,
+        description="Override the run-level STT model.",
+    )
+    stt_credential_id: Optional[UUID] = Field(
+        default=None,
+        description="Pin a specific credential row for the STT call.",
+    )
+    transcribe_overwrite: bool = Field(
+        default=False,
+        description=(
+            "When True, wipe the diarised transcript on every retried "
+            "row's source CallImportRow so the (possibly new) STT runs "
+            "from scratch. When False, rows that already have a "
+            "diarised transcript skip diarisation and only re-evaluate."
+        ),
+    )
+
+
+class CallImportEvaluationRetrySkippedItem(BaseModel):
+    """One entry in the retry response's ``skipped`` list."""
+
+    eval_row_id: UUID
+    reason: str = Field(
+        ...,
+        description=(
+            "Why this row was not re-enqueued. Known values: "
+            "'unknown' (id not in this run), 'in_progress' "
+            "(status is pending/running), 'completed' (already "
+            "successful), 'source_row_missing'."
+        ),
+    )
+
+
+class CallImportEvaluationRetryResponse(BaseModel):
+    """Summary of a retry fan-out request."""
+
+    requeued: int = Field(
+        ...,
+        description="How many evaluation rows were reset and re-enqueued.",
+    )
+    transcribe_requeued: int = Field(
+        default=0,
+        description=(
+            "Of those, how many were chained through a diarisation "
+            "task first because the diarised transcript was missing "
+            "(matches the auto-transcribe behavior of the create-run "
+            "endpoint)."
+        ),
+    )
+    skipped: List[CallImportEvaluationRetrySkippedItem] = Field(
+        default_factory=list,
+        description="Rows the caller asked for that we did not re-enqueue.",
     )
 
 
@@ -2382,6 +2811,10 @@ class CallImportEvaluationResponse(BaseModel):
     # for runs the user has not summarised yet. ``is_stale`` on the
     # nested object is set by the route, not the model.
     tldr_summary: Optional["EvaluationTldrSummary"] = None
+    # True when the user opted into top-level metric discovery on the
+    # Run Evaluation modal. The frontend uses this to gate the
+    # "Discovered metrics" panel on the Flow tab.
+    discover_new_metrics: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -2408,7 +2841,9 @@ class CallImportEvaluationRowResponse(BaseModel):
     evaluation_id: UUID
     call_import_row_id: UUID
     row_index: Optional[int] = None
-    external_call_id: Optional[str] = None
+    # Renamed from ``external_call_id``; same value, mirrors the renamed
+    # ``call_import_rows.conversation_id`` column.
+    conversation_id: Optional[str] = None
     transcript: Optional[str] = None
     raw_columns: Optional[Dict[str, Any]] = None
     recording_url: Optional[str] = None
@@ -2796,6 +3231,94 @@ class PromoteDiscoveredChildRequest(BaseModel):
     # keeps the original opt-in behavior available for callers that
     # don't care about rationales.
     capture_rationale: bool = True
+
+
+# --- Discovered top-level metrics (per-evaluation discovery) ---
+#
+# Parallel to ``DiscoveredLabelItem`` / merge / delete / promote — but
+# scoped to the evaluation as a whole, not to a parent category metric.
+# Used by the "Discovered metrics" panel at the top of the evaluation
+# detail Flow tab when ``CallImportEvaluation.discover_new_metrics``
+# is true.
+
+
+# The promote endpoint accepts these three suggested types; "category"
+# creates a parent (no children yet) that the user can later extend in
+# the Metrics page.
+DiscoveredMetricSuggestedType = Literal["boolean", "rating", "category"]
+
+
+class DiscoveredMetricItem(BaseModel):
+    """One LLM-discovered candidate top-level metric aggregated across rows.
+
+    Mirrors :class:`DiscoveredLabelItem` but at the evaluation level
+    (no ``parent_metric_id``). ``suggested_type`` is the LLM's guess at
+    the best representation; the promote flow lets the user override
+    it before creating the real :class:`Metric` row.
+    """
+
+    key: str
+    name: str
+    description: Optional[str] = None
+    suggested_type: DiscoveredMetricSuggestedType = "boolean"
+    sample_rationale: Optional[str] = None
+    examples: List[str] = Field(default_factory=list, max_length=3)
+    count: int = 0
+
+
+class DiscoveredMetricsResponse(BaseModel):
+    """List of discovered candidate top-level metrics for an evaluation."""
+
+    evaluation_id: UUID
+    items: List[DiscoveredMetricItem] = Field(default_factory=list)
+
+
+class DiscoveredMetricMergeRequest(BaseModel):
+    """Body for POST /evaluations/{eval_id}/discovered-metrics/merge.
+
+    Rewrites every row's ``metric_scores["__discovered_metrics__"]``
+    entries whose key is ``from_key`` to use ``to_key`` instead, and
+    records the redirect in ``CallImportEvaluation.discovered_metric_aliases``
+    so workers finishing later can't resurrect the merged-out slug.
+    """
+
+    from_key: str = Field(..., min_length=1, max_length=120)
+    to_key: str = Field(..., min_length=1, max_length=120)
+
+
+class DiscoveredMetricDeleteRequest(BaseModel):
+    """Body for POST /evaluations/{eval_id}/discovered-metrics/delete.
+
+    Strips a candidate from every row's
+    ``metric_scores["__discovered_metrics__"]`` list and tombstones
+    the slug at the evaluation level (empty-string alias) so workers
+    finishing later can't re-introduce it.
+    """
+
+    key: str = Field(..., min_length=1, max_length=120)
+
+
+class PromoteDiscoveredMetricRequest(BaseModel):
+    """Body for POST /metrics/from-discovered.
+
+    Creates a standalone :class:`Metric` (``parent_metric_id=None``)
+    from an LLM-discovered candidate. The new metric's name is
+    normalized so ``slugify(name) == key`` to keep already-scored row
+    payloads resolvable against the promoted metric. ``metric_type``
+    selects how the new metric will be scored on future runs;
+    ``"category"`` creates a ``multi_label`` parent with no children
+    (the user adds children via the existing Metrics page).
+    """
+
+    key: str = Field(..., min_length=1, max_length=120)
+    name: str = Field(..., min_length=1, max_length=120)
+    description: Optional[str] = Field(default=None, max_length=4000)
+    metric_type: DiscoveredMetricSuggestedType = "boolean"
+    capture_rationale: bool = True
+    # Optional per-type config knobs passed through to ``Metric.custom_config``.
+    # For ``rating`` the frontend can supply {"min": 1, "max": 5}; for
+    # ``boolean`` / ``category`` the field is typically empty.
+    custom_config: Optional[Dict[str, Any]] = None
 
 
 # --- Workspace Schemas ---

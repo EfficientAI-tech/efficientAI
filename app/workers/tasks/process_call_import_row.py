@@ -160,7 +160,7 @@ def process_call_import_row_task(self, row_id: str):
             return {"status": "failed", "reason": "provider_client_error"}
 
         original_csv_url = (row.recording_url or "").strip() or None
-        provider_lookup_supported = bool(row.external_call_id) and hasattr(
+        provider_lookup_supported = bool(row.conversation_id) and hasattr(
             client, "get_call_recording_url"
         )
 
@@ -178,7 +178,7 @@ def process_call_import_row_task(self, row_id: str):
 
         if provider_lookup_supported:
             try:
-                resolved_url = client.get_call_recording_url(row.external_call_id)
+                resolved_url = client.get_call_recording_url(row.conversation_id)
                 fetched: Tuple[bytes, str] = client.download_recording(resolved_url)
                 audio_bytes, content_type = fetched
                 used_url = resolved_url

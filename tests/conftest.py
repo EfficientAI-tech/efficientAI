@@ -329,6 +329,7 @@ def client(db_session, api_key, org_id):
         audio,
         auth,
         call_import_evaluations,
+        call_import_schemas,
         call_import_tags,
         call_imports,
         chat,
@@ -393,6 +394,7 @@ def client(db_session, api_key, org_id):
     app.include_router(voice_playground.router, prefix="/api/v1")
     app.include_router(telephony.router, prefix="/api/v1")
     app.include_router(call_imports.router, prefix="/api/v1")
+    app.include_router(call_import_schemas.router, prefix="/api/v1")
     app.include_router(call_import_tags.router, prefix="/api/v1")
     app.include_router(call_import_evaluations.router, prefix="/api/v1")
     app.include_router(workspaces.router, prefix="/api/v1")

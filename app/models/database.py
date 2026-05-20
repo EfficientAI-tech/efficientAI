@@ -1,6 +1,7 @@
 """SQLAlchemy database models."""
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     Column,
     DateTime,
@@ -694,7 +695,15 @@ class Metric(Base):
     # Basic information
     name = Column(String, nullable=False)
     description = Column(String, nullable=True)
-    
+    # Free-form illustrative example used to sharpen the LLM judge's
+    # rubric. Today this is consumed by child sub-labels of a
+    # categorization parent metric so each label can carry "what does
+    # this look like in a transcript?" text alongside the rubric in
+    # ``description``. The column lives on every Metric row for
+    # forward-compat: a standalone metric could later surface its own
+    # example without another migration.
+    example = Column(Text, nullable=True)
+
     # Configuration
     metric_type = Column(String, nullable=False, default=MetricType.RATING.value)
     trigger = Column(String, nullable=False, default=MetricTrigger.ALWAYS.value)
@@ -1502,6 +1511,98 @@ class TelephonyMaskedSession(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class CallImportSchema(Base):
+    """Reusable Input Parameter schema for the call-uploads flow.
+
+    A schema is workspace-scoped: users define a named bundle of typed
+    Input Parameters once (e.g. "Standard Voice QA" with conversation_id +
+    recording_url + transcript + agent_name) and then map those parameters
+    to CSV/Excel headers each time they upload a new batch.
+
+    Every schema MUST contain exactly one parameter with
+    ``type='conversation_id'`` and ``is_required=True`` - that's the
+    mandatory identity field every imported row needs. The invariant is
+    enforced in app code on create/update (no DB-level CHECK because the
+    parent + children are written across two tables in one transaction).
+    """
+
+    __tablename__ = "call_import_schemas"
+    __table_args__ = (
+        # Case-insensitive uniqueness is enforced via the matching partial
+        # index on ``LOWER(name)`` in the migration; this constraint here
+        # would be case-sensitive and is intentionally omitted to avoid
+        # confusing the user.
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    created_by_user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    parameters = relationship(
+        "CallImportSchemaParameter",
+        back_populates="schema",
+        cascade="all, delete-orphan",
+        order_by="CallImportSchemaParameter.ordering",
+    )
+
+
+class CallImportSchemaParameter(Base):
+    """A single typed parameter inside a :class:`CallImportSchema`.
+
+    ``type`` is one of the strings tracked by
+    :data:`app.models.enums.CallImportParameterType`. ``conversation_id``
+    is reserved for the mandatory identity parameter every schema must
+    contain.
+    """
+
+    __tablename__ = "call_import_schema_parameters"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    schema_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_import_schemas.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    name = Column(String(255), nullable=False)
+    type = Column(String(32), nullable=False)
+    description = Column(Text, nullable=True)
+    is_required = Column(Boolean, nullable=False, default=False)
+    # Stable ordering so the UI renders parameters in the order the
+    # schema author defined them (matters when conversation_id is pinned
+    # first and the user re-orders the rest).
+    ordering = Column(Integer, nullable=False, default=0)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    schema = relationship("CallImportSchema", back_populates="parameters")
+
+
 class CallImport(Base):
     """Batch record for a CSV-driven call import job."""
 
@@ -1520,7 +1621,12 @@ class CallImport(Base):
     )
     created_by_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
 
-    provider = Column(String(50), nullable=False, default="exotel")
+    # Telephony provider key (e.g. ``'exotel'``, ``'plivo'``). In the
+    # legacy one-shot ``POST /upload`` endpoint this is supplied with the
+    # file; in the three-stage flow (UPLOAD -> MAP -> IMPORT) the value
+    # isn't known until the IMPORT stage, so the column is nullable for
+    # ``uploaded`` / ``mapped`` batches.
+    provider = Column(String(50), nullable=True, default="exotel")
     # Pin a specific telephony credential for this batch so the worker
     # downloads recordings using *that* row instead of the org default.
     # NULL preserves legacy behavior (resolve by provider + default).
@@ -1536,12 +1642,51 @@ class CallImport(Base):
     # uploads since CSV has no sheet concept.
     sheet_name = Column(String(255), nullable=True)
 
+    # --- Source-file staging (UPLOAD stage) ---------------------------
+    # The raw CSV / Excel file is stored in S3 between stages so the
+    # user can come back later to MAP and IMPORT without re-uploading.
+    # ``source_s3_key`` is NULL on legacy batches that were imported via
+    # the one-shot endpoint (those batches stay read-only post-import).
+    source_s3_key = Column(Text, nullable=True)
+    source_format = Column(String(16), nullable=True)
+    source_size_bytes = Column(BigInteger, nullable=True)
+    source_content_type = Column(String(255), nullable=True)
+
+    # Snapshot of the file's sheets + headers captured at UPLOAD time
+    # so the MAP UI doesn't need to re-fetch the source bytes from S3.
+    # Shape: ``[{"name": str, "headers": [str, ...], "row_count": int}, ...]``.
+    available_sheets = Column(JSON, nullable=True)
+
+    # User's explicit "drop these columns" decision captured at MAP
+    # time. Was validation-only and ephemeral in the legacy flow; now
+    # persisted so the IMPORT stage can re-parse the file with the same
+    # mapping/skip intent.
+    skipped_columns = Column(JSON, nullable=False, default=list)
+
     # Free-text high-level segregation label. Powers the "Dataset" filter
     # at the top of the imports page; multiple imports can share a value.
     dataset = Column(String(255), nullable=True, index=True)
 
-    # JSON describing how the uploader's CSV headers map to system fields.
+    # Reusable Input Parameter schema this batch was uploaded against.
+    # NULL on legacy batches uploaded before the schema-driven flow
+    # shipped; those still render via ``column_mapping`` + ``extra_columns``
+    # + ``custom_column_mapping`` below.
+    schema_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_import_schemas.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    # New schema-driven mapping: ``{schema_parameter_name: csv_header}``.
+    # Populated for new uploads; empty dict on legacy batches.
+    parameter_mapping = Column(JSON, nullable=False, default=dict)
+
+    # Legacy free-form mapping (pre-schema-flow). Kept on the model so
+    # batches that were uploaded before the schema feature shipped still
+    # render correctly on the detail page; new uploads stop writing here.
     # Keys: external_call_id (required), transcript, recording_url.
+    # (DB column ``external_call_id`` is now ``conversation_id``; this
+    # JSON key stays as-is for historical batches.)
     # Values: original CSV header strings (preserve user casing for export).
     column_mapping = Column(JSON, nullable=False, default=dict)
     # Ordered list of additional CSV header strings the uploader wants
@@ -1605,7 +1750,11 @@ class CallImportRow(Base):
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
 
     row_index = Column(Integer, nullable=False)
-    external_call_id = Column(String(255), nullable=False, index=True)
+    # Was historically named ``external_call_id``; renamed to
+    # ``conversation_id`` so the new schema-driven upload flow can refer
+    # to it by a single canonical name across the schema definition,
+    # exports, and downstream evaluation tables.
+    conversation_id = Column(String(255), nullable=False, index=True)
     # Optional at upload time; the worker resolves it via Exotel's Calls API when
     # absent and writes the resolved URL back here so retries are cheap.
     recording_url = Column(Text, nullable=True)
@@ -1794,6 +1943,30 @@ class CallImportEvaluation(Base):
     # worker so that rows finishing AFTER a merge cannot reintroduce
     # the merged-away slug. Empty dict on fresh rows.
     discovered_label_aliases = Column(
+        JSON, nullable=False, default=dict, server_default="{}"
+    )
+
+    # Per-run opt-in for top-level metric discovery. When True, the LLM
+    # is asked to propose brand-new top-level metrics (boolean / rating /
+    # category) observed in the transcripts in addition to scoring the
+    # ``selected_metric_ids`` for the row. Candidates surface in a
+    # "Discovered metrics" panel on the evaluation's Flow tab and can
+    # be promoted into real standalone ``Metric`` rows via
+    # ``POST /metrics/from-discovered``. Defaults to False so existing
+    # evaluation creation payloads keep their previous behaviour.
+    discover_new_metrics = Column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    # Flat slug-to-slug redirect map for user merges + tombstones of
+    # discovered top-level metric candidates. Mirrors
+    # ``discovered_label_aliases`` but is NOT nested per parent —
+    # top-level metric discovery is not scoped to any parent. Shape::
+    #
+    #     {"<from_slug>": "<to_slug>", ...}
+    #
+    # An empty-string value tombstones the slug so workers finishing
+    # later can't re-introduce it.
+    discovered_metric_aliases = Column(
         JSON, nullable=False, default=dict, server_default="{}"
     )
 

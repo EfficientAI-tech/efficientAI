@@ -70,7 +70,7 @@ def _make_call_import_row(db_session, call_import, row_index=0, raw_columns=None
         call_import_id=call_import.id,
         organization_id=call_import.organization_id,
         row_index=row_index,
-        external_call_id=f"call-{row_index}",
+        conversation_id=f"call-{row_index}",
         recording_url="https://x/r.mp3",
         transcript="hello world",
         raw_columns=raw_columns

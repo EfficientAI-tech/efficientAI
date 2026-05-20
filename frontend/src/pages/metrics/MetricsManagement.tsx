@@ -1,5 +1,4 @@
 import { Fragment, useState, useEffect, useMemo, useRef } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../lib/api'
 import Button from '../../components/Button'
@@ -30,6 +29,12 @@ interface Metric {
   id: string
   name: string
   description?: string
+  /**
+   * Optional illustrative example. Populated mainly on categorization
+   * child labels (via the Categorization Labels editor's "Example
+   * (Optional)" field) but accepted on every metric.
+   */
+  example?: string | null
   metric_type: 'number' | 'boolean' | 'rating' | 'text'
   metric_origin: 'default' | 'custom'
   supported_surfaces: Array<'agent' | 'voice_playground' | 'blind_test'>
@@ -132,27 +137,35 @@ export default function MetricsManagement() {
   // builder.
   type CreateMode = 'single' | 'category'
   const [createMode, setCreateMode] = useState<CreateMode>('single')
+  // Categorization Labels create form. Mirrors the "Manage Categorization
+  // Labels" screen: name + description (acts as the LLM Prompt) + N
+  // labels with name/definition/example, plus an "Enable LLM Rationale"
+  // toggle that propagates to every child (we re-use the existing
+  // MetricChildDraft.capture_rationale so the prompt builder picks
+  // rationales up without extra wiring).
+  //
+  // ``selection_mode`` is hardcoded to ``single_choice`` server-side so
+  // the CSV export emits ONE column per metric whose row value is the
+  // chosen label's name. ``allow_discovery`` is hardcoded false: the
+  // simplified UI no longer surfaces it.
   const [categoryForm, setCategoryForm] = useState<{
     name: string
     description: string
-    selection_mode: 'single_choice' | 'multi_label'
-    allow_discovery: boolean
     surfaces: MetricSurface[]
+    capture_rationale: boolean
     children: Array<{
       local_id: string
       name: string
       description: string
-      capture_rationale: boolean
+      example: string
     }>
   }>({
     name: '',
     description: '',
-    selection_mode: 'single_choice',
-    allow_discovery: false,
     surfaces: ['agent'],
+    capture_rationale: false,
     children: [
-      { local_id: 'c1', name: '', description: '', capture_rationale: true },
-      { local_id: 'c2', name: '', description: '', capture_rationale: true },
+      { local_id: 'c1', name: '', description: '', example: '' },
     ],
   })
   // Track which parent metric ids are EXPANDED in the metrics list.
@@ -197,23 +210,29 @@ export default function MetricsManagement() {
     server_id: string | null
     name: string
     description: string
-    capture_rationale: boolean
+    example: string
     enabled: boolean
   }
   const [editCategoryForm, setEditCategoryForm] = useState<{
     name: string
     description: string
+    // Selection mode lives here only so the save handler can avoid
+    // sending it in the PUT (the server rejects flipping it on a
+    // metric with completed evaluations). The simplified UI no longer
+    // surfaces a picker.
     selection_mode: 'single_choice' | 'multi_label'
-    allow_discovery: boolean
     surfaces: MetricSurface[]
+    // Metric-level rationale toggle. Mirrors the create flow: on save
+    // it propagates uniformly to every child's capture_rationale.
+    capture_rationale: boolean
     children: EditCategoryChild[]
     deleted_child_ids: string[]
   }>({
     name: '',
     description: '',
-    selection_mode: 'multi_label',
-    allow_discovery: false,
+    selection_mode: 'single_choice',
     surfaces: ['agent'],
+    capture_rationale: false,
     children: [],
     deleted_child_ids: [],
   })
@@ -272,15 +291,6 @@ export default function MetricsManagement() {
   // Draft string for the "Input columns" tag input — kept outside
   // ``formData`` so a half-typed header doesn't get persisted on Save.
   const [inputColumnDraft, setInputColumnDraft] = useState('')
-  // UI-only toggle that gates the "Call Imports" sub-section of the
-  // metric editor. Both ``input_columns`` (column-input judge) and
-  // ``compare_transcripts`` (transcript-compare judge) only make sense
-  // for metrics that score CSV-imported call rows, so we hide them
-  // behind a single header check to keep the form scan-friendly for
-  // people authoring plain live-call metrics. The state is purely
-  // visual: when the user toggles it off we clear both underlying
-  // fields so the saved metric matches what the user sees.
-  const [isForCallImports, setIsForCallImports] = useState(false)
   // Visibility of the "Browse imported columns" popover that hangs
   // under the input. Toggled by the picker button and by click-outside
   // on the wrapping container.
@@ -300,9 +310,9 @@ export default function MetricsManagement() {
 
   // Recent call imports for the active workspace — the user picks
   // input columns by drilling into a specific batch instead of
-  // browsing a workspace-wide flat list. We pull a generous page so a
-  // typical workspace's recent imports all fit without pagination
-  // complexity inside the popover.
+  // browsing a workspace-wide flat list. A generous page covers the
+  // typical workspace's recent imports without pagination complexity
+  // inside the popover.
   const { data: recentImportsResponse } = useQuery({
     queryKey: ['call-imports-for-metric-picker', activeWorkspaceId],
     queryFn: () => apiClient.listCallImports({ page: 1, page_size: 50 }),
@@ -310,32 +320,9 @@ export default function MetricsManagement() {
   })
   const recentImports = recentImportsResponse?.items ?? []
 
-  // Seed default metrics on first load if none exist
-  const seedMutation = useMutation({
-    mutationFn: () => apiClient.seedDefaultMetrics(),
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['metrics'] })
-      if (data && data.length > 0) {
-        showToast(`Added ${data.length} new default metric${data.length > 1 ? 's' : ''}`, 'success')
-      } else {
-        showToast('All default metrics already exist', 'success')
-      }
-    },
-    onError: () => {
-      showToast('Failed to sync default metrics', 'error')
-    },
-  })
-
-  useEffect(() => {
-    if (metrics.length === 0 && !isLoading) {
-      seedMutation.mutate()
-    }
-  }, [metrics.length, isLoading])
-
-  // Close the "Browse imported columns" popover when the user clicks
-  // anywhere outside the picker container. We attach the listener only
-  // while the popover is open so it doesn't add overhead to every
-  // page render.
+  // Close the picker popover when the user clicks anywhere outside
+  // the picker container. The listener is only attached while the
+  // popover is open so it doesn't add overhead to every page render.
   useEffect(() => {
     if (!columnPickerOpen) return
     const handlePointerDown = (event: MouseEvent | TouchEvent) => {
@@ -359,57 +346,27 @@ export default function MetricsManagement() {
     }
   }, [columnPickerOpen])
 
-  // When another page navigates here with `state.prefillInputColumns`
-  // (e.g. the "Create metric from columns…" action on the call import
-  // detail page), auto-open the single-metric create modal with the
-  // headers pre-populated. We then clear the state so a refresh / nav
-  // back doesn't keep re-triggering the modal.
-  const location = useLocation()
-  const navigate = useNavigate()
+  // Seed default metrics on first load if none exist
+  const seedMutation = useMutation({
+    mutationFn: () => apiClient.seedDefaultMetrics(),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['metrics'] })
+      if (data && data.length > 0) {
+        showToast(`Added ${data.length} new default metric${data.length > 1 ? 's' : ''}`, 'success')
+      } else {
+        showToast('All default metrics already exist', 'success')
+      }
+    },
+    onError: () => {
+      showToast('Failed to sync default metrics', 'error')
+    },
+  })
+
   useEffect(() => {
-    const state = (location.state || {}) as {
-      prefillInputColumns?: string[]
+    if (metrics.length === 0 && !isLoading) {
+      seedMutation.mutate()
     }
-    const headers = Array.isArray(state.prefillInputColumns)
-      ? state.prefillInputColumns
-          .map((h) => String(h || '').trim())
-          .filter(Boolean)
-      : []
-    if (headers.length === 0) return
-    setIsCustomMetricMode(true)
-    setEditingMetric(null)
-    setCreateMode('single')
-    setFormData({
-      name: '',
-      description: '',
-      metric_origin: 'custom',
-      metric_type: 'rating',
-      custom_data_type: 'enum',
-      enum_options_csv: '',
-      number_min: 0,
-      number_max: 10,
-      number_step: 1,
-      tags_csv: '',
-      supported_surfaces: ['agent'],
-      enabled_surfaces: ['agent'],
-      trigger: 'always',
-      enabled: true,
-      capture_rationale: false,
-      allow_discovery: false,
-      input_columns: Array.from(new Set(headers)),
-      // Pre-seeded column-input judge from a CSV import — compare-
-      // transcripts is mutually exclusive so it stays off here.
-      compare_transcripts: false,
-    })
-    setInputColumnDraft('')
-    // The user arrived here from a CSV import's "Create metric" CTA,
-    // so the Call Imports sub-section is the whole point — keep it
-    // expanded on first paint.
-    setIsForCallImports(true)
-    setShowCreateModal(true)
-    navigate(location.pathname, { replace: true, state: null })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.state])
+  }, [metrics.length, isLoading])
 
   const createMutation = useMutation({
     mutationFn: (data: typeof formData) => apiClient.createMetric(data),
@@ -477,6 +434,10 @@ export default function MetricsManagement() {
       description?: string | null
       selection_mode: 'single_choice' | 'multi_label'
       allow_discovery?: boolean
+      // Parent-level rationale toggle. Children never carry their own
+      // rationale in hierarchical mode — the parent owns the single
+      // rationale column.
+      capture_rationale?: boolean
       supported_surfaces: string[]
       enabled_surfaces: string[]
       children: Array<{
@@ -523,6 +484,9 @@ export default function MetricsManagement() {
         name: string
         description?: string | null
         allow_discovery: boolean
+        // Parent-level rationale toggle (children never carry their own
+        // rationale in hierarchical mode).
+        capture_rationale: boolean
         supported_surfaces: string[]
         enabled_surfaces: string[]
       }
@@ -530,12 +494,14 @@ export default function MetricsManagement() {
         id: string
         name: string
         description?: string | null
+        example?: string | null
         capture_rationale: boolean
         enabled: boolean
       }>
       childrenToCreate: Array<{
         name: string
         description?: string | null
+        example?: string | null
         capture_rationale: boolean
         enabled: boolean
       }>
@@ -548,6 +514,10 @@ export default function MetricsManagement() {
           apiClient.updateMetric(child.id, {
             name: child.name,
             description: child.description ?? undefined,
+            // Send the example explicitly (including "" to clear) so
+            // the backend's "None = leave unchanged" rule still lets
+            // the user wipe a previously stored example.
+            example: child.example ?? '',
             capture_rationale: child.capture_rationale,
             enabled: child.enabled,
           } as any),
@@ -558,6 +528,7 @@ export default function MetricsManagement() {
           apiClient.addMetricChild(parentId, {
             name: child.name,
             description: child.description ?? undefined,
+            example: child.example ?? undefined,
             capture_rationale: child.capture_rationale,
             enabled: child.enabled,
           }),
@@ -653,12 +624,10 @@ export default function MetricsManagement() {
     setCategoryForm({
       name: '',
       description: '',
-      selection_mode: 'single_choice',
-      allow_discovery: false,
       surfaces: ['agent'],
+      capture_rationale: false,
       children: [
-        { local_id: 'c1', name: '', description: '', capture_rationale: true },
-        { local_id: 'c2', name: '', description: '', capture_rationale: true },
+        { local_id: 'c1', name: '', description: '', example: '' },
       ],
     })
   }
@@ -736,8 +705,6 @@ export default function MetricsManagement() {
       input_columns: [],
       compare_transcripts: false,
     })
-    setInputColumnDraft('')
-    setIsForCallImports(false)
   }
 
   const getCustomConfigFromForm = () => {
@@ -880,15 +847,6 @@ export default function MetricsManagement() {
         : [],
       compare_transcripts: !!metric.compare_transcripts,
     })
-    setInputColumnDraft('')
-    // The Call Imports sub-section auto-expands when the metric we're
-    // opening has either call-import-specific knob configured —
-    // otherwise it stays collapsed so the form reads as a plain
-    // live-call metric editor by default.
-    setIsForCallImports(
-      (Array.isArray(metric.input_columns) && metric.input_columns.length > 0)
-        || !!metric.compare_transcripts,
-    )
     setIsCustomMetricMode(metric.metric_origin === 'custom')
     setShowCreateModal(true)
   }
@@ -907,20 +865,29 @@ export default function MetricsManagement() {
         server_id: child.id,
         name: child.name,
         description: child.description || '',
-        capture_rationale: !!child.capture_rationale,
+        example: child.example || '',
         enabled: child.enabled,
       }),
     )
+    // Seed the metric-level rationale toggle from the parent's own
+    // ``capture_rationale`` flag — the LLM emits a single parent-level
+    // rationale, so the parent row is the source of truth. We fall back
+    // to ``children.some(c.capture_rationale)`` for legacy parents that
+    // never had the flag set on the parent (the 034 migration backfills
+    // those, but be defensive in case the migration hasn't run yet).
+    const inheritedRationale =
+      !!parent.capture_rationale ||
+      (parent.children || []).some((c) => !!c.capture_rationale)
     setEditCategoryForm({
       name: parent.name,
       description: parent.description || '',
       selection_mode:
         (parent.selection_mode as 'single_choice' | 'multi_label') ||
-        'multi_label',
-      allow_discovery: !!parent.allow_discovery,
+        'single_choice',
       surfaces: (parent.supported_surfaces?.length
         ? parent.supported_surfaces
         : ['agent']) as MetricSurface[],
+      capture_rationale: inheritedRationale,
       children: existingChildren,
       deleted_child_ids: [],
     })
@@ -944,23 +911,28 @@ export default function MetricsManagement() {
   const handleUpdateCategory = () => {
     if (!editingMetric) return
     if (!editCategoryForm.name.trim()) {
-      alert('Please enter a category name')
+      alert('Please enter a metric name')
       return
     }
     const namedChildren = editCategoryForm.children.filter((c) =>
       c.name.trim(),
     )
-    if (namedChildren.length < 2) {
-      alert('A category needs at least 2 named sub-labels')
+    if (namedChildren.length < 1) {
+      alert('Please add at least one named label')
       return
     }
+    // Parent-level rationale toggle goes on the parent payload only.
+    // Children always send ``capture_rationale: false`` because the LLM
+    // emits a single parent rationale per categorization — the server
+    // also coerces child capture_rationale to false defensively.
     const childrenToUpdate = namedChildren
       .filter((c) => !!c.server_id)
       .map((c) => ({
         id: c.server_id as string,
         name: c.name.trim(),
         description: c.description.trim() || null,
-        capture_rationale: c.capture_rationale,
+        example: c.example.trim(),
+        capture_rationale: false,
         enabled: c.enabled,
       }))
     const childrenToCreate = namedChildren
@@ -968,7 +940,8 @@ export default function MetricsManagement() {
       .map((c) => ({
         name: c.name.trim(),
         description: c.description.trim() || null,
-        capture_rationale: c.capture_rationale,
+        example: c.example.trim() || null,
+        capture_rationale: false,
         enabled: c.enabled,
       }))
     updateCategoryMutation.mutate({
@@ -976,7 +949,11 @@ export default function MetricsManagement() {
       parent: {
         name: editCategoryForm.name.trim(),
         description: editCategoryForm.description.trim() || null,
-        allow_discovery: editCategoryForm.allow_discovery,
+        // The simplified UI no longer surfaces allow_discovery. Force
+        // false so a re-save on an older legacy parent also turns it
+        // off, keeping the post-save UX honest.
+        allow_discovery: false,
+        capture_rationale: editCategoryForm.capture_rationale,
         supported_surfaces: editCategoryForm.surfaces,
         enabled_surfaces: editCategoryForm.surfaces,
       },
@@ -1139,8 +1116,6 @@ export default function MetricsManagement() {
                 input_columns: [],
                 compare_transcripts: false,
               })
-              setInputColumnDraft('')
-              setIsForCallImports(false)
               resetCategoryForm()
               setShowCreateModal(true)
             }}
@@ -1461,6 +1436,14 @@ export default function MetricsManagement() {
                               <div className="text-xs text-gray-500 max-w-md truncate">
                                 {child.description || '-'}
                               </div>
+                              {child.example ? (
+                                <div
+                                  className="mt-0.5 text-[11px] text-gray-400 max-w-md truncate italic"
+                                  title={child.example}
+                                >
+                                  e.g. {child.example}
+                                </div>
+                              ) : null}
                             </td>
                             <td className="px-6 py-2.5 whitespace-nowrap text-[11px] text-gray-400">
                               —
@@ -1540,10 +1523,10 @@ export default function MetricsManagement() {
                 <h2 className="text-2xl font-bold text-gray-900">
                   {editingMetric
                     ? isEditingCategory
-                      ? `Edit category · ${editingMetric.name}`
+                      ? `Manage Categorization Labels for: ${editingMetric.name}`
                       : 'Edit Metric'
                     : createMode === 'category'
-                      ? 'Create a category metric'
+                      ? `Manage Categorization Labels${categoryForm.name.trim() ? ` for: ${categoryForm.name.trim()}` : ''}`
                       : isCustomMetricMode
                         ? 'Create Custom Metric'
                         : 'Create Metric'}
@@ -1566,7 +1549,7 @@ export default function MetricsManagement() {
                     {(
                       [
                         { id: 'single', label: 'Single metric' },
-                        { id: 'category', label: 'Category with sub-labels' },
+                        { id: 'category', label: 'Categorization Labels' },
                       ] as Array<{ id: CreateMode; label: string }>
                     ).map((tab) => (
                       <button
@@ -1586,7 +1569,7 @@ export default function MetricsManagement() {
                   <p className="mt-2 text-[11px] text-gray-500">
                     {createMode === 'single'
                       ? 'Configure one custom metric end-to-end.'
-                      : 'A parent metric groups N sub-label children that the LLM scores together. Pick a selection mode to control how children relate (one-of vs. independent yes/no).'}
+                      : 'Create a metric with N labels. On a CSV-import evaluation the metric becomes one column whose row value is the LLM-chosen label name.'}
                   </p>
                 </div>
               )}
@@ -1886,147 +1869,29 @@ export default function MetricsManagement() {
                   )}
 
                   {/*
-                    Call Imports configuration: ``input_columns``
-                    (column-input judge) and ``compare_transcripts``
-                    (transcript-compare judge) are knobs that ONLY
-                    affect call-import evaluation runs (the CSV /
-                    Excel "Call Imports" upload flow). Grouping them
-                    behind a single "is this metric for Call Imports?"
-                    toggle keeps the form scan-friendly for people
-                    authoring plain live-call metrics, who don't need
-                    to know either flag exists. Hidden for child
-                    sub-metrics because the backend rejects either
-                    field on rows with a parent.
+                    Call Imports configuration: ``input_columns`` lets
+                    a metric judge specific CSV columns on each
+                    call-import row instead of the transcript. The
+                    knob is a no-op on live-call evaluations, so we
+                    render it unconditionally for any non-child
+                    metric. Hidden for child sub-metrics because the
+                    backend rejects ``input_columns`` on rows with a
+                    parent.
                   */}
                   {!editingMetric?.parent_metric_id && (
                     <div className="rounded-xl border border-gray-200 bg-white p-3.5 space-y-3.5">
-                      <label className="flex items-start gap-2.5 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={isForCallImports}
-                          onChange={(e) => {
-                            const next = e.target.checked
-                            setIsForCallImports(next)
-                            // Collapsing the section also clears both
-                            // fields so the saved metric exactly
-                            // mirrors what the user can see in the
-                            // form — no hidden state lingering after a
-                            // user changed their mind about routing
-                            // this metric through Call Imports.
-                            if (!next) {
-                              setFormData({
-                                ...formData,
-                                input_columns: [],
-                                compare_transcripts: false,
-                              })
-                              setInputColumnDraft('')
-                            }
-                          }}
-                          className="mt-0.5 h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
-                        />
-                        <span className="text-sm text-gray-800">
-                          <span className="font-medium">
-                            This metric is for Call Imports
-                          </span>
-                          <span className="block text-xs text-gray-500 mt-0.5">
-                            Configure how this metric scores rows from a
-                            CSV / Excel call-import batch — pick specific
-                            columns to judge, or compare the production
-                            and diarised transcripts side-by-side.
-                            Live-call evaluations are unaffected by
-                            either option below.
-                          </span>
-                        </span>
-                      </label>
-
-                      {isForCallImports && (
-                        <div className="ml-7 pl-3.5 border-l-2 border-gray-100 space-y-3.5">
-                  {/*
-                    Compare-transcripts judge: the metric reads BOTH
-                    the production and diarised transcripts on each
-                    call-import row and the Run Evaluation
-                    transcript_source toggle is ignored. Hidden for
-                    parent categories (server rejects the flag on
-                    rows with ``selection_mode``); also disabled when
-                    the metric is configured as a column-input judge
-                    (the two prompt templates are mutually exclusive).
-                    Toggling this flag on clears ``input_columns`` so
-                    the user can't end up with an incoherent metric
-                    shape on Save.
-                  */}
-                  {!editingMetric?.selection_mode
-                    && (() => {
-                      const hasInputColumns =
-                        (formData.input_columns?.length ?? 0) > 0
-                      const disabledByInputColumns =
-                        hasInputColumns && !formData.compare_transcripts
-                      const onToggle = (next: boolean) => {
-                        // Enabling compare_transcripts wipes
-                        // ``input_columns`` so the schema validator's
-                        // mutual-exclusion rule is satisfied in one
-                        // round-trip.
-                        setFormData({
-                          ...formData,
-                          compare_transcripts: next,
-                          input_columns: next ? [] : formData.input_columns,
-                        })
-                        if (next) setInputColumnDraft('')
-                      }
-                      return (
-                        <div className="rounded-xl border border-gray-200 bg-gray-50/70 p-3.5">
-                          <label
-                            className={`flex items-start gap-2.5 ${
-                              disabledByInputColumns
-                                ? 'cursor-not-allowed opacity-60'
-                                : 'cursor-pointer'
-                            }`}
-                            title={
-                              disabledByInputColumns
-                                ? 'Clear Input columns first — a metric can be either a column-input judge or a transcript-compare judge, not both.'
-                                : undefined
-                            }
-                          >
-                            <input
-                              type="checkbox"
-                              checked={!!formData.compare_transcripts}
-                              disabled={disabledByInputColumns}
-                              onChange={(e) => onToggle(e.target.checked)}
-                              className="mt-0.5 h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded disabled:opacity-60"
-                            />
-                            <span className="text-sm text-gray-800">
-                              <span className="font-medium">
-                                Compare transcripts (Production vs Diarised)
-                              </span>
-                              <span className="block text-xs text-gray-500 mt-0.5">
-                                When on, this metric reads BOTH transcripts
-                                on each row and the judge scores based on
-                                the relationship between them. The Run
-                                Evaluation transcript_source setting is
-                                ignored for this metric.
-                              </span>
-                            </span>
-                          </label>
-                        </div>
-                      )
-                    })()}
-
+                      <div className="space-y-3.5">
                   {/*
                     Input columns: when one or more entries are listed
-                    here the metric becomes a "column-input judge" — at
-                    call-import evaluation time the worker reads each
-                    entry from the row's ``raw_columns`` (with a
+                    here the metric becomes a "column-input judge" —
+                    at call-import evaluation time the worker reads
+                    each entry from the row's ``raw_columns`` (with a
                     fallback through the parent CallImport's
                     ``custom_column_mapping`` when the entry is a
                     friendly name) and feeds the values to the LLM as
-                    Context Inputs instead of the transcript. The
-                    child-sub-metric guard lives on the outer Call
-                    Imports wrapper now; here we just hide the chip
-                    input when the metric is configured as a
-                    transcript-compare judge (the two prompt
-                    templates are mutually exclusive).
+                    Context Inputs instead of the transcript.
                   */}
-                  {!formData.compare_transcripts
-                    && (() => {
+                  {(() => {
                     // Helpers scoped to the picker so they close over
                     // the latest formData / draft without us threading
                     // them through props.
@@ -2405,8 +2270,7 @@ export default function MetricsManagement() {
                       </div>
                     )
                   })()}
-                        </div>
-                      )}
+                      </div>
                     </div>
                   )}
 
@@ -2564,16 +2428,16 @@ export default function MetricsManagement() {
                           />
                           <span>
                             <span className="font-medium">
-                              Allow LLM-discovered labels
+                              Allow LLM-discovered metrics
                             </span>
                             <span className="block text-xs text-gray-600 mt-0.5">
-                              Lets the LLM emit candidate sub-labels beyond
+                              Lets the LLM emit candidate sub-metrics beyond
                               the children below during call-import
                               evaluation. Promote useful candidates from
-                              the Discovered Labels panel on each
+                              the Discovered Metrics panel on each
                               evaluation.
                               {editingMetric.selection_mode === 'single_choice'
-                                ? ' For single-choice categories the discovered labels are supplemental — the existing children still control the picked outcome.'
+                                ? ' For single-choice categories the discovered metrics are supplemental — the existing children still control the picked outcome.'
                                 : ''}
                             </span>
                           </span>
@@ -2612,10 +2476,21 @@ export default function MetricsManagement() {
 
               {!editingMetric && createMode === 'category' && (
                 <div className="space-y-5">
+                  {/* Metric-level fields: Name + Description (the LLM
+                      Prompt) + Enable LLM Rationale toggle. Selection
+                      mode and allow-discovery are not surfaced here —
+                      every new categorization metric is single-choice
+                      under the hood so the CSV export emits ONE column
+                      whose value is the chosen label name. */}
+                  <p className="text-sm text-gray-600">
+                    Add, edit, or remove specific labels with definitions
+                    and examples for this evaluation parameter.
+                  </p>
+
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-5">
-                    <div>
+                    <div className="md:col-span-2">
                       <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Category name *
+                        Metric name *
                       </label>
                       <input
                         type="text"
@@ -2627,59 +2502,10 @@ export default function MetricsManagement() {
                         className={MODERN_INPUT_CLASS}
                       />
                     </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Selection mode *
-                      </label>
-                      <select
-                        value={categoryForm.selection_mode}
-                        onChange={(e) => {
-                          const next = e.target.value as
-                            | 'single_choice'
-                            | 'multi_label'
-                          setCategoryForm((s) => ({
-                            ...s,
-                            selection_mode: next,
-                          }))
-                        }}
-                        className={MODERN_INPUT_CLASS}
-                      >
-                        <option value="single_choice">Single choice (exactly one true)</option>
-                        <option value="multi_label">Multi-label (each child independent)</option>
-                      </select>
-                    </div>
-
-                    <div className="md:col-span-2 rounded-xl border border-amber-200 bg-amber-50/40 p-3.5">
-                      <label className="flex items-start gap-2.5 text-sm text-gray-800">
-                        <input
-                          type="checkbox"
-                          checked={categoryForm.allow_discovery}
-                          onChange={(e) =>
-                            setCategoryForm((s) => ({
-                              ...s,
-                              allow_discovery: e.target.checked,
-                            }))
-                          }
-                          className="mt-0.5 h-4 w-4 text-amber-600 focus:ring-amber-500 border-gray-300 rounded"
-                        />
-                        <span>
-                          <span className="font-medium">Allow LLM-discovered labels</span>
-                          <span className="block text-xs text-gray-600 mt-0.5">
-                            Lets the LLM emit candidate sub-labels beyond
-                            the ones below during call-import evaluation.
-                            You can promote useful candidates into real
-                            sub-labels afterwards.
-                            {categoryForm.selection_mode === 'single_choice'
-                              ? ' For single-choice categories the discovered labels are supplemental — the existing children still control the picked outcome.'
-                              : ''}
-                          </span>
-                        </span>
-                      </label>
-                    </div>
 
                     <div className="md:col-span-2">
                       <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Description / context for the LLM
+                        Description (Prompt)
                       </label>
                       <textarea
                         value={categoryForm.description}
@@ -2687,114 +2513,162 @@ export default function MetricsManagement() {
                           setCategoryForm((s) => ({ ...s, description: e.target.value }))
                         }
                         rows={3}
-                        placeholder="e.g. Outcomes for an outbound survey call. The LLM uses this as context when scoring sub-labels below."
+                        placeholder="Tell the LLM what this metric measures. The labels below are the possible outcomes."
                         className={MODERN_INPUT_CLASS}
                       />
+                    </div>
+
+                    {/* Enable LLM Rationale toggle. The flag is stored
+                        on every child (via MetricChildDraft.capture_rationale)
+                        so the existing rationale-key emit logic in
+                        _render_parent_block picks it up without any
+                        prompt-builder changes. */}
+                    <div className="md:col-span-2 rounded-xl border border-gray-200 bg-gray-50/70 p-3.5">
+                      <label className="flex items-start gap-2.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={categoryForm.capture_rationale}
+                          onChange={(e) =>
+                            setCategoryForm((s) => ({
+                              ...s,
+                              capture_rationale: e.target.checked,
+                            }))
+                          }
+                          className="mt-0.5 h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
+                        />
+                        <span className="text-sm text-gray-800">
+                          <span className="font-medium">Enable LLM Rationale</span>
+                          <span className="block text-xs text-gray-500 mt-0.5">
+                            Ask the LLM to also return a 1-2 sentence
+                            reason for the chosen label. Adds a{' '}
+                            <code className="px-1 py-0.5 bg-white border border-gray-200 rounded text-[11px]">
+                              &lt;Name&gt; - LLM Rationale
+                            </code>{' '}
+                            column to the call-import CSV export.
+                          </span>
+                        </span>
+                      </label>
                     </div>
                   </div>
 
                   <div>
                     <div className="flex items-center justify-between mb-2">
                       <label className="block text-sm font-medium text-gray-700">
-                        Sub-labels ({categoryForm.children.length})
+                        Categorization Labels ({categoryForm.children.length})
                       </label>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() =>
-                          setCategoryForm((s) => ({
-                            ...s,
-                            children: [
-                              ...s.children,
-                              {
-                                local_id: `c-${Date.now()}-${s.children.length + 1}`,
-                                name: '',
-                                description: '',
-                                capture_rationale: true,
-                              },
-                            ],
-                          }))
-                        }
-                        leftIcon={<Plus className="w-3 h-3" />}
-                      >
-                        Add sub-label
-                      </Button>
                     </div>
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                    <div className="space-y-3">
                       {categoryForm.children.map((child, idx) => (
                         <div
                           key={child.local_id}
-                          className="border border-gray-200 rounded-xl p-3 space-y-2 bg-gray-50/60"
+                          className="border border-gray-200 rounded-xl p-4 space-y-3 bg-gray-50/60"
                         >
-                          <div className="flex items-start gap-2">
-                            <div className="flex-1">
-                              <input
-                                type="text"
-                                value={child.name}
-                                onChange={(e) =>
-                                  setCategoryForm((s) => ({
-                                    ...s,
-                                    children: s.children.map((c, i) =>
-                                      i === idx ? { ...c, name: e.target.value } : c,
-                                    ),
-                                  }))
-                                }
-                                placeholder="sub-label name (e.g. happy_completion)"
-                                className={MODERN_INPUT_SM_CLASS}
-                              />
-                            </div>
-                            <label className="inline-flex items-center gap-1.5 text-xs text-gray-700 px-2.5 py-2 rounded-lg border border-gray-200 bg-white whitespace-nowrap">
-                              <input
-                                type="checkbox"
-                                checked={child.capture_rationale}
-                                onChange={(e) =>
-                                  setCategoryForm((s) => ({
-                                    ...s,
-                                    children: s.children.map((c, i) =>
-                                      i === idx
-                                        ? { ...c, capture_rationale: e.target.checked }
-                                        : c,
-                                    ),
-                                  }))
-                                }
-                                className="h-3.5 w-3.5 text-primary-600 border-gray-300 rounded"
-                              />
-                              Rationale
-                            </label>
-                            {categoryForm.children.length > 2 && (
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm font-semibold text-gray-800">
+                              Label #{idx + 1}
+                            </span>
+                            {categoryForm.children.length > 1 && (
                               <button
+                                type="button"
                                 onClick={() =>
                                   setCategoryForm((s) => ({
                                     ...s,
                                     children: s.children.filter((_, i) => i !== idx),
                                   }))
                                 }
-                                className="text-gray-400 hover:text-red-600 px-2 py-1.5 rounded-lg hover:bg-red-50 transition-colors"
-                                title="Remove sub-label"
+                                className="inline-flex items-center justify-center w-7 h-7 rounded-full border border-red-200 text-red-500 hover:text-red-700 hover:bg-red-50 transition-colors"
+                                title="Remove label"
+                                aria-label={`Remove label ${idx + 1}`}
                               >
-                                <Trash2 className="w-4 h-4" />
+                                <Trash2 className="w-3.5 h-3.5" />
                               </button>
                             )}
                           </div>
-                          <textarea
-                            value={child.description}
-                            onChange={(e) =>
-                              setCategoryForm((s) => ({
-                                ...s,
-                                children: s.children.map((c, i) =>
-                                  i === idx
-                                    ? { ...c, description: e.target.value }
-                                    : c,
-                                ),
-                              }))
-                            }
-                            rows={3}
-                            placeholder="Rubric: when should the LLM mark this child true?"
-                            className={MODERN_INPUT_SM_CLASS}
-                          />
+                          <div>
+                            <label className="block text-xs font-medium text-gray-700 mb-1">
+                              Label Name
+                            </label>
+                            <input
+                              type="text"
+                              value={child.name}
+                              onChange={(e) =>
+                                setCategoryForm((s) => ({
+                                  ...s,
+                                  children: s.children.map((c, i) =>
+                                    i === idx ? { ...c, name: e.target.value } : c,
+                                  ),
+                                }))
+                              }
+                              placeholder="e.g. happy_completion"
+                              className={MODERN_INPUT_SM_CLASS}
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-gray-700 mb-1">
+                              Label Definition
+                            </label>
+                            <textarea
+                              value={child.description}
+                              onChange={(e) =>
+                                setCategoryForm((s) => ({
+                                  ...s,
+                                  children: s.children.map((c, i) =>
+                                    i === idx
+                                      ? { ...c, description: e.target.value }
+                                      : c,
+                                  ),
+                                }))
+                              }
+                              rows={2}
+                              placeholder="Define this specific label..."
+                              className={MODERN_INPUT_SM_CLASS}
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-gray-700 mb-1">
+                              Example (Optional)
+                            </label>
+                            <textarea
+                              value={child.example}
+                              onChange={(e) =>
+                                setCategoryForm((s) => ({
+                                  ...s,
+                                  children: s.children.map((c, i) =>
+                                    i === idx
+                                      ? { ...c, example: e.target.value }
+                                      : c,
+                                  ),
+                                }))
+                              }
+                              rows={2}
+                              placeholder="Provide an illustrative example for this label..."
+                              className={MODERN_INPUT_SM_CLASS}
+                            />
+                          </div>
                         </div>
                       ))}
                     </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setCategoryForm((s) => ({
+                          ...s,
+                          children: [
+                            ...s.children,
+                            {
+                              local_id: `c-${Date.now()}-${s.children.length + 1}`,
+                              name: '',
+                              description: '',
+                              example: '',
+                            },
+                          ],
+                        }))
+                      }
+                      className="mt-3 inline-flex items-center gap-1.5 text-sm font-medium text-primary-600 hover:text-primary-700"
+                    >
+                      <Plus className="w-4 h-4" />
+                      Add New Label
+                    </button>
                   </div>
 
                   <div className="flex items-center justify-end gap-3 pt-2 border-t border-gray-100">
@@ -2806,30 +2680,40 @@ export default function MetricsManagement() {
                       isLoading={createCategoryMutation.isPending}
                       disabled={
                         !categoryForm.name.trim() ||
-                        categoryForm.children.filter((c) => c.name.trim()).length < 2
+                        categoryForm.children.filter((c) => c.name.trim()).length < 1
                       }
                       onClick={() => {
+                        // Parent-level capture_rationale is now sent on
+                        // the PARENT payload (the LLM emits one
+                        // rationale per category, never per child). The
+                        // server forces every child to
+                        // capture_rationale=false regardless of what we
+                        // send, but we still set it explicitly here so
+                        // the request body reads honestly.
                         const cleanedChildren = categoryForm.children
                           .filter((c) => c.name.trim())
                           .map((c) => ({
                             name: c.name.trim(),
                             description: c.description.trim() || null,
-                            capture_rationale: c.capture_rationale,
+                            example: c.example.trim() || null,
+                            capture_rationale: false,
                             enabled: true,
                           }))
                         createCategoryMutation.mutate({
                           name: categoryForm.name.trim(),
                           description:
                             categoryForm.description.trim() || null,
-                          selection_mode: categoryForm.selection_mode,
-                          allow_discovery: categoryForm.allow_discovery,
+                          // Always single_choice for the new flow.
+                          selection_mode: 'single_choice',
+                          allow_discovery: false,
+                          capture_rationale: categoryForm.capture_rationale,
                           supported_surfaces: categoryForm.surfaces,
                           enabled_surfaces: categoryForm.surfaces,
                           children: cleanedChildren,
                         })
                       }}
                     >
-                      Create category
+                      Save Labels
                     </Button>
                   </div>
                 </div>
@@ -2854,10 +2738,15 @@ export default function MetricsManagement() {
               ------------------------------------------------------------------ */}
               {editingMetric && isEditingCategory && (
                 <div className="space-y-5">
+                  <p className="text-sm text-gray-600">
+                    Add, edit, or remove specific labels with definitions
+                    and examples for this evaluation parameter.
+                  </p>
+
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-5">
-                    <div>
+                    <div className="md:col-span-2">
                       <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Category name *
+                        Metric name *
                       </label>
                       <input
                         type="text"
@@ -2871,59 +2760,10 @@ export default function MetricsManagement() {
                         className={MODERN_INPUT_CLASS}
                       />
                     </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Selection mode
-                      </label>
-                      <div className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-lg border border-gray-200 bg-gray-50 text-sm text-gray-700 shadow-sm">
-                        <Layers className="w-4 h-4 text-purple-600" />
-                        <span className="font-medium">
-                          {editCategoryForm.selection_mode === 'single_choice'
-                            ? 'Single-choice'
-                            : 'Multi-label'}
-                        </span>
-                        <span
-                          className="text-[11px] text-gray-500"
-                          title="Selection mode is locked after creation. Changing it can invalidate completed evaluations that depend on the original mode."
-                        >
-                          (locked)
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="md:col-span-2 rounded-xl border border-amber-200 bg-amber-50/40 p-3.5">
-                      <label className="flex items-start gap-2.5 text-sm text-gray-800">
-                        <input
-                          type="checkbox"
-                          checked={editCategoryForm.allow_discovery}
-                          onChange={(e) =>
-                            setEditCategoryForm((s) => ({
-                              ...s,
-                              allow_discovery: e.target.checked,
-                            }))
-                          }
-                          className="mt-0.5 h-4 w-4 text-amber-600 focus:ring-amber-500 border-gray-300 rounded"
-                        />
-                        <span>
-                          <span className="font-medium">
-                            Allow LLM-discovered labels
-                          </span>
-                          <span className="block text-xs text-gray-600 mt-0.5">
-                            Lets the LLM emit candidate sub-labels beyond
-                            the ones below during call-import evaluation.
-                            You can promote useful candidates into real
-                            sub-labels afterwards.
-                            {editCategoryForm.selection_mode === 'single_choice'
-                              ? ' For single-choice categories the discovered labels are supplemental — the existing children still control the picked outcome.'
-                              : ''}
-                          </span>
-                        </span>
-                      </label>
-                    </div>
 
                     <div className="md:col-span-2">
                       <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Description / context for the LLM
+                        Description (Prompt)
                       </label>
                       <textarea
                         value={editCategoryForm.description}
@@ -2934,177 +2774,219 @@ export default function MetricsManagement() {
                           }))
                         }
                         rows={3}
-                        placeholder="The LLM uses this as context when scoring sub-labels below."
+                        placeholder="Tell the LLM what this metric measures. The labels below are the possible outcomes."
                         className={MODERN_INPUT_CLASS}
                       />
+                    </div>
+
+                    <div className="md:col-span-2 rounded-xl border border-gray-200 bg-gray-50/70 p-3.5">
+                      <label className="flex items-start gap-2.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={editCategoryForm.capture_rationale}
+                          onChange={(e) =>
+                            setEditCategoryForm((s) => ({
+                              ...s,
+                              capture_rationale: e.target.checked,
+                            }))
+                          }
+                          className="mt-0.5 h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
+                        />
+                        <span className="text-sm text-gray-800">
+                          <span className="font-medium">Enable LLM Rationale</span>
+                          <span className="block text-xs text-gray-500 mt-0.5">
+                            Ask the LLM to also return a 1-2 sentence
+                            reason for the chosen label. Adds a{' '}
+                            <code className="px-1 py-0.5 bg-white border border-gray-200 rounded text-[11px]">
+                              &lt;Name&gt; - LLM Rationale
+                            </code>{' '}
+                            column to the call-import CSV export.
+                          </span>
+                        </span>
+                      </label>
                     </div>
                   </div>
 
                   <div>
                     <div className="flex items-center justify-between mb-2">
                       <label className="block text-sm font-medium text-gray-700">
-                        Sub-labels ({editCategoryForm.children.length})
+                        Categorization Labels ({editCategoryForm.children.length})
                       </label>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() =>
-                          setEditCategoryForm((s) => ({
-                            ...s,
-                            children: [
-                              ...s.children,
-                              {
-                                local_id: `new-${Date.now()}-${s.children.length}`,
-                                server_id: null,
-                                name: '',
-                                description: '',
-                                capture_rationale: true,
-                                enabled: true,
-                              },
-                            ],
-                          }))
-                        }
-                        leftIcon={<Plus className="w-3 h-3" />}
-                      >
-                        Add sub-label
-                      </Button>
                     </div>
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                    <div className="space-y-3">
                       {editCategoryForm.children.map((child, idx) => (
                         <div
                           key={child.local_id}
-                          className={`rounded-xl border p-3 space-y-2 ${
+                          className={`rounded-xl border p-4 space-y-3 ${
                             child.server_id
                               ? 'border-gray-200 bg-gray-50/60'
                               : 'border-emerald-200 bg-emerald-50/30'
                           }`}
                         >
-                          <div className="flex items-start gap-2 flex-wrap">
-                            <div className="flex-1 min-w-[12rem]">
-                              <input
-                                type="text"
-                                value={child.name}
-                                onChange={(e) =>
-                                  setEditCategoryForm((s) => ({
-                                    ...s,
-                                    children: s.children.map((c, i) =>
-                                      i === idx
-                                        ? { ...c, name: e.target.value }
-                                        : c,
-                                    ),
-                                  }))
-                                }
-                                placeholder="Sub-label name (e.g. happy_completion)"
-                                className={MODERN_INPUT_SM_CLASS}
-                              />
-                            </div>
-                            <label className="inline-flex items-center gap-1.5 text-xs text-gray-700 px-2.5 py-2 rounded-lg border border-gray-200 bg-white whitespace-nowrap">
-                              <input
-                                type="checkbox"
-                                checked={child.capture_rationale}
-                                onChange={(e) =>
-                                  setEditCategoryForm((s) => ({
-                                    ...s,
-                                    children: s.children.map((c, i) =>
-                                      i === idx
-                                        ? {
-                                            ...c,
-                                            capture_rationale:
-                                              e.target.checked,
-                                          }
-                                        : c,
-                                    ),
-                                  }))
-                                }
-                                className="h-3.5 w-3.5 text-primary-600 border-gray-300 rounded"
-                              />
-                              Rationale
-                            </label>
-                            <label className="inline-flex items-center gap-1.5 text-xs text-gray-700 px-2.5 py-2 rounded-lg border border-gray-200 bg-white whitespace-nowrap">
-                              <input
-                                type="checkbox"
-                                checked={child.enabled}
-                                onChange={(e) =>
-                                  setEditCategoryForm((s) => ({
-                                    ...s,
-                                    children: s.children.map((c, i) =>
-                                      i === idx
-                                        ? { ...c, enabled: e.target.checked }
-                                        : c,
-                                    ),
-                                  }))
-                                }
-                                className="h-3.5 w-3.5 text-primary-600 border-gray-300 rounded"
-                              />
-                              Enabled
-                            </label>
-                            {!child.server_id ? (
-                              <span
-                                className="px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-emerald-100 text-emerald-800 border border-emerald-200 rounded"
-                                title="This sub-label was added in this edit session and will be created on Save."
-                              >
-                                New
+                          <div className="flex items-center justify-between gap-2 flex-wrap">
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-semibold text-gray-800">
+                                Label #{idx + 1}
                               </span>
-                            ) : null}
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setEditCategoryForm((s) => {
-                                  // Newly-added drafts: just splice out
-                                  // (nothing to delete on the server).
-                                  // Existing rows: stash the id so the
-                                  // save handler can issue the DELETE
-                                  // call, then remove from the visible
-                                  // list.
-                                  const target = s.children[idx]
-                                  const remainingDrafts = s.children.filter(
-                                    (_, i) => i !== idx,
-                                  )
-                                  return {
-                                    ...s,
-                                    children: remainingDrafts,
-                                    deleted_child_ids: target?.server_id
-                                      ? [
-                                          ...s.deleted_child_ids,
-                                          target.server_id,
-                                        ]
-                                      : s.deleted_child_ids,
+                              {!child.server_id ? (
+                                <span
+                                  className="px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-emerald-100 text-emerald-800 border border-emerald-200 rounded"
+                                  title="This label was added in this edit session and will be created on Save."
+                                >
+                                  New
+                                </span>
+                              ) : null}
+                              <label className="inline-flex items-center gap-1.5 text-xs text-gray-700 px-2.5 py-1.5 rounded-lg border border-gray-200 bg-white whitespace-nowrap">
+                                <input
+                                  type="checkbox"
+                                  checked={child.enabled}
+                                  onChange={(e) =>
+                                    setEditCategoryForm((s) => ({
+                                      ...s,
+                                      children: s.children.map((c, i) =>
+                                        i === idx
+                                          ? { ...c, enabled: e.target.checked }
+                                          : c,
+                                      ),
+                                    }))
                                   }
-                                })
-                              }
-                              className="text-gray-400 hover:text-red-600 px-2 py-1.5 rounded-lg hover:bg-red-50 transition-colors"
-                              title="Remove this sub-label"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
+                                  className="h-3.5 w-3.5 text-primary-600 border-gray-300 rounded"
+                                />
+                                Enabled
+                              </label>
+                            </div>
+                            {editCategoryForm.children.length > 1 && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setEditCategoryForm((s) => {
+                                    // Newly-added drafts: just splice out
+                                    // (nothing to delete on the server).
+                                    // Existing rows: stash the id so the
+                                    // save handler can issue the DELETE
+                                    // call, then remove from the visible
+                                    // list.
+                                    const target = s.children[idx]
+                                    const remainingDrafts = s.children.filter(
+                                      (_, i) => i !== idx,
+                                    )
+                                    return {
+                                      ...s,
+                                      children: remainingDrafts,
+                                      deleted_child_ids: target?.server_id
+                                        ? [
+                                            ...s.deleted_child_ids,
+                                            target.server_id,
+                                          ]
+                                        : s.deleted_child_ids,
+                                    }
+                                  })
+                                }
+                                className="inline-flex items-center justify-center w-7 h-7 rounded-full border border-red-200 text-red-500 hover:text-red-700 hover:bg-red-50 transition-colors"
+                                title="Remove label"
+                                aria-label={`Remove label ${idx + 1}`}
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
                           </div>
-                          <textarea
-                            value={child.description}
-                            onChange={(e) =>
-                              setEditCategoryForm((s) => ({
-                                ...s,
-                                children: s.children.map((c, i) =>
-                                  i === idx
-                                    ? { ...c, description: e.target.value }
-                                    : c,
-                                ),
-                              }))
-                            }
-                            rows={3}
-                            placeholder="Rubric: when should the LLM mark this sub-label true?"
-                            className={MODERN_INPUT_SM_CLASS}
-                          />
+                          <div>
+                            <label className="block text-xs font-medium text-gray-700 mb-1">
+                              Label Name
+                            </label>
+                            <input
+                              type="text"
+                              value={child.name}
+                              onChange={(e) =>
+                                setEditCategoryForm((s) => ({
+                                  ...s,
+                                  children: s.children.map((c, i) =>
+                                    i === idx
+                                      ? { ...c, name: e.target.value }
+                                      : c,
+                                  ),
+                                }))
+                              }
+                              placeholder="e.g. happy_completion"
+                              className={MODERN_INPUT_SM_CLASS}
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-gray-700 mb-1">
+                              Label Definition
+                            </label>
+                            <textarea
+                              value={child.description}
+                              onChange={(e) =>
+                                setEditCategoryForm((s) => ({
+                                  ...s,
+                                  children: s.children.map((c, i) =>
+                                    i === idx
+                                      ? { ...c, description: e.target.value }
+                                      : c,
+                                  ),
+                                }))
+                              }
+                              rows={2}
+                              placeholder="Define this specific label..."
+                              className={MODERN_INPUT_SM_CLASS}
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-gray-700 mb-1">
+                              Example (Optional)
+                            </label>
+                            <textarea
+                              value={child.example}
+                              onChange={(e) =>
+                                setEditCategoryForm((s) => ({
+                                  ...s,
+                                  children: s.children.map((c, i) =>
+                                    i === idx
+                                      ? { ...c, example: e.target.value }
+                                      : c,
+                                  ),
+                                }))
+                              }
+                              rows={2}
+                              placeholder="Provide an illustrative example for this label..."
+                              className={MODERN_INPUT_SM_CLASS}
+                            />
+                          </div>
                         </div>
                       ))}
                     </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setEditCategoryForm((s) => ({
+                          ...s,
+                          children: [
+                            ...s.children,
+                            {
+                              local_id: `new-${Date.now()}-${s.children.length}`,
+                              server_id: null,
+                              name: '',
+                              description: '',
+                              example: '',
+                              enabled: true,
+                            },
+                          ],
+                        }))
+                      }
+                      className="mt-3 inline-flex items-center gap-1.5 text-sm font-medium text-primary-600 hover:text-primary-700"
+                    >
+                      <Plus className="w-4 h-4" />
+                      Add New Label
+                    </button>
                     {editCategoryForm.deleted_child_ids.length > 0 && (
                       <p className="mt-2 text-[11px] text-amber-700">
-                        {editCategoryForm.deleted_child_ids.length} sub-label
+                        {editCategoryForm.deleted_child_ids.length} label
                         {editCategoryForm.deleted_child_ids.length === 1
                           ? ''
                           : 's'}{' '}
                         will be deleted on Save. Past evaluation rows keep
-                        their stored scores but the sub-label will no longer
+                        their stored scores but the label will no longer
                         appear in new runs.
                       </p>
                     )}
@@ -3121,11 +3003,11 @@ export default function MetricsManagement() {
                         !editCategoryForm.name.trim() ||
                         editCategoryForm.children.filter((c) =>
                           c.name.trim(),
-                        ).length < 2
+                        ).length < 1
                       }
                       onClick={handleUpdateCategory}
                     >
-                      Save changes
+                      Save Labels
                     </Button>
                   </div>
                 </div>

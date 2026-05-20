@@ -20,6 +20,7 @@ import {
   PieChart as PieChartIcon,
   Plus,
   RefreshCw,
+  RotateCw,
   Search,
   Sparkles,
   Table,
@@ -49,6 +50,9 @@ import type {
 import AIProviderModelPicker from '../../components/AIProviderModelPicker'
 import Button from '../../components/Button'
 import ConfirmModal from '../../components/ConfirmModal'
+import ProviderModelPicker, {
+  type ProviderModelValue,
+} from '../../components/providers/ProviderModelPicker'
 import StatusBadge from '../../components/shared/StatusBadge'
 import MetricFlowChart, {
   flowFromSequence,
@@ -57,6 +61,19 @@ import MetricFlowChart, {
 const PIE_COLORS = ['#10b981', '#ef4444', '#6366f1', '#f59e0b', '#a855f7']
 
 const ROWS_PAGE_SIZE = 50
+
+// Mirrors the allowlist used on `CallImportDetail` when picking STT
+// providers for a new evaluation run. The retry modal exposes the same
+// set so the user can't pick an STT provider that the backend's
+// `TranscriptionService` doesn't actually wire up.
+const STT_PROVIDER_ALLOWLIST = [
+  'deepgram',
+  'openai',
+  'elevenlabs',
+  'sarvam',
+  'smallest',
+  'google',
+]
 
 function formatDateTime(value: string | null | undefined): string {
   if (!value) return '—'
@@ -76,6 +93,32 @@ export default function CallImportEvaluationDetail() {
     useState<CallImportEvaluationRow | null>(null)
   const [deleteEvalOpen, setDeleteEvalOpen] = useState(false)
   const [rowDeleteError, setRowDeleteError] = useState<string | null>(null)
+  // Retry UX: ``retryError`` surfaces a banner on either failure path
+  // (bulk or single-row). ``pendingRetryRowId`` is set while a per-row
+  // retry is in flight so we can spin the button for that specific
+  // row without disabling the entire actions column.
+  const [retryError, setRetryError] = useState<string | null>(null)
+  const [pendingRetryRowId, setPendingRetryRowId] = useState<string | null>(
+    null,
+  )
+  const [retryConfirmOpen, setRetryConfirmOpen] = useState(false)
+  // Optional overrides the user can set inside the bulk-retry modal.
+  // ``null`` provider/model means "keep the run's saved value" — the
+  // mutation only sends each field when the picker holds something
+  // different from what's already on the evaluation, so the backend
+  // never sees a half-configured payload.
+  const [retryLLM, setRetryLLM] = useState<ProviderModelValue>({
+    provider: null,
+    model: null,
+    credential_id: null,
+  })
+  const [retrySTT, setRetrySTT] = useState<ProviderModelValue>({
+    provider: null,
+    model: null,
+    credential_id: null,
+  })
+  const [retryTranscribeOverwrite, setRetryTranscribeOverwrite] =
+    useState(false)
   const [resultsTab, setResultsTab] = useState<
     'table' | 'visualizations' | 'flow'
   >('table')
@@ -283,6 +326,135 @@ export default function CallImportEvaluationDetail() {
     },
   })
 
+  // Re-enqueue every failed row in this run. The backend filters to
+  // ``status='failed'`` server-side, so we don't need to know which
+  // rows are currently failing — the button just hands the whole run
+  // back to the workers. When the user changed the LLM / STT pickers
+  // inside the retry modal we forward those as overrides; the backend
+  // persists them onto the run so the next retry defaults to them.
+  const retryAllFailedMutation = useMutation({
+    mutationFn: () => {
+      // Only forward LLM overrides when the user actually picked
+      // BOTH provider and model — backend 400s on half-configured
+      // input, and "did the user touch the picker" is fuzzy anyway
+      // because it gets seeded from the run's saved values.
+      const llmChanged =
+        retryLLM.provider !== (evaluation?.llm_provider ?? null) ||
+        retryLLM.model !== (evaluation?.llm_model ?? null) ||
+        (retryLLM.credential_id ?? null) !==
+          (evaluation?.llm_credential_id ?? null)
+      const sttChanged =
+        retrySTT.provider !== (evaluation?.stt_provider ?? null) ||
+        retrySTT.model !== (evaluation?.stt_model ?? null) ||
+        (retrySTT.credential_id ?? null) !==
+          (evaluation?.stt_credential_id ?? null)
+
+      return apiClient.retryCallImportEvaluation(id!, evalId!, {
+        llmProvider:
+          llmChanged && retryLLM.provider && retryLLM.model
+            ? retryLLM.provider
+            : undefined,
+        llmModel:
+          llmChanged && retryLLM.provider && retryLLM.model
+            ? retryLLM.model
+            : undefined,
+        llmCredentialId:
+          llmChanged && retryLLM.provider && retryLLM.model
+            ? retryLLM.credential_id ?? null
+            : undefined,
+        sttProvider:
+          sttChanged && retrySTT.provider && retrySTT.model
+            ? retrySTT.provider
+            : undefined,
+        sttModel:
+          sttChanged && retrySTT.provider && retrySTT.model
+            ? retrySTT.model
+            : undefined,
+        sttCredentialId:
+          sttChanged && retrySTT.provider && retrySTT.model
+            ? retrySTT.credential_id ?? null
+            : undefined,
+        transcribeOverwrite: retryTranscribeOverwrite,
+      })
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-evaluation', id, evalId],
+      })
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-evaluation-rows', id, evalId],
+      })
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-evaluations', id],
+      })
+      setRetryError(null)
+      setRetryConfirmOpen(false)
+    },
+    onError: (err: any) => {
+      setRetryError(
+        err?.response?.data?.detail ||
+          err?.message ||
+          'Failed to retry the evaluation.',
+      )
+    },
+  })
+
+  // Seed the retry pickers from the run's saved config the moment the
+  // modal opens, then stop reacting to refetches. The 3s polling on
+  // the evaluation query would otherwise clobber whatever the user
+  // typed into the pickers, so we deliberately only depend on
+  // ``retryConfirmOpen`` here.
+  useEffect(() => {
+    if (!retryConfirmOpen) return
+    if (!evaluation) return
+    setRetryLLM({
+      provider: evaluation.llm_provider ?? null,
+      model: evaluation.llm_model ?? null,
+      credential_id: evaluation.llm_credential_id ?? null,
+    })
+    setRetrySTT({
+      provider: evaluation.stt_provider ?? null,
+      model: evaluation.stt_model ?? null,
+      credential_id: evaluation.stt_credential_id ?? null,
+    })
+    setRetryTranscribeOverwrite(false)
+    setRetryError(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [retryConfirmOpen])
+
+  // Re-enqueue a single failed row. Returns the refreshed row so we
+  // can prime the cache; the next polling tick (3s while running)
+  // will catch any subsequent status flips.
+  const retryRowMutation = useMutation({
+    mutationFn: (rowId: string) =>
+      apiClient.retryCallImportEvaluationRow(id!, evalId!, rowId),
+    onMutate: (rowId) => {
+      setPendingRetryRowId(rowId)
+      setRetryError(null)
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-evaluation', id, evalId],
+      })
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-evaluation-rows', id, evalId],
+      })
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-evaluations', id],
+      })
+    },
+    onError: (err: any) => {
+      setRetryError(
+        err?.response?.data?.detail ||
+          err?.message ||
+          'Failed to retry this row.',
+      )
+    },
+    onSettled: () => {
+      setPendingRetryRowId(null)
+    },
+  })
+
   const callImport = callImportQuery.data
   const evaluation = evaluationQuery.data
 
@@ -293,12 +465,33 @@ export default function CallImportEvaluationDetail() {
   // For each metric we also flag ``hasRationale``: true when ANY row has a
   // non-empty ``rationale`` string for that metric (i.e. it was scored
   // with ``capture_rationale=true``). The table then renders an extra
-  // "<Name> - Rationale" column right after the value column for those
+  // "<Name> - LLM Rationale" column right after the value column for those
   // metrics, mirroring the CSV export layout.
+  //
+  // Category parents collapse to a single value column (chosen child label)
+  // plus the rationale column. Any child whose parent is part of this
+  // run (via ``selected_metric_groups``) is suppressed so the user only
+  // sees the parent column — matching the CSV export.
   type DisplayMetric = { id: string; name: string; hasRationale: boolean }
+  const childrenInGroups = useMemo<Set<string>>(() => {
+    const set = new Set<string>()
+    const groups = evaluation?.selected_metric_groups
+    if (groups && typeof groups === 'object') {
+      for (const childIds of Object.values(groups)) {
+        if (Array.isArray(childIds)) {
+          for (const cid of childIds) {
+            if (typeof cid === 'string') set.add(cid)
+          }
+        }
+      }
+    }
+    return set
+  }, [evaluation?.selected_metric_groups])
+
   const displayMetrics = useMemo<DisplayMetric[]>(() => {
     const byId = new Map<string, DisplayMetric>()
     const upsert = (id: string, patch: Partial<DisplayMetric>) => {
+      if (childrenInGroups.has(id)) return
       const prev = byId.get(id)
       byId.set(id, {
         id,
@@ -322,6 +515,7 @@ export default function CallImportEvaluationDetail() {
       if (!scores || typeof scores !== 'object') continue
       for (const [metricId, entry] of Object.entries(scores)) {
         if (!metricId) continue
+        if (childrenInGroups.has(metricId)) continue
         const fallbackName =
           entry && typeof entry === 'object' && 'metric_name' in entry
             ? (entry as { metric_name?: unknown }).metric_name
@@ -355,6 +549,7 @@ export default function CallImportEvaluationDetail() {
     evaluation?.metrics,
     evaluation?.selected_metric_ids,
     rowsQuery.data?.items,
+    childrenInGroups,
   ])
 
   // Parent metrics (selection_mode != null) and their enabled children
@@ -413,15 +608,24 @@ export default function CallImportEvaluationDetail() {
 
   // Build the "Imported columns" panel from the parent CallImport's mapping
   // metadata, so users can see which CSV columns were used to drive this
-  // particular evaluation run (Transcript, Recording URL, External Call ID,
-  // and any user-named custom mappings).
+  // particular evaluation run. Schema-driven batches (``schema_id`` set)
+  // surface every Input Parameter from ``parameter_mapping``; legacy
+  // batches still render via the free-form ``column_mapping`` /
+  // ``extra_columns`` / ``custom_column_mapping`` fields.
   const importedColumns = useMemo(() => {
     if (!callImport) return []
     const rows: { label: string; value: string }[] = []
+    if (callImport.schema_id) {
+      const paramMapping = callImport.parameter_mapping || {}
+      for (const [name, csvHeader] of Object.entries(paramMapping)) {
+        rows.push({ label: name, value: csvHeader })
+      }
+      return rows
+    }
     const mapping = callImport.column_mapping || {}
     if (mapping.external_call_id) {
       rows.push({
-        label: 'External Call ID',
+        label: 'Conversation ID',
         value: mapping.external_call_id,
       })
     }
@@ -517,6 +721,25 @@ export default function CallImportEvaluationDetail() {
           Back to call import
         </Link>
         <div className="flex items-center gap-2">
+          {evaluation.failed_rows > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              leftIcon={<RotateCw className="h-4 w-4" />}
+              onClick={() => {
+                setRetryError(null)
+                setRetryConfirmOpen(true)
+              }}
+              isLoading={retryAllFailedMutation.isPending}
+              disabled={retryAllFailedMutation.isPending}
+              className="text-amber-700 hover:text-amber-800 hover:bg-amber-50 border-amber-200"
+              title={`Re-run evaluation on ${evaluation.failed_rows} failed row${
+                evaluation.failed_rows === 1 ? '' : 's'
+              }`}
+            >
+              Retry failed ({evaluation.failed_rows})
+            </Button>
+          )}
           <Button
             variant="outline"
             size="sm"
@@ -672,6 +895,25 @@ export default function CallImportEvaluationDetail() {
           </div>
         )}
 
+        {retryError && (
+          <div className="mt-4 bg-red-50 border border-red-200 rounded-lg p-3">
+            <div className="flex items-start gap-2">
+              <AlertCircle className="h-4 w-4 text-red-600 mt-0.5" />
+              <div className="flex-1">
+                <p className="text-sm text-red-800">{retryError}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRetryError(null)}
+                className="p-1 rounded text-red-400 hover:text-red-600 hover:bg-red-100"
+                aria-label="Dismiss retry error"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="mt-5 grid grid-cols-1 lg:grid-cols-2 gap-4">
           <div>
             <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
@@ -785,7 +1027,7 @@ export default function CallImportEvaluationDetail() {
                   type="text"
                   value={searchInput}
                   onChange={(e) => setSearchInput(e.target.value)}
-                  placeholder="Search by Call ID or transcript…"
+                  placeholder="Search by Conversation ID or transcript…"
                   className="w-full pl-9 pr-9 py-2 text-sm border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-500"
                 />
                 {searchInput && (
@@ -854,7 +1096,7 @@ export default function CallImportEvaluationDetail() {
                   <FilterChip
                     label={
                       discoveredFilter.anyDiscovered
-                        ? `${discoveredFilter.parentName}: any LLM-discovered label`
+                        ? `${discoveredFilter.parentName}: any LLM-discovered metric`
                         : `${discoveredFilter.parentName}: discovered "${
                             discoveredFilter.labelName ||
                             discoveredFilter.labelKey
@@ -883,13 +1125,51 @@ export default function CallImportEvaluationDetail() {
         )}
 
         {resultsTab === 'flow' ? (
-          parentMetrics.length === 0 ? (
-            <div className="text-sm text-gray-500 border border-dashed border-gray-300 rounded-md p-6 text-center">
-              No category metrics in this run. Flow diagrams are only
-              rendered for parent metrics with sub-labels.
-            </div>
-          ) : (
-            <div className="space-y-6">
+          <div className="space-y-6">
+            {/* Top-level metric discovery panel. Rendered above the
+                per-parent diagrams so the user sees newly-suggested
+                metrics first, regardless of whether the run included
+                any parent category metrics. Gated on the per-run opt-in
+                flag so legacy / non-discovery runs keep their
+                existing Flow tab layout. */}
+            {evaluationQuery.data?.discover_new_metrics ? (
+              <DiscoveredMetricsTopPanel
+                callImportId={id!}
+                evalId={evalId!}
+              />
+            ) : null}
+
+            {parentMetrics.length === 0 ? (
+              <div className="text-sm text-gray-500 border border-dashed border-gray-300 rounded-md p-6 text-center space-y-1">
+                <p>
+                  No category metrics in this run. Flow diagrams are
+                  only rendered for parent metrics with sub-labels.
+                </p>
+                <p className="text-xs">
+                  Standalone <strong>boolean</strong> and{' '}
+                  <strong>rating</strong> metrics (including ones
+                  promoted from the Discovered metrics panel) are
+                  scored per call and shown in the{' '}
+                  <button
+                    type="button"
+                    className="underline text-primary-600 hover:text-primary-700"
+                    onClick={() => setResultsTab('table')}
+                  >
+                    Table
+                  </button>{' '}
+                  and{' '}
+                  <button
+                    type="button"
+                    className="underline text-primary-600 hover:text-primary-700"
+                    onClick={() => setResultsTab('visualizations')}
+                  >
+                    Visualizations
+                  </button>{' '}
+                  tabs.
+                </p>
+              </div>
+            ) : (
+              <>
               <p className="text-xs text-gray-500 inline-flex items-center gap-1.5">
                 <Sparkles className="h-3.5 w-3.5 text-primary-500" />
                 One diagram per category metric. Edge thickness scales
@@ -951,8 +1231,9 @@ export default function CallImportEvaluationDetail() {
                   }}
                 />
               ))}
-            </div>
-          )
+              </>
+            )}
+          </div>
         ) : resultsTab === 'visualizations' ? (
           aggregateQuery.isLoading || !aggregateQuery.data ? (
             <div className="text-center py-12 text-gray-500">
@@ -1123,7 +1404,7 @@ export default function CallImportEvaluationDetail() {
                       #
                     </th>
                     <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase whitespace-nowrap">
-                      CallID
+                      Conversation ID
                     </th>
                     <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase whitespace-nowrap">
                       Status
@@ -1145,7 +1426,7 @@ export default function CallImportEvaluationDetail() {
                             className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase whitespace-nowrap"
                             title={`${metric.name} - LLM Rationale`}
                           >
-                            {metric.name} <span className="text-gray-400">- Rationale</span>
+                            {metric.name} <span className="text-gray-400">- LLM Rationale</span>
                           </th>,
                         )
                       }
@@ -1170,7 +1451,7 @@ export default function CallImportEvaluationDetail() {
                           {(row.row_index ?? 0) + 1}
                         </td>
                         <td className="px-3 py-2 text-sm font-mono text-primary-700 whitespace-nowrap">
-                          {row.external_call_id || '-'}
+                          {row.conversation_id || '-'}
                         </td>
                         <td className="px-3 py-2 whitespace-nowrap">
                           <StatusBadge status={row.status} size="sm" />
@@ -1259,23 +1540,48 @@ export default function CallImportEvaluationDetail() {
                           return cells
                         })}
                         <td className="px-3 py-2 text-right whitespace-nowrap">
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              setRowDeleteError(null)
-                              setPendingDeleteRow(row)
-                            }}
-                            disabled={
-                              deleteRowMutation.isPending &&
-                              pendingDeleteRow?.id === row.id
-                            }
-                            className="p-1.5 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors disabled:opacity-40"
-                            title="Delete row from this evaluation"
-                            aria-label="Delete evaluation row"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </button>
+                          <div className="inline-flex items-center gap-1">
+                            {row.status === 'failed' && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  if (pendingRetryRowId) return
+                                  retryRowMutation.mutate(row.id)
+                                }}
+                                disabled={
+                                  pendingRetryRowId !== null &&
+                                  pendingRetryRowId !== row.id
+                                }
+                                className="p-1.5 rounded text-gray-400 hover:text-amber-700 hover:bg-amber-50 transition-colors disabled:opacity-40"
+                                title="Retry evaluation on this row"
+                                aria-label="Retry evaluation row"
+                              >
+                                {pendingRetryRowId === row.id ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <RotateCw className="h-4 w-4" />
+                                )}
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setRowDeleteError(null)
+                                setPendingDeleteRow(row)
+                              }}
+                              disabled={
+                                deleteRowMutation.isPending &&
+                                pendingDeleteRow?.id === row.id
+                              }
+                              className="p-1.5 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors disabled:opacity-40"
+                              title="Delete row from this evaluation"
+                              aria-label="Delete evaluation row"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ),
@@ -1328,9 +1634,9 @@ export default function CallImportEvaluationDetail() {
         title="Delete this evaluation row?"
         description={(() => {
           if (!pendingDeleteRow) return ''
-          const callId = pendingDeleteRow.external_call_id || '(no callid)'
+          const callId = pendingDeleteRow.conversation_id || '(no callid)'
           const lines = [
-            `Row for CallID ${callId} will be removed from this evaluation only.`,
+            `Row for Conversation ID ${callId} will be removed from this evaluation only.`,
             'The underlying CSV row and its recording stay untouched on the parent import, so you can re-evaluate later.',
             'This cannot be undone.',
             rowDeleteError ? `Error: ${rowDeleteError}` : '',
@@ -1352,6 +1658,174 @@ export default function CallImportEvaluationDetail() {
           setRowDeleteError(null)
         }}
       />
+
+      {retryConfirmOpen &&
+        createPortal(
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
+              <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+                <div>
+                  <h2 className="text-lg font-semibold text-gray-900">
+                    Retry {evaluation.failed_rows} failed row
+                    {evaluation.failed_rows === 1 ? '' : 's'}
+                  </h2>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    Reset failed rows and re-run them. You can keep the
+                    run's existing LLM / STT or switch to a different
+                    provider+model just for this retry pass — your
+                    pick is saved onto the run so future retries
+                    default to it.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (retryAllFailedMutation.isPending) return
+                    setRetryConfirmOpen(false)
+                    setRetryError(null)
+                  }}
+                  disabled={retryAllFailedMutation.isPending}
+                  className="text-gray-400 hover:text-gray-600 disabled:opacity-50"
+                  aria-label="Close retry modal"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              <div className="px-6 py-5 overflow-y-auto flex-1 space-y-5">
+                <div className="rounded-md border border-gray-200 bg-gray-50 p-3 text-xs text-gray-700 space-y-1">
+                  <div>
+                    <span className="font-medium">Currently saved:</span>{' '}
+                    LLM ={' '}
+                    <span className="font-mono">
+                      {evaluation.llm_provider ?? '—'} /{' '}
+                      {evaluation.llm_model ?? '—'}
+                    </span>
+                  </div>
+                  <div>
+                    STT ={' '}
+                    <span className="font-mono">
+                      {evaluation.stt_provider ?? '—'} /{' '}
+                      {evaluation.stt_model ?? '—'}
+                    </span>{' '}
+                    · Transcript source ={' '}
+                    <span className="font-mono">
+                      {evaluation.transcript_source}
+                    </span>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    LLM for re-evaluation
+                  </label>
+                  <p className="text-xs text-gray-500 mb-2">
+                    Used to score every retried row. Leave as-is to
+                    re-run with the same LLM as before.
+                  </p>
+                  <ProviderModelPicker
+                    kind="llm"
+                    value={retryLLM}
+                    onChange={setRetryLLM}
+                    allowCredentialPick
+                    defaultLabel="Pick an LLM provider"
+                  />
+                </div>
+
+                {evaluation.transcript_source === 'diarised' && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      STT for re-diarisation
+                    </label>
+                    <p className="text-xs text-gray-500 mb-2">
+                      Only used when a retried row is missing its
+                      diarised transcript, or when you opt to overwrite
+                      below.
+                    </p>
+                    <ProviderModelPicker
+                      kind="stt"
+                      value={retrySTT}
+                      onChange={setRetrySTT}
+                      providerAllowList={STT_PROVIDER_ALLOWLIST}
+                      allowCredentialPick
+                      defaultLabel="Pick an STT provider"
+                    />
+                    <label className="mt-3 flex items-start gap-2 text-sm text-gray-700">
+                      <input
+                        type="checkbox"
+                        checked={retryTranscribeOverwrite}
+                        onChange={(e) =>
+                          setRetryTranscribeOverwrite(e.target.checked)
+                        }
+                        className="mt-0.5 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                      />
+                      <span>
+                        <span className="font-medium">
+                          Re-diarise existing transcripts
+                        </span>{' '}
+                        <span className="text-gray-500">
+                          — wipe the diarised transcript on every
+                          retried row so the new STT runs from scratch.
+                          Leave unchecked to keep existing transcripts
+                          and only re-score with the new LLM.
+                        </span>
+                      </span>
+                    </label>
+                  </div>
+                )}
+
+                <div className="rounded-md bg-amber-50 border border-amber-200 p-3 text-xs text-amber-900">
+                  Completed rows and rows currently in progress are
+                  left alone, so this is safe to run mid-evaluation.
+                  The picked LLM / STT becomes the run's new default
+                  for any future retry from this screen.
+                </div>
+
+                {retryError && (
+                  <div className="rounded-md bg-red-50 border border-red-200 p-3">
+                    <div className="flex items-start gap-2">
+                      <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
+                      <p className="text-sm text-red-800">{retryError}</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="px-6 py-4 border-t border-gray-200 flex items-center justify-end gap-3">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    if (retryAllFailedMutation.isPending) return
+                    setRetryConfirmOpen(false)
+                    setRetryError(null)
+                  }}
+                  disabled={retryAllFailedMutation.isPending}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="primary"
+                  leftIcon={<RotateCw className="h-4 w-4" />}
+                  onClick={() => {
+                    if (!retryAllFailedMutation.isPending) {
+                      retryAllFailedMutation.mutate()
+                    }
+                  }}
+                  isLoading={retryAllFailedMutation.isPending}
+                  disabled={
+                    retryAllFailedMutation.isPending ||
+                    !retryLLM.provider ||
+                    !retryLLM.model
+                  }
+                >
+                  Retry {evaluation.failed_rows} row
+                  {evaluation.failed_rows === 1 ? '' : 's'}
+                </Button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
 
       <ConfirmModal
         isOpen={deleteEvalOpen}
@@ -1472,7 +1946,7 @@ function RowDetailPanel({
 
   if (!row) return null
 
-  const callId = row.external_call_id || `Row ${(row.row_index ?? 0) + 1}`
+  const callId = row.conversation_id || `Row ${(row.row_index ?? 0) + 1}`
   const playbackUrl = presignedRecording?.url || null
 
   const panel = (
@@ -2903,7 +3377,7 @@ function DiscoveredLabelsPanel({
           ) : (
             <ChevronDown className="h-3 w-3" />
           )}
-          <Sparkles className="h-3 w-3" /> Discovered labels
+          <Sparkles className="h-3 w-3" /> Discovered metrics
         </button>
         <span className="text-[10px] text-amber-700">
           {items.length} {items.length === 1 ? 'candidate' : 'candidates'}
@@ -2916,15 +3390,15 @@ function DiscoveredLabelsPanel({
           className="mb-2 inline-flex items-center gap-1 text-[10px] font-medium text-amber-800 hover:text-amber-900 underline underline-offset-2"
         >
           <Filter className="h-3 w-3" />
-          Show all calls with discovered labels
+          Show all calls with discovered metrics
         </button>
       )}
       {collapsed ? null : discoveredQuery.isLoading ? (
         <p className="text-amber-700 italic">Loading…</p>
       ) : items.length === 0 ? (
         <p className="text-amber-800/70 italic">
-          No new labels yet. As rows finish, the LLM may propose
-          candidates here that you can promote into real sub-labels.
+          No new metrics yet. As rows finish, the LLM may propose
+          candidates here that you can promote into real sub-metrics.
         </p>
       ) : (
         <ul className="space-y-2">
@@ -3011,7 +3485,7 @@ function DiscoveredLabelsPanel({
                         })
                       }
                       className="inline-flex items-center gap-1 text-[10px] font-medium rounded px-1.5 py-0.5 border border-amber-300 text-amber-800 bg-white hover:bg-amber-50"
-                      title="Filter the row table to calls that produced this discovered label"
+                      title="Filter the row table to calls that produced this discovered metric"
                     >
                       <Filter className="h-3 w-3" /> View calls
                     </button>
@@ -3076,6 +3550,331 @@ function DiscoveredLabelsPanel({
                     </button>
                   )}
                 </div>
+              </li>
+            )
+          })}
+        </ul>
+      )}
+      {(promoteMutation.isError ||
+        mergeMutation.isError ||
+        deleteMutation.isError) && (
+        <p className="text-[10px] text-red-700 mt-1">
+          {String(
+            (promoteMutation.error as any)?.message ||
+              (mergeMutation.error as any)?.message ||
+              (deleteMutation.error as any)?.message ||
+              'Action failed.',
+          )}
+        </p>
+      )}
+    </aside>
+  )
+}
+
+
+// Panel: surfaces LLM-discovered candidate TOP-LEVEL metrics at the
+// top of the evaluation detail Flow tab. Parallel to
+// :func:`DiscoveredLabelsPanel` but scoped to the evaluation as a
+// whole (no parent metric) and promotes into standalone Metric rows
+// via ``POST /metrics/from-discovered``. The promote dropdown lets
+// the user override the LLM's suggested_type before creating the
+// metric — defaults pre-fill from the candidate.
+function DiscoveredMetricsTopPanel({
+  callImportId,
+  evalId,
+}: {
+  callImportId: string
+  evalId: string
+}) {
+  const queryClient = useQueryClient()
+
+  const discoveredQuery = useQuery({
+    queryKey: ['call-import-eval-discovered-metrics', callImportId, evalId],
+    queryFn: () =>
+      apiClient.getCallImportEvaluationDiscoveredMetrics(
+        callImportId,
+        evalId,
+      ),
+  })
+
+  const invalidateAll = () => {
+    queryClient.invalidateQueries({
+      queryKey: [
+        'call-import-eval-discovered-metrics',
+        callImportId,
+        evalId,
+      ],
+    })
+    queryClient.invalidateQueries({ queryKey: ['metrics'] })
+    queryClient.invalidateQueries({
+      queryKey: ['call-import-evaluation', callImportId, evalId],
+    })
+  }
+
+  const promoteMutation = useMutation({
+    mutationFn: (entry: {
+      key: string
+      name: string
+      description?: string | null
+      metric_type: 'boolean' | 'rating' | 'category'
+      capture_rationale?: boolean
+    }) => apiClient.promoteDiscoveredMetric(entry),
+    onSuccess: invalidateAll,
+  })
+
+  const mergeMutation = useMutation({
+    mutationFn: (body: { from_key: string; to_key: string }) =>
+      apiClient.mergeCallImportEvaluationDiscoveredMetrics(
+        callImportId,
+        evalId,
+        body,
+      ),
+    onSuccess: invalidateAll,
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (key: string) =>
+      apiClient.deleteCallImportEvaluationDiscoveredMetric(
+        callImportId,
+        evalId,
+        { key },
+      ),
+    onSuccess: invalidateAll,
+  })
+
+  const items = discoveredQuery.data?.items ?? []
+  const [collapsed, setCollapsed] = useState(false)
+  const [confirmKey, setConfirmKey] = useState<string | null>(null)
+  // Per-candidate type override. Defaults to the LLM-suggested type
+  // on first render; the user can pick a different shape before
+  // hitting Promote.
+  const [typeOverrides, setTypeOverrides] = useState<
+    Record<string, 'boolean' | 'rating' | 'category'>
+  >({})
+
+  const typeFor = (item: (typeof items)[number]) =>
+    typeOverrides[item.key] || item.suggested_type || 'boolean'
+
+  return (
+    <aside className="border border-amber-200 bg-amber-50/40 rounded-md p-3 text-xs">
+      <header className="flex items-center justify-between mb-2 gap-2">
+        <button
+          type="button"
+          onClick={() => setCollapsed((c) => !c)}
+          className="font-semibold text-amber-900 inline-flex items-center gap-1 hover:text-amber-950"
+          aria-expanded={!collapsed}
+          title={collapsed ? 'Expand panel' : 'Collapse panel'}
+        >
+          {collapsed ? (
+            <ChevronRight className="h-3 w-3" />
+          ) : (
+            <ChevronDown className="h-3 w-3" />
+          )}
+          <Sparkles className="h-3 w-3" /> Discovered metrics
+        </button>
+        <span className="text-[10px] text-amber-700">
+          {items.length}{' '}
+          {items.length === 1 ? 'candidate' : 'candidates'}
+        </span>
+      </header>
+      {collapsed ? null : discoveredQuery.isLoading ? (
+        <p className="text-amber-700 italic">Loading…</p>
+      ) : items.length === 0 ? (
+        <p className="text-amber-800/70 italic">
+          No new metrics yet. As rows finish, the LLM may propose
+          candidate top-level metrics here that you can promote into
+          real Metric rows.
+        </p>
+      ) : (
+        <ul className="space-y-2">
+          {items.map((item) => {
+            const others = items.filter((o) => o.key !== item.key)
+            const chosenType = typeFor(item)
+            return (
+              <li
+                key={item.key}
+                className="rounded border border-amber-200 bg-white p-2"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="font-semibold text-gray-900 truncate">
+                      {item.name}
+                    </p>
+                    <p className="text-[10px] text-gray-500 font-mono truncate">
+                      {item.key}
+                    </p>
+                  </div>
+                  <span className="text-[10px] tabular-nums text-amber-700 whitespace-nowrap">
+                    {item.count}{' '}
+                    {item.count === 1 ? 'call' : 'calls'}
+                  </span>
+                </div>
+                {item.description && (
+                  <p className="text-gray-700 mt-1">{item.description}</p>
+                )}
+                {item.sample_rationale && (
+                  <blockquote className="text-gray-500 italic mt-1 border-l-2 border-amber-300 pl-2">
+                    "{item.sample_rationale}"
+                  </blockquote>
+                )}
+                <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+                  <label className="inline-flex items-center gap-1 text-[10px] text-gray-700">
+                    Type
+                    <select
+                      className="border border-gray-300 rounded px-1 py-0.5 text-[10px] bg-white"
+                      value={chosenType}
+                      disabled={promoteMutation.isPending}
+                      onChange={(e) =>
+                        setTypeOverrides((prev) => ({
+                          ...prev,
+                          [item.key]: e.target.value as
+                            | 'boolean'
+                            | 'rating'
+                            | 'category',
+                        }))
+                      }
+                    >
+                      <option value="boolean">Boolean</option>
+                      <option value="rating">Rating</option>
+                      <option value="category">Category</option>
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    disabled={promoteMutation.isPending}
+                    onClick={() => {
+                      // Build the description: prefer the LLM's
+                      // description, append a single example
+                      // rationale so the new metric's rubric starts
+                      // with one concrete case. The user can edit
+                      // the metric afterwards in the Metrics page.
+                      const examplesArr =
+                        item.examples && item.examples.length > 0
+                          ? item.examples
+                          : item.sample_rationale
+                            ? [item.sample_rationale]
+                            : []
+                      const exampleSlice = examplesArr.slice(0, 2)
+                      const baseDescription = (item.description || '').trim()
+                      const description =
+                        exampleSlice.length > 0
+                          ? [
+                              baseDescription,
+                              'Examples:',
+                              ...exampleSlice.map((ex) => `- "${ex}"`),
+                            ]
+                              .filter((part) => part.length > 0)
+                              .join('\n\n')
+                              .replace(/\n{3,}/g, '\n\n')
+                          : baseDescription || null
+                      promoteMutation.mutate({
+                        key: item.key,
+                        name: item.key.replace(/_/g, ' '),
+                        description,
+                        metric_type: chosenType,
+                        capture_rationale: true,
+                      })
+                    }}
+                    className="inline-flex items-center gap-1 text-[10px] font-medium rounded px-1.5 py-0.5 bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-60"
+                  >
+                    <Plus className="h-3 w-3" /> Promote
+                  </button>
+                  {others.length > 0 && (
+                    <label className="inline-flex items-center gap-1 text-[10px] text-gray-700">
+                      <Merge className="h-3 w-3" />
+                      <select
+                        className="border border-gray-300 rounded px-1 py-0.5 text-[10px] bg-white"
+                        defaultValue=""
+                        disabled={mergeMutation.isPending}
+                        onChange={(e) => {
+                          const target = e.target.value
+                          if (!target) return
+                          mergeMutation.mutate({
+                            from_key: item.key,
+                            to_key: target,
+                          })
+                          e.target.value = ''
+                        }}
+                      >
+                        <option value="">Merge into…</option>
+                        {others.map((o) => (
+                          <option key={o.key} value={o.key}>
+                            {o.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                  {confirmKey === item.key ? (
+                    <span className="inline-flex items-center gap-1 text-[10px]">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          deleteMutation.mutate(item.key)
+                          setConfirmKey(null)
+                        }}
+                        disabled={deleteMutation.isPending}
+                        className="inline-flex items-center gap-1 font-medium rounded px-1.5 py-0.5 bg-red-600 text-white hover:bg-red-700 disabled:opacity-60"
+                        title="Permanently remove this candidate from the evaluation"
+                      >
+                        <Trash2 className="h-3 w-3" /> Confirm delete
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmKey(null)}
+                        className="inline-flex items-center px-1.5 py-0.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50"
+                      >
+                        Cancel
+                      </button>
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setConfirmKey(item.key)}
+                      disabled={deleteMutation.isPending}
+                      className="inline-flex items-center gap-1 text-[10px] font-medium rounded px-1.5 py-0.5 border border-red-200 text-red-700 hover:bg-red-50 disabled:opacity-60"
+                      title="Delete this LLM-discovered candidate (use for gibberish or irrelevant suggestions)"
+                    >
+                      <Trash2 className="h-3 w-3" /> Delete
+                    </button>
+                  )}
+                </div>
+                {/* Per-type guidance — without this the Promote
+                    button silently creates a metric that may not
+                    appear on the surface the user expects.
+                    Boolean/rating standalone metrics live in the
+                    Table / Visualizations tabs (the Flow diagram is
+                    reserved for category parents with sub-labels);
+                    a category metric promoted with no children is
+                    silently skipped by the next eval until children
+                    are added. */}
+                <p className="text-[10px] text-gray-500 mt-1.5 italic">
+                  {chosenType === 'category' ? (
+                    <>
+                      Creates an empty parent metric. <strong>Add
+                      child sub-labels in the Metrics page</strong>{' '}
+                      before re-running — without children the next
+                      evaluation skips this metric and the Flow
+                      diagram has nothing to render.
+                    </>
+                  ) : chosenType === 'rating' ? (
+                    <>
+                      Scored 0–1 per call. Appears in the{' '}
+                      <strong>Table</strong> and{' '}
+                      <strong>Visualizations</strong> tabs on the
+                      next run (the Flow diagram is reserved for
+                      category metrics with sub-labels).
+                    </>
+                  ) : (
+                    <>
+                      Scored true/false per call. Appears in the{' '}
+                      <strong>Table</strong> and{' '}
+                      <strong>Visualizations</strong> tabs on the
+                      next run (the Flow diagram is reserved for
+                      category metrics with sub-labels).
+                    </>
+                  )}
+                </p>
               </li>
             )
           })}

@@ -99,7 +99,7 @@ export default function SampleTextsPanel() {
     const q = callImportSearch.toLowerCase()
     return callImportRows.filter(
       (r: any) =>
-        r.external_call_id?.toLowerCase().includes(q) ||
+        r.conversation_id?.toLowerCase().includes(q) ||
         (r.transcript || '').toLowerCase().includes(q) ||
         (r.call_import_filename || '').toLowerCase().includes(q),
     )
@@ -1009,7 +1009,7 @@ export default function SampleTextsPanel() {
                           />
                           <div className="min-w-0 flex-1">
                             <p className="truncate text-sm font-semibold text-gray-900">
-                              {row.external_call_id || row.id}
+                              {row.conversation_id || row.id}
                             </p>
                             {hasTranscript ? (
                               <p className="mt-1 line-clamp-2 text-xs text-gray-600">

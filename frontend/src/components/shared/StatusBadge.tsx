@@ -1,4 +1,12 @@
-import { Clock, Loader2, CheckCircle2, XCircle, AlertCircle } from 'lucide-react'
+import {
+  Clock,
+  UploadCloud,
+  Layers,
+  Loader2,
+  CheckCircle2,
+  XCircle,
+  AlertCircle,
+} from 'lucide-react'
 
 interface StatusBadgeProps {
   status: string
@@ -19,6 +27,8 @@ const STATUS_STYLES: Record<string, string> = {
   call_in_progress: 'bg-blue-100 text-blue-800',
   call_ended: 'bg-green-100 text-green-800',
   transcribing: 'bg-blue-100 text-blue-800',
+  uploaded: 'bg-sky-100 text-sky-800',
+  mapped: 'bg-violet-100 text-violet-800',
 }
 
 export default function StatusBadge({ status, size = 'md' }: StatusBadgeProps) {
@@ -41,6 +51,12 @@ export default function StatusBadge({ status, size = 'md' }: StatusBadgeProps) {
     }
     if (normalizedStatus === 'partial') {
       return <AlertCircle className={iconClass} />
+    }
+    if (normalizedStatus === 'uploaded') {
+      return <UploadCloud className={iconClass} />
+    }
+    if (normalizedStatus === 'mapped') {
+      return <Layers className={iconClass} />
     }
     return <Clock className={iconClass} />
   }
