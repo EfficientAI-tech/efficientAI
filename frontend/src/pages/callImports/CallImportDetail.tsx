@@ -18,7 +18,6 @@ import {
   MessageSquare,
   Pause,
   Play,
-  Plus,
   RefreshCw,
   Search,
   Trash2,
@@ -52,18 +51,25 @@ import ProviderModelPicker, {
   type ProviderModelValue,
 } from '../../components/providers/ProviderModelPicker'
 import CallImportProgressBar from './components/CallImportProgressBar'
+import ImportPanel from './components/ImportPanel'
+import MappingPanel from './components/MappingPanel'
+import StageTracker from './components/StageTracker'
 import TranscriptView from './components/TranscriptView'
 
 // Providers we know `TranscriptionService.transcribe()` already supports
 // for the full diarization-enabled path. Local Whisper is omitted since
 // it's an unconditional fallback inside the service rather than
-// something the user explicitly picks.
+// something the user explicitly picks. Google is wired up via Gemini
+// multimodal completions through LiteLLM (see
+// `app/services/ai/stt_clients/google.py`) — the picker exposes the
+// `gemini-*-stt` model entries from `app/config/models.json`.
 const STT_PROVIDER_ALLOWLIST = [
   'deepgram',
   'openai',
   'elevenlabs',
   'sarvam',
   'smallest',
+  'google',
 ]
 
 const ROW_PAGE_SIZE = 100
@@ -93,7 +99,7 @@ export default function CallImportDetail() {
   const [rowOffset, setRowOffset] = useState(0)
   const [expandedRowIds, setExpandedRowIds] = useState<Set<string>>(new Set())
   // Row search: debounce keystrokes so we don't refire the rows fetch on
-  // every character — the backend filters by external_call_id ILIKE %q%
+  // every character — the backend filters by conversation_id ILIKE %q%
   // and reports the post-filter total in ``filtered_total_rows``.
   const [rowSearchInput, setRowSearchInput] = useState('')
   const [rowSearchQuery, setRowSearchQuery] = useState('')
@@ -135,22 +141,24 @@ export default function CallImportDetail() {
     Record<string, ProviderModelValue>
   >({})
   const [showAdvancedLLM, setShowAdvancedLLM] = useState(false)
-  // Auto-transcribe toggles for the eval modal: when on, the backend
-  // chains a transcribe -> evaluate per row so the user doesn't have
-  // to run two flows back-to-back when the CSV is missing transcripts.
-  const [autoTranscribe, setAutoTranscribe] = useState(false)
+  // Auto-transcribe is now ALWAYS on for every eval run — every run
+  // scores the diarised transcript, and missing diarised transcripts
+  // are auto-produced by the STT worker before scoring. The flag is
+  // no longer user-editable so we don't track it as state; the request
+  // payload below hardcodes ``auto_transcribe: true``.
   const [transcribeOverwrite, setTranscribeOverwrite] = useState(false)
-  // Which transcript(s) to score against. Ticking both creates two
-  // evaluation runs (one per source) so the user can compare scores
-  // side-by-side. At least one must stay checked.
-  const [evalUseProduction, setEvalUseProduction] = useState(true)
-  const [evalUseDiarised, setEvalUseDiarised] = useState(false)
   const [evalSTT, setEvalSTT] = useState<ProviderModelValue>({
     provider: null,
     model: null,
     credential_id: null,
   })
   const [evalSTTLanguage, setEvalSTTLanguage] = useState('')
+  // Opt into LLM-driven discovery of brand-new top-level metrics for
+  // this run. Defaults to off so existing users get the same behaviour
+  // as before; flipping it on adds a single instruction block to the
+  // first LLM call per row asking the model to surface candidate
+  // metrics that aren't already in the selected list.
+  const [discoverNewMetrics, setDiscoverNewMetrics] = useState(false)
   const [activeTab, setActiveTab] = useState<
     'rows' | 'evaluations' | 'insights'
   >('rows')
@@ -302,6 +310,10 @@ export default function CallImportDetail() {
       )
       return hasActiveTranscript ? 4000 : false
     },
+    // Pre-import staged batches don't have a meaningful "still working"
+    // signal that needs polling — they only change in response to user
+    // actions on this page, which already invalidate the query.
+    staleTime: 0,
   })
 
   const { data: metrics = [] } = useQuery({
@@ -352,12 +364,10 @@ export default function CallImportDetail() {
       setRunLLM({ provider: null, model: null, credential_id: null })
       setMetricLLMOverrides({})
       setShowAdvancedLLM(false)
-      setAutoTranscribe(false)
       setTranscribeOverwrite(false)
-      setEvalUseProduction(true)
-      setEvalUseDiarised(false)
       setEvalSTT({ provider: null, model: null, credential_id: null })
       setEvalSTTLanguage('')
+      setDiscoverNewMetrics(false)
       setActiveTab('evaluations')
       // When the user picked both Production and Diarised the backend
       // creates two runs and returns the primary one; the second eval
@@ -514,7 +524,7 @@ export default function CallImportDetail() {
       link.href = url
       link.setAttribute(
         'download',
-        row.recording_s3_key.split('/').pop() || `${row.external_call_id}.mp3`,
+        row.recording_s3_key.split('/').pop() || `${row.conversation_id}.mp3`,
       )
       document.body.appendChild(link)
       link.click()
@@ -639,6 +649,12 @@ export default function CallImportDetail() {
 
   const rows = data.rows ?? []
 
+  // The staged-flow batch isn't ready to render rows / evaluations
+  // until the user finishes the MAP + IMPORT steps. We swap out the
+  // bottom of the page for the stage panels while the batch is still
+  // pre-import so the user has a single linear next-action.
+  const preImport = data.status === 'uploaded' || data.status === 'mapped'
+
   // Selection state derived from the current page's row list. We
   // intentionally scope selection to the current page so a "Select all"
   // tick on screen always matches the rows the user can see.
@@ -663,18 +679,24 @@ export default function CallImportDetail() {
           Back to Call Imports
         </Link>
         <div className="flex items-center gap-2">
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={() => {
-              setSelectedMetricIds([])
-              setShowRunEval(true)
-            }}
-            disabled={!rows.length}
-            title={!rows.length ? 'No rows to evaluate yet' : 'Run an evaluation on this import'}
-          >
-            Run Evaluation
-          </Button>
+          {!preImport && (
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => {
+                setSelectedMetricIds([])
+                setShowRunEval(true)
+              }}
+              disabled={!rows.length}
+              title={
+                !rows.length
+                  ? 'No rows to evaluate yet'
+                  : 'Open the run dialog — you must pick metrics and an STT provider/model before starting'
+              }
+            >
+              Run Evaluation
+            </Button>
+          )}
           <Button
             variant="secondary"
             size="sm"
@@ -709,7 +731,14 @@ export default function CallImportDetail() {
             <div className="mt-3 flex items-center gap-3 flex-wrap">
               <StatusBadge status={data.status} />
               <span className="text-sm text-gray-600 capitalize">
-                Provider: <span className="font-medium">{data.provider}</span>
+                Provider:{' '}
+                <span className="font-medium">
+                  {data.provider || (
+                    <span className="text-gray-400 italic normal-case">
+                      not selected yet
+                    </span>
+                  )}
+                </span>
               </span>
               <span className="text-sm text-gray-600">
                 Created: {new Date(data.created_at).toLocaleString()}
@@ -909,6 +938,26 @@ export default function CallImportDetail() {
         )}
       </div>
 
+      {/* Stage tracker: only meaningful for batches that came through
+          the staged flow (i.e. have ``source_s3_key`` set). Legacy
+          one-shot uploads start at status='processing' so they would
+          render the tracker stuck on the final step, which is
+          confusing — skip it entirely for those. */}
+      {data.source_s3_key && <StageTracker status={data.status} />}
+
+      {preImport && data.source_s3_key && (
+        <>
+          {data.status === 'uploaded' && <MappingPanel callImport={data} />}
+          {data.status === 'mapped' && (
+            <>
+              <MappingPanel callImport={data} />
+              <ImportPanel callImport={data} />
+            </>
+          )}
+        </>
+      )}
+
+      {preImport ? null : (
       <div className="border-b border-gray-200">
         <nav className="-mb-px flex gap-6" aria-label="Call import sections">
           <button
@@ -956,8 +1005,9 @@ export default function CallImportDetail() {
           </button>
         </nav>
       </div>
+      )}
 
-      {activeTab === 'rows' && (
+      {!preImport && activeTab === 'rows' && (
       <div className="bg-white shadow rounded-lg p-6">
         <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
           <h2 className="text-lg font-semibold text-gray-900">Rows</h2>
@@ -996,8 +1046,8 @@ export default function CallImportDetail() {
               type="text"
               value={rowSearchInput}
               onChange={(e) => setRowSearchInput(e.target.value)}
-              placeholder="Search by Call ID…"
-              aria-label="Search rows by Call ID"
+              placeholder="Search by Conversation ID…"
+              aria-label="Search rows by Conversation ID"
               className="w-full pl-9 pr-9 py-2 text-sm border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-500"
             />
             {rowSearchInput && (
@@ -1111,15 +1161,22 @@ export default function CallImportDetail() {
               // they're already reading as chat bubbles.
               const transcriptValue = (row.transcript || '').trim()
               const recordingUrlValue = (row.recording_url || '').trim()
-              const externalCallIdValue = (row.external_call_id || '').trim()
+              const conversationIdValue = (row.conversation_id || '').trim()
+              // ``raw_columns`` cell values can be strings, numbers,
+              // booleans, or null after the staged flow's type
+              // coercion (legacy uploads were always strings). Coerce
+              // to a string before any string ops so non-string cells
+              // don't blow up ``.trim()``.
               const rawColumnEntries = Object.entries(row.raw_columns || {}).filter(
                 ([key, value]) => {
                   if (!key.trim()) return false
-                  const trimmedValue = (value || '').trim()
+                  const stringValue =
+                    value === null || value === undefined ? '' : String(value)
+                  const trimmedValue = stringValue.trim()
                   if (!trimmedValue) return true
                   if (transcriptValue && trimmedValue === transcriptValue) return false
                   if (recordingUrlValue && trimmedValue === recordingUrlValue) return false
-                  if (externalCallIdValue && trimmedValue === externalCallIdValue) {
+                  if (conversationIdValue && trimmedValue === conversationIdValue) {
                     return false
                   }
                   return true
@@ -1138,7 +1195,7 @@ export default function CallImportDetail() {
                   <div className="flex items-center gap-2 px-3 py-2.5">
                     <input
                       type="checkbox"
-                      aria-label={`Select row ${row.external_call_id}`}
+                      aria-label={`Select row ${row.conversation_id}`}
                       checked={isSelected}
                       onChange={(e) => {
                         setSelectedRowIds((prev) => {
@@ -1174,9 +1231,9 @@ export default function CallImportDetail() {
                       </span>
                       <span
                         className="font-mono text-sm text-gray-900 truncate flex-1 min-w-0"
-                        title={row.external_call_id}
+                        title={row.conversation_id}
                       >
-                        {row.external_call_id}
+                        {row.conversation_id}
                       </span>
                       <StatusBadge status={row.status} size="sm" />
                     </button>
@@ -1241,7 +1298,7 @@ export default function CallImportDetail() {
                       )}
                       <button
                         type="button"
-                        aria-label={`Delete recording for ${row.external_call_id}`}
+                        aria-label={`Delete recording for ${row.conversation_id}`}
                         title="Delete row"
                         onClick={() => {
                           setDeleteError(null)
@@ -1492,46 +1549,35 @@ export default function CallImportDetail() {
                             <span className="ml-1 inline-flex items-center justify-center rounded-full bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-600">
                               {rawColumnEntries.length}
                             </span>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                // Hand the column header names to the
-                                // metric editor through router state.
-                                // The user can prune unwanted ones in
-                                // the resulting modal before saving.
-                                navigate('/metrics-management', {
-                                  state: {
-                                    prefillInputColumns: rawColumnEntries.map(
-                                      ([key]) => key,
-                                    ),
-                                  },
-                                })
-                              }}
-                              className="ml-auto inline-flex items-center gap-1 text-[11px] font-medium text-primary-700 hover:text-primary-900"
-                              title="Open the metric editor with these column headers pre-filled. The next evaluation run will judge those columns and add a new column to the results."
-                            >
-                              <Plus className="h-3 w-3" />
-                              Create metric from columns
-                            </button>
                           </header>
                           <dl className="p-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 text-xs">
-                            {rawColumnEntries.map(([key, value]) => (
-                              <div
-                                key={key}
-                                className="bg-gray-50 border border-gray-200 rounded px-2.5 py-1.5"
-                              >
-                                <dt className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider truncate">
-                                  {key}
-                                </dt>
-                                <dd className="text-gray-800 break-words mt-0.5 whitespace-pre-wrap">
-                                  {value && value.trim() ? (
-                                    value
-                                  ) : (
-                                    <span className="italic text-gray-400">empty</span>
-                                  )}
-                                </dd>
-                              </div>
-                            ))}
+                            {rawColumnEntries.map(([key, value]) => {
+                              // Typed raw_columns cells (numbers /
+                              // booleans / nulls) need to be stringified
+                              // before any string ops or JSX render or
+                              // React throws on the non-string child.
+                              const stringValue =
+                                value === null || value === undefined
+                                  ? ''
+                                  : String(value)
+                              return (
+                                <div
+                                  key={key}
+                                  className="bg-gray-50 border border-gray-200 rounded px-2.5 py-1.5"
+                                >
+                                  <dt className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider truncate">
+                                    {key}
+                                  </dt>
+                                  <dd className="text-gray-800 break-words mt-0.5 whitespace-pre-wrap">
+                                    {stringValue.trim() ? (
+                                      stringValue
+                                    ) : (
+                                      <span className="italic text-gray-400">empty</span>
+                                    )}
+                                  </dd>
+                                </div>
+                              )
+                            })}
                           </dl>
                         </section>
                       )}
@@ -1584,7 +1630,7 @@ export default function CallImportDetail() {
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-semibold text-gray-900 truncate">
-                  {rows.find((r) => r.id === playingRowId)?.external_call_id}
+                  {rows.find((r) => r.id === playingRowId)?.conversation_id}
                 </p>
               </div>
               <button
@@ -1609,7 +1655,7 @@ export default function CallImportDetail() {
       </div>
       )}
 
-      {activeTab === 'evaluations' && (
+      {!preImport && activeTab === 'evaluations' && (
       <div className="bg-white shadow rounded-lg p-6">
         <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
           <div>
@@ -1736,7 +1782,7 @@ export default function CallImportDetail() {
       </div>
       )}
 
-      {activeTab === 'insights' && (
+      {!preImport && activeTab === 'insights' && (
         <div className="bg-white shadow rounded-lg p-6 space-y-6">
           <div>
             <h2 className="text-lg font-semibold text-gray-900">Insights</h2>
@@ -2002,6 +2048,52 @@ export default function CallImportDetail() {
           (() => {
             const enabledMetrics = metrics.filter((m: any) => m.enabled)
             const disabledMetrics = metrics.filter((m: any) => !m.enabled)
+            // Group the user's selection into "override targets" — one
+            // entry per parent categorization metric (regardless of how
+            // many of its labels are picked) and one entry per standalone
+            // metric. This drives the per-metric LLM override UI: we
+            // surface ONE picker per chosen metric, never one per label.
+            // The picker keys overrides by parent id for hierarchical
+            // metrics; the backend already accepts parent ids and
+            // expands them to every child of that parent.
+            type OverrideTarget = {
+              id: string
+              name: string
+              isHierarchical: boolean
+              selectedChildCount: number
+            }
+            const selectedSet = new Set(selectedMetricIds)
+            const overrideTargets: OverrideTarget[] = []
+            for (const metric of enabledMetrics as any[]) {
+              const children: any[] = Array.isArray(metric.children)
+                ? metric.children.filter((c: any) => c.enabled)
+                : []
+              const isHierarchical =
+                !!metric.selection_mode && children.length > 0
+              if (isHierarchical) {
+                const selectedChildCount = children.filter((c: any) =>
+                  selectedSet.has(c.id),
+                ).length
+                if (selectedChildCount > 0) {
+                  overrideTargets.push({
+                    id: metric.id,
+                    name: metric.name,
+                    isHierarchical: true,
+                    selectedChildCount,
+                  })
+                }
+              } else if (selectedSet.has(metric.id)) {
+                overrideTargets.push({
+                  id: metric.id,
+                  name: metric.name,
+                  isHierarchical: false,
+                  selectedChildCount: 0,
+                })
+              }
+            }
+            const overrideTargetIds = new Set(
+              overrideTargets.map((t) => t.id),
+            )
             const runError = runEvaluationMutation.isError
               ? (runEvaluationMutation.error as any)?.response?.data?.detail ||
                 'Failed to start evaluation.'
@@ -2090,9 +2182,28 @@ export default function CallImportDetail() {
                         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
                         <div className="space-y-3">
                         <div className="space-y-2">
-                          <p className="text-xs uppercase tracking-wide font-semibold text-gray-500">
-                            Enabled metrics ({enabledMetrics.length})
-                          </p>
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="text-xs uppercase tracking-wide font-semibold text-gray-500">
+                              Enabled metrics ({enabledMetrics.length})
+                              <span
+                                className="ml-1 text-red-600 normal-case"
+                                aria-label="required"
+                                title="At least one metric is required"
+                              >
+                                *
+                              </span>
+                            </p>
+                            {selectedMetricIds.length === 0 ? (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-200">
+                                <AlertCircle className="h-3 w-3" />
+                                Pick at least one
+                              </span>
+                            ) : (
+                              <span className="text-[10px] font-medium text-gray-500">
+                                {selectedMetricIds.length} selected
+                              </span>
+                            )}
+                          </div>
                           {enabledMetrics.map((metric: any) => {
                             const children: any[] = Array.isArray(metric.children)
                               ? metric.children.filter((c: any) => c.enabled)
@@ -2223,23 +2334,45 @@ export default function CallImportDetail() {
 
                         <div className="space-y-3">
                         {/* Run-level LLM config */}
-                        <div className="rounded-md border border-gray-200 bg-gray-50 p-3 space-y-2">
-                          <p className="text-xs uppercase tracking-wide font-semibold text-gray-500">
-                            Evaluation LLM
-                          </p>
-                          <p className="text-[11px] text-gray-500">
-                            Pick the LLM that scores every selected metric.
-                            Leave empty to keep the default (OpenAI · gpt-4o).
-                          </p>
-                          <ProviderModelPicker
-                            kind="llm"
-                            value={runLLM}
-                            onChange={setRunLLM}
-                            defaultLabel="Default (OpenAI · gpt-4o)"
-                            allowCredentialPick
-                          />
+                        {(() => {
+                          const llmPartial =
+                            Boolean(runLLM.provider) !==
+                            Boolean(runLLM.model)
+                          return (
+                            <div
+                              className={`rounded-md border p-3 space-y-2 ${
+                                llmPartial
+                                  ? 'border-red-300 bg-red-50/40'
+                                  : 'border-gray-200 bg-gray-50'
+                              }`}
+                            >
+                              <p className="text-xs uppercase tracking-wide font-semibold text-gray-500">
+                                Evaluation LLM
+                              </p>
+                              <p className="text-[11px] text-gray-500">
+                                Pick the LLM that scores every selected
+                                metric. Leave empty to keep the default
+                                (OpenAI · gpt-4o).
+                              </p>
+                              <ProviderModelPicker
+                                kind="llm"
+                                value={runLLM}
+                                onChange={setRunLLM}
+                                defaultLabel="Default (OpenAI · gpt-4o)"
+                                allowCredentialPick
+                              />
+                              {llmPartial && (
+                                <p className="flex items-start gap-1 text-[11px] font-medium text-red-700">
+                                  <AlertCircle className="h-3 w-3 mt-0.5 flex-shrink-0" />
+                                  <span>
+                                    {runLLM.provider
+                                      ? 'Pick a model for this provider, or clear the provider to use the default.'
+                                      : 'Pick a provider for this model, or clear the model to use the default.'}
+                                  </span>
+                                </p>
+                              )}
 
-                          {selectedMetricIds.length > 0 && (
+                          {overrideTargets.length > 0 && (
                             <div className="pt-2 border-t border-gray-200">
                               <button
                                 type="button"
@@ -2247,26 +2380,14 @@ export default function CallImportDetail() {
                                 className="text-[11px] font-medium text-primary-700 hover:text-primary-900"
                               >
                                 {showAdvancedLLM ? 'Hide' : 'Show'} per-metric overrides
-                                ({selectedMetricIds.length} metric
-                                {selectedMetricIds.length === 1 ? '' : 's'})
+                                ({overrideTargets.length} metric
+                                {overrideTargets.length === 1 ? '' : 's'})
                               </button>
                               {showAdvancedLLM && (
                                 <div className="mt-2 space-y-3">
-                                  {selectedMetricIds.map((metricId) => {
-                                    const metric =
-                                      enabledMetrics.find(
-                                        (m: any) => m.id === metricId,
-                                      ) ||
-                                      enabledMetrics
-                                        .flatMap((m: any) =>
-                                          Array.isArray(m.children)
-                                            ? m.children
-                                            : [],
-                                        )
-                                        .find((c: any) => c.id === metricId)
-                                    if (!metric) return null
+                                  {overrideTargets.map((target) => {
                                     const override = metricLLMOverrides[
-                                      metricId
+                                      target.id
                                     ] || {
                                       provider: null,
                                       model: null,
@@ -2274,11 +2395,20 @@ export default function CallImportDetail() {
                                     }
                                     return (
                                       <div
-                                        key={metricId}
+                                        key={target.id}
                                         className="rounded border border-gray-200 bg-white p-2"
                                       >
                                         <p className="text-xs font-medium text-gray-800 mb-1">
-                                          {metric.name}
+                                          {target.name}
+                                          {target.isHierarchical && (
+                                            <span className="ml-2 text-[10px] font-normal text-gray-500">
+                                              ({target.selectedChildCount} label
+                                              {target.selectedChildCount === 1
+                                                ? ''
+                                                : 's'}{' '}
+                                              selected)
+                                            </span>
+                                          )}
                                         </p>
                                         <ProviderModelPicker
                                           kind="llm"
@@ -2287,9 +2417,9 @@ export default function CallImportDetail() {
                                             setMetricLLMOverrides((prev) => {
                                               const copy = { ...prev }
                                               if (!next.provider && !next.model) {
-                                                delete copy[metricId]
+                                                delete copy[target.id]
                                               } else {
-                                                copy[metricId] = next
+                                                copy[target.id] = next
                                               }
                                               return copy
                                             })
@@ -2303,118 +2433,141 @@ export default function CallImportDetail() {
                               )}
                             </div>
                           )}
-                        </div>
+                            </div>
+                          )
+                        })()}
 
-                        {/* Transcript source selector — ticking both
-                            creates two evaluation runs (one per source). */}
-                        <div className="rounded-md border border-gray-200 bg-gray-50 p-3 space-y-2">
-                          <p className="text-sm font-medium text-gray-900">
-                            Run evaluation on
-                          </p>
-                          <p className="text-[11px] text-gray-500 -mt-1">
-                            Tick both to run the evaluation twice — once
-                            per transcript — so the two scorings can be
-                            compared side-by-side. At least one is required.
-                          </p>
-                          <label className="flex items-start gap-2 text-sm cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={evalUseProduction}
-                              onChange={(e) =>
-                                setEvalUseProduction(e.target.checked)
-                              }
-                              className="mt-0.5"
-                            />
-                            <span>
-                              <span className="font-medium text-gray-900">
-                                Production transcript
-                              </span>
-                              <span className="block text-[11px] text-gray-500">
-                                The transcript supplied via the CSV upload.
-                              </span>
-                            </span>
-                          </label>
-                          <label className="flex items-start gap-2 text-sm cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={evalUseDiarised}
-                              onChange={(e) =>
-                                setEvalUseDiarised(e.target.checked)
-                              }
-                              className="mt-0.5"
-                            />
-                            <span>
-                              <span className="font-medium text-gray-900">
-                                Diarised transcript
-                              </span>
-                              <span className="block text-[11px] text-gray-500">
-                                The transcript produced by running
-                                diarisation on the recording.
-                              </span>
-                            </span>
-                          </label>
-                          {!evalUseProduction && !evalUseDiarised && (
-                            <p className="text-[11px] text-red-600">
-                              Select at least one transcript to evaluate.
-                            </p>
-                          )}
-                        </div>
-
-                        {/* Auto-transcribe hook */}
-                        <div className="rounded-md border border-gray-200 bg-gray-50 p-3 space-y-2">
-                          <label className="flex items-start gap-2 text-sm cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={autoTranscribe}
-                              onChange={(e) =>
-                                setAutoTranscribe(e.target.checked)
-                              }
-                              className="mt-0.5"
-                            />
-                            <span>
-                              <span className="font-medium text-gray-900">
-                                Auto-diarise rows missing a diarised transcript
-                              </span>
-                              <span className="block text-[11px] text-gray-500">
-                                Runs the STT/diarisation worker first, then
-                                evaluates. Only applies to the Diarised
-                                transcript source — rows that already have a
-                                diarised transcript are reused unless overwrite
-                                is enabled.
-                              </span>
-                            </span>
-                          </label>
-                          {autoTranscribe && (
-                            <div className="pl-6 space-y-2">
-                              <ProviderModelPicker
-                                kind="stt"
-                                value={evalSTT}
-                                onChange={setEvalSTT}
-                                providerAllowList={STT_PROVIDER_ALLOWLIST}
-                                defaultLabel="Pick an STT provider"
-                                allowCredentialPick
-                              />
-                              <input
-                                type="text"
-                                value={evalSTTLanguage}
-                                onChange={(e) =>
-                                  setEvalSTTLanguage(e.target.value)
-                                }
-                                placeholder="Language hint (e.g. en, hi)"
-                                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                              />
-                              <label className="flex items-start gap-2 text-xs">
+                        {/* Diarisation is now mandatory for every eval
+                            run — the checkbox is shown as always-on
+                            (matching the spec) so the user knows the
+                            STT picker below is required. The legacy
+                            "Production vs Diarised" transcript-source
+                            selector has been removed: runs always
+                            score the diarised transcript. */}
+                        {(() => {
+                          const sttMissing =
+                            !evalSTT.provider || !evalSTT.model
+                          return (
+                            <div
+                              className={`rounded-md border p-3 space-y-2 ${
+                                sttMissing
+                                  ? 'border-red-300 bg-red-50/40 ring-1 ring-red-200'
+                                  : 'border-gray-200 bg-gray-50'
+                              }`}
+                            >
+                              <label className="flex items-start gap-2 text-sm">
                                 <input
                                   type="checkbox"
-                                  checked={transcribeOverwrite}
-                                  onChange={(e) =>
-                                    setTranscribeOverwrite(e.target.checked)
-                                  }
+                                  checked
+                                  disabled
+                                  readOnly
+                                  className="mt-0.5"
+                                  aria-label="Auto-diarise rows missing a diarised transcript (always on)"
                                 />
-                                <span>Overwrite existing transcripts</span>
+                                <span className="flex-1">
+                                  <span className="flex items-center gap-2 flex-wrap">
+                                    <span className="font-medium text-gray-900">
+                                      Auto-diarise rows missing a diarised
+                                      transcript
+                                    </span>
+                                    <span
+                                      className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                                        sttMissing
+                                          ? 'bg-red-100 text-red-700 ring-1 ring-inset ring-red-200'
+                                          : 'bg-green-50 text-green-700 ring-1 ring-inset ring-green-200'
+                                      }`}
+                                    >
+                                      {sttMissing ? 'Required' : 'Set'}
+                                    </span>
+                                  </span>
+                                  <span className="block text-[11px] text-gray-500">
+                                    Every evaluation scores the diarised
+                                    transcript. Rows that don't already
+                                    have one are diarised first via the
+                                    STT provider you pick below.
+                                  </span>
+                                </span>
                               </label>
+                              <div className="pl-6 space-y-2">
+                                <ProviderModelPicker
+                                  kind="stt"
+                                  value={evalSTT}
+                                  onChange={setEvalSTT}
+                                  providerAllowList={STT_PROVIDER_ALLOWLIST}
+                                  defaultLabel="Pick an STT provider"
+                                  allowCredentialPick
+                                />
+                                {sttMissing && (
+                                  <p className="flex items-start gap-1 text-[11px] font-medium text-red-700">
+                                    <AlertCircle className="h-3 w-3 mt-0.5 flex-shrink-0" />
+                                    <span>
+                                      {!evalSTT.provider
+                                        ? 'Pick an STT provider — auto-diarisation is mandatory for every run.'
+                                        : 'Pick a model for this STT provider to enable the run.'}
+                                    </span>
+                                  </p>
+                                )}
+                                <input
+                                  type="text"
+                                  value={evalSTTLanguage}
+                                  onChange={(e) =>
+                                    setEvalSTTLanguage(e.target.value)
+                                  }
+                                  placeholder="Language hint (e.g. en, hi)"
+                                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                                />
+                                <label className="flex items-start gap-2 text-xs">
+                                  <input
+                                    type="checkbox"
+                                    checked={transcribeOverwrite}
+                                    onChange={(e) =>
+                                      setTranscribeOverwrite(e.target.checked)
+                                    }
+                                  />
+                                  <span>
+                                    Overwrite existing diarised transcripts
+                                    (otherwise rows with a stored transcript
+                                    are reused).
+                                  </span>
+                                </label>
+                              </div>
                             </div>
-                          )}
+                          )
+                        })()}
+
+                        {/* Metric discovery (opt-in per run). When
+                            enabled, the LLM is asked once per row to
+                            surface candidate top-level metrics
+                            beyond the ones selected above; the
+                            results show up in the Discovered metrics
+                            panel on the evaluation detail Flow tab
+                            where they can be promoted into real
+                            Metric rows. */}
+                        <div className="rounded-md border border-amber-200 bg-amber-50/40 p-3 space-y-2">
+                          <label className="flex items-start gap-2 text-sm">
+                            <input
+                              type="checkbox"
+                              checked={discoverNewMetrics}
+                              onChange={(e) =>
+                                setDiscoverNewMetrics(e.target.checked)
+                              }
+                              className="mt-0.5 h-4 w-4 text-amber-600 focus:ring-amber-500 border-gray-300 rounded"
+                            />
+                            <span>
+                              <span className="font-medium text-gray-900">
+                                Discover new metrics
+                              </span>
+                              <span className="block text-[11px] text-gray-600 mt-0.5">
+                                Asks the LLM to propose brand-new
+                                top-level metrics it noticed in each
+                                transcript (boolean / rating /
+                                category). Candidates appear in the
+                                Discovered metrics panel on the Flow
+                                tab and can be promoted into real
+                                Metric rows.
+                              </span>
+                            </span>
+                          </label>
                         </div>
                         </div>
                         </div>
@@ -2435,33 +2588,81 @@ export default function CallImportDetail() {
                       </div>
                     ) : null}
 
-                    <div className="flex gap-2 pt-2">
-                      <Button
-                        variant="outline"
-                        onClick={() => setShowRunEval(false)}
-                        disabled={runEvaluationMutation.isPending}
-                        className="flex-1"
-                      >
-                        Cancel
-                      </Button>
-                      <Button
-                        variant="primary"
-                        isLoading={runEvaluationMutation.isPending}
-                        disabled={
-                          selectedMetricIds.length === 0 ||
-                          enabledMetrics.length === 0 ||
-                          runEvaluationMutation.isPending ||
-                          (autoTranscribe &&
-                            (!evalSTT.provider || !evalSTT.model)) ||
-                          (Boolean(runLLM.provider) !==
-                            Boolean(runLLM.model)) ||
-                          (!evalUseProduction && !evalUseDiarised)
-                        }
+                    {(() => {
+                      const disabledReasons: string[] = []
+                      if (enabledMetrics.length === 0) {
+                        disabledReasons.push(
+                          'Enable at least one agent metric in Metrics.',
+                        )
+                      } else if (selectedMetricIds.length === 0) {
+                        disabledReasons.push('Select at least one metric to score.')
+                      }
+                      if (!evalSTT.provider) {
+                        disabledReasons.push(
+                          'Pick an STT provider (auto-diarisation is required).',
+                        )
+                      } else if (!evalSTT.model) {
+                        disabledReasons.push(
+                          'Pick an STT model for the selected provider.',
+                        )
+                      }
+                      if (
+                        Boolean(runLLM.provider) !== Boolean(runLLM.model)
+                      ) {
+                        disabledReasons.push(
+                          'Finish the Evaluation LLM selection (pick both a provider and a model, or clear both).',
+                        )
+                      }
+                      const isDisabled =
+                        disabledReasons.length > 0 ||
+                        runEvaluationMutation.isPending
+                      return (
+                        <>
+                          {disabledReasons.length > 0 && (
+                            <div
+                              role="status"
+                              className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"
+                            >
+                              <p className="flex items-center gap-1.5 font-medium">
+                                <AlertCircle className="h-4 w-4" />
+                                Finish the required fields to start this run
+                              </p>
+                              <ul className="mt-1 list-disc pl-7 space-y-0.5 text-[12px]">
+                                {disabledReasons.map((reason) => (
+                                  <li key={reason}>{reason}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+
+                          <div className="flex gap-2 pt-2">
+                            <Button
+                              variant="outline"
+                              onClick={() => setShowRunEval(false)}
+                              disabled={runEvaluationMutation.isPending}
+                              className="flex-1"
+                            >
+                              Cancel
+                            </Button>
+                            <Button
+                              variant="primary"
+                              isLoading={runEvaluationMutation.isPending}
+                              disabled={isDisabled}
+                              title={
+                                disabledReasons.length > 0
+                                  ? `Can't start yet:\n• ${disabledReasons.join('\n• ')}`
+                                  : 'Start this evaluation run'
+                              }
                         onClick={() => {
                           // Build a clean overrides payload — drop any
                           // entries that didn't end up with both a
                           // provider and a model set so the API doesn't
-                          // 400 on partial fills.
+                          // 400 on partial fills. We also discard
+                          // entries for ids that are no longer in
+                          // ``overrideTargets`` (e.g., the user set an
+                          // override for a parent then deselected every
+                          // one of its labels) so stale state doesn't
+                          // trip backend validation.
                           const overrides: Record<
                             string,
                             CallImportEvaluationLLMOverride
@@ -2469,6 +2670,7 @@ export default function CallImportDetail() {
                           for (const [mid, val] of Object.entries(
                             metricLLMOverrides,
                           )) {
+                            if (!overrideTargetIds.has(mid)) continue
                             if (val.provider && val.model) {
                               overrides[mid] = {
                                 provider: val.provider,
@@ -2477,43 +2679,37 @@ export default function CallImportDetail() {
                               }
                             }
                           }
-                          const transcriptSources: Array<
-                            'production' | 'diarised'
-                          > = []
-                          if (evalUseProduction)
-                            transcriptSources.push('production')
-                          if (evalUseDiarised)
-                            transcriptSources.push('diarised')
                           runEvaluationMutation.mutate({
                             metric_ids: selectedMetricIds,
                             name: runDraftName.trim() || null,
-                            transcript_sources: transcriptSources,
+                            // Diarised is the only supported source
+                            // now; the backend rejects anything else.
+                            transcript_sources: ['diarised'],
                             llm_provider: runLLM.provider || null,
                             llm_model: runLLM.model || null,
                             llm_credential_id: runLLM.credential_id || null,
                             metric_llm_overrides: Object.keys(overrides).length
                               ? overrides
                               : null,
-                            auto_transcribe: autoTranscribe,
-                            transcribe_overwrite:
-                              autoTranscribe && transcribeOverwrite,
-                            stt_provider: autoTranscribe
-                              ? evalSTT.provider
-                              : null,
-                            stt_model: autoTranscribe ? evalSTT.model : null,
-                            stt_credential_id: autoTranscribe
-                              ? evalSTT.credential_id || null
-                              : null,
-                            stt_language: autoTranscribe
-                              ? evalSTTLanguage.trim() || null
-                              : null,
+                            // Auto-diarise is always on; the STT fields
+                            // are mandatory and validated above.
+                            auto_transcribe: true,
+                            transcribe_overwrite: transcribeOverwrite,
+                            stt_provider: evalSTT.provider,
+                            stt_model: evalSTT.model,
+                            stt_credential_id: evalSTT.credential_id || null,
+                            stt_language: evalSTTLanguage.trim() || null,
+                            discover_new_metrics: discoverNewMetrics,
                           })
                         }}
-                        className="flex-1"
-                      >
-                        Start
-                      </Button>
-                    </div>
+                              className="flex-1"
+                            >
+                              Start
+                            </Button>
+                          </div>
+                        </>
+                      )
+                    })()}
                   </div>
                 </div>
               </div>
@@ -2587,7 +2783,7 @@ export default function CallImportDetail() {
         title="Delete this recording?"
         description={(() => {
           if (!pendingDeleteRow) return ''
-          const callId = pendingDeleteRow.external_call_id
+          const callId = pendingDeleteRow.conversation_id
           const hasS3 = !!pendingDeleteRow.recording_s3_key
           const lines = [
             `The row for CallID ${callId} will be removed from this import.`,

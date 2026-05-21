@@ -67,7 +67,7 @@ function FlowNode({ data }: NodeProps<Node<FlowNodeData>>) {
         {data.isDiscovered && (
           <span
             className="text-[9px] uppercase tracking-wide font-semibold rounded-sm bg-amber-50 text-amber-700 border border-amber-200 px-1 py-[1px]"
-            title="LLM-discovered candidate (click Promote in the Discovered Labels panel to make it a real sub-label)"
+            title="LLM-discovered candidate (click Promote in the Discovered Metrics panel to make it a real sub-metric)"
           >
             discovered
           </span>

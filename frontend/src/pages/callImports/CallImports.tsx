@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ChevronLeft,
   ChevronRight,
+  Layers,
   Phone,
   RefreshCw,
   Trash2,
@@ -23,6 +24,8 @@ const PAGE_SIZE = 20
 
 const STATUS_OPTIONS: Array<{ label: string; value: '' | CallImportStatus }> = [
   { label: 'All statuses', value: '' },
+  { label: 'Uploaded', value: 'uploaded' },
+  { label: 'Mapped', value: 'mapped' },
   { label: 'Pending', value: 'pending' },
   { label: 'Processing', value: 'processing' },
   { label: 'Completed', value: 'completed' },
@@ -102,11 +105,20 @@ export default function CallImports() {
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Call Imports</h1>
           <p className="mt-2 text-sm text-gray-600">
-            Upload a CSV of CallID, Recording URL, Transcript and we'll fetch each
-            recording from Exotel into S3.
+            Pick a reusable Input Parameter schema, map its parameters to the
+            columns of your CSV / Excel sheet, and we'll fetch each recording
+            from the selected telephony provider into S3.
           </p>
         </div>
         <div className="flex gap-3">
+          <Link to="/call-imports/schemas">
+            <Button
+              variant="ghost"
+              leftIcon={<Layers className="h-5 w-5" />}
+            >
+              Manage Schemas
+            </Button>
+          </Link>
           <Link to="/call-imports/tags">
             <Button
               variant="ghost"
@@ -307,7 +319,11 @@ export default function CallImports() {
                       </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700 capitalize">
-                      {item.provider}
+                      {item.provider || (
+                        <span className="text-gray-400 italic normal-case">
+                          —
+                        </span>
+                      )}
                     </td>
                     <td className="px-6 py-4 align-top">
                       <div className="flex flex-col gap-1">

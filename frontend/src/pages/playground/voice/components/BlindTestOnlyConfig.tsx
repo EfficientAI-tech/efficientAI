@@ -246,7 +246,7 @@ function RecordingPicker({
     const q = search.toLowerCase()
     return rows.filter(
       (r: any) =>
-        r.external_call_id?.toLowerCase().includes(q) ||
+        r.conversation_id?.toLowerCase().includes(q) ||
         (r.transcript || '').toLowerCase().includes(q),
     )
   }, [rows, search])
@@ -281,7 +281,7 @@ function RecordingPicker({
         <div className="rounded border border-blue-200 bg-blue-50 px-2 py-1.5 flex items-center justify-between">
           <div className="min-w-0">
             <p className="truncate text-xs font-medium text-blue-900">
-              {selectedRow.external_call_id || selectedId}
+              {selectedRow.conversation_id || selectedId}
             </p>
             {selectedRow.transcript && (
               <p className="truncate text-[11px] text-blue-700">{selectedRow.transcript}</p>
@@ -310,12 +310,12 @@ function RecordingPicker({
               return (
                 <li
                   key={r.id}
-                  onClick={() => onSelect(r.id, r.external_call_id || undefined)}
+                  onClick={() => onSelect(r.id, r.conversation_id || undefined)}
                   className={`px-2 py-1.5 cursor-pointer hover:bg-gray-50 ${
                     active ? 'bg-blue-50' : ''
                   }`}
                 >
-                  <p className="truncate font-medium text-gray-800">{r.external_call_id}</p>
+                  <p className="truncate font-medium text-gray-800">{r.conversation_id}</p>
                   {r.transcript && (
                     <p className="truncate text-[11px] text-gray-500">{r.transcript}</p>
                   )}

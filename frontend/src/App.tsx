@@ -85,6 +85,7 @@ import CallImports from './pages/callImports/CallImports'
 import CallImportDetail from './pages/callImports/CallImportDetail'
 import CallImportEvaluationDetail from './pages/callImports/CallImportEvaluationDetail'
 import CallImportTagsPage from './pages/callImports/Tags'
+import CallImportSchemasPage from './pages/callImports/Schemas'
 
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -168,6 +169,7 @@ function App() {
           <Route path="prompt-partials" element={<PromptPartials />} />
           <Route path="call-imports" element={<EnterpriseGate feature="call_imports"><CallImports /></EnterpriseGate>} />
           <Route path="call-imports/tags" element={<EnterpriseGate feature="call_imports"><CallImportTagsPage /></EnterpriseGate>} />
+          <Route path="call-imports/schemas" element={<EnterpriseGate feature="call_imports"><CallImportSchemasPage /></EnterpriseGate>} />
           <Route path="call-imports/:id" element={<EnterpriseGate feature="call_imports"><CallImportDetail /></EnterpriseGate>} />
           <Route
             path="call-imports/:id/evaluations/:evalId"

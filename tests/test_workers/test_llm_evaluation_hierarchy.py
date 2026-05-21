@@ -370,6 +370,124 @@ def test_map_keeps_discovered_labels_supplemental_for_single_choice_parent():
     assert discovered[0]["name"] == "X"
 
 
+# ---------------------------------------------------------------------------
+# Parent-level capture_rationale: one rationale per category, never per child
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_emits_parent_rationale_key_when_parent_capture_rationale_on():
+    """When ``capture_rationale=True`` lives on the PARENT, the prompt
+    must ask for a single ``<parent>_rationale`` companion key instead
+    of one rationale per child. This is the contract the table relies
+    on to render exactly one ``<Parent> - LLM Rationale`` column."""
+    parent = _make_parent(selection_mode="single_choice", name="Call Outcome")
+    parent.capture_rationale = True
+    children = [
+        _make_child(name="happy_completion"),
+        _make_child(name="angry_hangup"),
+    ]
+
+    prompt = llm_evaluation.build_evaluation_prompt(
+        transcription="hi",
+        llm_metrics=children,
+        parent_metric=parent,
+    )
+    # Parent rationale key is requested...
+    assert "call_outcome_rationale" in prompt
+    # ...and per-child rationale keys are NOT (children stay rationale-free
+    # in hierarchical mode regardless of any legacy child.capture_rationale
+    # value the worker may see).
+    assert "happy_completion_rationale" not in prompt
+    assert "angry_hangup_rationale" not in prompt
+
+
+def test_prompt_omits_parent_rationale_key_when_parent_capture_rationale_off():
+    parent = _make_parent(selection_mode="single_choice", name="Call Outcome")
+    parent.capture_rationale = False
+    children = [_make_child(name="happy_completion")]
+
+    prompt = llm_evaluation.build_evaluation_prompt(
+        transcription="hi",
+        llm_metrics=children,
+        parent_metric=parent,
+    )
+    assert "call_outcome_rationale" not in prompt
+
+
+def test_prompt_ignores_legacy_child_capture_rationale_in_hierarchical_mode():
+    """Children with stale ``capture_rationale=True`` (e.g. from a row
+    that pre-dates the 034 migration) MUST NOT cause per-child rationale
+    keys to appear — the parent owns the single rationale string for
+    the group."""
+    parent = _make_parent(selection_mode="multi_label", name="Call Flow")
+    parent.capture_rationale = False
+    a = _make_child(name="connected")
+    b = _make_child(name="hung_up")
+    # Simulate a legacy child that the migration hasn't cleaned up yet.
+    a.capture_rationale = True
+    b.capture_rationale = True
+
+    prompt = llm_evaluation.build_evaluation_prompt(
+        transcription="hi",
+        llm_metrics=[a, b],
+        parent_metric=parent,
+    )
+    assert "connected_rationale" not in prompt
+    assert "hung_up_rationale" not in prompt
+
+
+def test_map_persists_parent_rationale_on_parent_entry_only():
+    parent = _make_parent(selection_mode="single_choice", name="Call Outcome")
+    parent.capture_rationale = True
+    happy = _make_child(name="happy_completion")
+    angry = _make_child(name="angry_hangup")
+    # Legacy bit on the child: still must not surface as a child rationale.
+    happy.capture_rationale = True
+
+    evaluation_data = {
+        "happy_completion": True,
+        "angry_hangup": False,
+        "call_outcome": "happy_completion",
+        "call_outcome__sequence": ["happy_completion"],
+        "call_outcome_rationale": "Customer thanked the agent and hung up.",
+        # A stray child rationale the LLM may have emitted before the
+        # prompt change rolled out — the mapper must IGNORE it.
+        "happy_completion_rationale": "stale per-child rationale",
+    }
+
+    scores = llm_evaluation._map_evaluation_to_metrics(
+        evaluation_data, [happy, angry], parent_metric=parent
+    )
+
+    parent_entry = scores[str(parent.id)]
+    assert parent_entry["value"] == "happy_completion"
+    assert (
+        parent_entry["rationale"]
+        == "Customer thanked the agent and hung up."
+    )
+    # Child entries never carry rationales in hierarchical mode.
+    assert "rationale" not in scores[str(happy.id)]
+    assert "rationale" not in scores[str(angry.id)]
+
+
+def test_map_parent_rationale_absent_when_parent_capture_rationale_off():
+    parent = _make_parent(selection_mode="single_choice", name="Call Outcome")
+    parent.capture_rationale = False
+    happy = _make_child(name="happy_completion")
+
+    evaluation_data = {
+        "happy_completion": True,
+        "call_outcome": "happy_completion",
+        "call_outcome__sequence": ["happy_completion"],
+        "call_outcome_rationale": "Should be ignored.",
+    }
+
+    scores = llm_evaluation._map_evaluation_to_metrics(
+        evaluation_data, [happy], parent_metric=parent
+    )
+    assert "rationale" not in scores[str(parent.id)]
+
+
 def test_map_drops_discovered_labels_when_allow_discovery_false():
     # Discovery is gated entirely by ``allow_discovery`` on the parent.
     # Even on a single_choice parent, when the flag is off any

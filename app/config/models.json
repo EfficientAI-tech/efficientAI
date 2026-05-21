@@ -135,6 +135,21 @@
     "provider": "google",
     "model_type": "stt"
   },
+  "gemini-2.5-pro-stt": {
+    "provider": "google",
+    "model_type": "stt",
+    "description": "Gemini 2.5 Pro used for audio transcription via LiteLLM proxy (audio input -> text)"
+  },
+  "gemini-2.5-flash-stt": {
+    "provider": "google",
+    "model_type": "stt",
+    "description": "Gemini 2.5 Flash used for audio transcription via LiteLLM proxy (fast, cost-efficient)"
+  },
+  "gemini-2.5-flash-lite-stt": {
+    "provider": "google",
+    "model_type": "stt",
+    "description": "Gemini 2.5 Flash Lite used for audio transcription via LiteLLM proxy (lowest cost)"
+  },
   "gemini-2.0-flash": {
     "provider": "google",
     "model_type": "llm"

@@ -17,6 +17,7 @@ from fastapi.responses import StreamingResponse
 from loguru import logger
 from sqlalchemy import desc, func, or_, text
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.database import get_db
 from app.dependencies import get_api_key, get_organization_id, require_enterprise_feature
@@ -35,6 +36,9 @@ from app.models.schemas import (
     CallImportEvaluationCreate,
     CallImportEvaluationListResponse,
     CallImportEvaluationResponse,
+    CallImportEvaluationRetryRequest,
+    CallImportEvaluationRetryResponse,
+    CallImportEvaluationRetrySkippedItem,
     CallImportEvaluationRowListResponse,
     CallImportEvaluationRowResponse,
     CallImportEvaluationUpdate,
@@ -46,6 +50,10 @@ from app.models.schemas import (
     DiscoveredLabelItem,
     DiscoveredLabelMergeRequest,
     DiscoveredLabelsResponse,
+    DiscoveredMetricDeleteRequest,
+    DiscoveredMetricItem,
+    DiscoveredMetricMergeRequest,
+    DiscoveredMetricsResponse,
     EvaluationInsightsRequest,
     EvaluationTldrSummary,
     MetricFlowEdge,
@@ -310,6 +318,9 @@ def _serialize_eval(
         created_at=row.created_at,
         updated_at=row.updated_at,
         tldr_summary=_tldr_summary_payload(row),
+        discover_new_metrics=bool(
+            getattr(row, "discover_new_metrics", False)
+        ),
     )
 
 
@@ -571,25 +582,44 @@ async def create_call_import_evaluation(
                     metric_overrides_payload[leaf_id] = override_dict
 
     # ----- Validate auto-transcribe settings -----
-    auto_transcribe = payload.auto_transcribe and bool(payload.stt_provider)
-    stt_provider_norm: Optional[str] = None
-    stt_model_norm: Optional[str] = None
-    if auto_transcribe:
-        if not payload.stt_model:
-            raise HTTPException(
-                status_code=400,
-                detail="stt_model is required when auto_transcribe is true.",
-            )
-        try:
-            stt_provider_norm = ModelProvider(
-                payload.stt_provider.lower()
-            ).value
-        except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unknown STT provider '{payload.stt_provider}'.",
-            )
-        stt_model_norm = payload.stt_model.strip() or None
+    # Every evaluation run scores the diarised transcript and
+    # auto-diarises rows that don't already have one, so STT
+    # provider+model are mandatory on every request (the
+    # ``auto_transcribe`` flag is preserved on the schema for API
+    # compatibility but is effectively always true at this point).
+    if not payload.stt_provider:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "stt_provider is required: every evaluation run "
+                "auto-diarises rows that are missing a diarised "
+                "transcript."
+            ),
+        )
+    if not payload.stt_model:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "stt_model is required: every evaluation run "
+                "auto-diarises rows that are missing a diarised "
+                "transcript."
+            ),
+        )
+    auto_transcribe = True
+    try:
+        stt_provider_norm: Optional[str] = ModelProvider(
+            payload.stt_provider.lower()
+        ).value
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown STT provider '{payload.stt_provider}'.",
+        )
+    stt_model_norm: Optional[str] = payload.stt_model.strip() or None
+    if not stt_model_norm:
+        raise HTTPException(
+            status_code=400, detail="stt_model cannot be empty."
+        )
 
     completed_rows = (
         db.query(CallImportRow)
@@ -601,26 +631,19 @@ async def create_call_import_evaluation(
         .all()
     )
 
-    # Deduplicate ``transcript_sources`` while preserving order so that
-    # ``['production','production']`` doesn't create two identical runs
-    # and ``['diarised','production']`` keeps the user's pick order
-    # (the first source becomes the "primary" returned in the response).
-    requested_sources: List[str] = []
-    for src in payload.transcript_sources or []:
-        if src not in requested_sources:
-            requested_sources.append(src)
-    if not requested_sources:
-        requested_sources = ["production"]
+    # Every evaluation run scores the diarised transcript. The
+    # ``transcript_sources`` field on the schema has already been
+    # normalized to ``['diarised']`` by the validator; we still iterate
+    # the list below so the loop machinery stays generic in case future
+    # sources are reintroduced.
+    requested_sources: List[str] = ["diarised"]
 
     base_name = _normalize_name(payload.name)
 
     def _name_for_source(source: str) -> Optional[str]:
-        if len(requested_sources) == 1:
-            return base_name
-        suffix = "Production" if source == "production" else "Diarised"
-        if base_name:
-            return f"{base_name} ({suffix})"
-        return f"({suffix})"
+        # Single-source runs preserve the user's chosen name verbatim.
+        del source
+        return base_name
 
     created_evaluations: List[CallImportEvaluation] = []
     eval_row_buckets: Dict[
@@ -653,6 +676,9 @@ async def create_call_import_evaluation(
                 payload.stt_credential_id if auto_transcribe else None
             ),
             transcript_source=source,
+            discover_new_metrics=bool(
+                getattr(payload, "discover_new_metrics", False)
+            ),
         )
         db.add(evaluation)
         db.flush()
@@ -873,7 +899,7 @@ async def list_call_import_evaluation_rows(
     q: Optional[str] = Query(
         None,
         description=(
-            "Free-text search across external_call_id and transcript "
+            "Free-text search across conversation_id and transcript "
             "(case-insensitive substring match)."
         ),
     ),
@@ -977,7 +1003,7 @@ async def list_call_import_evaluation_rows(
         # independent of which source the evaluation actually scored.
         query = query.filter(
             or_(
-                CallImportRow.external_call_id.ilike(needle),
+                CallImportRow.conversation_id.ilike(needle),
                 CallImportRow.transcript.ilike(needle),
                 CallImportRow.diarised_transcript.ilike(needle),
             )
@@ -1211,7 +1237,7 @@ async def list_call_import_evaluation_rows(
                 evaluation_id=eval_row_obj.evaluation_id,
                 call_import_row_id=eval_row_obj.call_import_row_id,
                 row_index=source_row.row_index,
-                external_call_id=source_row.external_call_id,
+                conversation_id=source_row.conversation_id,
                 transcript=_pick_transcript(source_row),
                 raw_columns=source_row.raw_columns,
                 recording_url=source_row.recording_url,
@@ -1281,36 +1307,83 @@ async def export_call_import_evaluation_csv(
     metric_names = {str(metric.id): metric.name for metric in metrics}
     metrics_by_id = {str(metric.id): metric for metric in metrics}
 
-    mapping = call_import.column_mapping or {}
-    mapped_headers = [
-        mapping.get("external_call_id"),
-        mapping.get("transcript"),
-        mapping.get("recording_url"),
-    ]
-    # Standard + extras columns: header == CSV header == raw_columns key.
+    # Two export-time modes depending on how the batch was uploaded:
+    #
+    #   * Schema-driven (new): ``call_imports.schema_id`` is set,
+    #     ``parameter_mapping`` records which CSV header fed each
+    #     parameter, and ``raw_columns`` on each row is keyed by
+    #     parameter NAME. Export headers are the parameter names.
+    #   * Legacy (pre-schema): ``column_mapping`` / ``extra_columns`` /
+    #     ``custom_column_mapping`` drive the columns and
+    #     ``raw_columns`` is keyed by the original CSV header.
+    #
+    # We bucket entries into ``standard_export_headers`` (raw_columns
+    # key == export header) and ``custom_export`` (export header
+    # differs from the raw_columns key) so the row-projection loop
+    # below stays mode-agnostic.
     standard_export_headers: List[str] = []
-    for header in [*mapped_headers, *(call_import.extra_columns or [])]:
-        if isinstance(header, str) and header and header not in standard_export_headers:
-            standard_export_headers.append(header)
+    custom_export: List[tuple[str, str]] = []  # [(export_header, raw_columns_key)]
 
-    # Custom mapping: header in the export is the uploader-chosen name,
-    # but the value is pulled from raw_columns under the original CSV header.
-    custom_mapping = call_import.custom_column_mapping or {}
-    custom_export: List[tuple[str, str]] = []  # [(export_header, csv_header)]
-    if isinstance(custom_mapping, dict):
-        for name, csv_header in custom_mapping.items():
-            if not isinstance(name, str) or not isinstance(csv_header, str):
-                continue
-            if not name or not csv_header:
-                continue
-            if name in standard_export_headers:
-                continue  # would clobber a real column
-            custom_export.append((name, csv_header))
+    if call_import.schema_id is not None:
+        # Use the live schema parameter list for column ordering. Falls
+        # back to whatever's in ``parameter_mapping`` if the schema was
+        # deleted (defensive - the FK is ON DELETE RESTRICT, but tests
+        # / future cascades may still hit this branch).
+        from app.models.database import CallImportSchema as _ImportSchema
 
-    # Build the metric columns in a hierarchy-aware order: each parent
-    # (if any) gets a column, then its children appear directly after it
-    # so the export reads like the metrics tree. Standalone metrics keep
-    # their original ordering.
+        schema_obj = (
+            db.query(_ImportSchema)
+            .filter(_ImportSchema.id == call_import.schema_id)
+            .first()
+        )
+        if schema_obj is not None:
+            params_sorted = sorted(
+                schema_obj.parameters, key=lambda p: p.ordering or 0
+            )
+            for param in params_sorted:
+                if param.name and param.name not in standard_export_headers:
+                    standard_export_headers.append(param.name)
+        else:
+            for param_name in (call_import.parameter_mapping or {}).keys():
+                if param_name and param_name not in standard_export_headers:
+                    standard_export_headers.append(param_name)
+    else:
+        mapping = call_import.column_mapping or {}
+        mapped_headers = [
+            mapping.get("external_call_id"),
+            mapping.get("transcript"),
+            mapping.get("recording_url"),
+        ]
+        for header in [*mapped_headers, *(call_import.extra_columns or [])]:
+            if (
+                isinstance(header, str)
+                and header
+                and header not in standard_export_headers
+            ):
+                standard_export_headers.append(header)
+
+        custom_mapping = call_import.custom_column_mapping or {}
+        if isinstance(custom_mapping, dict):
+            for name, csv_header in custom_mapping.items():
+                if not isinstance(name, str) or not isinstance(csv_header, str):
+                    continue
+                if not name or not csv_header:
+                    continue
+                if name in standard_export_headers:
+                    continue  # would clobber a real column
+                custom_export.append((name, csv_header))
+
+    # Build the metric columns: each parent (if any) gets a value column
+    # and (when capture_rationale=true) a "<Parent> - LLM Rationale"
+    # column. The per-child boolean columns are intentionally suppressed
+    # — categorization metrics now collapse to exactly two columns in
+    # the export, mirroring the in-app table.
+    child_ids_in_groups: set[str] = set()
+    for parent_str, child_strs in groups_raw.items():
+        for child_str in child_strs:
+            if isinstance(child_str, str):
+                child_ids_in_groups.add(child_str)
+
     metric_headers: List[str] = []
     rationale_headers: Dict[str, str] = {}  # metric_id_str -> rationale column name
     seen_metric_ids: set[str] = set()
@@ -1318,6 +1391,11 @@ async def export_call_import_evaluation_csv(
     def _add_metric_column(metric: Metric) -> None:
         mid_str = str(metric.id)
         if mid_str in seen_metric_ids:
+            return
+        # Skip any child whose parent is part of this run — the parent
+        # column above already shows the chosen child name as its
+        # value.
+        if mid_str in child_ids_in_groups:
             return
         seen_metric_ids.add(mid_str)
         header = metric_names[mid_str]
@@ -1327,14 +1405,14 @@ async def export_call_import_evaluation_csv(
             metric_headers.append(rationale_header)
             rationale_headers[mid_str] = rationale_header
 
-    for parent_str, child_strs in groups_raw.items():
+    for parent_str in groups_raw.keys():
         parent = metrics_by_id.get(parent_str)
         if parent:
             _add_metric_column(parent)
-        for child_str in child_strs:
-            child = metrics_by_id.get(child_str)
-            if child:
-                _add_metric_column(child)
+        # Children of an in-run parent are deliberately not emitted —
+        # the ``child_ids_in_groups`` guard inside ``_add_metric_column``
+        # is what enforces this. We still iterate the keys above (not
+        # ``.items()``) so the parent-only emission is explicit.
     # Append anything left over (standalone metrics not in any group, or
     # legacy runs without ``selected_metric_groups``).
     for metric in metrics:
@@ -2379,8 +2457,6 @@ async def generate_call_import_evaluation_insights(
     # ``JSON`` columns aren't auto-tracked when the same dict is mutated
     # in place; reassigning is the safest pattern, but we also flag the
     # attribute so SQLAlchemy schedules the UPDATE either way.
-    from sqlalchemy.orm.attributes import flag_modified
-
     flag_modified(evaluation, "tldr_summary")
     db.commit()
     db.refresh(evaluation)
@@ -2453,6 +2529,18 @@ def _resolve_alias(alias_map: Dict[str, str], key: str) -> str:
             return ""
         current = nxt
     return current
+
+
+# Reserved JSON key under which the worker stores top-level metric
+# discoveries on each row's ``metric_scores`` dict. Mirrors the constant
+# in ``app/workers/tasks/helpers/llm_evaluation.py`` — kept local here to
+# avoid a worker import cycle from the routes module.
+DISCOVERED_METRICS_KEY = "__discovered_metrics__"
+
+# Allowed values for an LLM-suggested top-level metric type. Kept in
+# sync with ``DiscoveredMetricSuggestedType`` in
+# ``app/models/schemas.py``.
+_DISCOVERED_METRIC_TYPES = ("boolean", "rating", "category")
 
 
 def normalize_scores_with_aliases(
@@ -2552,6 +2640,46 @@ def normalize_scores_with_aliases(
                 last = slug
             entry["sequence"] = new_seq
 
+    # Top-level metric discoveries live alongside the parent entries
+    # under the reserved ``DISCOVERED_METRICS_KEY`` slot. Apply the
+    # flat evaluation-level alias/tombstone map + suppress slugs that
+    # already correspond to a real top-level Metric so workers that
+    # finish AFTER the user has merged / deleted / promoted can't
+    # resurrect a retired candidate.
+    discovered_metrics_payload = metric_scores.get(DISCOVERED_METRICS_KEY)
+    if isinstance(discovered_metrics_payload, list):
+        flat_alias_map = (
+            evaluation.discovered_metric_aliases
+            if isinstance(evaluation.discovered_metric_aliases, dict)
+            else {}
+        )
+        promoted_metric_slugs = _promoted_top_level_metric_slugs(
+            db, organization_id
+        )
+        kept_metrics: List[Dict[str, Any]] = []
+        seen_metrics: set[str] = set()
+        for d in discovered_metrics_payload:
+            if not isinstance(d, dict):
+                continue
+            slug = _slug_label(d.get("key") or d.get("name"))
+            slug = _resolve_alias(flat_alias_map, slug)
+            if (
+                not slug
+                or slug in promoted_metric_slugs
+                or slug in seen_metrics
+            ):
+                continue
+            seen_metrics.add(slug)
+            new_entry = dict(d)
+            new_entry["key"] = slug
+            kept_metrics.append(new_entry)
+        if kept_metrics:
+            metric_scores[DISCOVERED_METRICS_KEY] = kept_metrics
+        else:
+            # No survivors — drop the empty array so empty-discovery rows
+            # keep their pre-feature payload shape.
+            metric_scores.pop(DISCOVERED_METRICS_KEY, None)
+
     return metric_scores
 
 
@@ -2600,6 +2728,33 @@ def _promoted_child_slugs(
     )
     out: set[str] = set()
     for (name,) in children:
+        slug = _slug_label(name)
+        if slug:
+            out.add(slug)
+    return out
+
+
+def _promoted_top_level_metric_slugs(
+    db: Session, organization_id: UUID
+) -> set[str]:
+    """Slugs of every top-level (non-child) Metric in the organization.
+
+    Used to suppress discovered-metric candidates whose slug already
+    matches a real standalone metric. We intentionally include both
+    standalone metrics AND parent category metrics — a top-level
+    discovery that collides with either name is a duplicate by
+    definition.
+    """
+    rows = (
+        db.query(Metric.name)
+        .filter(
+            Metric.organization_id == organization_id,
+            Metric.parent_metric_id.is_(None),
+        )
+        .all()
+    )
+    out: set[str] = set()
+    for (name,) in rows:
         slug = _slug_label(name)
         if slug:
             out.add(slug)
@@ -2721,6 +2876,115 @@ def _get_running_discovered_labels(
             # to a small cap. Headroom is intentionally one above
             # what the UI surfaces (2) so we have a backup when the
             # first rationale is unhelpful.
+            if sample:
+                ex_list: List[str] = existing.setdefault("examples", [])
+                if len(ex_list) < 3 and not any(
+                    s.strip().lower() == sample.strip().lower() for s in ex_list
+                ):
+                    ex_list.append(sample)
+
+    return sorted(
+        by_key.values(),
+        key=lambda item: (-item["count"], item["key"]),
+    )
+
+
+def _get_running_discovered_metrics(
+    db: Session,
+    eval_id: UUID,
+    organization_id: Optional[UUID] = None,
+    alias_map: Optional[Dict[str, str]] = None,
+) -> List[Dict[str, Any]]:
+    """Slug-deduped view of every discovered top-level metric in this eval.
+
+    Mirrors :func:`_get_running_discovered_labels` but is keyed at the
+    evaluation level (no ``parent_metric_id``). Walks each completed
+    row's ``metric_scores[DISCOVERED_METRICS_KEY]`` list, folds entries
+    that share the same slug (post-alias resolution), and suppresses
+    slugs that already correspond to a real top-level :class:`Metric`
+    in the organization.
+
+    Each returned entry is shaped::
+
+        {"key": "customer_satisfaction",
+         "name": "Customer Satisfaction",
+         "description": "...",
+         "suggested_type": "boolean" | "rating" | "category",
+         "sample_rationale": "...",
+         "examples": ["..."],
+         "count": 12}
+    """
+
+    rows = (
+        db.query(CallImportEvaluationRow.metric_scores)
+        .filter(
+            CallImportEvaluationRow.evaluation_id == eval_id,
+            CallImportEvaluationRow.status
+            == CallImportRowStatus.COMPLETED.value,
+        )
+        .all()
+    )
+
+    promoted_slugs: set[str] = set()
+    if organization_id is not None:
+        promoted_slugs = _promoted_top_level_metric_slugs(
+            db, organization_id
+        )
+    aliases = alias_map or {}
+
+    by_key: Dict[str, Dict[str, Any]] = {}
+    for (scores,) in rows:
+        if not isinstance(scores, dict):
+            continue
+        discovered = scores.get(DISCOVERED_METRICS_KEY)
+        if not isinstance(discovered, list):
+            continue
+        for entry in discovered:
+            if not isinstance(entry, dict):
+                continue
+            raw_key = entry.get("key") or entry.get("name")
+            key = _slug_label(raw_key)
+            if not key:
+                continue
+            # Apply user merges + deletions first, THEN drop anything
+            # that ended up on an already-existing top-level metric
+            # slug. Empty resolved key = tombstoned.
+            key = _resolve_alias(aliases, key)
+            if not key or key in promoted_slugs:
+                continue
+            name = (entry.get("name") or "").strip() or key.replace(
+                "_", " "
+            )
+            description = (entry.get("description") or "").strip() or None
+            sample = (entry.get("rationale") or "").strip() or None
+            raw_type = str(entry.get("suggested_type") or "").strip().lower()
+            if raw_type not in _DISCOVERED_METRIC_TYPES:
+                raw_type = "boolean"
+
+            existing = by_key.get(key)
+            if existing is None:
+                examples = [sample] if sample else []
+                by_key[key] = {
+                    "key": key,
+                    "name": name,
+                    "description": description,
+                    "suggested_type": raw_type,
+                    "sample_rationale": sample,
+                    "examples": examples,
+                    "count": 1,
+                }
+                continue
+
+            existing["count"] += 1
+            if not existing["description"] and description:
+                existing["description"] = description
+            if not existing["sample_rationale"] and sample:
+                existing["sample_rationale"] = sample
+            # Keep the most-frequently-suggested type. We don't track
+            # per-type frequency yet; defer to the first non-default
+            # type encountered when the existing entry has the default.
+            if existing.get("suggested_type") == "boolean" and raw_type != "boolean":
+                existing["suggested_type"] = raw_type
             if sample:
                 ex_list: List[str] = existing.setdefault("examples", [])
                 if len(ex_list) < 3 and not any(
@@ -3330,9 +3594,15 @@ async def merge_call_import_evaluation_discovered_labels(
                 mutated = True
 
         if mutated:
-            # Flag the dict as modified so SQLAlchemy persists the
-            # JSON column update.
+            # ``JSON`` columns aren't auto-tracked when the same dict is
+            # mutated in place — ``scores`` IS ``row.metric_scores``, so
+            # the in-place edits above already updated SQLAlchemy's
+            # cached "committed" snapshot to the post-edit dict. Without
+            # ``flag_modified`` the subsequent ``dict(scores)`` reassign
+            # compares equal to that snapshot and SQLAlchemy skips the
+            # UPDATE, leaving the per-row payload stale on disk.
             row.metric_scores = dict(scores)
+            flag_modified(row, "metric_scores")
 
     # Persist the merge at the evaluation level too. This is what makes
     # the merge survive future scoring: rows that finish AFTER this
@@ -3506,7 +3776,12 @@ async def delete_call_import_evaluation_discovered_label(
                 mutated = True
 
         if mutated:
+            # See merge endpoint above: in-place edits to ``scores`` /
+            # ``parent_entry`` already mutated SQLAlchemy's committed
+            # snapshot, so the reassign alone wouldn't trigger an
+            # UPDATE. Flagging the column forces it.
             row.metric_scores = dict(scores)
+            flag_modified(row, "metric_scores")
 
     # 3. Persist the tombstone on the evaluation so workers that finish
     # later don't re-surface the deleted slug. We also retarget any
@@ -3540,6 +3815,314 @@ async def delete_call_import_evaluation_discovered_label(
     return DiscoveredLabelsResponse(
         parent_metric_id=str(parent.id),
         items=[DiscoveredLabelItem(**item) for item in items_raw],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Discovered TOP-LEVEL METRICS (per-evaluation discovery)
+#
+# These endpoints are the parallel of the discovered-labels trio above but
+# scoped to the evaluation as a whole instead of to a parent metric. They
+# all live under ``/{eval_id}/discovered-metrics`` and operate on the
+# reserved ``DISCOVERED_METRICS_KEY`` slot of each per-row
+# ``metric_scores`` plus the flat ``CallImportEvaluation.discovered_metric_aliases``
+# map (no parent-id nesting).
+# ---------------------------------------------------------------------------
+
+
+def _flat_metric_aliases(
+    evaluation: CallImportEvaluation,
+) -> Dict[str, str]:
+    """Pull the flat ``{from_slug: to_slug}`` map for an evaluation."""
+    raw = getattr(evaluation, "discovered_metric_aliases", None)
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(k): str(v)
+        for k, v in raw.items()
+        if isinstance(k, str) and isinstance(v, str)
+    }
+
+
+@router.get(
+    "/{eval_id}/discovered-metrics",
+    response_model=DiscoveredMetricsResponse,
+    operation_id="getCallImportEvaluationDiscoveredMetrics",
+)
+async def get_call_import_evaluation_discovered_metrics(
+    call_import_id: UUID,
+    eval_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> DiscoveredMetricsResponse:
+    """Aggregate top-level metric candidates the LLM discovered during this eval.
+
+    Returns an empty ``items`` list when the evaluation did not opt
+    into top-level metric discovery; this keeps the frontend able to
+    call the endpoint unconditionally without branching on the
+    evaluation's ``discover_new_metrics`` flag.
+    """
+
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation not found"
+        )
+
+    if not bool(getattr(evaluation, "discover_new_metrics", False)):
+        return DiscoveredMetricsResponse(evaluation_id=evaluation.id, items=[])
+
+    items_raw = _get_running_discovered_metrics(
+        db,
+        eval_id,
+        organization_id=organization_id,
+        alias_map=_flat_metric_aliases(evaluation),
+    )
+    return DiscoveredMetricsResponse(
+        evaluation_id=evaluation.id,
+        items=[DiscoveredMetricItem(**item) for item in items_raw],
+    )
+
+
+@router.post(
+    "/{eval_id}/discovered-metrics/merge",
+    response_model=DiscoveredMetricsResponse,
+    operation_id="mergeCallImportEvaluationDiscoveredMetrics",
+)
+async def merge_call_import_evaluation_discovered_metrics(
+    call_import_id: UUID,
+    eval_id: UUID,
+    body: DiscoveredMetricMergeRequest,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> DiscoveredMetricsResponse:
+    """Rewrite every row's ``__discovered_metrics__`` entry from→to.
+
+    Mirrors the discovered-labels merge endpoint but operates on the
+    flat top-level metric list. Idempotent — re-merging is a no-op.
+    """
+
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation not found"
+        )
+
+    from_key = _slug_label(body.from_key)
+    to_key = _slug_label(body.to_key)
+    if not from_key or not to_key:
+        raise HTTPException(
+            status_code=400,
+            detail="from_key and to_key must be non-empty slugs.",
+        )
+    if from_key == to_key:
+        items_raw = _get_running_discovered_metrics(
+            db,
+            eval_id,
+            organization_id=organization_id,
+            alias_map=_flat_metric_aliases(evaluation),
+        )
+        return DiscoveredMetricsResponse(
+            evaluation_id=evaluation.id,
+            items=[DiscoveredMetricItem(**item) for item in items_raw],
+        )
+
+    rows = (
+        db.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == eval_id)
+        .all()
+    )
+
+    for row in rows:
+        scores = (
+            row.metric_scores
+            if isinstance(row.metric_scores, dict)
+            else None
+        )
+        if not scores:
+            continue
+        discovered = scores.get(DISCOVERED_METRICS_KEY)
+        if not isinstance(discovered, list):
+            continue
+
+        kept: List[Dict[str, Any]] = []
+        mutated = False
+        existing_to = next(
+            (
+                e
+                for e in discovered
+                if isinstance(e, dict)
+                and _slug_label(e.get("key") or e.get("name")) == to_key
+            ),
+            None,
+        )
+        for entry in discovered:
+            if not isinstance(entry, dict):
+                kept.append(entry)
+                continue
+            key = _slug_label(entry.get("key") or entry.get("name"))
+            if key == from_key:
+                if existing_to is not None:
+                    mutated = True
+                    continue
+                new_entry = dict(entry)
+                new_entry["key"] = to_key
+                kept.append(new_entry)
+                mutated = True
+            else:
+                kept.append(entry)
+        if mutated:
+            scores[DISCOVERED_METRICS_KEY] = kept
+            row.metric_scores = dict(scores)
+            flag_modified(row, "metric_scores")
+
+    raw_aliases = (
+        evaluation.discovered_metric_aliases
+        if isinstance(evaluation.discovered_metric_aliases, dict)
+        else {}
+    )
+    aliases = dict(raw_aliases)
+    canonical_to = _resolve_alias(aliases, to_key)
+    aliases[from_key] = canonical_to
+    for k, v in list(aliases.items()):
+        if v == from_key:
+            aliases[k] = canonical_to
+    evaluation.discovered_metric_aliases = aliases
+
+    db.commit()
+
+    items_raw = _get_running_discovered_metrics(
+        db,
+        eval_id,
+        organization_id=organization_id,
+        alias_map=_flat_metric_aliases(evaluation),
+    )
+    return DiscoveredMetricsResponse(
+        evaluation_id=evaluation.id,
+        items=[DiscoveredMetricItem(**item) for item in items_raw],
+    )
+
+
+@router.post(
+    "/{eval_id}/discovered-metrics/delete",
+    response_model=DiscoveredMetricsResponse,
+    operation_id="deleteCallImportEvaluationDiscoveredMetric",
+)
+async def delete_call_import_evaluation_discovered_metric(
+    call_import_id: UUID,
+    eval_id: UUID,
+    body: DiscoveredMetricDeleteRequest,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> DiscoveredMetricsResponse:
+    """Tombstone a single LLM-discovered top-level metric candidate."""
+
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation not found"
+        )
+
+    target_key = _slug_label(body.key)
+    if not target_key:
+        raise HTTPException(
+            status_code=400,
+            detail="key must be a non-empty slug.",
+        )
+
+    rows = (
+        db.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == eval_id)
+        .all()
+    )
+
+    for row in rows:
+        scores = (
+            row.metric_scores
+            if isinstance(row.metric_scores, dict)
+            else None
+        )
+        if not scores:
+            continue
+        discovered = scores.get(DISCOVERED_METRICS_KEY)
+        if not isinstance(discovered, list):
+            continue
+        kept = [
+            e
+            for e in discovered
+            if not (
+                isinstance(e, dict)
+                and _slug_label(e.get("key") or e.get("name"))
+                == target_key
+            )
+        ]
+        if len(kept) != len(discovered):
+            if kept:
+                scores[DISCOVERED_METRICS_KEY] = kept
+            else:
+                scores.pop(DISCOVERED_METRICS_KEY, None)
+            row.metric_scores = dict(scores)
+            flag_modified(row, "metric_scores")
+
+    raw_aliases = (
+        evaluation.discovered_metric_aliases
+        if isinstance(evaluation.discovered_metric_aliases, dict)
+        else {}
+    )
+    aliases = dict(raw_aliases)
+    aliases[target_key] = ""  # tombstone
+    for k, v in list(aliases.items()):
+        if v == target_key:
+            aliases[k] = ""
+    evaluation.discovered_metric_aliases = aliases
+
+    db.commit()
+
+    items_raw = _get_running_discovered_metrics(
+        db,
+        eval_id,
+        organization_id=organization_id,
+        alias_map=_flat_metric_aliases(evaluation),
+    )
+    return DiscoveredMetricsResponse(
+        evaluation_id=evaluation.id,
+        items=[DiscoveredMetricItem(**item) for item in items_raw],
     )
 
 
@@ -3607,3 +4190,592 @@ async def delete_call_import_evaluation_row(
     _rollup_evaluation_status(evaluation, db)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ---------------------------------------------------------------------------
+# Retry endpoints
+# ---------------------------------------------------------------------------
+#
+# The create endpoint enqueues every row of a fresh run; these endpoints
+# let the user re-enqueue a *subset* of rows in an existing run — most
+# commonly the ones that failed. We keep the worker contract identical
+# (``evaluate_call_import_row_task(eval_row_id)``), so the retry path
+# only has to reset row state and re-fan-out. When a row is missing its
+# diarised transcript and the run was configured for diarised
+# transcripts, we chain through ``transcribe_call_import_row_task`` the
+# same way the create endpoint does — that's what makes "retry" feel
+# like "just fix it" instead of "fail again immediately".
+
+
+def _reset_eval_row_for_retry(eval_row: CallImportEvaluationRow) -> None:
+    """Wipe per-row state so the worker can re-run it cleanly.
+
+    Mirrors the initial state used by ``create_call_import_evaluation``
+    when it first inserts a row, with the addition of revoking any
+    lingering Celery task id.
+    """
+    if eval_row.celery_task_id and eval_row.status in {"pending", "running"}:
+        try:
+            from app.workers.celery_app import celery_app
+
+            celery_app.control.revoke(eval_row.celery_task_id, terminate=False)
+        except Exception:  # noqa: BLE001 — revoke is best-effort
+            pass
+    eval_row.status = "pending"
+    eval_row.error_message = None
+    eval_row.metric_scores = {}
+    eval_row.started_at = None
+    eval_row.finished_at = None
+    eval_row.celery_task_id = None
+
+
+def _enqueue_eval_rows_with_optional_transcribe(
+    db: Session,
+    evaluation: CallImportEvaluation,
+    eval_rows_with_source: List[
+        Tuple[CallImportEvaluationRow, CallImportRow]
+    ],
+    *,
+    transcribe_overwrite: bool = False,
+) -> Tuple[int, int]:
+    """Fan out evaluate (and optionally transcribe) tasks for a set of
+    already-reset eval rows.
+
+    Returns ``(evaluate_only_count, transcribe_then_evaluate_count)``.
+
+    The transcribe-chain branch fires when the parent evaluation is
+    configured for the diarised transcript source AND we have STT
+    config saved on the run AND either (a) the row's diarised
+    transcript is missing or (b) the caller passed
+    ``transcribe_overwrite=True`` (used when the caller swapped the
+    STT provider/model on retry and wants the new STT actually
+    exercised). This matches the auto-transcribe behavior baked into
+    the create endpoint so retry stays consistent with first-run.
+    """
+    from app.workers.tasks.evaluate_call_import_row import (
+        evaluate_call_import_row_task,
+    )
+    from celery import group
+
+    transcript_source = (evaluation.transcript_source or "").strip().lower()
+    is_diarised_run = transcript_source == "diarised"
+    has_stt_config = bool(evaluation.stt_provider and evaluation.stt_model)
+
+    eval_only_row_ids: List[str] = []
+    deferred: List[Tuple[CallImportEvaluationRow, CallImportRow]] = []
+    for eval_row, source_row in eval_rows_with_source:
+        has_audio = bool((source_row.recording_s3_key or "").strip())
+        existing_dia = (source_row.diarised_transcript or "").strip()
+        needs_diarisation = not existing_dia or transcribe_overwrite
+        if (
+            is_diarised_run
+            and has_stt_config
+            and has_audio
+            and needs_diarisation
+        ):
+            deferred.append((eval_row, source_row))
+            continue
+        eval_only_row_ids.append(str(eval_row.id))
+
+    if deferred:
+        from app.workers.tasks.transcribe_call_import_row import (
+            transcribe_call_import_row_task,
+        )
+
+        # Mark the source rows as pending so the UI's diarisation badge
+        # flips immediately, before Celery picks them up.
+        for _, source_row in deferred:
+            source_row.diarised_transcript_status = "pending"
+            source_row.diarised_transcript_error = None
+        db.commit()
+
+        for eval_row, source_row in deferred:
+            transcribe_call_import_row_task.delay(
+                str(source_row.id),
+                evaluation.stt_provider,
+                evaluation.stt_model,
+                str(evaluation.stt_credential_id)
+                if evaluation.stt_credential_id
+                else None,
+                None,  # language hint not persisted on the run
+                transcribe_overwrite,
+                str(eval_row.id),
+            )
+
+    if eval_only_row_ids:
+        group(
+            [
+                evaluate_call_import_row_task.s(eval_row_id)
+                for eval_row_id in eval_only_row_ids
+            ]
+        ).apply_async()
+
+    return len(eval_only_row_ids), len(deferred)
+
+
+def _apply_retry_overrides(
+    db: Session,
+    evaluation: CallImportEvaluation,
+    organization_id: UUID,
+    payload: CallImportEvaluationRetryRequest,
+) -> None:
+    """Validate + persist the LLM/STT override fields on the run.
+
+    Mirrors the validation in ``create_call_import_evaluation`` but
+    only touches the fields the caller actually sent — leaving any
+    field ``None`` preserves the run's existing value. Raises
+    ``HTTPException(400)`` on bad input so the route handler can let
+    FastAPI turn it into a clean 400 response.
+    """
+    # --- LLM provider + model (must be sent together) ---
+    if payload.llm_provider is not None or payload.llm_model is not None:
+        if not (payload.llm_provider and payload.llm_model):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Both llm_provider and llm_model are required when "
+                    "overriding the run LLM on retry."
+                ),
+            )
+        try:
+            evaluation.llm_provider = ModelProvider(
+                payload.llm_provider.lower()
+            ).value
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Unknown LLM provider '{payload.llm_provider}'. "
+                    "Valid keys are documented in ModelProvider."
+                ),
+            )
+        new_model = payload.llm_model.strip() or None
+        if not new_model:
+            raise HTTPException(
+                status_code=400, detail="llm_model cannot be empty."
+            )
+        evaluation.llm_model = new_model
+
+    # --- LLM credential pin ---
+    if payload.llm_credential_id is not None:
+        cred = (
+            db.query(AIProvider)
+            .filter(
+                AIProvider.id == payload.llm_credential_id,
+                AIProvider.organization_id == organization_id,
+            )
+            .first()
+        )
+        if not cred:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "The provided llm_credential_id does not exist in "
+                    "this organization."
+                ),
+            )
+        evaluation.llm_credential_id = payload.llm_credential_id
+
+    # --- Per-metric LLM overrides ---
+    # We accept the same dict shape as the create endpoint but
+    # constrain keys to leaf metrics that are actually in this run.
+    # Passing an empty dict explicitly clears existing overrides.
+    if payload.metric_llm_overrides is not None:
+        valid_leaf_ids = {
+            str(mid) for mid in (evaluation.selected_metric_ids or [])
+        }
+        overrides_payload: Dict[str, Dict[str, Any]] = {}
+        for metric_id, override in payload.metric_llm_overrides.items():
+            if metric_id not in valid_leaf_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "metric_llm_overrides references metric "
+                        f"{metric_id} which is not a leaf metric in "
+                        "this run."
+                    ),
+                )
+            override_dict: Dict[str, Any] = {}
+            if override.provider is not None:
+                if not override.model:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Override for metric {metric_id} has a "
+                            "provider but no model."
+                        ),
+                    )
+                try:
+                    override_dict["provider"] = ModelProvider(
+                        override.provider.lower()
+                    ).value
+                except ValueError:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Override for metric {metric_id} uses "
+                            f"unknown provider '{override.provider}'."
+                        ),
+                    )
+                override_dict["model"] = override.model.strip()
+            elif override.model:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Override for metric {metric_id} has a model "
+                        "but no provider."
+                    ),
+                )
+            if override.credential_id is not None:
+                override_dict["credential_id"] = str(override.credential_id)
+            if override_dict:
+                overrides_payload[metric_id] = override_dict
+        evaluation.metric_llm_overrides = overrides_payload or None
+
+    # --- STT provider + model (must be sent together) ---
+    if payload.stt_provider is not None or payload.stt_model is not None:
+        if not (payload.stt_provider and payload.stt_model):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Both stt_provider and stt_model are required "
+                    "when overriding the run STT on retry."
+                ),
+            )
+        try:
+            evaluation.stt_provider = ModelProvider(
+                payload.stt_provider.lower()
+            ).value
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown STT provider '{payload.stt_provider}'.",
+            )
+        new_stt_model = payload.stt_model.strip() or None
+        if not new_stt_model:
+            raise HTTPException(
+                status_code=400, detail="stt_model cannot be empty."
+            )
+        evaluation.stt_model = new_stt_model
+
+    # --- STT credential pin ---
+    if payload.stt_credential_id is not None:
+        evaluation.stt_credential_id = payload.stt_credential_id
+
+
+def _gather_retry_targets(
+    db: Session,
+    evaluation: CallImportEvaluation,
+    requested_ids: Optional[List[UUID]],
+) -> Tuple[
+    List[Tuple[CallImportEvaluationRow, CallImportRow]],
+    List[CallImportEvaluationRetrySkippedItem],
+]:
+    """Resolve which rows to retry + reasons for any we refuse.
+
+    When ``requested_ids`` is None we retry every row whose status is
+    ``failed``. When the caller passes ids explicitly we still filter
+    out rows that are already completed or currently in flight — the
+    retry endpoint deliberately doesn't blow away in-progress work.
+    """
+    eval_rows_query = db.query(CallImportEvaluationRow).filter(
+        CallImportEvaluationRow.evaluation_id == evaluation.id
+    )
+
+    targets: List[Tuple[CallImportEvaluationRow, CallImportRow]] = []
+    skipped: List[CallImportEvaluationRetrySkippedItem] = []
+
+    if requested_ids is None:
+        candidate_rows = eval_rows_query.filter(
+            CallImportEvaluationRow.status == "failed"
+        ).all()
+    else:
+        requested_set = set(requested_ids)
+        candidate_rows = eval_rows_query.filter(
+            CallImportEvaluationRow.id.in_(requested_set)
+        ).all()
+        found_ids = {row.id for row in candidate_rows}
+        for missing in requested_set - found_ids:
+            skipped.append(
+                CallImportEvaluationRetrySkippedItem(
+                    eval_row_id=missing,
+                    reason="unknown",
+                )
+            )
+
+    if not candidate_rows:
+        return targets, skipped
+
+    source_row_ids = [row.call_import_row_id for row in candidate_rows]
+    source_rows = (
+        db.query(CallImportRow)
+        .filter(CallImportRow.id.in_(source_row_ids))
+        .all()
+    )
+    source_by_id = {row.id: row for row in source_rows}
+
+    for eval_row in candidate_rows:
+        if eval_row.status in {"pending", "running"}:
+            skipped.append(
+                CallImportEvaluationRetrySkippedItem(
+                    eval_row_id=eval_row.id,
+                    reason="in_progress",
+                )
+            )
+            continue
+        if eval_row.status == "completed":
+            skipped.append(
+                CallImportEvaluationRetrySkippedItem(
+                    eval_row_id=eval_row.id,
+                    reason="completed",
+                )
+            )
+            continue
+        source_row = source_by_id.get(eval_row.call_import_row_id)
+        if source_row is None:
+            skipped.append(
+                CallImportEvaluationRetrySkippedItem(
+                    eval_row_id=eval_row.id,
+                    reason="source_row_missing",
+                )
+            )
+            continue
+        targets.append((eval_row, source_row))
+
+    return targets, skipped
+
+
+@router.post(
+    "/{eval_id}/retry",
+    response_model=CallImportEvaluationRetryResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    operation_id="retryCallImportEvaluation",
+)
+async def retry_call_import_evaluation(
+    call_import_id: UUID,
+    eval_id: UUID,
+    payload: Optional[CallImportEvaluationRetryRequest] = Body(default=None),
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportEvaluationRetryResponse:
+    """Re-enqueue failed rows in an evaluation run.
+
+    Default behavior (no body) is "retry every row that failed". Pass
+    ``eval_row_ids`` to scope the retry to a specific subset (e.g. the
+    single row a user clicked in the UI). Rows that are still
+    in-flight or already completed are returned in ``skipped`` rather
+    than re-enqueued, so this endpoint is always safe to call.
+
+    The worker contract is the same as the create endpoint:
+    ``evaluate_call_import_row_task(eval_row_id)``. When the run is
+    configured for diarised transcripts and the row's diarised
+    transcript is missing, we chain through
+    ``transcribe_call_import_row_task`` first — matching the
+    auto-transcribe behavior of POST ``/evaluations``.
+    """
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation not found"
+        )
+
+    requested_ids = payload.eval_row_ids if payload else None
+    targets, skipped = _gather_retry_targets(db, evaluation, requested_ids)
+
+    if not targets:
+        # Nothing actually changed — return early without touching the
+        # parent so we don't flip a completed run into "running" by
+        # mistake.
+        return CallImportEvaluationRetryResponse(
+            requeued=0,
+            transcribe_requeued=0,
+            skipped=skipped,
+        )
+
+    # Apply LLM / STT overrides BEFORE resetting rows so the persisted
+    # run config is correct by the time the worker reads it. Validation
+    # happens here too — bad overrides 400 without touching any row
+    # state.
+    if payload is not None:
+        _apply_retry_overrides(db, evaluation, organization_id, payload)
+    transcribe_overwrite = bool(
+        payload.transcribe_overwrite if payload else False
+    )
+
+    for eval_row, _ in targets:
+        _reset_eval_row_for_retry(eval_row)
+
+    # Flip the parent back to ``running`` and clear any old enqueue
+    # error so the UI's polling resumes. Counters get recomputed by
+    # the worker's ``_rollup_parent`` as rows finish, but we also call
+    # the route-side rollup helper here so the counts are immediately
+    # consistent with the new pending rows.
+    evaluation.error_message = None
+    evaluation.finished_at = None
+    db.flush()
+    _rollup_evaluation_status(evaluation, db)
+    db.commit()
+
+    try:
+        evaluate_only, transcribe_chain = (
+            _enqueue_eval_rows_with_optional_transcribe(
+                db,
+                evaluation,
+                targets,
+                transcribe_overwrite=transcribe_overwrite,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 — surface but don't 500
+        logger.exception(
+            "Failed to re-enqueue evaluation {} for call import {}",
+            eval_id,
+            call_import_id,
+        )
+        # Roll the targeted rows back to ``failed`` with a clear
+        # message — leaving them ``pending`` would make the UI think
+        # work is still happening.
+        for eval_row, _ in targets:
+            eval_row.status = "failed"
+            eval_row.error_message = f"Failed to re-enqueue retry: {exc}"
+        _rollup_evaluation_status(evaluation, db)
+        db.commit()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to re-enqueue retry: {exc}",
+        )
+
+    return CallImportEvaluationRetryResponse(
+        requeued=evaluate_only + transcribe_chain,
+        transcribe_requeued=transcribe_chain,
+        skipped=skipped,
+    )
+
+
+@router.post(
+    "/{eval_id}/rows/{eval_row_id}/retry",
+    response_model=CallImportEvaluationRowResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    operation_id="retryCallImportEvaluationRow",
+)
+async def retry_call_import_evaluation_row(
+    call_import_id: UUID,
+    eval_id: UUID,
+    eval_row_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportEvaluationRowResponse:
+    """Re-enqueue a single failed evaluation row.
+
+    Convenience wrapper around ``retry_call_import_evaluation`` for the
+    "Retry this row" affordance in the row table. Returns the
+    refreshed row so the UI can update its badge immediately, without
+    waiting for the next polling tick.
+    """
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation not found"
+        )
+
+    eval_row = (
+        db.query(CallImportEvaluationRow)
+        .filter(
+            CallImportEvaluationRow.id == eval_row_id,
+            CallImportEvaluationRow.evaluation_id == eval_id,
+        )
+        .first()
+    )
+    if not eval_row:
+        raise HTTPException(
+            status_code=404, detail="Evaluation row not found in this run"
+        )
+
+    if eval_row.status in {"pending", "running"}:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This row is still in progress — wait for it to finish "
+                "before retrying."
+            ),
+        )
+
+    targets, _ = _gather_retry_targets(db, evaluation, [eval_row.id])
+    if not targets:
+        # Status was ``completed`` (or source row vanished) — surface a
+        # 409 instead of silently no-op'ing so the UI can show why.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This row cannot be retried in its current state "
+                f"(status={eval_row.status})."
+            ),
+        )
+
+    for er, _ in targets:
+        _reset_eval_row_for_retry(er)
+
+    evaluation.error_message = None
+    evaluation.finished_at = None
+    db.flush()
+    _rollup_evaluation_status(evaluation, db)
+    db.commit()
+
+    try:
+        _enqueue_eval_rows_with_optional_transcribe(db, evaluation, targets)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "Failed to re-enqueue retry for evaluation row {}", eval_row_id
+        )
+        eval_row.status = "failed"
+        eval_row.error_message = f"Failed to re-enqueue retry: {exc}"
+        _rollup_evaluation_status(evaluation, db)
+        db.commit()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to re-enqueue retry: {exc}",
+        )
+
+    db.refresh(eval_row)
+    source_row = targets[0][1]
+    return CallImportEvaluationRowResponse(
+        id=eval_row.id,
+        evaluation_id=eval_row.evaluation_id,
+        call_import_row_id=eval_row.call_import_row_id,
+        row_index=source_row.row_index,
+        conversation_id=source_row.conversation_id,
+        transcript=source_row.transcript,
+        raw_columns=source_row.raw_columns,
+        recording_url=source_row.recording_url,
+        recording_s3_key=source_row.recording_s3_key,
+        status=eval_row.status,
+        metric_scores=eval_row.metric_scores or {},
+        error_message=eval_row.error_message,
+        started_at=eval_row.started_at,
+        finished_at=eval_row.finished_at,
+        created_at=eval_row.created_at,
+        updated_at=eval_row.updated_at,
+    )

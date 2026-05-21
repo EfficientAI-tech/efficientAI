@@ -799,6 +799,40 @@ def evaluate_call_import_row_task(self, eval_row_id: str):
                     ((provider, model), parent_id), []
                 ).extend(children)
 
+            # Top-level metric discovery is opt-in per evaluation. When
+            # enabled, we feed the LLM the running list of candidates
+            # already proposed earlier in this evaluation (post-merge /
+            # post-deletion) so the model reuses keys instead of
+            # re-inventing near-duplicates. We only want to issue the
+            # discovery instruction ONCE per row even when the
+            # selected metrics span multiple LLM-config buckets — pay
+            # for the extra prompt block on the first call only.
+            metric_discovery_enabled = bool(
+                getattr(evaluation, "discover_new_metrics", False)
+            )
+            running_discovered_metrics: list = []
+            if metric_discovery_enabled:
+                from app.api.v1.routes.call_import_evaluations import (
+                    _get_running_discovered_metrics,
+                )
+
+                alias_map_metrics = (
+                    evaluation.discovered_metric_aliases
+                    if isinstance(
+                        evaluation.discovered_metric_aliases, dict
+                    )
+                    else {}
+                )
+                running_discovered_metrics = (
+                    _get_running_discovered_metrics(
+                        db,
+                        evaluation.id,
+                        organization_id=evaluation.organization_id,
+                        alias_map=alias_map_metrics,
+                    )
+                )
+            metric_discovery_emitted = False
+
             for (config, parent_id), bucket in groups.items():
                 provider, model = config
                 evaluator_obj = None
@@ -846,6 +880,16 @@ def evaluate_call_import_row_task(self, eval_row_id: str):
                         ),
                     )
 
+                # Only ask the LLM for net-new top-level metric
+                # candidates on the first bucket we process — keeps
+                # the per-row token cost bounded when the user has
+                # selected metrics spanning multiple provider/model or
+                # parent buckets.
+                emit_metric_discovery = (
+                    metric_discovery_enabled
+                    and not metric_discovery_emitted
+                )
+
                 try:
                     llm_scores, _eval_time = evaluate_with_llm(
                         transcription=transcript,
@@ -860,7 +904,15 @@ def evaluate_call_import_row_task(self, eval_row_id: str):
                         scenario=None,
                         parent_metric=parent_metric,
                         running_discovered=running_discovered,
+                        discover_new_metrics=emit_metric_discovery,
+                        running_discovered_metrics=(
+                            running_discovered_metrics
+                            if emit_metric_discovery
+                            else None
+                        ),
                     )
+                    if emit_metric_discovery:
+                        metric_discovery_emitted = True
                     metric_scores.update(llm_scores)
                 except Exception as exc:  # noqa: BLE001
                     logger.exception(

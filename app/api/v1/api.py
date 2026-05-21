@@ -35,6 +35,7 @@ from app.api.v1.routes import (
     prompt_optimization,
     telephony,
     call_imports,
+    call_import_schemas,
     call_import_tags,
     call_import_evaluations,
     judge_alignment,
@@ -77,6 +78,7 @@ api_router.include_router(prompt_partials.router)
 api_router.include_router(prompt_optimization.router)
 api_router.include_router(telephony.router)
 api_router.include_router(call_imports.router)
+api_router.include_router(call_import_schemas.router)
 api_router.include_router(call_import_tags.router)
 api_router.include_router(call_import_evaluations.router)
 api_router.include_router(judge_alignment.router)

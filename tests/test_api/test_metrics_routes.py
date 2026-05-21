@@ -357,9 +357,71 @@ def test_create_metric_with_children_atomic(authenticated_client):
         "customer_answered_some",
         "customer_hung_up",
     }
+    # Default capture_rationale is FALSE on the parent (the toggle is
+    # opt-in) and is force-cleared on every child regardless of payload.
+    assert body["capture_rationale"] is False
     for child in body["children"]:
         assert child["parent_metric_id"] == body["id"]
         assert child["selection_mode"] is None
+        assert child["capture_rationale"] is False
+
+
+def test_create_metric_with_children_sets_parent_capture_rationale(
+    authenticated_client,
+):
+    """``capture_rationale=true`` on the /with-children body lands on
+    the PARENT row (the LLM emits one rationale per category) and
+    children are force-cleared to false even if the payload tries to
+    set them true."""
+    response = authenticated_client.post(
+        "/api/v1/metrics/with-children",
+        json={
+            "name": "Call Outcome",
+            "description": "Why the call ended.",
+            "selection_mode": "single_choice",
+            "capture_rationale": True,
+            "children": [
+                {
+                    "name": "happy_completion",
+                    "description": "...",
+                    # Legacy client may still send true here; the
+                    # server must override it.
+                    "capture_rationale": True,
+                },
+                {"name": "angry_hangup", "description": "..."},
+            ],
+        },
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["capture_rationale"] is True
+    for child in body["children"]:
+        assert child["capture_rationale"] is False
+
+
+def test_update_child_capture_rationale_forced_to_false(
+    authenticated_client,
+):
+    """PUT /metrics/{child_id} with ``capture_rationale=true`` is
+    accepted (no 400) but the server silently coerces the value to
+    false because children never own a rationale in hierarchical mode."""
+    parent = authenticated_client.post(
+        "/api/v1/metrics/with-children",
+        json={
+            "name": "Outcome ForceFalse",
+            "description": "...",
+            "selection_mode": "single_choice",
+            "children": [{"name": "label_a", "description": "..."}],
+        },
+    ).json()
+    child_id = parent["children"][0]["id"]
+
+    response = authenticated_client.put(
+        f"/api/v1/metrics/{child_id}",
+        json={"capture_rationale": True},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["capture_rationale"] is False
 
 
 def test_post_child_to_existing_parent(authenticated_client):

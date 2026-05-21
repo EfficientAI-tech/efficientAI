@@ -24,6 +24,10 @@ import type {
   CallImport,
   CallImportDetail,
   CallImportListResponse,
+  CallImportSchema,
+  CallImportSchemaCreate,
+  CallImportSchemaListResponse,
+  CallImportSchemaUpdate,
   CallImportStatus,
   CallImportTag,
   CallImportUploadResponse,
@@ -31,7 +35,9 @@ import type {
   CallImportEvaluation,
   CallImportEvaluationLLMOverride,
   CallImportEvaluationListResponse,
+  CallImportEvaluationRow,
   CallImportEvaluationRowListResponse,
+  CallImportEvaluationRetryResponse,
   CallImportEvaluationAggregateResponse,
   CallImportInsightsResponse,
   CallImportTranscribeRequest,
@@ -1043,13 +1049,21 @@ class ApiClient {
     options: {
       provider: string
       telephonyIntegrationId: string
-      columnMapping: {
-        external_call_id: string
-        transcript?: string | null
-        recording_url?: string | null
-      }
-      extraColumns?: string[]
-      customColumnMapping?: Record<string, string>
+      /** Reusable Input Parameter schema this upload is mapped against. */
+      schemaId: string
+      /**
+       * Schema-driven mapping: ``{parameter_name: csv_header}``. Must
+       * include every required parameter on the schema. Pass an empty
+       * string / omit a parameter to leave it unmapped (only allowed
+       * for optional parameters).
+       */
+      parameterMapping: Record<string, string>
+      /**
+       * CSV/Excel headers the user has explicitly skipped. Every source
+       * column must either appear in ``parameterMapping`` or here, or
+       * the backend rejects the upload with 400.
+       */
+      skippedColumns?: string[]
       dataset?: string | null
       tagIds?: string[]
       /**
@@ -1064,12 +1078,9 @@ class ApiClient {
     formData.append('file', file)
     formData.append('provider', options.provider)
     formData.append('telephony_integration_id', options.telephonyIntegrationId)
-    formData.append('column_mapping', JSON.stringify(options.columnMapping))
-    formData.append('extra_columns', JSON.stringify(options.extraColumns || []))
-    formData.append(
-      'custom_column_mapping',
-      JSON.stringify(options.customColumnMapping || {}),
-    )
+    formData.append('schema_id', options.schemaId)
+    formData.append('parameter_mapping', JSON.stringify(options.parameterMapping))
+    formData.append('skipped_columns', JSON.stringify(options.skippedColumns || []))
     if (options.dataset !== undefined && options.dataset !== null) {
       formData.append('dataset', options.dataset)
     }
@@ -1085,6 +1096,140 @@ class ApiClient {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
     return response.data
+  }
+
+  /**
+   * UPLOAD stage of the staged call-import flow.
+   *
+   * Persists the CSV / Excel file to S3, captures a sheets snapshot,
+   * and creates a ``CallImport`` row with ``status='uploaded'``. The
+   * returned record has no mapping / provider / rows yet — the caller
+   * follows up with {@link updateCallImportMapping} and
+   * {@link startCallImport} to advance the batch.
+   */
+  async createCallImport(
+    file: File,
+    options: {
+      dataset: string
+      tagIds?: string[]
+      /**
+       * Optional schema pre-pick. The user can still change it during
+       * the MAP stage; provided here only so the detail page can pre-
+       * select the schema dropdown.
+       */
+      schemaId?: string | null
+    },
+  ): Promise<CallImport> {
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('dataset', options.dataset)
+    if (options.tagIds && options.tagIds.length > 0) {
+      for (const tagId of options.tagIds) {
+        formData.append('tag_ids', tagId)
+      }
+    }
+    if (options.schemaId) {
+      formData.append('schema_id', options.schemaId)
+    }
+    const response = await this.client.post('/api/v1/call-imports', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    return response.data
+  }
+
+  /**
+   * MAP stage of the staged call-import flow.
+   *
+   * Persists the schema + sheet + parameter mapping on the batch. The
+   * backend validates against the sheet snapshot it cached at upload
+   * time, so this is purely a metadata operation (no S3 fetch).
+   * Idempotent: safe to call repeatedly while the batch is in
+   * ``uploaded`` or ``mapped`` state.
+   */
+  async updateCallImportMapping(
+    id: string,
+    options: {
+      schemaId: string
+      sheetName?: string | null
+      parameterMapping: Record<string, string>
+      skippedColumns?: string[]
+    },
+  ): Promise<CallImport> {
+    const response = await this.client.patch(
+      `/api/v1/call-imports/${id}/mapping`,
+      {
+        schema_id: options.schemaId,
+        sheet_name: options.sheetName ?? null,
+        parameter_mapping: options.parameterMapping,
+        skipped_columns: options.skippedColumns ?? [],
+      },
+    )
+    return response.data
+  }
+
+  /**
+   * IMPORT stage of the staged call-import flow.
+   *
+   * Materialises rows from the staged source file using the persisted
+   * mapping and fans them out to the ``imports`` Celery queue. Returns
+   * the same shape as the legacy one-shot ``uploadCallImport``.
+   */
+  async startCallImport(
+    id: string,
+    options: {
+      provider: string
+      telephonyIntegrationId: string
+    },
+  ): Promise<CallImportUploadResponse> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${id}/import`,
+      {
+        provider: options.provider,
+        telephony_integration_id: options.telephonyIntegrationId,
+      },
+    )
+    return response.data
+  }
+
+  // -------------------------------------------------------------------
+  // Call Import Schemas (reusable Input Parameter schemas)
+  // -------------------------------------------------------------------
+
+  async listCallImportSchemas(): Promise<CallImportSchemaListResponse> {
+    const response = await this.client.get('/api/v1/call-import-schemas')
+    return response.data
+  }
+
+  async getCallImportSchema(id: string): Promise<CallImportSchema> {
+    const response = await this.client.get(`/api/v1/call-import-schemas/${id}`)
+    return response.data
+  }
+
+  async createCallImportSchema(
+    payload: CallImportSchemaCreate,
+  ): Promise<CallImportSchema> {
+    const response = await this.client.post('/api/v1/call-import-schemas', payload)
+    return response.data
+  }
+
+  async updateCallImportSchema(
+    id: string,
+    payload: CallImportSchemaUpdate,
+  ): Promise<CallImportSchema> {
+    const response = await this.client.patch(
+      `/api/v1/call-import-schemas/${id}`,
+      payload,
+    )
+    return response.data
+  }
+
+  async deleteCallImportSchema(
+    id: string,
+    options?: { force?: boolean },
+  ): Promise<void> {
+    await this.client.delete(`/api/v1/call-import-schemas/${id}`, {
+      params: options?.force ? { force: true } : undefined,
+    })
   }
 
   async listCallImports(
@@ -1122,7 +1267,16 @@ class ApiClient {
 
   async updateCallImport(
     id: string,
-    payload: { dataset?: string | null; tag_ids?: string[] }
+    payload: {
+      dataset?: string | null
+      tag_ids?: string[]
+      /**
+       * Reassign the Input Parameter schema. Only honoured while the
+       * batch is in ``uploaded`` / ``mapped`` state. Switching schemas
+       * resets the mapping and rewinds the batch to ``uploaded``.
+       */
+      schema_id?: string | null
+    },
   ): Promise<CallImport> {
     const response = await this.client.patch(`/api/v1/call-imports/${id}`, payload)
     return response.data
@@ -1171,6 +1325,12 @@ class ApiClient {
       stt_model?: string | null
       stt_credential_id?: string | null
       stt_language?: string | null
+      /**
+       * Opt into LLM-driven discovery of brand-new top-level metrics
+       * for this run. Surfaces candidates in the Discovered metrics
+       * panel on the evaluation detail Flow tab.
+       */
+      discover_new_metrics?: boolean
     },
   ): Promise<CallImportEvaluation> {
     const response = await this.client.post(
@@ -1331,6 +1491,86 @@ class ApiClient {
     return response.data
   }
 
+  /**
+   * List LLM-discovered candidate TOP-LEVEL metrics for an evaluation.
+   * Mirrors :func:`getCallImportEvaluationDiscoveredLabels` but is
+   * scoped to the evaluation as a whole (no ``parent_metric_id``).
+   * Returns an empty ``items`` list when the evaluation didn't opt
+   * into top-level metric discovery, so callers can fetch
+   * unconditionally.
+   */
+  async getCallImportEvaluationDiscoveredMetrics(
+    callImportId: string,
+    evaluationId: string,
+  ): Promise<import('../types/api').DiscoveredMetricsResponse> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/discovered-metrics`,
+    )
+    return response.data
+  }
+
+  /**
+   * Merge one discovered top-level metric slug into another. Rewrites
+   * every row's ``__discovered_metrics__`` list and records the
+   * alias on the evaluation so workers finishing later converge on
+   * the surviving slug.
+   */
+  async mergeCallImportEvaluationDiscoveredMetrics(
+    callImportId: string,
+    evaluationId: string,
+    body: { from_key: string; to_key: string },
+  ): Promise<import('../types/api').DiscoveredMetricsResponse> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/discovered-metrics/merge`,
+      body,
+    )
+    return response.data
+  }
+
+  /**
+   * Tombstone an LLM-discovered top-level metric candidate. Strips
+   * the slug from every row's ``__discovered_metrics__`` list and
+   * records a deletion alias on the evaluation so workers finishing
+   * later can't resurrect it.
+   */
+  async deleteCallImportEvaluationDiscoveredMetric(
+    callImportId: string,
+    evaluationId: string,
+    body: { key: string },
+  ): Promise<import('../types/api').DiscoveredMetricsResponse> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/discovered-metrics/delete`,
+      body,
+    )
+    return response.data
+  }
+
+  /**
+   * Promote an LLM-discovered top-level metric candidate into a real
+   * standalone :class:`Metric` row. ``key`` must equal
+   * ``slugify(name)`` so already-scored rows that referenced the
+   * candidate keep resolving against the promoted metric.
+   *
+   * ``metric_type`` selects how the new metric will be scored on
+   * future runs (``boolean`` / ``rating`` / ``category``). ``category``
+   * creates a ``multi_label`` parent with no children — the user adds
+   * children via the existing Metrics page.
+   */
+  async promoteDiscoveredMetric(body: {
+    key: string
+    name: string
+    description?: string | null
+    metric_type?: 'boolean' | 'rating' | 'category'
+    capture_rationale?: boolean
+    custom_config?: Record<string, unknown> | null
+  }): Promise<import('../types/api').MetricSummary> {
+    const response = await this.client.post(
+      `/api/v1/metrics/from-discovered`,
+      body,
+    )
+    return response.data
+  }
+
   /** Cross-run insights for the call import detail page. */
   async getCallImportInsights(
     callImportId: string,
@@ -1397,6 +1637,74 @@ class ApiClient {
     await this.client.delete(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/rows/${evalRowId}`,
     )
+  }
+
+  /**
+   * Re-enqueue failed evaluation rows. With no body, every row in the
+   * run whose status is ``failed`` is re-run with the run's saved
+   * config. Pass ``evalRowIds`` to scope the retry to a subset (used
+   * by the per-row "Retry" button), and/or the ``llm_*`` / ``stt_*``
+   * fields to swap out the LLM / STT provider before re-enqueueing
+   * (the backend validates + persists them onto the run).
+   *
+   * Rows still in progress / already completed are silently skipped
+   * on the server and reported in the response's ``skipped`` list —
+   * the mutation never fails just because the caller's selection is
+   * stale.
+   */
+  async retryCallImportEvaluation(
+    callImportId: string,
+    evaluationId: string,
+    options?: {
+      evalRowIds?: string[]
+      llmProvider?: string | null
+      llmModel?: string | null
+      llmCredentialId?: string | null
+      sttProvider?: string | null
+      sttModel?: string | null
+      sttCredentialId?: string | null
+      transcribeOverwrite?: boolean
+    },
+  ): Promise<CallImportEvaluationRetryResponse> {
+    const body: Record<string, unknown> = {}
+    if (options?.evalRowIds && options.evalRowIds.length > 0) {
+      body.eval_row_ids = options.evalRowIds
+    }
+    if (options?.llmProvider) body.llm_provider = options.llmProvider
+    if (options?.llmModel) body.llm_model = options.llmModel
+    if (options?.llmCredentialId !== undefined) {
+      body.llm_credential_id = options.llmCredentialId
+    }
+    if (options?.sttProvider) body.stt_provider = options.sttProvider
+    if (options?.sttModel) body.stt_model = options.sttModel
+    if (options?.sttCredentialId !== undefined) {
+      body.stt_credential_id = options.sttCredentialId
+    }
+    if (options?.transcribeOverwrite) {
+      body.transcribe_overwrite = true
+    }
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/retry`,
+      body,
+    )
+    return response.data
+  }
+
+  /**
+   * Re-enqueue a single failed evaluation row. Returns the refreshed
+   * row so the UI can flip the badge to ``pending`` immediately
+   * without waiting for the next polling tick. Server returns 409 if
+   * the row is still in progress or already completed.
+   */
+  async retryCallImportEvaluationRow(
+    callImportId: string,
+    evaluationId: string,
+    evalRowId: string,
+  ): Promise<CallImportEvaluationRow> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/rows/${evalRowId}/retry`,
+    )
+    return response.data
   }
 
   async listCallImportEvaluations(callImportId: string): Promise<CallImportEvaluationListResponse> {
@@ -1917,6 +2225,12 @@ class ApiClient {
   async createMetric(data: {
     name: string
     description?: string
+    /**
+     * Optional illustrative example surfaced alongside the description
+     * in the LLM judge's rubric. Mainly used by categorization label
+     * children but accepted on every metric.
+     */
+    example?: string | null
     metric_type: 'number' | 'boolean' | 'rating' | 'text'
     trigger?: 'always'
     enabled?: boolean
@@ -1954,9 +2268,20 @@ class ApiClient {
     enabled_surfaces?: string[]
     tags?: string[] | null
     allow_discovery?: boolean
+    /**
+     * Parent-level "Enable LLM Rationale" toggle. When true the LLM
+     * judge emits one rationale at the category level (children never
+     * carry rationales in hierarchical mode).
+     */
+    capture_rationale?: boolean
     children: Array<{
       name: string
       description?: string | null
+      /**
+       * Optional illustrative example for this label, surfaced
+       * alongside the description in the LLM judge's rubric.
+       */
+      example?: string | null
       enabled?: boolean
       capture_rationale?: boolean | null
       tags?: string[] | null
@@ -1972,6 +2297,11 @@ class ApiClient {
   async addMetricChild(parentMetricId: string, data: {
     name: string
     description?: string | null
+    /**
+     * Optional illustrative example for this label, surfaced alongside
+     * the description in the LLM judge's rubric.
+     */
+    example?: string | null
     enabled?: boolean
     capture_rationale?: boolean | null
     tags?: string[] | null
@@ -2054,6 +2384,11 @@ class ApiClient {
   async updateMetric(metricId: string, data: {
     name?: string
     description?: string
+    /**
+     * Pass ``""`` (empty string) to clear the stored example; omit to
+     * leave the persisted value untouched.
+     */
+    example?: string | null
     metric_type?: 'number' | 'boolean' | 'rating' | 'text'
     trigger?: 'always'
     enabled?: boolean
@@ -2379,7 +2714,7 @@ class ApiClient {
       id: string
       call_import_id: string
       call_import_filename: string | null
-      external_call_id: string
+      conversation_id: string
       transcript: string | null
       recording_s3_key: string | null
       has_recording: boolean

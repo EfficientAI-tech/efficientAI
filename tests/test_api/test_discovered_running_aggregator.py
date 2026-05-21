@@ -85,7 +85,7 @@ def _add_eval_row(
         call_import_id=call_import.id,
         organization_id=call_import.organization_id,
         row_index=_row_counter["n"],
-        external_call_id=f"call-{_row_counter['n']}",
+        conversation_id=f"call-{_row_counter['n']}",
         raw_columns={},
     )
     db_session.add(source)
