@@ -1053,6 +1053,178 @@ def test_llm_diariser_normalises_label_aliases(monkeypatch):
     assert raw_speakers == ["Speaker 2", "Speaker 1"]
 
 
+def test_llm_diariser_accepts_synonym_text_and_speaker_keys(monkeypatch):
+    """OpenAI / Gemini frequently emit ``utterance`` / ``content`` /
+    ``role`` instead of the canonical ``text`` / ``speaker`` keys.
+    The validator must treat those as equivalent so the response
+    isn't silently dropped, which used to surface as a misleading
+    'empty / unusable turn list' error across providers.
+    """
+    from app.workers.tasks.helpers import llm_diarisation
+
+    monkeypatch.setattr(
+        llm_diarisation.llm_service,
+        "generate_response",
+        lambda **_kw: {
+            "text": (
+                '[{"role": "agent", "utterance": "Hi"}, '
+                '{"role": "user", "content": "Hello"}]'
+            )
+        },
+    )
+
+    turns = llm_diarisation.diarize_transcript_with_llm(
+        "Hi. Hello.",
+        llm_provider="openai",
+        llm_model="gpt-4o-mini",
+        organization_id=uuid4(),
+        db=SimpleNamespace(),
+    )
+
+    assert [t["text"] for t in turns] == ["Hi", "Hello"]
+    # Both rows had explicit speaker labels, so we get the canonical
+    # Speaker 1 / Speaker 2 pair (agent first → Speaker 1).
+    assert [t["speaker"] for t in turns] == ["Speaker 1", "Speaker 2"]
+
+
+def test_llm_diariser_accepts_two_element_tuple_entries(monkeypatch):
+    """Some models, especially in JSON mode, collapse turns into a
+    terser ``[speaker, text]`` shape. The validator should accept
+    these as equivalent to the dict form so the response doesn't
+    get silently dropped."""
+    from app.workers.tasks.helpers import llm_diarisation
+
+    monkeypatch.setattr(
+        llm_diarisation.llm_service,
+        "generate_response",
+        lambda **_kw: {
+            "text": '[["agent", "Hi"], ["user", "Hello"]]'
+        },
+    )
+
+    turns = llm_diarisation.diarize_transcript_with_llm(
+        "Hi. Hello.",
+        llm_provider="openai",
+        llm_model="gpt-4o-mini",
+        organization_id=uuid4(),
+        db=SimpleNamespace(),
+    )
+
+    assert [t["text"] for t in turns] == ["Hi", "Hello"]
+    assert [t["speaker"] for t in turns] == ["Speaker 1", "Speaker 2"]
+
+
+def test_llm_diariser_empty_turns_error_includes_raw_snippet(monkeypatch):
+    """When the parsed JSON array is non-empty but every entry is
+    structurally unusable (e.g. dicts that don't carry ANY of the
+    accepted text-key synonyms), the error must surface a snippet
+    of the raw model output so the operator can debug it without
+    having to reproduce the call."""
+    from app.workers.tasks.helpers import llm_diarisation
+
+    raw_payload = '[{"foo": "bar"}, {"baz": "qux"}]'
+    monkeypatch.setattr(
+        llm_diarisation.llm_service,
+        "generate_response",
+        lambda **_kw: {"text": raw_payload},
+    )
+
+    with pytest.raises(llm_diarisation.LLMDiarisationError) as exc_info:
+        llm_diarisation.diarize_transcript_with_llm(
+            "Hi.",
+            llm_provider="openai",
+            llm_model="gpt-4o-mini",
+            organization_id=uuid4(),
+            db=SimpleNamespace(),
+        )
+
+    message = str(exc_info.value)
+    # Distinguishes from the "did not return a JSON array" error so
+    # we can tell apart the two failure modes from the row banner.
+    assert "no usable" in message
+    # And it carries enough of the raw payload that the operator can
+    # eyeball which key the model substituted.
+    assert "foo" in message and "bar" in message
+
+
+def test_llm_diariser_forwards_custom_prompt_and_json_config(monkeypatch):
+    """The operator's custom prompt (e.g. an appended 'translate to
+    English' instruction) must flow through to the LLM as the system
+    message verbatim, and the helper must request JSON mode via
+    ``config={"response_format": {"type": "json_object"}}`` so
+    OpenAI / Gemini are nudged toward valid structured output."""
+    from app.workers.tasks.helpers import llm_diarisation
+
+    captured: dict = {}
+
+    def _fake_generate_response(**kwargs):
+        captured["messages"] = kwargs["messages"]
+        captured["config"] = kwargs.get("config")
+        return {"text": '{"turns": [{"speaker": "agent", "text": "Hi"}]}'}
+
+    monkeypatch.setattr(
+        llm_diarisation.llm_service,
+        "generate_response",
+        _fake_generate_response,
+    )
+
+    custom_prompt = (
+        "You are a transcript diariser. Translate every turn's "
+        "`text` from Hindi to English in the JSON output."
+    )
+
+    llm_diarisation.diarize_transcript_with_llm(
+        "नमस्ते।",
+        llm_provider="openai",
+        llm_model="gpt-4o-mini",
+        organization_id=uuid4(),
+        db=SimpleNamespace(),
+        custom_prompt=custom_prompt,
+    )
+
+    # System message is the operator's prompt verbatim — the helper
+    # does not strip, rewrite, or merge it with the default.
+    system_msg = captured["messages"][0]
+    assert system_msg["role"] == "system"
+    assert system_msg["content"] == custom_prompt
+
+    # JSON mode is requested unconditionally; providers that don't
+    # support it drop the param via ``litellm.drop_params=True``.
+    assert captured["config"] == {
+        "response_format": {"type": "json_object"}
+    }
+
+
+def test_llm_diariser_parses_json_object_with_turns_wrapper(monkeypatch):
+    """OpenAI JSON mode rejects bare arrays at the top level, so the
+    user message asks for ``{"turns": [...]}``. Confirm the parser
+    extracts the inner array correctly via the bracket-scan
+    fallback in ``_extract_json_array``."""
+    from app.workers.tasks.helpers import llm_diarisation
+
+    monkeypatch.setattr(
+        llm_diarisation.llm_service,
+        "generate_response",
+        lambda **_kw: {
+            "text": (
+                '{"turns": [{"speaker": "agent", "text": "Hi"}, '
+                '{"speaker": "user", "text": "Hello"}]}'
+            )
+        },
+    )
+
+    turns = llm_diarisation.diarize_transcript_with_llm(
+        "Hi. Hello.",
+        llm_provider="openai",
+        llm_model="gpt-4o-mini",
+        organization_id=uuid4(),
+        db=SimpleNamespace(),
+    )
+
+    assert [t["text"] for t in turns] == ["Hi", "Hello"]
+    assert [t["speaker"] for t in turns] == ["Speaker 1", "Speaker 2"]
+
+
 # ---------------------------------------------------------------------------
 # Diariser-prompt default endpoint
 # ---------------------------------------------------------------------------

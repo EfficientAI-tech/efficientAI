@@ -20,7 +20,20 @@ Design notes:
   shape. We do, however, validate the *output* (JSON array of objects
   with ``speaker`` + ``text``) and surface a clean error when the model
   ignores the schema, so the worker can report a typed failure on the
-  row instead of crashing.
+  row instead of crashing. The validator is lenient about key names
+  (``utterance``/``content``/``message``/etc. all map to ``text``) so a
+  slightly off-spec response still routes through.
+* JSON mode is requested at the LLM layer
+  (``response_format={"type": "json_object"}``) so OpenAI / Gemini
+  are constrained to valid JSON; providers that don't recognise the
+  flag drop it silently. The user-message wrapper asks for
+  ``{"turns": [...]}`` (top-level object) because OpenAI JSON mode
+  rejects bare arrays; the parser handles both shapes.
+* The default prompt (:data:`DEFAULT_DIARIZATION_PROMPT`) explicitly
+  defers to operator instructions for any text transformation
+  (translation, paraphrasing, summarisation), so an operator can
+  append "translate to English" to the textarea without fighting the
+  default verbatim rule.
 * Synthetic monotonically increasing ``start`` / ``end`` floats are
   attached to each turn so downstream code that wants to order turns
   by time (e.g. the existing first-speaker-is-agent heuristic in
@@ -57,18 +70,29 @@ DEFAULT_DIARIZATION_PROMPT = (
     "labels, even if the call has more than two voices — collapse "
     "extra parties into whichever of `agent` / `user` they are "
     "most semantically aligned with.\n"
-    "3. Do NOT paraphrase, translate, or summarise. Each turn's "
-    "`text` must be a verbatim contiguous span of the original "
-    "transcript (whitespace may be normalised).\n"
-    "4. Preserve the original word order. The concatenation of every "
-    "turn's `text`, in order, should be a near-lossless reconstruction "
-    "of the input.\n\n"
-    "Return ONLY a JSON array, no prose, no markdown fence. Each "
-    "entry must have exactly the keys `speaker` (\"agent\" or "
-    "\"user\") and `text` (string). Example:\n"
-    "[{\"speaker\": \"agent\", \"text\": \"Hello, this is Acme "
-    "support.\"}, {\"speaker\": \"user\", \"text\": \"Hi, I have "
-    "a billing question.\"}]"
+    "3. By default, each turn's `text` should be the speaker's "
+    "original words with only whitespace normalised — no "
+    "paraphrasing, translation, or summarisation. HOWEVER, if the "
+    "operator's instructions appended after these rules request "
+    "translation, paraphrasing, summarisation, or any other text "
+    "transformation, follow THOSE instructions when producing the "
+    "`text` field. Operator instructions take precedence over this "
+    "default.\n"
+    "4. Preserve the original turn order regardless of any text "
+    "transformation requested in rule 3. When no transformation is "
+    "requested, the concatenation of every turn's `text`, in order, "
+    "should be a near-lossless reconstruction of the input.\n"
+    "5. Use exactly the keys `speaker` and `text` in each entry. "
+    "Do NOT substitute `content`, `utterance`, `message`, `role`, "
+    "`dialog`, `line`, etc., even if the operator's instructions "
+    "imply a different shape.\n\n"
+    "Return ONLY a JSON object with a single key `turns` whose "
+    "value is the array of turn objects, no prose, no markdown "
+    "fence. Each entry must have exactly the keys `speaker` "
+    "(\"agent\" or \"user\") and `text` (string). Example:\n"
+    "{\"turns\": [{\"speaker\": \"agent\", \"text\": \"Hello, this "
+    "is Acme support.\"}, {\"speaker\": \"user\", \"text\": \"Hi, "
+    "I have a billing question.\"}]}"
 )
 
 
@@ -76,6 +100,53 @@ DEFAULT_DIARIZATION_PROMPT = (
 # enforce a hard token cap (provider-specific) but we do clip the
 # transcript so a 1 MB CSV cell can't blow up the prompt window.
 _MAX_TRANSCRIPT_CHARS = 60_000
+
+
+# Synonym keys we accept from over-creative LLMs that don't follow the
+# canonical ``{"speaker": ..., "text": ...}`` schema verbatim. Without
+# this leniency a model that emits ``{"speaker": "agent", "utterance":
+# "Hello"}`` (very common with OpenAI/Gemini) would have every entry
+# silently dropped because the validator only looked at ``text``,
+# producing a misleading "empty / unusable turn list" error across
+# providers. We pick the first non-empty string value out of each
+# tuple so the strict schema is still preferred when the model honours
+# it. The system prompt also explicitly forbids these synonyms (rule 5
+# in ``DEFAULT_DIARIZATION_PROMPT``); the leniency below is a safety
+# net for operator-customised prompts and lazy models.
+_TEXT_KEYS: tuple[str, ...] = (
+    "text",
+    "utterance",
+    "content",
+    "message",
+    "dialog",
+    "dialogue",
+    "line",
+    "turn",
+    "transcript",
+    "words",
+    "speech",
+)
+_SPEAKER_KEYS: tuple[str, ...] = (
+    "speaker",
+    "role",
+    "who",
+    "spk",
+    "participant",
+    "label",
+)
+
+
+def _first_nonempty_str(entry: Dict[str, Any], keys: tuple[str, ...]) -> str:
+    """Return the stripped value of the first key in ``keys`` whose
+    value is a non-empty string. Empty / missing keys yield ``""``.
+    """
+    for key in keys:
+        value = entry.get(key)
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped:
+                return stripped
+    return ""
 
 
 class LLMDiarisationError(RuntimeError):
@@ -234,17 +305,44 @@ def diarize_transcript_with_llm(
             f"Unknown LLM provider '{llm_provider}' for diarisation."
         ) from exc
 
+    # The user message intentionally re-states the output contract as
+    # a JSON OBJECT wrapper (``{"turns": [...]}``) rather than a bare
+    # array. Two reasons:
+    #
+    # * OpenAI's JSON mode (``response_format={"type": "json_object"}``)
+    #   requires the model to produce a top-level JSON object — a bare
+    #   array is rejected. Asking for the wrapper here means JSON mode
+    #   is safe to enable unconditionally even when an operator-
+    #   customised system prompt asks for a bare array.
+    # * The keyword "JSON" must appear somewhere in the conversation
+    #   for OpenAI's JSON mode; this user message guarantees it even
+    #   for custom prompts that omit it.
+    #
+    # The downstream parser (``_extract_json_array``) handles both the
+    # wrapped object and a bare array via its bracket-scan fallback,
+    # so a model that ignores the wrapper still flows through.
     messages = [
         {"role": "system", "content": system_prompt},
         {
             "role": "user",
             "content": (
-                "Diarise the following transcript and return the JSON "
-                "array described in the system prompt. Transcript:\n\n"
+                "Diarise the following transcript. Return ONLY a JSON "
+                "object with a single key `turns` whose value is the "
+                "array of turn objects described in the system prompt "
+                "— no prose, no markdown fence. Transcript:\n\n"
                 f"{cleaned}"
             ),
         },
     ]
+
+    # ``response_format={"type": "json_object"}`` is forwarded to
+    # providers that support it (OpenAI JSON mode, Gemini's
+    # ``responseMimeType``) and silently dropped by the rest because
+    # ``litellm.drop_params=True`` is set globally in
+    # :mod:`app.services.ai.llm_service`. Setting it unconditionally
+    # nudges OpenAI/Gemini toward valid JSON without harming the
+    # other providers.
+    config = {"response_format": {"type": "json_object"}}
 
     response = llm_service.generate_response(
         messages=messages,
@@ -254,6 +352,7 @@ def diarize_transcript_with_llm(
         db=db,
         temperature=temperature,
         credential_id=credential_id,
+        config=config,
     )
 
     raw_text = (response.get("text") or "").strip()
@@ -268,12 +367,35 @@ def diarize_transcript_with_llm(
     turns: List[Dict[str, Any]] = []
     cursor: float = 0.0
     for entry in parsed:
-        if not isinstance(entry, dict):
+        # Two accepted entry shapes:
+        #
+        # * ``{"speaker": ..., "text": ...}`` — canonical, plus any
+        #   alias from ``_TEXT_KEYS`` / ``_SPEAKER_KEYS`` so a model
+        #   that emits ``utterance``/``content``/``role``/etc. still
+        #   routes through.
+        # * ``["agent", "Hello there"]`` — a 2-element list/tuple of
+        #   strings, treated as ``(speaker, text)``. Some models
+        #   collapse turns into this terser shape when nudged into
+        #   JSON mode.
+        #
+        # Anything else (scalar, 3-tuple, list of lists with >2
+        # elements) is dropped silently; the post-loop guard surfaces
+        # a diagnostic error if every entry is dropped.
+        if isinstance(entry, dict):
+            text = _first_nonempty_str(entry, _TEXT_KEYS)
+            raw_speaker_value = _first_nonempty_str(entry, _SPEAKER_KEYS)
+        elif (
+            isinstance(entry, (list, tuple))
+            and len(entry) == 2
+            and all(isinstance(part, str) for part in entry)
+        ):
+            raw_speaker_value = entry[0].strip()
+            text = entry[1].strip()
+        else:
             continue
-        text = str(entry.get("text") or "").strip()
         if not text:
             continue
-        raw_speaker = _normalise_speaker_label(entry.get("speaker"))
+        raw_speaker = _normalise_speaker_label(raw_speaker_value)
         turns.append(
             {
                 "speaker": raw_speaker,
@@ -285,8 +407,16 @@ def diarize_transcript_with_llm(
         cursor += 1.0
 
     if not turns:
+        # Mirror the no-array error path above: include a snippet of
+        # the raw model output so the operator can see WHICH key the
+        # model picked instead of ``text`` (or which non-dict shape
+        # it returned). Without this the error is identical for
+        # every provider even when each is failing differently.
+        snippet = raw_text[:400].replace("\n", " ")
         raise LLMDiarisationError(
-            "LLM diariser returned an empty / unusable turn list."
+            "LLM diariser returned a JSON array but no usable "
+            "{speaker, text} entries. Got: "
+            f"{snippet}{'…' if len(raw_text) > 400 else ''}"
         )
 
     return turns
