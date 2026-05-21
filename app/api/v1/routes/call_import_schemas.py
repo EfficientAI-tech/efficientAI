@@ -192,10 +192,34 @@ async def create_call_import_schema(
     """
     del api_key
 
+    name_normalized = payload.name.strip()
+
+    # Pre-flight duplicate check. Production catches this via the partial
+    # unique index ``uq_call_import_schemas_ws_name`` on
+    # ``LOWER(name)`` (see migration 034), but that's a Postgres
+    # expression index — SQLAlchemy's ``Base.metadata.create_all`` used
+    # in tests doesn't create it, so SQLite would silently accept
+    # duplicates. Doing the lookup in app code keeps the 409 behavior
+    # identical across both backends.
+    existing = (
+        db.query(CallImportSchema.id)
+        .filter(
+            CallImportSchema.organization_id == organization_id,
+            CallImportSchema.workspace_id == workspace_id,
+            func.lower(CallImportSchema.name) == name_normalized.lower(),
+        )
+        .first()
+    )
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"A schema named '{payload.name}' already exists in this workspace.",
+        )
+
     schema = CallImportSchema(
         organization_id=organization_id,
         workspace_id=workspace_id,
-        name=payload.name.strip(),
+        name=name_normalized,
         description=(payload.description or None),
     )
     db.add(schema)

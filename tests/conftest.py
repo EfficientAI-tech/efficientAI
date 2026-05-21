@@ -164,7 +164,19 @@ def client(db_session, api_key, org_id):
 
     if "app.services.ai" not in sys.modules:
         fake_ai_pkg = types.ModuleType("app.services.ai")
-        fake_ai_pkg.__path__ = []
+        # Point the stubbed package at the real on-disk directory so
+        # genuinely-needed submodules (like ``llm_resolver``) can still
+        # be imported from disk even when the rest of the package is
+        # replaced by light stubs above.
+        import os as _os
+
+        _real_ai_dir = _os.path.join(
+            _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+            "app",
+            "services",
+            "ai",
+        )
+        fake_ai_pkg.__path__ = [_real_ai_dir]
         fake_model_config_module = types.ModuleType("app.services.ai.model_config_service")
         fake_llm_module = types.ModuleType("app.services.ai.llm_service")
         fake_transcription_module = types.ModuleType("app.services.ai.transcription_service")

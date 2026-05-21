@@ -723,12 +723,14 @@ def promote_discovered_child(
         custom_data_type="boolean",
         custom_config={},
         tags=None,
-        # Children in hierarchical mode never carry their own
-        # rationale — the parent owns the single rationale string for
-        # the whole group. Force false regardless of the body's
-        # ``capture_rationale`` so promoted labels stay consistent with
-        # the new per-parent rationale model.
-        capture_rationale=False,
+        # Default True (matching the request schema) so future rows
+        # that hit the new child keep producing rationales — the
+        # discovered candidate was itself proposed *with* a rationale,
+        # and users almost always want that signal preserved on the
+        # promoted child. Callers that want the v2 hierarchical
+        # behavior (parent-only rationale) pass ``capture_rationale=
+        # false`` explicitly.
+        capture_rationale=bool(body.capture_rationale),
         parent_metric_id=parent.id,
     )
     db.add(child)

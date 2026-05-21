@@ -17,6 +17,7 @@ from fastapi.responses import StreamingResponse
 from loguru import logger
 from sqlalchemy import desc, func, or_, text
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.database import get_db
 from app.dependencies import get_api_key, get_organization_id, require_enterprise_feature
@@ -2456,8 +2457,6 @@ async def generate_call_import_evaluation_insights(
     # ``JSON`` columns aren't auto-tracked when the same dict is mutated
     # in place; reassigning is the safest pattern, but we also flag the
     # attribute so SQLAlchemy schedules the UPDATE either way.
-    from sqlalchemy.orm.attributes import flag_modified
-
     flag_modified(evaluation, "tldr_summary")
     db.commit()
     db.refresh(evaluation)
@@ -3595,9 +3594,15 @@ async def merge_call_import_evaluation_discovered_labels(
                 mutated = True
 
         if mutated:
-            # Flag the dict as modified so SQLAlchemy persists the
-            # JSON column update.
+            # ``JSON`` columns aren't auto-tracked when the same dict is
+            # mutated in place — ``scores`` IS ``row.metric_scores``, so
+            # the in-place edits above already updated SQLAlchemy's
+            # cached "committed" snapshot to the post-edit dict. Without
+            # ``flag_modified`` the subsequent ``dict(scores)`` reassign
+            # compares equal to that snapshot and SQLAlchemy skips the
+            # UPDATE, leaving the per-row payload stale on disk.
             row.metric_scores = dict(scores)
+            flag_modified(row, "metric_scores")
 
     # Persist the merge at the evaluation level too. This is what makes
     # the merge survive future scoring: rows that finish AFTER this
@@ -3771,7 +3776,12 @@ async def delete_call_import_evaluation_discovered_label(
                 mutated = True
 
         if mutated:
+            # See merge endpoint above: in-place edits to ``scores`` /
+            # ``parent_entry`` already mutated SQLAlchemy's committed
+            # snapshot, so the reassign alone wouldn't trigger an
+            # UPDATE. Flagging the column forces it.
             row.metric_scores = dict(scores)
+            flag_modified(row, "metric_scores")
 
     # 3. Persist the tombstone on the evaluation so workers that finish
     # later don't re-surface the deleted slug. We also retarget any
@@ -3988,6 +3998,7 @@ async def merge_call_import_evaluation_discovered_metrics(
         if mutated:
             scores[DISCOVERED_METRICS_KEY] = kept
             row.metric_scores = dict(scores)
+            flag_modified(row, "metric_scores")
 
     raw_aliases = (
         evaluation.discovered_metric_aliases
@@ -4087,6 +4098,7 @@ async def delete_call_import_evaluation_discovered_metric(
             else:
                 scores.pop(DISCOVERED_METRICS_KEY, None)
             row.metric_scores = dict(scores)
+            flag_modified(row, "metric_scores")
 
     raw_aliases = (
         evaluation.discovered_metric_aliases

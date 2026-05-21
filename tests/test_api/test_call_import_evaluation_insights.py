@@ -201,7 +201,10 @@ def _seed_eval_with_data(
             call_import_id=call_import.id,
             organization_id=org_id,
             row_index=i,
-            external_call_id=f"ext-{i}",
+            # ``conversation_id`` is the renamed-from-``external_call_id``
+            # canonical column on CallImportRow (kept consistent with the
+            # schema-driven upload flow).
+            conversation_id=f"ext-{i}",
             transcript=f"transcript {i}",
             raw_columns={"CallID": f"ext-{i}", "Transcript": f"transcript {i}"},
             status=CallImportRowStatus.COMPLETED,
