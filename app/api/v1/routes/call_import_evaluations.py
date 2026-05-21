@@ -7,7 +7,7 @@ import io
 import json
 import math
 import statistics
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Literal, Optional, Tuple
 from uuid import UUID
 
 from datetime import datetime, timezone
@@ -84,6 +84,26 @@ def _require_import(
     if not call_import:
         raise HTTPException(status_code=404, detail="Call import not found")
     return call_import
+
+
+def _flatten_transcript(text: Optional[str]) -> str:
+    """Collapse a multi-line transcript onto a single line for spreadsheet export.
+
+    The diarised transcript is stored as ``<speaker>: <text>`` lines joined
+    by ``\\n`` because the in-app ``TranscriptView`` parses those line
+    breaks to render chat bubbles. In Excel / Google Sheets that same
+    newline-per-turn formatting causes each cell to balloon vertically,
+    which the user reads as "lots of empty space on top of the cell".
+    Flattening at export time keeps the DB shape intact while giving the
+    spreadsheet a single-line cell per row.
+    """
+    if not text:
+        return ""
+    parts = [
+        segment.strip()
+        for segment in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    ]
+    return " ".join(p for p in parts if p)
 
 
 def _serialize_selected_metric_ids(value) -> List[UUID]:
@@ -1035,6 +1055,22 @@ async def list_call_import_evaluation_rows(
             "parent. Useful to triage which calls produced novel labels."
         ),
     ),
+    sort_by: Optional[str] = Query(
+        None,
+        description=(
+            "Column to sort by. Accepted values: ``row_index`` (default "
+            "when omitted), ``conversation_id``, ``status`` (the "
+            "evaluation-row status), or ``metric:<metric_uuid>`` to sort "
+            "by ``metric_scores[<uuid>].value``. Metric sorts compare "
+            "the extracted JSON text — adequate for booleans, enum "
+            "labels, and 0-1 ratings; large integer values may sort "
+            "lexicographically (10 before 2)."
+        ),
+    ),
+    sort_dir: Optional[str] = Query(
+        "asc",
+        description="Sort direction: ``asc`` (default) or ``desc``.",
+    ),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
@@ -1273,7 +1309,93 @@ async def list_call_import_evaluation_rows(
             ).bindparams(p_id=d_parent_str)
             query = query.filter(has_disc_sql)
 
-    query = query.order_by(CallImportRow.row_index.asc())
+    # --- Sorting ----------------------------------------------------------
+    # Column-click sorting from the UI. Falls back to ``row_index`` so
+    # paging stays stable when the user clears the sort. We always add a
+    # secondary ``row_index`` tiebreaker so duplicate sort keys (e.g.
+    # many rows with ``status = 'completed'``) keep a deterministic
+    # order across page boundaries — without this, pagination can
+    # double-show or skip rows when Postgres picks a different physical
+    # order on each query.
+    direction_desc = (sort_dir or "asc").strip().lower() == "desc"
+
+    def _apply_direction(column_expr):
+        return column_expr.desc() if direction_desc else column_expr.asc()
+
+    # Whether the caller's ``sort_by`` resolved to a known column. We
+    # use this flag to decide whether ``sort_dir`` is honoured on the
+    # fallback path: unrecognized columns (typos, stale UI state) fall
+    # back to the implicit ``row_index ASC`` default and intentionally
+    # ignore ``sort_dir`` so users don't get a surprise reverse order
+    # from a typo'd column name.
+    sort_recognized = False
+    sort_by_clean = (sort_by or "").strip()
+    primary_sort = None
+    if sort_by_clean == "row_index":
+        sort_recognized = True
+        # Falls through to the default ``order_by`` below with
+        # ``primary_sort`` still None — but ``sort_recognized=True``
+        # tells the fallback branch to apply the requested direction.
+    elif sort_by_clean == "conversation_id":
+        sort_recognized = True
+        primary_sort = _apply_direction(CallImportRow.conversation_id)
+    elif sort_by_clean == "status":
+        sort_recognized = True
+        primary_sort = _apply_direction(CallImportEvaluationRow.status)
+    elif sort_by_clean.startswith("metric:"):
+        raw_metric_id = sort_by_clean.split(":", 1)[1].strip()
+        try:
+            metric_uuid = UUID(raw_metric_id)
+        except (TypeError, ValueError):
+            metric_uuid = None
+        if metric_uuid is not None:
+            sort_recognized = True
+            # ``metric_scores`` is JSON-typed but the helper functions
+            # for path extraction differ between Postgres (production)
+            # and SQLite (default test backend). Branch on the active
+            # dialect so we can use the right primitive:
+            #   * Postgres → ``json_extract_path_text(col, key, "value")``
+            #     which returns the value as TEXT for both ``json`` and
+            #     ``jsonb`` columns.
+            #   * SQLite   → ``json_extract(col, '$."<uuid>".value')``
+            #     using JSONPath syntax. ``metric_uuid`` is already
+            #     validated above (``UUID(raw_metric_id)``), so the
+            #     interpolated path is safe from injection.
+            # NULL values (rows where the metric wasn't scored) sort
+            # to the END regardless of direction so un-scored rows
+            # don't crowd the top of an ascending sort.
+            dialect_name = (
+                db.bind.dialect.name if db.bind is not None else "postgresql"
+            )
+            if dialect_name == "sqlite":
+                json_path = f'$."{metric_uuid}".value'
+                path_value = func.json_extract(
+                    CallImportEvaluationRow.metric_scores,
+                    json_path,
+                )
+            else:
+                path_value = func.json_extract_path_text(
+                    CallImportEvaluationRow.metric_scores,
+                    str(metric_uuid),
+                    "value",
+                )
+            primary_sort = (
+                path_value.desc().nullslast()
+                if direction_desc
+                else path_value.asc().nullslast()
+            )
+
+    if primary_sort is not None:
+        query = query.order_by(primary_sort, CallImportRow.row_index.asc())
+    elif sort_recognized:
+        # Explicit ``sort_by=row_index`` request — honour direction.
+        query = query.order_by(_apply_direction(CallImportRow.row_index))
+    else:
+        # No sort requested OR unrecognized column — safe default of
+        # ``row_index ASC``. We deliberately ignore ``sort_dir`` here
+        # so a typo'd / stale ``sort_by`` doesn't quietly invert the
+        # default order.
+        query = query.order_by(CallImportRow.row_index.asc())
     total = query.count()
     rows = query.offset((page - 1) * page_size).limit(page_size).all()
 
@@ -1332,6 +1454,13 @@ async def list_call_import_evaluation_rows(
 async def export_call_import_evaluation_csv(
     call_import_id: UUID,
     eval_id: UUID,
+    format: Literal["csv", "xlsx"] = Query(
+        "csv",
+        description=(
+            "Output format. ``csv`` returns a UTF-8 BOM CSV; ``xlsx`` "
+            "returns a native Excel workbook (single sheet)."
+        ),
+    ),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
@@ -1507,10 +1636,6 @@ async def export_call_import_evaluation_csv(
         *metric_headers,
     ]
 
-    output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
-    writer.writeheader()
-
     rows = (
         db.query(CallImportEvaluationRow, CallImportRow)
         .join(CallImportRow, CallImportRow.id == CallImportEvaluationRow.call_import_row_id)
@@ -1525,55 +1650,132 @@ async def export_call_import_evaluation_csv(
         else "Production"
     )
 
-    for eval_row, source_row in rows:
-        row_out: Dict[str, str] = {}
-        raw = source_row.raw_columns if isinstance(source_row.raw_columns, dict) else {}
-        for header in standard_export_headers:
-            value = raw.get(header)
-            row_out[header] = "" if value is None else str(value)
-        for export_header, csv_header in custom_export:
-            value = raw.get(csv_header)
-            row_out[export_header] = "" if value is None else str(value)
+    def _project_rows() -> Iterator[Dict[str, str]]:
+        for eval_row, source_row in rows:
+            row_out: Dict[str, str] = {}
+            raw = (
+                source_row.raw_columns
+                if isinstance(source_row.raw_columns, dict)
+                else {}
+            )
+            for header in standard_export_headers:
+                value = raw.get(header)
+                row_out[header] = "" if value is None else str(value)
+            for export_header, csv_header in custom_export:
+                value = raw.get(csv_header)
+                row_out[export_header] = "" if value is None else str(value)
 
-        # Live transcripts pulled from the row, NOT from raw_columns,
-        # so re-diarised values are always reflected in the export.
-        row_out[PRODUCTION_TRANSCRIPT_HEADER] = source_row.transcript or ""
-        row_out[DIARISED_TRANSCRIPT_HEADER] = (
-            source_row.diarised_transcript or ""
-        )
-        row_out[EVAL_SOURCE_HEADER] = evaluated_source_label
+            # Live transcripts pulled from the row, NOT from raw_columns,
+            # so re-diarised values are always reflected in the export.
+            # Both transcript columns are flattened to a single line so the
+            # spreadsheet cell doesn't balloon vertically — the in-app
+            # ``TranscriptView`` still has the DB copy with line breaks
+            # intact for chat-bubble rendering.
+            row_out[PRODUCTION_TRANSCRIPT_HEADER] = _flatten_transcript(
+                source_row.transcript
+            )
+            row_out[DIARISED_TRANSCRIPT_HEADER] = _flatten_transcript(
+                source_row.diarised_transcript
+            )
+            row_out[EVAL_SOURCE_HEADER] = evaluated_source_label
 
-        scores = eval_row.metric_scores if isinstance(eval_row.metric_scores, dict) else {}
-        for metric in metrics:
-            metric_score = scores.get(str(metric.id)) if isinstance(scores, dict) else None
-            value = metric_score.get("value") if isinstance(metric_score, dict) else None
-            # Parent metrics (selection_mode set) render the chosen
-            # child name for single_choice or the ";"-joined list of
-            # true child names for multi_label.
-            if (
-                metric.selection_mode
-                and not metric.parent_metric_id
-                and isinstance(metric_score, dict)
-            ):
-                if metric.selection_mode == "multi_label":
-                    selected = metric_score.get("selected_child_names")
-                    if isinstance(selected, list):
-                        value = ";".join(str(s) for s in selected)
-                else:
-                    value = (
-                        metric_score.get("chosen_child_name")
-                        or metric_score.get("value")
-                    )
-            row_out[metric.name] = "" if value is None else str(value)
-            rationale_header = rationale_headers.get(str(metric.id))
-            if rationale_header is not None:
-                rationale = (
-                    metric_score.get("rationale")
+            scores = (
+                eval_row.metric_scores
+                if isinstance(eval_row.metric_scores, dict)
+                else {}
+            )
+            for metric in metrics:
+                metric_score = (
+                    scores.get(str(metric.id))
+                    if isinstance(scores, dict)
+                    else None
+                )
+                value = (
+                    metric_score.get("value")
                     if isinstance(metric_score, dict)
                     else None
                 )
-                row_out[rationale_header] = "" if rationale is None else str(rationale)
-        writer.writerow(row_out)
+                # Parent metrics (selection_mode set) render the chosen
+                # child name for single_choice or the ";"-joined list of
+                # true child names for multi_label.
+                if (
+                    metric.selection_mode
+                    and not metric.parent_metric_id
+                    and isinstance(metric_score, dict)
+                ):
+                    if metric.selection_mode == "multi_label":
+                        selected = metric_score.get("selected_child_names")
+                        if isinstance(selected, list):
+                            value = ";".join(str(s) for s in selected)
+                    else:
+                        value = (
+                            metric_score.get("chosen_child_name")
+                            or metric_score.get("value")
+                        )
+                row_out[metric.name] = "" if value is None else str(value)
+                rationale_header = rationale_headers.get(str(metric.id))
+                if rationale_header is not None:
+                    rationale = (
+                        metric_score.get("rationale")
+                        if isinstance(metric_score, dict)
+                        else None
+                    )
+                    row_out[rationale_header] = (
+                        "" if rationale is None else str(rationale)
+                    )
+            yield row_out
+
+    base_filename = f"call-import-{call_import_id}-evaluation-{eval_id}"
+
+    if format == "xlsx":
+        # xlsx is unicode-native (Hindi/Devanagari, emoji, etc.) so the
+        # UTF-8-BOM dance isn't needed here. ``write_only`` mode keeps
+        # peak memory bounded for large evaluations because openpyxl
+        # only buffers the current row.
+        try:
+            from openpyxl import Workbook  # type: ignore
+            from openpyxl.cell import WriteOnlyCell  # type: ignore
+            from openpyxl.styles import Font  # type: ignore
+        except ImportError as exc:  # pragma: no cover - exercised by pyproject lock
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Excel export requires the 'openpyxl' package which is "
+                    "not installed."
+                ),
+            ) from exc
+
+        workbook = Workbook(write_only=True)
+        worksheet = workbook.create_sheet(title="Evaluation")
+
+        bold_font = Font(bold=True)
+        header_cells = []
+        for header in fieldnames:
+            cell = WriteOnlyCell(worksheet, value=header)
+            cell.font = bold_font
+            header_cells.append(cell)
+        worksheet.append(header_cells)
+
+        for row_dict in _project_rows():
+            worksheet.append([row_dict.get(h, "") for h in fieldnames])
+
+        buffer = io.BytesIO()
+        workbook.save(buffer)
+        xlsx_bytes = buffer.getvalue()
+        filename = f"{base_filename}.xlsx"
+        return StreamingResponse(
+            iter([xlsx_bytes]),
+            media_type=(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ),
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    for row_dict in _project_rows():
+        writer.writerow(row_dict)
 
     # Excel on Windows defaults to the system ANSI codepage (Windows-1252)
     # when a CSV has no encoding marker, which turns UTF-8 Hindi/Devanagari
@@ -1587,7 +1789,7 @@ async def export_call_import_evaluation_csv(
     # codec in the Content-Type header so well-behaved HTTP clients (incl.
     # ``httpx`` / ``requests`` in our tests) strip the BOM during decode.
     csv_bytes = csv_text.encode("utf-8-sig")
-    filename = f"call-import-{call_import_id}-evaluation-{eval_id}.csv"
+    filename = f"{base_filename}.csv"
     return StreamingResponse(
         iter([csv_bytes]),
         media_type="text/csv; charset=utf-8-sig",

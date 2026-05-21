@@ -1,11 +1,14 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
   AlertTriangle,
+  ArrowDown,
   ArrowLeft,
+  ArrowUp,
+  ArrowUpDown,
   BarChart3,
   Check,
   CheckCircle2,
@@ -54,6 +57,7 @@ import ProviderModelPicker, {
   type ProviderModelValue,
 } from '../../components/providers/ProviderModelPicker'
 import StatusBadge from '../../components/shared/StatusBadge'
+import CallImportProgressBar from './components/CallImportProgressBar'
 import MetricFlowChart, {
   flowFromSequence,
 } from './components/MetricFlowChart'
@@ -80,6 +84,86 @@ function formatDateTime(value: string | null | undefined): string {
   return new Date(value).toLocaleString()
 }
 
+interface SortableHeaderProps {
+  /** Stable column key used as the ``sort_by`` value sent to the API. */
+  columnKey: string
+  /** Currently-active sort column (``null`` when no sort is set). */
+  activeKey: string | null
+  /** Currently-active sort direction; ignored when ``activeKey`` differs. */
+  activeDir: 'asc' | 'desc'
+  /** Tooltip + accessibility label fallback. */
+  title?: string
+  /** Cycles the sort state for this column. */
+  onCycle: (key: string) => void
+  /** Optional extra ``<th>`` className (alignment, sticky, etc.). */
+  className?: string
+  /** Optional trailing slot rendered AFTER the sort glyph (e.g. a
+   *  filter popover trigger). Kept outside the sort button so its
+   *  click doesn't trigger the sort cycle. */
+  rightSlot?: React.ReactNode
+  children: React.ReactNode
+}
+
+/**
+ * Header cell that reads as plain-text until the user clicks it, at
+ * which point the column starts cycling through ``asc → desc → off``.
+ * The active sort direction renders a solid up/down arrow; inactive
+ * columns render a dim double-arrow so users discover the affordance
+ * without it being visually noisy.
+ */
+function SortableHeader({
+  columnKey,
+  activeKey,
+  activeDir,
+  title,
+  onCycle,
+  className,
+  rightSlot,
+  children,
+}: SortableHeaderProps) {
+  const isActive = activeKey === columnKey
+  const Icon = !isActive
+    ? ArrowUpDown
+    : activeDir === 'asc'
+      ? ArrowUp
+      : ArrowDown
+  const ariaSort = !isActive
+    ? 'none'
+    : activeDir === 'asc'
+      ? 'ascending'
+      : 'descending'
+  return (
+    <th
+      aria-sort={ariaSort}
+      className={
+        'px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase whitespace-nowrap ' +
+        (className || '')
+      }
+    >
+      <div className="inline-flex items-center gap-1">
+        <button
+          type="button"
+          onClick={() => onCycle(columnKey)}
+          title={title || (typeof children === 'string' ? children : undefined)}
+          className={
+            'inline-flex items-center gap-1 rounded px-1 -mx-1 py-0.5 hover:bg-gray-100 transition-colors ' +
+            (isActive ? 'text-gray-900' : 'text-gray-500')
+          }
+        >
+          <span className="truncate">{children}</span>
+          <Icon
+            className={
+              'h-3 w-3 flex-shrink-0 ' +
+              (isActive ? 'text-primary-600' : 'text-gray-300')
+            }
+          />
+        </button>
+        {rightSlot}
+      </div>
+    </th>
+  )
+}
+
 export default function CallImportEvaluationDetail() {
   const { id, evalId } = useParams<{ id: string; evalId: string }>()
   const navigate = useNavigate()
@@ -92,6 +176,8 @@ export default function CallImportEvaluationDetail() {
   const [pendingDeleteRow, setPendingDeleteRow] =
     useState<CallImportEvaluationRow | null>(null)
   const [deleteEvalOpen, setDeleteEvalOpen] = useState(false)
+  const [downloadMenuOpen, setDownloadMenuOpen] = useState(false)
+  const downloadMenuRef = useRef<HTMLDivElement>(null)
   const [rowDeleteError, setRowDeleteError] = useState<string | null>(null)
   // Retry UX: ``retryError`` surfaces a banner on either failure path
   // (bulk or single-row). ``pendingRetryRowId`` is set while a per-row
@@ -173,13 +259,31 @@ export default function CallImportEvaluationDetail() {
   const [detailRow, setDetailRow] =
     useState<CallImportEvaluationRow | null>(null)
 
+  // Column-click sort state. ``sortBy`` is one of the built-in column
+  // keys (``row_index`` / ``conversation_id`` / ``status``) or
+  // ``metric:<metric_uuid>``; ``null`` means "no sort" (server falls
+  // back to row_index asc, the original behaviour). The header cycles
+  // null → asc → desc → null per column, so power users can flip
+  // direction with two clicks and clear with a third without reaching
+  // for a separate UI.
+  const [sortBy, setSortBy] = useState<string | null>(null)
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
+
+  // Inline status-filter popover anchored on the Status column header.
+  // The toolbar above keeps its full dropdown — this just gives users a
+  // one-click affordance from the column they're already looking at.
+  const [statusFilterMenuOpen, setStatusFilterMenuOpen] = useState(false)
+  const statusFilterMenuRef = useRef<HTMLDivElement>(null)
+
   useEffect(() => {
     const t = setTimeout(() => setSearchQuery(searchInput.trim()), 250)
     return () => clearTimeout(t)
   }, [searchInput])
 
-  // Reset to first page whenever any active filter changes — otherwise we'd
-  // be paging through a filtered result set that may be smaller than ``page``.
+  // Reset to first page whenever any active filter or sort changes —
+  // otherwise we'd be paging through a filtered / re-ordered result
+  // set that may be smaller than ``page`` or whose row at the current
+  // page index has changed.
   useEffect(() => {
     setPage(1)
   }, [
@@ -193,7 +297,44 @@ export default function CallImportEvaluationDetail() {
     discoveredFilter?.parentId,
     discoveredFilter?.labelKey,
     discoveredFilter?.anyDiscovered,
+    sortBy,
+    sortDir,
   ])
+
+  // Close the inline status-filter popover when the user clicks outside it.
+  useEffect(() => {
+    if (!statusFilterMenuOpen) return
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        statusFilterMenuRef.current &&
+        !statusFilterMenuRef.current.contains(event.target as Node)
+      ) {
+        setStatusFilterMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [statusFilterMenuOpen])
+
+  // Three-state cycle when the user clicks a sortable column header.
+  // Same key + same direction is the "I already see this view" hint
+  // and we move forward in the cycle:
+  //   1st click  → ascending on this column
+  //   2nd click  → descending on the same column
+  //   3rd click  → clear sort (server reverts to row_index asc)
+  const handleColumnSort = (key: string) => {
+    if (sortBy !== key) {
+      setSortBy(key)
+      setSortDir('asc')
+      return
+    }
+    if (sortDir === 'asc') {
+      setSortDir('desc')
+      return
+    }
+    setSortBy(null)
+    setSortDir('asc')
+  }
 
   const hasActiveFilters =
     !!searchQuery ||
@@ -206,6 +347,21 @@ export default function CallImportEvaluationDetail() {
     queryKey: ['call-import', id],
     queryFn: () => apiClient.getCallImport(id!, { row_limit: 0, row_offset: 0 }),
     enabled: !!id,
+    // Poll while diarisation is in flight so the per-run "Diarising
+    // audio…" progress bar updates as the upstream transcribe / diarise
+    // worker churns through this batch's rows. Stops polling once
+    // everything settles to terminal states.
+    refetchInterval: (q) => {
+      const ci = q.state.data as
+        | {
+            diarised_pending_rows?: number
+            diarised_running_rows?: number
+          }
+        | undefined
+      const inFlight =
+        (ci?.diarised_pending_rows ?? 0) + (ci?.diarised_running_rows ?? 0)
+      return inFlight > 0 ? 4000 : false
+    },
   })
 
   const evaluationQuery = useQuery({
@@ -234,6 +390,8 @@ export default function CallImportEvaluationDetail() {
       discoveredFilter?.parentId,
       discoveredFilter?.labelKey,
       discoveredFilter?.anyDiscovered,
+      sortBy,
+      sortDir,
     ],
     queryFn: () =>
       apiClient.listCallImportEvaluationRows(id!, evalId!, {
@@ -249,6 +407,8 @@ export default function CallImportEvaluationDetail() {
         discovered_parent_id: discoveredFilter?.parentId,
         discovered_label_key: discoveredFilter?.labelKey,
         has_discovered: discoveredFilter?.anyDiscovered || undefined,
+        sort_by: sortBy || undefined,
+        sort_dir: sortBy ? sortDir : undefined,
       }),
     enabled: !!id && !!evalId,
     refetchInterval: () => {
@@ -645,23 +805,41 @@ export default function CallImportEvaluationDetail() {
     return rows
   }, [callImport])
 
-  const handleExport = async () => {
+  const handleExport = async (format: 'csv' | 'xlsx') => {
     if (!id || !evalId) return
+    setDownloadMenuOpen(false)
     try {
-      const blob = await apiClient.exportCallImportEvaluation(id, evalId)
+      const blob = await apiClient.exportCallImportEvaluation(id, evalId, format)
       const url = window.URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
-      link.download = `call-import-${id}-evaluation-${evalId}.csv`
+      link.download = `call-import-${id}-evaluation-${evalId}.${format}`
       document.body.appendChild(link)
       link.click()
       link.remove()
       window.URL.revokeObjectURL(url)
     } catch (e) {
       console.error('Failed to export evaluation', e)
-      alert('Failed to export evaluation CSV')
+      alert(`Failed to export evaluation ${format.toUpperCase()}`)
     }
   }
+
+  // Close the download format menu when the user clicks anywhere outside
+  // it. Only attach the listener while the menu is open so we don't
+  // pollute the global event bus.
+  useEffect(() => {
+    if (!downloadMenuOpen) return
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        downloadMenuRef.current &&
+        !downloadMenuRef.current.contains(event.target as Node)
+      ) {
+        setDownloadMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [downloadMenuOpen])
 
   if (!id || !evalId) {
     return <div className="text-sm text-red-600">Missing identifiers.</div>
@@ -740,15 +918,47 @@ export default function CallImportEvaluationDetail() {
               Retry failed ({evaluation.failed_rows})
             </Button>
           )}
-          <Button
-            variant="outline"
-            size="sm"
-            leftIcon={<Download className="h-4 w-4" />}
-            onClick={handleExport}
-            disabled={!rowsQuery.data?.items?.length}
-          >
-            Download CSV
-          </Button>
+          <div className="relative" ref={downloadMenuRef}>
+            <Button
+              variant="outline"
+              size="sm"
+              leftIcon={<Download className="h-4 w-4" />}
+              rightIcon={
+                <ChevronDown
+                  className={`h-4 w-4 transition-transform ${
+                    downloadMenuOpen ? 'rotate-180' : ''
+                  }`}
+                />
+              }
+              onClick={() => setDownloadMenuOpen((prev) => !prev)}
+              disabled={!rowsQuery.data?.items?.length}
+            >
+              Download
+            </Button>
+            {downloadMenuOpen && (
+              <div
+                className="absolute right-0 z-20 mt-1 w-44 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden"
+                role="menu"
+              >
+                <button
+                  type="button"
+                  className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"
+                  onClick={() => handleExport('csv')}
+                  role="menuitem"
+                >
+                  Download as CSV
+                </button>
+                <button
+                  type="button"
+                  className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"
+                  onClick={() => handleExport('xlsx')}
+                  role="menuitem"
+                >
+                  Download as Excel
+                </button>
+              </div>
+            )}
+          </div>
           <Button
             variant="ghost"
             size="sm"
@@ -862,25 +1072,86 @@ export default function CallImportEvaluationDetail() {
               )}
             </div>
           </div>
-          <div className="grid grid-cols-3 gap-2 text-center text-xs">
-            <div className="bg-gray-50 rounded p-2 min-w-[72px]">
-              <div className="text-gray-500">Total</div>
-              <div className="font-semibold text-gray-900">
-                {evaluation.total_rows}
+          <div className="w-72 flex-shrink-0">
+            <div className="text-xs font-medium text-gray-600 mb-1">
+              Evaluation progress
+            </div>
+            <CallImportProgressBar
+              total={evaluation.total_rows}
+              completed={evaluation.completed_rows}
+              failed={evaluation.failed_rows}
+            />
+            <div className="mt-2 grid grid-cols-3 gap-2 text-center text-xs">
+              <div className="bg-gray-50 rounded p-2 min-w-[72px]">
+                <div className="text-gray-500">Total</div>
+                <div className="font-semibold text-gray-900">
+                  {evaluation.total_rows}
+                </div>
+              </div>
+              <div className="bg-green-50 rounded p-2 min-w-[72px]">
+                <div className="text-green-700">Completed</div>
+                <div className="font-semibold text-green-800">
+                  {evaluation.completed_rows}
+                </div>
+              </div>
+              <div className="bg-red-50 rounded p-2 min-w-[72px]">
+                <div className="text-red-700">Failed</div>
+                <div className="font-semibold text-red-800">
+                  {evaluation.failed_rows}
+                </div>
               </div>
             </div>
-            <div className="bg-green-50 rounded p-2 min-w-[72px]">
-              <div className="text-green-700">Completed</div>
-              <div className="font-semibold text-green-800">
-                {evaluation.completed_rows}
-              </div>
-            </div>
-            <div className="bg-red-50 rounded p-2 min-w-[72px]">
-              <div className="text-red-700">Failed</div>
-              <div className="font-semibold text-red-800">
-                {evaluation.failed_rows}
-              </div>
-            </div>
+
+            {/*
+              Upstream diarisation progress. When the user kicked off
+              this run with auto-transcribe enabled on rows missing a
+              diarised transcript, the eval row stays ``pending`` while
+              the transcribe / diarise worker is in flight. Surfacing
+              the parent batch's diarisation counters here tells the
+              user the run isn't stalled — it's waiting on audio
+              processing — and the bar fills as the worker churns.
+              Polling on ``callImportQuery`` keeps these numbers fresh
+              without a manual refresh.
+            */}
+            {(() => {
+              const ci = callImport
+              if (!ci) return null
+              const diarisePending = ci.diarised_pending_rows ?? 0
+              const diariseRunning = ci.diarised_running_rows ?? 0
+              const diariseInFlight = diarisePending + diariseRunning
+              const diariseDone =
+                (ci.diarised_completed_rows ?? 0) +
+                (ci.diarised_failed_rows ?? 0)
+              const evalRunning =
+                evaluation.status === 'pending' ||
+                evaluation.status === 'running'
+              // Only render while the upstream pipeline is actively
+              // moving — once everything's settled we don't want a
+              // stale 100% bar lingering for terminal runs.
+              if (!evalRunning || diariseInFlight + diariseDone === 0) {
+                return null
+              }
+              return (
+                <div className="mt-4 pt-4 border-t border-gray-100">
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="text-xs font-medium text-gray-600">
+                      Diarising audio
+                    </div>
+                    {diariseInFlight > 0 && (
+                      <div className="flex items-center gap-1 text-[11px] text-primary-700">
+                        <RefreshCw className="h-3 w-3 animate-spin" />
+                        {diariseInFlight} in progress
+                      </div>
+                    )}
+                  </div>
+                  <CallImportProgressBar
+                    total={ci.total_rows}
+                    completed={ci.diarised_completed_rows ?? 0}
+                    failed={ci.diarised_failed_rows ?? 0}
+                  />
+                </div>
+              )
+            })()}
           </div>
         </div>
 
@@ -1400,24 +1671,110 @@ export default function CallImportEvaluationDetail() {
               <table className="min-w-max w-full divide-y divide-gray-200">
                 <thead className="bg-gray-50">
                   <tr>
-                    <th className="sticky left-0 z-10 bg-gray-50 px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase whitespace-nowrap">
+                    <SortableHeader
+                      columnKey="row_index"
+                      activeKey={sortBy}
+                      activeDir={sortDir}
+                      onCycle={handleColumnSort}
+                      title="Row index"
+                      className="sticky left-0 z-10 bg-gray-50"
+                    >
                       #
-                    </th>
-                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase whitespace-nowrap">
+                    </SortableHeader>
+                    <SortableHeader
+                      columnKey="conversation_id"
+                      activeKey={sortBy}
+                      activeDir={sortDir}
+                      onCycle={handleColumnSort}
+                    >
                       Conversation ID
-                    </th>
-                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase whitespace-nowrap">
+                    </SortableHeader>
+                    <SortableHeader
+                      columnKey="status"
+                      activeKey={sortBy}
+                      activeDir={sortDir}
+                      onCycle={handleColumnSort}
+                      rightSlot={
+                        <div className="relative" ref={statusFilterMenuRef}>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setStatusFilterMenuOpen((v) => !v)
+                            }}
+                            className={
+                              'p-1 rounded hover:bg-gray-200 transition-colors ' +
+                              (statusFilter
+                                ? 'text-primary-600'
+                                : 'text-gray-400')
+                            }
+                            title={
+                              statusFilter
+                                ? `Status filter: ${statusFilter} (click to change)`
+                                : 'Filter by status'
+                            }
+                            aria-label="Filter by status"
+                          >
+                            <Filter className="h-3 w-3" />
+                          </button>
+                          {statusFilterMenuOpen && (
+                            <div
+                              role="menu"
+                              className="absolute left-0 top-full z-30 mt-1 w-40 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden text-xs"
+                            >
+                              {[
+                                { value: '', label: 'All statuses' },
+                                { value: 'completed', label: 'Completed' },
+                                { value: 'failed', label: 'Failed' },
+                                { value: 'pending', label: 'Pending' },
+                                { value: 'running', label: 'Running' },
+                                { value: 'skipped', label: 'Skipped' },
+                              ].map((opt) => {
+                                const isCurrent =
+                                  (statusFilter ?? '') === opt.value
+                                return (
+                                  <button
+                                    key={opt.value || '__all'}
+                                    type="button"
+                                    role="menuitem"
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      setStatusFilter(opt.value || null)
+                                      setStatusFilterMenuOpen(false)
+                                    }}
+                                    className={
+                                      'w-full px-3 py-1.5 text-left normal-case font-normal hover:bg-gray-50 flex items-center justify-between ' +
+                                      (isCurrent
+                                        ? 'text-primary-700'
+                                        : 'text-gray-700')
+                                    }
+                                  >
+                                    <span>{opt.label}</span>
+                                    {isCurrent && (
+                                      <Check className="h-3 w-3" />
+                                    )}
+                                  </button>
+                                )
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      }
+                    >
                       Status
-                    </th>
+                    </SortableHeader>
                     {displayMetrics.flatMap((metric) => {
                       const headers = [
-                        <th
+                        <SortableHeader
                           key={metric.id}
-                          className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase whitespace-nowrap"
+                          columnKey={`metric:${metric.id}`}
+                          activeKey={sortBy}
+                          activeDir={sortDir}
+                          onCycle={handleColumnSort}
                           title={metric.name}
                         >
                           {metric.name}
-                        </th>,
+                        </SortableHeader>,
                       ]
                       if (metric.hasRationale) {
                         headers.push(

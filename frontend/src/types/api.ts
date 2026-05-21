@@ -908,6 +908,17 @@ export interface CallImportDetail extends CallImport {
    * in that case.
    */
   filtered_total_rows: number | null
+  /**
+   * Batch-wide aggregates of ``CallImportRow.diarised_transcript_status``.
+   * The ``idle`` bucket (rows never touched by the transcribe/diarise
+   * worker) is implicit: ``total_rows - (pending + running + completed
+   * + failed)``. Lets the UI render a transcribe-and-diarise progress
+   * bar without paginating through every row.
+   */
+  diarised_pending_rows: number
+  diarised_running_rows: number
+  diarised_completed_rows: number
+  diarised_failed_rows: number
 }
 
 export interface CallImportListResponse {

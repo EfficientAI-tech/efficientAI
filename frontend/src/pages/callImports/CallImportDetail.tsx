@@ -851,6 +851,9 @@ export default function CallImportDetail() {
             </div>
           </div>
           <div className="w-72 flex-shrink-0">
+            <div className="text-xs font-medium text-gray-600 mb-1">
+              Recording import
+            </div>
             <CallImportProgressBar
               total={data.total_rows}
               completed={data.completed_rows}
@@ -870,6 +873,46 @@ export default function CallImportDetail() {
                 <div className="font-semibold text-red-800">{data.failed_rows}</div>
               </div>
             </div>
+
+            {/*
+              Transcription + diarisation progress, surfaced only once
+              the worker has actually been kicked off on at least one
+              row (otherwise every fresh batch would show a permanent
+              0% bar that means nothing). The ``pending`` + ``running``
+              counter is shown next to the bar so the user can see
+              "still working on N" while the bar fills with completed
+              + failed.
+            */}
+            {(() => {
+              const diariseInFlight =
+                (data.diarised_pending_rows ?? 0) +
+                (data.diarised_running_rows ?? 0)
+              const diariseDone =
+                (data.diarised_completed_rows ?? 0) +
+                (data.diarised_failed_rows ?? 0)
+              const hasActivity = diariseInFlight + diariseDone > 0
+              if (!hasActivity) return null
+              return (
+                <div className="mt-4 pt-4 border-t border-gray-100">
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="text-xs font-medium text-gray-600">
+                      Transcription &amp; diarisation
+                    </div>
+                    {diariseInFlight > 0 && (
+                      <div className="flex items-center gap-1 text-[11px] text-primary-700">
+                        <RefreshCw className="h-3 w-3 animate-spin" />
+                        {diariseInFlight} in progress
+                      </div>
+                    )}
+                  </div>
+                  <CallImportProgressBar
+                    total={data.total_rows}
+                    completed={data.diarised_completed_rows ?? 0}
+                    failed={data.diarised_failed_rows ?? 0}
+                  />
+                </div>
+              )
+            })()}
           </div>
         </div>
 

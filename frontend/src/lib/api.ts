@@ -1790,6 +1790,12 @@ class ApiClient {
       discovered_parent_id?: string
       discovered_label_key?: string
       has_discovered?: boolean
+      // Column-click sorting from the UI. ``sort_by`` is either a
+      // built-in column key (``row_index`` / ``conversation_id`` /
+      // ``status``) or ``metric:<metric_uuid>`` for per-metric value
+      // sorting; ``sort_dir`` is ``asc`` (default) or ``desc``.
+      sort_by?: string
+      sort_dir?: 'asc' | 'desc'
     } = {},
   ): Promise<CallImportEvaluationRowListResponse> {
     const cleaned: Record<string, any> = {}
@@ -1806,10 +1812,11 @@ class ApiClient {
   async exportCallImportEvaluation(
     callImportId: string,
     evaluationId: string,
+    format: 'csv' | 'xlsx' = 'csv',
   ): Promise<Blob> {
     const response = await this.client.get(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/export`,
-      { responseType: 'blob' },
+      { params: { format }, responseType: 'blob' },
     )
     return response.data
   }

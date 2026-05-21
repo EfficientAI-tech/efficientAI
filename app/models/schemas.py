@@ -2305,10 +2305,22 @@ class CallImportDetailResponse(CallImportResponse):
     ``filtered_total_rows`` is only set when the caller passed a ``q``
     search term — it lets the UI paginate against the filtered subset
     while still showing the unfiltered ``total_rows`` in the header.
+
+    The ``diarised_*_rows`` counters aggregate
+    ``CallImportRow.diarised_transcript_status`` across the batch so the
+    UI can render a transcribe-and-diarise progress bar without paging
+    through every row. Rows that have never been touched by the
+    transcribe/diarise worker (``status='idle'``) are NOT counted here —
+    callers compute the idle bucket as
+    ``total_rows - (pending + running + completed + failed)``.
     """
 
     rows: List[CallImportRowResponse] = Field(default_factory=list)
     filtered_total_rows: Optional[int] = None
+    diarised_pending_rows: int = 0
+    diarised_running_rows: int = 0
+    diarised_completed_rows: int = 0
+    diarised_failed_rows: int = 0
 
 
 class CallImportListResponse(BaseModel):

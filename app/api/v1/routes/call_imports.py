@@ -1963,9 +1963,27 @@ async def get_call_import_detail(
             .all()
         )
 
+    # Batch-wide diarisation status aggregate. One ``GROUP BY`` query
+    # across the whole batch — much cheaper than paging through every
+    # row to recount on the client and lets the UI render a
+    # transcribe/diarise progress bar without a separate roundtrip.
+    diarised_status_counts: Dict[str, int] = {}
+    for status_value, count in (
+        db.query(CallImportRow.diarised_transcript_status, func.count())
+        .filter(CallImportRow.call_import_id == call_import.id)
+        .group_by(CallImportRow.diarised_transcript_status)
+        .all()
+    ):
+        if isinstance(status_value, str):
+            diarised_status_counts[status_value] = int(count or 0)
+
     detail = CallImportDetailResponse.model_validate(call_import)
     detail.rows = [CallImportRowResponse.model_validate(r) for r in rows]
     detail.filtered_total_rows = filtered_total_rows
+    detail.diarised_pending_rows = diarised_status_counts.get("pending", 0)
+    detail.diarised_running_rows = diarised_status_counts.get("running", 0)
+    detail.diarised_completed_rows = diarised_status_counts.get("completed", 0)
+    detail.diarised_failed_rows = diarised_status_counts.get("failed", 0)
     return detail
 
 
