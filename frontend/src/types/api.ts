@@ -660,6 +660,23 @@ export type CallImportTranscriptStatus =
  */
 export type CallImportEvaluationTranscriptSource = 'production' | 'diarised'
 
+/**
+ * One contiguous turn inside ``CallImportRow.diarised_segments``.
+ *
+ * The diarisation worker rewrites each pyannote ``Speaker N`` label
+ * into ``agent`` / ``user`` (first speaker = agent heuristic). Anything
+ * beyond two distinct speakers keeps a generic ``speaker_N`` label so
+ * multi-party recordings still render every voice.
+ */
+export interface CallImportDiarisedSegment {
+  speaker: string
+  text: string
+  start: number
+  end: number
+  /** Original pyannote label (``Speaker 1`` / ``Speaker 2`` / ...). */
+  raw_speaker: string
+}
+
 export interface CallImportRow {
   id: string
   row_index: number
@@ -684,6 +701,37 @@ export interface CallImportRow {
   diarised_transcript_status: CallImportTranscriptStatus
   diarised_transcript_error: string | null
   diarised_at: string | null
+  /**
+   * Structured speaker turns produced by the diarisation worker. Each
+   * entry is a single contiguous turn shaped as
+   * `{ speaker: 'agent' | 'user' | 'speaker_N', text, start, end,
+   *   raw_speaker }`. ``diarised_transcript`` is a rendered
+   * `<speaker>: <text>` view of this list with
+   * ``diarised_speaker_swap`` applied. ``null`` on legacy rows that
+   * were diarised before structured turns were persisted (or when the
+   * STT provider didn't surface segments).
+   */
+  diarised_segments: CallImportDiarisedSegment[] | null
+  /**
+   * When ``true`` the ``agent`` <-> ``user`` mapping inside
+   * ``diarised_segments`` is inverted in the rendered transcript /
+   * CSV export. The worker writes the canonical mapping using a
+   * "first speaker is the agent" heuristic; reviewers can flip the
+   * toggle from the row detail panel without re-running diarisation.
+   */
+  diarised_speaker_swap: boolean
+  /**
+   * LLM that turned the STT plain-text output into structured
+   * ``diarised_segments``. NULL on legacy rows (pre-LLM-diariser).
+   */
+  diarised_llm_provider: string | null
+  diarised_llm_model: string | null
+  /**
+   * Exact prompt the LLM diariser ran with. Useful for the modal to
+   * pre-fill its textarea when the operator wants to iterate on a
+   * previously-diarised row.
+   */
+  diarised_prompt: string | null
   /**
    * Per-row preservation of the mapped source cells. Values land here
    * as whatever type the schema parameter coerced them to —
@@ -944,6 +992,14 @@ export interface CallImportEvaluation {
   stt_model: string | null
   stt_credential_id: string | null
   /**
+   * Run-level LLM diariser config used when the worker auto-diarises
+   * rows that are missing a diarised transcript.
+   */
+  diarisation_llm_provider?: string | null
+  diarisation_llm_model?: string | null
+  diarisation_llm_credential_id?: string | null
+  diarisation_prompt?: string | null
+  /**
    * Which transcript column this run scored against.
    * Defaults to `production` on legacy runs.
    */
@@ -1095,12 +1151,29 @@ export interface CallImportTranscribeRequest {
   only_missing?: boolean
   overwrite_existing?: boolean
   row_ids?: string[]
+  /**
+   * LLM that splits the STT plain-text output into agent/user turns.
+   * Required by the backend — there is no pyannote fallback.
+   */
+  diarization_llm_provider: string
+  diarization_llm_model: string
+  diarization_llm_credential_id?: string | null
+  /**
+   * Operator-supplied system prompt for the diariser LLM. NULL/empty
+   * means "fall back to the canonical default" (see
+   * ``getDiarisationDefaultPrompt``).
+   */
+  diarization_prompt?: string | null
 }
 
 export interface CallImportTranscribeResponse {
   queued: number
   skipped_rows: number
   skipped_reason_counts: Record<string, number>
+}
+
+export interface CallImportDiarisationPromptDefaultResponse {
+  prompt: string
 }
 
 // --- Aggregation / visualization payloads ---
@@ -1199,19 +1272,12 @@ export interface MetricSummary {
   selection_mode: MetricSelectionMode | null
   allow_discovery?: boolean
   /**
-   * CSV header names this metric reads from a call import row's
-   * ``raw_columns`` JSON. Empty array (the default) means the metric
-   * scores the transcript like before; a non-empty list switches the
-   * metric to a "column-input judge" at evaluation time.
-   */
-  input_columns?: string[]
-  /**
    * When true, this metric is a "transcript-compare judge": at
    * call-import evaluation time the worker feeds BOTH the production
    * transcript and the diarised transcript to the LLM as a labeled
    * pair, and the run's transcript_source toggle is ignored for this
-   * metric. Mutually exclusive with input_columns, parent_metric_id
-   * and selection_mode — v1 keeps comparison metrics standalone.
+   * metric. Mutually exclusive with parent_metric_id and selection_mode
+   * — comparison metrics stay standalone.
    */
   compare_transcripts?: boolean
   children?: MetricSummary[]

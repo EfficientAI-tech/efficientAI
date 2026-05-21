@@ -28,27 +28,11 @@ from fastapi import HTTPException
 # ---------------------------------------------------------------------------
 
 
-def test_transcribe_worker_writes_into_diarised_transcript():
-    """Worker output should land in ``diarised_transcript``, never overwrite
-    the CSV-supplied ``transcript`` column."""
-    from app.workers.tasks import transcribe_call_import_row as task_module
-
-    captured: dict = {}
-
-    def _fake_transcribe(**kwargs):
-        captured.update(kwargs)
-        return {
-            "transcript": "  hello world  ",
-            "speaker_segments": None,
-        }
-
-    fake_service = SimpleNamespace(transcribe=_fake_transcribe)
-
-    fake_row = SimpleNamespace(
+def _make_fake_row():
+    return SimpleNamespace(
         id=uuid4(),
         organization_id=uuid4(),
         recording_s3_key="s3://bucket/key.wav",
-        # Pre-existing production transcript that must be left untouched.
         transcript="production value from CSV",
         transcript_source="csv",
         transcript_status="idle",
@@ -57,14 +41,22 @@ def test_transcribe_worker_writes_into_diarised_transcript():
         transcript_model=None,
         transcribed_at=None,
         diarised_transcript=None,
+        diarised_segments=None,
+        diarised_speaker_swap=False,
         diarised_transcript_status="idle",
         diarised_transcript_error=None,
         diarised_transcript_provider=None,
         diarised_transcript_model=None,
+        diarised_llm_provider=None,
+        diarised_llm_model=None,
+        diarised_llm_credential_id=None,
+        diarised_prompt=None,
         diarised_at=None,
         celery_task_id=None,
     )
 
+
+def _patch_session(monkeypatch, task_module, fake_row):
     fake_query = MagicMock()
     fake_query.filter.return_value = fake_query
     fake_query.first.return_value = fake_row
@@ -74,76 +66,248 @@ def test_transcribe_worker_writes_into_diarised_transcript():
         commit=lambda: None,
         close=lambda: None,
     )
+    monkeypatch.setattr(task_module, "SessionLocal", lambda: fake_db)
+    return fake_db
 
-    with patch.object(task_module, "SessionLocal", lambda: fake_db), patch(
-        "app.services.ai.transcription_service.transcription_service",
-        fake_service,
-    ):
-        result = task_module.transcribe_call_import_row_task.run(
-            str(fake_row.id),
-            "deepgram",
-            "nova-2",
-        )
+
+def _resolve_submodule(dotted: str):
+    """Get the actual submodule object even when the parent package's
+    ``__init__.py`` re-exports something with the same name.
+
+    Specifically, ``app/services/ai/__init__.py`` runs
+    ``from app.services.ai.transcription_service import transcription_service``
+    which **overwrites** the submodule attribute on the parent package
+    with the singleton instance. After that, ``getattr`` walks
+    (``import X.Y.Z`` / ``import X.Y.Z as alias`` /
+    ``monkeypatch.setattr("X.Y.Z…", …)``) all return the singleton, not
+    the submodule, so patching anything on "the module" via name
+    resolution silently targets the instance and crashes with an
+    ``AttributeError`` on the next attribute lookup.
+
+    ``importlib.import_module`` reads ``sys.modules`` directly which
+    bypasses the parent-namespace ``getattr`` lookup and reliably
+    returns the submodule object.
+    """
+    import importlib
+
+    return importlib.import_module(dotted)
+
+
+def _patch_transcription_service(monkeypatch, fake_service):
+    """Stub the ``transcription_service`` singleton the worker reads
+    via its lazy ``from app.services.ai.transcription_service import
+    transcription_service`` call.
+
+    See :func:`_resolve_submodule` for why we go through
+    ``importlib.import_module`` instead of the usual ``import …`` form.
+    """
+    ts_mod = _resolve_submodule("app.services.ai.transcription_service")
+    monkeypatch.setattr(ts_mod, "transcription_service", fake_service)
+
+
+def _patch_llm_diariser(monkeypatch, fake):
+    """Stub the LLM diariser entry-point the worker reads via its lazy
+    ``from app.workers.tasks.helpers.llm_diarisation import
+    diarize_transcript_with_llm`` import. Uses
+    :func:`_resolve_submodule` for the same reason as
+    :func:`_patch_transcription_service`."""
+    diariser_mod = _resolve_submodule(
+        "app.workers.tasks.helpers.llm_diarisation"
+    )
+    monkeypatch.setattr(diariser_mod, "diarize_transcript_with_llm", fake)
+
+
+def test_transcribe_worker_skips_pyannote_and_calls_llm_diariser(monkeypatch):
+    """Worker should request plain STT text (no pyannote) and hand the
+    transcript to the LLM diariser helper. Output lands on
+    ``diarised_transcript`` / ``diarised_segments`` with the diariser
+    provenance recorded."""
+    from app.workers.tasks import transcribe_call_import_row as task_module
+
+    captured: dict = {}
+
+    def _fake_transcribe(**kwargs):
+        captured["stt_kwargs"] = kwargs
+        return {"transcript": "hello there. hi back.", "speaker_segments": None}
+
+    fake_service = SimpleNamespace(transcribe=_fake_transcribe)
+
+    def _fake_diarise(transcript, **kwargs):
+        captured["llm_kwargs"] = kwargs
+        captured["llm_transcript"] = transcript
+        return [
+            {
+                "speaker": "Speaker 1",
+                "text": "hello there.",
+                "start": 0.0,
+                "end": 1.0,
+            },
+            {
+                "speaker": "Speaker 2",
+                "text": "hi back.",
+                "start": 1.0,
+                "end": 2.0,
+            },
+        ]
+
+    fake_row = _make_fake_row()
+    _patch_session(monkeypatch, task_module, fake_row)
+    _patch_transcription_service(monkeypatch, fake_service)
+    _patch_llm_diariser(monkeypatch, _fake_diarise)
+
+    result = task_module.transcribe_call_import_row_task.run(
+        str(fake_row.id),
+        "deepgram",
+        "nova-2",
+        None,  # credential
+        None,  # language
+        False,  # overwrite
+        None,  # run_eval_row_id
+        "openai",
+        "gpt-4o-mini",
+        None,
+        "  Diarise it!  ",
+    )
 
     assert result["status"] == "completed"
-    # Diarization must be off — that's the whole point of the simplification.
-    assert captured.get("enable_speaker_diarization") is False
-    # Production transcript untouched, diarised transcript populated.
+    # Pyannote is NEVER asked to run from this worker any more — we
+    # diarise via LLM in the second pass.
+    assert captured["stt_kwargs"]["enable_speaker_diarization"] is False
+    # The LLM diariser got the plain STT text + the custom prompt
+    # the user supplied (trimmed, never the raw whitespace).
+    assert captured["llm_transcript"] == "hello there. hi back."
+    assert captured["llm_kwargs"]["custom_prompt"] == "Diarise it!"
+    assert captured["llm_kwargs"]["llm_provider"] == "openai"
+    assert captured["llm_kwargs"]["llm_model"] == "gpt-4o-mini"
+
+    # Production transcript untouched.
     assert fake_row.transcript == "production value from CSV"
-    assert fake_row.transcript_source == "csv"
-    assert fake_row.diarised_transcript == "hello world"
+    # Diarised rendering uses agent/user labels (first speaker by
+    # start time becomes the agent).
+    assert fake_row.diarised_transcript == (
+        "agent: hello there.\nuser: hi back."
+    )
+    assert fake_row.diarised_segments is not None
+    assert len(fake_row.diarised_segments) == 2
+    assert fake_row.diarised_segments[0]["speaker"] == "agent"
+    assert fake_row.diarised_segments[1]["speaker"] == "user"
+    assert fake_row.diarised_speaker_swap is False
     assert fake_row.diarised_transcript_provider == "deepgram"
     assert fake_row.diarised_transcript_model == "nova-2"
+    # Diariser provenance is persisted alongside the STT provenance.
+    assert fake_row.diarised_llm_provider == "openai"
+    assert fake_row.diarised_llm_model == "gpt-4o-mini"
+    assert fake_row.diarised_prompt == "Diarise it!"
     assert fake_row.diarised_transcript_status == "completed"
     assert fake_row.diarised_transcript_error is None
 
 
-def test_transcribe_worker_marks_failed_on_empty_transcript():
+def test_transcribe_worker_fails_when_diariser_llm_missing(monkeypatch):
+    """Missing diariser provider/model is a typed failure: the row is
+    marked failed with an actionable message, no STT call is made."""
+    from app.workers.tasks import transcribe_call_import_row as task_module
+
+    stt_calls = []
+
+    def _fake_transcribe(**kwargs):
+        stt_calls.append(kwargs)
+        return {"transcript": "x", "speaker_segments": None}
+
+    fake_service = SimpleNamespace(transcribe=_fake_transcribe)
+    fake_row = _make_fake_row()
+    _patch_session(monkeypatch, task_module, fake_row)
+    _patch_transcription_service(monkeypatch, fake_service)
+
+    result = task_module.transcribe_call_import_row_task.run(
+        str(fake_row.id), "deepgram", "nova-2"
+    )
+
+    assert result == {"status": "failed", "reason": "missing_llm_diariser"}
+    assert stt_calls == []
+    assert fake_row.diarised_transcript_status == "failed"
+    assert "diarisation llm" in (
+        fake_row.diarised_transcript_error or ""
+    ).lower()
+
+
+def test_transcribe_worker_surfaces_llm_diariser_errors(monkeypatch):
+    """``LLMDiarisationError`` from the helper must land verbatim on
+    ``diarised_transcript_error`` so the modal can show "your prompt
+    didn't return JSON" without the operator having to read worker
+    logs."""
+    from app.workers.tasks import transcribe_call_import_row as task_module
+    from app.workers.tasks.helpers.llm_diarisation import LLMDiarisationError
+
+    fake_service = SimpleNamespace(
+        transcribe=lambda **_kw: {
+            "transcript": "single voice mumble",
+            "speaker_segments": None,
+        }
+    )
+
+    def _boom(_transcript, **_kwargs):
+        raise LLMDiarisationError("Model returned prose instead of JSON.")
+
+    fake_row = _make_fake_row()
+    _patch_session(monkeypatch, task_module, fake_row)
+    _patch_transcription_service(monkeypatch, fake_service)
+    _patch_llm_diariser(monkeypatch, _boom)
+
+    result = task_module.transcribe_call_import_row_task.run(
+        str(fake_row.id),
+        "deepgram",
+        "nova-2",
+        None,
+        None,
+        False,
+        None,
+        "openai",
+        "gpt-4o-mini",
+    )
+
+    assert result == {"status": "failed", "reason": "llm_diarisation_error"}
+    assert fake_row.diarised_transcript_status == "failed"
+    assert "JSON" in (fake_row.diarised_transcript_error or "")
+
+
+def test_transcribe_worker_marks_failed_on_empty_transcript(monkeypatch):
+    """Empty STT output short-circuits before the LLM diariser runs —
+    we don't burn LLM tokens on a transcript that's already empty."""
     from app.workers.tasks import transcribe_call_import_row as task_module
 
     fake_service = SimpleNamespace(
         transcribe=lambda **_kw: {"transcript": "   ", "speaker_segments": None}
     )
 
-    fake_row = SimpleNamespace(
-        id=uuid4(),
-        organization_id=uuid4(),
-        recording_s3_key="s3://bucket/key.wav",
-        transcript=None,
-        transcript_status="idle",
-        transcript_error=None,
-        diarised_transcript=None,
-        diarised_transcript_status="idle",
-        diarised_transcript_error=None,
-        diarised_transcript_provider=None,
-        diarised_transcript_model=None,
-        diarised_at=None,
-        celery_task_id=None,
+    diariser_calls = []
+
+    def _track(*args, **kwargs):
+        diariser_calls.append((args, kwargs))
+        return []
+
+    fake_row = _make_fake_row()
+    fake_row.transcript = None
+    _patch_session(monkeypatch, task_module, fake_row)
+    _patch_transcription_service(monkeypatch, fake_service)
+    _patch_llm_diariser(monkeypatch, _track)
+
+    result = task_module.transcribe_call_import_row_task.run(
+        str(fake_row.id),
+        "deepgram",
+        "nova-2",
+        None,
+        None,
+        False,
+        None,
+        "openai",
+        "gpt-4o-mini",
     )
-
-    fake_query = MagicMock()
-    fake_query.filter.return_value = fake_query
-    fake_query.first.return_value = fake_row
-
-    fake_db = SimpleNamespace(
-        query=lambda *_a, **_kw: fake_query,
-        commit=lambda: None,
-        close=lambda: None,
-    )
-
-    with patch.object(task_module, "SessionLocal", lambda: fake_db), patch(
-        "app.services.ai.transcription_service.transcription_service",
-        fake_service,
-    ):
-        result = task_module.transcribe_call_import_row_task.run(
-            str(fake_row.id),
-            "deepgram",
-            "nova-2",
-        )
 
     assert result == {"status": "failed", "reason": "empty_transcript"}
     assert fake_row.diarised_transcript_status == "failed"
     assert "empty" in (fake_row.diarised_transcript_error or "").lower()
+    # The diariser must not be called when the transcript is empty.
+    assert diariser_calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -401,6 +565,8 @@ def test_select_rows_for_transcription_skips_rows_with_existing_transcripts():
     payload = CallImportTranscribeRequest(
         stt_provider="deepgram",
         stt_model="nova-2",
+        diarization_llm_provider="openai",
+        diarization_llm_model="gpt-4o-mini",
         only_missing=True,
         overwrite_existing=False,
     )
@@ -442,6 +608,8 @@ def test_select_rows_for_transcription_overwrite_replaces_existing():
     payload = CallImportTranscribeRequest(
         stt_provider="deepgram",
         stt_model="nova-2",
+        diarization_llm_provider="openai",
+        diarization_llm_model="gpt-4o-mini",
         only_missing=True,
         overwrite_existing=True,
     )
@@ -466,7 +634,10 @@ def test_select_rows_for_transcription_raises_on_unknown_row_id():
     fake_db = SimpleNamespace(query=lambda *_: fake_query)
 
     payload = CallImportTranscribeRequest(
-        stt_provider="deepgram", stt_model="nova-2"
+        stt_provider="deepgram",
+        stt_model="nova-2",
+        diarization_llm_provider="openai",
+        diarization_llm_model="gpt-4o-mini",
     )
 
     with pytest.raises(HTTPException) as exc:
@@ -475,3 +646,465 @@ def test_select_rows_for_transcription_raises_on_unknown_row_id():
         )
     assert exc.value.status_code == 400
     assert str(requested_id) in exc.value.detail
+
+
+# ---------------------------------------------------------------------------
+# Speaker-turn helpers — pure functions used by transcribe_call_import_row
+# ---------------------------------------------------------------------------
+
+
+def test_segments_to_user_agent_turns_assigns_first_speaker_to_agent():
+    """The heuristic is "first speaker by start time is the agent"; the
+    next distinct label becomes the user."""
+    from app.workers.tasks.transcribe_call_import_row import (
+        _segments_to_user_agent_turns,
+    )
+
+    segments = [
+        {"speaker": "Speaker 1", "text": "Hello there", "start": 0.0, "end": 1.0},
+        {"speaker": "Speaker 2", "text": "Hi back", "start": 1.2, "end": 2.0},
+        {"speaker": "Speaker 1", "text": "How can I help", "start": 2.1, "end": 3.0},
+    ]
+    turns = _segments_to_user_agent_turns(segments)
+    assert [t["speaker"] for t in turns] == ["agent", "user", "agent"]
+    assert turns[0]["raw_speaker"] == "Speaker 1"
+    assert turns[1]["raw_speaker"] == "Speaker 2"
+
+
+def test_segments_to_user_agent_turns_handles_three_plus_speakers():
+    """Speakers beyond the second keep a numbered ``speaker_N`` role so
+    multi-party calls never silently lose a participant."""
+    from app.workers.tasks.transcribe_call_import_row import (
+        _segments_to_user_agent_turns,
+    )
+
+    segments = [
+        {"speaker": "A", "text": "first", "start": 0.0, "end": 1.0},
+        {"speaker": "B", "text": "second", "start": 1.0, "end": 2.0},
+        {"speaker": "C", "text": "third", "start": 2.0, "end": 3.0},
+    ]
+    turns = _segments_to_user_agent_turns(segments)
+    assert [t["speaker"] for t in turns] == ["agent", "user", "speaker_3"]
+
+
+def test_render_turns_as_text_emits_chat_format():
+    """The chat-bubble renderer used by both the UI and the CSV export
+    emits one ``speaker: text`` line per turn."""
+    from app.workers.tasks.transcribe_call_import_row import (
+        _render_turns_as_text,
+    )
+
+    turns = [
+        {"speaker": "agent", "text": "Hello"},
+        {"speaker": "user", "text": "Hi"},
+    ]
+    assert _render_turns_as_text(turns) == "agent: Hello\nuser: Hi"
+
+
+def test_render_turns_as_text_swap_only_flips_agent_and_user():
+    """``swap=True`` flips the agent/user mapping but leaves
+    ``speaker_3+`` labels alone (those are real participants outside
+    the agent/user duo)."""
+    from app.workers.tasks.transcribe_call_import_row import (
+        _render_turns_as_text,
+    )
+
+    turns = [
+        {"speaker": "agent", "text": "a"},
+        {"speaker": "user", "text": "u"},
+        {"speaker": "speaker_3", "text": "x"},
+    ]
+    rendered = _render_turns_as_text(turns, swap=True)
+    assert rendered == "user: a\nagent: u\nspeaker_3: x"
+
+
+def test_route_render_diarised_segments_text_matches_worker_format():
+    """``_render_diarised_segments_text`` in the route layer must agree
+    with the worker's ``_render_turns_as_text`` so swapping at the API
+    layer produces the same chat-formatted text the worker originally
+    wrote — the UI relies on this contract."""
+    from app.api.v1.routes.call_imports import (
+        _render_diarised_segments_text,
+    )
+    from app.workers.tasks.transcribe_call_import_row import (
+        _render_turns_as_text,
+    )
+
+    segments = [
+        {"speaker": "agent", "text": "Hello"},
+        {"speaker": "user", "text": "Hi"},
+        {"speaker": "speaker_3", "text": "Note"},
+    ]
+    for swap in (False, True):
+        assert _render_diarised_segments_text(
+            segments, swap=swap
+        ) == _render_turns_as_text(segments, swap=swap)
+
+
+def test_route_render_diarised_segments_text_skips_bad_entries():
+    """Defensive: malformed entries (non-dict / missing keys) are
+    dropped silently so a corrupted JSONB row doesn't 500 the route."""
+    from app.api.v1.routes.call_imports import (
+        _render_diarised_segments_text,
+    )
+
+    rendered = _render_diarised_segments_text(
+        [
+            None,
+            "not a dict",
+            {"speaker": "agent", "text": "kept"},
+            {"speaker": "", "text": "no speaker"},
+            {"speaker": "user", "text": ""},
+        ]
+    )
+    assert rendered == "agent: kept"
+
+
+# ---------------------------------------------------------------------------
+# _build_all_columns_block — replaces the removed per-metric input_columns
+# ---------------------------------------------------------------------------
+
+
+def test_build_all_columns_block_renders_every_non_empty_cell():
+    from app.workers.tasks.evaluate_call_import_row import (
+        _build_all_columns_block,
+    )
+
+    raw = {
+        "AgentName": "Alice",
+        "Empty": "",
+        "Notes": "spoke clearly",
+    }
+    block = _build_all_columns_block(raw, custom_column_mapping=None)
+    assert block is not None
+    assert "- AgentName: Alice" in block
+    assert "- Notes: spoke clearly" in block
+    # Empty cells are dropped (no whitespace-only labels in the prompt).
+    assert "Empty" not in block
+
+
+def test_build_all_columns_block_surfaces_friendly_name_alias():
+    """When the import defines a friendly-name mapping for a CSV header,
+    the prompt shows both identifiers so the LLM can resolve whichever
+    name the metric description references."""
+    from app.workers.tasks.evaluate_call_import_row import (
+        _build_all_columns_block,
+    )
+
+    raw = {"Intent_v2": "refund please"}
+    mapping = {"customer_intent": "Intent_v2"}
+    block = _build_all_columns_block(raw, custom_column_mapping=mapping)
+    assert block is not None
+    assert "Intent_v2" in block
+    assert "customer_intent" in block
+    assert "refund please" in block
+
+
+def test_build_all_columns_block_returns_none_for_empty_row():
+    from app.workers.tasks.evaluate_call_import_row import (
+        _build_all_columns_block,
+    )
+
+    assert _build_all_columns_block({}, custom_column_mapping=None) is None
+    assert _build_all_columns_block(None, custom_column_mapping=None) is None
+
+
+# ---------------------------------------------------------------------------
+# Auto-detect comparison metrics from prompt keywords
+# ---------------------------------------------------------------------------
+
+
+def test_metric_text_references_production_detects_keywords():
+    """A metric description that mentions any of the well-known
+    production / diarised phrases triggers the comparison path."""
+    from app.workers.tasks.evaluate_call_import_row import (
+        _metric_text_references_production,
+    )
+
+    triggering = _make_metric(
+        "Diff hunter",
+        description="Compare the production transcript with the diarised transcript.",
+    )
+    plain = _make_metric(
+        "Plain",
+        description="Score the call's professionalism.",
+    )
+    assert _metric_text_references_production(triggering) is True
+    assert _metric_text_references_production(plain) is False
+
+
+def test_metric_text_references_production_inherits_from_parent():
+    """A child metric inherits comparison mode from its parent's
+    description — the parent's prompt is what drives the whole group."""
+    from app.workers.tasks.evaluate_call_import_row import (
+        _metric_text_references_production,
+    )
+
+    child = _make_metric(
+        "Yes / No", description="Pick yes or no based on the call."
+    )
+    parent_with_keyword = _make_metric(
+        "Parent",
+        description="Compare both transcripts and choose the best label.",
+    )
+    parent_without_keyword = _make_metric(
+        "Parent",
+        description="Score the call against the rubric.",
+    )
+
+    assert (
+        _metric_text_references_production(child, parent=parent_with_keyword)
+        is True
+    )
+    assert (
+        _metric_text_references_production(
+            child, parent=parent_without_keyword
+        )
+        is False
+    )
+
+
+def _make_metric(name: str, *, description: str | None = None):
+    """Lightweight stub used by the keyword-detection tests above —
+    the helper only reads ``name`` / ``description`` off the metric."""
+    return SimpleNamespace(
+        id=uuid4(), name=name, description=description, metric_type="rating"
+    )
+
+
+# ---------------------------------------------------------------------------
+# LLM-based diariser helper
+# ---------------------------------------------------------------------------
+
+
+def test_llm_diariser_parses_bare_json_array(monkeypatch):
+    """Happy path: model returns a clean JSON array; the helper
+    normalises labels to ``Speaker N`` and assigns monotonically
+    increasing synthetic timestamps."""
+    from app.workers.tasks.helpers import llm_diarisation
+
+    def _fake_generate_response(**kwargs):
+        return {
+            "text": (
+                '[{"speaker": "agent", "text": "Hi"}, '
+                '{"speaker": "user", "text": "Hello"}]'
+            )
+        }
+
+    monkeypatch.setattr(
+        llm_diarisation.llm_service,
+        "generate_response",
+        _fake_generate_response,
+    )
+
+    turns = llm_diarisation.diarize_transcript_with_llm(
+        "Hi. Hello.",
+        llm_provider="openai",
+        llm_model="gpt-4o-mini",
+        organization_id=uuid4(),
+        db=SimpleNamespace(),
+    )
+    assert [t["speaker"] for t in turns] == ["Speaker 1", "Speaker 2"]
+    assert [t["text"] for t in turns] == ["Hi", "Hello"]
+    # Synthetic timestamps preserve order for the downstream
+    # ``_segments_to_user_agent_turns`` heuristic.
+    assert turns[0]["start"] < turns[1]["start"]
+
+
+def test_llm_diariser_extracts_json_from_markdown_fence(monkeypatch):
+    """Chatty models like to wrap JSON in ```json fences; the helper
+    must still extract the array."""
+    from app.workers.tasks.helpers import llm_diarisation
+
+    monkeypatch.setattr(
+        llm_diarisation.llm_service,
+        "generate_response",
+        lambda **_kw: {
+            "text": (
+                "Sure, here you go:\n"
+                "```json\n"
+                '[{"speaker": "Speaker 1", "text": "alpha"},'
+                ' {"speaker": "Speaker 2", "text": "beta"}]\n'
+                "```\n"
+                "Hope this helps!"
+            )
+        },
+    )
+
+    turns = llm_diarisation.diarize_transcript_with_llm(
+        "alpha. beta.",
+        llm_provider="openai",
+        llm_model="gpt-4o-mini",
+        organization_id=uuid4(),
+        db=SimpleNamespace(),
+    )
+    assert len(turns) == 2
+    assert turns[0]["text"] == "alpha"
+
+
+def test_llm_diariser_raises_on_unparseable_response(monkeypatch):
+    from app.workers.tasks.helpers import llm_diarisation
+
+    monkeypatch.setattr(
+        llm_diarisation.llm_service,
+        "generate_response",
+        lambda **_kw: {"text": "I am terribly sorry but I cannot help."},
+    )
+
+    with pytest.raises(llm_diarisation.LLMDiarisationError):
+        llm_diarisation.diarize_transcript_with_llm(
+            "x",
+            llm_provider="openai",
+            llm_model="gpt-4o-mini",
+            organization_id=uuid4(),
+            db=SimpleNamespace(),
+        )
+
+
+def test_llm_diariser_rejects_unknown_provider():
+    from app.workers.tasks.helpers import llm_diarisation
+
+    with pytest.raises(llm_diarisation.LLMDiarisationError):
+        llm_diarisation.diarize_transcript_with_llm(
+            "x",
+            llm_provider="not-a-real-provider",
+            llm_model="anything",
+            organization_id=uuid4(),
+            db=SimpleNamespace(),
+        )
+
+
+def test_llm_diariser_short_circuits_on_empty_transcript():
+    from app.workers.tasks.helpers import llm_diarisation
+
+    assert (
+        llm_diarisation.diarize_transcript_with_llm(
+            "   ",
+            llm_provider="openai",
+            llm_model="gpt-4o-mini",
+            organization_id=uuid4(),
+            db=SimpleNamespace(),
+        )
+        == []
+    )
+
+
+def test_llm_diariser_falls_back_to_default_prompt(monkeypatch):
+    """Empty / whitespace custom prompt routes through the canonical
+    default so the operator always gets a usable diariser even when
+    they don't fill the textarea."""
+    from app.workers.tasks.helpers import llm_diarisation
+
+    captured: dict = {}
+
+    def _fake_generate_response(**kwargs):
+        captured["messages"] = kwargs["messages"]
+        return {"text": '[{"speaker": "agent", "text": "Hi"}]'}
+
+    monkeypatch.setattr(
+        llm_diarisation.llm_service,
+        "generate_response",
+        _fake_generate_response,
+    )
+
+    llm_diarisation.diarize_transcript_with_llm(
+        "Hi.",
+        llm_provider="openai",
+        llm_model="gpt-4o-mini",
+        organization_id=uuid4(),
+        db=SimpleNamespace(),
+        custom_prompt="   ",
+    )
+
+    system_msg = captured["messages"][0]
+    assert system_msg["role"] == "system"
+    assert system_msg["content"] == llm_diarisation.DEFAULT_DIARIZATION_PROMPT
+
+
+def test_llm_diariser_normalises_label_aliases(monkeypatch):
+    """The model may return human-friendly labels like ``customer``;
+    the helper coerces them onto the canonical ``Speaker N`` track
+    that the downstream first-speaker-is-agent heuristic understands."""
+    from app.workers.tasks.helpers import llm_diarisation
+
+    monkeypatch.setattr(
+        llm_diarisation.llm_service,
+        "generate_response",
+        lambda **_kw: {
+            "text": (
+                '[{"speaker": "Customer", "text": "Hi"},'
+                ' {"speaker": "Agent", "text": "Hello"}]'
+            )
+        },
+    )
+
+    turns = llm_diarisation.diarize_transcript_with_llm(
+        "Hi. Hello.",
+        llm_provider="openai",
+        llm_model="gpt-4o-mini",
+        organization_id=uuid4(),
+        db=SimpleNamespace(),
+    )
+    raw_speakers = [t["speaker"] for t in turns]
+    # ``customer`` -> ``Speaker 2``, ``agent`` -> ``Speaker 1``. The
+    # downstream mapper then sorts by start time and re-labels the
+    # earliest turn as agent / next as user, but that's a separate
+    # concern; here we only confirm the label normalisation is sane.
+    assert raw_speakers == ["Speaker 2", "Speaker 1"]
+
+
+# ---------------------------------------------------------------------------
+# Diariser-prompt default endpoint
+# ---------------------------------------------------------------------------
+
+
+def test_diarisation_prompt_default_endpoint_returns_canonical_constant():
+    """The GET endpoint must return the exact constant the worker
+    falls back to so the UI's pre-filled textarea matches the
+    server-side default verbatim."""
+    import asyncio
+
+    from app.api.v1.routes.call_imports import (
+        get_call_import_diarisation_prompt_default,
+    )
+    from app.workers.tasks.helpers.llm_diarisation import (
+        DEFAULT_DIARIZATION_PROMPT,
+    )
+
+    response = asyncio.run(
+        get_call_import_diarisation_prompt_default(
+            api_key="ignored", organization_id=uuid4()
+        )
+    )
+    assert response.prompt == DEFAULT_DIARIZATION_PROMPT
+
+
+# ---------------------------------------------------------------------------
+# Transcribe request schema validation
+# ---------------------------------------------------------------------------
+
+
+def test_transcribe_request_requires_llm_diariser_fields():
+    """The Pydantic schema rejects payloads that omit
+    ``diarization_llm_provider`` / ``diarization_llm_model`` so the
+    modal can't accidentally submit an incomplete request."""
+    from pydantic import ValidationError
+
+    from app.models.schemas import CallImportTranscribeRequest
+
+    # Both required fields present — passes.
+    payload = CallImportTranscribeRequest(
+        stt_provider="deepgram",
+        stt_model="nova-2",
+        diarization_llm_provider="openai",
+        diarization_llm_model="gpt-4o-mini",
+    )
+    assert payload.diarization_llm_provider == "openai"
+
+    # Missing diariser model — rejected.
+    with pytest.raises(ValidationError):
+        CallImportTranscribeRequest(
+            stt_provider="deepgram",
+            stt_model="nova-2",
+            diarization_llm_provider="openai",
+        )

@@ -4,20 +4,42 @@ The call-import pipeline historically relied on the uploader to provide
 transcripts via a CSV column. This task lets users fill that gap (or
 add a second transcript next to one already supplied by the CSV) by
 running the existing :class:`TranscriptionService` over the row's S3
-recording and storing the resulting plain-text transcript on
-``CallImportRow.diarised_transcript`` — a *separate* column from the
-CSV-supplied production transcript so the two values coexist and can
-be evaluated/exported side by side.
+recording and storing the result on ``CallImportRow.diarised_transcript``
+— a *separate* column from the CSV-supplied production transcript so
+the two values coexist and can be evaluated / exported side by side.
 
-Speaker diarization (pyannote) is intentionally **disabled** here —
-users only need a single transcript per row, not speaker turns. This
-also avoids pulling in ``torch`` / ``pyannote.audio`` at task time and
-removes the HuggingFace-token requirement.
+Diarisation is a **two-stage LLM-augmented** pipeline:
 
-Provider/model are caller-controlled — the user picks them from the UI.
-We accept anything ``TranscriptionService.transcribe`` already supports
-(OpenAI, Deepgram, ElevenLabs, Sarvam, Smallest, plus local Whisper as
-the unconditional fallback inside that service).
+  1. ``TranscriptionService.transcribe`` produces plain text (no
+     speaker segmentation — we explicitly pass
+     ``enable_speaker_diarization=False`` because pyannote is no
+     longer in the loop).
+  2. :func:`app.workers.tasks.helpers.llm_diarisation.diarize_transcript_with_llm`
+     hands that plain text to a chat model along with a caller-supplied
+     prompt and asks it to emit structured ``agent`` / ``user`` turns.
+
+The row stores:
+
+  * Structured turns on ``diarised_segments`` (one entry per turn
+    returned by the LLM, mapped through the first-speaker-is-agent
+    heuristic in :func:`_segments_to_user_agent_turns` so reviewers
+    keep the existing per-row "Swap user ↔ agent" affordance).
+  * A rendered ``<speaker>: <text>`` line per turn on
+    ``diarised_transcript`` so the existing UI / CSV-export code that
+    reads the plain-text column keeps working without changes.
+  * ``diarised_llm_provider`` / ``diarised_llm_model`` / ``diarised_prompt``
+    so reviewers can see exactly which model + instructions produced
+    the turns.
+
+If the LLM diariser fails (bad JSON, unknown provider, …) the worker
+records a typed error on the row and surfaces it in the UI — there is
+no silent fallback, because the operator explicitly opted into LLM-
+based diarisation by picking the model in the modal.
+
+Provider/model for the STT step are caller-controlled — the user picks
+them from the UI. We accept anything ``TranscriptionService.transcribe``
+already supports (OpenAI, Deepgram, ElevenLabs, Sarvam, Smallest, plus
+local Whisper as the unconditional fallback inside that service).
 
 When ``run_eval_row_id`` is set the task fires the per-row evaluation
 worker in a chord-like fashion: this lets the Run Evaluation modal
@@ -31,7 +53,7 @@ no longer block evaluation for siblings whose transcripts succeeded.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from loguru import logger
@@ -42,6 +64,125 @@ from app.workers.config import celery_app
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _segments_to_user_agent_turns(
+    speaker_segments: Optional[List[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """Map pyannote-labelled segments to canonical ``agent`` / ``user`` turns.
+
+    ``TranscriptionService.transcribe(enable_speaker_diarization=True)``
+    returns ``[{ "speaker": "Speaker 1", "text": "...", "start": float,
+    "end": float }, ...]`` — generic speaker labels with no semantic
+    role. We pick the canonical role for each raw label using a
+    deterministic, easy-to-reason-about rule: the raw speaker who
+    appears **earliest in time** is the ``agent``; the other becomes
+    the ``user``. Most call-import recordings are agent-initiated
+    (outbound IVR / outbound dialer / inbound greeting) so the agent
+    almost always speaks first; when the heuristic is wrong reviewers
+    flip ``diarised_speaker_swap`` from the row detail panel without
+    re-running the worker.
+
+    For recordings with more than two speakers (rare, but legal — e.g.
+    conference calls) any extras keep their raw ``speaker_N`` label so
+    they're still visible in the rendered transcript without being
+    silently merged into ``user``.
+
+    Each returned entry preserves ``raw_speaker`` so the swap endpoint
+    can rebuild the rendered string from this list alone, without
+    needing to re-read the original ``speaker_segments`` snapshot.
+    """
+    if not speaker_segments:
+        return []
+
+    earliest_by_label: Dict[str, float] = {}
+    for seg in speaker_segments:
+        raw = (seg.get("speaker") or "").strip()
+        if not raw:
+            continue
+        start = seg.get("start")
+        try:
+            start_val = float(start) if start is not None else float("inf")
+        except (TypeError, ValueError):
+            start_val = float("inf")
+        if raw not in earliest_by_label or start_val < earliest_by_label[raw]:
+            earliest_by_label[raw] = start_val
+
+    if not earliest_by_label:
+        return []
+
+    # Sort raw labels by first-appearance time, tie-breaking on label
+    # text so the mapping is deterministic across calls with the same
+    # transcript. The first-appearance label becomes "agent"; the next
+    # becomes "user"; anything beyond that keeps a generic numbered
+    # label so we never silently lose a speaker.
+    ordered_labels = sorted(
+        earliest_by_label.keys(),
+        key=lambda lbl: (earliest_by_label[lbl], lbl),
+    )
+    role_map: Dict[str, str] = {}
+    for idx, raw_label in enumerate(ordered_labels):
+        if idx == 0:
+            role_map[raw_label] = "agent"
+        elif idx == 1:
+            role_map[raw_label] = "user"
+        else:
+            role_map[raw_label] = f"speaker_{idx + 1}"
+
+    turns: List[Dict[str, Any]] = []
+    for seg in speaker_segments:
+        raw = (seg.get("speaker") or "").strip()
+        text = (seg.get("text") or "").strip()
+        if not raw or not text:
+            continue
+        try:
+            start_val = float(seg.get("start") or 0.0)
+        except (TypeError, ValueError):
+            start_val = 0.0
+        try:
+            end_val = float(seg.get("end") or 0.0)
+        except (TypeError, ValueError):
+            end_val = 0.0
+        turns.append(
+            {
+                "speaker": role_map.get(raw, raw.lower().replace(" ", "_")),
+                "text": text,
+                "start": round(start_val, 3),
+                "end": round(end_val, 3),
+                "raw_speaker": raw,
+            }
+        )
+    return turns
+
+
+def _render_turns_as_text(
+    turns: Optional[List[Dict[str, Any]]],
+    *,
+    swap: bool = False,
+) -> str:
+    """Render structured turns as ``<speaker>: <text>`` lines.
+
+    The frontend's ``TranscriptView`` parses this exact shape into chat
+    bubbles (see ``frontend/src/pages/callImports/components/TranscriptView.tsx``).
+    When ``swap`` is True, ``agent`` and ``user`` are swapped — but only
+    those two labels, so ``speaker_3``+ on multi-party calls keep their
+    canonical role through a swap.
+    """
+    if not turns:
+        return ""
+    out: List[str] = []
+    for turn in turns:
+        speaker = (turn.get("speaker") or "").strip()
+        text = (turn.get("text") or "").strip()
+        if not speaker or not text:
+            continue
+        if swap:
+            if speaker == "agent":
+                speaker = "user"
+            elif speaker == "user":
+                speaker = "agent"
+        out.append(f"{speaker}: {text}")
+    return "\n".join(out)
 
 
 def _summarize_exc(exc: BaseException, *, max_chars: int = 240) -> str:
@@ -91,8 +232,12 @@ def transcribe_call_import_row_task(
     language: Optional[str] = None,
     overwrite_existing: bool = False,
     run_eval_row_id: Optional[str] = None,
+    diarization_llm_provider: Optional[str] = None,
+    diarization_llm_model: Optional[str] = None,
+    diarization_llm_credential_id: Optional[str] = None,
+    diarization_prompt: Optional[str] = None,
 ):
-    """Diarise a single row's recording (plain text, no speaker turns).
+    """Diarise a single row's recording.
 
     Skips rows with no S3 recording, or with an existing diarised
     transcript when ``overwrite_existing`` is False. Errors are recorded
@@ -100,6 +245,12 @@ def transcribe_call_import_row_task(
     ``diarised_transcript_error``) so the UI can surface a per-row
     diagnostic without polling Celery directly. The CSV-supplied
     production ``transcript`` is never touched by this task.
+
+    The ``diarization_llm_*`` kwargs identify the chat model that turns
+    the STT plain-text output into structured ``agent`` / ``user``
+    turns. They are required: the worker fails the row when either
+    ``diarization_llm_provider`` or ``diarization_llm_model`` is
+    missing, because the pyannote fallback has been removed.
     """
 
     from app.models.database import CallImportRow
@@ -145,6 +296,21 @@ def transcribe_call_import_row_task(
             db.commit()
             return {"status": "failed", "reason": "unknown_provider"}
 
+        # The LLM diariser is mandatory now that pyannote has been
+        # removed. We surface a typed failure on the row when the
+        # caller forgot to pick a model so the modal can show a
+        # specific banner instead of a generic celery error.
+        llm_provider_value = (diarization_llm_provider or "").strip()
+        llm_model_value = (diarization_llm_model or "").strip()
+        if not llm_provider_value or not llm_model_value:
+            row.diarised_transcript_status = "failed"
+            row.diarised_transcript_error = (
+                "Diarisation LLM provider/model not configured. Pick "
+                "a chat model in the Diarise modal."
+            )
+            db.commit()
+            return {"status": "failed", "reason": "missing_llm_diariser"}
+
         row.diarised_transcript_status = "running"
         row.diarised_transcript_error = None
         # Record which provider/model the user asked for *now* (rather
@@ -153,6 +319,17 @@ def transcribe_call_import_row_task(
         # to remember what they picked in the modal.
         row.diarised_transcript_provider = provider_enum.value
         row.diarised_transcript_model = stt_model
+        row.diarised_llm_provider = llm_provider_value
+        row.diarised_llm_model = llm_model_value
+        try:
+            llm_credential_uuid = (
+                UUID(diarization_llm_credential_id)
+                if diarization_llm_credential_id
+                else None
+            )
+        except (TypeError, ValueError):
+            llm_credential_uuid = None
+        row.diarised_llm_credential_id = llm_credential_uuid
         row.celery_task_id = self.request.id
         db.commit()
 
@@ -174,10 +351,10 @@ def transcribe_call_import_row_task(
                 organization_id=row.organization_id,
                 db=db,
                 language=language,
-                # Plain-text only — we don't run pyannote here. Users
-                # asked for a single transcript per row, not speaker
-                # turns, so we skip the diarization stage entirely and
-                # store whatever the STT provider returns as-is.
+                # We diarise via an LLM in a second pass below, so the
+                # STT call only needs to produce plain text. Skipping
+                # pyannote here avoids the HuggingFace-token /
+                # speaker-count guesswork that the old path required.
                 enable_speaker_diarization=False,
                 credential_id=credential_uuid,
             )
@@ -199,11 +376,80 @@ def transcribe_call_import_row_task(
             db.commit()
             return {"status": "failed", "reason": "empty_transcript"}
 
-        # Write into ``diarised_transcript`` so the CSV-supplied
-        # production ``transcript`` is preserved as-is. The UI shows
-        # both columns side-by-side and evaluations can be configured
-        # to score against either source.
-        row.diarised_transcript = plain_text
+        # ---- LLM diarisation ----------------------------------------
+        # Hand the plain transcript to the chat model the operator
+        # picked. The helper enforces a JSON-array contract and raises
+        # ``LLMDiarisationError`` when the response is unusable, which
+        # we surface verbatim on the row so the operator can iterate on
+        # the prompt.
+        from app.workers.tasks.helpers.llm_diarisation import (
+            DEFAULT_DIARIZATION_PROMPT,
+            LLMDiarisationError,
+            diarize_transcript_with_llm,
+        )
+
+        effective_prompt = (diarization_prompt or "").strip() or (
+            DEFAULT_DIARIZATION_PROMPT
+        )
+        row.diarised_prompt = effective_prompt
+
+        try:
+            raw_turns = diarize_transcript_with_llm(
+                plain_text,
+                llm_provider=llm_provider_value,
+                llm_model=llm_model_value,
+                organization_id=row.organization_id,
+                db=db,
+                custom_prompt=effective_prompt,
+                credential_id=llm_credential_uuid,
+            )
+        except LLMDiarisationError as exc:
+            logger.warning(
+                "LLM diarisation failed for row {}: {}", row_id, exc
+            )
+            row.diarised_transcript_status = "failed"
+            row.diarised_transcript_error = str(exc)
+            db.commit()
+            return {"status": "failed", "reason": "llm_diarisation_error"}
+        except Exception as exc:  # noqa: BLE001 — same surfacing as STT
+            logger.exception(
+                "LLM diarisation crashed for row {}", row_id
+            )
+            row.diarised_transcript_status = "failed"
+            row.diarised_transcript_error = _summarize_exc(exc)
+            db.commit()
+            return {"status": "failed", "reason": "llm_diarisation_error"}
+
+        turns = _segments_to_user_agent_turns(raw_turns)
+
+        # Guard against pseudo-diarisation: when the LLM emits a single
+        # speaker for the whole call we treat it the same as the
+        # legacy pyannote-unavailable fallback — store the plain text
+        # without speaker prefixes so the UI doesn't show a misleading
+        # ``agent: <everything>`` chat bubble.
+        distinct_roles = {turn.get("speaker") for turn in turns}
+        has_real_diarisation = len(distinct_roles - {None, ""}) >= 2
+        rendered_turns = (
+            _render_turns_as_text(turns, swap=False)
+            if turns and has_real_diarisation
+            else ""
+        )
+
+        transcript_to_store = rendered_turns or plain_text
+
+        # Persist into ``diarised_transcript`` so the CSV-supplied
+        # production ``transcript`` is preserved as-is. The structured
+        # turns are persisted alongside on ``diarised_segments`` so the
+        # swap endpoint can re-render without re-running diarisation.
+        # We always reset ``diarised_speaker_swap`` to False on a fresh
+        # diarisation run — the heuristic is applied at write time so
+        # any prior swap flip is no longer meaningful for the new turns.
+        # ``diarised_segments`` is only populated when real diarisation
+        # happened — single-speaker fallback gets ``None`` so the swap
+        # button stays hidden (nothing meaningful to swap).
+        row.diarised_transcript = transcript_to_store
+        row.diarised_segments = turns if has_real_diarisation else None
+        row.diarised_speaker_swap = False
         row.diarised_transcript_provider = provider_enum.value
         row.diarised_transcript_model = stt_model
         row.diarised_transcript_status = "completed"
@@ -233,7 +479,10 @@ def transcribe_call_import_row_task(
             "row_id": row_id,
             "provider": provider_enum.value,
             "model": stt_model,
-            "characters": len(plain_text),
+            "llm_provider": llm_provider_value,
+            "llm_model": llm_model_value,
+            "characters": len(transcript_to_store),
+            "turn_count": len(turns) if has_real_diarisation else 0,
         }
     finally:
         db.close()

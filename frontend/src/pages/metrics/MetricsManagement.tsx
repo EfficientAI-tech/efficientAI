@@ -1,4 +1,4 @@
-import { Fragment, useState, useEffect, useMemo, useRef } from 'react'
+import { Fragment, useState, useEffect, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../lib/api'
 import Button from '../../components/Button'
@@ -18,11 +18,8 @@ import {
   MoreVertical,
   ChevronRight,
   ChevronDown,
-  ChevronLeft,
   Layers,
   AlertTriangle,
-  FileText,
-  Database,
 } from 'lucide-react'
 
 interface Metric {
@@ -52,19 +49,12 @@ interface Metric {
   selection_mode?: 'single_choice' | 'multi_label' | null
   allow_discovery?: boolean
   /**
-   * CSV header names this metric reads from a call import row's
-   * ``raw_columns`` instead of the transcript. Empty / missing means
-   * today's transcript-based judge behavior. Children of a parent
-   * category metric never carry this list (server enforces it).
-   */
-  input_columns?: string[]
-  /**
    * When true, this metric is a "transcript-compare judge": at
    * call-import evaluation time the worker feeds BOTH the production
    * and diarised transcripts to the LLM as a labeled pair and the
    * run's transcript_source toggle is ignored for this metric.
-   * Mutually exclusive with input_columns, parent_metric_id, and
-   * selection_mode (server enforces).
+   * Mutually exclusive with parent_metric_id and selection_mode
+   * (server enforces).
    */
   compare_transcripts?: boolean
   children?: Metric[]
@@ -277,74 +267,17 @@ export default function MetricsManagement() {
     // true on anything else, so leaving it false everywhere else is
     // the safe default.
     allow_discovery: false,
-    // CSV header names this metric reads from a call import row's
-    // ``raw_columns`` instead of the transcript. Empty array (the
-    // default) preserves today's transcript-based judge behavior.
-    input_columns: [] as string[],
     // When true, the worker scores this metric against BOTH the
     // production and diarised transcripts on each call-import row.
-    // Mutually exclusive with ``input_columns`` and unavailable on
-    // parent / child metrics. The Run Evaluation transcript_source
-    // toggle is ignored for these metrics — they always read both.
+    // Unavailable on parent / child metrics. The Run Evaluation
+    // transcript_source toggle is ignored for these metrics —
+    // they always read both.
     compare_transcripts: false,
   })
-  // Draft string for the "Input columns" tag input — kept outside
-  // ``formData`` so a half-typed header doesn't get persisted on Save.
-  const [inputColumnDraft, setInputColumnDraft] = useState('')
-  // Visibility of the "Browse imported columns" popover that hangs
-  // under the input. Toggled by the picker button and by click-outside
-  // on the wrapping container.
-  const [columnPickerOpen, setColumnPickerOpen] = useState(false)
-  // Which call import the user is currently looking at inside the
-  // popover. ``null`` means the popover shows the import list view;
-  // a string id means we're showing that import's column groupings.
-  const [columnPickerImportId, setColumnPickerImportId] = useState<
-    string | null
-  >(null)
-  const columnPickerRef = useRef<HTMLDivElement | null>(null)
-
   const { data: metrics = [], isLoading } = useQuery({
     queryKey: ['metrics', activeWorkspaceId, surfaceFilter],
     queryFn: () => apiClient.listMetrics(surfaceFilter === 'all' ? undefined : surfaceFilter),
   })
-
-  // Recent call imports for the active workspace — the user picks
-  // input columns by drilling into a specific batch instead of
-  // browsing a workspace-wide flat list. A generous page covers the
-  // typical workspace's recent imports without pagination complexity
-  // inside the popover.
-  const { data: recentImportsResponse } = useQuery({
-    queryKey: ['call-imports-for-metric-picker', activeWorkspaceId],
-    queryFn: () => apiClient.listCallImports({ page: 1, page_size: 50 }),
-    staleTime: 60_000,
-  })
-  const recentImports = recentImportsResponse?.items ?? []
-
-  // Close the picker popover when the user clicks anywhere outside
-  // the picker container. The listener is only attached while the
-  // popover is open so it doesn't add overhead to every page render.
-  useEffect(() => {
-    if (!columnPickerOpen) return
-    const handlePointerDown = (event: MouseEvent | TouchEvent) => {
-      const target = event.target as Node | null
-      if (
-        columnPickerRef.current &&
-        target &&
-        !columnPickerRef.current.contains(target)
-      ) {
-        setColumnPickerOpen(false)
-        // Reset the drill-in state so reopening starts fresh on the
-        // import list rather than the last-viewed import's columns.
-        setColumnPickerImportId(null)
-      }
-    }
-    document.addEventListener('mousedown', handlePointerDown)
-    document.addEventListener('touchstart', handlePointerDown)
-    return () => {
-      document.removeEventListener('mousedown', handlePointerDown)
-      document.removeEventListener('touchstart', handlePointerDown)
-    }
-  }, [columnPickerOpen])
 
   // Seed default metrics on first load if none exist
   const seedMutation = useMutation({
@@ -702,7 +635,6 @@ export default function MetricsManagement() {
       enabled: true,
       capture_rationale: false,
       allow_discovery: false,
-      input_columns: [],
       compare_transcripts: false,
     })
   }
@@ -764,21 +696,13 @@ export default function MetricsManagement() {
       ...(isParentBeingEdited
         ? { allow_discovery: !!formData.allow_discovery }
         : {}),
-      // Backend rejects ``input_columns`` on child sub-metrics with
-      // a 400. Children have no parent_metric_id at create time
-      // (only set explicitly elsewhere), so the only way the field
-      // can leak there is via edit — gate on the row's
-      // ``parent_metric_id`` to be safe.
-      ...((!editingMetric || !editingMetric.parent_metric_id)
-        ? { input_columns: formData.input_columns }
-        : {}),
-      // Transcript-compare judge metrics live alongside column-input
-      // judges and standalone transcript metrics. The server rejects
-      // the flag on child sub-metrics and parents (selection_mode
-      // set), so we only forward it for standalone rows where the
-      // toggle could legitimately be on. ``buildPayload`` is also
-      // used by the create flow (no editingMetric yet) — there the
-      // flag is always forwarded since the body is a fresh row.
+      // Transcript-compare judge metrics live alongside standalone
+      // transcript metrics. The server rejects the flag on child
+      // sub-metrics and parents (selection_mode set), so we only
+      // forward it for standalone rows where the toggle could
+      // legitimately be on. ``buildPayload`` is also used by the
+      // create flow (no editingMetric yet) — there the flag is
+      // always forwarded since the body is a fresh row.
       ...((!editingMetric
         || (!editingMetric.parent_metric_id
           && !editingMetric.selection_mode))
@@ -842,9 +766,6 @@ export default function MetricsManagement() {
       enabled: metric.enabled,
       capture_rationale: !!metric.capture_rationale,
       allow_discovery: !!metric.allow_discovery,
-      input_columns: Array.isArray(metric.input_columns)
-        ? [...metric.input_columns]
-        : [],
       compare_transcripts: !!metric.compare_transcripts,
     })
     setIsCustomMetricMode(metric.metric_origin === 'custom')
@@ -1113,7 +1034,6 @@ export default function MetricsManagement() {
                 enabled: true,
                 capture_rationale: false,
                 allow_discovery: false,
-                input_columns: [],
                 compare_transcripts: false,
               })
               resetCategoryForm()
@@ -1869,410 +1789,16 @@ export default function MetricsManagement() {
                   )}
 
                   {/*
-                    Call Imports configuration: ``input_columns`` lets
-                    a metric judge specific CSV columns on each
-                    call-import row instead of the transcript. The
-                    knob is a no-op on live-call evaluations, so we
-                    render it unconditionally for any non-child
-                    metric. Hidden for child sub-metrics because the
-                    backend rejects ``input_columns`` on rows with a
-                    parent.
+                    Call Imports configuration: previously housed a
+                    per-metric "Input columns" picker that turned the
+                    metric into a "column-input judge". The product
+                    now always injects EVERY non-empty CSV column
+                    into the evaluation prompt for every metric (see
+                    ``_build_all_columns_block`` in the call-import
+                    worker), so a per-metric column allow-list is
+                    redundant and was removed.
                   */}
-                  {!editingMetric?.parent_metric_id && (
-                    <div className="rounded-xl border border-gray-200 bg-white p-3.5 space-y-3.5">
-                      <div className="space-y-3.5">
-                  {/*
-                    Input columns: when one or more entries are listed
-                    here the metric becomes a "column-input judge" —
-                    at call-import evaluation time the worker reads
-                    each entry from the row's ``raw_columns`` (with a
-                    fallback through the parent CallImport's
-                    ``custom_column_mapping`` when the entry is a
-                    friendly name) and feeds the values to the LLM as
-                    Context Inputs instead of the transcript.
-                  */}
-                  {(() => {
-                    // Helpers scoped to the picker so they close over
-                    // the latest formData / draft without us threading
-                    // them through props.
-                    const isAlreadySelected = (entry: string) =>
-                      formData.input_columns.some(
-                        (h) => h.toLowerCase() === entry.toLowerCase(),
-                      )
-                    const addEntry = (entry: string) => {
-                      const trimmed = entry.trim()
-                      if (!trimmed || isAlreadySelected(trimmed)) return
-                      setFormData({
-                        ...formData,
-                        input_columns: [...formData.input_columns, trimmed],
-                      })
-                    }
-                    const removeEntry = (entry: string) => {
-                      setFormData({
-                        ...formData,
-                        input_columns: formData.input_columns.filter(
-                          (h) => h !== entry,
-                        ),
-                      })
-                    }
-
-                    // The drilled-in CallImport (if any). When the
-                    // popover is at the import-list step this is
-                    // undefined and the popover renders the list view.
-                    const drilledImport = columnPickerImportId
-                      ? recentImports.find(
-                          (ci) => ci.id === columnPickerImportId,
-                        )
-                      : undefined
-
-                    // Build the column groups for the drilled-in
-                    // import. Custom-mapped columns expose the
-                    // friendly name (key of ``custom_column_mapping``)
-                    // because that's what the rest of the call-import
-                    // UI surfaces — the worker resolves it back to the
-                    // CSV header at evaluation time. Extra columns
-                    // expose their CSV header verbatim because that's
-                    // already the user-visible identifier.
-                    const customMappingEntries = drilledImport
-                      ? Object.entries(drilledImport.custom_column_mapping || {})
-                          .filter(([key]) => typeof key === 'string' && key.trim())
-                          .sort(([a], [b]) =>
-                            a.toLowerCase().localeCompare(b.toLowerCase()),
-                          )
-                      : []
-                    const extraColumnEntries = drilledImport
-                      ? (drilledImport.extra_columns || [])
-                          .filter((h) => typeof h === 'string' && h.trim())
-                          .slice()
-                          .sort((a, b) =>
-                            a.toLowerCase().localeCompare(b.toLowerCase()),
-                          )
-                      : []
-                    const drilledImportColumnCount =
-                      customMappingEntries.length + extraColumnEntries.length
-
-                    const importLabel = (
-                      ci: (typeof recentImports)[number],
-                    ) => ci.original_filename || `Import ${ci.id.slice(0, 8)}`
-
-                    const importColumnCount = (
-                      ci: (typeof recentImports)[number],
-                    ): number => {
-                      const customCount = Object.keys(
-                        ci.custom_column_mapping || {},
-                      ).filter((k) => typeof k === 'string' && k.trim()).length
-                      const extraCount = (ci.extra_columns || []).filter(
-                        (h) => typeof h === 'string' && h.trim(),
-                      ).length
-                      return customCount + extraCount
-                    }
-
-                    return (
-                      <div ref={columnPickerRef}>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Input columns (optional)
-                        </label>
-                        <p className="text-xs text-gray-500 mb-2">
-                          Pick from a specific imported CSV's columns —
-                          either the friendly names you assigned during
-                          import or the extra columns you preserved
-                          verbatim. The next evaluation run will judge
-                          those values (instead of the transcript) and
-                          the verdict becomes a new column in the
-                          export. Leave empty to keep the default
-                          transcript-based behavior.
-                        </p>
-                        {/* Chip-input + popover wrapper. ``relative``
-                            anchors the absolute-positioned popover. */}
-                        <div className="relative">
-                          <div className="flex flex-wrap items-center gap-2 px-3 py-2 rounded-lg border border-gray-200 bg-white shadow-sm transition focus-within:border-primary-500 focus-within:ring-2 focus-within:ring-primary-500/20">
-                            {formData.input_columns.map((entry) => (
-                              <span
-                                key={entry}
-                                className="inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded-full bg-primary-50 text-primary-700 border border-primary-200"
-                              >
-                                {entry}
-                                <button
-                                  type="button"
-                                  aria-label={`Remove ${entry}`}
-                                  onClick={() => removeEntry(entry)}
-                                  className="hover:text-primary-900"
-                                >
-                                  <X className="w-3 h-3" />
-                                </button>
-                              </span>
-                            ))}
-                            <input
-                              type="text"
-                              value={inputColumnDraft}
-                              onChange={(e) =>
-                                setInputColumnDraft(e.target.value)
-                              }
-                              onKeyDown={(e) => {
-                                // Free-text Enter / comma is the
-                                // forward-compat escape hatch — useful
-                                // when authoring a metric before the
-                                // first matching CSV is uploaded.
-                                if (e.key === 'Enter' || e.key === ',') {
-                                  e.preventDefault()
-                                  const trimmed = inputColumnDraft.trim()
-                                  if (trimmed) {
-                                    addEntry(trimmed)
-                                    setInputColumnDraft('')
-                                  }
-                                  return
-                                }
-                                if (
-                                  e.key === 'Backspace' &&
-                                  !inputColumnDraft &&
-                                  formData.input_columns.length > 0
-                                ) {
-                                  setFormData({
-                                    ...formData,
-                                    input_columns:
-                                      formData.input_columns.slice(0, -1),
-                                  })
-                                }
-                              }}
-                              onBlur={() => {
-                                const trimmed = inputColumnDraft.trim()
-                                if (trimmed) {
-                                  addEntry(trimmed)
-                                  setInputColumnDraft('')
-                                }
-                              }}
-                              placeholder={
-                                formData.input_columns.length === 0
-                                  ? 'Type a column name and press Enter, or use the picker →'
-                                  : ''
-                              }
-                              className="flex-1 min-w-[10rem] text-sm text-gray-900 placeholder-gray-400 focus:outline-none bg-transparent"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setColumnPickerOpen((prev) => !prev)
-                                setColumnPickerImportId(null)
-                              }}
-                              className="ml-auto inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md bg-gray-100 hover:bg-gray-200 text-gray-700 transition"
-                              title="Browse columns from a specific imported CSV"
-                            >
-                              <Layers className="h-3.5 w-3.5" />
-                              Browse imports
-                              <ChevronDown
-                                className={`h-3 w-3 transition-transform ${
-                                  columnPickerOpen ? 'rotate-180' : ''
-                                }`}
-                              />
-                            </button>
-                          </div>
-
-                          {columnPickerOpen && (
-                            <div className="absolute z-20 left-0 right-0 mt-1 max-h-80 overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg ring-1 ring-black/5">
-                              {/* IMPORT LIST VIEW — shown when no
-                                  specific import is drilled into. */}
-                              {!drilledImport && (
-                                <div>
-                                  <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-gray-500 bg-gray-50 border-b border-gray-100 flex items-center justify-between">
-                                    <span>Pick a call import</span>
-                                    {recentImports.length > 0 && (
-                                      <span className="text-[10px] font-normal normal-case text-gray-400">
-                                        {recentImports.length} most recent
-                                      </span>
-                                    )}
-                                  </div>
-                                  {recentImports.length === 0 && (
-                                    <div className="px-3 py-3 text-xs text-gray-500">
-                                      No call imports in this workspace
-                                      yet. Type a column name in the
-                                      field above and press Enter to add
-                                      it manually — the metric will
-                                      start judging it as soon as a
-                                      matching column shows up in an
-                                      upload.
-                                    </div>
-                                  )}
-                                  {recentImports.map((ci) => {
-                                    const cols = importColumnCount(ci)
-                                    return (
-                                      <button
-                                        key={ci.id}
-                                        type="button"
-                                        onClick={() =>
-                                          setColumnPickerImportId(ci.id)
-                                        }
-                                        disabled={cols === 0}
-                                        className={`w-full flex items-center justify-between gap-3 px-3 py-2.5 text-left transition border-b border-gray-50 last:border-b-0 ${
-                                          cols === 0
-                                            ? 'opacity-50 cursor-not-allowed'
-                                            : 'hover:bg-gray-50'
-                                        }`}
-                                      >
-                                        <div className="min-w-0 flex-1">
-                                          <div className="flex items-center gap-1.5">
-                                            <FileText className="h-3.5 w-3.5 text-gray-400 shrink-0" />
-                                            <span className="truncate text-sm font-medium text-gray-800">
-                                              {importLabel(ci)}
-                                            </span>
-                                          </div>
-                                          <div className="mt-0.5 flex items-center gap-2 text-[11px] text-gray-500">
-                                            {ci.dataset && (
-                                              <span className="inline-flex items-center gap-0.5">
-                                                <Database className="h-3 w-3" />
-                                                {ci.dataset}
-                                              </span>
-                                            )}
-                                            <span>
-                                              {ci.total_rows} row
-                                              {ci.total_rows === 1 ? '' : 's'}
-                                            </span>
-                                            <span>
-                                              {cols} mappable column
-                                              {cols === 1 ? '' : 's'}
-                                            </span>
-                                          </div>
-                                        </div>
-                                        {cols > 0 && (
-                                          <ChevronRight className="h-4 w-4 text-gray-400 shrink-0" />
-                                        )}
-                                      </button>
-                                    )
-                                  })}
-                                </div>
-                              )}
-
-                              {/* COLUMN VIEW — shown after the user
-                                  picks an import. Friendly-mapped
-                                  columns and extra (verbatim) columns
-                                  are split into clearly labeled
-                                  groups. */}
-                              {drilledImport && (
-                                <div>
-                                  <div className="px-3 py-2 bg-gray-50 border-b border-gray-100 flex items-center gap-2">
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        setColumnPickerImportId(null)
-                                      }
-                                      className="inline-flex items-center gap-1 text-[11px] font-medium text-gray-600 hover:text-gray-900"
-                                    >
-                                      <ChevronLeft className="h-3.5 w-3.5" />
-                                      Imports
-                                    </button>
-                                    <span className="text-[11px] text-gray-400">
-                                      /
-                                    </span>
-                                    <span className="text-[11px] font-semibold text-gray-700 truncate">
-                                      {importLabel(drilledImport)}
-                                    </span>
-                                  </div>
-
-                                  {drilledImportColumnCount === 0 && (
-                                    <div className="px-3 py-3 text-xs text-gray-500">
-                                      This import didn't preserve any
-                                      extra columns or define custom
-                                      mappings, so there's nothing for a
-                                      column-input metric to read. Pick
-                                      a different import or upload one
-                                      that includes the columns you
-                                      want to score.
-                                    </div>
-                                  )}
-
-                                  {customMappingEntries.length > 0 && (
-                                    <div>
-                                      <div className="px-3 pt-2.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-gray-500">
-                                        Custom-mapped columns
-                                      </div>
-                                      {customMappingEntries.map(
-                                        ([friendlyName, csvHeader]) => {
-                                          const already =
-                                            isAlreadySelected(friendlyName)
-                                          return (
-                                            <button
-                                              key={`custom-${friendlyName}`}
-                                              type="button"
-                                              onClick={() => {
-                                                addEntry(friendlyName)
-                                              }}
-                                              disabled={already}
-                                              className={`w-full flex items-start justify-between gap-2 px-3 py-2 text-left transition ${
-                                                already
-                                                  ? 'opacity-50 cursor-not-allowed'
-                                                  : 'hover:bg-primary-50'
-                                              }`}
-                                            >
-                                              <div className="min-w-0 flex-1">
-                                                <div className="text-sm text-gray-800 truncate font-mono text-[12px]">
-                                                  {friendlyName}
-                                                </div>
-                                                <div className="text-[10px] text-gray-500 truncate">
-                                                  CSV column:{' '}
-                                                  <span className="font-mono">
-                                                    {csvHeader}
-                                                  </span>
-                                                </div>
-                                              </div>
-                                              {already ? (
-                                                <span className="text-[10px] text-gray-400">
-                                                  added
-                                                </span>
-                                              ) : (
-                                                <Plus className="h-3.5 w-3.5 text-primary-600 shrink-0 mt-0.5" />
-                                              )}
-                                            </button>
-                                          )
-                                        },
-                                      )}
-                                    </div>
-                                  )}
-
-                                  {extraColumnEntries.length > 0 && (
-                                    <div>
-                                      <div className="px-3 pt-2.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-gray-500 border-t border-gray-100 mt-1">
-                                        Extra preserved columns
-                                      </div>
-                                      {extraColumnEntries.map((header) => {
-                                        const already =
-                                          isAlreadySelected(header)
-                                        return (
-                                          <button
-                                            key={`extra-${header}`}
-                                            type="button"
-                                            onClick={() => addEntry(header)}
-                                            disabled={already}
-                                            className={`w-full flex items-center justify-between gap-2 px-3 py-2 text-left transition ${
-                                              already
-                                                ? 'opacity-50 cursor-not-allowed'
-                                                : 'hover:bg-primary-50'
-                                            }`}
-                                          >
-                                            <span className="truncate font-mono text-[12px] text-gray-800">
-                                              {header}
-                                            </span>
-                                            {already ? (
-                                              <span className="text-[10px] text-gray-400">
-                                                added
-                                              </span>
-                                            ) : (
-                                              <Plus className="h-3.5 w-3.5 text-primary-600 shrink-0" />
-                                            )}
-                                          </button>
-                                        )
-                                      })}
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    )
-                  })()}
-                      </div>
-                    </div>
-                  )}
+                  {/* end of removed Input-columns picker block */}
 
                   {/* Per-shape sub-config that the unified Type select
                       drives. Only renders for custom metrics where the

@@ -621,15 +621,20 @@ class TranscriptionService:
             if enable_speaker_diarization:
                 segments = result.get("segments", [])
 
-                # If no segments from transcription, create a single segment from the full text
+                # If no segments from transcription, create a single segment from the full text.
+                # The local audio file is bound to ``temp_file_path`` (downloaded
+                # from S3 a few lines above); the previous name ``audio_file_path``
+                # was a typo that NameError'd as soon as a provider that doesn't
+                # surface segments (e.g. Gemini STT) was used with diarisation
+                # enabled.
                 if not segments and result.get("text"):
                     estimated_duration = 0.0
                     if hasattr(result, "duration") and result.get("duration"):
                         estimated_duration = result.get("duration")
-                    elif audio_file_path and os.path.exists(audio_file_path):
+                    elif temp_file_path and os.path.exists(temp_file_path):
                         try:
                             import librosa
-                            duration = librosa.get_duration(path=audio_file_path)
+                            duration = librosa.get_duration(path=temp_file_path)
                             estimated_duration = duration
                         except Exception:
                             pass

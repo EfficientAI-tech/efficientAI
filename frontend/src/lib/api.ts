@@ -24,6 +24,7 @@ import type {
   CallImport,
   CallImportDetail,
   CallImportListResponse,
+  CallImportRow,
   CallImportSchema,
   CallImportSchemaCreate,
   CallImportSchemaListResponse,
@@ -1326,6 +1327,16 @@ class ApiClient {
       stt_credential_id?: string | null
       stt_language?: string | null
       /**
+       * LLM diariser config: post-STT, an LLM splits the plain
+       * transcript into agent/user turns using ``diarization_prompt``
+       * (or the canonical default when empty). Required by the server
+       * when ``auto_transcribe`` is set.
+       */
+      diarization_llm_provider?: string | null
+      diarization_llm_model?: string | null
+      diarization_llm_credential_id?: string | null
+      diarization_prompt?: string | null
+      /**
        * Opt into LLM-driven discovery of brand-new top-level metrics
        * for this run. Surfaces candidates in the Discovered metrics
        * panel on the evaluation detail Flow tab.
@@ -1581,6 +1592,18 @@ class ApiClient {
     return response.data
   }
 
+  /**
+   * Fetch the canonical LLM diariser prompt. Used by the Transcribe /
+   * Run Evaluation modals to pre-fill the prompt textarea so the
+   * operator sees the actual default they'd otherwise get.
+   */
+  async getCallImportDiarisationPromptDefault(): Promise<string> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/diarisation-prompt-default`,
+    )
+    return (response.data?.prompt ?? '') as string
+  }
+
   /** Fan out diarization tasks for a batch of rows. */
   async transcribeCallImport(
     callImportId: string,
@@ -1602,6 +1625,27 @@ class ApiClient {
     const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/rows/${rowId}/transcribe`,
       payload,
+    )
+    return response.data
+  }
+
+  /**
+   * Flip ``diarised_speaker_swap`` on a row and re-render
+   * ``diarised_transcript`` from ``diarised_segments``. Returns the
+   * updated row so the caller can swap it into local state without an
+   * extra refetch.
+   *
+   * The backend rejects this with 409 when the row has no structured
+   * segments (e.g. legacy diarisations done before turns were
+   * persisted) — callers should surface that as "re-diarise to enable
+   * speaker swapping".
+   */
+  async toggleCallImportRowSpeakerSwap(
+    callImportId: string,
+    rowId: string,
+  ): Promise<CallImportRow> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/rows/${rowId}/diarised-speaker-swap`,
     )
     return response.data
   }
@@ -2243,12 +2287,6 @@ class ApiClient {
     capture_rationale?: boolean
     parent_metric_id?: string | null
     selection_mode?: 'single_choice' | 'multi_label' | null
-    /**
-     * CSV header names from imported call rows that this metric should
-     * read instead of the transcript. Empty / omitted means today's
-     * transcript-based behavior.
-     */
-    input_columns?: string[]
   }): Promise<any> {
     const response = await this.client.post('/api/v1/metrics', data)
     return response.data
@@ -2402,12 +2440,6 @@ class ApiClient {
     selection_mode?: 'single_choice' | 'multi_label' | null
     /** Only honored on multi_label parents; backend 400s otherwise. */
     allow_discovery?: boolean
-    /**
-     * Pass an empty array to clear; ``null`` / omit to leave unchanged.
-     * Sending a non-empty list switches this metric to a column-input
-     * judge for the next call-import evaluation run.
-     */
-    input_columns?: string[] | null
   }): Promise<any> {
     const response = await this.client.put(`/api/v1/metrics/${metricId}`, data)
     return response.data

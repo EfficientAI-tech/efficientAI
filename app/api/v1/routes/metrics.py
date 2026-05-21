@@ -42,76 +42,6 @@ router = APIRouter(prefix="/metrics", tags=["metrics"])
 
 _VALID_SELECTION_MODES = {"single_choice", "multi_label"}
 
-# Defensive caps so a malformed UI payload can't blow up the prompt
-# we send to the LLM later.
-_MAX_INPUT_COLUMNS = 25
-_MAX_INPUT_COLUMN_NAME_LEN = 200
-
-
-def _normalize_input_columns(
-    raw: Optional[List[str]],
-    *,
-    parent_metric_id: Optional[UUID],
-) -> List[str]:
-    """Validate and de-duplicate ``input_columns`` from a request body.
-
-    Empty / None means "this metric scores the transcript like before".
-    A non-empty list switches the metric to a "column-input judge" at
-    evaluation time. Children of a parent category are intentionally
-    excluded from the feature for the first cut: they always inherit
-    their parent's prompt context, so layering CSV-column inputs on top
-    would make the parent-level grouping ambiguous.
-    """
-    if raw is None:
-        return []
-
-    cleaned: List[str] = []
-    seen: set[str] = set()
-    for entry in raw:
-        if entry is None:
-            continue
-        if not isinstance(entry, str):
-            raise HTTPException(
-                status_code=400,
-                detail="input_columns must be a list of strings.",
-            )
-        value = entry.strip()
-        if not value:
-            raise HTTPException(
-                status_code=400,
-                detail="input_columns entries cannot be blank.",
-            )
-        if len(value) > _MAX_INPUT_COLUMN_NAME_LEN:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "input_columns entries must be <= "
-                    f"{_MAX_INPUT_COLUMN_NAME_LEN} characters."
-                ),
-            )
-        key = value.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        cleaned.append(value)
-
-    if len(cleaned) > _MAX_INPUT_COLUMNS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"input_columns supports at most {_MAX_INPUT_COLUMNS} entries.",
-        )
-
-    if cleaned and parent_metric_id is not None:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "input_columns cannot be set on a child sub-metric. Move it "
-                "to a standalone or parent category metric."
-            ),
-        )
-
-    return cleaned
-
 
 def _validate_hierarchy_fields(
     organization_id: UUID,
@@ -238,7 +168,6 @@ def _serialize_metric_tree(metric: Metric) -> Dict[str, Any]:
         "parent_metric_id": metric.parent_metric_id,
         "selection_mode": metric.selection_mode,
         "allow_discovery": bool(getattr(metric, "allow_discovery", False)),
-        "input_columns": list(getattr(metric, "input_columns", None) or []),
         "compare_transcripts": bool(
             getattr(metric, "compare_transcripts", False)
         ),
@@ -275,11 +204,6 @@ def create_metric(
         selection_mode=metric_data.selection_mode,
         metric_type=metric_data.metric_type,
         allow_discovery=metric_data.allow_discovery,
-    )
-
-    normalized_input_columns = _normalize_input_columns(
-        metric_data.input_columns,
-        parent_metric_id=metric_data.parent_metric_id,
     )
 
     effective_workspace_id = workspace_id
@@ -350,7 +274,6 @@ def create_metric(
         parent_metric_id=metric_data.parent_metric_id,
         selection_mode=metric_data.selection_mode,
         allow_discovery=bool(metric_data.allow_discovery),
-        input_columns=normalized_input_columns,
         compare_transcripts=bool(metric_data.compare_transcripts),
     )
     db.add(metric)
@@ -1088,33 +1011,13 @@ def update_metric(
             )
         metric.allow_discovery = bool(metric_data.allow_discovery)
 
-    if metric_data.input_columns is not None:
-        metric.input_columns = _normalize_input_columns(
-            metric_data.input_columns,
-            parent_metric_id=metric.parent_metric_id,
-        )
-
     if metric_data.compare_transcripts is not None:
         # Cross-state validation: a Metric can be a transcript-compare
-        # judge only if it's standalone and has no column-input
-        # configuration. ``compare_transcripts=False`` clears the flag
-        # unconditionally (used to "downgrade" a comparison metric back
-        # to a regular transcript judge).
+        # judge only if it's standalone (not a child sub-metric and not
+        # a parent category). ``compare_transcripts=False`` clears the
+        # flag unconditionally (used to "downgrade" a comparison metric
+        # back to a regular transcript judge).
         if bool(metric_data.compare_transcripts):
-            # Use the row's post-patch input_columns so a patch that
-            # simultaneously clears input_columns AND enables
-            # compare_transcripts is accepted in one round-trip.
-            effective_input_columns = list(metric.input_columns or [])
-            if effective_input_columns:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "Clear input_columns before enabling "
-                        "compare_transcripts: a metric can be either "
-                        "a column-input judge or a transcript-compare "
-                        "judge, not both."
-                    ),
-                )
             if metric.parent_metric_id is not None:
                 raise HTTPException(
                     status_code=400,
@@ -1124,8 +1027,8 @@ def update_metric(
                         "metric first."
                     ),
                 )
-            # Same logic for selection_mode but read the freshly-patched
-            # value so users can clear+set in one PATCH.
+            # Read the freshly-patched selection_mode value so users
+            # can clear+set in one PATCH.
             if metric.selection_mode is not None:
                 raise HTTPException(
                     status_code=400,

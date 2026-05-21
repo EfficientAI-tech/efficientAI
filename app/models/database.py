@@ -741,21 +741,6 @@ class Metric(Base):
         Boolean, nullable=False, default=False, server_default="false"
     )
 
-    # When non-empty, this metric is a "column-input judge": the
-    # call-import evaluator looks up each entry in
-    # ``call_import_rows.raw_columns`` for each row and feeds the
-    # values to the LLM as "Context inputs" instead of the transcript.
-    # Each entry is either a verbatim CSV header (from the import's
-    # ``extra_columns``) or a friendly name the uploader gave a column
-    # via ``CallImport.custom_column_mapping`` — the worker resolves
-    # both via ``_resolve_column_value`` so a metric storing
-    # ``customer_intent`` keeps working across imports that map that
-    # name to different underlying CSV headers.
-    # Empty list = today's behavior (transcript-based judge).
-    input_columns = Column(
-        JSON, nullable=False, default=list, server_default="[]"
-    )
-
     # When True, this metric is a "transcript-compare judge": the
     # call-import evaluator feeds BOTH the production transcript
     # (``call_import_rows.transcript``, CSV-supplied) and the diarised
@@ -766,11 +751,14 @@ class Metric(Base):
     # ignored for these metrics — they always read both columns.
     # Rows where either transcript is missing are skipped per-metric
     # with ``skipped="comparison_missing_transcript"`` so the rest of
-    # the row's metrics still produce scores. v1 keeps these metrics
-    # standalone: the Pydantic validator rejects ``compare_transcripts``
-    # combined with ``input_columns``, ``parent_metric_id`` or
-    # ``selection_mode`` (i.e. they can't simultaneously be a
-    # column-input judge or part of a parent/child hierarchy).
+    # the row's metrics still produce scores. The Pydantic validator
+    # rejects ``compare_transcripts`` combined with ``parent_metric_id``
+    # or ``selection_mode`` (i.e. it can't simultaneously be part of
+    # a parent/child hierarchy). The call-import worker also
+    # auto-promotes a metric to comparison mode when its description
+    # references the production / diarised transcripts in well-known
+    # phrases (see ``_metric_text_references_production`` in
+    # ``app.workers.tasks.evaluate_call_import_row``).
     compare_transcripts = Column(
         Boolean, nullable=False, default=False, server_default="false"
     )
@@ -1818,6 +1806,37 @@ class CallImportRow(Base):
     diarised_transcript_error = Column(Text, nullable=True)
     diarised_at = Column(DateTime(timezone=True), nullable=True)
 
+    # Structured speaker turns produced by the diarisation worker —
+    # ``[{ "speaker": "agent"|"user"|"speaker_3", "text": "...",
+    #      "start": float, "end": float, "raw_speaker": "Speaker 1" }, ...]``
+    # The plain-text ``diarised_transcript`` above is a rendered view
+    # of this list (``<speaker>: <text>`` per line). When the worker
+    # cannot recover structured turns (no pyannote token / single-
+    # speaker recording / provider that doesn't surface segments) this
+    # column stays NULL and the plain-text path is still populated.
+    diarised_segments = Column(JSON, nullable=True)
+    # When True the ``agent`` <-> ``user`` mapping inside
+    # ``diarised_segments`` is inverted at render / export time. The
+    # worker writes the canonical mapping using the "first speaker is
+    # the agent" heuristic; reviewers can flip the toggle from the row
+    # detail panel without re-running diarisation.
+    diarised_speaker_swap = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+    )
+    # LLM that turned the STT plain-text output into structured
+    # ``diarised_segments``. The legacy diarisation worker used
+    # pyannote and left these NULL; the current path always runs an
+    # LLM with the operator-supplied (or default) ``diarised_prompt``
+    # below, and records exactly which model + prompt produced each
+    # row so reviewers can reproduce a specific run.
+    diarised_llm_provider = Column(String(50), nullable=True)
+    diarised_llm_model = Column(String(100), nullable=True)
+    diarised_llm_credential_id = Column(UUID(as_uuid=True), nullable=True)
+    diarised_prompt = Column(Text, nullable=True)
+
     status = Column(
         Enum(CallImportRowStatus, values_callable=get_enum_values),
         nullable=False,
@@ -1998,6 +2017,16 @@ class CallImportEvaluation(Base):
     stt_provider = Column(String(50), nullable=True)
     stt_model = Column(String(100), nullable=True)
     stt_credential_id = Column(UUID(as_uuid=True), nullable=True)
+
+    # Run-level LLM diariser config. Used when the create-run /
+    # retry-run paths chain a ``transcribe_call_import_row_task``
+    # because the row is missing a diarised transcript. Persisted on
+    # the run so a retry uses the same diariser the original create
+    # call picked (unless the retry payload explicitly overrides).
+    diarisation_llm_provider = Column(String(50), nullable=True)
+    diarisation_llm_model = Column(String(100), nullable=True)
+    diarisation_llm_credential_id = Column(UUID(as_uuid=True), nullable=True)
+    diarisation_prompt = Column(Text, nullable=True)
 
     # Which of the two transcripts on each ``CallImportRow`` this run
     # scored against. ``'production'`` reads ``CallImportRow.transcript``

@@ -311,6 +311,12 @@ def _serialize_eval(
         stt_provider=row.stt_provider,
         stt_model=row.stt_model,
         stt_credential_id=row.stt_credential_id,
+        diarisation_llm_provider=getattr(row, "diarisation_llm_provider", None),
+        diarisation_llm_model=getattr(row, "diarisation_llm_model", None),
+        diarisation_llm_credential_id=getattr(
+            row, "diarisation_llm_credential_id", None
+        ),
+        diarisation_prompt=getattr(row, "diarisation_prompt", None),
         transcript_source=(row.transcript_source or "production"),
         sibling_evaluation_ids=list(sibling_evaluation_ids or []),
         started_at=row.started_at,
@@ -621,6 +627,53 @@ async def create_call_import_evaluation(
             status_code=400, detail="stt_model cannot be empty."
         )
 
+    # --- Validate LLM diariser settings -----
+    # The post-STT diariser is mandatory now that pyannote is no longer
+    # in the loop. We reject the request up-front (instead of letting
+    # individual rows fail at task time) so the operator gets a clean
+    # 400 in the modal.
+    if not payload.diarization_llm_provider:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "diarization_llm_provider is required: every evaluation "
+                "run diarises STT output with an LLM."
+            ),
+        )
+    if not payload.diarization_llm_model:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "diarization_llm_model is required: every evaluation "
+                "run diarises STT output with an LLM."
+            ),
+        )
+    try:
+        diarisation_llm_provider_norm: Optional[str] = ModelProvider(
+            payload.diarization_llm_provider.lower()
+        ).value
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unknown diarisation LLM provider "
+                f"'{payload.diarization_llm_provider}'."
+            ),
+        )
+    diarisation_llm_model_norm: Optional[str] = (
+        payload.diarization_llm_model.strip() or None
+    )
+    if not diarisation_llm_model_norm:
+        raise HTTPException(
+            status_code=400,
+            detail="diarization_llm_model cannot be empty.",
+        )
+    diarisation_prompt_norm: Optional[str] = (
+        payload.diarization_prompt.strip()
+        if isinstance(payload.diarization_prompt, str)
+        else None
+    ) or None
+
     completed_rows = (
         db.query(CallImportRow)
         .filter(
@@ -675,6 +728,12 @@ async def create_call_import_evaluation(
             stt_credential_id=(
                 payload.stt_credential_id if auto_transcribe else None
             ),
+            diarisation_llm_provider=diarisation_llm_provider_norm,
+            diarisation_llm_model=diarisation_llm_model_norm,
+            diarisation_llm_credential_id=(
+                payload.diarization_llm_credential_id
+            ),
+            diarisation_prompt=diarisation_prompt_norm,
             transcript_source=source,
             discover_new_metrics=bool(
                 getattr(payload, "discover_new_metrics", False)
@@ -795,6 +854,12 @@ async def create_call_import_evaluation(
                     payload.stt_language,
                     payload.transcribe_overwrite,
                     str(primary_eval_row.id),
+                    diarisation_llm_provider_norm,
+                    diarisation_llm_model_norm,
+                    str(payload.diarization_llm_credential_id)
+                    if payload.diarization_llm_credential_id
+                    else None,
+                    diarisation_prompt_norm,
                 )
                 # Any sibling diarised evals on the same row enqueue
                 # immediately — they will read the same
@@ -4300,6 +4365,12 @@ def _enqueue_eval_rows_with_optional_transcribe(
                 None,  # language hint not persisted on the run
                 transcribe_overwrite,
                 str(eval_row.id),
+                getattr(evaluation, "diarisation_llm_provider", None),
+                getattr(evaluation, "diarisation_llm_model", None),
+                str(evaluation.diarisation_llm_credential_id)
+                if getattr(evaluation, "diarisation_llm_credential_id", None)
+                else None,
+                getattr(evaluation, "diarisation_prompt", None),
             )
 
     if eval_only_row_ids:
@@ -4461,6 +4532,57 @@ def _apply_retry_overrides(
     # --- STT credential pin ---
     if payload.stt_credential_id is not None:
         evaluation.stt_credential_id = payload.stt_credential_id
+
+    # --- LLM diariser provider + model (must be sent together) ---
+    if (
+        payload.diarization_llm_provider is not None
+        or payload.diarization_llm_model is not None
+    ):
+        if not (
+            payload.diarization_llm_provider
+            and payload.diarization_llm_model
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Both diarization_llm_provider and "
+                    "diarization_llm_model are required when overriding "
+                    "the run diariser on retry."
+                ),
+            )
+        try:
+            evaluation.diarisation_llm_provider = ModelProvider(
+                payload.diarization_llm_provider.lower()
+            ).value
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Unknown diarisation LLM provider "
+                    f"'{payload.diarization_llm_provider}'."
+                ),
+            )
+        new_diariser_model = (
+            payload.diarization_llm_model.strip() or None
+        )
+        if not new_diariser_model:
+            raise HTTPException(
+                status_code=400,
+                detail="diarization_llm_model cannot be empty.",
+            )
+        evaluation.diarisation_llm_model = new_diariser_model
+
+    if payload.diarization_llm_credential_id is not None:
+        evaluation.diarisation_llm_credential_id = (
+            payload.diarization_llm_credential_id
+        )
+
+    # ``diarization_prompt`` semantics: None = leave untouched;
+    # empty string = clear (fall back to the canonical default at
+    # worker time); anything else = persist verbatim.
+    if payload.diarization_prompt is not None:
+        cleaned = payload.diarization_prompt.strip()
+        evaluation.diarisation_prompt = cleaned or None
 
 
 def _gather_retry_targets(

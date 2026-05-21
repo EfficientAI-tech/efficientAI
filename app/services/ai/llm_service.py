@@ -110,8 +110,35 @@ class LLMService:
             "api_key": api_key,
             "temperature": temperature,
         }
+        # Gemini 2.5 series (Flash / Pro / Flash-Lite) ships with "thinking"
+        # enabled by default. Thinking tokens are deducted from
+        # ``max_output_tokens``, so a budget like 2000 can be entirely
+        # consumed by reasoning, leaving the visible JSON truncated mid-
+        # string (finish_reason="length"). For structured-JSON evaluation
+        # calls we don't need chain-of-thought, so disable thinking and
+        # ensure the budget is generous enough for the actual answer.
+        is_gemini_25 = (
+            self._litellm_model_name(llm_provider, llm_model).startswith("gemini/")
+            and "2.5" in (llm_model or "").lower()
+        )
+        if is_gemini_25:
+            # LiteLLM cross-provider switch that maps to thinkingBudget=0
+            # for Gemini 2.5 and is silently dropped by others.
+            call_kwargs.setdefault("reasoning_effort", "disable")
+            # Belt-and-braces: pass the provider-native flag too.
+            call_kwargs.setdefault(
+                "thinking", {"type": "disabled", "budget_tokens": 0}
+            )
+
         if max_tokens:
-            call_kwargs["max_tokens"] = max_tokens
+            # Gemini 2.5 with thinking disabled still benefits from a
+            # larger ceiling because some evaluation prompts request many
+            # metrics + rationales. Bump the caller-supplied cap to a sane
+            # floor so we don't keep tripping `finish_reason="length"`.
+            effective_max_tokens = max_tokens
+            if is_gemini_25 and effective_max_tokens < 4096:
+                effective_max_tokens = 4096
+            call_kwargs["max_tokens"] = effective_max_tokens
         if config:
             call_kwargs.update(config)
 
@@ -128,11 +155,28 @@ class LLMService:
 
         # --- normalise response into our standard shape --------------------
         text = response.choices[0].message.content if response.choices else ""
+        finish_reason = (
+            response.choices[0].finish_reason if response.choices else None
+        )
         usage = getattr(response, "usage", None)
+
+        # Surface output truncation clearly. Without this, callers (notably
+        # the JSON parser for evaluator results) only see a cryptic
+        # "Unterminated string" error and never learn the real cause.
+        if finish_reason == "length":
+            logger.warning(
+                "[LLMService] {} returned finish_reason='length' "
+                "(output truncated at max_tokens={}). "
+                "Response will likely fail to parse as JSON.",
+                model_str,
+                call_kwargs.get("max_tokens"),
+            )
 
         result: Dict[str, Any] = {
             "text": text or "",
             "model": llm_model,
+            "finish_reason": finish_reason,
+            "truncated": finish_reason == "length",
             "usage": {
                 "prompt_tokens": getattr(usage, "prompt_tokens", 0) if usage else 0,
                 "completion_tokens": getattr(usage, "completion_tokens", 0) if usage else 0,

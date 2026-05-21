@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
   ArrowLeft,
+  ArrowLeftRight,
   AudioLines,
   BarChart3,
   Check,
@@ -153,6 +154,14 @@ export default function CallImportDetail() {
     credential_id: null,
   })
   const [evalSTTLanguage, setEvalSTTLanguage] = useState('')
+  // LLM diariser config for the auto-diarise step. Mirrors the
+  // standalone Transcribe modal; required by the backend.
+  const [evalDiariserLLM, setEvalDiariserLLM] = useState<ProviderModelValue>({
+    provider: null,
+    model: null,
+    credential_id: null,
+  })
+  const [evalDiarisationPrompt, setEvalDiarisationPrompt] = useState('')
   // Opt into LLM-driven discovery of brand-new top-level metrics for
   // this run. Defaults to off so existing users get the same behaviour
   // as before; flipping it on adds a single instruction block to the
@@ -175,10 +184,31 @@ export default function CallImportDetail() {
     model: null,
     credential_id: null,
   })
+  // LLM that diarises the STT plain-text into agent/user turns.
+  // Pyannote has been removed — this picker is required to start a
+  // run. We default to OpenAI/gpt-4o-mini because it's the cheapest
+  // chat model on the curated list; the user can override it.
+  const [transcribeDiariserLLM, setTranscribeDiariserLLM] =
+    useState<ProviderModelValue>({
+      provider: null,
+      model: null,
+      credential_id: null,
+    })
+  const [transcribeDiarisationPrompt, setTranscribeDiarisationPrompt] =
+    useState('')
   const [transcribeOverwriteStandalone, setTranscribeOverwriteStandalone] =
     useState(false)
   const [transcribeLanguage, setTranscribeLanguage] = useState('')
   const [transcribeError, setTranscribeError] = useState<string | null>(null)
+
+  // The canonical default diariser prompt. Fetched once when the
+  // modal opens so the textarea can pre-fill with the *actual*
+  // server-side default rather than a duplicated hardcoded copy.
+  const { data: defaultDiarisationPrompt } = useQuery({
+    queryKey: ['call-import-diarisation-prompt-default'],
+    queryFn: () => apiClient.getCallImportDiarisationPromptDefault(),
+    staleTime: Infinity,
+  })
 
   const [editingMeta, setEditingMeta] = useState(false)
   const [draftDataset, setDraftDataset] = useState('')
@@ -367,6 +397,12 @@ export default function CallImportDetail() {
       setTranscribeOverwrite(false)
       setEvalSTT({ provider: null, model: null, credential_id: null })
       setEvalSTTLanguage('')
+      setEvalDiariserLLM({
+        provider: null,
+        model: null,
+        credential_id: null,
+      })
+      setEvalDiarisationPrompt('')
       setDiscoverNewMetrics(false)
       setActiveTab('evaluations')
       // When the user picked both Production and Diarised the backend
@@ -387,35 +423,40 @@ export default function CallImportDetail() {
     mutationFn: ({
       rowIds,
       stt,
+      diariserLLM,
+      diarisationPrompt,
       language,
       overwrite,
     }: {
       rowIds: string[] | null
       stt: ProviderModelValue
+      diariserLLM: ProviderModelValue
+      diarisationPrompt: string
       language: string
       overwrite: boolean
     }) => {
       const trimmedLang = language.trim() || null
-      // Single-row endpoint vs batch endpoint: prefer the single-row
-      // endpoint when the modal targets exactly one row so the API
-      // surface stays self-documenting.
-      if (rowIds && rowIds.length === 1) {
-        return apiClient.transcribeCallImportRow(id!, rowIds[0], {
-          stt_provider: stt.provider as string,
-          stt_model: stt.model as string,
-          credential_id: stt.credential_id ?? null,
-          language: trimmedLang,
-          only_missing: !overwrite,
-          overwrite_existing: overwrite,
-        })
-      }
-      return apiClient.transcribeCallImport(id!, {
+      const trimmedPrompt = diarisationPrompt.trim() || null
+      const base = {
         stt_provider: stt.provider as string,
         stt_model: stt.model as string,
         credential_id: stt.credential_id ?? null,
         language: trimmedLang,
         only_missing: !overwrite,
         overwrite_existing: overwrite,
+        diarization_llm_provider: diariserLLM.provider as string,
+        diarization_llm_model: diariserLLM.model as string,
+        diarization_llm_credential_id: diariserLLM.credential_id ?? null,
+        diarization_prompt: trimmedPrompt,
+      }
+      // Single-row endpoint vs batch endpoint: prefer the single-row
+      // endpoint when the modal targets exactly one row so the API
+      // surface stays self-documenting.
+      if (rowIds && rowIds.length === 1) {
+        return apiClient.transcribeCallImportRow(id!, rowIds[0], base)
+      }
+      return apiClient.transcribeCallImport(id!, {
+        ...base,
         row_ids: rowIds ?? undefined,
       })
     },
@@ -433,6 +474,38 @@ export default function CallImportDetail() {
       setTranscribeError(
         err?.response?.data?.detail || err?.message || 'Failed to enqueue transcription.',
       )
+    },
+  })
+
+  // Tracks which row is currently being swapped so we can show a tiny
+  // spinner inline on its toggle button without blocking the rest of
+  // the row UI. Cleared on success or error.
+  const [swappingRowId, setSwappingRowId] = useState<string | null>(null)
+  const [swapError, setSwapError] = useState<string | null>(null)
+
+  const swapSpeakersMutation = useMutation({
+    mutationFn: ({ rowId }: { rowId: string }) =>
+      apiClient.toggleCallImportRowSpeakerSwap(id!, rowId),
+    onMutate: ({ rowId }) => {
+      setSwappingRowId(rowId)
+      setSwapError(null)
+    },
+    onSuccess: () => {
+      // The PATCH already returns the updated row, but we still want
+      // the parent ``call-import`` query to refetch so the row list /
+      // pagination / search index stay in sync (the row object is
+      // embedded inside a much larger response).
+      queryClient.invalidateQueries({ queryKey: ['call-import', id] })
+    },
+    onError: (err: any) => {
+      setSwapError(
+        err?.response?.data?.detail ||
+          err?.message ||
+          'Failed to swap speaker labels.',
+      )
+    },
+    onSettled: () => {
+      setSwappingRowId(null)
     },
   })
 
@@ -606,6 +679,21 @@ export default function CallImportDetail() {
         credential_id: null,
       })
     }
+    // Default diariser LLM: openai/gpt-4o-mini is cheap and good
+    // enough for two-speaker call diarisation. The user can change
+    // it before submitting.
+    if (!transcribeDiariserLLM.provider) {
+      setTranscribeDiariserLLM({
+        provider: 'openai',
+        model: 'gpt-4o-mini',
+        credential_id: null,
+      })
+    }
+    // Seed the prompt textarea with the canonical default the first
+    // time the modal opens; preserve any local edits across re-opens.
+    if (!transcribeDiarisationPrompt && defaultDiarisationPrompt) {
+      setTranscribeDiarisationPrompt(defaultDiarisationPrompt)
+    }
     setShowTranscribeModal(true)
   }
 
@@ -685,6 +773,20 @@ export default function CallImportDetail() {
               size="sm"
               onClick={() => {
                 setSelectedMetricIds([])
+                // Seed sensible diariser defaults; the user can
+                // override before submitting. Same defaults as the
+                // standalone Transcribe modal so the two paths feel
+                // consistent.
+                if (!evalDiariserLLM.provider) {
+                  setEvalDiariserLLM({
+                    provider: 'openai',
+                    model: 'gpt-4o-mini',
+                    credential_id: null,
+                  })
+                }
+                if (!evalDiarisationPrompt && defaultDiarisationPrompt) {
+                  setEvalDiarisationPrompt(defaultDiarisationPrompt)
+                }
                 setShowRunEval(true)
               }}
               disabled={!rows.length}
@@ -1412,24 +1514,77 @@ export default function CallImportDetail() {
                                   </span>
                                 )}
                               </div>
-                              {hasRecording && (
+                              <div className="flex items-center gap-3">
+                                {Array.isArray(row.diarised_segments) &&
+                                  row.diarised_segments.length > 0 && (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        swapSpeakersMutation.mutate({
+                                          rowId: row.id,
+                                        })
+                                      }
+                                      disabled={
+                                        swappingRowId === row.id ||
+                                        row.diarised_transcript_status ===
+                                          'pending' ||
+                                        row.diarised_transcript_status ===
+                                          'running'
+                                      }
+                                      title={
+                                        row.diarised_speaker_swap
+                                          ? 'Speaker labels have been swapped. Click to revert to the diarisation default.'
+                                          : 'Swap user and agent labels on this row.'
+                                      }
+                                      className="inline-flex items-center gap-1 text-[11px] font-medium text-purple-700 hover:text-purple-900 disabled:opacity-50"
+                                    >
+                                      {swappingRowId === row.id ? (
+                                        <RefreshCw className="h-3 w-3 animate-spin" />
+                                      ) : (
+                                        <ArrowLeftRight className="h-3 w-3" />
+                                      )}
+                                      Swap user/agent
+                                      {row.diarised_speaker_swap && (
+                                        <span className="text-[9px] uppercase tracking-wider text-purple-500">
+                                          (swapped)
+                                        </span>
+                                      )}
+                                    </button>
+                                  )}
+                                {hasRecording && (
+                                  <button
+                                    type="button"
+                                    onClick={() => openTranscribeModal([row])}
+                                    disabled={
+                                      row.diarised_transcript_status ===
+                                        'pending' ||
+                                      row.diarised_transcript_status ===
+                                        'running'
+                                    }
+                                    className="text-[11px] font-medium text-purple-700 hover:text-purple-900 disabled:opacity-50"
+                                  >
+                                    {row.diarised_transcript
+                                      ? 'Re-diarise'
+                                      : 'Diarise'}
+                                  </button>
+                                )}
+                              </div>
+                            </header>
+                            {swapError && swappingRowId === null && (
+                              <div className="border-b border-red-100 bg-red-50 px-3 py-2 text-xs text-red-800 flex items-start gap-2">
+                                <AlertCircle className="h-3.5 w-3.5 text-red-600 flex-shrink-0 mt-0.5" />
+                                <div className="min-w-0 flex-1 break-words">
+                                  {swapError}
+                                </div>
                                 <button
                                   type="button"
-                                  onClick={() => openTranscribeModal([row])}
-                                  disabled={
-                                    row.diarised_transcript_status ===
-                                      'pending' ||
-                                    row.diarised_transcript_status ===
-                                      'running'
-                                  }
-                                  className="text-[11px] font-medium text-purple-700 hover:text-purple-900 disabled:opacity-50"
+                                  onClick={() => setSwapError(null)}
+                                  className="text-red-600 hover:text-red-800 flex-shrink-0"
                                 >
-                                  {row.diarised_transcript
-                                    ? 'Re-diarise'
-                                    : 'Diarise'}
+                                  <X className="h-3.5 w-3.5" />
                                 </button>
-                              )}
-                            </header>
+                              </div>
+                            )}
                             {row.diarised_transcript_status === 'failed' &&
                               row.diarised_transcript_error && (
                                 <div className="border-b border-red-100 bg-red-50 px-3 py-2 text-xs text-red-800 flex items-start gap-2">
@@ -1946,11 +2101,13 @@ export default function CallImportDetail() {
             const canSubmit =
               !!transcribeSTT.provider &&
               !!transcribeSTT.model &&
+              !!transcribeDiariserLLM.provider &&
+              !!transcribeDiariserLLM.model &&
               targets.length > 0 &&
               !transcribeRowsMutation.isPending
             return (
               <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]">
-                <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
+                <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] flex flex-col">
                   <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
                     <h3 className="text-lg font-semibold">{headerLabel}</h3>
                     <button
@@ -1964,41 +2121,101 @@ export default function CallImportDetail() {
                       <X className="h-5 w-5" />
                     </button>
                   </div>
-                  <div className="p-6 space-y-3">
-                    <p className="text-sm text-gray-600">
-                      Pick the STT provider and model. Diarization is enabled
-                      automatically — the transcript is stored in
-                      <code className="mx-1 px-1 bg-gray-100 rounded text-[11px]">
-                        Speaker N:
-                      </code>
-                      format that the conversation viewer renders as bubbles.
-                    </p>
-                    <ProviderModelPicker
-                      kind="stt"
-                      value={transcribeSTT}
-                      onChange={setTranscribeSTT}
-                      providerAllowList={STT_PROVIDER_ALLOWLIST}
-                      defaultLabel="Pick an STT provider"
-                      allowCredentialPick
-                    />
-                    <input
-                      type="text"
-                      value={transcribeLanguage}
-                      onChange={(e) => setTranscribeLanguage(e.target.value)}
-                      placeholder="Language hint (e.g. en, hi)"
-                      className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                    />
-                    <label className="flex items-start gap-2 text-xs">
+                  <div className="p-6 space-y-4 overflow-y-auto">
+                    <div className="space-y-2">
+                      <p className="text-xs uppercase tracking-wide text-gray-500 font-semibold">
+                        1. Speech-to-text
+                      </p>
+                      <p className="text-sm text-gray-600">
+                        The STT step produces plain text only; the LLM
+                        below splits it into agent / user turns.
+                      </p>
+                      <ProviderModelPicker
+                        kind="stt"
+                        value={transcribeSTT}
+                        onChange={setTranscribeSTT}
+                        providerAllowList={STT_PROVIDER_ALLOWLIST}
+                        defaultLabel="Pick an STT provider"
+                        allowCredentialPick
+                      />
+                      <input
+                        type="text"
+                        value={transcribeLanguage}
+                        onChange={(e) =>
+                          setTranscribeLanguage(e.target.value)
+                        }
+                        placeholder="Language hint (e.g. en, hi)"
+                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                      />
+                    </div>
+                    <div className="space-y-2 pt-1 border-t border-gray-100">
+                      <p className="text-xs uppercase tracking-wide text-gray-500 font-semibold pt-3">
+                        2. LLM diariser
+                      </p>
+                      <p className="text-sm text-gray-600">
+                        Pick a chat model and tweak the prompt below.
+                        The model receives the STT plain text and the
+                        prompt and must return a JSON array of
+                        {' '}
+                        <code className="px-1 bg-gray-100 rounded text-[11px]">
+                          {'{ speaker, text }'}
+                        </code>{' '}
+                        turns.
+                      </p>
+                      <ProviderModelPicker
+                        kind="llm"
+                        value={transcribeDiariserLLM}
+                        onChange={setTranscribeDiariserLLM}
+                        defaultLabel="Pick an LLM for diarisation"
+                        allowCredentialPick
+                      />
+                      <div className="flex items-center justify-between pt-1">
+                        <label className="text-xs font-medium text-gray-700">
+                          Diarisation prompt
+                        </label>
+                        {defaultDiarisationPrompt && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setTranscribeDiarisationPrompt(
+                                defaultDiarisationPrompt,
+                              )
+                            }
+                            className="text-[11px] text-primary-600 hover:text-primary-700"
+                          >
+                            Reset to default
+                          </button>
+                        )}
+                      </div>
+                      <textarea
+                        value={transcribeDiarisationPrompt}
+                        onChange={(e) =>
+                          setTranscribeDiarisationPrompt(e.target.value)
+                        }
+                        rows={10}
+                        placeholder={
+                          defaultDiarisationPrompt ||
+                          'Describe how the LLM should split the transcript into agent / user turns…'
+                        }
+                        className="w-full px-3 py-2 text-xs font-mono border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                      />
+                      <p className="text-[11px] text-gray-500">
+                        Leave blank to fall back to the canonical default
+                        prompt the worker ships with.
+                      </p>
+                    </div>
+                    <label className="flex items-start gap-2 text-xs pt-2 border-t border-gray-100">
                       <input
                         type="checkbox"
+                        className="mt-0.5"
                         checked={transcribeOverwriteStandalone}
                         onChange={(e) =>
                           setTranscribeOverwriteStandalone(e.target.checked)
                         }
                       />
                       <span>
-                        Overwrite existing transcripts (otherwise rows with
-                        a transcript are skipped).
+                        Overwrite existing transcripts (otherwise rows
+                        with a transcript are skipped).
                       </span>
                     </label>
                     {transcribeError && (
@@ -2006,36 +2223,38 @@ export default function CallImportDetail() {
                         {transcribeError}
                       </div>
                     )}
-                    <div className="flex gap-2 pt-2">
-                      <Button
-                        variant="outline"
-                        onClick={() => {
-                          if (transcribeRowsMutation.isPending) return
-                          setShowTranscribeModal(false)
-                          setTranscribeTargetRows(null)
-                        }}
-                        disabled={transcribeRowsMutation.isPending}
-                        className="flex-1"
-                      >
-                        Cancel
-                      </Button>
-                      <Button
-                        variant="primary"
-                        isLoading={transcribeRowsMutation.isPending}
-                        disabled={!canSubmit}
-                        onClick={() =>
-                          transcribeRowsMutation.mutate({
-                            rowIds: targets.map((r) => r.id),
-                            stt: transcribeSTT,
-                            language: transcribeLanguage,
-                            overwrite: transcribeOverwriteStandalone,
-                          })
-                        }
-                        className="flex-1"
-                      >
-                        Start
-                      </Button>
-                    </div>
+                  </div>
+                  <div className="px-6 py-4 border-t border-gray-200 flex gap-2 bg-gray-50 rounded-b-lg">
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        if (transcribeRowsMutation.isPending) return
+                        setShowTranscribeModal(false)
+                        setTranscribeTargetRows(null)
+                      }}
+                      disabled={transcribeRowsMutation.isPending}
+                      className="flex-1"
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      variant="primary"
+                      isLoading={transcribeRowsMutation.isPending}
+                      disabled={!canSubmit}
+                      onClick={() =>
+                        transcribeRowsMutation.mutate({
+                          rowIds: targets.map((r) => r.id),
+                          stt: transcribeSTT,
+                          diariserLLM: transcribeDiariserLLM,
+                          diarisationPrompt: transcribeDiarisationPrompt,
+                          language: transcribeLanguage,
+                          overwrite: transcribeOverwriteStandalone,
+                        })
+                      }
+                      className="flex-1"
+                    >
+                      Start
+                    </Button>
                   </div>
                 </div>
               </div>
@@ -2530,6 +2749,58 @@ export default function CallImportDetail() {
                                     are reused).
                                   </span>
                                 </label>
+                                <div className="pt-3 border-t border-gray-200 space-y-2">
+                                  <p className="text-xs font-medium text-gray-700">
+                                    Diariser LLM
+                                  </p>
+                                  <p className="text-[11px] text-gray-500">
+                                    After the STT step, this chat model
+                                    splits the plain transcript into
+                                    agent / user turns using the prompt
+                                    below.
+                                  </p>
+                                  <ProviderModelPicker
+                                    kind="llm"
+                                    value={evalDiariserLLM}
+                                    onChange={setEvalDiariserLLM}
+                                    defaultLabel="Pick an LLM for diarisation"
+                                    allowCredentialPick
+                                  />
+                                  <div className="flex items-center justify-between pt-1">
+                                    <label className="text-[11px] font-medium text-gray-700">
+                                      Diarisation prompt
+                                    </label>
+                                    {defaultDiarisationPrompt && (
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setEvalDiarisationPrompt(
+                                            defaultDiarisationPrompt,
+                                          )
+                                        }
+                                        className="text-[11px] text-primary-600 hover:text-primary-700"
+                                      >
+                                        Reset to default
+                                      </button>
+                                    )}
+                                  </div>
+                                  <textarea
+                                    value={evalDiarisationPrompt}
+                                    onChange={(e) =>
+                                      setEvalDiarisationPrompt(e.target.value)
+                                    }
+                                    rows={6}
+                                    placeholder={
+                                      defaultDiarisationPrompt ||
+                                      'Describe how the LLM should split the transcript into agent / user turns…'
+                                    }
+                                    className="w-full px-3 py-2 text-[11px] font-mono border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                                  />
+                                  <p className="text-[11px] text-gray-500">
+                                    Leave blank to fall back to the
+                                    canonical default prompt.
+                                  </p>
+                                </div>
                               </div>
                             </div>
                           )
@@ -2604,6 +2875,15 @@ export default function CallImportDetail() {
                       } else if (!evalSTT.model) {
                         disabledReasons.push(
                           'Pick an STT model for the selected provider.',
+                        )
+                      }
+                      if (!evalDiariserLLM.provider) {
+                        disabledReasons.push(
+                          'Pick a diariser LLM provider — the STT output is split into agent / user turns by an LLM.',
+                        )
+                      } else if (!evalDiariserLLM.model) {
+                        disabledReasons.push(
+                          'Pick a diariser LLM model for the selected provider.',
                         )
                       }
                       if (
@@ -2699,6 +2979,13 @@ export default function CallImportDetail() {
                             stt_model: evalSTT.model,
                             stt_credential_id: evalSTT.credential_id || null,
                             stt_language: evalSTTLanguage.trim() || null,
+                            diarization_llm_provider:
+                              evalDiariserLLM.provider,
+                            diarization_llm_model: evalDiariserLLM.model,
+                            diarization_llm_credential_id:
+                              evalDiariserLLM.credential_id || null,
+                            diarization_prompt:
+                              evalDiarisationPrompt.trim() || null,
                             discover_new_metrics: discoverNewMetrics,
                           })
                         }}

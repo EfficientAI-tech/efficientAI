@@ -1124,25 +1124,18 @@ class MetricCreate(BaseModel):
     # When true, the LLM is invited during call-import evaluation to emit
     # additional candidate sub-labels beyond the user-defined children.
     allow_discovery: bool = False
-    # When non-empty, this metric is a "column-input judge": at
-    # call-import evaluation time the worker reads the listed entries
-    # from each row's ``raw_columns`` and feeds those values to the
-    # LLM as "Context inputs" instead of the transcript. Entries can
-    # be either a verbatim CSV header (from the import's
-    # ``extra_columns``) or the friendly key the uploader gave a
-    # column in ``custom_column_mapping`` — the worker resolves both.
-    # Empty list preserves the default transcript-based behavior.
-    input_columns: List[str] = Field(default_factory=list)
     # When true, this metric is a "transcript-compare judge": at
     # call-import evaluation time the worker feeds BOTH the production
     # transcript (``call_import_rows.transcript``, CSV-supplied) and
     # the diarised transcript (``call_import_rows.diarised_transcript``,
     # worker-produced) to the LLM as a labeled pair. The parent
     # evaluation's ``transcript_source`` is ignored for these metrics.
-    # Mutually exclusive with ``input_columns`` (column-input judge),
-    # ``parent_metric_id`` and ``selection_mode`` — v1 keeps comparison
-    # metrics standalone so the LLM grouping logic doesn't have to
-    # second-guess which prompt template to use within a hierarchy.
+    # Mutually exclusive with ``parent_metric_id`` / ``selection_mode``
+    # — comparison metrics stay standalone so the LLM grouping logic
+    # doesn't have to second-guess which prompt template to use within
+    # a hierarchy. (Parent-level keyword auto-detection in the worker
+    # still routes a categorisation parent through the comparison
+    # prompt without setting this flag.)
     compare_transcripts: bool = False
 
     @model_validator(mode='after')
@@ -1152,18 +1145,12 @@ class MetricCreate(BaseModel):
 
         The Metric ORM column accepts the value; the validator just
         prevents the user from accidentally requesting an incoherent
-        metric shape (e.g. "compare two transcripts but also read
-        columns instead of the transcript" — those are contradictory
-        prompt templates).
+        metric shape (e.g. "compare two transcripts but also live
+        inside a categorisation hierarchy" — different prompt
+        templates).
         """
         if not self.compare_transcripts:
             return self
-        if self.input_columns:
-            raise ValueError(
-                "A metric can be either a column-input judge "
-                "(input_columns) or a transcript-compare judge "
-                "(compare_transcripts), not both."
-            )
         if self.parent_metric_id is not None:
             raise ValueError(
                 "Transcript-compare metrics must be standalone: "
@@ -1252,16 +1239,11 @@ class MetricUpdate(BaseModel):
     capture_rationale: Optional[bool] = None
     selection_mode: Optional[SelectionMode] = None
     allow_discovery: Optional[bool] = None
-    # See ``MetricCreate.input_columns``. ``None`` here means "leave
-    # unchanged"; an empty list explicitly clears any previously
-    # configured column inputs.
-    input_columns: Optional[List[str]] = None
     # See ``MetricCreate.compare_transcripts``. ``None`` here means
     # "leave unchanged". The route layer enforces mutual exclusion
-    # against the row's existing ``input_columns`` /
-    # ``parent_metric_id`` / ``selection_mode`` when this is set to
-    # True, because the patch body alone doesn't have enough context
-    # to validate cross-state.
+    # against the row's existing ``parent_metric_id`` /
+    # ``selection_mode`` when this is set to True, because the patch
+    # body alone doesn't have enough context to validate cross-state.
     compare_transcripts: Optional[bool] = None
 
     @model_validator(mode='after')
@@ -1270,17 +1252,11 @@ class MetricUpdate(BaseModel):
         ALSO trying to set a conflicting field in the same request.
 
         Cross-state validation against the persisted row (e.g. "the
-        existing metric already has input_columns") is done in the
+        existing metric already has a parent") is done in the
         update route since the schema doesn't have the row in hand.
         """
         if self.compare_transcripts is not True:
             return self
-        if self.input_columns:
-            raise ValueError(
-                "A metric can be either a column-input judge "
-                "(input_columns) or a transcript-compare judge "
-                "(compare_transcripts), not both."
-            )
         if self.selection_mode is not None:
             raise ValueError(
                 "Transcript-compare metrics must be standalone: "
@@ -1321,7 +1297,6 @@ class MetricResponse(BaseModel):
     parent_metric_id: Optional[UUID] = None
     selection_mode: Optional[SelectionMode] = None
     allow_discovery: bool = False
-    input_columns: List[str] = Field(default_factory=list)
     # See ``MetricCreate.compare_transcripts``. Surfaced so the UI can
     # render a "Compare transcripts" badge in the metric picker and
     # know to skip the run's transcript_source toggle for this metric.
@@ -1380,14 +1355,6 @@ class MetricResponse(BaseModel):
         if v is None:
             return "custom"
         return str(v).lower()
-
-    @validator('input_columns', pre=True)
-    def normalize_input_columns(cls, v):
-        if v is None:
-            return []
-        if isinstance(v, (list, tuple)):
-            return [str(item) for item in v if item is not None and str(item).strip() != ""]
-        return []
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -2045,6 +2012,28 @@ class CallImportRowResponse(BaseModel):
     diarised_transcript_status: Optional[str] = None
     diarised_transcript_error: Optional[str] = None
     diarised_at: Optional[datetime] = None
+    # LLM that turned the STT plain-text output into structured
+    # ``diarised_segments``. Surfaced in the row detail panel so
+    # reviewers can see "Diarised by openai/gpt-4o-mini" next to
+    # the swap toggle. NULL on rows diarised by the legacy pyannote
+    # worker (which has been removed).
+    diarised_llm_provider: Optional[str] = None
+    diarised_llm_model: Optional[str] = None
+    # The exact prompt the LLM diariser ran with. Persisted so a
+    # reviewer can copy it back into the modal and reproduce the
+    # turn layout against a different STT pass.
+    diarised_prompt: Optional[str] = None
+    # Structured speaker turns produced by the diarisation worker. Each
+    # entry is `{ "speaker": "agent"|"user"|"speaker_N", "text": str,
+    # "start": float, "end": float, "raw_speaker": "Speaker 1" }`. The
+    # plain ``diarised_transcript`` field above is a `<speaker>: <text>`
+    # rendering of this list with ``diarised_speaker_swap`` applied.
+    diarised_segments: Optional[List[Dict[str, Any]]] = None
+    # When True the agent <-> user mapping in ``diarised_segments`` is
+    # inverted at render / export time. The worker writes the canonical
+    # mapping using the "first speaker is the agent" heuristic; the swap
+    # toggle lets reviewers correct that without re-running diarisation.
+    diarised_speaker_swap: bool = False
     status: CallImportRowStatus
     recording_s3_key: Optional[str] = None
     recording_content_type: Optional[str] = None
@@ -2585,6 +2574,37 @@ class CallImportEvaluationCreate(BaseModel):
         max_length=20,
         description="ISO language hint for the STT provider, e.g. 'en'.",
     )
+    # --- LLM diariser config (mirror of CallImportTranscribeRequest) ---
+    # Auto-diarised eval rows go through the same LLM-based diariser as
+    # the standalone Transcribe modal — the run remembers the provider /
+    # model / prompt so a follow-up retry can reproduce them without
+    # having to re-prompt the user.
+    diarization_llm_provider: Optional[str] = Field(
+        default=None,
+        max_length=50,
+        description=(
+            "LLM provider for diarising STT output into agent/user "
+            "turns. Required when ``auto_transcribe`` is set (the worker "
+            "no longer falls back to pyannote)."
+        ),
+    )
+    diarization_llm_model: Optional[str] = Field(
+        default=None,
+        max_length=100,
+        description="LLM model for the diariser.",
+    )
+    diarization_llm_credential_id: Optional[UUID] = Field(
+        default=None,
+        description="Optional AIProvider row to pin for the diariser LLM.",
+    )
+    diarization_prompt: Optional[str] = Field(
+        default=None,
+        max_length=10_000,
+        description=(
+            "Custom system prompt for the diariser LLM; falls back to "
+            "the canonical default when blank."
+        ),
+    )
     discover_new_metrics: bool = Field(
         default=False,
         description=(
@@ -2701,6 +2721,37 @@ class CallImportEvaluationRetryRequest(BaseModel):
         default=None,
         description="Pin a specific credential row for the STT call.",
     )
+    # --- LLM diariser overrides ---
+    # When set, replace the run-stored diariser configuration for any
+    # rows that have to be re-diarised as part of the retry (i.e.
+    # ``transcribe_overwrite=True`` or the row never had a diarised
+    # transcript). Same provider+model pairing rule as STT.
+    diarization_llm_provider: Optional[str] = Field(
+        default=None,
+        max_length=50,
+        description=(
+            "Override the run's diariser LLM provider. Must be paired "
+            "with ``diarization_llm_model``."
+        ),
+    )
+    diarization_llm_model: Optional[str] = Field(
+        default=None,
+        max_length=100,
+        description="Override the run's diariser LLM model.",
+    )
+    diarization_llm_credential_id: Optional[UUID] = Field(
+        default=None,
+        description="Pin a specific credential row for the diariser LLM.",
+    )
+    diarization_prompt: Optional[str] = Field(
+        default=None,
+        max_length=10_000,
+        description=(
+            "Override the run's diariser prompt. Pass an empty string "
+            "to clear the override and fall back to the canonical "
+            "default; pass None to leave the existing value untouched."
+        ),
+    )
     transcribe_overwrite: bool = Field(
         default=False,
         description=(
@@ -2791,6 +2842,13 @@ class CallImportEvaluationResponse(BaseModel):
     stt_provider: Optional[str] = None
     stt_model: Optional[str] = None
     stt_credential_id: Optional[UUID] = None
+    # Run-level LLM diariser config. Surfaced so the UI can show
+    # "Diarised via openai/gpt-4o-mini" on the evaluation header and
+    # pre-fill the retry modal with the previously-used prompt.
+    diarisation_llm_provider: Optional[str] = None
+    diarisation_llm_model: Optional[str] = None
+    diarisation_llm_credential_id: Optional[UUID] = None
+    diarisation_prompt: Optional[str] = None
     # Which transcript column this run scored against. See the
     # ``CallImportEvaluation.transcript_source`` model docstring for
     # the semantics. Defaults to ``'production'`` on legacy rows.
@@ -2937,6 +2995,53 @@ class CallImportTranscribeRequest(BaseModel):
         description=(
             "Restrict the run to a specific subset of rows. NULL = every "
             "row in the import (subject to only_missing)."
+        ),
+    )
+    # --- LLM diariser config ---
+    # Diarisation runs as a *second* step: STT produces plain text,
+    # then this LLM splits it into agent/user turns using the
+    # ``diarization_prompt`` below. Both fields are mandatory because
+    # there is no longer a pyannote fallback — the worker fails the
+    # row when the diariser is missing.
+    diarization_llm_provider: str = Field(
+        ...,
+        max_length=50,
+        description=(
+            "LLM provider that diarises the STT output into agent/user "
+            "turns (e.g. 'openai', 'anthropic', 'google')."
+        ),
+    )
+    diarization_llm_model: str = Field(
+        ...,
+        max_length=100,
+        description="LLM model name, e.g. 'gpt-4o-mini', 'claude-3-haiku'.",
+    )
+    diarization_llm_credential_id: Optional[UUID] = Field(
+        default=None,
+        description=(
+            "Optional AIProvider row to pin for the diarisation LLM."
+        ),
+    )
+    diarization_prompt: Optional[str] = Field(
+        default=None,
+        max_length=10_000,
+        description=(
+            "Operator-supplied system prompt for the diariser LLM. "
+            "When NULL/empty the worker uses the canonical default "
+            "(see ``GET /api/v1/call-imports/diarisation-prompt-default``)."
+        ),
+    )
+
+
+class CallImportDiarisationPromptDefaultResponse(BaseModel):
+    """Wrapper for the canonical diariser-prompt fetched by the modal."""
+
+    prompt: str = Field(
+        ...,
+        description=(
+            "The exact prompt the worker falls back to when the caller "
+            "leaves ``diarization_prompt`` blank. The frontend pre-fills "
+            "the textarea with this value so the operator can edit it."
         ),
     )
 

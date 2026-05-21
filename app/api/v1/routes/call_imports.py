@@ -54,6 +54,7 @@ from app.models.schemas import (
     CallImportPreviewResponse,
     CallImportPreviewSheet,
     CallImportResponse,
+    CallImportDiarisationPromptDefaultResponse,
     CallImportRowBulkDelete,
     CallImportRowBulkDeleteResponse,
     CallImportRowResponse,
@@ -2326,6 +2327,34 @@ async def bulk_delete_call_import_rows(
 # ---------------------------------------------------------------------------
 
 
+@router.get(
+    "/diarisation-prompt-default",
+    response_model=CallImportDiarisationPromptDefaultResponse,
+    operation_id="getCallImportDiarisationPromptDefault",
+)
+async def get_call_import_diarisation_prompt_default(
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+) -> CallImportDiarisationPromptDefaultResponse:
+    """Return the canonical LLM diariser prompt.
+
+    The Transcribe / Run Evaluation modals call this on open so they
+    can pre-fill the prompt textarea. Returning the constant from the
+    backend (rather than hard-coding it in the frontend) keeps the
+    fallback used by the worker and the placeholder shown in the UI
+    in lock-step — operators always see the *actual* default they'd
+    get if they leave the field blank.
+    """
+    del api_key, organization_id
+    from app.workers.tasks.helpers.llm_diarisation import (
+        DEFAULT_DIARIZATION_PROMPT,
+    )
+
+    return CallImportDiarisationPromptDefaultResponse(
+        prompt=DEFAULT_DIARIZATION_PROMPT
+    )
+
+
 def _select_rows_for_transcription(
     db: Session,
     call_import: CallImport,
@@ -2459,6 +2488,13 @@ async def transcribe_call_import(
                 str(payload.credential_id) if payload.credential_id else None,
                 payload.language,
                 payload.overwrite_existing,
+                None,  # run_eval_row_id — not chained from this route
+                payload.diarization_llm_provider,
+                payload.diarization_llm_model,
+                str(payload.diarization_llm_credential_id)
+                if payload.diarization_llm_credential_id
+                else None,
+                payload.diarization_prompt,
             )
             enqueued += 1
         except Exception as exc:
@@ -2542,6 +2578,13 @@ async def transcribe_call_import_row(
             str(payload.credential_id) if payload.credential_id else None,
             payload.language,
             payload.overwrite_existing,
+            None,  # run_eval_row_id — not chained from this route
+            payload.diarization_llm_provider,
+            payload.diarization_llm_model,
+            str(payload.diarization_llm_credential_id)
+            if payload.diarization_llm_credential_id
+            else None,
+            payload.diarization_prompt,
         )
         return CallImportTranscribeResponse(
             queued=1,
@@ -2559,6 +2602,122 @@ async def transcribe_call_import_row(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to enqueue transcription: {exc}",
         )
+
+
+def _render_diarised_segments_text(
+    segments: Optional[List[Dict[str, Any]]],
+    *,
+    swap: bool = False,
+) -> str:
+    """Render ``CallImportRow.diarised_segments`` as ``<speaker>: <text>`` lines.
+
+    Mirrors the worker's ``_render_turns_as_text`` (kept duplicated so
+    the route doesn't need to import a Celery task module just to
+    rebuild the rendered transcript). Only ``agent`` and ``user`` are
+    swapped — multi-party calls keep their ``speaker_N`` labels through
+    a swap so we don't silently collapse a third speaker into the user
+    side.
+    """
+    if not segments:
+        return ""
+    out: List[str] = []
+    for turn in segments:
+        if not isinstance(turn, dict):
+            continue
+        speaker = (turn.get("speaker") or "").strip()
+        text = (turn.get("text") or "").strip()
+        if not speaker or not text:
+            continue
+        if swap:
+            if speaker == "agent":
+                speaker = "user"
+            elif speaker == "user":
+                speaker = "agent"
+        out.append(f"{speaker}: {text}")
+    return "\n".join(out)
+
+
+@router.post(
+    "/{call_import_id}/rows/{row_id}/diarised-speaker-swap",
+    response_model=CallImportRowResponse,
+    operation_id="toggleCallImportRowSpeakerSwap",
+)
+async def toggle_call_import_row_speaker_swap(
+    call_import_id: UUID,
+    row_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportRowResponse:
+    """Flip the user <-> agent mapping on a diarised row.
+
+    The worker's "first speaker is the agent" heuristic is right most of
+    the time but does fail on inbound recordings where the customer
+    greets first, on recordings where the agent stays silent for the
+    intro, etc. Rather than rerun the (expensive) STT + pyannote
+    pipeline for those cases, we let reviewers flip the mapping in
+    place: the structured ``diarised_segments`` are the source of truth
+    and we re-render the plain-text ``diarised_transcript`` from them
+    with the swap applied. The next CSV export will then show the
+    corrected labels.
+
+    Returns the updated row so the frontend can refresh without an
+    extra round-trip.
+    """
+
+    del api_key
+
+    call_import = (
+        db.query(CallImport)
+        .filter(
+            CallImport.id == call_import_id,
+            CallImport.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not call_import:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Call import not found",
+        )
+
+    row = (
+        db.query(CallImportRow)
+        .filter(
+            CallImportRow.id == row_id,
+            CallImportRow.call_import_id == call_import_id,
+            CallImportRow.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Call import row not found",
+        )
+
+    segments = row.diarised_segments if isinstance(row.diarised_segments, list) else None
+    if not segments:
+        # Without structured turns the swap toggle would have nothing to
+        # re-render — surface a clear error rather than silently
+        # flipping a flag the UI never read.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This row has no structured diarised segments to swap. "
+                "Re-run diarisation to generate per-speaker turns first."
+            ),
+        )
+
+    new_swap = not bool(row.diarised_speaker_swap)
+    row.diarised_speaker_swap = new_swap
+    row.diarised_transcript = (
+        _render_diarised_segments_text(segments, swap=new_swap) or None
+    )
+    db.commit()
+    db.refresh(row)
+
+    return CallImportRowResponse.model_validate(row)
 
 
 # ---------------------------------------------------------------------------

@@ -181,6 +181,12 @@ def _make_call_import(
 _DEFAULT_EVAL_STT = {
     "stt_provider": "deepgram",
     "stt_model": "nova-2",
+    # Every evaluation run now requires an LLM diariser (the worker
+    # no longer falls back to pyannote). Keep these on the shared
+    # default so tests that aren't exercising the diariser specifically
+    # don't have to repeat them in every payload.
+    "diarization_llm_provider": "openai",
+    "diarization_llm_model": "gpt-4o-mini",
 }
 
 
