@@ -19,7 +19,6 @@ import type {
   CallImportSchemaParameterType,
 } from '../../types/api'
 import Button from '../../components/Button'
-import ConfirmModal from '../../components/ConfirmModal'
 
 const PARAMETER_TYPES: { value: CallImportSchemaParameterType; label: string }[] = [
   { value: 'recording_url', label: 'Recording URL' },
@@ -476,6 +475,141 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
   )
 }
 
+interface DeleteSchemaModalProps {
+  schema: CallImportSchema | null
+  isLoading: boolean
+  error: string | null
+  onConfirm: (force: boolean) => void
+  onCancel: () => void
+}
+
+function DeleteSchemaModal({
+  schema,
+  isLoading,
+  error,
+  onConfirm,
+  onCancel,
+}: DeleteSchemaModalProps) {
+  const [forceAcknowledged, setForceAcknowledged] = useState(false)
+
+  useMemo(() => {
+    if (schema) setForceAcknowledged(false)
+  }, [schema?.id])
+
+  if (!schema) return null
+  if (typeof document === 'undefined') return null
+
+  const usage = schema.usage_count
+  const inUse = usage > 0
+  const confirmDisabled =
+    isLoading || (inUse && !forceAcknowledged)
+
+  return createPortal(
+    <div className="fixed inset-0 z-[10000] overflow-y-auto">
+      <div
+        className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"
+        onClick={() => {
+          if (!isLoading) onCancel()
+        }}
+      />
+      <div className="flex min-h-screen items-center justify-center p-4">
+        <div className="relative bg-white rounded-2xl shadow-xl max-w-md w-full p-6">
+          <div className="flex items-center gap-3 mb-3">
+            <div className="p-2.5 rounded-full bg-[#fce8e6]">
+              <AlertCircle className="w-5 h-5 text-[#ea4335]" />
+            </div>
+            <h3 className="text-lg font-semibold text-gray-900">
+              {inUse ? 'Force delete schema?' : 'Delete schema?'}
+            </h3>
+          </div>
+
+          <div className="space-y-3 mb-5">
+            <p className="text-sm text-gray-700">
+              <span className="font-semibold">“{schema.name}”</span>{' '}
+              {inUse
+                ? `is currently used by ${usage} call import batch${usage === 1 ? '' : 'es'}.`
+                : 'will be permanently removed. This cannot be undone.'}
+            </p>
+
+            {inUse && (
+              <>
+                <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 space-y-1.5">
+                  <p className="font-medium">
+                    What happens to those batches?
+                  </p>
+                  <ul className="list-disc pl-5 space-y-1">
+                    <li>
+                      They stay intact — rows, recordings, transcripts
+                      and evaluations are untouched.
+                    </li>
+                    <li>
+                      They are <em>detached</em> from this schema.
+                      Already-imported batches keep working via their
+                      snapshotted parameter mapping.
+                    </li>
+                    <li>
+                      Any batch that was still staged (uploaded but not
+                      yet imported) will need a new schema picked
+                      before it can be imported.
+                    </li>
+                  </ul>
+                </div>
+
+                <label className="flex items-start gap-2 text-sm text-gray-800 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5 h-4 w-4 rounded border-gray-300 text-red-600 focus:ring-red-500"
+                    checked={forceAcknowledged}
+                    onChange={(e) => setForceAcknowledged(e.target.checked)}
+                    disabled={isLoading}
+                  />
+                  <span>
+                    I understand {usage} batch
+                    {usage === 1 ? '' : 'es'} will be detached from this
+                    schema.
+                  </span>
+                </label>
+              </>
+            )}
+
+            {error && (
+              <div className="rounded-md bg-red-50 border border-red-200 p-3">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
+                  <p className="text-sm text-red-800">{error}</p>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="flex justify-end gap-3">
+            <Button
+              variant="ghost"
+              onClick={onCancel}
+              disabled={isLoading}
+            >
+              Cancel
+            </Button>
+            <button
+              type="button"
+              onClick={() => onConfirm(inUse)}
+              disabled={confirmDisabled}
+              className="px-4 py-2 rounded-full font-semibold transition-colors disabled:opacity-50 bg-[#fce8e6] hover:bg-[#fad2cf] text-[#c5221f]"
+            >
+              {isLoading
+                ? 'Working…'
+                : inUse
+                  ? `Force delete (detach ${usage})`
+                  : 'Delete'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
 export default function CallImportSchemasPage() {
   const queryClient = useQueryClient()
   const [editorOpen, setEditorOpen] = useState(false)
@@ -490,9 +624,16 @@ export default function CallImportSchemasPage() {
   const schemas: CallImportSchema[] = schemasResponse?.items ?? []
 
   const deleteMutation = useMutation({
-    mutationFn: (schemaId: string) => apiClient.deleteCallImportSchema(schemaId),
+    mutationFn: ({
+      schemaId,
+      force,
+    }: {
+      schemaId: string
+      force?: boolean
+    }) => apiClient.deleteCallImportSchema(schemaId, { force }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['call-import-schemas'] })
+      queryClient.invalidateQueries({ queryKey: ['call-imports'] })
       setPendingDelete(null)
       setDeleteError(null)
     },
@@ -626,6 +767,13 @@ export default function CallImportSchemasPage() {
                         }}
                         className="text-gray-400 hover:text-red-600"
                         aria-label={`Delete ${schema.name}`}
+                        title={
+                          schema.usage_count > 0
+                            ? `In use by ${schema.usage_count} batch${
+                                schema.usage_count === 1 ? '' : 'es'
+                              } — you'll be asked to confirm a force delete that detaches them.`
+                            : 'Delete schema'
+                        }
                       >
                         <Trash2 className="h-4 w-4" />
                       </button>
@@ -648,24 +796,17 @@ export default function CallImportSchemasPage() {
         onSaved={handleSaved}
       />
 
-      <ConfirmModal
-        isOpen={pendingDelete !== null}
-        title="Delete schema?"
-        description={
-          pendingDelete
-            ? `“${pendingDelete.name}” will be deleted. ${
-                pendingDelete.usage_count > 0
-                  ? `It is currently used by ${pendingDelete.usage_count} import(s); delete or migrate those first.`
-                  : 'This cannot be undone.'
-              }${deleteError ? `\n\n${deleteError}` : ''}`
-            : ''
-        }
-        confirmLabel="Delete"
-        cancelLabel="Cancel"
-        variant="danger"
+      <DeleteSchemaModal
+        schema={pendingDelete}
         isLoading={deleteMutation.isPending}
-        onConfirm={() => {
-          if (pendingDelete) deleteMutation.mutate(pendingDelete.id)
+        error={deleteError}
+        onConfirm={(force) => {
+          if (pendingDelete) {
+            deleteMutation.mutate({
+              schemaId: pendingDelete.id,
+              force,
+            })
+          }
         }}
         onCancel={() => {
           if (deleteMutation.isPending) return

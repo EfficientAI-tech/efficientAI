@@ -1223,8 +1223,13 @@ class ApiClient {
     return response.data
   }
 
-  async deleteCallImportSchema(id: string): Promise<void> {
-    await this.client.delete(`/api/v1/call-import-schemas/${id}`)
+  async deleteCallImportSchema(
+    id: string,
+    options?: { force?: boolean },
+  ): Promise<void> {
+    await this.client.delete(`/api/v1/call-import-schemas/${id}`, {
+      params: options?.force ? { force: true } : undefined,
+    })
   }
 
   async listCallImports(

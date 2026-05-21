@@ -6,8 +6,9 @@ Covers the contract surfaced by ``app/api/v1/routes/call_import_schemas.py``:
 * create rejects payloads missing the mandatory ``conversation_id``
   parameter or carrying duplicate parameter names,
 * update fully replaces the parameter list,
-* delete refuses to drop a schema that's still wired to a CallImport
-  batch and otherwise removes the schema + its parameters.
+* delete refuses (by default) to drop a schema that's still wired to a
+  CallImport batch, but ``?force=true`` detaches those batches and
+  removes the schema + its parameters.
 """
 
 from __future__ import annotations
@@ -421,7 +422,11 @@ def test_delete_schema_refuses_when_referenced_by_call_import(
         f"/api/v1/call-import-schemas/{created['id']}"
     )
     assert response.status_code == 409
-    assert "in use" in response.json()["detail"].lower()
+    detail = response.json()["detail"].lower()
+    assert "in use" in detail
+    # The error nudges the caller toward the force=true escape hatch
+    # so the UI can offer it without guessing at API semantics.
+    assert "force=true" in detail
 
     # Schema still in DB after the failed delete.
     assert (
@@ -430,6 +435,81 @@ def test_delete_schema_refuses_when_referenced_by_call_import(
         .first()
         is not None
     )
+
+
+def test_force_delete_schema_detaches_in_use_batches(
+    authenticated_client, db_session, org_id, seed_org
+):
+    """``?force=true`` lets the user drop a schema even when batches
+    still reference it. The batches stay (they carry their own
+    ``parameter_mapping`` snapshot) but their ``schema_id`` is NULLed
+    so the FK no longer blocks the delete, and downstream rendering
+    falls back to the legacy/free-form mapping path."""
+    created = authenticated_client.post(
+        "/api/v1/call-import-schemas", json=_minimal_payload()
+    ).json()
+    schema_id = UUID(created["id"])
+
+    workspace = _default_workspace(db_session, org_id)
+    integration = TelephonyIntegration(
+        id=uuid4(),
+        organization_id=org_id,
+        provider="exotel",
+        auth_id="enc",
+        auth_token="enc",
+        is_active=True,
+        is_default=True,
+    )
+    db_session.add(integration)
+    db_session.flush()
+    batch_id = uuid4()
+    db_session.add(
+        CallImport(
+            id=batch_id,
+            organization_id=org_id,
+            workspace_id=workspace.id,
+            schema_id=schema_id,
+            provider="exotel",
+            telephony_integration_id=integration.id,
+            original_filename="batch.csv",
+            parameter_mapping={"conversation_id": "CallID"},
+            total_rows=0,
+            completed_rows=0,
+            failed_rows=0,
+            status=CallImportStatus.COMPLETED,
+        )
+    )
+    db_session.commit()
+
+    response = authenticated_client.delete(
+        f"/api/v1/call-import-schemas/{created['id']}?force=true"
+    )
+    assert response.status_code == 204, response.text
+
+    # Schema (and its children) are gone.
+    assert (
+        db_session.query(CallImportSchema)
+        .filter(CallImportSchema.id == schema_id)
+        .first()
+        is None
+    )
+    assert (
+        db_session.query(CallImportSchemaParameter)
+        .filter(CallImportSchemaParameter.schema_id == schema_id)
+        .count()
+        == 0
+    )
+
+    # The batch survived but is now schema-less. Its
+    # ``parameter_mapping`` snapshot is preserved so the detail /
+    # export endpoints can still render the rows.
+    batch = (
+        db_session.query(CallImport)
+        .filter(CallImport.id == batch_id)
+        .one()
+    )
+    assert batch.schema_id is None
+    assert batch.parameter_mapping == {"conversation_id": "CallID"}
 
 
 def test_delete_schema_404_for_unknown_id(

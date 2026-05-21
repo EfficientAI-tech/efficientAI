@@ -688,7 +688,11 @@ export default function CallImportDetail() {
                 setShowRunEval(true)
               }}
               disabled={!rows.length}
-              title={!rows.length ? 'No rows to evaluate yet' : 'Run an evaluation on this import'}
+              title={
+                !rows.length
+                  ? 'No rows to evaluate yet'
+                  : 'Open the run dialog — you must pick metrics and an STT provider/model before starting'
+              }
             >
               Run Evaluation
             </Button>
@@ -2178,9 +2182,28 @@ export default function CallImportDetail() {
                         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
                         <div className="space-y-3">
                         <div className="space-y-2">
-                          <p className="text-xs uppercase tracking-wide font-semibold text-gray-500">
-                            Enabled metrics ({enabledMetrics.length})
-                          </p>
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="text-xs uppercase tracking-wide font-semibold text-gray-500">
+                              Enabled metrics ({enabledMetrics.length})
+                              <span
+                                className="ml-1 text-red-600 normal-case"
+                                aria-label="required"
+                                title="At least one metric is required"
+                              >
+                                *
+                              </span>
+                            </p>
+                            {selectedMetricIds.length === 0 ? (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-200">
+                                <AlertCircle className="h-3 w-3" />
+                                Pick at least one
+                              </span>
+                            ) : (
+                              <span className="text-[10px] font-medium text-gray-500">
+                                {selectedMetricIds.length} selected
+                              </span>
+                            )}
+                          </div>
                           {enabledMetrics.map((metric: any) => {
                             const children: any[] = Array.isArray(metric.children)
                               ? metric.children.filter((c: any) => c.enabled)
@@ -2311,21 +2334,43 @@ export default function CallImportDetail() {
 
                         <div className="space-y-3">
                         {/* Run-level LLM config */}
-                        <div className="rounded-md border border-gray-200 bg-gray-50 p-3 space-y-2">
-                          <p className="text-xs uppercase tracking-wide font-semibold text-gray-500">
-                            Evaluation LLM
-                          </p>
-                          <p className="text-[11px] text-gray-500">
-                            Pick the LLM that scores every selected metric.
-                            Leave empty to keep the default (OpenAI · gpt-4o).
-                          </p>
-                          <ProviderModelPicker
-                            kind="llm"
-                            value={runLLM}
-                            onChange={setRunLLM}
-                            defaultLabel="Default (OpenAI · gpt-4o)"
-                            allowCredentialPick
-                          />
+                        {(() => {
+                          const llmPartial =
+                            Boolean(runLLM.provider) !==
+                            Boolean(runLLM.model)
+                          return (
+                            <div
+                              className={`rounded-md border p-3 space-y-2 ${
+                                llmPartial
+                                  ? 'border-red-300 bg-red-50/40'
+                                  : 'border-gray-200 bg-gray-50'
+                              }`}
+                            >
+                              <p className="text-xs uppercase tracking-wide font-semibold text-gray-500">
+                                Evaluation LLM
+                              </p>
+                              <p className="text-[11px] text-gray-500">
+                                Pick the LLM that scores every selected
+                                metric. Leave empty to keep the default
+                                (OpenAI · gpt-4o).
+                              </p>
+                              <ProviderModelPicker
+                                kind="llm"
+                                value={runLLM}
+                                onChange={setRunLLM}
+                                defaultLabel="Default (OpenAI · gpt-4o)"
+                                allowCredentialPick
+                              />
+                              {llmPartial && (
+                                <p className="flex items-start gap-1 text-[11px] font-medium text-red-700">
+                                  <AlertCircle className="h-3 w-3 mt-0.5 flex-shrink-0" />
+                                  <span>
+                                    {runLLM.provider
+                                      ? 'Pick a model for this provider, or clear the provider to use the default.'
+                                      : 'Pick a provider for this model, or clear the model to use the default.'}
+                                  </span>
+                                </p>
+                              )}
 
                           {overrideTargets.length > 0 && (
                             <div className="pt-2 border-t border-gray-200">
@@ -2388,7 +2433,9 @@ export default function CallImportDetail() {
                               )}
                             </div>
                           )}
-                        </div>
+                            </div>
+                          )
+                        })()}
 
                         {/* Diarisation is now mandatory for every eval
                             run — the checkbox is shown as always-on
@@ -2397,62 +2444,96 @@ export default function CallImportDetail() {
                             "Production vs Diarised" transcript-source
                             selector has been removed: runs always
                             score the diarised transcript. */}
-                        <div className="rounded-md border border-gray-200 bg-gray-50 p-3 space-y-2">
-                          <label className="flex items-start gap-2 text-sm">
-                            <input
-                              type="checkbox"
-                              checked
-                              disabled
-                              readOnly
-                              className="mt-0.5"
-                              aria-label="Auto-diarise rows missing a diarised transcript (always on)"
-                            />
-                            <span>
-                              <span className="font-medium text-gray-900">
-                                Auto-diarise rows missing a diarised transcript
-                              </span>
-                              <span className="block text-[11px] text-gray-500">
-                                Every evaluation scores the diarised
-                                transcript. Rows that don't already have
-                                one are diarised first via the STT
-                                provider you pick below.
-                              </span>
-                            </span>
-                          </label>
-                          <div className="pl-6 space-y-2">
-                            <ProviderModelPicker
-                              kind="stt"
-                              value={evalSTT}
-                              onChange={setEvalSTT}
-                              providerAllowList={STT_PROVIDER_ALLOWLIST}
-                              defaultLabel="Pick an STT provider"
-                              allowCredentialPick
-                            />
-                            <input
-                              type="text"
-                              value={evalSTTLanguage}
-                              onChange={(e) =>
-                                setEvalSTTLanguage(e.target.value)
-                              }
-                              placeholder="Language hint (e.g. en, hi)"
-                              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                            />
-                            <label className="flex items-start gap-2 text-xs">
-                              <input
-                                type="checkbox"
-                                checked={transcribeOverwrite}
-                                onChange={(e) =>
-                                  setTranscribeOverwrite(e.target.checked)
-                                }
-                              />
-                              <span>
-                                Overwrite existing diarised transcripts
-                                (otherwise rows with a stored transcript
-                                are reused).
-                              </span>
-                            </label>
-                          </div>
-                        </div>
+                        {(() => {
+                          const sttMissing =
+                            !evalSTT.provider || !evalSTT.model
+                          return (
+                            <div
+                              className={`rounded-md border p-3 space-y-2 ${
+                                sttMissing
+                                  ? 'border-red-300 bg-red-50/40 ring-1 ring-red-200'
+                                  : 'border-gray-200 bg-gray-50'
+                              }`}
+                            >
+                              <label className="flex items-start gap-2 text-sm">
+                                <input
+                                  type="checkbox"
+                                  checked
+                                  disabled
+                                  readOnly
+                                  className="mt-0.5"
+                                  aria-label="Auto-diarise rows missing a diarised transcript (always on)"
+                                />
+                                <span className="flex-1">
+                                  <span className="flex items-center gap-2 flex-wrap">
+                                    <span className="font-medium text-gray-900">
+                                      Auto-diarise rows missing a diarised
+                                      transcript
+                                    </span>
+                                    <span
+                                      className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                                        sttMissing
+                                          ? 'bg-red-100 text-red-700 ring-1 ring-inset ring-red-200'
+                                          : 'bg-green-50 text-green-700 ring-1 ring-inset ring-green-200'
+                                      }`}
+                                    >
+                                      {sttMissing ? 'Required' : 'Set'}
+                                    </span>
+                                  </span>
+                                  <span className="block text-[11px] text-gray-500">
+                                    Every evaluation scores the diarised
+                                    transcript. Rows that don't already
+                                    have one are diarised first via the
+                                    STT provider you pick below.
+                                  </span>
+                                </span>
+                              </label>
+                              <div className="pl-6 space-y-2">
+                                <ProviderModelPicker
+                                  kind="stt"
+                                  value={evalSTT}
+                                  onChange={setEvalSTT}
+                                  providerAllowList={STT_PROVIDER_ALLOWLIST}
+                                  defaultLabel="Pick an STT provider"
+                                  allowCredentialPick
+                                />
+                                {sttMissing && (
+                                  <p className="flex items-start gap-1 text-[11px] font-medium text-red-700">
+                                    <AlertCircle className="h-3 w-3 mt-0.5 flex-shrink-0" />
+                                    <span>
+                                      {!evalSTT.provider
+                                        ? 'Pick an STT provider — auto-diarisation is mandatory for every run.'
+                                        : 'Pick a model for this STT provider to enable the run.'}
+                                    </span>
+                                  </p>
+                                )}
+                                <input
+                                  type="text"
+                                  value={evalSTTLanguage}
+                                  onChange={(e) =>
+                                    setEvalSTTLanguage(e.target.value)
+                                  }
+                                  placeholder="Language hint (e.g. en, hi)"
+                                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                                />
+                                <label className="flex items-start gap-2 text-xs">
+                                  <input
+                                    type="checkbox"
+                                    checked={transcribeOverwrite}
+                                    onChange={(e) =>
+                                      setTranscribeOverwrite(e.target.checked)
+                                    }
+                                  />
+                                  <span>
+                                    Overwrite existing diarised transcripts
+                                    (otherwise rows with a stored transcript
+                                    are reused).
+                                  </span>
+                                </label>
+                              </div>
+                            </div>
+                          )
+                        })()}
 
                         {/* Metric discovery (opt-in per run). When
                             enabled, the LLM is asked once per row to
@@ -2507,29 +2588,71 @@ export default function CallImportDetail() {
                       </div>
                     ) : null}
 
-                    <div className="flex gap-2 pt-2">
-                      <Button
-                        variant="outline"
-                        onClick={() => setShowRunEval(false)}
-                        disabled={runEvaluationMutation.isPending}
-                        className="flex-1"
-                      >
-                        Cancel
-                      </Button>
-                      <Button
-                        variant="primary"
-                        isLoading={runEvaluationMutation.isPending}
-                        disabled={
-                          selectedMetricIds.length === 0 ||
-                          enabledMetrics.length === 0 ||
-                          runEvaluationMutation.isPending ||
-                          // STT provider+model are now required on
-                          // every run (auto-diarise is mandatory).
-                          !evalSTT.provider ||
-                          !evalSTT.model ||
-                          (Boolean(runLLM.provider) !==
-                            Boolean(runLLM.model))
-                        }
+                    {(() => {
+                      const disabledReasons: string[] = []
+                      if (enabledMetrics.length === 0) {
+                        disabledReasons.push(
+                          'Enable at least one agent metric in Metrics.',
+                        )
+                      } else if (selectedMetricIds.length === 0) {
+                        disabledReasons.push('Select at least one metric to score.')
+                      }
+                      if (!evalSTT.provider) {
+                        disabledReasons.push(
+                          'Pick an STT provider (auto-diarisation is required).',
+                        )
+                      } else if (!evalSTT.model) {
+                        disabledReasons.push(
+                          'Pick an STT model for the selected provider.',
+                        )
+                      }
+                      if (
+                        Boolean(runLLM.provider) !== Boolean(runLLM.model)
+                      ) {
+                        disabledReasons.push(
+                          'Finish the Evaluation LLM selection (pick both a provider and a model, or clear both).',
+                        )
+                      }
+                      const isDisabled =
+                        disabledReasons.length > 0 ||
+                        runEvaluationMutation.isPending
+                      return (
+                        <>
+                          {disabledReasons.length > 0 && (
+                            <div
+                              role="status"
+                              className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"
+                            >
+                              <p className="flex items-center gap-1.5 font-medium">
+                                <AlertCircle className="h-4 w-4" />
+                                Finish the required fields to start this run
+                              </p>
+                              <ul className="mt-1 list-disc pl-7 space-y-0.5 text-[12px]">
+                                {disabledReasons.map((reason) => (
+                                  <li key={reason}>{reason}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+
+                          <div className="flex gap-2 pt-2">
+                            <Button
+                              variant="outline"
+                              onClick={() => setShowRunEval(false)}
+                              disabled={runEvaluationMutation.isPending}
+                              className="flex-1"
+                            >
+                              Cancel
+                            </Button>
+                            <Button
+                              variant="primary"
+                              isLoading={runEvaluationMutation.isPending}
+                              disabled={isDisabled}
+                              title={
+                                disabledReasons.length > 0
+                                  ? `Can't start yet:\n• ${disabledReasons.join('\n• ')}`
+                                  : 'Start this evaluation run'
+                              }
                         onClick={() => {
                           // Build a clean overrides payload — drop any
                           // entries that didn't end up with both a
@@ -2579,11 +2702,14 @@ export default function CallImportDetail() {
                             discover_new_metrics: discoverNewMetrics,
                           })
                         }}
-                        className="flex-1"
-                      >
-                        Start
-                      </Button>
-                    </div>
+                              className="flex-1"
+                            >
+                              Start
+                            </Button>
+                          </div>
+                        </>
+                      )
+                    })()}
                   </div>
                 </div>
               </div>

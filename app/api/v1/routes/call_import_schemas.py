@@ -20,7 +20,7 @@ from __future__ import annotations
 from typing import List
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
@@ -333,6 +333,18 @@ async def update_call_import_schema(
 )
 async def delete_call_import_schema(
     schema_id: UUID,
+    force: bool = Query(
+        False,
+        description=(
+            "When true, detach this schema from any CallImport batches "
+            "that reference it (sets ``call_imports.schema_id = NULL``) "
+            "before deleting the schema row. Use this to drop a schema "
+            "whose batches you want to keep — already-imported batches "
+            "keep working via their snapshotted ``parameter_mapping``, "
+            "while staged-but-not-yet-imported batches will need a new "
+            "schema picked before they can be imported."
+        ),
+    ),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
@@ -340,24 +352,46 @@ async def delete_call_import_schema(
 ) -> Response:
     """Delete a schema.
 
-    Refuses with 409 when any ``CallImport`` row still references the
-    schema (matches the ``ON DELETE RESTRICT`` FK behavior); the user
-    must either delete the dependent batches first or migrate them to
-    a different schema before retrying.
+    By default refuses with 409 when any ``CallImport`` row still
+    references the schema (matches the ``ON DELETE RESTRICT`` FK
+    behavior); the user must either delete the dependent batches
+    first, migrate them to a different schema, or retry with
+    ``?force=true`` to detach them in one shot.
+
+    ``force=true`` is safe for completed batches: every batch keeps
+    its own ``parameter_mapping`` snapshot, and downstream rendering
+    (detail page, evaluation export) already handles a NULL
+    ``schema_id`` gracefully. Batches still in the staged ``uploaded``
+    state will need a fresh schema before they can be imported - the
+    existing import endpoint already enforces that.
     """
     del api_key
 
     schema = _load_schema(db, schema_id, organization_id, workspace_id)
 
     usage = _count_usage(db, schema.id)
-    if usage > 0:
+    if usage > 0 and not force:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
                 f"Cannot delete schema '{schema.name}': it is still in "
-                f"use by {usage} call import batch(es)."
+                f"use by {usage} call import batch(es). Retry with "
+                f"force=true to detach them and delete anyway."
             ),
         )
+
+    if usage > 0:
+        # Detach in-use batches before dropping the schema. The FK on
+        # ``call_imports.schema_id`` is ON DELETE RESTRICT, so the
+        # explicit UPDATE is what lets ``db.delete(schema)`` succeed.
+        # Scope by (organization_id, workspace_id) so a malicious /
+        # mis-targeted request can never NULL another tenant's rows.
+        db.query(CallImport).filter(
+            CallImport.schema_id == schema.id,
+            CallImport.organization_id == organization_id,
+            CallImport.workspace_id == workspace_id,
+        ).update({CallImport.schema_id: None}, synchronize_session=False)
+        db.flush()
 
     db.delete(schema)
     db.commit()
