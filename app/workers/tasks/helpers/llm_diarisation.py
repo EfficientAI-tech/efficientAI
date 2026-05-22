@@ -355,6 +355,17 @@ def diarize_transcript_with_llm(
         config=config,
     )
 
+    return _parse_turns_from_response(response)
+
+
+def _parse_turns_from_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Common JSON-array → ``[{speaker, text, start, end}, ...]`` parser.
+
+    Shared between the text-diariser (:func:`diarize_transcript_with_llm`)
+    and the audio-diariser (:func:`diarize_audio_with_llm`) so both paths
+    produce identical downstream shapes for
+    :func:`app.workers.tasks.transcribe_call_import_row._segments_to_user_agent_turns`.
+    """
     raw_text = (response.get("text") or "").strip()
     parsed = _extract_json_array(raw_text)
     if parsed is None:
@@ -420,3 +431,301 @@ def diarize_transcript_with_llm(
         )
 
     return turns
+
+
+# ---------------------------------------------------------------------------
+# Audio-input ("LLM-only") diarisation
+# ---------------------------------------------------------------------------
+#
+# The companion path used when the operator picks ``mode="llm_only"`` in the
+# transcribe modal. Instead of running an STT step first, we hand the raw
+# audio bytes to a multimodal chat model that both transcribes AND diarises
+# in a single pass, governed by the same custom diarisation prompt as the
+# text path. The output contract is identical
+# (``[{"speaker": "Speaker N", "text": "..."}, ...]``) so downstream code in
+# :mod:`app.workers.tasks.transcribe_call_import_row` is unchanged.
+#
+# Provider support is intentionally narrow — only providers whose chat
+# completions API accepts inline audio content parts:
+#   * OpenAI ``gpt-4o-audio-preview`` family → ``{"type": "input_audio"}``
+#   * Google Gemini 1.5 / 2.0+ → ``{"type": "image_url",
+#     "image_url": "data:audio/<fmt>;base64,..."}`` (LiteLLM normalises this
+#     into Gemini's native ``inline_data`` shape).
+# Other providers raise :class:`LLMDiarisationError` with a clear message
+# so the row surfaces a typed error instead of a cryptic LiteLLM crash.
+
+# Mapping of common audio file extensions to mime types + the ``format``
+# string OpenAI expects in its ``input_audio`` content part. We only list
+# formats both providers accept; anything else is rejected up-front.
+_AUDIO_MIME_BY_EXT: Dict[str, tuple[str, str]] = {
+    "wav": ("audio/wav", "wav"),
+    "mp3": ("audio/mpeg", "mp3"),
+    "mpeg": ("audio/mpeg", "mp3"),
+    "mp4": ("audio/mp4", "mp4"),
+    "m4a": ("audio/mp4", "mp4"),
+    "ogg": ("audio/ogg", "ogg"),
+    "flac": ("audio/flac", "flac"),
+    "webm": ("audio/webm", "webm"),
+}
+
+# Cap the audio payload at a safe size. Both OpenAI and Gemini accept
+# multi-MB audio, but base64-encoding inflates by ~33% and our LiteLLM
+# transport has a request-size ceiling — better to surface a clear
+# "recording too large" error than wait for a generic timeout/500.
+_MAX_AUDIO_BYTES = 25 * 1024 * 1024  # 25 MiB raw → ~33 MB base64
+
+# Providers we currently know how to build a multimodal audio prompt
+# for. Adding a new provider means teaching ``_build_audio_messages``
+# how to shape its content parts; until then we surface a clean error.
+_AUDIO_SUPPORTED_PROVIDERS: frozenset[str] = frozenset({"openai", "google"})
+
+
+def _detect_audio_format(
+    *, audio_file_key: Optional[str], explicit_mime: Optional[str]
+) -> tuple[str, str]:
+    """Resolve ``(mime_type, openai_format)`` for an audio payload.
+
+    Prefers an explicit ``mime_type`` (e.g. when the caller already
+    knows it from S3 metadata) and falls back to the file extension on
+    the S3 key. Raises :class:`LLMDiarisationError` for unrecognised
+    formats so the worker surfaces an actionable error.
+    """
+    if explicit_mime:
+        normalised = explicit_mime.strip().lower()
+        for ext, (mime, fmt) in _AUDIO_MIME_BY_EXT.items():
+            if normalised == mime:
+                return mime, fmt
+
+    ext = ""
+    if audio_file_key:
+        ext = (audio_file_key.rsplit(".", 1)[-1] or "").strip().lower()
+    mapped = _AUDIO_MIME_BY_EXT.get(ext)
+    if mapped is None:
+        raise LLMDiarisationError(
+            "Could not determine an audio format the multimodal LLM "
+            f"accepts (extension '{ext or '<unknown>'}'). Supported: "
+            f"{sorted(_AUDIO_MIME_BY_EXT.keys())}."
+        )
+    return mapped
+
+
+def _build_audio_messages(
+    *,
+    provider_value: str,
+    audio_b64: str,
+    mime_type: str,
+    openai_format: str,
+    system_prompt: str,
+) -> List[Dict[str, Any]]:
+    """Build a provider-shaped messages list for the audio diariser.
+
+    LiteLLM's content-part vocabulary differs slightly per provider:
+
+    * **OpenAI** accepts a first-class ``{"type": "input_audio",
+      "input_audio": {"data": <b64>, "format": "wav|mp3|..."}}`` content
+      part on ``gpt-4o-audio-*`` models.
+    * **Gemini** accepts inline media as either a ``{"type":
+      "image_url", "image_url": "data:<mime>;base64,..."}`` data-URI
+      part (LiteLLM rewrites this into ``inline_data``) — the same
+      shape used for inline images today, just with an audio mime
+      type. This is the only LiteLLM-portable spelling for Gemini at
+      the time of writing.
+
+    A user-message text block is always included so the model has a
+    JSON output contract in the conversation (mirrors the text-path
+    helper's reason for the wrapper).
+    """
+    user_instructions = (
+        "Transcribe AND diarise the attached call recording according "
+        "to the system prompt. Return ONLY a JSON object with a single "
+        "key `turns` whose value is the array of turn objects "
+        "described above — no prose, no markdown fence."
+    )
+
+    if provider_value == "openai":
+        audio_part: Dict[str, Any] = {
+            "type": "input_audio",
+            "input_audio": {"data": audio_b64, "format": openai_format},
+        }
+    else:  # google / Gemini
+        audio_part = {
+            "type": "image_url",
+            "image_url": f"data:{mime_type};base64,{audio_b64}",
+        }
+
+    return [
+        {"role": "system", "content": system_prompt},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": user_instructions},
+                audio_part,
+            ],
+        },
+    ]
+
+
+def diarize_audio_with_llm(
+    audio_bytes: bytes,
+    *,
+    llm_provider: str,
+    llm_model: str,
+    organization_id: UUID,
+    db: Session,
+    custom_prompt: Optional[str] = None,
+    credential_id: Optional[UUID] = None,
+    temperature: float = 0.0,
+    audio_file_key: Optional[str] = None,
+    mime_type: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Ask a multimodal LLM to transcribe + diarise raw audio in one pass.
+
+    Functionally the audio-input twin of :func:`diarize_transcript_with_llm`:
+    same return shape (raw ``Speaker N`` labels with synthetic
+    monotonic timestamps), same custom-prompt UX, same JSON-object
+    output contract. The difference is that no STT step runs first —
+    the model sees the audio directly.
+
+    Parameters
+    ----------
+    audio_bytes:
+        The raw bytes of the recording (typically fetched via
+        ``s3_service.download_file_by_key``). Empty input short-
+        circuits to ``[]`` so callers don't have to special-case it.
+    llm_provider:
+        Must be one of :data:`_AUDIO_SUPPORTED_PROVIDERS` (``openai``
+        or ``google`` at the moment). Other providers raise a typed
+        error instead of attempting an unsupported call.
+    llm_model:
+        Concrete model name. The caller is responsible for picking a
+        model that actually accepts audio input (e.g.
+        ``gpt-4o-audio-preview``, ``gemini-1.5-pro``); we don't
+        maintain a server-side allowlist because new models ship
+        constantly and the user already chose it explicitly.
+    audio_file_key, mime_type:
+        Either an S3 key (whose extension determines the mime type)
+        or an explicit mime type can be passed; at least one is
+        required so we can label the audio content part correctly.
+    """
+    if not audio_bytes:
+        return []
+
+    if len(audio_bytes) > _MAX_AUDIO_BYTES:
+        raise LLMDiarisationError(
+            "Recording is too large for the LLM-only diariser "
+            f"({len(audio_bytes)} bytes > {_MAX_AUDIO_BYTES} byte cap). "
+            "Use the STT + LLM pipeline for this row, or split the "
+            "audio before re-uploading."
+        )
+
+    provider_value = (llm_provider or "").strip().lower()
+    if provider_value not in _AUDIO_SUPPORTED_PROVIDERS:
+        raise LLMDiarisationError(
+            f"Provider '{llm_provider}' is not supported in LLM-only "
+            "mode yet. Pick an OpenAI gpt-4o-audio model or a Google "
+            "Gemini model that accepts audio input."
+        )
+
+    try:
+        provider_enum = ModelProvider(provider_value)
+    except ValueError as exc:
+        raise LLMDiarisationError(
+            f"Unknown LLM provider '{llm_provider}' for diarisation."
+        ) from exc
+
+    resolved_mime, openai_format = _detect_audio_format(
+        audio_file_key=audio_file_key, explicit_mime=mime_type
+    )
+
+    # Lazy import — base64 is cheap but we still keep helper imports
+    # at call sites so worker boot time isn't polluted.
+    import base64 as _b64
+
+    audio_b64 = _b64.b64encode(audio_bytes).decode("ascii")
+    system_prompt = (custom_prompt or "").strip() or DEFAULT_DIARIZATION_PROMPT
+
+    messages = _build_audio_messages(
+        provider_value=provider_value,
+        audio_b64=audio_b64,
+        mime_type=resolved_mime,
+        openai_format=openai_format,
+        system_prompt=system_prompt,
+    )
+
+    # ``response_format`` is forwarded for OpenAI / Gemini and dropped
+    # by other providers via ``litellm.drop_params=True`` — same
+    # rationale as the text-diariser path.
+    config = {"response_format": {"type": "json_object"}}
+
+    try:
+        response = llm_service.generate_response(
+            messages=messages,
+            llm_provider=provider_enum,
+            llm_model=llm_model,
+            organization_id=organization_id,
+            db=db,
+            temperature=temperature,
+            credential_id=credential_id,
+            config=config,
+        )
+    except Exception as exc:
+        # LiteLLM surfaces "model does not support audio input" as a
+        # generic RuntimeError. Translate it to LLMDiarisationError so
+        # the worker treats it as a typed user-facing failure (bad
+        # model choice) rather than a transient crash. We also try to
+        # detect the most common cause — a non-audio-capable OpenAI
+        # model (e.g. ``gpt-4.1`` / ``gpt-5*``) being chosen for
+        # LLM-only mode — and rewrite the otherwise cryptic
+        # ``"Content blocks are expected to be either text or
+        # image_url type"`` 400 into a recommendation the operator
+        # can act on.
+        raise LLMDiarisationError(
+            _humanise_audio_call_error(
+                provider=llm_provider, model=llm_model, exc=exc
+            )
+        ) from exc
+
+    return _parse_turns_from_response(response)
+
+
+# Substring fingerprints LiteLLM/OpenAI/Gemini surface when the chosen
+# chat-completions model doesn't actually accept audio content parts.
+# We match on these to convert the dense provider error into actionable
+# guidance pointing at the audio-capable model families.
+_AUDIO_UNSUPPORTED_FINGERPRINTS: tuple[str, ...] = (
+    # OpenAI returns this verbatim for non-audio-capable Chat models
+    # (gpt-4.1, gpt-5*, gpt-4o w/o the ``-audio-preview`` suffix, …).
+    "Content blocks are expected to be either text or image_url",
+    # Generic LiteLLM phrasings that surface for audio-incapable models
+    # across providers — keep this list short and high-signal to avoid
+    # rewriting unrelated 400s.
+    "does not support audio",
+    "audio input is not supported",
+    "unsupported content type",
+)
+
+
+def _humanise_audio_call_error(
+    *, provider: str, model: str, exc: BaseException
+) -> str:
+    """Rewrite raw LiteLLM/provider 400s into an actionable diariser error.
+
+    Falls back to the original wrapper string when the error doesn't
+    match any of the known "model can't take audio" fingerprints —
+    we want to keep the original detail for genuinely unrelated
+    failures (auth, rate limit, quota) while still surfacing a
+    helpful message for the bad-model-choice case that dominates
+    real-world support tickets.
+    """
+    msg = str(exc)
+    if any(fp in msg for fp in _AUDIO_UNSUPPORTED_FINGERPRINTS):
+        return (
+            f"Model '{model}' on provider '{provider}' does not accept "
+            "audio input via Chat Completions, which is what LLM-only "
+            "diarisation uses. Pick an audio-capable model: OpenAI's "
+            "gpt-4o-audio-preview / gpt-4o-mini-audio-preview, or any "
+            "Google Gemini 1.5+ model (gemini-1.5-pro, gemini-2.0-flash, "
+            "gemini-2.5-pro, …). Provider error: "
+            + msg
+        )
+    return f"LLM-only diarisation call failed for {provider}/{model}: {msg}"

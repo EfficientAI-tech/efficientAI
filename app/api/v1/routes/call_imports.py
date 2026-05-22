@@ -2606,6 +2606,7 @@ async def transcribe_call_import(
                 if payload.diarization_llm_credential_id
                 else None,
                 payload.diarization_prompt,
+                payload.mode,
             )
             enqueued += 1
         except Exception as exc:
@@ -2696,6 +2697,7 @@ async def transcribe_call_import_row(
             if payload.diarization_llm_credential_id
             else None,
             payload.diarization_prompt,
+            payload.mode,
         )
         return CallImportTranscribeResponse(
             queued=1,

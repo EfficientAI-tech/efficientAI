@@ -1845,6 +1845,23 @@ class CallImportRow(Base):
     diarised_llm_model = Column(String(100), nullable=True)
     diarised_llm_credential_id = Column(UUID(as_uuid=True), nullable=True)
     diarised_prompt = Column(Text, nullable=True)
+    # Which diarisation pipeline produced this row's turns.
+    #   * ``"stt_llm"`` (default) — two-stage: STT then LLM diariser.
+    #     ``diarised_transcript_provider``/``_model`` describe the STT
+    #     side; ``diarised_llm_provider``/``_model`` the LLM side.
+    #   * ``"llm_only"`` — single-stage: audio fed straight to a
+    #     multimodal LLM. ``diarised_transcript_provider`` is stamped
+    #     with the sentinel ``"llm_only"``; the real model is on
+    #     ``diarised_llm_*``.
+    # Persisting it on the row (not just the run) lets the row detail
+    # panel render the right "Diarised via …" label even for ad-hoc
+    # standalone transcribes (no parent evaluation).
+    transcribe_mode = Column(
+        String(20),
+        nullable=False,
+        default="stt_llm",
+        server_default="stt_llm",
+    )
 
     status = Column(
         Enum(CallImportRowStatus, values_callable=get_enum_values),
@@ -2036,6 +2053,18 @@ class CallImportEvaluation(Base):
     diarisation_llm_model = Column(String(100), nullable=True)
     diarisation_llm_credential_id = Column(UUID(as_uuid=True), nullable=True)
     diarisation_prompt = Column(Text, nullable=True)
+    # Mode the run was *created* with for its auto-transcribe step.
+    # Retry chains read this to decide whether to enqueue an STT+LLM
+    # transcribe or a single-stage multimodal LLM transcribe — without
+    # it we'd have to infer the mode from "stt_provider is NULL", which
+    # would silently break legacy rows that simply never configured
+    # auto-transcribe. See migration 041 for the column DDL.
+    transcribe_mode = Column(
+        String(20),
+        nullable=False,
+        default="stt_llm",
+        server_default="stt_llm",
+    )
 
     # Which of the two transcripts on each ``CallImportRow`` this run
     # scored against. ``'production'`` reads ``CallImportRow.transcript``

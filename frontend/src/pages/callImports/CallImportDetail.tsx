@@ -9,7 +9,6 @@ import {
   AudioLines,
   BarChart3,
   Check,
-  ChevronLeft,
   ChevronRight,
   Download,
   Edit3,
@@ -47,6 +46,7 @@ import type {
 } from '../../types/api'
 import Button from '../../components/Button'
 import ConfirmModal from '../../components/ConfirmModal'
+import Pagination from '../../components/Pagination'
 import StatusBadge from '../../components/shared/StatusBadge'
 import ProviderModelPicker, {
   type ProviderModelValue,
@@ -166,6 +166,14 @@ export default function CallImportDetail() {
   // no longer user-editable so we don't track it as state; the request
   // payload below hardcodes ``auto_transcribe: true``.
   const [transcribeOverwrite, setTranscribeOverwrite] = useState(false)
+  // Same toggle as the standalone Transcribe modal: ``stt_llm`` (the
+  // legacy two-stage path) vs ``llm_only`` (multimodal audio→LLM in
+  // one pass). The Run-Evaluation modal carries an independent copy
+  // so flipping the standalone modal doesn't quietly mutate the eval
+  // run's transcribe step.
+  const [evalTranscribeMode, setEvalTranscribeMode] = useState<
+    'stt_llm' | 'llm_only'
+  >('stt_llm')
   const [evalSTT, setEvalSTT] = useState<ProviderModelValue>({
     provider: null,
     model: null,
@@ -197,6 +205,15 @@ export default function CallImportDetail() {
   const [transcribeTargetRows, setTranscribeTargetRows] = useState<
     CallImportRow[] | null
   >(null)
+  // Which diarisation pipeline the operator has selected for THIS
+  // modal instance. ``stt_llm`` is the legacy two-stage path (STT
+  // then LLM diariser); ``llm_only`` hides the STT picker and feeds
+  // the audio straight to a multimodal chat model. Persists across
+  // modal opens within a session so power-users don't have to re-
+  // toggle every time.
+  const [transcribeMode, setTranscribeMode] = useState<
+    'stt_llm' | 'llm_only'
+  >('stt_llm')
   const [transcribeSTT, setTranscribeSTT] = useState<ProviderModelValue>({
     provider: null,
     model: null,
@@ -522,6 +539,7 @@ export default function CallImportDetail() {
   const transcribeRowsMutation = useMutation({
     mutationFn: ({
       rowIds,
+      mode,
       stt,
       diariserLLM,
       diarisationPrompt,
@@ -529,6 +547,7 @@ export default function CallImportDetail() {
       overwrite,
     }: {
       rowIds: string[] | null
+      mode: 'stt_llm' | 'llm_only'
       stt: ProviderModelValue
       diariserLLM: ProviderModelValue
       diarisationPrompt: string
@@ -537,10 +556,16 @@ export default function CallImportDetail() {
     }) => {
       const trimmedLang = language.trim() || null
       const trimmedPrompt = diarisationPrompt.trim() || null
+      // STT fields are conditionally present: required when the
+      // operator picked the legacy STT+LLM path, omitted (sent as
+      // null) when they picked LLM-only so the backend's validator
+      // accepts the request. We always send `mode` explicitly so the
+      // server never has to guess from the absence of stt_*.
       const base = {
-        stt_provider: stt.provider as string,
-        stt_model: stt.model as string,
-        credential_id: stt.credential_id ?? null,
+        mode,
+        stt_provider: mode === 'stt_llm' ? (stt.provider as string) : null,
+        stt_model: mode === 'stt_llm' ? (stt.model as string) : null,
+        credential_id: mode === 'stt_llm' ? (stt.credential_id ?? null) : null,
         language: trimmedLang,
         only_missing: !overwrite,
         overwrite_existing: overwrite,
@@ -1564,6 +1589,27 @@ export default function CallImportDetail() {
                 {selectAllError}
               </div>
             )}
+            {/* Top pagination — mirrors the bottom bar so users don't
+                have to scroll past hundreds of rows to flip pages.
+                Renders nothing when there's only one page of results. */}
+            <Pagination
+              page={rowPage}
+              pageCount={rowTotalPages}
+              total={filteredTotalRows}
+              pageSize={ROW_PAGE_SIZE}
+              variant="card"
+              className="mb-2"
+              onPrev={() =>
+                setRowOffset((o) => Math.max(0, o - ROW_PAGE_SIZE))
+              }
+              onNext={() =>
+                setRowOffset((o) =>
+                  o + ROW_PAGE_SIZE >= filteredTotalRows
+                    ? o
+                    : o + ROW_PAGE_SIZE,
+                )
+              }
+            />
             {rows.map((row) => {
               const hasRecording = !!row.recording_s3_key
               const isThisPlaying = playingRowId === row.id && isPlaying
@@ -2102,37 +2148,24 @@ export default function CallImportDetail() {
               )
             })}
 
-            {rowTotalPages > 1 && (
-              <div className="px-4 py-3 bg-gray-50 border border-gray-200 flex items-center justify-between mt-3 rounded-lg">
-                <p className="text-sm text-gray-600">
-                  Page {rowPage} of {rowTotalPages}
-                </p>
-                <div className="flex gap-2">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setRowOffset((o) => Math.max(0, o - ROW_PAGE_SIZE))}
-                    disabled={rowOffset <= 0}
-                    leftIcon={<ChevronLeft className="h-4 w-4" />}
-                  >
-                    Prev
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() =>
-                      setRowOffset((o) =>
-                        o + ROW_PAGE_SIZE >= filteredTotalRows ? o : o + ROW_PAGE_SIZE,
-                      )
-                    }
-                    disabled={rowOffset + ROW_PAGE_SIZE >= filteredTotalRows}
-                    rightIcon={<ChevronRight className="h-4 w-4" />}
-                  >
-                    Next
-                  </Button>
-                </div>
-              </div>
-            )}
+            <Pagination
+              page={rowPage}
+              pageCount={rowTotalPages}
+              total={filteredTotalRows}
+              pageSize={ROW_PAGE_SIZE}
+              variant="card"
+              className="mt-3"
+              onPrev={() =>
+                setRowOffset((o) => Math.max(0, o - ROW_PAGE_SIZE))
+              }
+              onNext={() =>
+                setRowOffset((o) =>
+                  o + ROW_PAGE_SIZE >= filteredTotalRows
+                    ? o
+                    : o + ROW_PAGE_SIZE,
+                )
+              }
+            />
           </div>
         )}
 
@@ -2574,9 +2607,15 @@ export default function CallImportDetail() {
               targets.length === 1
                 ? `Transcribe row #${(targets[0]?.row_index ?? 0) + 1}`
                 : `Transcribe ${targets.length} rows`
+            // The STT picker is only required in the legacy two-stage
+            // path; the new ``llm_only`` path skips STT entirely so we
+            // drop the STT-validity check from ``canSubmit`` when that
+            // mode is active. The diariser LLM picker is required in
+            // both modes (it's the model that produces the turns).
             const canSubmit =
-              !!transcribeSTT.provider &&
-              !!transcribeSTT.model &&
+              (transcribeMode === 'llm_only'
+                ? true
+                : !!transcribeSTT.provider && !!transcribeSTT.model) &&
               !!transcribeDiariserLLM.provider &&
               !!transcribeDiariserLLM.model &&
               targets.length > 0 &&
@@ -2598,45 +2637,110 @@ export default function CallImportDetail() {
                     </button>
                   </div>
                   <div className="p-6 space-y-4 overflow-y-auto">
+                    {/* Mode toggle: STT+LLM vs LLM only. Rendered as a
+                        segmented control so the active path is
+                        unambiguous at a glance and the user can flip
+                        between the two without scrolling. */}
                     <div className="space-y-2">
                       <p className="text-xs uppercase tracking-wide text-gray-500 font-semibold">
-                        1. Speech-to-text
+                        Diarisation mode
                       </p>
-                      <p className="text-sm text-gray-600">
-                        The STT step produces plain text only; the LLM
-                        below splits it into agent / user turns.
+                      <div
+                        role="tablist"
+                        aria-label="Diarisation mode"
+                        className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5"
+                      >
+                        <button
+                          type="button"
+                          role="tab"
+                          aria-pressed={transcribeMode === 'stt_llm'}
+                          onClick={() => setTranscribeMode('stt_llm')}
+                          className={`px-3 py-1.5 text-xs font-medium rounded-md transition ${
+                            transcribeMode === 'stt_llm'
+                              ? 'bg-white text-gray-900 shadow-sm'
+                              : 'text-gray-600 hover:text-gray-900'
+                          }`}
+                        >
+                          STT + LLM diariser
+                        </button>
+                        <button
+                          type="button"
+                          role="tab"
+                          aria-pressed={transcribeMode === 'llm_only'}
+                          onClick={() => setTranscribeMode('llm_only')}
+                          className={`px-3 py-1.5 text-xs font-medium rounded-md transition ${
+                            transcribeMode === 'llm_only'
+                              ? 'bg-white text-gray-900 shadow-sm'
+                              : 'text-gray-600 hover:text-gray-900'
+                          }`}
+                        >
+                          LLM only (audio in)
+                        </button>
+                      </div>
+                      <p className="text-[11px] text-gray-500">
+                        {transcribeMode === 'stt_llm'
+                          ? 'Two-stage pipeline: STT transcribes the audio, then an LLM splits it into agent / user turns using your prompt.'
+                          : 'Single-stage pipeline: the audio is fed directly to a multimodal LLM along with your prompt; the model both transcribes and diarises in one call. Pick a model that accepts audio input (e.g. Gemini 1.5/2.0, GPT-4o audio-preview).'}
                       </p>
-                      <ProviderModelPicker
-                        kind="stt"
-                        value={transcribeSTT}
-                        onChange={setTranscribeSTT}
-                        providerAllowList={STT_PROVIDER_ALLOWLIST}
-                        defaultLabel="Pick an STT provider"
-                        allowCredentialPick
-                      />
-                      <input
-                        type="text"
-                        value={transcribeLanguage}
-                        onChange={(e) =>
-                          setTranscribeLanguage(e.target.value)
-                        }
-                        placeholder="Language hint (e.g. en, hi)"
-                        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                      />
                     </div>
+                    {transcribeMode === 'stt_llm' && (
+                      <div className="space-y-2">
+                        <p className="text-xs uppercase tracking-wide text-gray-500 font-semibold">
+                          1. Speech-to-text
+                        </p>
+                        <p className="text-sm text-gray-600">
+                          The STT step produces plain text only; the LLM
+                          below splits it into agent / user turns.
+                        </p>
+                        <ProviderModelPicker
+                          kind="stt"
+                          value={transcribeSTT}
+                          onChange={setTranscribeSTT}
+                          providerAllowList={STT_PROVIDER_ALLOWLIST}
+                          defaultLabel="Pick an STT provider"
+                          allowCredentialPick
+                        />
+                        <input
+                          type="text"
+                          value={transcribeLanguage}
+                          onChange={(e) =>
+                            setTranscribeLanguage(e.target.value)
+                          }
+                          placeholder="Language hint (e.g. en, hi)"
+                          className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                        />
+                      </div>
+                    )}
                     <div className="space-y-2 pt-1 border-t border-gray-100">
                       <p className="text-xs uppercase tracking-wide text-gray-500 font-semibold pt-3">
-                        2. LLM diariser
+                        {transcribeMode === 'stt_llm'
+                          ? '2. LLM diariser'
+                          : 'Multimodal diariser LLM'}
                       </p>
                       <p className="text-sm text-gray-600">
-                        Pick a chat model and tweak the prompt below.
-                        The model receives the STT plain text and the
-                        prompt and must return a JSON array of
-                        {' '}
-                        <code className="px-1 bg-gray-100 rounded text-[11px]">
-                          {'{ speaker, text }'}
-                        </code>{' '}
-                        turns.
+                        {transcribeMode === 'stt_llm' ? (
+                          <>
+                            Pick a chat model and tweak the prompt below.
+                            The model receives the STT plain text and the
+                            prompt and must return a JSON array of{' '}
+                            <code className="px-1 bg-gray-100 rounded text-[11px]">
+                              {'{ speaker, text }'}
+                            </code>{' '}
+                            turns.
+                          </>
+                        ) : (
+                          <>
+                            Pick a chat model that accepts audio input
+                            (e.g. <code className="px-1 bg-gray-100 rounded text-[11px]">gemini-1.5-pro</code>,{' '}
+                            <code className="px-1 bg-gray-100 rounded text-[11px]">gpt-4o-audio-preview</code>).
+                            The model receives the recording bytes and
+                            the prompt and must return a JSON array of{' '}
+                            <code className="px-1 bg-gray-100 rounded text-[11px]">
+                              {'{ speaker, text }'}
+                            </code>{' '}
+                            turns.
+                          </>
+                        )}
                       </p>
                       <ProviderModelPicker
                         kind="llm"
@@ -2644,6 +2748,7 @@ export default function CallImportDetail() {
                         onChange={setTranscribeDiariserLLM}
                         defaultLabel="Pick an LLM for diarisation"
                         allowCredentialPick
+                        audioCapableOnly={transcribeMode === 'llm_only'}
                       />
                       <div className="flex items-center justify-between pt-1">
                         <label className="text-xs font-medium text-gray-700">
@@ -2735,6 +2840,7 @@ export default function CallImportDetail() {
                       onClick={() =>
                         transcribeRowsMutation.mutate({
                           rowIds: targets.map((r) => r.id),
+                          mode: transcribeMode,
                           stt: transcribeSTT,
                           diariserLLM: transcribeDiariserLLM,
                           diarisationPrompt: transcribeDiarisationPrompt,
@@ -3155,12 +3261,25 @@ export default function CallImportDetail() {
                             selector has been removed: runs always
                             score the diarised transcript. */}
                         {(() => {
+                          // In ``llm_only`` mode there is no STT —
+                          // the diariser LLM consumes the audio
+                          // directly. We adapt the "is the auto-
+                          // diarise step ready?" check to reflect
+                          // that so the banner doesn't yell about a
+                          // missing STT picker that's intentionally
+                          // hidden.
                           const sttMissing =
-                            !evalSTT.provider || !evalSTT.model
+                            evalTranscribeMode === 'stt_llm' &&
+                            (!evalSTT.provider || !evalSTT.model)
+                          const diariserMissing =
+                            !evalDiariserLLM.provider || !evalDiariserLLM.model
+                          const sectionIncomplete = sttMissing || (
+                            evalTranscribeMode === 'llm_only' && diariserMissing
+                          )
                           return (
                             <div
                               className={`rounded-md border p-3 space-y-2 ${
-                                sttMissing
+                                sectionIncomplete
                                   ? 'border-red-300 bg-red-50/40 ring-1 ring-red-200'
                                   : 'border-gray-200 bg-gray-50'
                               }`}
@@ -3182,50 +3301,94 @@ export default function CallImportDetail() {
                                     </span>
                                     <span
                                       className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                                        sttMissing
+                                        sectionIncomplete
                                           ? 'bg-red-100 text-red-700 ring-1 ring-inset ring-red-200'
                                           : 'bg-green-50 text-green-700 ring-1 ring-inset ring-green-200'
                                       }`}
                                     >
-                                      {sttMissing ? 'Required' : 'Set'}
+                                      {sectionIncomplete ? 'Required' : 'Set'}
                                     </span>
                                   </span>
                                   <span className="block text-[11px] text-gray-500">
-                                    Every evaluation scores the diarised
-                                    transcript. Rows that don't already
-                                    have one are diarised first via the
-                                    STT provider you pick below.
+                                    {evalTranscribeMode === 'stt_llm'
+                                      ? "Every evaluation scores the diarised transcript. Rows that don't already have one are diarised first via the STT provider you pick below."
+                                      : "Every evaluation scores the diarised transcript. Rows that don't already have one are diarised by feeding the audio directly to the multimodal LLM you pick below."}
                                   </span>
                                 </span>
                               </label>
                               <div className="pl-6 space-y-2">
-                                <ProviderModelPicker
-                                  kind="stt"
-                                  value={evalSTT}
-                                  onChange={setEvalSTT}
-                                  providerAllowList={STT_PROVIDER_ALLOWLIST}
-                                  defaultLabel="Pick an STT provider"
-                                  allowCredentialPick
-                                />
-                                {sttMissing && (
-                                  <p className="flex items-start gap-1 text-[11px] font-medium text-red-700">
-                                    <AlertCircle className="h-3 w-3 mt-0.5 flex-shrink-0" />
-                                    <span>
-                                      {!evalSTT.provider
-                                        ? 'Pick an STT provider — auto-diarisation is mandatory for every run.'
-                                        : 'Pick a model for this STT provider to enable the run.'}
-                                    </span>
-                                  </p>
+                                {/* Mode toggle. Hidden behind the
+                                    "Auto-diarise" checkbox row so the
+                                    flow reads top-to-bottom: enable
+                                    auto-diarise → pick pipeline → pick
+                                    models. */}
+                                <div
+                                  role="tablist"
+                                  aria-label="Auto-diarise pipeline"
+                                  className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5"
+                                >
+                                  <button
+                                    type="button"
+                                    role="tab"
+                                    aria-pressed={evalTranscribeMode === 'stt_llm'}
+                                    onClick={() =>
+                                      setEvalTranscribeMode('stt_llm')
+                                    }
+                                    className={`px-3 py-1 text-[11px] font-medium rounded-md transition ${
+                                      evalTranscribeMode === 'stt_llm'
+                                        ? 'bg-primary-50 text-primary-700 ring-1 ring-inset ring-primary-200'
+                                        : 'text-gray-600 hover:text-gray-900'
+                                    }`}
+                                  >
+                                    STT + LLM diariser
+                                  </button>
+                                  <button
+                                    type="button"
+                                    role="tab"
+                                    aria-pressed={evalTranscribeMode === 'llm_only'}
+                                    onClick={() =>
+                                      setEvalTranscribeMode('llm_only')
+                                    }
+                                    className={`px-3 py-1 text-[11px] font-medium rounded-md transition ${
+                                      evalTranscribeMode === 'llm_only'
+                                        ? 'bg-primary-50 text-primary-700 ring-1 ring-inset ring-primary-200'
+                                        : 'text-gray-600 hover:text-gray-900'
+                                    }`}
+                                  >
+                                    LLM only (audio in)
+                                  </button>
+                                </div>
+                                {evalTranscribeMode === 'stt_llm' && (
+                                  <>
+                                    <ProviderModelPicker
+                                      kind="stt"
+                                      value={evalSTT}
+                                      onChange={setEvalSTT}
+                                      providerAllowList={STT_PROVIDER_ALLOWLIST}
+                                      defaultLabel="Pick an STT provider"
+                                      allowCredentialPick
+                                    />
+                                    {sttMissing && (
+                                      <p className="flex items-start gap-1 text-[11px] font-medium text-red-700">
+                                        <AlertCircle className="h-3 w-3 mt-0.5 flex-shrink-0" />
+                                        <span>
+                                          {!evalSTT.provider
+                                            ? 'Pick an STT provider — auto-diarisation is mandatory for every run.'
+                                            : 'Pick a model for this STT provider to enable the run.'}
+                                        </span>
+                                      </p>
+                                    )}
+                                    <input
+                                      type="text"
+                                      value={evalSTTLanguage}
+                                      onChange={(e) =>
+                                        setEvalSTTLanguage(e.target.value)
+                                      }
+                                      placeholder="Language hint (e.g. en, hi)"
+                                      className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                                    />
+                                  </>
                                 )}
-                                <input
-                                  type="text"
-                                  value={evalSTTLanguage}
-                                  onChange={(e) =>
-                                    setEvalSTTLanguage(e.target.value)
-                                  }
-                                  placeholder="Language hint (e.g. en, hi)"
-                                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                                />
                                 <label className="flex items-start gap-2 text-xs">
                                   <input
                                     type="checkbox"
@@ -3242,13 +3405,14 @@ export default function CallImportDetail() {
                                 </label>
                                 <div className="pt-3 border-t border-gray-200 space-y-2">
                                   <p className="text-xs font-medium text-gray-700">
-                                    Diariser LLM
+                                    {evalTranscribeMode === 'stt_llm'
+                                      ? 'Diariser LLM'
+                                      : 'Multimodal diariser LLM'}
                                   </p>
                                   <p className="text-[11px] text-gray-500">
-                                    After the STT step, this chat model
-                                    splits the plain transcript into
-                                    agent / user turns using the prompt
-                                    below.
+                                    {evalTranscribeMode === 'stt_llm'
+                                      ? 'After the STT step, this chat model splits the plain transcript into agent / user turns using the prompt below.'
+                                      : 'This chat model receives the audio bytes and the prompt and produces structured agent / user turns in one call. Pick a model that accepts audio input (e.g. Gemini 1.5/2.0 or GPT-4o audio-preview).'}
                                   </p>
                                   <ProviderModelPicker
                                     kind="llm"
@@ -3256,6 +3420,7 @@ export default function CallImportDetail() {
                                     onChange={setEvalDiariserLLM}
                                     defaultLabel="Pick an LLM for diarisation"
                                     allowCredentialPick
+                                    audioCapableOnly={evalTranscribeMode === 'llm_only'}
                                   />
                                   <div className="flex items-center justify-between pt-1">
                                     <label className="text-[11px] font-medium text-gray-700">
@@ -3374,18 +3539,26 @@ export default function CallImportDetail() {
                       } else if (selectedMetricIds.length === 0) {
                         disabledReasons.push('Select at least one metric to score.')
                       }
-                      if (!evalSTT.provider) {
-                        disabledReasons.push(
-                          'Pick an STT provider (auto-diarisation is required).',
-                        )
-                      } else if (!evalSTT.model) {
-                        disabledReasons.push(
-                          'Pick an STT model for the selected provider.',
-                        )
+                      // STT is only required in the legacy two-stage
+                      // mode. ``llm_only`` mode feeds the audio
+                      // straight to the diariser LLM, so the STT
+                      // checks are gated on the active mode.
+                      if (evalTranscribeMode === 'stt_llm') {
+                        if (!evalSTT.provider) {
+                          disabledReasons.push(
+                            'Pick an STT provider (auto-diarisation is required).',
+                          )
+                        } else if (!evalSTT.model) {
+                          disabledReasons.push(
+                            'Pick an STT model for the selected provider.',
+                          )
+                        }
                       }
                       if (!evalDiariserLLM.provider) {
                         disabledReasons.push(
-                          'Pick a diariser LLM provider — the STT output is split into agent / user turns by an LLM.',
+                          evalTranscribeMode === 'llm_only'
+                            ? 'Pick a multimodal LLM provider — the recording is fed to it directly in LLM-only mode.'
+                            : 'Pick a diariser LLM provider — the STT output is split into agent / user turns by an LLM.',
                         )
                       } else if (!evalDiariserLLM.model) {
                         disabledReasons.push(
@@ -3477,14 +3650,30 @@ export default function CallImportDetail() {
                             metric_llm_overrides: Object.keys(overrides).length
                               ? overrides
                               : null,
-                            // Auto-diarise is always on; the STT fields
-                            // are mandatory and validated above.
+                            // Auto-diarise is always on; ``transcribe_mode``
+                            // decides whether the STT step actually runs
+                            // (and therefore whether the STT fields are
+                            // sent or nulled out for the backend's
+                            // validator).
                             auto_transcribe: true,
                             transcribe_overwrite: transcribeOverwrite,
-                            stt_provider: evalSTT.provider,
-                            stt_model: evalSTT.model,
-                            stt_credential_id: evalSTT.credential_id || null,
-                            stt_language: evalSTTLanguage.trim() || null,
+                            transcribe_mode: evalTranscribeMode,
+                            stt_provider:
+                              evalTranscribeMode === 'stt_llm'
+                                ? evalSTT.provider
+                                : null,
+                            stt_model:
+                              evalTranscribeMode === 'stt_llm'
+                                ? evalSTT.model
+                                : null,
+                            stt_credential_id:
+                              evalTranscribeMode === 'stt_llm'
+                                ? evalSTT.credential_id || null
+                                : null,
+                            stt_language:
+                              evalTranscribeMode === 'stt_llm'
+                                ? evalSTTLanguage.trim() || null
+                                : null,
                             diarization_llm_provider:
                               evalDiariserLLM.provider,
                             diarization_llm_model: evalDiariserLLM.model,

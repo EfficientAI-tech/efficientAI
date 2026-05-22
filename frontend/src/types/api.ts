@@ -733,6 +733,13 @@ export interface CallImportRow {
    */
   diarised_prompt: string | null
   /**
+   * Diarisation pipeline that produced this row's turns.
+   * - `stt_llm` (default) — two-stage STT then LLM diariser.
+   * - `llm_only` — single-stage multimodal LLM (audio in).
+   * Read-only; written by the worker on each diarisation.
+   */
+  transcribe_mode?: 'stt_llm' | 'llm_only'
+  /**
    * Per-row preservation of the mapped source cells. Values land here
    * as whatever type the schema parameter coerced them to —
    * strings (text / url / conversation_id / recording_url / transcript /
@@ -1011,6 +1018,13 @@ export interface CallImportEvaluation {
   diarisation_llm_credential_id?: string | null
   diarisation_prompt?: string | null
   /**
+   * Diarisation pipeline shape this run was created with.
+   * - `stt_llm` (default) — STT then an LLM diariser over the text.
+   * - `llm_only` — audio fed directly to a multimodal diariser LLM.
+   * Surfaced so the retry / re-run UI can preselect the right mode.
+   */
+  transcribe_mode?: 'stt_llm' | 'llm_only'
+  /**
    * Which transcript column this run scored against.
    * Defaults to `production` on legacy runs.
    */
@@ -1155,16 +1169,28 @@ export interface CallImportEvaluationRetryResponse {
 // --- Diarization / transcription ---
 
 export interface CallImportTranscribeRequest {
-  stt_provider: string
-  stt_model: string
+  /**
+   * Diarisation pipeline shape.
+   * - `stt_llm` (default) — STT produces plain text, then an LLM
+   *   diariser splits it into agent/user turns. STT fields required.
+   * - `llm_only` — skip STT entirely and feed the audio bytes
+   *   directly to a multimodal `diarization_llm_*` model along with
+   *   `diarization_prompt`. STT fields MUST be omitted in this mode.
+   */
+  mode?: 'stt_llm' | 'llm_only'
+  /** Required when `mode === 'stt_llm'`; must be null/omitted in `llm_only`. */
+  stt_provider?: string | null
+  /** Required when `mode === 'stt_llm'`; must be null/omitted in `llm_only`. */
+  stt_model?: string | null
   credential_id?: string | null
   language?: string | null
   only_missing?: boolean
   overwrite_existing?: boolean
   row_ids?: string[]
   /**
-   * LLM that splits the STT plain-text output into agent/user turns.
-   * Required by the backend — there is no pyannote fallback.
+   * LLM diariser. In `stt_llm` mode it splits the STT plain-text into
+   * agent/user turns; in `llm_only` mode it directly receives the
+   * audio along with `diarization_prompt`. Always required.
    */
   diarization_llm_provider: string
   diarization_llm_model: string

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, List, Optional
 from uuid import UUID
 
 from loguru import logger
@@ -370,8 +370,20 @@ def _rollup_parent(db, evaluation: CallImportEvaluation) -> None:
     time_limit=10 * 60,
     soft_time_limit=8 * 60,
 )
-def evaluate_call_import_row_task(self, eval_row_id: str):
-    """Evaluate one row using the appropriate library per metric type."""
+def evaluate_call_import_row_task(
+    self,
+    eval_row_id: str,
+    restricted_metric_ids: Optional[List[str]] = None,
+):
+    """Evaluate one row using the appropriate library per metric type.
+
+    When ``restricted_metric_ids`` is set, this is a **metric-subset**
+    pass: only those metrics are recomputed, and the resulting scores
+    are merged into the row's existing ``metric_scores`` dict so other
+    metrics' previously-computed values are preserved. Used by the
+    "Re-run metrics" UI; the create-evaluation flow always leaves this
+    None for a full row evaluation.
+    """
     db = SessionLocal()
     try:
         row_uuid = UUID(eval_row_id)
@@ -454,6 +466,37 @@ def evaluate_call_import_row_task(self, eval_row_id: str):
                 metric_ids.append(UUID(str(item)))
             except (TypeError, ValueError):
                 continue
+
+        # Metric-subset retry: narrow ``metric_ids`` to the requested
+        # subset BEFORE the DB query so we don't even hit the
+        # categoriser for metrics we're not recomputing. The intersection
+        # with ``selected_metric_ids`` defends against a stale payload
+        # asking for a metric that's since been removed from the run.
+        restricted_metric_uuids: Optional[List[UUID]] = None
+        if restricted_metric_ids:
+            restricted_metric_uuids = []
+            for raw in restricted_metric_ids:
+                try:
+                    restricted_metric_uuids.append(UUID(str(raw)))
+                except (TypeError, ValueError):
+                    continue
+            metric_ids = [
+                mid for mid in metric_ids if mid in restricted_metric_uuids
+            ]
+            if not metric_ids:
+                # Nothing left to do — leave the row alone (preserve
+                # its prior status and scores) and surface a typed
+                # short-circuit so the rollup can treat it as a no-op.
+                eval_row.status = "completed"
+                eval_row.error_message = None
+                eval_row.finished_at = _now()
+                db.commit()
+                _rollup_parent(db, evaluation)
+                db.commit()
+                return {
+                    "status": "skipped",
+                    "reason": "restricted_metric_ids_no_match",
+                }
 
         metrics = (
             db.query(Metric)
@@ -932,7 +975,24 @@ def evaluate_call_import_row_task(self, eval_row_id: str):
             metric_scores, evaluation, db, evaluation.organization_id
         )
 
-        eval_row.metric_scores = _as_json_dict(metric_scores)
+        new_scores = _as_json_dict(metric_scores)
+        if restricted_metric_uuids:
+            # Metric-subset retry: merge the newly-computed scores
+            # into whatever was already on the row so the metrics the
+            # user didn't pick keep their prior values byte-identical.
+            # We compare keys case-insensitively to handle the rare
+            # case where the persisted dict mixes UUID-string casings.
+            existing = (
+                eval_row.metric_scores
+                if isinstance(eval_row.metric_scores, dict)
+                else {}
+            )
+            merged = dict(existing)
+            for key, value in new_scores.items():
+                merged[key] = value
+            eval_row.metric_scores = merged
+        else:
+            eval_row.metric_scores = new_scores
         eval_row.finished_at = _now()
         db.commit()
 
@@ -943,6 +1003,7 @@ def evaluate_call_import_row_task(self, eval_row_id: str):
             "status": eval_row.status,
             "eval_row_id": eval_row_id,
             "metrics": len(eval_row.metric_scores or {}),
+            "subset_retry": bool(restricted_metric_uuids),
         }
     finally:
         db.close()

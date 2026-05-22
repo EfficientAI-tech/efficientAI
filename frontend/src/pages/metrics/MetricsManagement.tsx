@@ -293,6 +293,103 @@ export default function MetricsManagement() {
     // supported in this iteration).
     scope: 'workspace' as 'workspace' | 'organization',
   })
+
+  // --- Prompt-partial import sub-modal --------------------------------------
+  // The metric editors carry several "Description (Prompt)" textareas that
+  // all feed into the LLM evaluation prompt: the single-metric form
+  // (``formData.description``), the create-category form
+  // (``categoryForm.description``), and the edit-category form
+  // (``editCategoryForm.description``). Rather than duplicate a partials
+  // picker per spot, we route a single picker through ``partialsImportTarget``
+  // so opening any of the three "Import from saved partials" links shows the
+  // same modal and the success path injects the partial's content into the
+  // textarea the user originated from. Mirrors the pattern already shipped on
+  // [`CallImportDetail`](frontend/src/pages/callImports/CallImportDetail.tsx).
+  const [partialsImportTarget, setPartialsImportTarget] = useState<
+    'single' | 'category' | 'edit_category' | null
+  >(null)
+  const [partialsSearchInput, setPartialsSearchInput] = useState('')
+  const [partialsSearchQuery, setPartialsSearchQuery] = useState('')
+  const [selectedPartialId, setSelectedPartialId] = useState<string>('')
+  const [partialsImportError, setPartialsImportError] = useState<
+    string | null
+  >(null)
+
+  // Debounce the partials-search input so we don't refire the list query on
+  // every keystroke while the import sub-modal is open.
+  useEffect(() => {
+    const handle = setTimeout(() => {
+      setPartialsSearchQuery(partialsSearchInput.trim())
+    }, 250)
+    return () => clearTimeout(handle)
+  }, [partialsSearchInput])
+
+  const { data: promptPartials = [], isLoading: isLoadingPartials } = useQuery<
+    Array<{ id: string; name: string; description?: string | null }>
+  >({
+    queryKey: ['metrics-prompt-partials', partialsSearchQuery],
+    queryFn: () =>
+      apiClient.listPromptPartials(
+        0,
+        100,
+        partialsSearchQuery ? partialsSearchQuery : undefined,
+      ),
+    enabled: partialsImportTarget !== null,
+  })
+
+  // Apply the chosen partial's content to whichever textarea opened the
+  // picker, then close. We fetch the full partial body on-demand because
+  // ``listPromptPartials`` only returns the index card (name + description),
+  // not the prompt content itself.
+  const importPartialMutation = useMutation({
+    mutationFn: (partialId: string) => apiClient.getPromptPartial(partialId),
+    onSuccess: (partial) => {
+      const content = ((partial?.content as string | undefined) || '').trim()
+      if (!content) {
+        setPartialsImportError('Selected prompt partial has no content.')
+        return
+      }
+      if (partialsImportTarget === 'single') {
+        setFormData((prev) => ({ ...prev, description: content }))
+      } else if (partialsImportTarget === 'category') {
+        setCategoryForm((prev) => ({ ...prev, description: content }))
+      } else if (partialsImportTarget === 'edit_category') {
+        setEditCategoryForm((prev) => ({ ...prev, description: content }))
+      }
+      setPartialsImportTarget(null)
+      setPartialsSearchInput('')
+      setPartialsSearchQuery('')
+      setSelectedPartialId('')
+      setPartialsImportError(null)
+    },
+    onError: (err: any) => {
+      setPartialsImportError(
+        err?.response?.data?.detail ||
+          err?.message ||
+          'Failed to load prompt partial.',
+      )
+    },
+  })
+
+  const openPartialsImport = (
+    target: 'single' | 'category' | 'edit_category',
+  ) => {
+    setPartialsImportError(null)
+    setSelectedPartialId('')
+    setPartialsSearchInput('')
+    setPartialsSearchQuery('')
+    setPartialsImportTarget(target)
+  }
+
+  const closePartialsImport = () => {
+    if (importPartialMutation.isPending) return
+    setPartialsImportTarget(null)
+    setPartialsSearchInput('')
+    setPartialsSearchQuery('')
+    setSelectedPartialId('')
+    setPartialsImportError(null)
+  }
+
   const { data: metrics = [], isLoading } = useQuery({
     queryKey: ['metrics', activeWorkspaceId, surfaceFilter],
     queryFn: () => apiClient.listMetrics(surfaceFilter === 'all' ? undefined : surfaceFilter),
@@ -1802,9 +1899,19 @@ export default function MetricsManagement() {
                   </div>
 
                   <div className="lg:col-span-2">
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Description
-                    </label>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="block text-sm font-medium text-gray-700">
+                        Description
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => openPartialsImport('single')}
+                        className="inline-flex items-center gap-1 text-xs font-medium text-primary-600 hover:text-primary-700"
+                      >
+                        <Layers className="w-3.5 h-3.5" />
+                        Import from saved partials
+                      </button>
+                    </div>
                     <textarea
                       value={formData.description}
                       onChange={(e) => setFormData({ ...formData, description: e.target.value })}
@@ -2140,9 +2247,19 @@ export default function MetricsManagement() {
                     </div>
 
                     <div className="md:col-span-2">
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Description (Prompt)
-                      </label>
+                      <div className="flex items-center justify-between mb-2">
+                        <label className="block text-sm font-medium text-gray-700">
+                          Description (Prompt)
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => openPartialsImport('category')}
+                          className="inline-flex items-center gap-1 text-xs font-medium text-primary-600 hover:text-primary-700"
+                        >
+                          <Layers className="w-3.5 h-3.5" />
+                          Import from saved partials
+                        </button>
+                      </div>
                       <textarea
                         value={categoryForm.description}
                         onChange={(e) =>
@@ -2448,9 +2565,19 @@ export default function MetricsManagement() {
                     </div>
 
                     <div className="md:col-span-2">
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Description (Prompt)
-                      </label>
+                      <div className="flex items-center justify-between mb-2">
+                        <label className="block text-sm font-medium text-gray-700">
+                          Description (Prompt)
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => openPartialsImport('edit_category')}
+                          className="inline-flex items-center gap-1 text-xs font-medium text-primary-600 hover:text-primary-700"
+                        >
+                          <Layers className="w-3.5 h-3.5" />
+                          Import from saved partials
+                        </button>
+                      </div>
                       <textarea
                         value={editCategoryForm.description}
                         onChange={(e) =>
@@ -3002,6 +3129,122 @@ export default function MetricsManagement() {
       {/* The "Bulk Create Metrics" and "Create Category" flows are now
           rendered inside the unified showCreateModal above, switched by
           createMode. */}
+
+      {/* Prompt-partial import sub-modal. One picker that all three metric
+          Description textareas share — opening it from any of them sets
+          ``partialsImportTarget`` so the success path knows which setter to
+          run. ``z-[10000]`` keeps it above the create/edit metric modal
+          (``z-50``). */}
+      {partialsImportTarget !== null && (
+        <div
+          className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[10000]"
+          onClick={closePartialsImport}
+        >
+          <div
+            className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[85vh] overflow-hidden flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+              <h3 className="text-lg font-semibold text-gray-900">
+                Import metric prompt from saved partials
+              </h3>
+              <button
+                onClick={closePartialsImport}
+                className="text-gray-400 hover:text-gray-600"
+                aria-label="Close prompt partials modal"
+                disabled={importPartialMutation.isPending}
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="p-6 space-y-4 overflow-y-auto flex-1">
+              <p className="text-xs text-gray-500">
+                Pick a saved Prompt Partial; its content will replace the
+                current Description textarea.
+              </p>
+              <input
+                type="text"
+                value={partialsSearchInput}
+                onChange={(e) => setPartialsSearchInput(e.target.value)}
+                placeholder="Search saved prompts..."
+                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+              />
+
+              {isLoadingPartials ? (
+                <div className="flex items-center justify-center py-8 text-sm text-gray-500">
+                  <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                  Loading saved prompts...
+                </div>
+              ) : promptPartials.length === 0 ? (
+                <div className="rounded-lg border border-gray-200 p-8 text-center text-sm text-gray-500">
+                  {partialsSearchQuery
+                    ? `No saved prompt partials match “${partialsSearchQuery}”.`
+                    : 'No saved prompt partials yet.'}
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-[45vh] overflow-y-auto">
+                  {promptPartials.map((partial) => {
+                    const isSelected = selectedPartialId === partial.id
+                    return (
+                      <label
+                        key={partial.id}
+                        className={`block cursor-pointer rounded-lg border p-3 transition-colors ${
+                          isSelected
+                            ? 'border-primary-300 bg-primary-50'
+                            : 'border-gray-200 hover:bg-gray-50'
+                        }`}
+                      >
+                        <div className="flex items-start gap-3">
+                          <input
+                            type="radio"
+                            name="metric-prompt-partial"
+                            checked={isSelected}
+                            onChange={() => setSelectedPartialId(partial.id)}
+                            className="mt-1 h-4 w-4 border-gray-300 text-primary-600 focus:ring-primary-500"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-semibold text-gray-900">
+                              {partial.name}
+                            </p>
+                            {partial.description ? (
+                              <p className="mt-0.5 text-xs text-gray-500">
+                                {partial.description}
+                              </p>
+                            ) : null}
+                          </div>
+                        </div>
+                      </label>
+                    )
+                  })}
+                </div>
+              )}
+
+              {partialsImportError && (
+                <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+                  {partialsImportError}
+                </div>
+              )}
+            </div>
+            <div className="px-6 py-4 border-t border-gray-200 flex justify-end gap-2 bg-gray-50 rounded-b-lg">
+              <Button
+                variant="outline"
+                onClick={closePartialsImport}
+                disabled={importPartialMutation.isPending}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                onClick={() => importPartialMutation.mutate(selectedPartialId)}
+                isLoading={importPartialMutation.isPending}
+                disabled={!selectedPartialId}
+              >
+                Use Selected Prompt
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   )

@@ -337,6 +337,9 @@ def _serialize_eval(
             row, "diarisation_llm_credential_id", None
         ),
         diarisation_prompt=getattr(row, "diarisation_prompt", None),
+        transcribe_mode=(
+            (getattr(row, "transcribe_mode", None) or "stt_llm")
+        ),
         transcript_source=(row.transcript_source or "production"),
         sibling_evaluation_ids=list(sibling_evaluation_ids or []),
         started_at=row.started_at,
@@ -613,39 +616,70 @@ async def create_call_import_evaluation(
     # provider+model are mandatory on every request (the
     # ``auto_transcribe`` flag is preserved on the schema for API
     # compatibility but is effectively always true at this point).
-    if not payload.stt_provider:
+    # ``transcribe_mode`` controls whether STT is required: the
+    # ``llm_only`` path skips STT entirely and feeds audio directly to
+    # the diariser LLM, so STT fields must be absent. The ``stt_llm``
+    # path (default) keeps the original behaviour.
+    transcribe_mode_norm = (payload.transcribe_mode or "stt_llm").strip().lower()
+    if transcribe_mode_norm not in {"stt_llm", "llm_only"}:
         raise HTTPException(
             status_code=400,
             detail=(
-                "stt_provider is required: every evaluation run "
-                "auto-diarises rows that are missing a diarised "
-                "transcript."
+                f"Unknown transcribe_mode '{payload.transcribe_mode}'. "
+                "Expected 'stt_llm' or 'llm_only'."
             ),
         )
-    if not payload.stt_model:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "stt_model is required: every evaluation run "
-                "auto-diarises rows that are missing a diarised "
-                "transcript."
-            ),
-        )
+
     auto_transcribe = True
-    try:
-        stt_provider_norm: Optional[str] = ModelProvider(
-            payload.stt_provider.lower()
-        ).value
-    except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown STT provider '{payload.stt_provider}'.",
-        )
-    stt_model_norm: Optional[str] = payload.stt_model.strip() or None
-    if not stt_model_norm:
-        raise HTTPException(
-            status_code=400, detail="stt_model cannot be empty."
-        )
+    stt_provider_norm: Optional[str] = None
+    stt_model_norm: Optional[str] = None
+    if transcribe_mode_norm == "stt_llm":
+        if not payload.stt_provider:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "stt_provider is required when "
+                    "transcribe_mode='stt_llm': every evaluation run "
+                    "auto-diarises rows that are missing a diarised "
+                    "transcript."
+                ),
+            )
+        if not payload.stt_model:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "stt_model is required when transcribe_mode='stt_llm'."
+                ),
+            )
+        try:
+            stt_provider_norm = ModelProvider(
+                payload.stt_provider.lower()
+            ).value
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown STT provider '{payload.stt_provider}'.",
+            )
+        stt_model_norm = payload.stt_model.strip() or None
+        if not stt_model_norm:
+            raise HTTPException(
+                status_code=400, detail="stt_model cannot be empty."
+            )
+    else:
+        # llm_only — explicitly reject lingering STT inputs so the
+        # contract is unambiguous (the worker would ignore them but
+        # silent acceptance hides accidental misconfiguration).
+        if (payload.stt_provider or "").strip() or (
+            payload.stt_model or ""
+        ).strip():
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "stt_provider / stt_model must be omitted when "
+                    "transcribe_mode='llm_only'; the LLM consumes the "
+                    "audio directly."
+                ),
+            )
 
     # --- Validate LLM diariser settings -----
     # The post-STT diariser is mandatory now that pyannote is no longer
@@ -754,6 +788,7 @@ async def create_call_import_evaluation(
                 payload.diarization_llm_credential_id
             ),
             diarisation_prompt=diarisation_prompt_norm,
+            transcribe_mode=transcribe_mode_norm,
             transcript_source=source,
             discover_new_metrics=bool(
                 getattr(payload, "discover_new_metrics", False)
@@ -880,6 +915,7 @@ async def create_call_import_evaluation(
                     if payload.diarization_llm_credential_id
                     else None,
                     diarisation_prompt_norm,
+                    transcribe_mode_norm,
                 )
                 # Any sibling diarised evals on the same row enqueue
                 # immediately — they will read the same
@@ -4474,12 +4510,23 @@ async def delete_call_import_evaluation_row(
 # like "just fix it" instead of "fail again immediately".
 
 
-def _reset_eval_row_for_retry(eval_row: CallImportEvaluationRow) -> None:
+def _reset_eval_row_for_retry(
+    eval_row: CallImportEvaluationRow,
+    *,
+    metric_ids: Optional[List[UUID]] = None,
+) -> None:
     """Wipe per-row state so the worker can re-run it cleanly.
 
     Mirrors the initial state used by ``create_call_import_evaluation``
     when it first inserts a row, with the addition of revoking any
     lingering Celery task id.
+
+    When ``metric_ids`` is provided, this is a **metric-subset retry**:
+    only the scores for those metrics are removed from
+    ``metric_scores`` (other metrics' previously-computed values are
+    preserved so the worker's partial-merge write keeps them intact).
+    Otherwise the entire ``metric_scores`` dict is reset, matching the
+    legacy behaviour.
     """
     if eval_row.celery_task_id and eval_row.status in {"pending", "running"}:
         try:
@@ -4490,7 +4537,22 @@ def _reset_eval_row_for_retry(eval_row: CallImportEvaluationRow) -> None:
             pass
     eval_row.status = "pending"
     eval_row.error_message = None
-    eval_row.metric_scores = {}
+    if metric_ids:
+        # Strip ONLY the targeted metric keys. Both string and UUID
+        # forms can appear in ``metric_scores`` depending on which
+        # code path wrote the dict, so we normalise to lower-case
+        # strings for the comparison.
+        existing = (
+            eval_row.metric_scores if isinstance(eval_row.metric_scores, dict) else {}
+        )
+        target_keys = {str(mid).lower() for mid in metric_ids}
+        eval_row.metric_scores = {
+            key: value
+            for key, value in existing.items()
+            if str(key).lower() not in target_keys
+        }
+    else:
+        eval_row.metric_scores = {}
     eval_row.started_at = None
     eval_row.finished_at = None
     eval_row.celery_task_id = None
@@ -4504,6 +4566,7 @@ def _enqueue_eval_rows_with_optional_transcribe(
     ],
     *,
     transcribe_overwrite: bool = False,
+    restricted_metric_ids: Optional[List[UUID]] = None,
 ) -> Tuple[int, int]:
     """Fan out evaluate (and optionally transcribe) tasks for a set of
     already-reset eval rows.
@@ -4526,7 +4589,25 @@ def _enqueue_eval_rows_with_optional_transcribe(
 
     transcript_source = (evaluation.transcript_source or "").strip().lower()
     is_diarised_run = transcript_source == "diarised"
+    # ``transcribe_mode`` was added in migration 041; legacy runs read as
+    # NULL → default to the historical ``stt_llm`` behavior so retries
+    # of pre-feature evaluations stay byte-identical.
+    transcribe_mode = (
+        getattr(evaluation, "transcribe_mode", None) or "stt_llm"
+    ).strip().lower()
     has_stt_config = bool(evaluation.stt_provider and evaluation.stt_model)
+    has_diariser_config = bool(
+        getattr(evaluation, "diarisation_llm_provider", None)
+        and getattr(evaluation, "diarisation_llm_model", None)
+    )
+    # In ``llm_only`` mode the run never had STT config (the create
+    # endpoint rejects it), so ``has_stt_config`` would be False — but
+    # we still want to chain through transcribe because the LLM is
+    # what produces the diarised text. Gate on the diariser config
+    # instead in that case.
+    can_auto_transcribe = (
+        has_stt_config if transcribe_mode == "stt_llm" else has_diariser_config
+    )
 
     eval_only_row_ids: List[str] = []
     deferred: List[Tuple[CallImportEvaluationRow, CallImportRow]] = []
@@ -4536,7 +4617,7 @@ def _enqueue_eval_rows_with_optional_transcribe(
         needs_diarisation = not existing_dia or transcribe_overwrite
         if (
             is_diarised_run
-            and has_stt_config
+            and can_auto_transcribe
             and has_audio
             and needs_diarisation
         ):
@@ -4556,32 +4637,76 @@ def _enqueue_eval_rows_with_optional_transcribe(
             source_row.diarised_transcript_error = None
         db.commit()
 
+        # ``restricted_metric_ids`` propagates through the transcribe
+        # task as a kwarg so the evaluate task chained at the end of
+        # transcribe (see ``transcribe_call_import_row_task``'s
+        # ``run_eval_row_id`` branch) can apply the same metric
+        # filter. Stringify so Celery's JSON serializer is happy.
+        restricted_metric_ids_str: Optional[List[str]] = (
+            [str(mid) for mid in restricted_metric_ids]
+            if restricted_metric_ids
+            else None
+        )
+
         for eval_row, source_row in deferred:
-            transcribe_call_import_row_task.delay(
-                str(source_row.id),
-                evaluation.stt_provider,
-                evaluation.stt_model,
-                str(evaluation.stt_credential_id)
-                if evaluation.stt_credential_id
+            transcribe_call_import_row_task.apply_async(
+                args=(
+                    str(source_row.id),
+                    # STT fields are ignored by the worker in llm_only
+                    # mode; passing None keeps the wire format clean
+                    # and avoids accidentally re-introducing stale
+                    # config.
+                    evaluation.stt_provider
+                    if transcribe_mode == "stt_llm"
+                    else None,
+                    evaluation.stt_model
+                    if transcribe_mode == "stt_llm"
+                    else None,
+                    str(evaluation.stt_credential_id)
+                    if (
+                        transcribe_mode == "stt_llm"
+                        and evaluation.stt_credential_id
+                    )
+                    else None,
+                    None,  # language hint not persisted on the run
+                    transcribe_overwrite,
+                    str(eval_row.id),
+                    getattr(evaluation, "diarisation_llm_provider", None),
+                    getattr(evaluation, "diarisation_llm_model", None),
+                    str(evaluation.diarisation_llm_credential_id)
+                    if getattr(
+                        evaluation, "diarisation_llm_credential_id", None
+                    )
+                    else None,
+                    getattr(evaluation, "diarisation_prompt", None),
+                    transcribe_mode,
+                ),
+                kwargs={
+                    "eval_restricted_metric_ids": restricted_metric_ids_str,
+                }
+                if restricted_metric_ids_str
                 else None,
-                None,  # language hint not persisted on the run
-                transcribe_overwrite,
-                str(eval_row.id),
-                getattr(evaluation, "diarisation_llm_provider", None),
-                getattr(evaluation, "diarisation_llm_model", None),
-                str(evaluation.diarisation_llm_credential_id)
-                if getattr(evaluation, "diarisation_llm_credential_id", None)
-                else None,
-                getattr(evaluation, "diarisation_prompt", None),
             )
 
     if eval_only_row_ids:
-        group(
-            [
-                evaluate_call_import_row_task.s(eval_row_id)
-                for eval_row_id in eval_only_row_ids
-            ]
-        ).apply_async()
+        if restricted_metric_ids:
+            restricted_str = [str(mid) for mid in restricted_metric_ids]
+            group(
+                [
+                    evaluate_call_import_row_task.s(
+                        eval_row_id,
+                        restricted_metric_ids=restricted_str,
+                    )
+                    for eval_row_id in eval_only_row_ids
+                ]
+            ).apply_async()
+        else:
+            group(
+                [
+                    evaluate_call_import_row_task.s(eval_row_id)
+                    for eval_row_id in eval_only_row_ids
+                ]
+            ).apply_async()
 
     return len(eval_only_row_ids), len(deferred)
 
@@ -4791,6 +4916,8 @@ def _gather_retry_targets(
     db: Session,
     evaluation: CallImportEvaluation,
     requested_ids: Optional[List[UUID]],
+    *,
+    include_completed: bool = False,
 ) -> Tuple[
     List[Tuple[CallImportEvaluationRow, CallImportRow]],
     List[CallImportEvaluationRetrySkippedItem],
@@ -4798,9 +4925,12 @@ def _gather_retry_targets(
     """Resolve which rows to retry + reasons for any we refuse.
 
     When ``requested_ids`` is None we retry every row whose status is
-    ``failed``. When the caller passes ids explicitly we still filter
-    out rows that are already completed or currently in flight — the
-    retry endpoint deliberately doesn't blow away in-progress work.
+    ``failed`` (or every row when ``include_completed`` is also set —
+    used by the metric-subset retry path which legitimately wants to
+    recompute a metric on already-successful rows). When the caller
+    passes ids explicitly we still filter out rows that are currently
+    in flight; ``include_completed`` controls whether previously-
+    successful rows are eligible.
     """
     eval_rows_query = db.query(CallImportEvaluationRow).filter(
         CallImportEvaluationRow.evaluation_id == evaluation.id
@@ -4810,9 +4940,17 @@ def _gather_retry_targets(
     skipped: List[CallImportEvaluationRetrySkippedItem] = []
 
     if requested_ids is None:
-        candidate_rows = eval_rows_query.filter(
-            CallImportEvaluationRow.status == "failed"
-        ).all()
+        if include_completed:
+            # "Retry everything" path used by the metric-subset re-run
+            # UI. Still skip in-flight rows below so we don't trample
+            # work the worker is actively doing.
+            candidate_rows = eval_rows_query.filter(
+                CallImportEvaluationRow.status.in_(["failed", "completed"])
+            ).all()
+        else:
+            candidate_rows = eval_rows_query.filter(
+                CallImportEvaluationRow.status == "failed"
+            ).all()
     else:
         requested_set = set(requested_ids)
         candidate_rows = eval_rows_query.filter(
@@ -4847,7 +4985,7 @@ def _gather_retry_targets(
                 )
             )
             continue
-        if eval_row.status == "completed":
+        if eval_row.status == "completed" and not include_completed:
             skipped.append(
                 CallImportEvaluationRetrySkippedItem(
                     eval_row_id=eval_row.id,
@@ -4891,10 +5029,18 @@ async def retry_call_import_evaluation(
     in-flight or already completed are returned in ``skipped`` rather
     than re-enqueued, so this endpoint is always safe to call.
 
+    When ``metric_ids`` is set in the payload, this is a **metric-
+    subset retry**: only the listed metrics are recomputed (and merged
+    into the row's existing ``metric_scores`` — other metrics' values
+    are preserved). The route auto-flips ``include_completed=True`` in
+    that case so previously-successful rows are eligible for re-
+    scoring; without it the call would no-op because every row would
+    be skipped as ``completed``.
+
     The worker contract is the same as the create endpoint:
-    ``evaluate_call_import_row_task(eval_row_id)``. When the run is
-    configured for diarised transcripts and the row's diarised
-    transcript is missing, we chain through
+    ``evaluate_call_import_row_task(eval_row_id, [restricted_metric_ids])``.
+    When the run is configured for diarised transcripts and the row's
+    diarised transcript is missing, we chain through
     ``transcribe_call_import_row_task`` first — matching the
     auto-transcribe behavior of POST ``/evaluations``.
     """
@@ -4916,7 +5062,54 @@ async def retry_call_import_evaluation(
         )
 
     requested_ids = payload.eval_row_ids if payload else None
-    targets, skipped = _gather_retry_targets(db, evaluation, requested_ids)
+    # Metric-subset retry: validate that every metric is part of this
+    # run's ``selected_metric_ids`` so we never silently no-op. Empty
+    # list is rejected too — callers that want a full re-run should
+    # omit the field entirely.
+    metric_ids: Optional[List[UUID]] = (
+        payload.metric_ids if payload else None
+    )
+    if metric_ids is not None:
+        if not metric_ids:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "metric_ids must be a non-empty list. Omit the "
+                    "field to re-run all metrics."
+                ),
+            )
+        selected_set = {
+            str(item).lower()
+            for item in (evaluation.selected_metric_ids or [])
+        }
+        unknown = [
+            mid for mid in metric_ids
+            if str(mid).lower() not in selected_set
+        ]
+        if unknown:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "metric_ids must be a subset of this evaluation's "
+                    f"selected metrics; unknown ids: {[str(u) for u in unknown]}."
+                ),
+            )
+
+    # ``include_completed`` is auto-enabled when the caller asked for a
+    # metric subset (otherwise the metric-subset retry would always
+    # no-op on a green run, which is the whole reason this feature
+    # exists). The explicit payload flag wins for full-row retries.
+    include_completed = bool(
+        (payload.include_completed if payload else False)
+        or (metric_ids is not None)
+    )
+
+    targets, skipped = _gather_retry_targets(
+        db,
+        evaluation,
+        requested_ids,
+        include_completed=include_completed,
+    )
 
     if not targets:
         # Nothing actually changed — return early without touching the
@@ -4939,7 +5132,7 @@ async def retry_call_import_evaluation(
     )
 
     for eval_row, _ in targets:
-        _reset_eval_row_for_retry(eval_row)
+        _reset_eval_row_for_retry(eval_row, metric_ids=metric_ids)
 
     # Flip the parent back to ``running`` and clear any old enqueue
     # error so the UI's polling resumes. Counters get recomputed by
@@ -4959,6 +5152,7 @@ async def retry_call_import_evaluation(
                 evaluation,
                 targets,
                 transcribe_overwrite=transcribe_overwrite,
+                restricted_metric_ids=metric_ids,
             )
         )
     except Exception as exc:  # noqa: BLE001 — surface but don't 500

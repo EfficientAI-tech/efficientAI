@@ -2596,15 +2596,34 @@ class CallImportEvaluationCreate(BaseModel):
             "instead of skipping rows that already have one."
         ),
     )
+    transcribe_mode: Literal["stt_llm", "llm_only"] = Field(
+        default="stt_llm",
+        description=(
+            "Diarisation pipeline shape for the auto-transcribe step. "
+            "'stt_llm' (default) runs STT then an LLM diariser over the "
+            "resulting text — ``stt_provider`` + ``stt_model`` must be "
+            "provided. 'llm_only' skips STT and feeds the audio "
+            "directly to the multimodal ``diarization_llm_*`` model "
+            "along with ``diarization_prompt``; STT fields must be "
+            "omitted in that case."
+        ),
+    )
     stt_provider: Optional[str] = Field(
         default=None,
         max_length=50,
-        description="STT provider key, e.g. 'deepgram', 'openai'.",
+        description=(
+            "STT provider key, e.g. 'deepgram', 'openai'. Required when "
+            "``transcribe_mode='stt_llm'`` (the default); must be omitted "
+            "when ``transcribe_mode='llm_only'``."
+        ),
     )
     stt_model: Optional[str] = Field(
         default=None,
         max_length=100,
-        description="STT model name, e.g. 'nova-2', 'whisper-1'.",
+        description=(
+            "STT model name, e.g. 'nova-2', 'whisper-1'. Same presence "
+            "rules as ``stt_provider``."
+        ),
     )
     stt_credential_id: Optional[UUID] = Field(
         default=None,
@@ -2705,6 +2724,34 @@ class CallImportEvaluationRetryRequest(BaseModel):
             "Restrict the retry to a specific subset of evaluation rows. "
             "When omitted, every row with status='failed' in this run is "
             "re-enqueued."
+        ),
+    )
+
+    # --- Metric-subset re-run ---
+    # When ``metric_ids`` is set, the retry recomputes ONLY those
+    # metrics instead of the whole row, and the new scores are merged
+    # into the existing ``metric_scores`` JSON (other metrics'
+    # previously-computed values are preserved). This is the path
+    # taken by the "Re-run metrics" UI in CallImportEvaluationDetail.
+    metric_ids: Optional[List[UUID]] = Field(
+        default=None,
+        description=(
+            "Restrict the retry to a specific subset of metrics. When "
+            "set, the worker recomputes only these metrics and merges "
+            "the new scores into the row's existing metric_scores "
+            "(other metrics' previous values are preserved). When "
+            "omitted, the row is fully re-scored as before. Every id "
+            "must already be present in the run's selected_metric_ids."
+        ),
+    )
+    include_completed: bool = Field(
+        default=False,
+        description=(
+            "When True, rows whose status is currently 'completed' "
+            "become eligible for retry (otherwise only 'failed' rows "
+            "are picked up). Required when ``metric_ids`` is set on a "
+            "successful row, since otherwise the whole metric-subset "
+            "retry would be skipped as 'completed'."
         ),
     )
 
@@ -2890,6 +2937,13 @@ class CallImportEvaluationResponse(BaseModel):
     diarisation_llm_model: Optional[str] = None
     diarisation_llm_credential_id: Optional[UUID] = None
     diarisation_prompt: Optional[str] = None
+    # Diarisation pipeline shape this run was created with. ``stt_llm``
+    # (default) is the legacy STT-then-LLM-diariser flow; ``llm_only``
+    # means the audio was fed directly to a multimodal diariser LLM.
+    # Surfaced so the retry modal can preselect the right mode and the
+    # eval header can render "Diarised via LLM only (Gemini)" instead of
+    # an empty STT label.
+    transcribe_mode: Literal["stt_llm", "llm_only"] = "stt_llm"
     # Which transcript column this run scored against. See the
     # ``CallImportEvaluation.transcript_source`` model docstring for
     # the semantics. Defaults to ``'production'`` on legacy rows.
@@ -2996,17 +3050,47 @@ class CallImportTranscribeRequest(BaseModel):
     is ignored) and the batch-level endpoint. ``only_missing`` is the
     safe default — rows with an existing transcript are skipped unless
     ``overwrite_existing`` is set.
+
+    Two modes are supported:
+
+    * ``mode="stt_llm"`` (default) — the legacy two-stage pipeline: STT
+      produces plain text, an LLM splits it into agent/user turns using
+      ``diarization_prompt``. ``stt_provider`` and ``stt_model`` are
+      required in this mode.
+    * ``mode="llm_only"`` — skip STT entirely and hand the recording's
+      audio bytes to a multimodal chat model along with
+      ``diarization_prompt``. The model both transcribes and diarises in
+      a single pass. The STT fields are ignored (and must be omitted /
+      null). Only providers whose chat API accepts audio input (OpenAI
+      ``gpt-4o-audio-*``, Google Gemini ``1.5/2.0``) are usable; other
+      providers will surface a typed error on the row.
     """
 
-    stt_provider: str = Field(
-        ...,
-        max_length=50,
-        description="STT provider key, e.g. 'deepgram' or 'openai'.",
+    mode: Literal["stt_llm", "llm_only"] = Field(
+        default="stt_llm",
+        description=(
+            "Pipeline shape. 'stt_llm' (default) runs STT then an LLM "
+            "diariser over the resulting text. 'llm_only' skips STT and "
+            "feeds the raw audio to a multimodal LLM together with "
+            "``diarization_prompt`` for a single-pass transcribe + "
+            "diarise."
+        ),
     )
-    stt_model: str = Field(
-        ...,
+    stt_provider: Optional[str] = Field(
+        default=None,
+        max_length=50,
+        description=(
+            "STT provider key, e.g. 'deepgram' or 'openai'. Required when "
+            "``mode='stt_llm'``; must be omitted when ``mode='llm_only'``."
+        ),
+    )
+    stt_model: Optional[str] = Field(
+        default=None,
         max_length=100,
-        description="STT model name, e.g. 'nova-2' or 'whisper-1'.",
+        description=(
+            "STT model name, e.g. 'nova-2' or 'whisper-1'. Required when "
+            "``mode='stt_llm'``; must be omitted when ``mode='llm_only'``."
+        ),
     )
     credential_id: Optional[UUID] = Field(
         default=None,
@@ -3039,23 +3123,28 @@ class CallImportTranscribeRequest(BaseModel):
         ),
     )
     # --- LLM diariser config ---
-    # Diarisation runs as a *second* step: STT produces plain text,
-    # then this LLM splits it into agent/user turns using the
-    # ``diarization_prompt`` below. Both fields are mandatory because
-    # there is no longer a pyannote fallback — the worker fails the
-    # row when the diariser is missing.
+    # In ``stt_llm`` mode diarisation runs as a *second* step: STT
+    # produces plain text, then this LLM splits it into agent/user
+    # turns. In ``llm_only`` mode this same LLM directly receives the
+    # audio and the prompt. Both fields are always mandatory because
+    # there is no longer a pyannote fallback and ``llm_only`` cannot
+    # function without an LLM either.
     diarization_llm_provider: str = Field(
         ...,
         max_length=50,
         description=(
-            "LLM provider that diarises the STT output into agent/user "
-            "turns (e.g. 'openai', 'anthropic', 'google')."
+            "LLM provider that diarises the call. In ``stt_llm`` it sees "
+            "the STT text; in ``llm_only`` it sees the raw audio."
         ),
     )
     diarization_llm_model: str = Field(
         ...,
         max_length=100,
-        description="LLM model name, e.g. 'gpt-4o-mini', 'claude-3-haiku'.",
+        description=(
+            "LLM model name. In ``llm_only`` mode this must be a model "
+            "that accepts audio input (e.g. 'gpt-4o-audio-preview', "
+            "'gemini-1.5-pro')."
+        ),
     )
     diarization_llm_credential_id: Optional[UUID] = Field(
         default=None,
@@ -3072,6 +3161,33 @@ class CallImportTranscribeRequest(BaseModel):
             "(see ``GET /api/v1/call-imports/diarisation-prompt-default``)."
         ),
     )
+
+    @model_validator(mode="after")
+    def _validate_mode_fields(self) -> "CallImportTranscribeRequest":
+        """Enforce STT-field presence rules based on ``mode``.
+
+        ``stt_llm`` (default) requires both STT fields — the worker
+        cannot diarise without a transcript. ``llm_only`` forbids them
+        so the API contract makes it clear that the audio is going
+        straight to the LLM; passing both would be ambiguous about
+        which path the worker should take.
+        """
+        stt_provider = (self.stt_provider or "").strip() if self.stt_provider else None
+        stt_model = (self.stt_model or "").strip() if self.stt_model else None
+        if self.mode == "stt_llm":
+            if not stt_provider or not stt_model:
+                raise ValueError(
+                    "stt_provider and stt_model are required when "
+                    "mode='stt_llm'."
+                )
+        else:  # llm_only
+            if stt_provider or stt_model:
+                raise ValueError(
+                    "stt_provider/stt_model must be omitted when "
+                    "mode='llm_only'; the LLM consumes the audio "
+                    "directly."
+                )
+        return self
 
 
 class CallImportDiarisationPromptDefaultResponse(BaseModel):

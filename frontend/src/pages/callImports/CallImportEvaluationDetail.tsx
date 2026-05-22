@@ -53,6 +53,7 @@ import type {
 import AIProviderModelPicker from '../../components/AIProviderModelPicker'
 import Button from '../../components/Button'
 import ConfirmModal from '../../components/ConfirmModal'
+import Pagination from '../../components/Pagination'
 import ProviderModelPicker, {
   type ProviderModelValue,
 } from '../../components/providers/ProviderModelPicker'
@@ -205,6 +206,23 @@ export default function CallImportEvaluationDetail() {
   })
   const [retryTranscribeOverwrite, setRetryTranscribeOverwrite] =
     useState(false)
+
+  // "Re-run metrics" UX (separate from the failed-row retry above).
+  // The user picks one or more of the run's already-scored metrics
+  // and the worker recomputes only those, merging the new scores
+  // into the row's existing ``metric_scores`` so other metrics'
+  // values stay byte-identical. Backed by the same retry endpoint
+  // with ``metric_ids`` + ``include_completed=true``.
+  const [rerunMetricsOpen, setRerunMetricsOpen] = useState(false)
+  const [rerunMetricIds, setRerunMetricIds] = useState<Set<string>>(
+    new Set(),
+  )
+  const [rerunLLM, setRerunLLM] = useState<ProviderModelValue>({
+    provider: null,
+    model: null,
+    credential_id: null,
+  })
+  const [rerunError, setRerunError] = useState<string | null>(null)
   const [resultsTab, setResultsTab] = useState<
     'table' | 'visualizations' | 'flow'
   >('table')
@@ -582,6 +600,86 @@ export default function CallImportEvaluationDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [retryConfirmOpen])
 
+  // Same seeding pattern for the "Re-run metrics" modal. We default
+  // the LLM picker to the run's saved value (no override) and start
+  // with no metrics selected — the user must explicitly pick at
+  // least one, otherwise the action is a no-op and we surface a
+  // disabled state on the submit button.
+  useEffect(() => {
+    if (!rerunMetricsOpen) return
+    if (!evaluation) return
+    setRerunLLM({
+      provider: evaluation.llm_provider ?? null,
+      model: evaluation.llm_model ?? null,
+      credential_id: evaluation.llm_credential_id ?? null,
+    })
+    setRerunMetricIds(new Set())
+    setRerunError(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rerunMetricsOpen])
+
+  // Metric-subset re-run mutation. Forwards ``metric_ids`` to the
+  // backend so the worker recomputes only those metrics, with
+  // ``include_completed`` flipped on so already-successful rows are
+  // eligible (the whole point of this UI). LLM overrides flow
+  // through the same retry payload — when the user changes the LLM
+  // picker, the backend persists the new model on the run and uses
+  // it for every selected metric.
+  const rerunMetricsMutation = useMutation({
+    mutationFn: () => {
+      const metricIds = Array.from(rerunMetricIds)
+      if (!metricIds.length) {
+        return Promise.reject(
+          new Error('Pick at least one metric to re-run.'),
+        )
+      }
+      const llmChanged =
+        rerunLLM.provider !== (evaluation?.llm_provider ?? null) ||
+        rerunLLM.model !== (evaluation?.llm_model ?? null) ||
+        (rerunLLM.credential_id ?? null) !==
+          (evaluation?.llm_credential_id ?? null)
+      return apiClient.retryCallImportEvaluation(id!, evalId!, {
+        metricIds,
+        // ``include_completed`` would be auto-flipped server-side
+        // when ``metricIds`` is set; sending it explicitly here
+        // makes the intent obvious in the network tab.
+        includeCompleted: true,
+        llmProvider:
+          llmChanged && rerunLLM.provider && rerunLLM.model
+            ? rerunLLM.provider
+            : undefined,
+        llmModel:
+          llmChanged && rerunLLM.provider && rerunLLM.model
+            ? rerunLLM.model
+            : undefined,
+        llmCredentialId:
+          llmChanged && rerunLLM.provider && rerunLLM.model
+            ? rerunLLM.credential_id ?? null
+            : undefined,
+      })
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-evaluation', id, evalId],
+      })
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-evaluation-rows', id, evalId],
+      })
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-evaluations', id],
+      })
+      setRerunError(null)
+      setRerunMetricsOpen(false)
+    },
+    onError: (err: any) => {
+      setRerunError(
+        err?.response?.data?.detail ||
+          err?.message ||
+          'Failed to re-run the selected metrics.',
+      )
+    },
+  })
+
   // Re-enqueue a single failed row. Returns the refreshed row so we
   // can prime the cache; the next polling tick (3s while running)
   // will catch any subsequent status flips.
@@ -916,6 +1014,22 @@ export default function CallImportEvaluationDetail() {
               }`}
             >
               Retry failed ({evaluation.failed_rows})
+            </Button>
+          )}
+          {(evaluation.metrics?.length ?? 0) > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              leftIcon={<RefreshCw className="h-4 w-4" />}
+              onClick={() => {
+                setRerunError(null)
+                setRerunMetricsOpen(true)
+              }}
+              isLoading={rerunMetricsMutation.isPending}
+              disabled={rerunMetricsMutation.isPending}
+              title="Re-score selected metrics across every row in this run, merging into existing scores."
+            >
+              Re-run metrics
             </Button>
           )}
           <div className="relative" ref={downloadMenuRef}>
@@ -1667,6 +1781,17 @@ export default function CallImportEvaluationDetail() {
                 {totalMetricColumnCount} metric columns.
               </p>
             )}
+            {/* Top pagination mirrors the bottom controls so the user
+                doesn't have to scroll past every row to flip pages. */}
+            <Pagination
+              page={rowsQuery.data.page}
+              pageCount={totalPages}
+              total={rowsQuery.data.total}
+              pageSize={rowsQuery.data.page_size}
+              className="mb-2"
+              onPrev={() => setPage((p) => Math.max(1, p - 1))}
+              onNext={() => setPage((p) => p + 1)}
+            />
             <div className="overflow-x-auto border border-gray-100 rounded">
               <table className="min-w-max w-full divide-y divide-gray-200">
                 <thead className="bg-gray-50">
@@ -1947,34 +2072,15 @@ export default function CallImportEvaluationDetail() {
               </table>
             </div>
 
-            {totalPages > 1 && (
-              <div className="mt-3 flex items-center justify-between">
-                <p className="text-sm text-gray-500">
-                  Page {rowsQuery.data.page} of {totalPages}
-                </p>
-                <div className="flex gap-2">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setPage((p) => Math.max(1, p - 1))}
-                    disabled={rowsQuery.data.page <= 1}
-                  >
-                    Prev
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setPage((p) => p + 1)}
-                    disabled={
-                      rowsQuery.data.page * rowsQuery.data.page_size >=
-                      rowsQuery.data.total
-                    }
-                  >
-                    Next
-                  </Button>
-                </div>
-              </div>
-            )}
+            <Pagination
+              page={rowsQuery.data.page}
+              pageCount={totalPages}
+              total={rowsQuery.data.total}
+              pageSize={rowsQuery.data.page_size}
+              className="mt-3"
+              onPrev={() => setPage((p) => Math.max(1, p - 1))}
+              onNext={() => setPage((p) => p + 1)}
+            />
           </>
         )}
       </div>
@@ -2181,6 +2287,193 @@ export default function CallImportEvaluationDetail() {
               </div>
             </div>
           </div>,
+          document.body,
+        )}
+
+      {rerunMetricsOpen &&
+        createPortal(
+          (() => {
+            // List every metric known on the run, sorted by name for
+            // deterministic scanning. We pull from
+            // ``displayMetrics`` (computed above) so the picker stays
+            // in sync with what the table renders: child metrics
+            // collapsed under their parent, discovered-metric
+            // candidates excluded until promoted, etc.
+            const pickableMetrics = (displayMetrics ?? [])
+              .slice()
+              .sort((a, b) => a.name.localeCompare(b.name))
+            const allIds = pickableMetrics.map((m) => m.id)
+            const selectedCount = rerunMetricIds.size
+            const allSelected =
+              allIds.length > 0 && allIds.every((id) => rerunMetricIds.has(id))
+            const noneSelected = selectedCount === 0
+            return (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
+                <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
+                  <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+                    <div>
+                      <h2 className="text-lg font-semibold text-gray-900">
+                        Re-run selected metrics
+                      </h2>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        Pick the metrics you want to recompute. Every
+                        row in this run is re-scored on just those
+                        metrics; other metrics' values stay
+                        byte-identical.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (rerunMetricsMutation.isPending) return
+                        setRerunMetricsOpen(false)
+                        setRerunError(null)
+                      }}
+                      disabled={rerunMetricsMutation.isPending}
+                      className="text-gray-400 hover:text-gray-600 disabled:opacity-50"
+                      aria-label="Close re-run metrics modal"
+                    >
+                      <X className="h-5 w-5" />
+                    </button>
+                  </div>
+
+                  <div className="px-6 py-5 overflow-y-auto flex-1 space-y-5">
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <label className="block text-sm font-medium text-gray-700">
+                          Metrics to recompute
+                        </label>
+                        {pickableMetrics.length > 0 && (
+                          <button
+                            type="button"
+                            className="text-[11px] text-primary-600 hover:text-primary-700"
+                            onClick={() => {
+                              if (allSelected) {
+                                setRerunMetricIds(new Set())
+                              } else {
+                                setRerunMetricIds(new Set(allIds))
+                              }
+                            }}
+                          >
+                            {allSelected ? 'Clear all' : 'Select all'}
+                          </button>
+                        )}
+                      </div>
+                      {pickableMetrics.length === 0 ? (
+                        <p className="text-sm text-gray-500 italic">
+                          This run has no scored metrics yet — nothing
+                          to re-run.
+                        </p>
+                      ) : (
+                        <div className="border border-gray-200 rounded-lg divide-y divide-gray-100 max-h-64 overflow-y-auto">
+                          {pickableMetrics.map((m) => {
+                            const checked = rerunMetricIds.has(m.id)
+                            return (
+                              <label
+                                key={m.id}
+                                className="flex items-start gap-3 px-3 py-2 hover:bg-gray-50 cursor-pointer"
+                              >
+                                <input
+                                  type="checkbox"
+                                  className="mt-0.5 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                                  checked={checked}
+                                  onChange={(e) => {
+                                    setRerunMetricIds((prev) => {
+                                      const next = new Set(prev)
+                                      if (e.target.checked) {
+                                        next.add(m.id)
+                                      } else {
+                                        next.delete(m.id)
+                                      }
+                                      return next
+                                    })
+                                  }}
+                                />
+                                <div className="min-w-0 flex-1">
+                                  <p className="text-sm font-medium text-gray-900 truncate">
+                                    {m.name}
+                                  </p>
+                                  <p className="text-[11px] text-gray-500 font-mono truncate">
+                                    {m.id}
+                                  </p>
+                                </div>
+                              </label>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        LLM for re-evaluation
+                      </label>
+                      <p className="text-xs text-gray-500 mb-2">
+                        Used to score the selected metrics. Leave as-is
+                        to re-run with the run's existing LLM.
+                      </p>
+                      <ProviderModelPicker
+                        kind="llm"
+                        value={rerunLLM}
+                        onChange={setRerunLLM}
+                        allowCredentialPick
+                        defaultLabel="Pick an LLM provider"
+                      />
+                    </div>
+
+                    <div className="rounded-md bg-blue-50 border border-blue-200 p-3 text-xs text-blue-900">
+                      Already-successful rows are eligible too — only
+                      the selected metrics' scores are overwritten; the
+                      rest of <code>metric_scores</code> is preserved
+                      verbatim.
+                    </div>
+
+                    {rerunError && (
+                      <div className="rounded-md bg-red-50 border border-red-200 p-3">
+                        <div className="flex items-start gap-2">
+                          <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
+                          <p className="text-sm text-red-800">{rerunError}</p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="px-6 py-4 border-t border-gray-200 flex items-center justify-end gap-3">
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        if (rerunMetricsMutation.isPending) return
+                        setRerunMetricsOpen(false)
+                        setRerunError(null)
+                      }}
+                      disabled={rerunMetricsMutation.isPending}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      variant="primary"
+                      leftIcon={<RefreshCw className="h-4 w-4" />}
+                      onClick={() => {
+                        if (!rerunMetricsMutation.isPending && !noneSelected) {
+                          rerunMetricsMutation.mutate()
+                        }
+                      }}
+                      isLoading={rerunMetricsMutation.isPending}
+                      disabled={
+                        rerunMetricsMutation.isPending ||
+                        noneSelected ||
+                        !rerunLLM.provider ||
+                        !rerunLLM.model
+                      }
+                    >
+                      Re-run {selectedCount > 0 ? `${selectedCount} ` : ''}
+                      metric{selectedCount === 1 ? '' : 's'}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )
+          })(),
           document.body,
         )}
 

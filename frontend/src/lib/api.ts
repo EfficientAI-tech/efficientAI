@@ -1347,6 +1347,14 @@ class ApiClient {
       /** When true, diarize rows missing transcripts before evaluation. */
       auto_transcribe?: boolean
       transcribe_overwrite?: boolean
+      /**
+       * Diarisation pipeline shape for the auto-transcribe step.
+       * 'stt_llm' (default) runs STT then an LLM diariser over the
+       * resulting text. 'llm_only' skips STT and feeds the audio
+       * directly to the multimodal ``diarization_llm_*`` model — STT
+       * fields must be omitted in that case.
+       */
+      transcribe_mode?: 'stt_llm' | 'llm_only'
       stt_provider?: string | null
       stt_model?: string | null
       stt_credential_id?: string | null
@@ -1355,7 +1363,8 @@ class ApiClient {
        * LLM diariser config: post-STT, an LLM splits the plain
        * transcript into agent/user turns using ``diarization_prompt``
        * (or the canonical default when empty). Required by the server
-       * when ``auto_transcribe`` is set.
+       * when ``auto_transcribe`` is set. Also used in 'llm_only' mode
+       * where this same LLM receives the audio directly.
        */
       diarization_llm_provider?: string | null
       diarization_llm_model?: string | null
@@ -1733,6 +1742,20 @@ class ApiClient {
       sttModel?: string | null
       sttCredentialId?: string | null
       transcribeOverwrite?: boolean
+      /**
+       * Metric-subset retry: when set, only these metrics are
+       * recomputed and merged into the row's existing metric_scores
+       * (other metrics' previous values are preserved). The backend
+       * auto-flips ``include_completed`` to true in this case so
+       * already-successful rows are eligible.
+       */
+      metricIds?: string[]
+      /**
+       * When true, rows currently ``completed`` are eligible for
+       * retry too (otherwise only ``failed`` rows are picked up).
+       * Required-and-implied when ``metricIds`` is set.
+       */
+      includeCompleted?: boolean
     },
   ): Promise<CallImportEvaluationRetryResponse> {
     const body: Record<string, unknown> = {}
@@ -1751,6 +1774,12 @@ class ApiClient {
     }
     if (options?.transcribeOverwrite) {
       body.transcribe_overwrite = true
+    }
+    if (options?.metricIds && options.metricIds.length > 0) {
+      body.metric_ids = options.metricIds
+    }
+    if (options?.includeCompleted) {
+      body.include_completed = true
     }
     const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/retry`,
