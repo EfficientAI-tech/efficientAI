@@ -1260,9 +1260,34 @@ class ApiClient {
 
   async getCallImport(
     id: string,
-    params: { row_limit?: number; row_offset?: number; q?: string } = {}
+    params: {
+      row_limit?: number
+      row_offset?: number
+      q?: string
+      /**
+       * Optional filter on ``CallImportRow.diarised_transcript_status``.
+       * When set, ``filtered_total_rows`` on the response reflects the
+       * post-filter row count (combined with ``q`` when both are
+       * supplied) so the UI can paginate against the same slice.
+       */
+      diarised_status?: 'pending' | 'running' | 'completed' | 'failed'
+    } = {}
   ): Promise<CallImportDetail> {
     const response = await this.client.get(`/api/v1/call-imports/${id}`, { params })
+    return response.data
+  }
+
+  async listCallImportRowIds(
+    id: string,
+    params: {
+      q?: string
+      diarised_status?: 'pending' | 'running' | 'completed' | 'failed'
+    } = {}
+  ): Promise<{ ids: string[]; total: number }> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${id}/row-ids`,
+      { params },
+    )
     return response.data
   }
 
@@ -2294,6 +2319,16 @@ class ApiClient {
     capture_rationale?: boolean
     parent_metric_id?: string | null
     selection_mode?: 'single_choice' | 'multi_label' | null
+    /**
+     * Scope of the new metric:
+     *   - "workspace" (default): stamped with the active X-Workspace-Id
+     *     header so it only appears inside that workspace.
+     *   - "organization": stored with workspace_id=NULL so it surfaces
+     *     in every workspace of the caller's org.
+     * Ignored when parent_metric_id is set — children always inherit
+     * their parent's scope.
+     */
+    scope?: 'workspace' | 'organization'
   }): Promise<any> {
     const response = await this.client.post('/api/v1/metrics', data)
     return response.data
@@ -2331,6 +2366,13 @@ class ApiClient {
       capture_rationale?: boolean | null
       tags?: string[] | null
     }>
+    /**
+     * Same semantics as {@link createMetric}'s ``scope``: when
+     * ``"organization"`` the parent + every child are stored with
+     * ``workspace_id=NULL`` so the whole category subtree is visible
+     * in every workspace of the org.
+     */
+    scope?: 'workspace' | 'organization'
   }): Promise<any> {
     const response = await this.client.post(
       '/api/v1/metrics/with-children',

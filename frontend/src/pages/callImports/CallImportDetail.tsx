@@ -104,11 +104,29 @@ export default function CallImportDetail() {
   // and reports the post-filter total in ``filtered_total_rows``.
   const [rowSearchInput, setRowSearchInput] = useState('')
   const [rowSearchQuery, setRowSearchQuery] = useState('')
+  // Optional filter on per-row diarised transcript status. Lets the
+  // user find rows where diarisation failed (or is still running)
+  // without having to expand each row. Backed by the new
+  // ``diarised_status`` query param on ``GET /call-imports/{id}``.
+  type DiarisedStatusFilter =
+    | 'all'
+    | 'pending'
+    | 'running'
+    | 'completed'
+    | 'failed'
+  const [diarisedStatusFilter, setDiarisedStatusFilter] =
+    useState<DiarisedStatusFilter>('all')
   // Multi-select state for the row list — drives the bulk-action
   // toolbar (delete / transcribe). The header checkbox toggles every
-  // row currently visible on the page; selection is intentionally
-  // scoped to the current page so cross-page operations stay explicit.
+  // row currently visible on the page; an explicit "Select all in
+  // import" affordance extends the selection across pages by harvesting
+  // ids from ``GET /call-imports/{id}/row-ids``.
   const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set())
+  // Loading flag for the cross-page select-all click; surfaces a tiny
+  // spinner on the affordance button so the user knows the harvest is
+  // in flight.
+  const [isSelectingAllInImport, setIsSelectingAllInImport] = useState(false)
+  const [selectAllError, setSelectAllError] = useState<string | null>(null)
   const [showBulkDeleteRows, setShowBulkDeleteRows] = useState(false)
   const [bulkDeleteRowsError, setBulkDeleteRowsError] = useState<string | null>(
     null,
@@ -196,10 +214,30 @@ export default function CallImportDetail() {
     })
   const [transcribeDiarisationPrompt, setTranscribeDiarisationPrompt] =
     useState('')
+  // Defaults to ON: when the user clicks the Diarize button they almost
+  // always want to re-run on top of any existing diarised transcript;
+  // the safe-off default forced an extra click for every re-run. The
+  // user can still untick it before submitting if they explicitly want
+  // to skip rows that already have a transcript.
   const [transcribeOverwriteStandalone, setTranscribeOverwriteStandalone] =
-    useState(false)
+    useState(true)
   const [transcribeLanguage, setTranscribeLanguage] = useState('')
   const [transcribeError, setTranscribeError] = useState<string | null>(null)
+
+  // Prompt-partial import sub-modal. ``target`` decides which
+  // diarisation prompt textarea the chosen partial's ``content``
+  // replaces — ``standalone`` is the Diarize-modal textarea,
+  // ``eval`` is the Run-Evaluation modal's. ``null`` keeps the
+  // sub-modal hidden.
+  const [partialsImportTarget, setPartialsImportTarget] = useState<
+    'standalone' | 'eval' | null
+  >(null)
+  const [partialsSearchInput, setPartialsSearchInput] = useState('')
+  const [partialsSearchQuery, setPartialsSearchQuery] = useState('')
+  const [selectedPartialId, setSelectedPartialId] = useState<string>('')
+  const [partialsImportError, setPartialsImportError] = useState<string | null>(
+    null,
+  )
 
   // The canonical default diariser prompt. Fetched once when the
   // modal opens so the textarea can pre-fill with the *actual*
@@ -292,28 +330,90 @@ export default function CallImportDetail() {
     return () => clearTimeout(handle)
   }, [rowSearchInput])
 
+  // Debounce the partials-search input so we don't refire the list
+  // query on every character while the import sub-modal is open.
+  useEffect(() => {
+    const handle = setTimeout(() => {
+      setPartialsSearchQuery(partialsSearchInput.trim())
+    }, 250)
+    return () => clearTimeout(handle)
+  }, [partialsSearchInput])
+
+  const { data: promptPartials = [], isLoading: isLoadingPartials } = useQuery<
+    Array<{ id: string; name: string; description?: string | null }>
+  >({
+    queryKey: ['call-import-prompt-partials', partialsSearchQuery],
+    queryFn: () =>
+      apiClient.listPromptPartials(
+        0,
+        100,
+        partialsSearchQuery ? partialsSearchQuery : undefined,
+      ),
+    enabled: partialsImportTarget !== null,
+  })
+
+  const importPartialMutation = useMutation({
+    mutationFn: (partialId: string) => apiClient.getPromptPartial(partialId),
+    onSuccess: (partial) => {
+      const content = ((partial?.content as string | undefined) || '').trim()
+      if (!content) {
+        setPartialsImportError('Selected prompt partial has no content.')
+        return
+      }
+      if (partialsImportTarget === 'standalone') {
+        setTranscribeDiarisationPrompt(content)
+      } else if (partialsImportTarget === 'eval') {
+        setEvalDiarisationPrompt(content)
+      }
+      setPartialsImportTarget(null)
+      setPartialsSearchInput('')
+      setPartialsSearchQuery('')
+      setSelectedPartialId('')
+      setPartialsImportError(null)
+    },
+    onError: (err: any) => {
+      setPartialsImportError(
+        err?.response?.data?.detail ||
+          err?.message ||
+          'Failed to load prompt partial.',
+      )
+    },
+  })
+
+  const closePartialsImportModal = () => {
+    if (importPartialMutation.isPending) return
+    setPartialsImportTarget(null)
+    setPartialsSearchInput('')
+    setPartialsSearchQuery('')
+    setSelectedPartialId('')
+    setPartialsImportError(null)
+  }
+
   // Snap back to the first page whenever the active query changes —
   // otherwise the user could be sitting on page 3 of a filtered set
   // that only has one page of results.
   useEffect(() => {
     setRowOffset(0)
-  }, [rowSearchQuery])
+  }, [rowSearchQuery, diarisedStatusFilter])
 
-  // Clear any active row selection when the visible slice changes
-  // (search / pagination). Selection is scoped to the current page so
-  // keeping stale ids around just leads to confusing "X selected"
-  // counters that don't match what's on screen.
+  // Clear any active row selection when the filter set changes — the
+  // ids the user picked may no longer match the new slice. Pagination
+  // alone no longer resets the selection so users can still pick rows
+  // across pages (the "Select all in import" affordance relies on this).
   useEffect(() => {
     setSelectedRowIds(new Set())
-  }, [rowSearchQuery, rowOffset])
+    setSelectAllError(null)
+  }, [rowSearchQuery, diarisedStatusFilter])
 
   const queryParams = useMemo(
     () => ({
       row_limit: ROW_PAGE_SIZE,
       row_offset: rowOffset,
       q: rowSearchQuery || undefined,
+      diarised_status:
+        diarisedStatusFilter === 'all' ? undefined : diarisedStatusFilter,
     }),
-    [rowOffset, rowSearchQuery],
+    [rowOffset, rowSearchQuery, diarisedStatusFilter],
   )
 
   const { data, isLoading, isFetching, refetch, error } = useQuery({
@@ -536,10 +636,12 @@ export default function CallImportDetail() {
   }, [])
 
   const totalRows = data?.total_rows ?? 0
-  // ``filtered_total_rows`` is only set when ``q`` is on; pagination
-  // should always page against whatever slice the user is actually
-  // looking at (filtered or otherwise).
-  const filteredTotalRows = rowSearchQuery
+  // ``filtered_total_rows`` is set whenever any filter (search OR
+  // diarisation-status) is active; pagination should always page
+  // against whatever slice the user is actually looking at.
+  const hasActiveFilter =
+    !!rowSearchQuery || diarisedStatusFilter !== 'all'
+  const filteredTotalRows = hasActiveFilter
     ? data?.filtered_total_rows ?? 0
     : totalRows
   const rowPage = Math.floor(rowOffset / ROW_PAGE_SIZE) + 1
@@ -669,7 +771,7 @@ export default function CallImportDetail() {
   const openTranscribeModal = (rows: CallImportRow[]) => {
     setTranscribeTargetRows(rows)
     setTranscribeError(null)
-    setTranscribeOverwriteStandalone(false)
+    setTranscribeOverwriteStandalone(true)
     // Default to deepgram/nova-2 since it's the most common diarization
     // setup; the user can change it before submitting.
     if (!transcribeSTT.provider) {
@@ -743,12 +845,25 @@ export default function CallImportDetail() {
   // pre-import so the user has a single linear next-action.
   const preImport = data.status === 'uploaded' || data.status === 'mapped'
 
-  // Selection state derived from the current page's row list. We
-  // intentionally scope selection to the current page so a "Select all"
-  // tick on screen always matches the rows the user can see.
+  // Selection state — ``selectedRowIds`` can now span pages (we no
+  // longer wipe it on pagination), so distinguish "how many of the
+  // currently-visible rows are ticked" from "how many rows are
+  // selected in total". The header checkbox toggles only the on-page
+  // rows; a separate affordance appears once every on-page row is
+  // selected to let the user extend the selection across every page.
   const selectedOnPage = rows.filter((r) => selectedRowIds.has(r.id))
-  const selectedCount = selectedOnPage.length
-  const allOnPageSelected = rows.length > 0 && selectedCount === rows.length
+  const selectedOnPageCount = selectedOnPage.length
+  const selectedCount = selectedRowIds.size
+  const allOnPageSelected =
+    rows.length > 0 && selectedOnPageCount === rows.length
+  const allMatchingSelected =
+    filteredTotalRows > 0 && selectedCount >= filteredTotalRows
+  // ``transcribeReadySelection`` previously gated the Transcribe
+  // button on the on-page filter; with cross-page selection we can't
+  // cheaply check every off-page row's status from here, so we trust
+  // the worker's own ``_select_rows_for_transcription`` filter to
+  // skip rows lacking audio / in-flight. We still surface an on-page
+  // optimistic count for the button label.
   const transcribeReadySelection = selectedOnPage.filter(
     (r) =>
       !!r.recording_s3_key &&
@@ -1179,7 +1294,7 @@ export default function CallImportDetail() {
             <p className="text-sm text-gray-500">
               Showing {rows.length === 0 ? 0 : rowOffset + 1}&ndash;
               {rowOffset + rows.length} of {filteredTotalRows}
-              {rowSearchQuery ? ` (filtered from ${totalRows})` : ''}
+              {hasActiveFilter ? ` (filtered from ${totalRows})` : ''}
             </p>
           </div>
         </div>
@@ -1206,6 +1321,47 @@ export default function CallImportDetail() {
               </button>
             )}
           </div>
+          {/* Diarisation status filter chips — finally lets the user
+              find rows where diarisation failed without expanding every
+              row in turn. The active chip drives ``diarised_status`` on
+              the rows query and updates ``filtered_total_rows``. */}
+          <div
+            className="flex items-center gap-1 flex-wrap"
+            role="group"
+            aria-label="Filter rows by diarisation status"
+          >
+            <span className="text-[11px] uppercase tracking-wide text-gray-500 mr-1">
+              Diarisation:
+            </span>
+            {(
+              [
+                { id: 'all', label: 'All' },
+                { id: 'pending', label: 'Pending' },
+                { id: 'running', label: 'Running' },
+                { id: 'completed', label: 'Completed' },
+                { id: 'failed', label: 'Failed' },
+              ] as Array<{ id: DiarisedStatusFilter; label: string }>
+            ).map((chip) => {
+              const active = diarisedStatusFilter === chip.id
+              return (
+                <button
+                  key={chip.id}
+                  type="button"
+                  onClick={() => setDiarisedStatusFilter(chip.id)}
+                  className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${
+                    active
+                      ? chip.id === 'failed'
+                        ? 'bg-red-600 border-red-600 text-white'
+                        : 'bg-primary-600 border-primary-600 text-white'
+                      : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'
+                  }`}
+                  aria-pressed={active}
+                >
+                  {chip.label}
+                </button>
+              )
+            })}
+          </div>
           {selectedCount > 0 && (
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-xs text-gray-600">
@@ -1222,15 +1378,46 @@ export default function CallImportDetail() {
                 variant="ghost"
                 size="sm"
                 leftIcon={<Mic className="h-4 w-4" />}
-                disabled={transcribeReadySelection.length === 0}
-                title={
+                disabled={
+                  // When the selection lives entirely on the current
+                  // page, gate on the on-page readiness check. Once the
+                  // selection spans pages we can't cheaply audit each
+                  // off-page row from the client, so allow the click
+                  // and let the worker's own filter skip rows lacking
+                  // audio / in-flight (see
+                  // ``_select_rows_for_transcription``).
+                  selectedCount === selectedOnPageCount &&
                   transcribeReadySelection.length === 0
-                    ? 'Selected rows have no downloaded recording or are already transcribing'
-                    : `Transcribe ${transcribeReadySelection.length} row${
-                        transcribeReadySelection.length === 1 ? '' : 's'
-                      }`
                 }
-                onClick={() => openTranscribeModal(transcribeReadySelection)}
+                title={
+                  selectedCount === selectedOnPageCount
+                    ? transcribeReadySelection.length === 0
+                      ? 'Selected rows have no downloaded recording or are already transcribing'
+                      : `Transcribe ${transcribeReadySelection.length} row${
+                          transcribeReadySelection.length === 1 ? '' : 's'
+                        }`
+                    : `Transcribe ${selectedCount} selected rows (the worker will skip any that lack audio or are already in flight)`
+                }
+                onClick={() => {
+                  if (selectedCount === selectedOnPageCount) {
+                    openTranscribeModal(transcribeReadySelection)
+                  } else {
+                    // Cross-page selection: build a synthetic row
+                    // list with just ids so the modal can target the
+                    // batch endpoint. The other row fields aren't
+                    // read by the modal beyond ``row_index`` (only
+                    // used in the header label when targeting 1 row).
+                    openTranscribeModal(
+                      Array.from(selectedRowIds).map(
+                        (rowId) =>
+                          ({
+                            id: rowId,
+                            row_index: 0,
+                          } as unknown as CallImportRow),
+                      ),
+                    )
+                  }
+                }}
                 className="text-purple-600 hover:text-purple-700 hover:bg-purple-50"
               >
                 Transcribe selected
@@ -1260,6 +1447,16 @@ export default function CallImportDetail() {
                 <span className="font-mono text-gray-700">
                   &quot;{rowSearchQuery}&quot;
                 </span>
+                {diarisedStatusFilter !== 'all'
+                  ? ` with diarisation status ${diarisedStatusFilter}.`
+                  : '.'}
+              </p>
+            ) : diarisedStatusFilter !== 'all' ? (
+              <p>
+                No rows with diarisation status{' '}
+                <span className="font-medium text-gray-700">
+                  {diarisedStatusFilter}
+                </span>
                 .
               </p>
             ) : (
@@ -1268,30 +1465,105 @@ export default function CallImportDetail() {
           </div>
         ) : (
           <div className="space-y-2">
-            <div className="flex items-center gap-2 px-3 py-2 border border-gray-200 rounded-lg bg-gray-50">
-              <input
-                type="checkbox"
-                aria-label="Select all rows on this page"
-                checked={allOnPageSelected}
-                ref={(el) => {
-                  if (el) el.indeterminate = selectedCount > 0 && !allOnPageSelected
-                }}
-                onChange={(e) => {
-                  if (e.target.checked) {
-                    setSelectedRowIds(new Set(rows.map((r) => r.id)))
-                  } else {
-                    setSelectedRowIds(new Set())
-                  }
-                }}
-              />
-              <span className="text-xs text-gray-600">
-                {allOnPageSelected
-                  ? `All ${rows.length} on this page selected`
-                  : selectedCount > 0
-                  ? `${selectedCount} of ${rows.length} on this page selected`
-                  : `Select all on this page (${rows.length})`}
-              </span>
+            <div className="flex items-center gap-3 px-3 py-2 border border-gray-200 rounded-lg bg-gray-50 flex-wrap">
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  aria-label="Select all rows on this page"
+                  checked={allOnPageSelected}
+                  ref={(el) => {
+                    if (el)
+                      el.indeterminate =
+                        selectedOnPageCount > 0 && !allOnPageSelected
+                  }}
+                  onChange={(e) => {
+                    if (e.target.checked) {
+                      // Add every on-page row to the selection without
+                      // disturbing rows the user already ticked on
+                      // other pages.
+                      setSelectedRowIds((prev) => {
+                        const next = new Set(prev)
+                        for (const r of rows) next.add(r.id)
+                        return next
+                      })
+                    } else {
+                      // Drop only the on-page rows from the selection
+                      // so the user can unselect this page without
+                      // wiping cross-page picks.
+                      setSelectedRowIds((prev) => {
+                        const next = new Set(prev)
+                        for (const r of rows) next.delete(r.id)
+                        return next
+                      })
+                    }
+                  }}
+                />
+                <span className="text-xs text-gray-600">
+                  {allOnPageSelected
+                    ? `All ${rows.length} on this page selected`
+                    : selectedOnPageCount > 0
+                    ? `${selectedOnPageCount} of ${rows.length} on this page selected`
+                    : `Select all on this page (${rows.length})`}
+                </span>
+              </div>
+              {/* "Select all in import" affordance — only shown once
+                  the on-page checkbox is satisfied AND there are off-page
+                  rows that the user could still benefit from selecting.
+                  Clicking it hits the lightweight ``/row-ids`` endpoint
+                  with the active filters so the selection respects the
+                  search / status chips. */}
+              {allOnPageSelected &&
+                filteredTotalRows > rows.length &&
+                !allMatchingSelected && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-gray-400">·</span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      isLoading={isSelectingAllInImport}
+                      onClick={async () => {
+                        if (isSelectingAllInImport) return
+                        setSelectAllError(null)
+                        setIsSelectingAllInImport(true)
+                        try {
+                          const { ids } =
+                            await apiClient.listCallImportRowIds(id!, {
+                              q: rowSearchQuery || undefined,
+                              diarised_status:
+                                diarisedStatusFilter === 'all'
+                                  ? undefined
+                                  : diarisedStatusFilter,
+                            })
+                          setSelectedRowIds(new Set(ids))
+                        } catch (err: any) {
+                          setSelectAllError(
+                            err?.response?.data?.detail ||
+                              err?.message ||
+                              'Failed to select all rows.',
+                          )
+                        } finally {
+                          setIsSelectingAllInImport(false)
+                        }
+                      }}
+                    >
+                      {`Select all ${filteredTotalRows} rows in this import${
+                        hasActiveFilter ? ' (matching filters)' : ''
+                      }`}
+                    </Button>
+                  </div>
+                )}
+              {allMatchingSelected &&
+                filteredTotalRows > rows.length && (
+                  <span className="text-xs text-primary-700">
+                    All {filteredTotalRows} matching rows selected.
+                  </span>
+                )}
             </div>
+            {selectAllError && (
+              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+                {selectAllError}
+              </div>
+            )}
             {rows.map((row) => {
               const hasRecording = !!row.recording_s3_key
               const isThisPlaying = playingRowId === row.id && isPlaying
@@ -1381,6 +1653,32 @@ export default function CallImportDetail() {
                         {row.conversation_id}
                       </span>
                       <StatusBadge status={row.status} size="sm" />
+                      {/* Diarisation status pill: only surfaced once
+                          the diarise/transcribe worker has touched
+                          this row. Lets the user spot failed rows
+                          inline without expanding the row, and makes
+                          the new diarisation status filter chip set
+                          self-evident. */}
+                      {(() => {
+                        const ds = row.diarised_transcript_status
+                        if (!ds || ds === 'idle') return null
+                        const tone =
+                          ds === 'failed'
+                            ? 'bg-red-100 text-red-700 border-red-200'
+                            : ds === 'completed'
+                            ? 'bg-green-100 text-green-700 border-green-200'
+                            : ds === 'running'
+                            ? 'bg-blue-100 text-blue-700 border-blue-200'
+                            : 'bg-gray-100 text-gray-700 border-gray-200'
+                        return (
+                          <span
+                            className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border ${tone}`}
+                            title={`Diarisation: ${ds}`}
+                          >
+                            Diarise: {ds}
+                          </span>
+                        )
+                      })()}
                     </button>
 
                     <div className="flex items-center gap-1 flex-shrink-0">
@@ -1473,6 +1771,25 @@ export default function CallImportDetail() {
                       </div>
                     </div>
                   )}
+
+                  {/* Surface diarisation-specific failures even when
+                      the row's recording download itself succeeded.
+                      Previously these only showed inside the expanded
+                      panel, so the new "Failed" filter chip would land
+                      the user on rows with no inline indication of why
+                      they failed. */}
+                  {row.diarised_transcript_status === 'failed' &&
+                    row.diarised_transcript_error && (
+                      <div className="border-t border-red-100 bg-red-50 px-3 py-2 text-xs text-red-800 flex items-start gap-2">
+                        <AlertCircle className="h-3.5 w-3.5 text-red-600 flex-shrink-0 mt-0.5" />
+                        <div className="min-w-0 flex-1 break-words">
+                          <span className="font-medium">
+                            Diarisation error:
+                          </span>{' '}
+                          {row.diarised_transcript_error}
+                        </div>
+                      </div>
+                    )}
 
                   {isExpanded && (
                     <div className="border-t border-gray-200 px-4 py-4 bg-gray-100 space-y-3">
@@ -2133,6 +2450,122 @@ export default function CallImportDetail() {
         </div>
       )}
 
+      {partialsImportTarget !== null &&
+        renderModal(
+          <div
+            className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[10000]"
+            onClick={closePartialsImportModal}
+          >
+            <div
+              className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[85vh] overflow-hidden flex flex-col"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+                <h3 className="text-lg font-semibold text-gray-900">
+                  Import diarisation prompt from saved partials
+                </h3>
+                <button
+                  onClick={closePartialsImportModal}
+                  className="text-gray-400 hover:text-gray-600"
+                  aria-label="Close prompt partials modal"
+                  disabled={importPartialMutation.isPending}
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+              <div className="p-6 space-y-4 overflow-y-auto flex-1">
+                <p className="text-xs text-gray-500">
+                  Pick a saved Prompt Partial; its content will replace
+                  the current diarisation prompt textarea.
+                </p>
+                <input
+                  type="text"
+                  value={partialsSearchInput}
+                  onChange={(e) => setPartialsSearchInput(e.target.value)}
+                  placeholder="Search saved prompts..."
+                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                />
+
+                {isLoadingPartials ? (
+                  <div className="flex items-center justify-center py-8 text-sm text-gray-500">
+                    <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                    Loading saved prompts...
+                  </div>
+                ) : promptPartials.length === 0 ? (
+                  <div className="rounded-lg border border-gray-200 p-8 text-center text-sm text-gray-500">
+                    {partialsSearchQuery
+                      ? `No saved prompt partials match “${partialsSearchQuery}”.`
+                      : 'No saved prompt partials yet.'}
+                  </div>
+                ) : (
+                  <div className="space-y-2 max-h-[45vh] overflow-y-auto">
+                    {promptPartials.map((partial) => {
+                      const isSelected = selectedPartialId === partial.id
+                      return (
+                        <label
+                          key={partial.id}
+                          className={`block cursor-pointer rounded-lg border p-3 transition-colors ${
+                            isSelected
+                              ? 'border-primary-300 bg-primary-50'
+                              : 'border-gray-200 hover:bg-gray-50'
+                          }`}
+                        >
+                          <div className="flex items-start gap-3">
+                            <input
+                              type="radio"
+                              name="call-import-prompt-partial"
+                              checked={isSelected}
+                              onChange={() =>
+                                setSelectedPartialId(partial.id)
+                              }
+                              className="mt-1 h-4 w-4 border-gray-300 text-primary-600 focus:ring-primary-500"
+                            />
+                            <div className="min-w-0 flex-1">
+                              <p className="text-sm font-semibold text-gray-900">
+                                {partial.name}
+                              </p>
+                              {partial.description ? (
+                                <p className="mt-0.5 text-xs text-gray-500">
+                                  {partial.description}
+                                </p>
+                              ) : null}
+                            </div>
+                          </div>
+                        </label>
+                      )
+                    })}
+                  </div>
+                )}
+
+                {partialsImportError && (
+                  <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+                    {partialsImportError}
+                  </div>
+                )}
+              </div>
+              <div className="px-6 py-4 border-t border-gray-200 flex justify-end gap-2 bg-gray-50 rounded-b-lg">
+                <Button
+                  variant="outline"
+                  onClick={closePartialsImportModal}
+                  disabled={importPartialMutation.isPending}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="primary"
+                  onClick={() =>
+                    importPartialMutation.mutate(selectedPartialId)
+                  }
+                  isLoading={importPartialMutation.isPending}
+                  disabled={!selectedPartialId}
+                >
+                  Use Selected Prompt
+                </Button>
+              </div>
+            </div>
+          </div>,
+        )}
+
       {showTranscribeModal &&
         renderModal(
           (() => {
@@ -2216,19 +2649,34 @@ export default function CallImportDetail() {
                         <label className="text-xs font-medium text-gray-700">
                           Diarisation prompt
                         </label>
-                        {defaultDiarisationPrompt && (
+                        <div className="flex items-center gap-3">
                           <button
                             type="button"
-                            onClick={() =>
-                              setTranscribeDiarisationPrompt(
-                                defaultDiarisationPrompt,
-                              )
-                            }
+                            onClick={() => {
+                              setPartialsImportError(null)
+                              setSelectedPartialId('')
+                              setPartialsSearchInput('')
+                              setPartialsSearchQuery('')
+                              setPartialsImportTarget('standalone')
+                            }}
                             className="text-[11px] text-primary-600 hover:text-primary-700"
                           >
-                            Reset to default
+                            Import from saved partials
                           </button>
-                        )}
+                          {defaultDiarisationPrompt && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setTranscribeDiarisationPrompt(
+                                  defaultDiarisationPrompt,
+                                )
+                              }
+                              className="text-[11px] text-primary-600 hover:text-primary-700"
+                            >
+                              Reset to default
+                            </button>
+                          )}
+                        </div>
                       </div>
                       <textarea
                         value={transcribeDiarisationPrompt}
@@ -2813,19 +3261,34 @@ export default function CallImportDetail() {
                                     <label className="text-[11px] font-medium text-gray-700">
                                       Diarisation prompt
                                     </label>
-                                    {defaultDiarisationPrompt && (
+                                    <div className="flex items-center gap-3">
                                       <button
                                         type="button"
-                                        onClick={() =>
-                                          setEvalDiarisationPrompt(
-                                            defaultDiarisationPrompt,
-                                          )
-                                        }
+                                        onClick={() => {
+                                          setPartialsImportError(null)
+                                          setSelectedPartialId('')
+                                          setPartialsSearchInput('')
+                                          setPartialsSearchQuery('')
+                                          setPartialsImportTarget('eval')
+                                        }}
                                         className="text-[11px] text-primary-600 hover:text-primary-700"
                                       >
-                                        Reset to default
+                                        Import from saved partials
                                       </button>
-                                    )}
+                                      {defaultDiarisationPrompt && (
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            setEvalDiarisationPrompt(
+                                              defaultDiarisationPrompt,
+                                            )
+                                          }
+                                          className="text-[11px] text-primary-600 hover:text-primary-700"
+                                        >
+                                          Reset to default
+                                        </button>
+                                      )}
+                                    </div>
                                   </div>
                                   <textarea
                                     value={evalDiarisationPrompt}

@@ -25,6 +25,13 @@ import {
 interface Metric {
   id: string
   name: string
+  // ``null`` when this metric is shared org-wide (``scope ===
+  // 'organization'``); a real UUID when it's pinned to a specific
+  // workspace (the default).
+  workspace_id?: string | null
+  // Convenience field computed by the backend so the UI doesn't have
+  // to check ``workspace_id == null`` everywhere.
+  scope?: 'workspace' | 'organization'
   description?: string
   /**
    * Optional illustrative example. Populated mainly on categorization
@@ -143,6 +150,9 @@ export default function MetricsManagement() {
     description: string
     surfaces: MetricSurface[]
     capture_rationale: boolean
+    // CREATE-time visibility scope (same semantics as ``formData.scope``).
+    // Inherited by every child of the new category.
+    scope: 'workspace' | 'organization'
     children: Array<{
       local_id: string
       name: string
@@ -154,6 +164,7 @@ export default function MetricsManagement() {
     description: '',
     surfaces: ['agent'],
     capture_rationale: false,
+    scope: 'workspace',
     children: [
       { local_id: 'c1', name: '', description: '', example: '' },
     ],
@@ -273,6 +284,14 @@ export default function MetricsManagement() {
     // transcript_source toggle is ignored for these metrics —
     // they always read both.
     compare_transcripts: false,
+    // Visibility scope. ``'workspace'`` (default) pins the metric to
+    // the currently active workspace via X-Workspace-Id; ``'organization'``
+    // stores it with workspace_id=NULL so it shows up in every
+    // workspace of the org. Only honoured by the CREATE endpoints —
+    // the edit form does not surface this toggle (changing scope
+    // post-creation would break uniqueness invariants and so is not
+    // supported in this iteration).
+    scope: 'workspace' as 'workspace' | 'organization',
   })
   const { data: metrics = [], isLoading } = useQuery({
     queryKey: ['metrics', activeWorkspaceId, surfaceFilter],
@@ -379,6 +398,10 @@ export default function MetricsManagement() {
         capture_rationale?: boolean
         enabled?: boolean
       }>
+      // CREATE-time visibility scope. ``'organization'`` writes the
+      // parent + every child with workspace_id=NULL so the whole
+      // category subtree appears in every workspace.
+      scope?: 'workspace' | 'organization'
     }) => apiClient.createMetricWithChildren(payload),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['metrics'] })
@@ -559,6 +582,7 @@ export default function MetricsManagement() {
       description: '',
       surfaces: ['agent'],
       capture_rationale: false,
+      scope: 'workspace',
       children: [
         { local_id: 'c1', name: '', description: '', example: '' },
       ],
@@ -636,6 +660,7 @@ export default function MetricsManagement() {
       capture_rationale: false,
       allow_discovery: false,
       compare_transcripts: false,
+      scope: 'workspace',
     })
   }
 
@@ -708,6 +733,11 @@ export default function MetricsManagement() {
           && !editingMetric.selection_mode))
         ? { compare_transcripts: !!formData.compare_transcripts }
         : {}),
+      // Scope is a CREATE-time decision (the row is stored with a
+      // workspace_id of either the active UUID or NULL). PUT /metrics
+      // does not accept ``scope``, so we omit it when editing to keep
+      // the body honest.
+      ...(!editingMetric ? { scope: formData.scope } : {}),
     }
   }
 
@@ -767,6 +797,11 @@ export default function MetricsManagement() {
       capture_rationale: !!metric.capture_rationale,
       allow_discovery: !!metric.allow_discovery,
       compare_transcripts: !!metric.compare_transcripts,
+      // Mirror the persisted scope so the form state is honest, even
+      // though the edit UI doesn't expose a scope picker.
+      scope:
+        metric.scope ||
+        (metric.workspace_id == null ? 'organization' : 'workspace'),
     })
     setIsCustomMetricMode(metric.metric_origin === 'custom')
     setShowCreateModal(true)
@@ -1035,6 +1070,7 @@ export default function MetricsManagement() {
                 capture_rationale: false,
                 allow_discovery: false,
                 compare_transcripts: false,
+                scope: 'workspace',
               })
               resetCategoryForm()
               setShowCreateModal(true)
@@ -1193,6 +1229,22 @@ export default function MetricsManagement() {
                             {metric.is_default && (
                               <span className="px-2 py-0.5 text-xs bg-blue-100 text-blue-800 rounded">
                                 Default
+                              </span>
+                            )}
+                            {/* Org-shared marker: surfaces only when
+                                the metric has no workspace association
+                                (``scope === 'organization'`` / NULL
+                                workspace_id). Same row will appear in
+                                every workspace, so the badge tells
+                                users "editing this affects everyone in
+                                the org". */}
+                            {(metric.scope === 'organization' ||
+                              metric.workspace_id == null) && (
+                              <span
+                                className="px-2 py-0.5 text-xs font-semibold uppercase tracking-wide bg-indigo-100 text-indigo-800 rounded"
+                                title="This metric is shared across every workspace in the organization."
+                              >
+                                Shared
                               </span>
                             )}
                             {isParent && (
@@ -1971,6 +2023,64 @@ export default function MetricsManagement() {
                       </div>
                     )}
 
+                  {/* Visibility scope picker. Only meaningful at
+                      CREATE time — the metrics API does not support
+                      flipping a row between workspace and org scope
+                      after the fact (would break the partial unique
+                      indexes added in migration 041). We hide the
+                      picker when editing so users don't expect to
+                      be able to change it. */}
+                  {!editingMetric && (
+                    <div className="lg:col-span-2 rounded-xl border border-gray-200 bg-gray-50/70 p-3.5">
+                      <span className="block text-sm font-medium text-gray-700 mb-2">
+                        Available in
+                      </span>
+                      <div className="space-y-2">
+                        <label className="flex items-start gap-2.5 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="metric-scope"
+                            value="workspace"
+                            checked={formData.scope === 'workspace'}
+                            onChange={() =>
+                              setFormData({ ...formData, scope: 'workspace' })
+                            }
+                            className="mt-0.5 h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300"
+                          />
+                          <span className="text-sm text-gray-800">
+                            <span className="font-medium">This workspace only</span>
+                            <span className="block text-xs text-gray-500 mt-0.5">
+                              The metric is created inside the currently
+                              active workspace and is invisible to other
+                              workspaces in this organization.
+                            </span>
+                          </span>
+                        </label>
+                        <label className="flex items-start gap-2.5 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="metric-scope"
+                            value="organization"
+                            checked={formData.scope === 'organization'}
+                            onChange={() =>
+                              setFormData({ ...formData, scope: 'organization' })
+                            }
+                            className="mt-0.5 h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300"
+                          />
+                          <span className="text-sm text-gray-800">
+                            <span className="font-medium">All workspaces in this organization</span>
+                            <span className="block text-xs text-gray-500 mt-0.5">
+                              The metric is shared org-wide and shows up in
+                              every workspace's metric list. Pick this for
+                              standard metrics you want to reuse without
+                              recreating them per workspace.
+                            </span>
+                          </span>
+                        </label>
+                      </div>
+                    </div>
+                  )}
+
                   <div className="lg:col-span-2 flex items-center">
                     <input
                       type="checkbox"
@@ -2074,6 +2184,55 @@ export default function MetricsManagement() {
                           </span>
                         </span>
                       </label>
+                    </div>
+
+                    {/* Visibility scope picker. Same shape + semantics
+                        as the single-metric scope picker — the parent
+                        and every child inherit the chosen scope. */}
+                    <div className="md:col-span-2 rounded-xl border border-gray-200 bg-gray-50/70 p-3.5">
+                      <span className="block text-sm font-medium text-gray-700 mb-2">
+                        Available in
+                      </span>
+                      <div className="space-y-2">
+                        <label className="flex items-start gap-2.5 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="category-scope"
+                            value="workspace"
+                            checked={categoryForm.scope === 'workspace'}
+                            onChange={() =>
+                              setCategoryForm((s) => ({ ...s, scope: 'workspace' }))
+                            }
+                            className="mt-0.5 h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300"
+                          />
+                          <span className="text-sm text-gray-800">
+                            <span className="font-medium">This workspace only</span>
+                            <span className="block text-xs text-gray-500 mt-0.5">
+                              The category and all of its labels are created
+                              inside the currently active workspace.
+                            </span>
+                          </span>
+                        </label>
+                        <label className="flex items-start gap-2.5 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="category-scope"
+                            value="organization"
+                            checked={categoryForm.scope === 'organization'}
+                            onChange={() =>
+                              setCategoryForm((s) => ({ ...s, scope: 'organization' }))
+                            }
+                            className="mt-0.5 h-4 w-4 text-primary-600 focus:ring-primary-500 border-gray-300"
+                          />
+                          <span className="text-sm text-gray-800">
+                            <span className="font-medium">All workspaces in this organization</span>
+                            <span className="block text-xs text-gray-500 mt-0.5">
+                              The category subtree is shared org-wide and
+                              shows up in every workspace's metric list.
+                            </span>
+                          </span>
+                        </label>
+                      </div>
                     </div>
                   </div>
 
@@ -2236,6 +2395,7 @@ export default function MetricsManagement() {
                           supported_surfaces: categoryForm.surfaces,
                           enabled_surfaces: categoryForm.surfaces,
                           children: cleanedChildren,
+                          scope: categoryForm.scope,
                         })
                       }}
                     >
@@ -2781,6 +2941,15 @@ export default function MetricsManagement() {
                             <span className={`px-2 py-0.5 text-xs font-medium rounded-full ${isQuantitative ? 'bg-blue-100 text-blue-800' : 'bg-amber-100 text-amber-800'}`}>
                               {isQuantitative ? 'Quantitative' : 'Qualitative'}
                             </span>
+                            {(metric.scope === 'organization' ||
+                              metric.workspace_id == null) && (
+                              <span
+                                className="px-2 py-0.5 text-xs font-semibold uppercase tracking-wide bg-indigo-100 text-indigo-800 rounded"
+                                title="This metric is shared across every workspace in the organization."
+                              >
+                                Shared
+                              </span>
+                            )}
                             {isAIVoiceMetric(metric.name) ? (
                               <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium bg-purple-100 text-purple-800 rounded-full">
                                 <Sparkles className="w-3 h-3 mr-1" />

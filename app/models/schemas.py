@@ -1092,6 +1092,9 @@ class RunEvaluatorsResponse(BaseModel):
 SelectionMode = Literal["single_choice", "multi_label"]
 
 
+MetricScope = Literal["workspace", "organization"]
+
+
 class MetricCreate(BaseModel):
     """Schema for creating a metric.
 
@@ -1100,6 +1103,14 @@ class MetricCreate(BaseModel):
       is forced to ``boolean`` server-side; ``selection_mode`` must be None.
     - ``selection_mode`` set => this is a parent category metric.
       ``parent_metric_id`` must be None (max depth = 2).
+
+    Scope:
+    - ``scope="workspace"`` (default) stamps the metric with the active
+      ``X-Workspace-Id`` so it only shows up inside that workspace.
+    - ``scope="organization"`` stamps ``workspace_id=NULL`` so the metric
+      is visible in every workspace of the org. Children always inherit
+      their parent's scope; setting ``scope`` on a child request body is
+      ignored server-side.
     """
     name: str
     description: Optional[str] = None
@@ -1137,6 +1148,13 @@ class MetricCreate(BaseModel):
     # still routes a categorisation parent through the comparison
     # prompt without setting this flag.)
     compare_transcripts: bool = False
+    # When ``"organization"``, the metric is stored with
+    # ``workspace_id=NULL`` so it surfaces in every workspace of the
+    # caller's org. Default ``"workspace"`` preserves the historical
+    # behavior of stamping the metric with the active ``X-Workspace-Id``.
+    # Ignored when ``parent_metric_id`` is set (children inherit the
+    # parent's scope unconditionally).
+    scope: MetricScope = "workspace"
 
     @model_validator(mode='after')
     def validate_compare_transcripts_exclusions(self):
@@ -1218,6 +1236,11 @@ class MetricCreateWithChildren(BaseModel):
         default_factory=list,
         description="Child sub-metric labels under this parent.",
     )
+    # See ``MetricCreate.scope``. Same semantics: ``"organization"``
+    # creates the parent + all children with ``workspace_id=NULL`` so
+    # the whole category subtree is shared across every workspace in
+    # the org.
+    scope: MetricScope = "workspace"
 
 
 class MetricUpdate(BaseModel):
@@ -1276,7 +1299,13 @@ class MetricResponse(BaseModel):
     """
     id: UUID
     organization_id: UUID
-    workspace_id: UUID
+    # ``None`` when the metric is org-shared (``scope == "organization"``).
+    # See the ORM ``Metric.workspace_id`` docstring.
+    workspace_id: Optional[UUID] = None
+    # Computed convenience field so the UI doesn't have to do
+    # ``workspace_id == null`` checks everywhere. Always one of
+    # ``"workspace"`` or ``"organization"``.
+    scope: MetricScope = "workspace"
     name: str
     description: Optional[str]
     # Optional illustrative example. Populated mainly on categorization
@@ -3054,6 +3083,33 @@ class CallImportDiarisationPromptDefaultResponse(BaseModel):
             "The exact prompt the worker falls back to when the caller "
             "leaves ``diarization_prompt`` blank. The frontend pre-fills "
             "the textarea with this value so the operator can edit it."
+        ),
+    )
+
+
+class CallImportRowIdsResponse(BaseModel):
+    """Flat row-id list for cross-page bulk selection.
+
+    Powers the "Select all M rows in this import" affordance on the
+    detail page — returning only ids keeps the payload tiny so the UI
+    can hold the full set in memory even for batches with thousands
+    of rows. The frontend then passes those ids straight to the
+    existing bulk-delete / bulk-transcribe endpoints.
+    """
+
+    ids: List[UUID] = Field(
+        default_factory=list,
+        description=(
+            "Every ``CallImportRow.id`` that matches the ``q`` and "
+            "``diarised_status`` filters (or every row when neither is "
+            "supplied), sorted by ``row_index``."
+        ),
+    )
+    total: int = Field(
+        ...,
+        description=(
+            "Length of ``ids``. Sent explicitly so callers can show a "
+            "count without re-measuring the array."
         ),
     )
 

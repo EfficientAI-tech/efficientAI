@@ -57,6 +57,7 @@ from app.models.schemas import (
     CallImportDiarisationPromptDefaultResponse,
     CallImportRowBulkDelete,
     CallImportRowBulkDeleteResponse,
+    CallImportRowIdsResponse,
     CallImportRowResponse,
     CallImportStartRequest,
     CallImportTranscribeRequest,
@@ -1916,6 +1917,18 @@ async def get_call_import_detail(
             "can paginate against the filtered slice."
         ),
     ),
+    diarised_status: Optional[str] = Query(
+        None,
+        description=(
+            "Optional filter on ``CallImportRow.diarised_transcript_status``. "
+            "Accepts one of ``pending``, ``running``, ``completed``, "
+            "``failed``. When set, ``filtered_total_rows`` reflects the "
+            "post-filter row count (combined with the ``q`` filter when "
+            "both are supplied) so the UI can paginate against the same "
+            "slice it's displaying."
+        ),
+        pattern="^(pending|running|completed|failed)$",
+    ),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
@@ -1946,11 +1959,19 @@ async def get_call_import_detail(
     )
 
     search_term = (q or "").strip()
+    diarised_status_filter = (diarised_status or "").strip() or None
     filtered_total_rows: Optional[int] = None
     if search_term:
         rows_query = rows_query.filter(
             CallImportRow.conversation_id.ilike(f"%{search_term}%")
         )
+    if diarised_status_filter:
+        rows_query = rows_query.filter(
+            CallImportRow.diarised_transcript_status == diarised_status_filter
+        )
+    # Surface the post-filter total whenever any filter is active so
+    # the UI can paginate against the slice it's actually displaying.
+    if search_term or diarised_status_filter:
         filtered_total_rows = rows_query.count()
 
     if row_limit == 0:
@@ -1985,6 +2006,78 @@ async def get_call_import_detail(
     detail.diarised_completed_rows = diarised_status_counts.get("completed", 0)
     detail.diarised_failed_rows = diarised_status_counts.get("failed", 0)
     return detail
+
+
+@router.get(
+    "/{call_import_id}/row-ids",
+    response_model=CallImportRowIdsResponse,
+    operation_id="listCallImportRowIds",
+)
+async def list_call_import_row_ids(
+    call_import_id: UUID,
+    q: Optional[str] = Query(
+        None,
+        description=(
+            "Optional case-insensitive substring filter on "
+            "``conversation_id``. Same semantics as the detail endpoint."
+        ),
+    ),
+    diarised_status: Optional[str] = Query(
+        None,
+        description=(
+            "Optional filter on ``CallImportRow.diarised_transcript_status``. "
+            "Accepts ``pending`` / ``running`` / ``completed`` / ``failed``."
+        ),
+        pattern="^(pending|running|completed|failed)$",
+    ),
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportRowIdsResponse:
+    """Return every matching ``CallImportRow.id`` for cross-page bulk select.
+
+    Lightweight companion to ``GET /{call_import_id}`` — the detail
+    endpoint caps ``row_limit`` at 5000 and ships the entire row body
+    on each page, so harvesting ids that way is wasteful when the
+    user just wants to bulk-delete or bulk-transcribe everything that
+    matches the current filters. This endpoint applies the same ``q``
+    and ``diarised_status`` filters and returns only the ids.
+    """
+    del api_key
+
+    call_import = (
+        db.query(CallImport)
+        .filter(
+            CallImport.id == call_import_id,
+            CallImport.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not call_import:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Call import not found",
+        )
+
+    rows_query = db.query(CallImportRow.id).filter(
+        CallImportRow.call_import_id == call_import.id
+    )
+    search_term = (q or "").strip()
+    if search_term:
+        rows_query = rows_query.filter(
+            CallImportRow.conversation_id.ilike(f"%{search_term}%")
+        )
+    status_filter = (diarised_status or "").strip() or None
+    if status_filter:
+        rows_query = rows_query.filter(
+            CallImportRow.diarised_transcript_status == status_filter
+        )
+
+    ids = [
+        row_id
+        for (row_id,) in rows_query.order_by(CallImportRow.row_index).all()
+    ]
+    return CallImportRowIdsResponse(ids=ids, total=len(ids))
 
 
 def _revoke_pending_tasks(rows: List[CallImportRow]) -> None:

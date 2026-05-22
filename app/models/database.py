@@ -682,13 +682,22 @@ class Metric(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
-    # Workspace isolation: every metric belongs to exactly one workspace
-    # within its org. Children inherit their parent's workspace_id (the
-    # promote/add-child endpoints enforce this).
+    # Workspace isolation: two-shape column.
+    #
+    #   * ``workspace_id = <uuid>`` — workspace-scoped metric. Only
+    #     visible inside that workspace (the default behavior; existing
+    #     rows all look like this).
+    #   * ``workspace_id IS NULL`` — org-shared metric. Surfaces in
+    #     every workspace's listing under this org so users don't have
+    #     to recreate the same metric per workspace.
+    #
+    # Children always inherit their parent's ``workspace_id`` (including
+    # NULL) so a category metric's whole subtree shares one scope; the
+    # add-child / promote-discovered endpoints enforce this.
     workspace_id = Column(
         UUID(as_uuid=True),
         ForeignKey("workspaces.id", ondelete="RESTRICT"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
 
