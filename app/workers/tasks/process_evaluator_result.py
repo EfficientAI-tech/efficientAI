@@ -423,7 +423,11 @@ def process_evaluator_result_task(self, result_id: str):
                 raise ValueError("No audio S3 key or existing transcript found")
 
             evaluator, agent, persona, scenario = _load_related_entities(db, result)
-            is_custom_evaluator = evaluator and bool(evaluator.custom_prompt)
+            is_custom_evaluator = evaluator and (
+                bool(evaluator.custom_prompt)
+                or bool(getattr(evaluator, "metric_ids", None))
+                or (evaluator.agent_id is None)
+            )
 
             if not is_custom_evaluator and not agent:
                 raise ValueError("Agent not found and no custom prompt available")
@@ -469,6 +473,17 @@ def process_evaluator_result_task(self, result_id: str):
                     or not (m.enabled_surfaces or [])  # legacy/unset → default to agent
                 )
             ]
+
+            # Custom evaluators may carry an explicit metric selection. When set,
+            # only score those metrics (children are stored directly by the UI
+            # picker, so no parent expansion is needed here).
+            selected_metric_ids = {
+                str(mid) for mid in (getattr(evaluator, "metric_ids", None) or [])
+            }
+            if selected_metric_ids:
+                enabled_metrics = [
+                    m for m in enabled_metrics if str(m.id) in selected_metric_ids
+                ]
 
             has_audio = bool(result.audio_s3_key)
             llm_metrics, audio_metrics, metric_scores = _categorize_metrics(enabled_metrics, has_audio)

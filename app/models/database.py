@@ -651,7 +651,12 @@ class Evaluator(Base):
     
     # Custom evaluator prompt (used instead of agent/persona/scenario)
     custom_prompt = Column(Text, nullable=True)
-    
+
+    # Custom evaluator metric selection. When set, the worker filters the
+    # enabled-org metrics down to only these IDs (list of metric UUID strings).
+    # Standard evaluators leave this NULL and use all enabled agent metrics.
+    metric_ids = Column(JSON, nullable=True)
+
     # LLM configuration for evaluation (overrides hardcoded defaults)
     llm_provider = Column(String, nullable=True)  # e.g. "openai", "anthropic", "google"
     llm_model = Column(String, nullable=True)  # e.g. "gpt-4.1", "claude-sonnet-4-20250514"

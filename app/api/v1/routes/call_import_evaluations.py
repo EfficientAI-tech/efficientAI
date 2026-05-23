@@ -1897,6 +1897,251 @@ def _revoke_pending_tasks(evaluation: CallImportEvaluation) -> None:
         pass
 
 
+# ---------------------------------------------------------------------------
+# User-initiated cancel for in-flight evaluation rows
+# ---------------------------------------------------------------------------
+#
+# Evaluation rows can sit in ``running`` for many minutes when the underlying
+# LLM / audio metric call is slow or wedged (the worker carries an 8 min
+# soft / 10 min hard time limit). Without a cancel affordance the operator's
+# only recourse is to wait for Celery's time limit to fire — or to manually
+# mutate the DB. These helpers + the two endpoints below give the UI a
+# first-class "Abort" button mirroring the diarisation cancel pattern at
+# ``app.api.v1.routes.call_imports`` (``_apply_diarisation_cancel`` etc.).
+#
+# Why ``terminate=True``: the legacy ``_revoke_pending_tasks`` above uses
+# ``terminate=False`` because it's called from delete-flow paths where the
+# task may simply not get to run (a worker pulls it off the queue and drops
+# it). For a user-initiated cancel we want SIGTERM to interrupt the worker
+# mid-LLM/audio call so the in-flight HTTP request actually aborts.
+# ``terminate=True`` routes the signal to the executing process; we spell
+# ``signal="SIGTERM"`` out for clarity even though it's the default.
+
+# Sentinel error message stamped on cancelled rows. Read by the eval worker's
+# ``_was_cancelled_externally`` guard (see
+# :mod:`app.workers.tasks.evaluate_call_import_row`) so a worker that's already
+# past its slowest operation can't overwrite the cancelled state with its own
+# terminal status. Touching either copy means touching both.
+EVAL_CANCELLED_BY_USER_ERROR: str = "Evaluation cancelled by user"
+
+
+def _cancellable_eval_states() -> Tuple[str, ...]:
+    """States that an evaluation row can be cancelled from.
+
+    Kept as a tiny helper so adding a future ``"queued"`` / ``"retrying"``
+    state only needs one edit.
+    """
+    return ("pending", "running")
+
+
+def _revoke_eval_task(eval_row: CallImportEvaluationRow) -> None:
+    """Best-effort revoke of a single eval row's Celery task.
+
+    Always swallows control-plane exceptions — Celery's control bus is
+    inherently best-effort and a missed revoke is not catastrophic
+    because the DB row is already flipped to ``failed`` by the caller
+    before this runs (so the UI immediately reflects the cancel; if
+    the task happens to finish anyway, the worker's finaliser skips
+    over the row via :data:`EVAL_CANCELLED_BY_USER_ERROR`).
+    """
+    task_id = (eval_row.celery_task_id or "").strip()
+    if not task_id:
+        return
+    try:
+        from app.workers.celery_app import celery_app
+
+        celery_app.control.revoke(
+            task_id, terminate=True, signal="SIGTERM"
+        )
+        logger.info(
+            "Revoked evaluation task {} for eval row {}",
+            task_id,
+            eval_row.id,
+        )
+    except Exception as exc:  # noqa: BLE001 — revoke is best-effort
+        logger.warning(
+            "Failed to revoke evaluation task {} for eval row {}: {}",
+            task_id,
+            eval_row.id,
+            exc,
+        )
+
+
+def _apply_evaluation_cancel(
+    eval_rows: List[CallImportEvaluationRow],
+) -> Tuple[int, int]:
+    """Cancel every cancellable row in ``eval_rows``.
+
+    Returns ``(cancelled, skipped)`` so the caller can build a typed
+    response without re-querying the DB. The caller is responsible for
+    ``db.commit()`` after this returns — we deliberately don't commit
+    here so a batch endpoint can flush all rows in one transaction.
+    """
+    cancellable_states = _cancellable_eval_states()
+    cancelled = 0
+    skipped = 0
+    now = datetime.now(timezone.utc)
+    for eval_row in eval_rows:
+        if (eval_row.status or "").lower() not in cancellable_states:
+            skipped += 1
+            continue
+        # Flip the row state BEFORE we revoke so the UI's next poll
+        # already shows the cancel, even if Celery's control plane is
+        # slow to ack.
+        eval_row.status = "failed"
+        eval_row.error_message = EVAL_CANCELLED_BY_USER_ERROR
+        eval_row.finished_at = now
+        _revoke_eval_task(eval_row)
+        # Drop the task id so a follow-up retry (or a stale poll) can't
+        # accidentally re-revoke or get confused.
+        eval_row.celery_task_id = None
+        cancelled += 1
+    return cancelled, skipped
+
+
+@router.post(
+    "/{eval_id}/cancel",
+    response_model=CallImportEvaluationResponse,
+    status_code=status.HTTP_200_OK,
+    operation_id="cancelCallImportEvaluation",
+)
+async def cancel_call_import_evaluation(
+    call_import_id: UUID,
+    eval_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportEvaluationResponse:
+    """Abort all in-flight (or queued) rows in a single evaluation run.
+
+    Idempotent: calling on a run whose rows are already terminal returns
+    the run unchanged with a 200, so the UI can fire this from an
+    "Abort" button without having to pre-check the state.
+
+    Race notes:
+
+    * Each cancellable row's ``status`` is flipped to ``failed`` with
+      :data:`EVAL_CANCELLED_BY_USER_ERROR` BEFORE the Celery revoke,
+      so the polling UI sees the cancel immediately.
+    * If the worker happens to finish between our DB flip and the
+      SIGTERM landing, its ``_was_cancelled_externally`` guard will
+      detect the cancelled sentinel on the row and skip its own
+      status / score writes (see
+      :mod:`app.workers.tasks.evaluate_call_import_row`).
+    """
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation not found"
+        )
+
+    _apply_evaluation_cancel(list(evaluation.row_results))
+    db.flush()
+    _rollup_evaluation_status(evaluation, db)
+    db.commit()
+    db.refresh(evaluation)
+    return _serialize_eval(db, evaluation)
+
+
+@router.post(
+    "/{eval_id}/rows/{eval_row_id}/cancel",
+    response_model=CallImportEvaluationRowResponse,
+    status_code=status.HTTP_200_OK,
+    operation_id="cancelCallImportEvaluationRow",
+)
+async def cancel_call_import_evaluation_row(
+    call_import_id: UUID,
+    eval_id: UUID,
+    eval_row_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportEvaluationRowResponse:
+    """Abort an in-flight (or queued) evaluation for a single row.
+
+    Idempotent: calling on a row that's already terminal (``completed``
+    / ``failed``) returns the row unchanged with a 200 so the UI can
+    wire this to a "Stop" button without having to pre-check the
+    state. Updates the parent run's rollup so its counters reflect
+    the cancel immediately.
+    """
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation not found"
+        )
+
+    eval_row = (
+        db.query(CallImportEvaluationRow)
+        .filter(
+            CallImportEvaluationRow.id == eval_row_id,
+            CallImportEvaluationRow.evaluation_id == eval_id,
+        )
+        .first()
+    )
+    if not eval_row:
+        raise HTTPException(
+            status_code=404, detail="Evaluation row not found in this run"
+        )
+
+    _apply_evaluation_cancel([eval_row])
+    db.flush()
+    _rollup_evaluation_status(evaluation, db)
+    db.commit()
+    db.refresh(eval_row)
+
+    source_row = (
+        db.query(CallImportRow)
+        .filter(CallImportRow.id == eval_row.call_import_row_id)
+        .first()
+    )
+
+    return CallImportEvaluationRowResponse(
+        id=eval_row.id,
+        evaluation_id=eval_row.evaluation_id,
+        call_import_row_id=eval_row.call_import_row_id,
+        row_index=source_row.row_index if source_row else None,
+        conversation_id=source_row.conversation_id if source_row else None,
+        transcript=(
+            (source_row.diarised_transcript or source_row.transcript)
+            if source_row
+            else None
+        ),
+        raw_columns=source_row.raw_columns if source_row else None,
+        recording_url=source_row.recording_url if source_row else None,
+        recording_s3_key=source_row.recording_s3_key if source_row else None,
+        status=eval_row.status,
+        metric_scores=eval_row.metric_scores or {},
+        error_message=eval_row.error_message,
+        started_at=eval_row.started_at,
+        finished_at=eval_row.finished_at,
+        created_at=eval_row.created_at,
+        updated_at=eval_row.updated_at,
+    )
+
+
 @router.delete(
     "/{eval_id}",
     status_code=status.HTTP_204_NO_CONTENT,

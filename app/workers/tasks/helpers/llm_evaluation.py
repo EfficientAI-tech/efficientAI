@@ -511,7 +511,11 @@ def build_evaluation_prompt(
     Returns:
         Complete evaluation prompt string
     """
-    is_custom_evaluator = evaluator and bool(evaluator.custom_prompt)
+    is_custom_evaluator = evaluator and (
+        bool(evaluator.custom_prompt)
+        or bool(getattr(evaluator, "metric_ids", None))
+        or (evaluator.agent_id is None)
+    )
     is_comparison = comparison_pair is not None
 
     context_block = ""
@@ -569,12 +573,20 @@ def build_evaluation_prompt(
         )
 
     if is_custom_evaluator:
-        prompt = f"""You are evaluating a conversation transcript against the agent's system prompt. You MUST evaluate ONLY the specific metrics listed below and use the EXACT metric keys provided.
+        has_prompt = bool(evaluator.custom_prompt and evaluator.custom_prompt.strip())
+        if has_prompt:
+            prompt = f"""You are evaluating a conversation transcript against the agent's system prompt. You MUST evaluate ONLY the specific metrics listed below and use the EXACT metric keys provided.
 
 ## Agent System Prompt
 The following is the system prompt / instructions that the agent was configured with. Use this to understand the agent's goals, rules, and expected behavior when evaluating the conversation.
 
 {evaluator.custom_prompt}
+{context_block}
+{transcript_section}
+## Metrics to Evaluate (use EXACT keys below)
+"""
+        else:
+            prompt = f"""You are evaluating a conversation transcript against the listed metrics. You MUST evaluate ONLY the specific metrics listed below and use the EXACT metric keys provided. Base your scoring on the transcript and each metric's description.
 {context_block}
 {transcript_section}
 ## Metrics to Evaluate (use EXACT keys below)

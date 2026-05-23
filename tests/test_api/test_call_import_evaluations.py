@@ -480,3 +480,266 @@ def test_evaluations_unknown_import_returns_404(authenticated_client, seed_org):
         f"/api/v1/call-imports/{uuid4()}/evaluations"
     )
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# User-initiated cancel for in-flight evaluations
+# ---------------------------------------------------------------------------
+#
+# These tests exercise ``POST .../{eval_id}/cancel`` and
+# ``POST .../{eval_id}/rows/{eval_row_id}/cancel`` in isolation: the rows are
+# left in ``running`` (with synthetic ``celery_task_id`` values) and the
+# Celery control plane is stubbed via ``sys.modules`` so the revoke call
+# succeeds without a real broker. We verify three things on every cancel:
+#
+# 1. Each cancellable row flips to ``failed`` with the
+#    ``"Evaluation cancelled by user"`` sentinel + cleared ``celery_task_id``.
+# 2. The parent rollup picks the new state up (``failed``/``partial``).
+# 3. The Celery revoke was called with ``terminate=True, signal="SIGTERM"`` —
+#    that's the contract that lets the worker actually interrupt an in-flight
+#    LLM/audio call rather than waiting up to 10 minutes for the time limit.
+
+
+def _stub_celery_revoke(monkeypatch):
+    """Install a fake ``app.workers.celery_app`` with a recording revoke.
+
+    Returns the ``MagicMock`` so the test can assert on call arguments.
+    """
+    from unittest.mock import MagicMock
+
+    revoke = MagicMock()
+    fake_module = types.ModuleType("app.workers.celery_app")
+    fake_module.celery_app = types.SimpleNamespace(
+        control=types.SimpleNamespace(revoke=revoke)
+    )
+    monkeypatch.setitem(sys.modules, "app.workers.celery_app", fake_module)
+    return revoke
+
+
+def _force_running(db_session, evaluation_id, *, task_id_prefix="celery-task"):
+    """Flip every row of ``evaluation_id`` to ``running`` with a fake task id.
+
+    Mirrors what the worker does at the start of ``evaluate_call_import_row``
+    so the cancel endpoint has something cancellable to act on (a freshly
+    created evaluation has all rows in ``pending`` with no ``celery_task_id``,
+    which would short-circuit the revoke path and leave us unable to assert
+    on it).
+    """
+    eval_uuid = UUID(evaluation_id)
+    rows = (
+        db_session.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == eval_uuid)
+        .all()
+    )
+    for idx, row in enumerate(rows):
+        row.status = "running"
+        row.celery_task_id = f"{task_id_prefix}-{idx}"
+    parent = (
+        db_session.query(CallImportEvaluation)
+        .filter(CallImportEvaluation.id == eval_uuid)
+        .first()
+    )
+    parent.status = "running"
+    db_session.commit()
+    return rows
+
+
+def test_cancel_evaluation_flips_rows_and_revokes_tasks(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    """Run-level cancel: every running row flips to the cancelled sentinel,
+    parent rolls up to ``failed``, and Celery is asked to SIGTERM each task."""
+    metric = _make_metric(db_session, org_id)
+    call_import, _ = _make_call_import(db_session, org_id, rows=2)
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+
+    revoke = _stub_celery_revoke(monkeypatch)
+    rows = _force_running(db_session, created["id"])
+    expected_task_ids = {r.celery_task_id for r in rows}
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{created['id']}/cancel"
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    # Two running rows -> all failed -> rollup is ``failed``.
+    assert body["status"] == "failed"
+    assert body["failed_rows"] == 2
+    assert body["completed_rows"] == 0
+
+    # DB state matches the response.
+    db_session.expire_all()
+    refreshed = (
+        db_session.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == UUID(created["id"]))
+        .all()
+    )
+    assert {r.status for r in refreshed} == {"failed"}
+    assert all(
+        (r.error_message or "") == "Evaluation cancelled by user"
+        for r in refreshed
+    )
+    # ``celery_task_id`` is cleared so a stale poll can't accidentally
+    # re-revoke an already-cancelled task.
+    assert all(r.celery_task_id is None for r in refreshed)
+
+    # Every fake task id was forwarded to Celery with terminate=True +
+    # SIGTERM — that's the contract that interrupts the worker mid-call.
+    revoked_task_ids = {call.args[0] for call in revoke.call_args_list}
+    assert revoked_task_ids == expected_task_ids
+    for call in revoke.call_args_list:
+        assert call.kwargs.get("terminate") is True
+        assert call.kwargs.get("signal") == "SIGTERM"
+
+
+def test_cancel_evaluation_is_idempotent_for_terminal_runs(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    """Calling cancel on a run whose rows are already terminal is a 200
+    no-op (no revokes, no DB churn) so the UI can fire it from a button
+    without pre-checking state."""
+    metric = _make_metric(db_session, org_id)
+    call_import, _ = _make_call_import(db_session, org_id, rows=1)
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+
+    # Mark every row + parent as ``completed`` so nothing is cancellable.
+    rows = (
+        db_session.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == UUID(created["id"]))
+        .all()
+    )
+    for row in rows:
+        row.status = "completed"
+    parent = (
+        db_session.query(CallImportEvaluation)
+        .filter(CallImportEvaluation.id == UUID(created["id"]))
+        .first()
+    )
+    parent.status = "completed"
+    parent.completed_rows = len(rows)
+    db_session.commit()
+
+    revoke = _stub_celery_revoke(monkeypatch)
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{created['id']}/cancel"
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "completed"
+    revoke.assert_not_called()
+
+
+def test_cancel_evaluation_unknown_id_returns_404(
+    authenticated_client, db_session, org_id, seed_org
+):
+    call_import, _ = _make_call_import(db_session, org_id, rows=1)
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{uuid4()}/cancel"
+    )
+    assert response.status_code == 404
+
+
+def test_cancel_evaluation_row_flips_only_target_row(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    """Row-level cancel scopes the flip + revoke to the targeted row, leaves
+    siblings alone, and rolls up the parent (here: 1 failed + 1 running ->
+    parent stays ``running``)."""
+    metric = _make_metric(db_session, org_id)
+    call_import, _ = _make_call_import(db_session, org_id, rows=2)
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+
+    revoke = _stub_celery_revoke(monkeypatch)
+    rows = _force_running(db_session, created["id"])
+    target = rows[0]
+    sibling = rows[1]
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/"
+        f"{created['id']}/rows/{target.id}/cancel"
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["id"] == str(target.id)
+    assert body["status"] == "failed"
+    assert body["error_message"] == "Evaluation cancelled by user"
+
+    db_session.expire_all()
+    refreshed_target = db_session.get(CallImportEvaluationRow, target.id)
+    refreshed_sibling = db_session.get(CallImportEvaluationRow, sibling.id)
+    assert refreshed_target.status == "failed"
+    assert refreshed_target.celery_task_id is None
+    # Sibling untouched — only the targeted row was cancelled.
+    assert refreshed_sibling.status == "running"
+    assert refreshed_sibling.celery_task_id is not None
+
+    parent = db_session.get(CallImportEvaluation, UUID(created["id"]))
+    # 1 running + 1 failed -> parent rolls up to ``running``.
+    assert parent.status == "running"
+
+    revoke.assert_called_once()
+    assert revoke.call_args.args[0] == target.celery_task_id or (
+        # ``celery_task_id`` is cleared post-revoke; cross-check via the
+        # original snapshot we captured before the call.
+        revoke.call_args.args[0] in {row.celery_task_id for row in rows}
+    )
+
+
+def test_cancel_evaluation_row_idempotent_when_terminal(
+    authenticated_client, db_session, org_id, seed_org, monkeypatch
+):
+    """A row already in a terminal state is returned unchanged with a 200 —
+    no DB flip, no revoke."""
+    metric = _make_metric(db_session, org_id)
+    call_import, _ = _make_call_import(db_session, org_id, rows=1)
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+
+    eval_row = (
+        db_session.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == UUID(created["id"]))
+        .first()
+    )
+    eval_row.status = "completed"
+    eval_row.metric_scores = {str(metric.id): {"value": 4}}
+    db_session.commit()
+
+    revoke = _stub_celery_revoke(monkeypatch)
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/"
+        f"{created['id']}/rows/{eval_row.id}/cancel"
+    )
+    assert response.status_code == 200
+    body = response.json()
+    # Row is unchanged — still completed, scores still attached.
+    assert body["status"] == "completed"
+    assert body["metric_scores"][str(metric.id)]["value"] == 4
+    revoke.assert_not_called()
+
+
+def test_cancel_evaluation_row_unknown_row_returns_404(
+    authenticated_client, db_session, org_id, seed_org
+):
+    metric = _make_metric(db_session, org_id)
+    call_import, _ = _make_call_import(db_session, org_id, rows=1)
+    created = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations",
+        json=_eval_body([metric.id]),
+    ).json()
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/"
+        f"{created['id']}/rows/{uuid4()}/cancel"
+    )
+    assert response.status_code == 404

@@ -759,3 +759,82 @@ def test_evaluate_call_import_row_ignores_transcript_source_for_comparison_metri
     # by the run's transcript_source toggle.
     assert captured[0]["comparison_pair"] == ("PROD text", "DIAR text")
     assert captured[0]["transcription"] == ""
+
+
+# ---------------------------------------------------------------------------
+# Cancelled-mid-flight guard
+# ---------------------------------------------------------------------------
+#
+# When the operator hits the cancel endpoint while a worker is mid-LLM call,
+# the API flips the row to ``failed`` + the cancelled-by-user sentinel BEFORE
+# revoking the Celery task. If the worker happens to finish its call before
+# the SIGTERM lands, it would race the API and overwrite the cancelled state
+# with its own terminal status / scores. The ``_was_cancelled_externally``
+# guard re-reads the row right before the terminal write so the cancel wins.
+
+
+def test_evaluate_call_import_row_skips_terminal_write_when_cancelled(
+    db_session, monkeypatch
+):
+    """If the row was flipped to the cancelled sentinel between the worker's
+    initial ``running`` write and the final terminal write, the worker must
+    NOT overwrite ``status`` / ``error_message`` / ``metric_scores`` with its
+    own success values — the operator's cancel wins the race."""
+    _, _ci, _metrics, _source_rows, evaluation, eval_rows = _seed(db_session)
+    eval_row = eval_rows[0]
+
+    # Fire the cancel via ``evaluate_with_llm``: the helper runs AFTER the
+    # worker has already written ``status='running'`` but BEFORE the final
+    # terminal write, which is exactly the race window the guard is meant
+    # to protect. The simulated cancel mirrors what
+    # ``_apply_evaluation_cancel`` would do server-side.
+    def _simulate_cancel(*_args, **kwargs):
+        # Round-trip through the DB so the worker's session must
+        # ``expire`` + ``refresh`` to see the flipped state — that's
+        # the actual code path under test.
+        from sqlalchemy import update
+
+        db_session.execute(
+            update(CallImportEvaluationRow)
+            .where(CallImportEvaluationRow.id == eval_row.id)
+            .values(
+                status="failed",
+                error_message="Evaluation cancelled by user",
+                celery_task_id=None,
+            )
+        )
+        db_session.commit()
+        # Return a normal "scored" payload so the worker would otherwise
+        # try to write ``completed`` + these scores onto the row; the
+        # guard should prevent that.
+        metrics = kwargs.get("llm_metrics") or []
+        return (
+            {
+                str(m.id): {"value": 5, "type": "rating", "metric_name": m.name}
+                for m in metrics
+            },
+            0.1,
+        )
+
+    task_module = _patch_dependencies(
+        monkeypatch, db_session, evaluate_with_llm=_simulate_cancel
+    )
+    result = task_module.evaluate_call_import_row_task.run(str(eval_row.id))
+
+    # Guard surfaces a typed ``cancelled`` short-circuit so the caller
+    # (Celery's group rollup) can tell the row didn't fail organically.
+    assert result["status"] == "cancelled"
+
+    db_session.expire_all()
+    refreshed = db_session.get(CallImportEvaluationRow, eval_row.id)
+    # Cancel sentinel is preserved verbatim — the worker did NOT overwrite
+    # ``status`` to ``completed`` and did NOT stamp the synthetic scores
+    # the LLM stub returned.
+    assert refreshed.status == "failed"
+    assert refreshed.error_message == "Evaluation cancelled by user"
+    assert refreshed.metric_scores in (None, {}, {} or None)
+
+    # Parent rollup still ran, so its counters reflect the cancelled row.
+    refreshed_eval = db_session.get(CallImportEvaluation, evaluation.id)
+    assert refreshed_eval.failed_rows == 1
+    assert refreshed_eval.completed_rows == 0

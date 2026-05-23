@@ -993,12 +993,13 @@ class ConversationEvaluationResponse(BaseModel):
 
 # Evaluator Schemas
 class EvaluatorCreate(BaseModel):
-    """Schema for creating an evaluator. Either provide agent_id+persona_id+scenario_id (standard) or custom_prompt (custom)."""
+    """Schema for creating an evaluator. Either provide agent_id+persona_id+scenario_id (standard) or metric_ids/custom_prompt (custom)."""
     name: Optional[str] = None
     agent_id: Optional[UUID] = None
     persona_id: Optional[UUID] = None
     scenario_id: Optional[UUID] = None
     custom_prompt: Optional[str] = None
+    metric_ids: Optional[List[UUID]] = None
     llm_provider: Optional[ModelProvider] = None
     llm_model: Optional[str] = None
     tags: Optional[List[str]] = None
@@ -1011,6 +1012,7 @@ class EvaluatorUpdate(BaseModel):
     persona_id: Optional[UUID] = None
     scenario_id: Optional[UUID] = None
     custom_prompt: Optional[str] = None
+    metric_ids: Optional[List[UUID]] = None
     llm_provider: Optional[ModelProvider] = None
     llm_model: Optional[str] = None
     tags: Optional[List[str]] = None
@@ -1026,6 +1028,7 @@ class EvaluatorResponse(BaseModel):
     persona_id: Optional[UUID] = None
     scenario_id: Optional[UUID] = None
     custom_prompt: Optional[str] = None
+    metric_ids: Optional[List[UUID]] = None
     llm_provider: Optional[ModelProvider] = None
     llm_model: Optional[str] = None
     tags: Optional[List[str]]

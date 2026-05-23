@@ -1850,6 +1850,47 @@ class ApiClient {
     return response.data
   }
 
+  /**
+   * Abort an entire in-flight (or queued) evaluation run.
+   *
+   * Idempotent — calling on a run whose rows are already terminal
+   * returns the run unchanged so the UI can wire this to an "Abort
+   * run" button without pre-checking state. The backend flips every
+   * cancellable row's ``status`` to ``failed`` and stamps
+   * ``"Evaluation cancelled by user"`` as the error so the polling UI
+   * surfaces the cancel on the next tick. Pairs with the worker's
+   * cancellation guard which prevents a late-finishing task from
+   * overwriting the cancelled state.
+   */
+  async cancelCallImportEvaluation(
+    callImportId: string,
+    evaluationId: string,
+  ): Promise<CallImportEvaluation> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/cancel`,
+    )
+    return response.data
+  }
+
+  /**
+   * Abort an in-flight (or queued) evaluation for a single row.
+   *
+   * Mirrors :func:`cancelCallImportEvaluation` but scoped to one row,
+   * intended for the per-row Stop button on the evaluation detail
+   * rows table. The parent run's counters are rolled up server-side
+   * so the run-level pill updates on the same response.
+   */
+  async cancelCallImportEvaluationRow(
+    callImportId: string,
+    evaluationId: string,
+    evalRowId: string,
+  ): Promise<CallImportEvaluationRow> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/rows/${evalRowId}/cancel`,
+    )
+    return response.data
+  }
+
   async listCallImportEvaluations(callImportId: string): Promise<CallImportEvaluationListResponse> {
     const response = await this.client.get(`/api/v1/call-imports/${callImportId}/evaluations`)
     return response.data
@@ -2311,6 +2352,7 @@ class ApiClient {
     persona_id?: string
     scenario_id?: string
     custom_prompt?: string
+    metric_ids?: string[]
     llm_provider?: string
     llm_model?: string
     tags?: string[]
@@ -2351,6 +2393,7 @@ class ApiClient {
     scenario_id?: string
     name?: string
     custom_prompt?: string
+    metric_ids?: string[]
     llm_provider?: string
     llm_model?: string
     tags?: string[]

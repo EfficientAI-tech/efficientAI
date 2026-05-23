@@ -31,6 +31,7 @@ import {
   Trash2,
   Workflow,
   X,
+  XCircle,
 } from 'lucide-react'
 import {
   Bar,
@@ -772,6 +773,78 @@ export default function CallImportEvaluationDetail() {
     },
   })
 
+  // Inline error banner shown above the run header when an Abort call
+  // fails. Cancel is idempotent on the server so the most likely cause
+  // is a network blip; we still surface the message so the operator
+  // knows the click didn't take effect rather than silently swallowing.
+  const [cancelError, setCancelError] = useState<string | null>(null)
+  // Tracks which single row is currently mid-cancel so we can render
+  // a spinner on the row's Stop button without blocking the others.
+  const [cancellingRowId, setCancellingRowId] = useState<string | null>(null)
+
+  // Run-level cancel: SIGTERM-revokes every in-flight row, flips them
+  // to ``failed`` with the cancelled-by-user sentinel, and rolls up
+  // the parent run. The 3s parent + rows pollers below pick the new
+  // state up automatically; we still invalidate so the UI updates on
+  // the next tick rather than waiting up to 3s.
+  const cancelEvaluationMutation = useMutation({
+    mutationFn: () => apiClient.cancelCallImportEvaluation(id!, evalId!),
+    onMutate: () => {
+      setCancelError(null)
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-evaluation', id, evalId],
+      })
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-evaluation-rows', id, evalId],
+      })
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-evaluations', id],
+      })
+    },
+    onError: (err: any) => {
+      setCancelError(
+        err?.response?.data?.detail ||
+          err?.message ||
+          'Failed to abort this evaluation run.',
+      )
+    },
+  })
+
+  // Row-level cancel: same shape as the run-level mutation but
+  // scoped to a single row so the operator can stop one wedged row
+  // without aborting siblings that are progressing fine.
+  const cancelRowMutation = useMutation({
+    mutationFn: (rowId: string) =>
+      apiClient.cancelCallImportEvaluationRow(id!, evalId!, rowId),
+    onMutate: (rowId) => {
+      setCancellingRowId(rowId)
+      setCancelError(null)
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-evaluation', id, evalId],
+      })
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-evaluation-rows', id, evalId],
+      })
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-evaluations', id],
+      })
+    },
+    onError: (err: any) => {
+      setCancelError(
+        err?.response?.data?.detail ||
+          err?.message ||
+          'Failed to abort this row.',
+      )
+    },
+    onSettled: () => {
+      setCancellingRowId(null)
+    },
+  })
+
   const callImport = callImportQuery.data
   const evaluation = evaluationQuery.data
 
@@ -1056,6 +1129,24 @@ export default function CallImportEvaluationDetail() {
           Back to call import
         </Link>
         <div className="flex items-center gap-2">
+          {(evaluation.status === 'pending' ||
+            evaluation.status === 'running') && (
+            <Button
+              variant="outline"
+              size="sm"
+              leftIcon={<XCircle className="h-4 w-4" />}
+              onClick={() => {
+                if (cancelEvaluationMutation.isPending) return
+                cancelEvaluationMutation.mutate()
+              }}
+              isLoading={cancelEvaluationMutation.isPending}
+              disabled={cancelEvaluationMutation.isPending}
+              className="text-amber-700 hover:text-amber-800 hover:bg-amber-50 border-amber-200"
+              title="Abort every in-flight or queued row in this run"
+            >
+              Abort run
+            </Button>
+          )}
           {evaluation.failed_rows > 0 && (
             <Button
               variant="outline"
@@ -1351,6 +1442,25 @@ export default function CallImportEvaluationDetail() {
                 onClick={() => setRetryError(null)}
                 className="p-1 rounded text-red-400 hover:text-red-600 hover:bg-red-100"
                 aria-label="Dismiss retry error"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {cancelError && (
+          <div className="mt-4 bg-red-50 border border-red-200 rounded-lg p-3">
+            <div className="flex items-start gap-2">
+              <AlertCircle className="h-4 w-4 text-red-600 mt-0.5" />
+              <div className="flex-1">
+                <p className="text-sm text-red-800">{cancelError}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCancelError(null)}
+                className="p-1 rounded text-red-400 hover:text-red-600 hover:bg-red-100"
+                aria-label="Dismiss abort error"
               >
                 <X className="h-3.5 w-3.5" />
               </button>
@@ -2138,6 +2248,30 @@ export default function CallImportEvaluationDetail() {
                         })}
                         <td className="px-3 py-2 text-right whitespace-nowrap">
                           <div className="inline-flex items-center gap-1">
+                            {(row.status === 'pending' ||
+                              row.status === 'running') && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  if (cancellingRowId) return
+                                  cancelRowMutation.mutate(row.id)
+                                }}
+                                disabled={
+                                  cancellingRowId !== null &&
+                                  cancellingRowId !== row.id
+                                }
+                                className="p-1.5 rounded text-gray-400 hover:text-amber-700 hover:bg-amber-50 transition-colors disabled:opacity-40"
+                                title="Abort this row"
+                                aria-label="Abort evaluation row"
+                              >
+                                {cancellingRowId === row.id ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <XCircle className="h-4 w-4" />
+                                )}
+                              </button>
+                            )}
                             {row.status === 'failed' && (
                               <button
                                 type="button"

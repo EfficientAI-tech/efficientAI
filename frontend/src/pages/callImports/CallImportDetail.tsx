@@ -804,6 +804,62 @@ export default function CallImportDetail() {
     },
   })
 
+  // Tracks which evaluation run is currently being aborted so we can show
+  // a tiny spinner inline on its Abort button without blocking the rest
+  // of the evaluations list. Cleared on success or error.
+  const [cancellingEvalId, setCancellingEvalId] = useState<string | null>(null)
+
+  const cancelEvaluationMutation = useMutation({
+    mutationFn: (evaluationId: string) =>
+      apiClient.cancelCallImportEvaluation(id!, evaluationId),
+    onMutate: (evaluationId) => {
+      setCancellingEvalId(evaluationId)
+    },
+    onSuccess: () => {
+      // Backend has already flipped any running/pending rows to
+      // ``failed`` with the cancelled-by-user sentinel; refetch so the
+      // status pill and counters in this list reflect the cancel
+      // immediately rather than waiting for the 3s poll tick.
+      queryClient.invalidateQueries({ queryKey: ['call-import-evaluations', id] })
+    },
+    onError: (err: any) => {
+      // Cancel is idempotent on the server — the most likely failure
+      // is a 404 because the run was just deleted, in which case the
+      // refetch above will reconcile state. Surface a console.error
+      // so dev-tools shows it without breaking the layout.
+      // eslint-disable-next-line no-console
+      console.error('cancelEvaluationMutation failed:', err)
+    },
+    onSettled: () => {
+      setCancellingEvalId(null)
+    },
+  })
+
+  // Bulk-abort companion to ``cancelEvaluationMutation`` — fires the
+  // single-run cancel endpoint per selected run in parallel. We
+  // deliberately keep this client-side fan-out (rather than a new
+  // bulk endpoint) so the UI surface stays small; cancel is cheap
+  // server-side because each call only revokes the rows that are
+  // still in-flight.
+  const bulkCancelEvalsMutation = useMutation({
+    mutationFn: async (ids: string[]) => {
+      const results = await Promise.allSettled(
+        ids.map((evalId) => apiClient.cancelCallImportEvaluation(id!, evalId)),
+      )
+      const fulfilled = results.filter((r) => r.status === 'fulfilled').length
+      const rejected = results.filter((r) => r.status === 'rejected').length
+      return { fulfilled, rejected }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['call-import-evaluations', id] })
+      setSelectedEvalIds(new Set())
+    },
+    onError: (err: any) => {
+      // eslint-disable-next-line no-console
+      console.error('bulkCancelEvalsMutation failed:', err)
+    },
+  })
+
   useEffect(() => {
     return () => {
       if (audioRef.current) {
@@ -2432,32 +2488,64 @@ export default function CallImportDetail() {
               button at the top to start a new run.
             </p>
           </div>
-          {selectedEvalIds.size > 0 && (
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-600">
-                {selectedEvalIds.size} selected
-              </span>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setSelectedEvalIds(new Set())}
-              >
-                Clear
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                leftIcon={<Trash2 className="h-4 w-4" />}
-                onClick={() => {
-                  setBulkDeleteEvalsError(null)
-                  setShowBulkDeleteEvals(true)
-                }}
-                className="text-red-600 hover:text-red-700 hover:bg-red-50"
-              >
-                Delete selected
-              </Button>
-            </div>
-          )}
+          {selectedEvalIds.size > 0 && (() => {
+            // Surface "Abort selected" only when at least one selected
+            // run is still in a cancellable state (``pending`` /
+            // ``running``) — otherwise the button would be a no-op
+            // for the operator and just clutter the toolbar.
+            const items = evaluationsData?.items ?? []
+            const cancellableSelected = items.filter(
+              (run) =>
+                selectedEvalIds.has(run.id) &&
+                (run.status === 'pending' || run.status === 'running'),
+            )
+            return (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-600">
+                  {selectedEvalIds.size} selected
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setSelectedEvalIds(new Set())}
+                >
+                  Clear
+                </Button>
+                {cancellableSelected.length > 0 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    leftIcon={<XCircle className="h-4 w-4" />}
+                    isLoading={bulkCancelEvalsMutation.isPending}
+                    disabled={bulkCancelEvalsMutation.isPending}
+                    onClick={() =>
+                      bulkCancelEvalsMutation.mutate(
+                        cancellableSelected.map((run) => run.id),
+                      )
+                    }
+                    className="text-amber-700 hover:text-amber-800 hover:bg-amber-50"
+                    title={`Abort ${cancellableSelected.length} in-progress run${
+                      cancellableSelected.length === 1 ? '' : 's'
+                    }`}
+                  >
+                    Abort selected ({cancellableSelected.length})
+                  </Button>
+                )}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  leftIcon={<Trash2 className="h-4 w-4" />}
+                  onClick={() => {
+                    setBulkDeleteEvalsError(null)
+                    setShowBulkDeleteEvals(true)
+                  }}
+                  className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                >
+                  Delete selected
+                </Button>
+              </div>
+            )
+          })()}
         </div>
 
         {(evaluationsData?.items?.length || 0) === 0 ? (
@@ -2541,6 +2629,34 @@ export default function CallImportDetail() {
                       </p>
                     </div>
                   </Link>
+                  {(evaluation.status === 'pending' ||
+                    evaluation.status === 'running') && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      leftIcon={<XCircle className="h-4 w-4" />}
+                      isLoading={
+                        cancellingEvalId === evaluation.id &&
+                        cancelEvaluationMutation.isPending
+                      }
+                      disabled={
+                        cancellingEvalId === evaluation.id &&
+                        cancelEvaluationMutation.isPending
+                      }
+                      onClick={(e) => {
+                        // Stop the click from bubbling into the parent
+                        // Link (which would navigate to the evaluation
+                        // detail page mid-cancel).
+                        e.preventDefault()
+                        e.stopPropagation()
+                        cancelEvaluationMutation.mutate(evaluation.id)
+                      }}
+                      className="flex-shrink-0 text-amber-700 hover:text-amber-800 hover:bg-amber-50"
+                      title="Abort this evaluation run"
+                    >
+                      Abort
+                    </Button>
+                  )}
                 </div>
               )
             })}

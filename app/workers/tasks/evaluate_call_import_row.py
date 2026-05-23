@@ -54,6 +54,42 @@ def _as_json_dict(value: Any) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+# Sentinel error message stamped on rows that the operator cancelled via
+# ``POST /v1/call-imports/{id}/evaluations/{eval_id}/cancel`` (or the per-row
+# variant). Kept in sync with
+# :data:`app.api.v1.routes.call_import_evaluations.EVAL_CANCELLED_BY_USER_ERROR`
+# — duplicated here so the worker doesn't have to import the route module
+# (which would pull FastAPI / Pydantic into the worker boot path). Touching
+# either copy means touching both.
+_EVAL_CANCELLED_BY_USER_ERROR: str = "Evaluation cancelled by user"
+
+
+def _was_cancelled_externally(db, eval_row: CallImportEvaluationRow) -> bool:
+    """Re-read ``eval_row`` from the DB and return True if it was cancelled.
+
+    Used by the terminal-status write in the eval task so an external
+    cancel (which flips the row to ``failed`` + sets
+    :data:`_EVAL_CANCELLED_BY_USER_ERROR`) WINS THE RACE against a worker
+    that's already past its slowest operation (LLM call / S3 download)
+    and is about to overwrite the row with its own terminal state.
+
+    Why ``db.expire`` + ``refresh``: the worker's SQLAlchemy session
+    cached the row when it pulled it for the run, so a parallel
+    update from the FastAPI process is invisible until we explicitly
+    re-read. We expire just the two columns we care about so other
+    in-flight modifications on the same row aren't clobbered.
+    """
+    try:
+        db.expire(eval_row, ["status", "error_message"])
+        db.refresh(eval_row, attribute_names=["status", "error_message"])
+    except Exception:  # noqa: BLE001 — refresh is best-effort
+        return False
+    return (
+        (eval_row.status or "").lower() == "failed"
+        and (eval_row.error_message or "") == _EVAL_CANCELLED_BY_USER_ERROR
+    )
+
+
 _ALL_COLUMNS_BLOCK_MAX_CHARS = 16_000
 _ALL_COLUMNS_CELL_MAX_CHARS = 4_000
 
@@ -953,6 +989,28 @@ def evaluate_call_import_row_task(
                     )
                     evaluation_failed = True
                     primary_error_message = str(exc)
+
+        # Cancelled-mid-flight guard: if the API flipped this row to the
+        # cancelled sentinel while we were running the LLM / audio calls,
+        # DON'T overwrite the cancelled state with our own terminal
+        # status / score writes — the operator's cancel wins the race.
+        # We still update the parent rollup so its counters reflect
+        # the cancelled row before we exit.
+        if _was_cancelled_externally(db, eval_row):
+            logger.info(
+                "[CallImportEval {}] Skipping terminal write; "
+                "row was cancelled by user",
+                eval_row.id,
+            )
+            try:
+                _rollup_parent(db, evaluation)
+                db.commit()
+            except Exception:  # noqa: BLE001 — rollup is best-effort here
+                db.rollback()
+            return {
+                "status": "cancelled",
+                "eval_row_id": eval_row_id,
+            }
 
         if evaluation_failed:
             eval_row.status = "failed"
