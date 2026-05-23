@@ -7,7 +7,7 @@ import io
 import json
 import math
 import statistics
-from typing import Any, Dict, Iterator, List, Literal, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Literal, Optional, Set, Tuple
 from uuid import UUID
 
 from datetime import datetime, timezone
@@ -5062,10 +5062,27 @@ async def retry_call_import_evaluation(
         )
 
     requested_ids = payload.eval_row_ids if payload else None
-    # Metric-subset retry: validate that every metric is part of this
-    # run's ``selected_metric_ids`` so we never silently no-op. Empty
-    # list is rejected too — callers that want a full re-run should
-    # omit the field entirely.
+    # Metric-subset retry: validate that every metric is something this
+    # run actually scored. Empty list is rejected too — callers that
+    # want a full re-run should omit the field entirely.
+    #
+    # ``selected_metric_ids`` holds the LEAVES only (children for
+    # hierarchical / category metrics, standalone metrics otherwise) —
+    # see ``leaf_metric_ids`` in :func:`create_call_import_evaluation`.
+    # Parent IDs for hierarchical metrics live separately in
+    # ``selected_metric_groups`` (``{parent_id: [child_ids]}``) so the
+    # UI can reconstruct the tree without round-tripping through the
+    # metric table.
+    #
+    # The Re-run-metrics modal surfaces PARENTS for hierarchical
+    # metrics (it suppresses individual children via
+    # ``childrenInGroups`` in ``CallImportEvaluationDetail.tsx``), so a
+    # naive ``metric_ids ⊆ selected_metric_ids`` check rejects every
+    # parent-ID request with a misleading "unknown ids" 400. We accept
+    # both shapes here and then EXPAND any parent IDs into
+    # ``{parent_id, *child_ids}`` so the downstream helpers see the
+    # full set of keys that need clearing + the full set of leaves
+    # that need re-scoring.
     metric_ids: Optional[List[UUID]] = (
         payload.metric_ids if payload else None
     )
@@ -5078,13 +5095,36 @@ async def retry_call_import_evaluation(
                     "field to re-run all metrics."
                 ),
             )
-        selected_set = {
+
+        leaf_set: Set[str] = {
             str(item).lower()
             for item in (evaluation.selected_metric_ids or [])
         }
+        # ``selected_metric_groups`` is a dict ``{parent_id_str:
+        # [child_id_str, ...]}`` (see line ~487 in
+        # ``create_call_import_evaluation``). We tolerate stale data
+        # (string / UUID / non-dict) without crashing the retry path —
+        # if it's malformed we just treat it as "no parents" and fall
+        # back to the leaf-only check.
+        groups_raw = (
+            evaluation.selected_metric_groups
+            if isinstance(evaluation.selected_metric_groups, dict)
+            else {}
+        )
+        parent_to_children_str: Dict[str, List[str]] = {}
+        for parent_key, children_raw in groups_raw.items():
+            if not isinstance(children_raw, (list, tuple)):
+                continue
+            children_norm = [
+                str(c).lower() for c in children_raw if c is not None
+            ]
+            parent_to_children_str[str(parent_key).lower()] = children_norm
+        parent_set = set(parent_to_children_str.keys())
+
         unknown = [
             mid for mid in metric_ids
-            if str(mid).lower() not in selected_set
+            if str(mid).lower() not in leaf_set
+            and str(mid).lower() not in parent_set
         ]
         if unknown:
             raise HTTPException(
@@ -5094,6 +5134,41 @@ async def retry_call_import_evaluation(
                     f"selected metrics; unknown ids: {[str(u) for u in unknown]}."
                 ),
             )
+
+        # Expand parent IDs into ``{parent, *children}`` so:
+        #   * ``_reset_eval_row_for_retry`` strips BOTH the parent
+        #     entry (with ``chosen_child_id`` / rationale) AND every
+        #     per-child boolean entry that the LLM evaluator wrote
+        #     under each child's ID (see
+        #     ``app/workers/tasks/helpers/llm_evaluation.py`` lines
+        #     1584 and 1649).
+        #   * ``_enqueue_eval_rows_with_optional_transcribe`` →
+        #     ``evaluate_call_import_row_task`` filters the work-list
+        #     off ``selected_metric_ids`` (leaves), so we MUST hand it
+        #     the child IDs for the parent to actually get re-scored.
+        # Leaves pass through unchanged.
+        expanded: List[UUID] = []
+        seen: Set[str] = set()
+        for mid in metric_ids:
+            mid_norm = str(mid).lower()
+            children_str = parent_to_children_str.get(mid_norm)
+            if children_str is not None:
+                # Parent: include the parent ID itself (so the parent
+                # entry in ``metric_scores`` is also cleared) and all
+                # of its children.
+                candidates = [mid_norm, *children_str]
+            else:
+                candidates = [mid_norm]
+            for candidate in candidates:
+                if candidate in seen:
+                    continue
+                try:
+                    expanded.append(UUID(candidate))
+                except (TypeError, ValueError):
+                    # Defensive: skip junk values rather than 500.
+                    continue
+                seen.add(candidate)
+        metric_ids = expanded
 
     # ``include_completed`` is auto-enabled when the caller asked for a
     # metric subset (otherwise the metric-subset retry would always

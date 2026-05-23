@@ -185,6 +185,53 @@ def _render_turns_as_text(
     return "\n".join(out)
 
 
+# Sentinel error message stamped on rows that the operator cancelled
+# via ``POST /v1/call-imports/{id}/rows/{row_id}/cancel-diarisation``.
+# Kept in sync with :data:`app.api.v1.routes.call_imports.CANCELLED_BY_USER_ERROR`
+# — duplicated here so the worker doesn't have to import the route
+# module (which would pull FastAPI / Pydantic into the worker boot
+# path). Touching either copy means touching both.
+_CANCELLED_BY_USER_ERROR: str = "Diarisation cancelled by user"
+
+
+def _was_cancelled_externally(db, row) -> bool:
+    """Re-read ``row`` from the DB and return True if it was cancelled.
+
+    Used by every terminal-status write in this task so an external
+    cancel (which flips the row to ``failed`` + sets
+    :data:`_CANCELLED_BY_USER_ERROR`) WINS THE RACE against a worker
+    that's already past its slowest operation (LLM call / S3 download)
+    and is about to overwrite the row with its own terminal state.
+
+    Why ``db.expire`` + ``refresh``: the worker's SQLAlchemy session
+    cached the row when it pulled it for the run, so a parallel
+    update from the FastAPI process is invisible until we explicitly
+    re-read. We expire just the two columns we care about so other
+    in-flight modifications on the same row aren't clobbered.
+    """
+    try:
+        db.expire(
+            row,
+            [
+                "diarised_transcript_status",
+                "diarised_transcript_error",
+            ],
+        )
+        db.refresh(
+            row,
+            attribute_names=[
+                "diarised_transcript_status",
+                "diarised_transcript_error",
+            ],
+        )
+    except Exception:  # noqa: BLE001 — refresh is best-effort
+        return False
+    return (
+        (row.diarised_transcript_status or "").lower() == "failed"
+        and (row.diarised_transcript_error or "") == _CANCELLED_BY_USER_ERROR
+    )
+
+
 def _summarize_exc(exc: BaseException, *, max_chars: int = 240) -> str:
     """Pull a human-friendly one-liner out of an STT-client exception.
 
@@ -431,6 +478,14 @@ def transcribe_call_import_row_task(
                 logger.exception(
                     "transcribe_call_import_row failed for row {}", row_id
                 )
+                if _was_cancelled_externally(db, row):
+                    logger.info(
+                        "Row {} was cancelled by the user mid-flight; "
+                        "preserving cancelled state instead of writing "
+                        "STT failure.",
+                        row_id,
+                    )
+                    return {"status": "cancelled", "reason": "cancelled_by_user"}
                 row.diarised_transcript_status = "failed"
                 row.diarised_transcript_error = _summarize_exc(exc)
                 db.commit()
@@ -438,6 +493,8 @@ def transcribe_call_import_row_task(
 
             plain_text = (result.get("transcript") or "").strip() or None
             if not plain_text:
+                if _was_cancelled_externally(db, row):
+                    return {"status": "cancelled", "reason": "cancelled_by_user"}
                 row.diarised_transcript_status = "failed"
                 row.diarised_transcript_error = (
                     "Transcription returned an empty result."
@@ -459,6 +516,8 @@ def transcribe_call_import_row_task(
                 logger.warning(
                     "LLM diarisation failed for row {}: {}", row_id, exc
                 )
+                if _was_cancelled_externally(db, row):
+                    return {"status": "cancelled", "reason": "cancelled_by_user"}
                 row.diarised_transcript_status = "failed"
                 row.diarised_transcript_error = str(exc)
                 db.commit()
@@ -467,6 +526,8 @@ def transcribe_call_import_row_task(
                 logger.exception(
                     "LLM diarisation crashed for row {}", row_id
                 )
+                if _was_cancelled_externally(db, row):
+                    return {"status": "cancelled", "reason": "cancelled_by_user"}
                 row.diarised_transcript_status = "failed"
                 row.diarised_transcript_error = _summarize_exc(exc)
                 db.commit()
@@ -487,6 +548,8 @@ def transcribe_call_import_row_task(
                     "Failed to fetch recording for LLM-only diarise on row {}",
                     row_id,
                 )
+                if _was_cancelled_externally(db, row):
+                    return {"status": "cancelled", "reason": "cancelled_by_user"}
                 row.diarised_transcript_status = "failed"
                 row.diarised_transcript_error = (
                     "Failed to download recording from storage: "
@@ -510,6 +573,8 @@ def transcribe_call_import_row_task(
                 logger.warning(
                     "LLM-only diarisation failed for row {}: {}", row_id, exc
                 )
+                if _was_cancelled_externally(db, row):
+                    return {"status": "cancelled", "reason": "cancelled_by_user"}
                 row.diarised_transcript_status = "failed"
                 row.diarised_transcript_error = str(exc)
                 db.commit()
@@ -521,6 +586,8 @@ def transcribe_call_import_row_task(
                 logger.exception(
                     "LLM-only diarisation crashed for row {}", row_id
                 )
+                if _was_cancelled_externally(db, row):
+                    return {"status": "cancelled", "reason": "cancelled_by_user"}
                 row.diarised_transcript_status = "failed"
                 row.diarised_transcript_error = _summarize_exc(exc)
                 db.commit()
@@ -556,6 +623,24 @@ def transcribe_call_import_row_task(
         # ``diarised_segments`` is only populated when real diarisation
         # happened — single-speaker fallback gets ``None`` so the swap
         # button stays hidden (nothing meaningful to swap).
+        # Cancellation-aware finaliser: if the operator clicked "Stop
+        # Diarisation" while we were inside the LLM call (the most
+        # likely race window because the LLM call is by far the
+        # longest synchronous step), the route handler will already
+        # have flipped the row to ``failed`` + the cancellation
+        # sentinel. Writing ``completed`` over the top would silently
+        # swallow the user's intent, so we bail BEFORE the success
+        # commit and just leave the cancelled state intact. This is
+        # the only race window we actually need to guard — the error
+        # branches above each do their own check before writing.
+        if _was_cancelled_externally(db, row):
+            logger.info(
+                "Row {} was cancelled by the user mid-flight; "
+                "skipping success write and preserving cancelled state.",
+                row_id,
+            )
+            return {"status": "cancelled", "reason": "cancelled_by_user"}
+
         row.diarised_transcript = transcript_to_store
         row.diarised_segments = turns if has_real_diarisation else None
         row.diarised_speaker_swap = False

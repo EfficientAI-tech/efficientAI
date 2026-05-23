@@ -3251,6 +3251,53 @@ class CallImportTranscribeResponse(BaseModel):
     )
 
 
+class CallImportCancelDiarisationRequest(BaseModel):
+    """Body for the batch cancel-diarisation endpoint.
+
+    Omit ``row_ids`` (or pass ``null``) to cancel every row in the
+    import whose ``diarised_transcript_status`` is currently
+    ``pending`` or ``running``. Pass an explicit list to scope the
+    cancel to a subset (e.g. the rows the operator selected in the
+    UI).
+    """
+
+    row_ids: Optional[List[UUID]] = Field(
+        default=None,
+        description=(
+            "Optional subset of CallImportRow UUIDs. ``None`` cancels "
+            "every pending / running diarisation in the import."
+        ),
+    )
+
+
+class CallImportCancelDiarisationResponse(BaseModel):
+    """Summary of a cancel-diarisation request.
+
+    ``cancelled`` counts rows that were actively pending / running
+    when the cancel landed and got flipped to ``failed`` with a
+    "Cancelled by user" error. ``skipped`` counts rows that were
+    requested (or matched the implicit "all rows" filter) but were
+    not in a cancellable state — typically because they had already
+    finished or were never queued for diarisation in the first place.
+    """
+
+    cancelled: int = Field(
+        ...,
+        description=(
+            "Rows whose in-flight Celery task was revoked and whose "
+            "``diarised_transcript_status`` was flipped to ``failed`` "
+            "with a 'Cancelled by user' error message."
+        ),
+    )
+    skipped: int = Field(
+        default=0,
+        description=(
+            "Rows that were requested but not in a cancellable state "
+            "(idle / completed / already failed)."
+        ),
+    )
+
+
 # --- Per-run aggregation / visualization payloads ---
 
 

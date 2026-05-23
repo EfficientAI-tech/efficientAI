@@ -57,6 +57,8 @@ from app.models.schemas import (
     CallImportDiarisationPromptDefaultResponse,
     CallImportRowBulkDelete,
     CallImportRowBulkDeleteResponse,
+    CallImportCancelDiarisationRequest,
+    CallImportCancelDiarisationResponse,
     CallImportRowIdsResponse,
     CallImportRowResponse,
     CallImportStartRequest,
@@ -2715,6 +2717,245 @@ async def transcribe_call_import_row(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to enqueue transcription: {exc}",
         )
+
+
+# ---------------------------------------------------------------------------
+# Cancel-in-flight diarisation
+# ---------------------------------------------------------------------------
+#
+# Long-running multimodal LLM diarisation calls (especially LLM-only mode on
+# slow audio) can sit in ``pending`` / ``running`` for tens of minutes when an
+# upstream provider stalls. Without an abort affordance the operator's only
+# recourse is to wait for Celery's ``time_limit`` to fire — which can be
+# several minutes — or to manually mutate the DB. These helpers + the two
+# endpoints below give the UI a first-class "Stop diarisation" button.
+#
+# Why ``terminate=True``: the legacy ``_revoke_pending_tasks`` helper uses
+# ``terminate=False`` because it's called from delete-flow paths where the
+# task may simply not get to run (a worker pulls it off the queue and drops
+# it). For a user-initiated cancel we want SIGTERM to interrupt the worker
+# mid-LLM call so the audio HTTP request actually aborts. ``terminate=True``
+# routes SIGTERM to the executing process; ``signal="SIGTERM"`` is the
+# default but we spell it out so the intent is obvious to reviewers.
+
+# Sentinel error message stamped on cancelled rows. Read by the transcribe
+# worker's finaliser (see ``app/workers/tasks/transcribe_call_import_row.py``)
+# to detect a row that was cancelled mid-flight and AVOID overwriting it
+# with whatever partial result the worker had managed to compute before the
+# SIGTERM landed.
+CANCELLED_BY_USER_ERROR: str = "Diarisation cancelled by user"
+
+
+def _cancellable_diarisation_states() -> Tuple[str, ...]:
+    """States that a diarisation row can be cancelled from.
+
+    Kept as a tiny helper so adding a future ``"queued"`` / ``"retrying"``
+    state only needs one edit.
+    """
+    return ("pending", "running")
+
+
+def _revoke_diarisation_task(row: CallImportRow) -> None:
+    """Best-effort revoke of a single row's diarisation Celery task.
+
+    Always swallows control-plane exceptions — Celery's control bus is
+    inherently best-effort and a missed revoke is not catastrophic
+    because the DB row is already flipped to ``failed`` by the caller
+    before this runs (so the UI immediately reflects the cancel; if
+    the task happens to finish anyway, the worker's finaliser skips
+    over the row via :data:`CANCELLED_BY_USER_ERROR`).
+    """
+    task_id = (row.celery_task_id or "").strip()
+    if not task_id:
+        return
+    try:
+        from app.workers.celery_app import celery_app
+
+        celery_app.control.revoke(
+            task_id, terminate=True, signal="SIGTERM"
+        )
+        logger.info(
+            "Revoked diarisation task {} for call-import row {}",
+            task_id,
+            row.id,
+        )
+    except Exception as exc:  # noqa: BLE001 — revoke is best-effort
+        logger.warning(
+            "Failed to revoke diarisation task {} for row {}: {}",
+            task_id,
+            row.id,
+            exc,
+        )
+
+
+def _apply_diarisation_cancel(rows: List[CallImportRow]) -> Tuple[int, int]:
+    """Cancel diarisation on every cancellable row in ``rows``.
+
+    Returns ``(cancelled, skipped)`` so the caller can build a typed
+    response without re-querying the DB. The caller is responsible for
+    ``db.commit()`` after this returns — we deliberately don't commit
+    here so a batch endpoint can flush all rows in one transaction.
+    """
+    cancellable_states = _cancellable_diarisation_states()
+    cancelled = 0
+    skipped = 0
+    for row in rows:
+        if (row.diarised_transcript_status or "").lower() not in cancellable_states:
+            skipped += 1
+            continue
+        # Flip the row state BEFORE we revoke so the UI's next poll
+        # already shows the cancel, even if Celery's control plane is
+        # slow to ack.
+        row.diarised_transcript_status = "failed"
+        row.diarised_transcript_error = CANCELLED_BY_USER_ERROR
+        _revoke_diarisation_task(row)
+        # Drop the task id so a follow-up retry (or a stale poll) can't
+        # accidentally re-revoke or get confused.
+        row.celery_task_id = None
+        cancelled += 1
+    return cancelled, skipped
+
+
+@router.post(
+    "/{call_import_id}/rows/{row_id}/cancel-diarisation",
+    response_model=CallImportRowResponse,
+    status_code=status.HTTP_200_OK,
+    operation_id="cancelCallImportRowDiarisation",
+)
+async def cancel_call_import_row_diarisation(
+    call_import_id: UUID,
+    row_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportRowResponse:
+    """Abort an in-flight (or queued) diarisation for a single row.
+
+    Idempotent: calling on a row that's already terminal (``completed``
+    / ``failed`` / ``idle``) returns the row unchanged with a 200, so
+    the UI can fire this from a "Stop" button without having to
+    pre-check the state.
+
+    Race notes:
+
+    * The row's ``diarised_transcript_status`` is flipped to ``failed``
+      with :data:`CANCELLED_BY_USER_ERROR` BEFORE the Celery revoke,
+      so the polling UI sees the cancel immediately.
+    * If the worker happens to finish between our DB flip and the
+      SIGTERM landing, its finaliser will detect the cancelled
+      sentinel on the row and skip its own status / score writes
+      (see :mod:`app.workers.tasks.transcribe_call_import_row`).
+    """
+    del api_key
+
+    call_import = (
+        db.query(CallImport)
+        .filter(
+            CallImport.id == call_import_id,
+            CallImport.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not call_import:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Call import not found",
+        )
+
+    row = (
+        db.query(CallImportRow)
+        .filter(
+            CallImportRow.id == row_id,
+            CallImportRow.call_import_id == call_import_id,
+        )
+        .first()
+    )
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Call import row not found",
+        )
+
+    _apply_diarisation_cancel([row])
+    db.commit()
+    db.refresh(row)
+    return CallImportRowResponse.model_validate(row)
+
+
+@router.post(
+    "/{call_import_id}/cancel-diarisation",
+    response_model=CallImportCancelDiarisationResponse,
+    status_code=status.HTTP_200_OK,
+    operation_id="cancelCallImportDiarisation",
+)
+async def cancel_call_import_diarisation(
+    call_import_id: UUID,
+    payload: Optional[CallImportCancelDiarisationRequest] = None,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportCancelDiarisationResponse:
+    """Abort in-flight diarisation for many rows in a single call.
+
+    Default body (no ``row_ids``) cancels every row in this import
+    whose ``diarised_transcript_status`` is ``pending`` or
+    ``running`` — the "stop everything" button. Pass ``row_ids`` to
+    scope the cancel to the rows the operator has selected.
+
+    Returns ``(cancelled, skipped)`` so the UI can render a tight
+    toast ("Cancelled 3 rows · 1 skipped (already completed)").
+    """
+    del api_key
+
+    call_import = (
+        db.query(CallImport)
+        .filter(
+            CallImport.id == call_import_id,
+            CallImport.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not call_import:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Call import not found",
+        )
+
+    base_query = db.query(CallImportRow).filter(
+        CallImportRow.call_import_id == call_import_id
+    )
+
+    requested_ids = (
+        payload.row_ids if payload and payload.row_ids is not None else None
+    )
+    if requested_ids is not None:
+        if not requested_ids:
+            # Empty list is "no rows requested" — treat as a no-op
+            # 200 rather than 400 so the UI can pass through an empty
+            # selection without a special-case.
+            return CallImportCancelDiarisationResponse(cancelled=0, skipped=0)
+        rows = base_query.filter(CallImportRow.id.in_(requested_ids)).all()
+        found_ids = {r.id for r in rows}
+        # Treat requested-but-not-found ids as ``skipped`` so the UI's
+        # numbers reconcile (a stale selection that includes deleted
+        # rows shouldn't 404 the whole call).
+        missing = [rid for rid in requested_ids if rid not in found_ids]
+        skipped_missing = len(missing)
+    else:
+        # Implicit "cancel every cancellable row in this import" path.
+        rows = base_query.filter(
+            CallImportRow.diarised_transcript_status.in_(
+                list(_cancellable_diarisation_states())
+            )
+        ).all()
+        skipped_missing = 0
+
+    cancelled, skipped = _apply_diarisation_cancel(rows)
+    db.commit()
+    return CallImportCancelDiarisationResponse(
+        cancelled=cancelled,
+        skipped=skipped + skipped_missing,
+    )
 
 
 def _render_diarised_segments_text(

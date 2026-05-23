@@ -14,6 +14,7 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  Copy,
   Download,
   Edit3,
   ExternalLink,
@@ -276,6 +277,64 @@ export default function CallImportEvaluationDetail() {
   // for the currently-selected row.
   const [detailRow, setDetailRow] =
     useState<CallImportEvaluationRow | null>(null)
+
+  // Transient "✓ Copied" feedback on the per-row Copy button next to
+  // the ``conversation_id`` cell. Same UX as the upstream rows table
+  // on ``CallImportDetail`` — keyed by eval-row id so we can flip
+  // exactly one button at a time.
+  const [copiedRowId, setCopiedRowId] = useState<string | null>(null)
+  const handleCopyConversationId = (
+    row: CallImportEvaluationRow,
+    event: React.MouseEvent | React.KeyboardEvent,
+  ) => {
+    // The ``<tr>`` wrapping each row has an onClick that opens the
+    // detail drawer; without this guard, copying would also open the
+    // drawer for the row whose ID was just copied.
+    event.preventDefault()
+    event.stopPropagation()
+    const text = row.conversation_id || ''
+    if (!text) return
+    const finalize = () => {
+      setCopiedRowId(row.id)
+      window.setTimeout(() => {
+        setCopiedRowId((prev) => (prev === row.id ? null : prev))
+      }, 1500)
+    }
+    // Same fallback dance as ``CallImportDetail.handleCopyConversationId``
+    // — ``navigator.clipboard`` requires a secure context, so LAN dev
+    // over plain HTTP needs the ``execCommand`` escape hatch.
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(finalize).catch(() => {
+        try {
+          const ta = document.createElement('textarea')
+          ta.value = text
+          ta.style.position = 'fixed'
+          ta.style.opacity = '0'
+          document.body.appendChild(ta)
+          ta.select()
+          document.execCommand('copy')
+          document.body.removeChild(ta)
+          finalize()
+        } catch {
+          // Drag-select still works as a last resort.
+        }
+      })
+    } else {
+      try {
+        const ta = document.createElement('textarea')
+        ta.value = text
+        ta.style.position = 'fixed'
+        ta.style.opacity = '0'
+        document.body.appendChild(ta)
+        ta.select()
+        document.execCommand('copy')
+        document.body.removeChild(ta)
+        finalize()
+      } catch {
+        // Drag-select still works as a last resort.
+      }
+    }
+  }
 
   // Column-click sort state. ``sortBy`` is one of the built-in column
   // keys (``row_index`` / ``conversation_id`` / ``status``) or
@@ -1932,8 +1991,64 @@ export default function CallImportEvaluationDetail() {
                         <td className="sticky left-0 z-10 bg-inherit px-3 py-2 text-sm text-gray-600 whitespace-nowrap">
                           {(row.row_index ?? 0) + 1}
                         </td>
-                        <td className="px-3 py-2 text-sm font-mono text-primary-700 whitespace-nowrap">
-                          {row.conversation_id || '-'}
+                        {/*
+                          The conversation-id cell is the user-visible
+                          row identifier and the most common thing an
+                          operator wants to paste into Slack / a
+                          ticket. The parent ``<tr>`` already has an
+                          onClick to open the detail drawer; we stop
+                          propagation here so drag-selecting the text
+                          or hitting the inline Copy icon doesn't also
+                          open the drawer. ``select-text`` re-enables
+                          the native selection cursor that the row's
+                          ``cursor-pointer`` would otherwise mask.
+                         */}
+                        <td
+                          className="px-3 py-2 text-sm font-mono text-primary-700 whitespace-nowrap"
+                          onClick={(e) => e.stopPropagation()}
+                          onMouseDown={(e) => e.stopPropagation()}
+                          onDoubleClick={(e) => e.stopPropagation()}
+                        >
+                          {row.conversation_id ? (
+                            <span className="inline-flex items-center gap-2">
+                              <span
+                                className="select-text cursor-text"
+                                title={row.conversation_id}
+                              >
+                                {row.conversation_id}
+                              </span>
+                              <button
+                                type="button"
+                                aria-label={
+                                  copiedRowId === row.id
+                                    ? `Copied ${row.conversation_id}`
+                                    : `Copy ${row.conversation_id}`
+                                }
+                                title={
+                                  copiedRowId === row.id
+                                    ? 'Copied!'
+                                    : 'Copy conversation ID'
+                                }
+                                onClick={(e) =>
+                                  handleCopyConversationId(row, e)
+                                }
+                                onMouseDown={(e) => e.stopPropagation()}
+                                className={`inline-flex items-center justify-center w-6 h-6 rounded transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 ${
+                                  copiedRowId === row.id
+                                    ? 'text-green-600 bg-green-50'
+                                    : 'text-gray-400 hover:text-primary-700 hover:bg-primary-50'
+                                }`}
+                              >
+                                {copiedRowId === row.id ? (
+                                  <Check className="h-3.5 w-3.5" />
+                                ) : (
+                                  <Copy className="h-3.5 w-3.5" />
+                                )}
+                              </button>
+                            </span>
+                          ) : (
+                            '-'
+                          )}
                         </td>
                         <td className="px-3 py-2 whitespace-nowrap">
                           <StatusBadge status={row.status} size="sm" />

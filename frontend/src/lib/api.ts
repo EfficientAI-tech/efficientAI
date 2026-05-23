@@ -1664,6 +1664,51 @@ class ApiClient {
   }
 
   /**
+   * Abort an in-flight (or queued) diarisation for a single row.
+   *
+   * Idempotent — calling on a row whose diarisation is already in a
+   * terminal state (``completed`` / ``failed`` / ``idle``) returns the
+   * row unchanged so the UI can wire this to a "Stop" button without
+   * pre-checking state. The backend flips the row's
+   * ``diarised_transcript_status`` to ``failed`` and stamps
+   * ``"Diarisation cancelled by user"`` as the error so the existing
+   * diarisation pill in the row header renders the right state on the
+   * next poll.
+   */
+  async cancelCallImportRowDiarisation(
+    callImportId: string,
+    rowId: string,
+  ): Promise<CallImportRow> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/rows/${rowId}/cancel-diarisation`,
+    )
+    return response.data
+  }
+
+  /**
+   * Abort in-flight diarisation for many rows in one call.
+   *
+   * Pass ``rowIds`` to cancel a specific subset. Omit it (or pass
+   * ``null``) to cancel every row in the import whose
+   * ``diarised_transcript_status`` is currently ``pending`` or
+   * ``running`` — the "stop everything" affordance.
+   */
+  async cancelCallImportDiarisation(
+    callImportId: string,
+    rowIds?: string[] | null,
+  ): Promise<{ cancelled: number; skipped: number }> {
+    const body =
+      rowIds === undefined || rowIds === null
+        ? {}
+        : { row_ids: rowIds }
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/cancel-diarisation`,
+      body,
+    )
+    return response.data
+  }
+
+  /**
    * Flip ``diarised_speaker_swap`` on a row and re-render
    * ``diarised_transcript`` from ``diarised_segments``. Returns the
    * updated row so the caller can swap it into local state without an

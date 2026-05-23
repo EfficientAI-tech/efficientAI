@@ -10,6 +10,7 @@ import {
   BarChart3,
   Check,
   ChevronRight,
+  Copy,
   Download,
   Edit3,
   FileText,
@@ -20,6 +21,7 @@ import {
   Play,
   RefreshCw,
   Search,
+  Square,
   Trash2,
   Volume2,
   X,
@@ -99,6 +101,68 @@ export default function CallImportDetail() {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
   const [rowOffset, setRowOffset] = useState(0)
   const [expandedRowIds, setExpandedRowIds] = useState<Set<string>>(new Set())
+  // Transient "✓ Copied" feedback on the per-row Copy button next to
+  // the conversation_id. Keyed by row.id so the badge can flip on the
+  // exact button that was clicked without affecting the rest of the
+  // table. Auto-clears after 1.5s via a setTimeout inside the handler.
+  const [copiedRowId, setCopiedRowId] = useState<string | null>(null)
+  const handleCopyConversationId = (
+    row: CallImportRow,
+    event: React.MouseEvent,
+  ) => {
+    // Stop the synthetic click from bubbling up to the expand button
+    // that wraps the row header — otherwise copying would also toggle
+    // the row open/closed.
+    event.preventDefault()
+    event.stopPropagation()
+    const text = row.conversation_id || ''
+    if (!text) return
+    const finalize = () => {
+      setCopiedRowId(row.id)
+      window.setTimeout(() => {
+        // Only clear if THIS row is still the active one — a quick
+        // double-click on two different rows shouldn't prematurely
+        // wipe the badge on the second.
+        setCopiedRowId((prev) => (prev === row.id ? null : prev))
+      }, 1500)
+    }
+    // ``navigator.clipboard`` is async + requires a secure context.
+    // Fall back to the legacy ``execCommand`` path so localhost-over-
+    // http (e.g. ``http://10.x.x.x:5173`` LAN dev) still works.
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(finalize).catch(() => {
+        // Best-effort fallback if the async API rejects (permission /
+        // not focused / unsupported MIME, …).
+        try {
+          const ta = document.createElement('textarea')
+          ta.value = text
+          ta.style.position = 'fixed'
+          ta.style.opacity = '0'
+          document.body.appendChild(ta)
+          ta.select()
+          document.execCommand('copy')
+          document.body.removeChild(ta)
+          finalize()
+        } catch {
+          // Swallow — user can still drag-select the visible text.
+        }
+      })
+    } else {
+      try {
+        const ta = document.createElement('textarea')
+        ta.value = text
+        ta.style.position = 'fixed'
+        ta.style.opacity = '0'
+        document.body.appendChild(ta)
+        ta.select()
+        document.execCommand('copy')
+        document.body.removeChild(ta)
+        finalize()
+      } catch {
+        // Swallow — drag-select still works.
+      }
+    }
+  }
   // Row search: debounce keystrokes so we don't refire the rows fetch on
   // every character — the backend filters by conversation_id ILIKE %q%
   // and reports the post-filter total in ``filtered_total_rows``.
@@ -171,9 +235,16 @@ export default function CallImportDetail() {
   // one pass). The Run-Evaluation modal carries an independent copy
   // so flipping the standalone modal doesn't quietly mutate the eval
   // run's transcribe step.
+  //
+  // Default is ``llm_only`` because a single audio-in multimodal call
+  // is faster, cheaper, and produces a tighter transcript than the
+  // two-stage STT+LLM dance in the vast majority of real-world rows.
+  // Operators who explicitly want the legacy pipeline (e.g. to reuse
+  // an existing STT contract) flip the segmented control over to
+  // "STT + LLM diariser" which is presented as the advanced fallback.
   const [evalTranscribeMode, setEvalTranscribeMode] = useState<
     'stt_llm' | 'llm_only'
-  >('stt_llm')
+  >('llm_only')
   const [evalSTT, setEvalSTT] = useState<ProviderModelValue>({
     provider: null,
     model: null,
@@ -210,10 +281,11 @@ export default function CallImportDetail() {
   // then LLM diariser); ``llm_only`` hides the STT picker and feeds
   // the audio straight to a multimodal chat model. Persists across
   // modal opens within a session so power-users don't have to re-
-  // toggle every time.
+  // toggle every time. ``llm_only`` is the default — see the
+  // matching note on ``evalTranscribeMode`` above.
   const [transcribeMode, setTranscribeMode] = useState<
     'stt_llm' | 'llm_only'
-  >('stt_llm')
+  >('llm_only')
   const [transcribeSTT, setTranscribeSTT] = useState<ProviderModelValue>({
     provider: null,
     model: null,
@@ -602,6 +674,86 @@ export default function CallImportDetail() {
     },
   })
 
+  // Tracks which row's diarisation we're currently asking the backend
+  // to cancel. Used to inline-spinner the Stop button on the row
+  // without blocking the rest of the row's controls. Cleared in
+  // ``onSettled`` so a transient 5xx still releases the spinner.
+  const [cancellingRowId, setCancellingRowId] = useState<string | null>(null)
+
+  const cancelDiarisationMutation = useMutation({
+    mutationFn: ({ rowId }: { rowId: string }) =>
+      apiClient.cancelCallImportRowDiarisation(id!, rowId),
+    onMutate: ({ rowId }) => {
+      setCancellingRowId(rowId)
+    },
+    onSuccess: () => {
+      // The backend has already flipped the row to ``failed`` with the
+      // "cancelled by user" sentinel; refetch so the diarisation pill
+      // and error message in the row drawer pick up the new state
+      // immediately instead of waiting for the next poll tick.
+      queryClient.invalidateQueries({ queryKey: ['call-import', id] })
+    },
+    onError: (err: any) => {
+      // Cancel is idempotent on the server — the most likely failure
+      // is a 404 because the row was just deleted, in which case the
+      // refetch below will reconcile state. Surface a console.error
+      // so the failure isn't completely silent for an operator with
+      // dev-tools open, but skip the inline banner: the row strip
+      // itself reflects truth on the next poll.
+      // eslint-disable-next-line no-console
+      console.error('cancelDiarisationMutation failed:', err)
+    },
+    onSettled: () => {
+      setCancellingRowId(null)
+    },
+  })
+
+  // Consolidated "Bulk actions" modal. The toolbar used to have one
+  // button per action (Transcribe / Delete) which crowded the strip;
+  // now there's a single entry point that opens a modal listing every
+  // action with its own per-action count + execute button. This also
+  // makes the new "Stop diarisation (selected)" affordance a natural
+  // fit without growing the toolbar further.
+  const [showBulkActionsModal, setShowBulkActionsModal] = useState(false)
+  const [bulkActionResult, setBulkActionResult] = useState<string | null>(
+    null,
+  )
+  const [bulkActionError, setBulkActionError] = useState<string | null>(null)
+
+  const bulkCancelDiarisationMutation = useMutation({
+    mutationFn: (rowIds: string[]) =>
+      apiClient.cancelCallImportDiarisation(id!, rowIds),
+    onMutate: () => {
+      setBulkActionError(null)
+      setBulkActionResult(null)
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['call-import', id] })
+      // The endpoint returns a typed ``{cancelled, skipped}`` summary;
+      // surface it inline in the modal so the operator sees the
+      // breakdown without having to scan the rows table for green
+      // diarise pills.
+      const cancelled = data?.cancelled ?? 0
+      const skipped = data?.skipped ?? 0
+      const parts = [
+        `Cancelled ${cancelled} row${cancelled === 1 ? '' : 's'}`,
+      ]
+      if (skipped > 0) {
+        parts.push(
+          `skipped ${skipped} (not in a cancellable state — typically already completed or never queued)`,
+        )
+      }
+      setBulkActionResult(parts.join(' · '))
+    },
+    onError: (err: any) => {
+      setBulkActionError(
+        err?.response?.data?.detail ||
+          err?.message ||
+          'Failed to cancel diarisation for the selected rows.',
+      )
+    },
+  })
+
   // Tracks which row is currently being swapped so we can show a tiny
   // spinner inline on its toggle button without blocking the rest of
   // the row UI. Cleared on success or error.
@@ -895,6 +1047,23 @@ export default function CallImportDetail() {
       r.diarised_transcript_status !== 'pending' &&
       r.diarised_transcript_status !== 'running',
   )
+  // Rows in the selection (on-page slice we can see) whose diarisation
+  // is actually cancellable (queued OR currently running). The same
+  // cross-page caveat as ``transcribeReadySelection`` applies — if the
+  // user has selected rows on pages we don't have loaded, this counter
+  // undercounts and we surface that ambiguity in the modal copy. The
+  // backend filters again server-side so a hopeful click on a stale
+  // count just reports back ``cancelled / skipped`` in the toast.
+  const cancellableSelection = selectedOnPage.filter(
+    (r) =>
+      r.diarised_transcript_status === 'pending' ||
+      r.diarised_transcript_status === 'running',
+  )
+  // True when the user's selection covers rows we don't have loaded on
+  // the current page (cross-page selection). In that case any
+  // per-action count is on-page-only, so the modal degrades to "we'll
+  // act on N selected rows; the server filters the rest".
+  const selectionSpansPages = selectedCount > selectedOnPageCount
 
   return (
     <div className="space-y-6">
@@ -1399,65 +1568,23 @@ export default function CallImportDetail() {
               >
                 Clear
               </Button>
+              {/* Single entry point for every multi-row operation:
+                  Diarise, Stop diarisation, Delete. The modal
+                  surfaces per-action counts and explicit confirm
+                  affordances, so the toolbar can stay uncluttered
+                  even as we keep adding bulk verbs. */}
               <Button
                 variant="ghost"
                 size="sm"
-                leftIcon={<Mic className="h-4 w-4" />}
-                disabled={
-                  // When the selection lives entirely on the current
-                  // page, gate on the on-page readiness check. Once the
-                  // selection spans pages we can't cheaply audit each
-                  // off-page row from the client, so allow the click
-                  // and let the worker's own filter skip rows lacking
-                  // audio / in-flight (see
-                  // ``_select_rows_for_transcription``).
-                  selectedCount === selectedOnPageCount &&
-                  transcribeReadySelection.length === 0
-                }
-                title={
-                  selectedCount === selectedOnPageCount
-                    ? transcribeReadySelection.length === 0
-                      ? 'Selected rows have no downloaded recording or are already transcribing'
-                      : `Transcribe ${transcribeReadySelection.length} row${
-                          transcribeReadySelection.length === 1 ? '' : 's'
-                        }`
-                    : `Transcribe ${selectedCount} selected rows (the worker will skip any that lack audio or are already in flight)`
-                }
+                leftIcon={<ListTree className="h-4 w-4" />}
                 onClick={() => {
-                  if (selectedCount === selectedOnPageCount) {
-                    openTranscribeModal(transcribeReadySelection)
-                  } else {
-                    // Cross-page selection: build a synthetic row
-                    // list with just ids so the modal can target the
-                    // batch endpoint. The other row fields aren't
-                    // read by the modal beyond ``row_index`` (only
-                    // used in the header label when targeting 1 row).
-                    openTranscribeModal(
-                      Array.from(selectedRowIds).map(
-                        (rowId) =>
-                          ({
-                            id: rowId,
-                            row_index: 0,
-                          } as unknown as CallImportRow),
-                      ),
-                    )
-                  }
+                  setBulkActionError(null)
+                  setBulkActionResult(null)
+                  setShowBulkActionsModal(true)
                 }}
-                className="text-purple-600 hover:text-purple-700 hover:bg-purple-50"
+                className="text-primary-700 hover:text-primary-800 hover:bg-primary-50"
               >
-                Transcribe selected
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                leftIcon={<Trash2 className="h-4 w-4" />}
-                onClick={() => {
-                  setBulkDeleteRowsError(null)
-                  setShowBulkDeleteRows(true)
-                }}
-                className="text-red-600 hover:text-red-700 hover:bg-red-50"
-              >
-                Delete selected
+                Bulk actions
               </Button>
             </div>
           )}
@@ -1692,11 +1819,67 @@ export default function CallImportDetail() {
                       <span className="text-xs text-gray-400 w-10 tabular-nums flex-shrink-0">
                         #{row.row_index + 1}
                       </span>
+                      {/*
+                        ``conversation_id`` is the user-visible row
+                        identifier. It used to sit inside the expand
+                        button untouched, which meant:
+                          (a) browsers default ``user-select: none`` on
+                              ``<button>`` contents, so drag-select
+                              didn't work, and
+                          (b) any mouse-up on the text triggered the
+                              expand toggle, swallowing accidental
+                              clicks that the user intended as a
+                              double-click-to-select-word.
+                        We now stop click + mousedown propagation on
+                        the span so the button's onClick never fires
+                        from interactions with the text, force
+                        ``user-select: text`` to re-enable drag-select,
+                        and expose a one-click Copy affordance next to
+                        it for the common case.
+                       */}
                       <span
-                        className="font-mono text-sm text-gray-900 truncate flex-1 min-w-0"
+                        className="font-mono text-sm text-gray-900 truncate flex-1 min-w-0 select-text cursor-text"
                         title={row.conversation_id}
+                        onClick={(e) => e.stopPropagation()}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onDoubleClick={(e) => e.stopPropagation()}
                       >
                         {row.conversation_id}
+                      </span>
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        aria-label={
+                          copiedRowId === row.id
+                            ? `Copied ${row.conversation_id}`
+                            : `Copy ${row.conversation_id}`
+                        }
+                        title={
+                          copiedRowId === row.id
+                            ? 'Copied!'
+                            : 'Copy conversation ID'
+                        }
+                        onClick={(e) => handleCopyConversationId(row, e)}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            handleCopyConversationId(
+                              row,
+                              e as unknown as React.MouseEvent,
+                            )
+                          }
+                        }}
+                        className={`flex-shrink-0 inline-flex items-center justify-center w-6 h-6 rounded transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 cursor-pointer ${
+                          copiedRowId === row.id
+                            ? 'text-green-600 bg-green-50'
+                            : 'text-gray-400 hover:text-primary-600 hover:bg-primary-50'
+                        }`}
+                      >
+                        {copiedRowId === row.id ? (
+                          <Check className="h-3.5 w-3.5" />
+                        ) : (
+                          <Copy className="h-3.5 w-3.5" />
+                        )}
                       </span>
                       <StatusBadge status={row.status} size="sm" />
                       {/* Diarisation status pill: only surfaced once
@@ -1779,6 +1962,42 @@ export default function CallImportDetail() {
                               <Mic className="h-4 w-4" />
                             )}
                           </button>
+                          {/*
+                            Stop / abort button. Only visible while
+                            the diarisation pipeline is actually in
+                            flight (``pending`` queued OR ``running``
+                            inside the worker). Calls the cancel
+                            endpoint which revokes the Celery task
+                            (SIGTERM) and stamps the row with a
+                            "Cancelled by user" failure so the UI
+                            immediately reflects the abort. Disabled
+                            while we already have an in-flight cancel
+                            request for THIS row so a double-click
+                            doesn't fire two revokes (it's idempotent
+                            on the server, but the spinner state would
+                            flicker).
+                           */}
+                          {(row.diarised_transcript_status === 'pending' ||
+                            row.diarised_transcript_status === 'running') && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                cancelDiarisationMutation.mutate({
+                                  rowId: row.id,
+                                })
+                              }
+                              disabled={cancellingRowId === row.id}
+                              title="Stop diarisation"
+                              aria-label={`Stop diarisation for ${row.conversation_id}`}
+                              className="p-1.5 rounded text-gray-500 hover:text-red-600 hover:bg-red-50 transition-colors disabled:opacity-40"
+                            >
+                              {cancellingRowId === row.id ? (
+                                <RefreshCw className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Square className="h-4 w-4" />
+                              )}
+                            </button>
+                          )}
                         </>
                       ) : (
                         <span className="text-[11px] text-gray-400 px-2">
@@ -2645,24 +2864,18 @@ export default function CallImportDetail() {
                       <p className="text-xs uppercase tracking-wide text-gray-500 font-semibold">
                         Diarisation mode
                       </p>
+                      {/* Order intentionally puts LLM-only on the LEFT
+                          (the recommended default) and STT+LLM on the
+                          RIGHT, badged as "Advanced". This matches the
+                          product direction: audio-in multimodal is the
+                          first-class path and the two-stage STT pipeline
+                          is the escape hatch for orgs that need a
+                          specific STT contract or transcript artefact. */}
                       <div
                         role="tablist"
                         aria-label="Diarisation mode"
                         className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5"
                       >
-                        <button
-                          type="button"
-                          role="tab"
-                          aria-pressed={transcribeMode === 'stt_llm'}
-                          onClick={() => setTranscribeMode('stt_llm')}
-                          className={`px-3 py-1.5 text-xs font-medium rounded-md transition ${
-                            transcribeMode === 'stt_llm'
-                              ? 'bg-white text-gray-900 shadow-sm'
-                              : 'text-gray-600 hover:text-gray-900'
-                          }`}
-                        >
-                          STT + LLM diariser
-                        </button>
                         <button
                           type="button"
                           role="tab"
@@ -2676,11 +2889,27 @@ export default function CallImportDetail() {
                         >
                           LLM only (audio in)
                         </button>
+                        <button
+                          type="button"
+                          role="tab"
+                          aria-pressed={transcribeMode === 'stt_llm'}
+                          onClick={() => setTranscribeMode('stt_llm')}
+                          className={`px-3 py-1.5 text-xs font-medium rounded-md transition inline-flex items-center gap-1.5 ${
+                            transcribeMode === 'stt_llm'
+                              ? 'bg-white text-gray-900 shadow-sm'
+                              : 'text-gray-600 hover:text-gray-900'
+                          }`}
+                        >
+                          STT + LLM diariser
+                          <span className="rounded-full bg-gray-200 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-gray-600">
+                            Advanced
+                          </span>
+                        </button>
                       </div>
                       <p className="text-[11px] text-gray-500">
-                        {transcribeMode === 'stt_llm'
-                          ? 'Two-stage pipeline: STT transcribes the audio, then an LLM splits it into agent / user turns using your prompt.'
-                          : 'Single-stage pipeline: the audio is fed directly to a multimodal LLM along with your prompt; the model both transcribes and diarises in one call. Pick a model that accepts audio input (e.g. Gemini 1.5/2.0, GPT-4o audio-preview).'}
+                        {transcribeMode === 'llm_only'
+                          ? 'Recommended. Single-stage pipeline: the audio is fed directly to a multimodal LLM along with your prompt; the model both transcribes and diarises in one call. Pick a model that accepts audio input (e.g. Gemini 1.5/2.0, GPT-4o audio-preview).'
+                          : 'Advanced fallback. Two-stage pipeline: STT transcribes the audio, then an LLM splits it into agent / user turns using your prompt. Use this when you need a specific STT contract or to reuse an existing transcript artefact.'}
                       </p>
                     </div>
                     {transcribeMode === 'stt_llm' && (
@@ -3322,26 +3551,16 @@ export default function CallImportDetail() {
                                     flow reads top-to-bottom: enable
                                     auto-diarise → pick pipeline → pick
                                     models. */}
+                                {/* Same ordering rationale as the
+                                    standalone Transcribe modal:
+                                    LLM-only is the recommended default
+                                    and STT+LLM is the advanced
+                                    fallback. */}
                                 <div
                                   role="tablist"
                                   aria-label="Auto-diarise pipeline"
                                   className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5"
                                 >
-                                  <button
-                                    type="button"
-                                    role="tab"
-                                    aria-pressed={evalTranscribeMode === 'stt_llm'}
-                                    onClick={() =>
-                                      setEvalTranscribeMode('stt_llm')
-                                    }
-                                    className={`px-3 py-1 text-[11px] font-medium rounded-md transition ${
-                                      evalTranscribeMode === 'stt_llm'
-                                        ? 'bg-primary-50 text-primary-700 ring-1 ring-inset ring-primary-200'
-                                        : 'text-gray-600 hover:text-gray-900'
-                                    }`}
-                                  >
-                                    STT + LLM diariser
-                                  </button>
                                   <button
                                     type="button"
                                     role="tab"
@@ -3356,6 +3575,24 @@ export default function CallImportDetail() {
                                     }`}
                                   >
                                     LLM only (audio in)
+                                  </button>
+                                  <button
+                                    type="button"
+                                    role="tab"
+                                    aria-pressed={evalTranscribeMode === 'stt_llm'}
+                                    onClick={() =>
+                                      setEvalTranscribeMode('stt_llm')
+                                    }
+                                    className={`px-3 py-1 text-[11px] font-medium rounded-md transition inline-flex items-center gap-1.5 ${
+                                      evalTranscribeMode === 'stt_llm'
+                                        ? 'bg-primary-50 text-primary-700 ring-1 ring-inset ring-primary-200'
+                                        : 'text-gray-600 hover:text-gray-900'
+                                    }`}
+                                  >
+                                    STT + LLM diariser
+                                    <span className="rounded-full bg-gray-200 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-gray-600">
+                                      Advanced
+                                    </span>
                                   </button>
                                 </div>
                                 {evalTranscribeMode === 'stt_llm' && (
@@ -3825,6 +4062,274 @@ export default function CallImportDetail() {
           setBulkDeleteRowsError(null)
         }}
       />
+
+      {/*
+        Consolidated bulk-actions modal.
+
+        Rationale: instead of growing the toolbar with one button per
+        verb (Transcribe / Stop / Delete / …), the toolbar exposes a
+        single "Bulk actions" entry point that opens this modal. Each
+        action lives in its own card, shows the count of rows it'll
+        actually affect (with a "selection spans pages" disclaimer
+        when we can only see the on-page slice), and either fires
+        immediately (Stop) or hands off to the existing dedicated
+        modal (Transcribe → Diarise modal, Delete → ConfirmModal) so
+        all the per-flow validation / config UI is preserved.
+       */}
+      {showBulkActionsModal &&
+        selectedCount > 0 &&
+        renderModal(
+          <div
+            className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-50"
+            onClick={() => {
+              if (bulkCancelDiarisationMutation.isPending) return
+              setShowBulkActionsModal(false)
+              setBulkActionError(null)
+              setBulkActionResult(null)
+            }}
+          >
+            <div
+              className="bg-white rounded-lg shadow-xl max-w-xl w-full mx-4 max-h-[85vh] overflow-hidden flex flex-col"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-start gap-3">
+                <div className="min-w-0">
+                  <h3 className="text-lg font-semibold text-gray-900">
+                    Bulk actions
+                  </h3>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    {selectedCount} row{selectedCount === 1 ? '' : 's'}{' '}
+                    selected
+                    {selectionSpansPages
+                      ? ' · selection spans pages (per-action counts below are for on-page rows only; the backend filters the rest)'
+                      : ''}
+                    .
+                  </p>
+                </div>
+                <button
+                  onClick={() => {
+                    if (bulkCancelDiarisationMutation.isPending) return
+                    setShowBulkActionsModal(false)
+                    setBulkActionError(null)
+                    setBulkActionResult(null)
+                  }}
+                  className="text-gray-400 hover:text-gray-600 flex-shrink-0"
+                  aria-label="Close bulk actions modal"
+                  disabled={bulkCancelDiarisationMutation.isPending}
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              <div className="p-5 space-y-3 overflow-y-auto flex-1">
+                {/*
+                  Action card 1 — Diarise / re-diarise.
+
+                  ``transcribeReadySelection`` counts on-page rows that
+                  have a recording AND aren't already in-flight. With
+                  cross-page selections we hand off the full
+                  ``selectedRowIds`` set and rely on the worker's
+                  server-side filter to skip rows that don't qualify.
+                 */}
+                <div className="rounded-lg border border-gray-200 p-4 hover:border-purple-300 hover:bg-purple-50/40 transition-colors">
+                  <div className="flex items-start gap-3">
+                    <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-purple-100 text-purple-700 flex items-center justify-center">
+                      <Mic className="h-5 w-5" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h4 className="text-sm font-semibold text-gray-900">
+                        Diarise / re-diarise
+                      </h4>
+                      <p className="text-xs text-gray-600 mt-1">
+                        {selectionSpansPages
+                          ? `Run diarisation on the ${selectedCount} selected rows. Rows without a recording or already in flight are skipped server-side.`
+                          : transcribeReadySelection.length === 0
+                          ? 'No rows in this selection are ready to diarise (each is either missing a recording or already in flight).'
+                          : `${transcribeReadySelection.length} of ${selectedCount} selected row${
+                              selectedCount === 1 ? '' : 's'
+                            } can be diarised right now. The rest will be skipped.`}
+                      </p>
+                    </div>
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      disabled={
+                        !selectionSpansPages &&
+                        transcribeReadySelection.length === 0
+                      }
+                      onClick={() => {
+                        setShowBulkActionsModal(false)
+                        setBulkActionError(null)
+                        setBulkActionResult(null)
+                        if (selectionSpansPages) {
+                          // Cross-page selection: forward synthetic
+                          // rows (id-only) so the modal targets the
+                          // batch endpoint without inventing fake
+                          // row_index values for the header label.
+                          openTranscribeModal(
+                            Array.from(selectedRowIds).map(
+                              (rowId) =>
+                                ({
+                                  id: rowId,
+                                  row_index: 0,
+                                } as unknown as CallImportRow),
+                            ),
+                          )
+                        } else {
+                          openTranscribeModal(transcribeReadySelection)
+                        }
+                      }}
+                      className="flex-shrink-0"
+                    >
+                      Diarise
+                    </Button>
+                  </div>
+                </div>
+
+                {/*
+                  Action card 2 — Stop diarisation.
+
+                  The button is disabled when there's nothing in flight
+                  on the visible page; for cross-page selections we
+                  allow the click and let the server's
+                  ``cancelled / skipped`` summary do the talking.
+                 */}
+                <div className="rounded-lg border border-gray-200 p-4 hover:border-amber-300 hover:bg-amber-50/40 transition-colors">
+                  <div className="flex items-start gap-3">
+                    <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-amber-100 text-amber-700 flex items-center justify-center">
+                      <Square className="h-5 w-5" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h4 className="text-sm font-semibold text-gray-900">
+                        Stop diarisation
+                      </h4>
+                      <p className="text-xs text-gray-600 mt-1">
+                        {selectionSpansPages
+                          ? `Revoke any in-flight or queued diarisation across the ${selectedCount} selected rows. Rows that finished already are skipped.`
+                          : cancellableSelection.length === 0
+                          ? 'No rows in this selection are currently queued or running. Nothing to stop.'
+                          : `Stop diarisation for ${cancellableSelection.length} pending / running row${
+                              cancellableSelection.length === 1 ? '' : 's'
+                            }. Each row is flipped to "failed" with a "Cancelled by user" message.`}
+                      </p>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      isLoading={bulkCancelDiarisationMutation.isPending}
+                      disabled={
+                        bulkCancelDiarisationMutation.isPending ||
+                        (!selectionSpansPages &&
+                          cancellableSelection.length === 0)
+                      }
+                      onClick={() => {
+                        if (bulkCancelDiarisationMutation.isPending) return
+                        // For on-page selections we narrow to the
+                        // cancellable subset so the server doesn't
+                        // need to discover skips; for cross-page we
+                        // send everything and let the server filter.
+                        const ids = selectionSpansPages
+                          ? Array.from(selectedRowIds)
+                          : cancellableSelection.map((r) => r.id)
+                        if (ids.length === 0) return
+                        bulkCancelDiarisationMutation.mutate(ids)
+                      }}
+                      className="flex-shrink-0 text-amber-700 border-amber-300 hover:bg-amber-50"
+                    >
+                      Stop
+                    </Button>
+                  </div>
+                </div>
+
+                {/*
+                  Action card 3 — Delete rows.
+
+                  We close THIS modal and hand off to the existing
+                  ConfirmModal so the destructive flow keeps its
+                  "type-aware confirm" behaviour. No duplication of
+                  the irreversible-action copy here.
+                 */}
+                <div className="rounded-lg border border-gray-200 p-4 hover:border-red-300 hover:bg-red-50/40 transition-colors">
+                  <div className="flex items-start gap-3">
+                    <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-red-100 text-red-700 flex items-center justify-center">
+                      <Trash2 className="h-5 w-5" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h4 className="text-sm font-semibold text-gray-900">
+                        Delete rows
+                      </h4>
+                      <p className="text-xs text-gray-600 mt-1">
+                        Permanently remove {selectedCount} selected row
+                        {selectedCount === 1 ? '' : 's'} from this import,
+                        along with their stored recordings in S3. In-flight
+                        tasks for these rows will be revoked. This cannot
+                        be undone.
+                      </p>
+                    </div>
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      onClick={() => {
+                        setShowBulkActionsModal(false)
+                        setBulkActionError(null)
+                        setBulkActionResult(null)
+                        setBulkDeleteRowsError(null)
+                        setShowBulkDeleteRows(true)
+                      }}
+                      className="flex-shrink-0"
+                    >
+                      Delete
+                    </Button>
+                  </div>
+                </div>
+
+                {bulkActionResult && (
+                  <div className="rounded-md border border-green-200 bg-green-50 p-3 text-xs text-green-800 flex items-start gap-2">
+                    <Check className="h-4 w-4 text-green-600 flex-shrink-0 mt-0.5" />
+                    <div className="min-w-0 flex-1">{bulkActionResult}</div>
+                    <button
+                      type="button"
+                      onClick={() => setBulkActionResult(null)}
+                      className="text-green-700 hover:text-green-900 flex-shrink-0"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                )}
+
+                {bulkActionError && (
+                  <div className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-800 flex items-start gap-2">
+                    <AlertCircle className="h-4 w-4 text-red-600 flex-shrink-0 mt-0.5" />
+                    <div className="min-w-0 flex-1">{bulkActionError}</div>
+                    <button
+                      type="button"
+                      onClick={() => setBulkActionError(null)}
+                      className="text-red-700 hover:text-red-900 flex-shrink-0"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div className="px-6 py-3 border-t border-gray-200 bg-gray-50 flex justify-end">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={bulkCancelDiarisationMutation.isPending}
+                  onClick={() => {
+                    if (bulkCancelDiarisationMutation.isPending) return
+                    setShowBulkActionsModal(false)
+                    setBulkActionError(null)
+                    setBulkActionResult(null)
+                  }}
+                >
+                  Close
+                </Button>
+              </div>
+            </div>
+          </div>,
+        )}
     </div>
   )
 }
