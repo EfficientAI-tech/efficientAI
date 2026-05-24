@@ -11,7 +11,7 @@ import random
 from pydantic import BaseModel
 from loguru import logger
 
-from app.dependencies import get_db, get_organization_id, get_api_key
+from app.dependencies import get_db, get_organization_id, get_workspace_id, get_api_key
 from app.models.database import (
     Agent, ConversationEvaluation, TestAgentConversation, VoiceBundle,
     AIProvider, Integration, IntegrationPlatform, CallMediumEnum,
@@ -193,9 +193,14 @@ def get_agent_dependencies(db: Session, organization_id: UUID, agent_uuid: UUID)
 async def create_agent(
     agent: AgentCreate,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db)
 ):
-    """Create a new test agent"""
+    """Create a new test agent.
+
+    The agent is stamped with the active workspace from the
+    ``X-Workspace-Id`` header (falling back to the org's Default).
+    """
     # Validate phone_number is provided when call_medium is phone_call
     if agent.call_medium == CallMediumEnumSchema.PHONE_CALL and not agent.phone_number:
         raise HTTPException(
@@ -252,6 +257,7 @@ async def create_agent(
     db_agent = Agent(
         agent_id=agent_id,
         organization_id=organization_id,
+        workspace_id=workspace_id,
         name=agent.name,
         phone_number=agent.phone_number,
         language=agent.language,
@@ -285,11 +291,17 @@ async def list_agents(
     skip: int = 0,
     limit: int = 100,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db)
 ):
-    """Get list of all agents for the organization"""
+    """Get list of all agents for the active workspace.
+
+    Scoped to (organization_id, workspace_id) so users only see agents
+    in the workspace they're currently in.
+    """
     agents = db.query(Agent).filter(
-        Agent.organization_id == organization_id
+        Agent.organization_id == organization_id,
+        Agent.workspace_id == workspace_id,
     ).offset(skip).limit(limit).all()
     return agents
 
@@ -298,16 +310,18 @@ async def list_agents(
 async def get_agent(
     agent_id: str,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db)
 ):
-    """Get a specific agent by ID (UUID) or agent_id (6-digit)."""
+    """Get a specific agent by ID (UUID) or agent_id (6-digit) within the active workspace."""
     try:
         # Try as UUID first
         agent_uuid = UUID(agent_id)
         agent = db.query(Agent).filter(
             and_(
                 Agent.id == agent_uuid,
-                Agent.organization_id == organization_id
+                Agent.organization_id == organization_id,
+                Agent.workspace_id == workspace_id,
             )
         ).first()
     except ValueError:
@@ -315,7 +329,8 @@ async def get_agent(
         agent = db.query(Agent).filter(
             and_(
                 Agent.agent_id == agent_id,
-                Agent.organization_id == organization_id
+                Agent.organization_id == organization_id,
+                Agent.workspace_id == workspace_id,
             )
         ).first()
     
@@ -329,16 +344,18 @@ async def update_agent(
     agent_id: str,
     agent_update: AgentUpdate,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db)
 ):
-    """Update an existing agent by ID (UUID) or agent_id (6-digit)."""
+    """Update an existing agent by ID (UUID) or agent_id (6-digit) within the active workspace."""
     try:
         # Try as UUID first
         agent_uuid = UUID(agent_id)
         db_agent = db.query(Agent).filter(
             and_(
                 Agent.id == agent_uuid,
-                Agent.organization_id == organization_id
+                Agent.organization_id == organization_id,
+                Agent.workspace_id == workspace_id,
             )
         ).first()
     except ValueError:
@@ -346,7 +363,8 @@ async def update_agent(
         db_agent = db.query(Agent).filter(
             and_(
                 Agent.agent_id == agent_id,
-                Agent.organization_id == organization_id
+                Agent.organization_id == organization_id,
+                Agent.workspace_id == workspace_id,
             )
         ).first()
     
@@ -438,6 +456,7 @@ async def update_agent(
 async def sync_agent_provider_prompt(
     agent_id: str,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
@@ -445,11 +464,19 @@ async def sync_agent_provider_prompt(
     try:
         agent_uuid = UUID(agent_id)
         db_agent = db.query(Agent).filter(
-            and_(Agent.id == agent_uuid, Agent.organization_id == organization_id)
+            and_(
+                Agent.id == agent_uuid,
+                Agent.organization_id == organization_id,
+                Agent.workspace_id == workspace_id,
+            )
         ).first()
     except ValueError:
         db_agent = db.query(Agent).filter(
-            and_(Agent.agent_id == agent_id, Agent.organization_id == organization_id)
+            and_(
+                Agent.agent_id == agent_id,
+                Agent.organization_id == organization_id,
+                Agent.workspace_id == workspace_id,
+            )
         ).first()
 
     if not db_agent:
@@ -496,22 +523,25 @@ async def delete_agent(
     agent_id: str,
     force: bool = Query(False, description="Force delete with all dependent records"),
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db)
 ):
-    """Delete an agent by ID (UUID) or agent_id (6-digit). Returns 409 if dependent records exist unless force=true."""
+    """Delete an agent (scoped to the active workspace). Returns 409 if dependent records exist unless force=true."""
     try:
         agent_uuid = UUID(agent_id)
         db_agent = db.query(Agent).filter(
             and_(
                 Agent.id == agent_uuid,
-                Agent.organization_id == organization_id
+                Agent.organization_id == organization_id,
+                Agent.workspace_id == workspace_id,
             )
         ).first()
     except ValueError:
         db_agent = db.query(Agent).filter(
             and_(
                 Agent.agent_id == agent_id,
-                Agent.organization_id == organization_id
+                Agent.organization_id == organization_id,
+                Agent.workspace_id == workspace_id,
             )
         ).first()
     
@@ -589,22 +619,25 @@ async def delete_agent(
 async def get_agent_delete_impact(
     agent_id: str,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db)
 ):
-    """Preview dependent records that would be affected by force delete."""
+    """Preview dependent records that would be affected by force delete (scoped to the active workspace)."""
     try:
         agent_uuid = UUID(agent_id)
         db_agent = db.query(Agent).filter(
             and_(
                 Agent.id == agent_uuid,
-                Agent.organization_id == organization_id
+                Agent.organization_id == organization_id,
+                Agent.workspace_id == workspace_id,
             )
         ).first()
     except ValueError:
         db_agent = db.query(Agent).filter(
             and_(
                 Agent.agent_id == agent_id,
-                Agent.organization_id == organization_id
+                Agent.organization_id == organization_id,
+                Agent.workspace_id == workspace_id,
             )
         ).first()
 

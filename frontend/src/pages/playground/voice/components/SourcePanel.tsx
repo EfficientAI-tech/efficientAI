@@ -179,7 +179,7 @@ function CallImportRowsPicker({
     const q = search.toLowerCase()
     return rows.filter(
       (r) =>
-        r.external_call_id.toLowerCase().includes(q) ||
+        r.conversation_id.toLowerCase().includes(q) ||
         (r.transcript || '').toLowerCase().includes(q) ||
         (r.call_import_filename || '').toLowerCase().includes(q),
     )
@@ -250,7 +250,7 @@ function CallImportRowsPicker({
                   </span>
                   <div className="flex-1 min-w-0">
                     <p className="truncate font-medium text-gray-800">
-                      {r?.external_call_id || id}
+                      {r?.conversation_id || id}
                     </p>
                     {r?.transcript && (
                       <p className="truncate text-xs text-gray-500">{r.transcript}</p>
@@ -314,7 +314,7 @@ function CallImportRowsPicker({
                     className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
                   />
                   <div className="flex-1 min-w-0">
-                    <p className="truncate font-medium text-gray-800">{r.external_call_id}</p>
+                    <p className="truncate font-medium text-gray-800">{r.conversation_id}</p>
                     {r.transcript && (
                       <p className="truncate text-xs text-gray-500">{r.transcript}</p>
                     )}

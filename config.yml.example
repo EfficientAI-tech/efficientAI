@@ -126,8 +126,21 @@ auth:
   #   default_org_name: "Example Inc"                       # used when no org claim is present
   #   org_claim_path: ["https://efficientai.com/org"]       # dotted path into the JWT to find the org name
 
+# Judge Alignment (AlignEval-style hybrid integration).
+# Lets users build LLM-as-a-judge evaluators backed by labeled data,
+# measure alignment metrics (precision/recall/F1/Cohen's kappa) and
+# optimize the judge prompt via the existing GEPA service.
+# Per-org thresholds (min labels to evaluate / optimize) and the judge
+# model selection are configured from the UI, NOT from this file -- the
+# judge model dropdown is sourced from your configured AI Provider
+# integrations.
+judge_alignment:
+  enabled: true            # operator-level kill switch
+  csv_max_rows: 5000       # safety limit for CSV uploads
+
 # Enterprise License (JWT signed with RS256). Unlocks gated features like
-# oidc_sso, mfa_enforce, audit_export, voice_playground, gepa_optimization.
+# oidc_sso, mfa_enforce, audit_export, voice_playground, gepa_optimization,
+# call_imports.
 # license:
 #   key: "eyJhbGciOi..."
 

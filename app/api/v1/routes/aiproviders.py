@@ -1,8 +1,16 @@
 """
 AI Provider API Routes
-Complete CRUD operations for AI Provider API key management
+Complete CRUD operations for AI Provider API key management.
+
+Multiple credentials per (org, provider) are supported. The first row
+created for a given (org, provider) is automatically marked
+``is_default``; further rows can be promoted via
+``POST /aiproviders/{id}/set-default``. Runtime resolution prefers the
+default row when no explicit credential id is selected.
 """
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 from typing import List
 from uuid import UUID
@@ -13,8 +21,22 @@ from app.models.schemas import (
     AIProviderCreate, AIProviderUpdate, AIProviderResponse
 )
 from app.core.encryption import encrypt_api_key
+from app.services.credentials.resolver import clear_other_defaults
 
 router = APIRouter(prefix="/aiproviders", tags=["aiproviders"])
+
+
+def _scrub_for_response(db: Session, instance: AIProvider) -> AIProvider:
+    """Detach the row from the session before clearing ``api_key``.
+
+    The same SQLAlchemy session is reused across requests in tests; if we
+    leave the instance attached and assign ``api_key = None``, SQLAlchemy
+    treats it as a pending UPDATE and tries to flush ``api_key=NULL`` on
+    the next request — which violates the column's NOT NULL constraint.
+    """
+    db.expunge(instance)
+    instance.api_key = None
+    return instance
 
 
 @router.post("", response_model=AIProviderResponse, status_code=status.HTTP_201_CREATED, operation_id="createAIProvider")
@@ -23,53 +45,49 @@ async def create_aiprovider(
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db)
 ):
-    """Create or update an AI Provider configuration"""
-    from sqlalchemy import func
-    # Check if provider already exists for this organization
-    # Handle both string and enum comparisons
+    """Create a new AI Provider credential row.
+
+    Multiple credentials per (org, provider) are now allowed. The first
+    row created for a given provider is auto-promoted to default;
+    subsequent rows are stored as additional keys and can be promoted via
+    ``set-default``.
+    """
     provider_value = aiprovider.provider.value if hasattr(aiprovider.provider, 'value') else aiprovider.provider
-    
-    existing = db.query(AIProvider).filter(
+
+    existing_default = db.query(AIProvider).filter(
         AIProvider.organization_id == organization_id,
-        AIProvider.provider == provider_value
+        func.lower(AIProvider.provider) == provider_value.lower(),
+        AIProvider.is_default.is_(True),
     ).first()
-    
-    # If not found, try case-insensitive match
-    if not existing:
-        existing = db.query(AIProvider).filter(
-            AIProvider.organization_id == organization_id,
-            func.lower(AIProvider.provider) == provider_value.lower()
-        ).first()
-    
-    if existing:
-        # Update existing provider
-        encrypted_api_key = encrypt_api_key(aiprovider.api_key)
-        existing.api_key = encrypted_api_key
-        existing.name = aiprovider.name
-        existing.is_active = True
-        db.commit()
-        db.refresh(existing)
-        
-        # Don't return API key
-        existing.api_key = None
-        return existing
-    
-    # Create new provider
+
+    requested_default = bool(aiprovider.is_default)
+    will_be_default = requested_default or existing_default is None
+
     encrypted_api_key = encrypt_api_key(aiprovider.api_key)
     db_aiprovider = AIProvider(
         organization_id=organization_id,
-        provider=aiprovider.provider,
+        provider=provider_value,
         api_key=encrypted_api_key,
         name=aiprovider.name,
+        is_default=will_be_default,
     )
     db.add(db_aiprovider)
+    db.flush()
+
+    if will_be_default:
+        clear_other_defaults(
+            AIProvider,
+            db,
+            organization_id,
+            keep_id=db_aiprovider.id,
+            provider_field="provider",
+            provider_value=provider_value,
+        )
+
     db.commit()
     db.refresh(db_aiprovider)
-    
-    # Don't return API key
-    db_aiprovider.api_key = None
-    
-    return db_aiprovider
+
+    return _scrub_for_response(db, db_aiprovider)
 
 
 @router.get("", response_model=List[AIProviderResponse], operation_id="listAIProviders")
@@ -77,16 +95,15 @@ async def list_aiproviders(
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db)
 ):
-    """List all AI Providers for the organization"""
-    aiproviders = db.query(AIProvider).filter(
-        AIProvider.organization_id == organization_id
-    ).all()
-    
-    # Don't return API keys
-    for provider in aiproviders:
-        provider.api_key = None
-    
-    return aiproviders
+    """List all AI Providers for the organization."""
+    aiproviders = (
+        db.query(AIProvider)
+        .filter(AIProvider.organization_id == organization_id)
+        .order_by(desc(AIProvider.is_default), desc(AIProvider.created_at))
+        .all()
+    )
+
+    return [_scrub_for_response(db, provider) for provider in aiproviders]
 
 
 @router.get("/{aiprovider_id}", response_model=AIProviderResponse)
@@ -100,16 +117,13 @@ async def get_aiprovider(
         AIProvider.id == aiprovider_id,
         AIProvider.organization_id == organization_id
     ).first()
-    
+
     if not aiprovider:
         raise HTTPException(
             status_code=404, detail=f"AI Provider {aiprovider_id} not found"
         )
-    
-    # Don't return API key
-    aiprovider.api_key = None
-    
-    return aiprovider
+
+    return _scrub_for_response(db, aiprovider)
 
 
 @router.put("/{aiprovider_id}", response_model=AIProviderResponse, operation_id="updateAIProvider")
@@ -124,12 +138,12 @@ async def update_aiprovider(
         AIProvider.id == aiprovider_id,
         AIProvider.organization_id == organization_id
     ).first()
-    
+
     if not db_aiprovider:
         raise HTTPException(
             status_code=404, detail=f"AI Provider {aiprovider_id} not found"
         )
-    
+
     update_data = aiprovider_update.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         if field == 'api_key' and value:
@@ -137,14 +151,52 @@ async def update_aiprovider(
             db_aiprovider.api_key = encrypted_api_key
         else:
             setattr(db_aiprovider, field, value)
-    
+
     db.commit()
     db.refresh(db_aiprovider)
-    
-    # Don't return API key
-    db_aiprovider.api_key = None
-    
-    return db_aiprovider
+
+    return _scrub_for_response(db, db_aiprovider)
+
+
+@router.post(
+    "/{aiprovider_id}/set-default",
+    response_model=AIProviderResponse,
+    operation_id="setDefaultAIProvider",
+)
+async def set_default_aiprovider(
+    aiprovider_id: UUID,
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+):
+    """Mark this AIProvider row as the default for its (org, provider)."""
+    db_aiprovider = db.query(AIProvider).filter(
+        AIProvider.id == aiprovider_id,
+        AIProvider.organization_id == organization_id,
+    ).first()
+
+    if not db_aiprovider:
+        raise HTTPException(
+            status_code=404, detail=f"AI Provider {aiprovider_id} not found"
+        )
+
+    provider_value = (
+        db_aiprovider.provider.value
+        if hasattr(db_aiprovider.provider, "value")
+        else db_aiprovider.provider
+    )
+    clear_other_defaults(
+        AIProvider,
+        db,
+        organization_id,
+        keep_id=db_aiprovider.id,
+        provider_field="provider",
+        provider_value=provider_value,
+    )
+    db_aiprovider.is_default = True
+    db.commit()
+    db.refresh(db_aiprovider)
+
+    return _scrub_for_response(db, db_aiprovider)
 
 
 @router.delete("/{aiprovider_id}", status_code=status.HTTP_204_NO_CONTENT, operation_id="deleteAIProvider")
@@ -158,15 +210,37 @@ async def delete_aiprovider(
         AIProvider.id == aiprovider_id,
         AIProvider.organization_id == organization_id
     ).first()
-    
+
     if not db_aiprovider:
         raise HTTPException(
             status_code=404, detail=f"AI Provider {aiprovider_id} not found"
         )
-    
+
+    was_default = bool(db_aiprovider.is_default)
+    provider_value = (
+        db_aiprovider.provider.value
+        if hasattr(db_aiprovider.provider, "value")
+        else db_aiprovider.provider
+    )
+
     db.delete(db_aiprovider)
+    db.flush()
+
+    if was_default:
+        replacement = (
+            db.query(AIProvider)
+            .filter(
+                AIProvider.organization_id == organization_id,
+                func.lower(AIProvider.provider) == provider_value.lower(),
+                AIProvider.is_active.is_(True),
+            )
+            .order_by(desc(AIProvider.updated_at), desc(AIProvider.created_at))
+            .first()
+        )
+        if replacement:
+            replacement.is_default = True
+
     db.commit()
-    
     return None
 
 
@@ -181,17 +255,13 @@ async def test_aiprovider(
         AIProvider.id == aiprovider_id,
         AIProvider.organization_id == organization_id
     ).first()
-    
+
     if not aiprovider:
         raise HTTPException(
             status_code=404, detail=f"AI Provider {aiprovider_id} not found"
         )
-    
-    # TODO: Implement actual API key testing based on provider type
-    # For now, just update the last_tested_at timestamp
-    from datetime import datetime, timezone
+
     aiprovider.last_tested_at = datetime.now(timezone.utc)
     db.commit()
-    
-    return {"status": "success", "message": "API key test completed"}
 
+    return {"status": "success", "message": "API key test completed"}

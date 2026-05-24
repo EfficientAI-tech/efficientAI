@@ -37,13 +37,12 @@ storage:
     - "m4a"
 
 # S3 Configuration (for data sources integration)
-# Copy your S3 settings from config.yml here
 s3:
-  enabled: true 
-  bucket_name: "your-bucket-name"
+  enabled: true
+  bucket_name: "voiceai-evals-test"
   region: "us-east-1"
-  access_key_id: "YOUR_ACCESS_KEY_ID"
-  secret_access_key: "YOUR_SECRET_ACCESS_KEY"
+  access_key_id: "${S3_ACCESS_KEY_ID}"
+  secret_access_key: "${S3_SECRET_ACCESS_KEY}"
   endpoint_url: null
   prefix: "audio/"
 
@@ -81,7 +80,7 @@ observability:
     #   access_key_id: ""
     #   secret_access_key: ""
     #   prefix: "logs/"
-    
+
 auth:
   providers:
     - api_key
@@ -107,6 +106,13 @@ auth:
   #   jwks_uri: "https://example.okta.com/oauth2/v1/keys"   # optional, derived from issuer
   #   default_org_name: "Example Inc"                       # used when no org claim is present
   #   org_claim_path: ["https://efficientai.com/org"]       # dotted path into the JWT to find the org name
+
+# Judge Alignment (AlignEval-style hybrid integration).
+# Per-org thresholds and judge model selection are UI-driven; only the
+# operator kill switch + CSV upload limit live here.
+judge_alignment:
+  enabled: true
+  csv_max_rows: 5000
 
 # Enterprise License (JWT signed with RS256). Unlocks gated features like
 # oidc_sso, mfa_enforce, audit_export, voice_playground, gepa_optimization.

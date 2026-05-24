@@ -9,7 +9,7 @@ from uuid import UUID
 from typing import List, Optional
 
 from app.database import get_db
-from app.dependencies import get_organization_id, get_api_key
+from app.dependencies import get_organization_id, get_workspace_id, get_api_key
 from app.models.database import TestAgentConversation
 from app.models.schemas import (
     TestAgentConversationCreate,
@@ -25,9 +25,10 @@ router = APIRouter(prefix="/test-agents", tags=["test-agents"])
 async def create_conversation(
     conversation: TestAgentConversationCreate,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db)
 ):
-    """Create a new test agent conversation."""
+    """Create a new test agent conversation stamped with the active workspace."""
     try:
         db_conversation = test_agent_service.create_conversation(
             agent_id=conversation.agent_id,
@@ -35,6 +36,7 @@ async def create_conversation(
             scenario_id=conversation.scenario_id,
             voice_bundle_id=conversation.voice_bundle_id,
             organization_id=organization_id,
+            workspace_id=workspace_id,
             db=db,
             conversation_metadata=conversation.conversation_metadata
         )
@@ -50,11 +52,13 @@ async def list_conversations(
     skip: int = 0,
     limit: int = 100,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db)
 ):
-    """List all test agent conversations for the organization."""
+    """List test agent conversations for the active workspace."""
     conversations = db.query(TestAgentConversation).filter(
-        TestAgentConversation.organization_id == organization_id
+        TestAgentConversation.organization_id == organization_id,
+        TestAgentConversation.workspace_id == workspace_id,
     ).offset(skip).limit(limit).all()
     return conversations
 
@@ -63,12 +67,14 @@ async def list_conversations(
 async def get_conversation(
     conversation_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db)
 ):
-    """Get a specific test agent conversation."""
+    """Get a specific test agent conversation within the active workspace."""
     conversation = db.query(TestAgentConversation).filter(
         TestAgentConversation.id == conversation_id,
-        TestAgentConversation.organization_id == organization_id
+        TestAgentConversation.organization_id == organization_id,
+        TestAgentConversation.workspace_id == workspace_id,
     ).first()
     if not conversation:
         raise HTTPException(
@@ -81,9 +87,10 @@ async def get_conversation(
 async def start_conversation(
     conversation_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db)
 ):
-    """Start a test agent conversation."""
+    """Start a test agent conversation in the active workspace."""
     try:
         conversation = test_agent_service.start_conversation(
             conversation_id=conversation_id,
@@ -158,12 +165,14 @@ async def process_audio_chunk(
 async def get_response_audio(
     conversation_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db)
 ):
-    """Get the latest response audio for a conversation."""
+    """Get the latest response audio for a conversation in the active workspace."""
     conversation = db.query(TestAgentConversation).filter(
         TestAgentConversation.id == conversation_id,
-        TestAgentConversation.organization_id == organization_id
+        TestAgentConversation.organization_id == organization_id,
+        TestAgentConversation.workspace_id == workspace_id,
     ).first()
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -224,12 +233,14 @@ async def update_conversation(
     conversation_id: UUID,
     conversation_update: TestAgentConversationUpdate,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db)
 ):
-    """Update a test agent conversation."""
+    """Update a test agent conversation within the active workspace."""
     conversation = db.query(TestAgentConversation).filter(
         TestAgentConversation.id == conversation_id,
-        TestAgentConversation.organization_id == organization_id
+        TestAgentConversation.organization_id == organization_id,
+        TestAgentConversation.workspace_id == workspace_id,
     ).first()
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -247,12 +258,14 @@ async def update_conversation(
 async def delete_conversation(
     conversation_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db)
 ):
-    """Delete a test agent conversation."""
+    """Delete a test agent conversation within the active workspace."""
     conversation = db.query(TestAgentConversation).filter(
         TestAgentConversation.id == conversation_id,
-        TestAgentConversation.organization_id == organization_id
+        TestAgentConversation.organization_id == organization_id,
+        TestAgentConversation.workspace_id == workspace_id,
     ).first()
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")

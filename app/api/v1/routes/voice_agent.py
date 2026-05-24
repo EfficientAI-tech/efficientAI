@@ -11,7 +11,7 @@ from loguru import logger
 
 from app.database import get_db
 from app.dependencies import get_organization_id, get_api_key
-from app.models.database import AIProvider, ModelProvider, Integration, IntegrationPlatform
+from app.models.database import AIProvider, ModelProvider, Integration, IntegrationPlatform, Workspace
 from app.core.encryption import decrypt_api_key
 from app.services.voice_agent.bot_fast_api import run_bot
 from app.services.voice_agent.voice_bundle import run_voice_bundle_fastapi
@@ -106,6 +106,20 @@ async def websocket_endpoint(
                     ).first()
         except ValueError:
             pass
+
+        # Resolve workspace_id: derive from agent when available, otherwise fall
+        # back to the organization's default workspace so created records remain
+        # workspace-scoped.
+        workspace_id: Optional[UUID] = None
+        if agent and getattr(agent, "workspace_id", None):
+            workspace_id = agent.workspace_id
+        else:
+            default_ws = db.query(Workspace).filter(
+                Workspace.organization_id == organization_id,
+                Workspace.is_default == True,  # noqa: E712
+            ).first()
+            if default_ws:
+                workspace_id = default_ws.id
 
         use_voice_bundle_pipeline = bool(voice_bundle and voice_bundle.bundle_type == "stt_llm_tts")
 
@@ -259,10 +273,13 @@ async def websocket_endpoint(
         if persona_id:
             try:
                 persona_uuid = UUID(persona_id)
-                persona = db.query(Persona).filter(
+                persona_query = db.query(Persona).filter(
                     Persona.id == persona_uuid,
                     Persona.organization_id == organization_id
-                ).first()
+                )
+                if workspace_id is not None:
+                    persona_query = persona_query.filter(Persona.workspace_id == workspace_id)
+                persona = persona_query.first()
                 if persona:
                     persona_parts = []
                     persona_parts.append(f"\n\nPersona: {persona.name}")
@@ -283,10 +300,13 @@ async def websocket_endpoint(
         if scenario_id:
             try:
                 scenario_uuid = UUID(scenario_id)
-                scenario = db.query(Scenario).filter(
+                scenario_query = db.query(Scenario).filter(
                     Scenario.id == scenario_uuid,
                     Scenario.organization_id == organization_id
-                ).first()
+                )
+                if workspace_id is not None:
+                    scenario_query = scenario_query.filter(Scenario.workspace_id == workspace_id)
+                scenario = scenario_query.first()
                 if scenario:
                     scenario_parts = []
                     scenario_parts.append(f"\n\nScenario: {scenario.name}")
@@ -341,12 +361,15 @@ async def websocket_endpoint(
                 import random
                 
                 # Find evaluator by agent, persona, scenario
-                evaluator = db.query(Evaluator).filter(
+                evaluator_query = db.query(Evaluator).filter(
                     Evaluator.agent_id == UUID(agent_id),
                     Evaluator.persona_id == UUID(persona_id),
                     Evaluator.scenario_id == UUID(scenario_id),
                     Evaluator.organization_id == organization_id
-                ).first()
+                )
+                if workspace_id is not None:
+                    evaluator_query = evaluator_query.filter(Evaluator.workspace_id == workspace_id)
+                evaluator = evaluator_query.first()
                 
                 # If no evaluator exists, create one automatically for test voice agent calls
                 if not evaluator:
@@ -355,6 +378,7 @@ async def websocket_endpoint(
                     evaluator = Evaluator(
                         evaluator_id=evaluator_id,
                         organization_id=organization_id,
+                        workspace_id=workspace_id,
                         agent_id=UUID(agent_id),
                         persona_id=UUID(persona_id),
                         scenario_id=UUID(scenario_id),
@@ -367,7 +391,10 @@ async def websocket_endpoint(
                 
                 if evaluator:
                     # Get scenario name
-                    scenario = db.query(Scenario).filter(Scenario.id == UUID(scenario_id)).first()
+                    scenario_name_query = db.query(Scenario).filter(Scenario.id == UUID(scenario_id))
+                    if workspace_id is not None:
+                        scenario_name_query = scenario_name_query.filter(Scenario.workspace_id == workspace_id)
+                    scenario = scenario_name_query.first()
                     scenario_name = scenario.name if scenario else "Unknown Scenario"
             except Exception as e:
                 logger.warning(f"Error finding/creating evaluator or generating result_id: {e}")
@@ -483,18 +510,22 @@ async def websocket_endpoint(
                     from app.api.v1.routes.evaluators import generate_unique_evaluator_id
                     import random
                     
-                    evaluator = db.query(Evaluator).filter(
+                    fallback_eval_query = db.query(Evaluator).filter(
                         Evaluator.agent_id == UUID(agent_id),
                         Evaluator.persona_id == UUID(persona_id),
                         Evaluator.scenario_id == UUID(scenario_id),
                         Evaluator.organization_id == organization_id
-                    ).first()
+                    )
+                    if workspace_id is not None:
+                        fallback_eval_query = fallback_eval_query.filter(Evaluator.workspace_id == workspace_id)
+                    evaluator = fallback_eval_query.first()
                     
                     if not evaluator:
                         evaluator_id = generate_unique_evaluator_id(db)
                         evaluator = Evaluator(
                             evaluator_id=evaluator_id,
                             organization_id=organization_id,
+                            workspace_id=workspace_id,
                             agent_id=UUID(agent_id),
                             persona_id=UUID(persona_id),
                             scenario_id=UUID(scenario_id),
@@ -504,7 +535,10 @@ async def websocket_endpoint(
                         db.commit()
                         db.refresh(evaluator)
                     
-                    scenario = db.query(Scenario).filter(Scenario.id == UUID(scenario_id)).first()
+                    fallback_scenario_query = db.query(Scenario).filter(Scenario.id == UUID(scenario_id))
+                    if workspace_id is not None:
+                        fallback_scenario_query = fallback_scenario_query.filter(Scenario.workspace_id == workspace_id)
+                    scenario = fallback_scenario_query.first()
                     scenario_name = scenario.name if scenario else "Unknown Scenario"
                     
                     # Generate result_id
@@ -540,6 +574,7 @@ async def websocket_endpoint(
                     evaluator_result = EvaluatorResult(
                         result_id=result_id,
                         organization_id=organization_id,
+                        workspace_id=workspace_id,
                         evaluator_id=evaluator.id if evaluator else None,  # Optional
                         agent_id=UUID(agent_id),
                         persona_id=UUID(persona_id) if persona_id else None,  # Optional
@@ -637,80 +672,91 @@ async def bot_connect(
     """
     Get WebSocket connection URL for voice agent.
     Returns the WebSocket URL that the client should connect to.
-    Accepts API key from header, query parameter, cookies, or request body.
-    
-    Supports both GET and POST requests for compatibility with different client implementations.
-    
-    Note: This endpoint is called by Pipecat's startBotAndConnect which may not
-    send authentication headers. We try multiple methods to get the API key.
+
+    Accepts either a Bearer access token (email/password / SSO login) or an
+    API key (legacy / machine access). Credentials may be supplied via the
+    `Authorization` header, `X-API-Key` header, cookies (`access_token` /
+    `api_key`), or query parameters (`token` / `X-API-Key` / `api_key`).
+
+    Supports both GET and POST requests for compatibility with different client
+    implementations. Pipecat's `startBotAndConnect` issues an HTTP request to
+    this endpoint; the WebSocket URL returned here embeds the same credential
+    so the subsequent /ws connection can authenticate without re-prompting.
     """
+    from app.core.auth.providers import (
+        AuthError,
+        RawCredential,
+        get_provider_registry,
+    )
+
     print("=" * 80)
     print(f"[BACKEND] /connect endpoint called at {__import__('datetime').datetime.now()}")
     print(f"[BACKEND] Request method: {request.method}")
     print(f"[BACKEND] Request URL: {request.url}")
-    print(f"[BACKEND] Request headers: {dict(request.headers)}")
-    print(f"[BACKEND] Request cookies: {dict(request.cookies)}")
+    print(f"[BACKEND] Request cookies present: {list(request.cookies.keys())}")
     print(f"[BACKEND] Query params: {dict(request.query_params)}")
-    
-    # Get API key - prioritize cookies since Pipecat can send them automatically
-    # Then try headers, then query params
-    api_key = request.cookies.get("api_key")
-    print(f"[BACKEND] API key from cookies: {'found' if api_key else 'not found'}")
-    
-    if not api_key:
-        api_key = request.headers.get("X-API-Key")
-        print(f"[BACKEND] API key from headers: {'found' if api_key else 'not found'}")
-    
-    if not api_key:
-        api_key = request.query_params.get("X-API-Key") or request.query_params.get("api_key")
-        print(f"[BACKEND] API key from query params: {'found' if api_key else 'not found'}")
-    
-    # Also try to extract from the full URL (in case query params aren't parsed)
-    if not api_key:
-        url_str = str(request.url)
-        if "X-API-Key=" in url_str:
-            try:
-                from urllib.parse import urlparse, parse_qs
-                parsed = urlparse(url_str)
-                params = parse_qs(parsed.query)
-                api_key = params.get("X-API-Key", [None])[0] or params.get("api_key", [None])[0]
-                print(f"[BACKEND] API key from URL parsing: {'found' if api_key else 'not found'}")
-            except Exception as e:
-                print(f"[BACKEND] Error parsing URL: {e}")
-    
-    # Don't read request body - it can only be read once and might cause issues
-    # If we need to read body, we'd need to cache it, but cookies should work
-    
+
+    def _extract_bearer(value: Optional[str]) -> Optional[str]:
+        if not value:
+            return None
+        scheme, _, token = value.partition(" ")
+        if scheme.lower() != "bearer" or not token.strip():
+            return None
+        return token.strip()
+
+    # Bearer / access token: header, cookie, query param.
+    bearer_token = (
+        _extract_bearer(request.headers.get("Authorization"))
+        or request.cookies.get("access_token")
+        or request.query_params.get("token")
+        or request.query_params.get("access_token")
+    )
+
+    # API key: header, cookie, query param.
+    api_key = (
+        request.headers.get("X-API-Key")
+        or request.headers.get("X-EFFICIENTAI-API-KEY")
+        or request.cookies.get("api_key")
+        or request.query_params.get("X-API-Key")
+        or request.query_params.get("api_key")
+    )
+
+    print(
+        f"[BACKEND] Bearer token: {'found' if bearer_token else 'not found'}, "
+        f"API key: {'found' if api_key else 'not found'}"
+    )
+
     from app.config import settings
-    
-    # If no API key is provided, we can't return a valid WebSocket URL
-    # because the WebSocket endpoint requires authentication.
-    # However, to allow Pipecat's startBotAndConnect to work, we'll return
-    # a WebSocket URL that the client can modify, or we'll use a session-based approach.
-    # For now, let's require the API key but make it easier to provide.
-    if not api_key:
-        print("[BACKEND] ❌ No API key found, returning 401")
+
+    if not bearer_token and not api_key:
+        print("[BACKEND] ❌ No credentials found, returning 401")
         raise HTTPException(
-            status_code=401, 
-            detail="API key is required. Please ensure you are logged in and the API key is set."
+            status_code=401,
+            detail=(
+                "Authentication required. Send an Authorization: Bearer "
+                "header, X-API-Key header, or matching cookie/query param."
+            ),
         )
-    
-    print(f"[BACKEND] API key found: {api_key[:10]}... (truncated)")
-    
-    # Verify API key if provided
-    from app.core.security import verify_api_key, get_api_key_organization_id
-    if not verify_api_key(api_key, db):
-        print("[BACKEND] ❌ API key verification failed")
-        raise HTTPException(status_code=401, detail="Invalid API key")
-    
-    print("[BACKEND] ✅ API key verified")
-    
-    organization_id = get_api_key_organization_id(api_key, db)
+
+    cred = RawCredential(bearer_token=bearer_token, api_key=api_key)
+    registry = get_provider_registry()
+    provider = registry.find(cred)
+    if provider is None:
+        print("[BACKEND] ❌ No auth provider accepted the credential")
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    try:
+        principal = provider.authenticate(cred, db)
+    except AuthError as e:
+        print(f"[BACKEND] ❌ Auth provider rejected credential: {e}")
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+
+    organization_id = principal.organization_id
     if not organization_id:
-        print("[BACKEND] ❌ Could not get organization ID")
-        raise HTTPException(status_code=401, detail="Invalid API key")
-    
-    print(f"[BACKEND] Organization ID: {organization_id}")
+        print("[BACKEND] ❌ Principal has no organization")
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    print(f"[BACKEND] ✅ Authenticated via {provider.name} (org={organization_id})")
     
     # Get agent_id, persona_id and scenario_id from query params first
     agent_id = request.query_params.get("agent_id")
@@ -850,10 +896,17 @@ async def bot_connect(
     scheme = "wss" if request.url.scheme == "https" else "ws"
     host = request.headers.get("host", f"localhost:{settings.PORT}")
     base_url = f"{scheme}://{host}"
-    
-    # The WebSocket endpoint path with API key as query parameter
-    ws_url = f"{base_url}{settings.API_V1_PREFIX}/voice-agent/ws?X-API-Key={api_key}"
-    
+
+    # The WebSocket endpoint accepts either a bearer token (?token=...) or an
+    # API key (?X-API-Key=...). Embed whichever credential authenticated this
+    # /connect request so the client doesn't need to re-supply it.
+    from urllib.parse import quote
+    if bearer_token:
+        ws_auth_query = f"token={quote(bearer_token, safe='')}"
+    else:
+        ws_auth_query = f"X-API-Key={quote(api_key or '', safe='')}"
+    ws_url = f"{base_url}{settings.API_V1_PREFIX}/voice-agent/ws?{ws_auth_query}"
+
     # Append agent_id, persona_id and scenario_id if present
     if agent_id:
         ws_url += f"&agent_id={agent_id}"

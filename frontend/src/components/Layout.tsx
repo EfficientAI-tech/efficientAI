@@ -39,8 +39,8 @@ import {
 import { useState, useEffect } from 'react'
 import Logo from './Logo'
 import OrgSwitcher from './OrgSwitcher'
+import WorkspaceSwitcher from './WorkspaceSwitcher'
 import WalkthroughRail from './walkthrough/WalkthroughRail'
-import { useWalkthrough } from '../context/WalkthroughContext'
 
 interface NavItem {
   name: string
@@ -63,7 +63,6 @@ const navigationSections: NavSection[] = [
       { name: 'Agents', href: '/agents', icon: Bot },
       { name: 'Personas', href: '/personas', icon: Users },
       { name: 'Scenarios', href: '/scenarios', icon: FileText },
-      { name: 'Metrics', href: '/metrics-management', icon: BarChart3 },
     ],
   },
   {
@@ -80,6 +79,8 @@ const navigationSections: NavSection[] = [
     items: [
       { name: 'Evaluators', href: '/evaluate-test-agents', icon: Mic },
       { name: 'Evaluation Results', href: '/results', icon: BarChart3 },
+      { name: 'Judge Alignment', href: '/judge-alignment', icon: Sparkles },
+      { name: 'Call Imports', href: '/call-imports', icon: Upload, enterpriseFeature: 'call_imports' },
     ],
   },
   {
@@ -121,7 +122,7 @@ const navigationSections: NavSection[] = [
 
 const otherNavigation: NavItem[] = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
-  { name: 'Call Imports', href: '/call-imports', icon: Upload },
+  { name: 'Metrics', href: '/metrics-management', icon: BarChart3 },
 ]
 
 const bottomNavigation = [
@@ -133,10 +134,8 @@ export default function Layout() {
   const { logout } = useAuthStore()
   const { selectedAgent, setSelectedAgent, loadPreferences, isInitialized } = useAgentStore()
   const { fetchLicense } = useLicenseStore()
-  const { activeDefinition, isCollapsed } = useWalkthrough()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [showAgentDropdown, setShowAgentDropdown] = useState(false)
-  const walkthroughOffsetClass = activeDefinition && !isCollapsed ? 'lg:pr-[360px]' : 'lg:pr-0'
 
   // Fetch agents
   const { data: agents = [], isSuccess: agentsLoaded } = useQuery({
@@ -322,7 +321,7 @@ export default function Layout() {
         </div>
 
         {/* Page content */}
-        <main className={`flex-1 p-6 transition-all duration-300 ${walkthroughOffsetClass}`}>
+        <main className="flex-1 p-6 transition-all duration-300">
           <div className="min-h-[calc(100vh-7rem)] min-w-0">
             <Outlet />
           </div>
@@ -410,6 +409,17 @@ function SidebarContent({
     <div className="flex flex-col h-full">
       <div className="flex items-center flex-shrink-0 px-4 h-16 border-b border-gray-200">
         <Logo />
+      </div>
+      {/* Workspace switcher - sits above the Dashboard nav so the
+          active workspace context is always visible in the sidebar
+          (and not buried in the top header). The small label above
+          the switcher makes it explicit that the dropdown scopes
+          the whole left-nav to a workspace, not just an org. */}
+      <div className="flex-shrink-0 px-3 py-3 border-b border-gray-200">
+        <div className="px-1 mb-1.5 text-xs font-semibold text-gray-500 uppercase tracking-wide">
+          Workspace
+        </div>
+        <WorkspaceSwitcher />
       </div>
       <div className="flex-1 flex flex-col min-h-0 overflow-y-auto">
         <nav className="flex-1 px-2 py-4 space-y-1">

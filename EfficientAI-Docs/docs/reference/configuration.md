@@ -106,7 +106,8 @@ auth:
 
 # Enterprise license JWT (RS256, signed by the EfficientAI team).
 # Unlocks gated features: oidc_sso, mfa_enforce, audit_export,
-# voice_playground, gepa_optimization, scim_provisioning, saml_sso.
+# voice_playground, gepa_optimization, call_imports,
+# scim_provisioning, saml_sso.
 # license:
 #   key: "eyJhbGciOi..."
 ```

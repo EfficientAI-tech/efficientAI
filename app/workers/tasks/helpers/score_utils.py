@@ -97,4 +97,18 @@ def normalize_score(score, metric_type: str):
         except (ValueError, TypeError):
             return None
 
+    if metric_type == "text":
+        # Free-form text metrics: keep the value as a string. Most callers
+        # bypass this branch (see ``_map_evaluation_to_metrics``); this is a
+        # safety net so a ``normalize_score(..., "text")`` call never coerces
+        # a summary into ``None``.
+        if isinstance(score, str):
+            stripped = score.strip()
+            return stripped or None
+        try:
+            text = str(score).strip()
+        except Exception:  # noqa: BLE001
+            return None
+        return text or None
+
     return score

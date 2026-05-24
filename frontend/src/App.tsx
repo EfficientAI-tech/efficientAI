@@ -69,6 +69,10 @@ import Profile from './pages/profile/Profile'
 // Prompt Optimization (Enterprise)
 import PromptOptimization from './pages/promptOptimization/PromptOptimization'
 
+// Judge Alignment (AlignEval-style hybrid integration)
+import JudgeAlignment from './pages/judgeAlignment/JudgeAlignment'
+import JudgeDatasetDetail from './pages/judgeAlignment/JudgeDatasetDetail'
+
 // Enterprise
 import EnterpriseUpgrade from './pages/enterprise/EnterpriseUpgrade'
 import { WalkthroughProvider } from './context/WalkthroughContext'
@@ -79,6 +83,9 @@ import BlindTestForm from './pages/public/BlindTestForm'
 // Call Imports
 import CallImports from './pages/callImports/CallImports'
 import CallImportDetail from './pages/callImports/CallImportDetail'
+import CallImportEvaluationDetail from './pages/callImports/CallImportEvaluationDetail'
+import CallImportTagsPage from './pages/callImports/Tags'
+import CallImportSchemasPage from './pages/callImports/Schemas'
 
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -160,9 +167,17 @@ function App() {
           <Route path="voice-playground" element={<EnterpriseGate feature="voice_playground"><VoicePlayground /></EnterpriseGate>} />
           <Route path="cron-jobs" element={<CronJobs />} />
           <Route path="prompt-partials" element={<PromptPartials />} />
-          <Route path="call-imports" element={<CallImports />} />
-          <Route path="call-imports/:id" element={<CallImportDetail />} />
+          <Route path="call-imports" element={<EnterpriseGate feature="call_imports"><CallImports /></EnterpriseGate>} />
+          <Route path="call-imports/tags" element={<EnterpriseGate feature="call_imports"><CallImportTagsPage /></EnterpriseGate>} />
+          <Route path="call-imports/schemas" element={<EnterpriseGate feature="call_imports"><CallImportSchemasPage /></EnterpriseGate>} />
+          <Route path="call-imports/:id" element={<EnterpriseGate feature="call_imports"><CallImportDetail /></EnterpriseGate>} />
+          <Route
+            path="call-imports/:id/evaluations/:evalId"
+            element={<EnterpriseGate feature="call_imports"><CallImportEvaluationDetail /></EnterpriseGate>}
+          />
           <Route path="prompt-optimization" element={<EnterpriseGate feature="gepa_optimization"><PromptOptimization /></EnterpriseGate>} />
+          <Route path="judge-alignment" element={<JudgeAlignment />} />
+          <Route path="judge-alignment/datasets/:datasetId" element={<JudgeDatasetDetail />} />
         </Route>
       </Routes>
     </BrowserRouter>

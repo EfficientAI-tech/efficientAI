@@ -30,6 +30,7 @@ from app.models.database import (
     TestAgentConversation,
     User,
     VoiceBundle,
+    Workspace,
 )
 from app.models.enums import EvaluationStatus, IntegrationPlatform, MetricTrigger, MetricType, RoleEnum
 
@@ -42,6 +43,30 @@ def seed_org(db_session, org_id):
         db_session.add(org)
         db_session.commit()
     return org
+
+
+@pytest.fixture
+def default_workspace(db_session, org_id, seed_org):
+    """Seed the per-org Default workspace that migration 033 normally creates."""
+    ws = (
+        db_session.query(Workspace)
+        .filter(
+            Workspace.organization_id == org_id,
+            Workspace.is_default.is_(True),
+        )
+        .first()
+    )
+    if ws is None:
+        ws = Workspace(
+            organization_id=org_id,
+            name="Default",
+            slug="default",
+            is_default=True,
+        )
+        db_session.add(ws)
+        db_session.commit()
+        db_session.refresh(ws)
+    return ws
 
 
 @pytest.fixture
@@ -67,12 +92,13 @@ def make_audio(db_session, org_id, seed_org):
 
 
 @pytest.fixture
-def make_evaluation(db_session, org_id, seed_org, make_audio):
+def make_evaluation(db_session, org_id, seed_org, default_workspace, make_audio):
     def _make_evaluation(**overrides):
         audio = overrides.get("audio") or make_audio()
         evaluation = Evaluation(
             id=overrides.get("id", uuid4()),
             organization_id=org_id,
+            workspace_id=overrides.get("workspace_id", default_workspace.id),
             audio_id=audio.id,
             reference_text=overrides.get("reference_text", "hello world"),
             evaluation_type=overrides.get("evaluation_type", "asr"),
@@ -89,11 +115,18 @@ def make_evaluation(db_session, org_id, seed_org, make_audio):
 
 
 @pytest.fixture
-def make_evaluation_result(db_session):
+def make_evaluation_result(db_session, default_workspace):
     def _make_result(evaluation, **overrides):
         result = EvaluationResult(
             id=overrides.get("id", uuid4()),
             evaluation_id=evaluation.id,
+            workspace_id=overrides.get(
+                "workspace_id",
+                # Default to the parent evaluation's workspace so the
+                # denormalized column stays consistent with its parent.
+                getattr(evaluation, "workspace_id", default_workspace.id)
+                or default_workspace.id,
+            ),
             transcript=overrides.get("transcript", "hello world"),
             metrics=overrides.get("metrics", {"wer": 0.1, "latency_ms": 300}),
             raw_output=overrides.get("raw_output", {}),
@@ -129,13 +162,14 @@ def make_integration(db_session, org_id, seed_org):
 
 
 @pytest.fixture
-def make_agent(db_session, org_id, seed_org, make_integration):
+def make_agent(db_session, org_id, seed_org, default_workspace, make_integration):
     def _make_agent(**overrides):
         integration = overrides.get("integration") or make_integration()
         agent = Agent(
             id=overrides.get("id", uuid4()),
             agent_id=overrides.get("agent_id", "123456"),
             organization_id=org_id,
+            workspace_id=overrides.get("workspace_id", default_workspace.id),
             name=overrides.get("name", "Agent A"),
             phone_number=overrides.get("phone_number", "+1234567890"),
             language=overrides.get("language", "en"),
@@ -156,11 +190,12 @@ def make_agent(db_session, org_id, seed_org, make_integration):
 
 
 @pytest.fixture
-def make_persona(db_session, org_id, seed_org):
+def make_persona(db_session, org_id, seed_org, default_workspace):
     def _make_persona(**overrides):
         persona = Persona(
             id=overrides.get("id", uuid4()),
             organization_id=org_id,
+            workspace_id=overrides.get("workspace_id", default_workspace.id),
             name=overrides.get("name", "Persona A"),
             gender=overrides.get("gender", "neutral"),
             tts_provider=overrides.get("tts_provider"),
@@ -177,11 +212,12 @@ def make_persona(db_session, org_id, seed_org):
 
 
 @pytest.fixture
-def make_scenario(db_session, org_id, seed_org):
+def make_scenario(db_session, org_id, seed_org, default_workspace):
     def _make_scenario(**overrides):
         scenario = Scenario(
             id=overrides.get("id", uuid4()),
             organization_id=org_id,
+            workspace_id=overrides.get("workspace_id", default_workspace.id),
             agent_id=overrides.get("agent_id"),
             name=overrides.get("name", "Scenario A"),
             description=overrides.get("description", "Scenario description"),
@@ -196,12 +232,13 @@ def make_scenario(db_session, org_id, seed_org):
 
 
 @pytest.fixture
-def make_evaluator(db_session, org_id, seed_org):
+def make_evaluator(db_session, org_id, seed_org, default_workspace):
     def _make_evaluator(**overrides):
         evaluator = Evaluator(
             id=overrides.get("id", uuid4()),
             evaluator_id=overrides.get("evaluator_id", "654321"),
             organization_id=org_id,
+            workspace_id=overrides.get("workspace_id", default_workspace.id),
             name=overrides.get("name", "Evaluator A"),
             agent_id=overrides.get("agent_id"),
             persona_id=overrides.get("persona_id"),
@@ -283,17 +320,25 @@ def make_ai_provider(db_session, org_id, seed_org):
 
 
 @pytest.fixture
-def make_metric(db_session, org_id, seed_org):
+def make_metric(db_session, org_id, seed_org, default_workspace):
     def _make_metric(**overrides):
         metric = Metric(
             id=overrides.get("id", uuid4()),
             organization_id=org_id,
+            workspace_id=overrides.get("workspace_id", default_workspace.id),
             name=overrides.get("name", "Professionalism"),
             description=overrides.get("description", "Professional tone"),
             metric_type=overrides.get("metric_type", MetricType.RATING.value),
             trigger=overrides.get("trigger", MetricTrigger.ALWAYS.value),
             enabled=overrides.get("enabled", True),
             is_default=overrides.get("is_default", False),
+            custom_data_type=overrides.get("custom_data_type"),
+            custom_config=overrides.get("custom_config"),
+            capture_rationale=overrides.get("capture_rationale", False),
+            parent_metric_id=overrides.get("parent_metric_id"),
+            selection_mode=overrides.get("selection_mode"),
+            allow_discovery=overrides.get("allow_discovery", False),
+            input_columns=overrides.get("input_columns", []),
         )
         db_session.add(metric)
         db_session.commit()
@@ -304,12 +349,13 @@ def make_metric(db_session, org_id, seed_org):
 
 
 @pytest.fixture
-def make_evaluator_result(db_session, org_id, seed_org):
+def make_evaluator_result(db_session, org_id, seed_org, default_workspace):
     def _make_evaluator_result(**overrides):
         evaluator_result = EvaluatorResult(
             id=overrides.get("id", uuid4()),
             result_id=overrides.get("result_id", "112233"),
             organization_id=org_id,
+            workspace_id=overrides.get("workspace_id", default_workspace.id),
             evaluator_id=overrides.get("evaluator_id"),
             agent_id=overrides.get("agent_id"),
             persona_id=overrides.get("persona_id"),
@@ -360,11 +406,12 @@ def make_voice_bundle(db_session, org_id, seed_org):
 
 
 @pytest.fixture
-def make_test_agent_conversation(db_session, org_id, seed_org):
+def make_test_agent_conversation(db_session, org_id, seed_org, default_workspace):
     def _make_test_agent_conversation(**overrides):
         conversation = TestAgentConversation(
             id=overrides.get("id", uuid4()),
             organization_id=org_id,
+            workspace_id=overrides.get("workspace_id", default_workspace.id),
             agent_id=overrides["agent_id"],
             persona_id=overrides["persona_id"],
             scenario_id=overrides["scenario_id"],
@@ -458,11 +505,12 @@ def make_alert(db_session, org_id, seed_org):
 
 
 @pytest.fixture
-def make_call_recording(db_session, org_id, seed_org):
+def make_call_recording(db_session, org_id, seed_org, default_workspace):
     def _make_call_recording(**overrides):
         call_recording = CallRecording(
             id=overrides.get("id", uuid4()),
             organization_id=org_id,
+            workspace_id=overrides.get("workspace_id", default_workspace.id),
             call_short_id=overrides.get("call_short_id", "123456"),
             status=overrides.get("status", CallRecordingStatus.PENDING),
             source=overrides.get("source", CallRecordingSource.WEBHOOK),
@@ -481,11 +529,12 @@ def make_call_recording(db_session, org_id, seed_org):
 
 
 @pytest.fixture
-def make_prompt_optimization_run(db_session, org_id, seed_org):
+def make_prompt_optimization_run(db_session, org_id, seed_org, default_workspace):
     def _make_prompt_optimization_run(**overrides):
         run = PromptOptimizationRun(
             id=overrides.get("id", uuid4()),
             organization_id=org_id,
+            workspace_id=overrides.get("workspace_id", default_workspace.id),
             agent_id=overrides["agent_id"],
             evaluator_id=overrides.get("evaluator_id"),
             voice_bundle_id=overrides.get("voice_bundle_id"),
@@ -503,11 +552,12 @@ def make_prompt_optimization_run(db_session, org_id, seed_org):
 
 
 @pytest.fixture
-def make_prompt_optimization_candidate(db_session):
+def make_prompt_optimization_candidate(db_session, default_workspace):
     def _make_prompt_optimization_candidate(**overrides):
         candidate = PromptOptimizationCandidate(
             id=overrides.get("id", uuid4()),
             optimization_run_id=overrides["optimization_run_id"],
+            workspace_id=overrides.get("workspace_id", default_workspace.id),
             prompt_text=overrides.get("prompt_text", "candidate prompt"),
             score=overrides.get("score", 0.9),
             metric_breakdown=overrides.get("metric_breakdown"),

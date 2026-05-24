@@ -18,6 +18,7 @@ from app.workers.tasks import (
     generate_tts_report_pdf_task,
     run_prompt_optimization_task,
     process_call_import_row_task,
+    run_judge_alignment_task,
 )
 
 __all__ = [
@@ -30,4 +31,5 @@ __all__ = [
     "generate_tts_report_pdf_task",
     "run_prompt_optimization_task",
     "process_call_import_row_task",
+    "run_judge_alignment_task",
 ]

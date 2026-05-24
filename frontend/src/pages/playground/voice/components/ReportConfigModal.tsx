@@ -215,7 +215,7 @@ export default function ReportConfigModal({
 
   return renderModal(
     <div
-      className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999] p-4"
+      className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999] p-4"
       onClick={onClose}
     >
       <div

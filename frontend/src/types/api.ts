@@ -191,6 +191,8 @@ export interface Integration {
   name?: string | null
   public_key?: string | null
   is_active: boolean
+  /** True if this row is the default credential for (org, platform). */
+  is_default?: boolean
   created_at: string
   updated_at: string
   last_tested_at?: string | null
@@ -201,6 +203,8 @@ export interface IntegrationCreate {
   api_key: string
   public_key?: string
   name?: string | null
+  /** Mark the new credential as the default for (org, platform). */
+  is_default?: boolean
 }
 
 // VoiceBundle Types
@@ -233,6 +237,8 @@ export interface AIProvider {
   api_key?: string | null
   name?: string | null
   is_active: boolean
+  /** True if this row is the default credential for (org, provider). */
+  is_default?: boolean
   created_at: string
   updated_at: string
   last_tested_at?: string | null
@@ -242,6 +248,8 @@ export interface AIProviderCreate {
   provider: ModelProvider
   api_key: string
   name?: string | null
+  /** Mark the new credential as the default for (org, provider). */
+  is_default?: boolean
 }
 
 export interface AIProviderUpdate {
@@ -262,18 +270,26 @@ export interface VoiceBundle {
   bundle_type: VoiceBundleType
   stt_provider?: ModelProvider | null
   stt_model?: string | null
+  /**
+   * Optional explicit AIProvider/Integration row id for STT. When null the
+   * runtime resolver picks the default credential for stt_provider.
+   */
+  stt_credential_id?: string | null
   llm_provider?: ModelProvider | null
   llm_model?: string | null
   llm_temperature?: number | null
   llm_max_tokens?: number | null
   llm_config?: Record<string, any> | null
+  llm_credential_id?: string | null
   tts_provider?: ModelProvider | null
   tts_model?: string | null
   tts_voice?: string | null
   tts_config?: Record<string, any> | null
+  tts_credential_id?: string | null
   s2s_provider?: ModelProvider | null
   s2s_model?: string | null
   s2s_config?: Record<string, any> | null
+  s2s_credential_id?: string | null
   extra_metadata?: Record<string, any> | null
   is_active: boolean
   created_at: string
@@ -287,18 +303,22 @@ export interface VoiceBundleCreate {
   bundle_type?: VoiceBundleType
   stt_provider?: ModelProvider | null
   stt_model?: string | null
+  stt_credential_id?: string | null
   llm_provider?: ModelProvider | null
   llm_model?: string | null
   llm_temperature?: number | null
   llm_max_tokens?: number | null
   llm_config?: Record<string, any> | null
+  llm_credential_id?: string | null
   tts_provider?: ModelProvider | null
   tts_model?: string | null
   tts_voice?: string | null
   tts_config?: Record<string, any> | null
+  tts_credential_id?: string | null
   s2s_provider?: ModelProvider | null
   s2s_model?: string | null
   s2s_config?: Record<string, any> | null
+  s2s_credential_id?: string | null
   extra_metadata?: Record<string, any> | null
 }
 
@@ -366,15 +386,22 @@ export interface VoiceBundleUpdate {
   description?: string | null
   stt_provider?: ModelProvider
   stt_model?: string
+  stt_credential_id?: string | null
   llm_provider?: ModelProvider
   llm_model?: string
   llm_temperature?: number | null
   llm_max_tokens?: number | null
   llm_config?: Record<string, any> | null
+  llm_credential_id?: string | null
   tts_provider?: ModelProvider
   tts_model?: string
   tts_voice?: string | null
   tts_config?: Record<string, any> | null
+  tts_credential_id?: string | null
+  s2s_provider?: ModelProvider | null
+  s2s_model?: string | null
+  s2s_config?: Record<string, any> | null
+  s2s_credential_id?: string | null
   extra_metadata?: Record<string, any> | null
   is_active?: boolean
 }
@@ -585,8 +612,21 @@ export interface CronJobUpdate {
 
 // --- Call Imports ---
 
+/**
+ * Lifecycle for a call-import batch.
+ *
+ *  - ``uploaded``   : file landed in S3, no mapping yet.
+ *  - ``mapped``     : user picked a schema + sheet + column mapping; no
+ *                     rows materialised yet, no worker enqueued.
+ *  - ``processing`` : rows materialised + workers enqueued.
+ *  - ``pending``    : transient state used by the legacy one-shot
+ *                     ``POST /upload`` endpoint just before transitioning
+ *                     to ``processing``.
+ */
 export type CallImportStatus =
   | 'pending'
+  | 'uploaded'
+  | 'mapped'
   | 'processing'
   | 'completed'
   | 'partial'
@@ -598,12 +638,60 @@ export type CallImportRowStatus =
   | 'completed'
   | 'failed'
 
+/** Where the value in `transcript` came from. */
+export type CallImportTranscriptSource =
+  | 'csv'
+  | 'transcribed'
+  | 'edited'
+  | null
+/** Lifecycle status for the post-hoc transcription workflow itself. */
+export type CallImportTranscriptStatus =
+  | 'idle'
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | null
+
+/**
+ * Which transcript an evaluation run scored against.
+ *  - `production`: the CSV-supplied value on `CallImportRow.transcript`.
+ *  - `diarised`: the worker-produced value on `CallImportRow.diarised_transcript`.
+ */
+export type CallImportEvaluationTranscriptSource = 'production' | 'diarised'
+
 export interface CallImportRow {
   id: string
   row_index: number
-  external_call_id: string
+  /** Mandatory identifier per row. Renamed from ``external_call_id``. */
+  conversation_id: string
   recording_url: string | null
+  /** Production transcript — the value supplied via the CSV upload. */
   transcript: string | null
+  /** Provenance of the stored production transcript (csv = CSV upload, edited = manual edit). */
+  transcript_source: CallImportTranscriptSource
+  /** Legacy: provider recorded by the original transcription worker before the split. */
+  transcript_provider: string | null
+  transcript_model: string | null
+  transcript_status: CallImportTranscriptStatus
+  transcript_error: string | null
+  transcribed_at: string | null
+  /** Diarised transcript — produced by the post-hoc diarisation worker. */
+  diarised_transcript: string | null
+  /** Provider used by the diarisation worker (e.g. "deepgram"). */
+  diarised_transcript_provider: string | null
+  diarised_transcript_model: string | null
+  diarised_transcript_status: CallImportTranscriptStatus
+  diarised_transcript_error: string | null
+  diarised_at: string | null
+  /**
+   * Per-row preservation of the mapped source cells. Values land here
+   * as whatever type the schema parameter coerced them to —
+   * strings (text / url / conversation_id / recording_url / transcript /
+   * datetime), numbers, booleans, or ``null`` for blanks. Always
+   * coerce with ``String(value)`` before string operations.
+   */
+  raw_columns: Record<string, string | number | boolean | null> | null
   status: CallImportRowStatus
   recording_s3_key: string | null
   recording_content_type: string | null
@@ -614,11 +702,147 @@ export interface CallImportRow {
   updated_at: string
 }
 
+export interface CallImportTag {
+  id: string
+  name: string
+  color: string | null
+  created_at: string
+  updated_at: string
+}
+
+/**
+ * Parameter type tag on a Call Import schema parameter.
+ *
+ *  - ``conversation_id``: mandatory identifier (one per schema).
+ *  - ``recording_url``: feeds ``CallImportRow.recording_url``.
+ *  - ``transcript``: feeds ``CallImportRow.transcript``.
+ *  - ``text`` / ``number`` / ``boolean`` / ``datetime`` / ``url``:
+ *    generic typed fields preserved per row in ``raw_columns`` and
+ *    surfaced in the evaluation export under the parameter's name.
+ */
+export type CallImportSchemaParameterType =
+  | 'conversation_id'
+  | 'recording_url'
+  | 'transcript'
+  | 'text'
+  | 'number'
+  | 'boolean'
+  | 'datetime'
+  | 'url'
+
+export interface CallImportSchemaParameter {
+  id?: string
+  name: string
+  type: CallImportSchemaParameterType
+  description: string | null
+  is_required: boolean
+  ordering?: number
+}
+
+export interface CallImportSchema {
+  id: string
+  organization_id: string
+  workspace_id: string
+  name: string
+  description: string | null
+  parameters: CallImportSchemaParameter[]
+  /** How many CallImport batches reference this schema. */
+  usage_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface CallImportSchemaListResponse {
+  items: CallImportSchema[]
+  total: number
+}
+
+export interface CallImportSchemaCreate {
+  name: string
+  description?: string | null
+  parameters: Array<Omit<CallImportSchemaParameter, 'id' | 'ordering'>>
+}
+
+export interface CallImportSchemaUpdate {
+  name?: string
+  description?: string | null
+  parameters?: Array<Omit<CallImportSchemaParameter, 'id' | 'ordering'>>
+}
+
+/**
+ * In-org Workspace - the active workspace scopes call imports and
+ * metrics in the UI. The org's Default workspace is auto-seeded by
+ * migration 033 and cannot be deleted.
+ */
+export interface Workspace {
+  id: string
+  organization_id: string
+  name: string
+  slug: string
+  is_default: boolean
+  created_at: string
+  updated_at: string
+}
+
 export interface CallImport {
   id: string
   organization_id: string
-  provider: string
+  /** Workspace this import belongs to. */
+  workspace_id: string
+  /**
+   * Telephony provider key. ``null`` until the IMPORT stage in the
+   * staged flow (which is the first step that knows the provider).
+   * Always populated on post-import batches and on legacy one-shot
+   * uploads.
+   */
+  provider: string | null
+  telephony_integration_id: string | null
   original_filename: string | null
+  /**
+   * For Excel uploads, which worksheet this batch came from. ``null``
+   * for CSV uploads (CSV files have no sheet concept) and for any
+   * imports created before multi-sheet support landed.
+   */
+  sheet_name: string | null
+  /** Optional free-text dataset label (high-level segregation filter). */
+  dataset: string | null
+  /** Tags currently attached to this import. Empty array if untagged. */
+  tags: CallImportTag[]
+  /**
+   * Reusable Input Parameter schema the batch was uploaded against.
+   * NULL on legacy batches uploaded before the schema-driven flow shipped.
+   */
+  schema_id: string | null
+  /**
+   * Schema-driven mapping: ``{parameter_name: csv_header}``. Empty on
+   * legacy batches; check ``column_mapping`` / ``extra_columns`` /
+   * ``custom_column_mapping`` instead for those.
+   */
+  parameter_mapping: Record<string, string>
+  /** Legacy free-form mapping kept for batches uploaded before schemas. */
+  column_mapping: Record<string, string | null>
+  /** Legacy extra-column list kept for backwards-compat. */
+  extra_columns: string[]
+  /** Legacy uploader-named columns kept for backwards-compat. */
+  custom_column_mapping: Record<string, string>
+  /**
+   * Source headers the uploader explicitly skipped, captured at the
+   * MAP stage. Empty for legacy one-shot uploads where the value was
+   * ephemeral.
+   */
+  skipped_columns: string[]
+  /** S3 key for the staged source file. ``null`` on legacy batches. */
+  source_s3_key: string | null
+  /** ``'csv'`` or ``'xlsx'`` of the staged source file. */
+  source_format: string | null
+  source_size_bytes: number | null
+  source_content_type: string | null
+  /**
+   * Snapshot of the file's sheets + headers captured at UPLOAD time so
+   * the MAP UI can render without re-fetching the source from S3.
+   * ``null`` on legacy batches.
+   */
+  available_sheets: CallImportPreviewSheet[] | null
   total_rows: number
   completed_rows: number
   failed_rows: number
@@ -630,6 +854,12 @@ export interface CallImport {
 
 export interface CallImportDetail extends CallImport {
   rows: CallImportRow[]
+  /**
+   * Total row count *after* applying the optional ``q`` search filter.
+   * ``null`` when no filter is active — paginate against ``total_rows``
+   * in that case.
+   */
+  filtered_total_rows: number | null
 }
 
 export interface CallImportListResponse {
@@ -643,5 +873,435 @@ export interface CallImportUploadResponse {
   id: string
   total_rows: number
   status: CallImportStatus
+  dataset: string | null
+  tags: CallImportTag[]
   message: string
+}
+
+/** One worksheet (or one CSV file synthesized as a single sheet). */
+export interface CallImportPreviewSheet {
+  /** Sheet name for xlsx; filename for csv. */
+  name: string
+  /** Column headers from the first non-empty row. */
+  headers: string[]
+  /** Approximate count of data rows (excludes the header row). */
+  row_count: number
+}
+
+/**
+ * Sheets / headers extracted server-side from an uploaded CSV or Excel
+ * workbook. Drives the modal's column-mapping UI without forcing the
+ * frontend to parse the file itself.
+ */
+export interface CallImportPreviewResponse {
+  /** ``'csv'`` or ``'xlsx'``. */
+  format: 'csv' | 'xlsx'
+  sheets: CallImportPreviewSheet[]
+}
+
+export type MetricSelectionMode = 'single_choice' | 'multi_label'
+
+export interface CallImportMetricSummary {
+  id: string
+  name: string
+  metric_type: string | null
+  description: string | null
+  parent_metric_id?: string | null
+  selection_mode?: MetricSelectionMode | null
+  /** Only meaningful on multi_label parents; gates the Discovered
+   *  Labels panel on the Flow tab. Defaults to false. */
+  allow_discovery?: boolean
+}
+
+/** Per-metric LLM override (provider+model+optional credential). */
+export interface CallImportEvaluationLLMOverride {
+  provider?: string | null
+  model?: string | null
+  credential_id?: string | null
+}
+
+export interface CallImportEvaluation {
+  id: string
+  call_import_id: string
+  organization_id: string
+  /** User-supplied label for the run; null when not named. */
+  name: string | null
+  selected_metric_ids: string[]
+  /** parent_id -> [child_id, ...] snapshot captured at run time. */
+  selected_metric_groups?: Record<string, string[]> | null
+  metrics: CallImportMetricSummary[]
+  status: 'pending' | 'running' | 'completed' | 'partial' | 'failed'
+  total_rows: number
+  completed_rows: number
+  failed_rows: number
+  error_message: string | null
+  /** Run-level LLM provider chosen by the user (null = legacy default). */
+  llm_provider: string | null
+  llm_model: string | null
+  llm_credential_id: string | null
+  metric_llm_overrides: Record<string, CallImportEvaluationLLMOverride> | null
+  stt_provider: string | null
+  stt_model: string | null
+  stt_credential_id: string | null
+  /**
+   * Which transcript column this run scored against.
+   * Defaults to `production` on legacy runs.
+   */
+  transcript_source: CallImportEvaluationTranscriptSource
+  /**
+   * Other evaluation ids created in the same Run Evaluation request.
+   * Populated only on the POST response when the user ticked both
+   * Production and Diarised. Empty array on all other reads.
+   */
+  sibling_evaluation_ids: string[]
+  started_at: string | null
+  finished_at: string | null
+  created_at: string
+  updated_at: string
+  /**
+   * Cached LLM-generated TLDR rendered above the Visualizations tab.
+   * Populated lazily via ``POST /evaluations/{id}/insights``; null on
+   * runs the user has not summarised yet.
+   */
+  tldr_summary?: EvaluationTldrSummary | null
+  /**
+   * True when the user opted into top-level metric discovery on the
+   * Run Evaluation modal. Gates the Discovered metrics panel on the
+   * evaluation detail Flow tab.
+   */
+  discover_new_metrics?: boolean
+}
+
+/**
+ * LLM-generated narrative + bullet patterns for a single evaluation
+ * run. Cached on the evaluation row so re-opening the Visualizations
+ * tab doesn't auto-burn LLM tokens. ``is_stale`` is computed by the
+ * backend at read time when ``completed_rows`` has grown since the
+ * summary was generated.
+ */
+export interface EvaluationTldrSummary {
+  narrative: string
+  patterns: string[]
+  generated_at: string
+  generated_at_completed_rows: number
+  provider?: string | null
+  model?: string | null
+  is_stale: boolean
+}
+
+export interface CallImportEvaluationListResponse {
+  items: CallImportEvaluation[]
+  total: number
+}
+
+export interface CallImportEvaluationRow {
+  id: string
+  evaluation_id: string
+  call_import_row_id: string
+  row_index: number | null
+  /** Mandatory identifier from the source batch (renamed from ``external_call_id``). */
+  conversation_id: string | null
+  transcript: string | null
+  raw_columns: Record<string, any> | null
+  recording_url: string | null
+  /**
+   * S3 object key for the downloaded recording. Prefer this over
+   * ``recording_url`` for playback — we resolve it to a presigned URL
+   * so audio plays from our storage instead of the (often expired)
+   * provider URL.
+   */
+  recording_s3_key: string | null
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped'
+  metric_scores: Record<string, any>
+  error_message: string | null
+  started_at: string | null
+  finished_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CallImportEvaluationRowListResponse {
+  items: CallImportEvaluationRow[]
+  total: number
+  page: number
+  page_size: number
+}
+
+// --- Retry (re-enqueue failed rows on an existing evaluation run) ---
+
+export interface CallImportEvaluationRetryRequest {
+  /**
+   * Restrict the retry to a specific subset of evaluation rows.
+   * When omitted, every row with status='failed' in this run is
+   * re-enqueued.
+   */
+  eval_row_ids?: string[]
+
+  /**
+   * Optional LLM overrides. When provided, persisted onto the run so
+   * future retries default to the new config. ``llm_provider`` and
+   * ``llm_model`` must be sent together — the backend 400s on
+   * half-configured input.
+   */
+  llm_provider?: string
+  llm_model?: string
+  llm_credential_id?: string | null
+
+  /**
+   * Optional STT overrides (only meaningful when the run scores the
+   * diarised transcript). Same paired-field rule as LLM.
+   */
+  stt_provider?: string
+  stt_model?: string
+  stt_credential_id?: string | null
+
+  /**
+   * When true, wipe the diarised transcript on every retried row so
+   * the (possibly new) STT runs from scratch. Only takes effect for
+   * diarised runs that have STT config.
+   */
+  transcribe_overwrite?: boolean
+}
+
+export interface CallImportEvaluationRetrySkippedItem {
+  eval_row_id: string
+  /**
+   * Why this row was not re-enqueued. Known values:
+   * - 'unknown' (id not in this run)
+   * - 'in_progress' (status is pending/running)
+   * - 'completed' (already successful)
+   * - 'source_row_missing'
+   */
+  reason: 'unknown' | 'in_progress' | 'completed' | 'source_row_missing'
+}
+
+export interface CallImportEvaluationRetryResponse {
+  requeued: number
+  /**
+   * Of those, how many were chained through a diarisation task first
+   * because the diarised transcript was missing.
+   */
+  transcribe_requeued: number
+  skipped: CallImportEvaluationRetrySkippedItem[]
+}
+
+// --- Diarization / transcription ---
+
+export interface CallImportTranscribeRequest {
+  stt_provider: string
+  stt_model: string
+  credential_id?: string | null
+  language?: string | null
+  only_missing?: boolean
+  overwrite_existing?: boolean
+  row_ids?: string[]
+}
+
+export interface CallImportTranscribeResponse {
+  queued: number
+  skipped_rows: number
+  skipped_reason_counts: Record<string, number>
+}
+
+// --- Aggregation / visualization payloads ---
+
+export interface CallImportMetricHistogramBucket {
+  x0: number
+  x1: number
+  count: number
+}
+
+export interface CallImportMetricValueCount {
+  label: string
+  count: number
+}
+
+export interface CallImportMetricAggregate {
+  metric_id: string
+  metric_name: string
+  metric_type: string | null
+  /**
+   * True when the metric is a multi-label classifier parent.
+   * ``value_counts`` then lists per-child label tallies and one row
+   * may contribute to several labels, so the chart layout has to
+   * ignore the pie toggle (slices wouldn't sum to 100%) and the
+   * n-badge represents rows scored, not label occurrences.
+   */
+  is_multi_label_parent?: boolean
+  count: number
+  skipped_count: number
+  error_count: number
+  mean: number | null
+  median: number | null
+  p25: number | null
+  p75: number | null
+  p95: number | null
+  min: number | null
+  max: number | null
+  stddev: number | null
+  histogram_buckets: CallImportMetricHistogramBucket[]
+  value_counts: CallImportMetricValueCount[]
+}
+
+export interface CallImportEvaluationAggregateResponse {
+  evaluation_id: string
+  total_rows: number
+  completed_rows: number
+  failed_rows: number
+  metrics: CallImportMetricAggregate[]
+}
+
+export interface CallImportInsightsRunPoint {
+  evaluation_id: string
+  name: string | null
+  created_at: string
+  mean: number | null
+  completed_rows: number
+}
+
+export interface CallImportInsightsMetric {
+  metric_id: string
+  metric_name: string
+  metric_type: string | null
+  latest: CallImportMetricAggregate | null
+  trend: CallImportInsightsRunPoint[]
+}
+
+export interface CallImportInsightsResponse {
+  call_import_id: string
+  total_rows: number
+  rows_with_transcript: number
+  rows_without_transcript: number
+  transcript_source_counts: Record<string, number>
+  evaluation_count: number
+  metrics: CallImportInsightsMetric[]
+}
+
+// --- Metrics hierarchy + flow visualization ---
+
+export interface MetricSummary {
+  id: string
+  organization_id: string
+  name: string
+  description: string | null
+  metric_type: string
+  trigger: string
+  enabled: boolean
+  is_default: boolean
+  metric_origin: string
+  supported_surfaces: string[]
+  enabled_surfaces: string[]
+  custom_data_type: string | null
+  custom_config: Record<string, any> | null
+  tags: string[] | null
+  capture_rationale: boolean
+  parent_metric_id: string | null
+  selection_mode: MetricSelectionMode | null
+  allow_discovery?: boolean
+  /**
+   * CSV header names this metric reads from a call import row's
+   * ``raw_columns`` JSON. Empty array (the default) means the metric
+   * scores the transcript like before; a non-empty list switches the
+   * metric to a "column-input judge" at evaluation time.
+   */
+  input_columns?: string[]
+  /**
+   * When true, this metric is a "transcript-compare judge": at
+   * call-import evaluation time the worker feeds BOTH the production
+   * transcript and the diarised transcript to the LLM as a labeled
+   * pair, and the run's transcript_source toggle is ignored for this
+   * metric. Mutually exclusive with input_columns, parent_metric_id
+   * and selection_mode — v1 keeps comparison metrics standalone.
+   */
+  compare_transcripts?: boolean
+  children?: MetricSummary[]
+  created_at: string
+  updated_at: string
+  created_by: string | null
+}
+
+export interface MetricChildDraft {
+  name: string
+  description?: string | null
+  enabled?: boolean
+  capture_rationale?: boolean | null
+  tags?: string[] | null
+}
+
+export interface MetricCreateWithChildrenPayload {
+  name: string
+  description?: string | null
+  selection_mode: MetricSelectionMode
+  enabled?: boolean
+  supported_surfaces?: string[]
+  enabled_surfaces?: string[]
+  tags?: string[] | null
+  allow_discovery?: boolean
+  children: MetricChildDraft[]
+}
+
+export interface MetricFlowNode {
+  id: string
+  label: string
+  count: number
+  is_terminal: boolean
+  is_discovered?: boolean
+}
+
+export interface MetricFlowEdge {
+  source: string
+  target: string
+  count: number
+}
+
+export interface MetricFlowResponse {
+  parent_metric_id: string
+  parent_metric_name: string
+  selection_mode: MetricSelectionMode | null
+  nodes: MetricFlowNode[]
+  edges: MetricFlowEdge[]
+  total_rows: number
+  rows_with_sequence: number
+}
+
+export interface DiscoveredLabel {
+  key: string
+  name: string
+  description?: string | null
+  sample_rationale?: string | null
+  /**
+   * Up to 3 distinct LLM rationales captured for this candidate
+   * across rows. The Discovered Labels promote flow surfaces the
+   * first 2 as an ``Examples:`` block on the new sub-metric's
+   * rubric so the user starts with concrete cases in the prompt.
+   */
+  examples?: string[]
+  count: number
+}
+
+export interface DiscoveredLabelsResponse {
+  parent_metric_id: string
+  items: DiscoveredLabel[]
+}
+
+/**
+ * One LLM-discovered candidate TOP-LEVEL metric aggregated across all
+ * rows of an evaluation. Mirrors :class:`DiscoveredLabel` but adds a
+ * ``suggested_type`` field — the LLM's guess at the best shape for
+ * the new metric — that the promote modal can pre-fill the type radio
+ * with.
+ */
+export interface DiscoveredMetric {
+  key: string
+  name: string
+  description?: string | null
+  suggested_type: 'boolean' | 'rating' | 'category'
+  sample_rationale?: string | null
+  examples?: string[]
+  count: number
+}
+
+export interface DiscoveredMetricsResponse {
+  evaluation_id: string
+  items: DiscoveredMetric[]
 }

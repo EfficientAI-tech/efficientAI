@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from typing import List
 from uuid import UUID
 from app.database import get_db
-from app.dependencies import get_api_key, get_organization_id
+from app.dependencies import get_api_key, get_organization_id, get_workspace_id
 from app.models.database import Evaluation, EvaluationResult, EvaluationStatus
 from app.models.schemas import (
     EvaluationResultResponse,
@@ -23,20 +23,10 @@ def get_evaluation_result(
     evaluation_id: str,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """
-    Get detailed evaluation results.
-
-    Args:
-        evaluation_id: Evaluation ID
-        api_key: Validated API key
-        organization_id: Organization ID from API key
-        db: Database session
-
-    Returns:
-        Detailed evaluation results
-    """
+    """Get detailed evaluation results from the active workspace."""
     try:
         eval_id = UUID(evaluation_id)
     except ValueError:
@@ -44,7 +34,8 @@ def get_evaluation_result(
 
     evaluation = db.query(Evaluation).filter(
         Evaluation.id == eval_id,
-        Evaluation.organization_id == organization_id
+        Evaluation.organization_id == organization_id,
+        Evaluation.workspace_id == workspace_id,
     ).first()
     if not evaluation:
         raise HTTPException(status_code=404, detail="Evaluation not found")
@@ -78,29 +69,19 @@ def get_metrics(
     evaluation_id: str,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """
-    Get metrics breakdown for an evaluation.
-
-    Args:
-        evaluation_id: Evaluation ID
-        api_key: Validated API key
-        organization_id: Organization ID from API key
-        db: Database session
-
-    Returns:
-        Metrics breakdown
-    """
+    """Get metrics breakdown for an evaluation in the active workspace."""
     try:
         eval_id = UUID(evaluation_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid evaluation ID format")
 
-    # Verify evaluation belongs to organization
     evaluation = db.query(Evaluation).filter(
         Evaluation.id == eval_id,
-        Evaluation.organization_id == organization_id
+        Evaluation.organization_id == organization_id,
+        Evaluation.workspace_id == workspace_id,
     ).first()
     if not evaluation:
         raise HTTPException(status_code=404, detail="Evaluation not found")
@@ -121,29 +102,19 @@ def get_transcript(
     evaluation_id: str,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """
-    Get transcription text for an evaluation.
-
-    Args:
-        evaluation_id: Evaluation ID
-        api_key: Validated API key
-        organization_id: Organization ID from API key
-        db: Database session
-
-    Returns:
-        Transcription text
-    """
+    """Get transcription text for an evaluation in the active workspace."""
     try:
         eval_id = UUID(evaluation_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid evaluation ID format")
 
-    # Verify evaluation belongs to organization
     evaluation = db.query(Evaluation).filter(
         Evaluation.id == eval_id,
-        Evaluation.organization_id == organization_id
+        Evaluation.organization_id == organization_id,
+        Evaluation.workspace_id == workspace_id,
     ).first()
     if not evaluation:
         raise HTTPException(status_code=404, detail="Evaluation not found")
@@ -160,20 +131,10 @@ def compare_evaluations(
     comparison_data: ComparisonRequest,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """
-    Compare multiple evaluations.
-
-    Args:
-        comparison_data: Evaluation IDs to compare
-        api_key: Validated API key
-        organization_id: Organization ID from API key
-        db: Database session
-
-    Returns:
-        Comparison results
-    """
+    """Compare multiple evaluations that all live in the active workspace."""
     evaluation_results = []
 
     for eval_id_input in comparison_data.evaluation_ids:
@@ -184,10 +145,10 @@ def compare_evaluations(
         except (ValueError, TypeError):
             continue
 
-        # Verify evaluation belongs to organization
         evaluation = db.query(Evaluation).filter(
             Evaluation.id == eval_id,
-            Evaluation.organization_id == organization_id
+            Evaluation.organization_id == organization_id,
+            Evaluation.workspace_id == workspace_id,
         ).first()
         if not evaluation:
             continue

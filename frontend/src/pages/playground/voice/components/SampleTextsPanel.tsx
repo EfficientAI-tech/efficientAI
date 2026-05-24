@@ -99,7 +99,7 @@ export default function SampleTextsPanel() {
     const q = callImportSearch.toLowerCase()
     return callImportRows.filter(
       (r: any) =>
-        r.external_call_id?.toLowerCase().includes(q) ||
+        r.conversation_id?.toLowerCase().includes(q) ||
         (r.transcript || '').toLowerCase().includes(q) ||
         (r.call_import_filename || '').toLowerCase().includes(q),
     )
@@ -667,7 +667,7 @@ export default function SampleTextsPanel() {
         )}
       </div>
       {showSaveModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-500 bg-opacity-75 p-4">
           <div className="w-full max-w-2xl rounded-xl bg-white shadow-xl">
             <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4">
               <h3 className="text-lg font-semibold text-gray-900">Save to Prompt Partials</h3>
@@ -761,7 +761,7 @@ export default function SampleTextsPanel() {
       )}
 
       {showSaveAllModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-500 bg-opacity-75 p-4">
           <div className="w-full max-w-xl rounded-xl bg-white shadow-xl">
             <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4">
               <h3 className="text-lg font-semibold text-gray-900">Save All to Prompt Partials</h3>
@@ -842,7 +842,7 @@ export default function SampleTextsPanel() {
       )}
 
       {showUseSavedModal && renderModal(
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999] p-4">
+        <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999] p-4">
           <div className="w-full max-w-3xl rounded-xl bg-white shadow-xl max-h-[90vh] overflow-hidden flex flex-col">
             <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4">
               <h3 className="text-lg font-semibold text-gray-900">Use Saved Prompt Partials</h3>
@@ -937,7 +937,7 @@ export default function SampleTextsPanel() {
       )}
 
       {showCallImportsModal && renderModal(
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-[9999] p-4">
+        <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999] p-4">
           <div className="w-full max-w-3xl rounded-xl bg-white shadow-xl max-h-[90vh] overflow-hidden flex flex-col">
             <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4">
               <h3 className="text-lg font-semibold text-gray-900">Pull Transcripts from Call Imports</h3>
@@ -1009,7 +1009,7 @@ export default function SampleTextsPanel() {
                           />
                           <div className="min-w-0 flex-1">
                             <p className="truncate text-sm font-semibold text-gray-900">
-                              {row.external_call_id || row.id}
+                              {row.conversation_id || row.id}
                             </p>
                             {hasTranscript ? (
                               <p className="mt-1 line-clamp-2 text-xs text-gray-600">

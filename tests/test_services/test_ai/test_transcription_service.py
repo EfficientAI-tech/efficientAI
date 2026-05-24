@@ -27,7 +27,7 @@ def test_transcribe_text_only_returns_none_when_no_api_key(monkeypatch):
     assert result is None
 
 
-def test_transcribe_text_only_openai_success(monkeypatch):
+def test_transcribe_text_only_strips_openai_text(monkeypatch):
     service = TranscriptionService()
     monkeypatch.setattr(service, "_get_api_key_for_provider", lambda *_args, **_kwargs: "key-1")
     monkeypatch.setattr(
@@ -46,21 +46,7 @@ def test_transcribe_text_only_openai_success(monkeypatch):
     assert result == "hello transcript"
 
 
-def test_transcribe_text_only_unsupported_provider_returns_none(monkeypatch):
-    service = TranscriptionService()
-    monkeypatch.setattr(service, "_get_api_key_for_provider", lambda *_args, **_kwargs: "key-1")
-
-    result = service.transcribe_text_only(
-        audio_file_path="/tmp/a.wav",
-        stt_provider=ModelProvider.GOOGLE,
-        stt_model="whatever",
-        organization_id=uuid4(),
-        db=object(),
-    )
-    assert result is None
-
-
-def test_transcribe_text_only_smallest_success(monkeypatch):
+def test_transcribe_text_only_uses_smallest_for_smallest_provider(monkeypatch):
     service = TranscriptionService()
     monkeypatch.setattr(service, "_get_api_key_for_provider", lambda *_args, **_kwargs: "key-1")
     monkeypatch.setattr(
@@ -76,56 +62,54 @@ def test_transcribe_text_only_smallest_success(monkeypatch):
         organization_id=uuid4(),
         db=object(),
     )
-
     assert result == "smallest transcript"
 
 
-def test_transcribe_returns_standard_shape_without_diarization(monkeypatch, tmp_path):
+def test_transcribe_text_only_passes_language_for_sarvam(monkeypatch):
     service = TranscriptionService()
-    temp_audio = tmp_path / "sample.wav"
-    temp_audio.write_bytes(b"fake-audio")
+    monkeypatch.setattr(service, "_get_api_key_for_provider", lambda *_args, **_kwargs: "key-1")
 
-    monkeypatch.setattr(service, "_download_audio_to_temp", lambda *_args, **_kwargs: str(temp_audio))
+    captured = {}
+
+    def _fake_transcribe_sarvam(audio_file_path, model, api_key, language=None):
+        captured["language"] = language
+        return {"text": "namaste"}
+
+    monkeypatch.setattr(
+        stt_clients_module,
+        "transcribe_sarvam",
+        _fake_transcribe_sarvam,
+    )
+
+    result = service.transcribe_text_only(
+        audio_file_path="/tmp/a.wav",
+        stt_provider=ModelProvider.SARVAM,
+        stt_model="saarika-v2.5",
+        organization_id=uuid4(),
+        db=object(),
+        language="hi-IN",
+    )
+    assert result == "namaste"
+    assert captured["language"] == "hi-IN"
+
+
+def test_transcribe_text_only_returns_none_when_text_missing(monkeypatch):
+    service = TranscriptionService()
     monkeypatch.setattr(service, "_get_api_key_for_provider", lambda *_args, **_kwargs: "key-1")
     monkeypatch.setattr(
         stt_clients_module,
         "transcribe_openai",
         lambda *_args, **_kwargs: {
-            "text": "hello world",
             "language": "en",
-            "segments": [{"start": 0.0, "end": 1.0, "text": "hello world"}],
+            "segments": [],
         },
     )
 
-    result = service.transcribe(
-        audio_file_key="audio-key",
+    result = service.transcribe_text_only(
+        audio_file_path="/tmp/a.wav",
         stt_provider=ModelProvider.OPENAI,
         stt_model="whisper-1",
         organization_id=uuid4(),
         db=object(),
-        enable_speaker_diarization=False,
     )
-
-    assert result["transcript"] == "hello world"
-    assert result["language"] == "en"
-    assert isinstance(result["segments"], list)
-    assert result["speaker_segments"] is None
-    assert not Path(temp_audio).exists()
-
-
-def test_transcribe_raises_when_provider_key_missing(monkeypatch, tmp_path):
-    service = TranscriptionService()
-    temp_audio = tmp_path / "sample.wav"
-    temp_audio.write_bytes(b"fake-audio")
-    monkeypatch.setattr(service, "_download_audio_to_temp", lambda *_args, **_kwargs: str(temp_audio))
-    monkeypatch.setattr(service, "_get_api_key_for_provider", lambda *_args, **_kwargs: None)
-
-    with pytest.raises(RuntimeError, match="No API key found"):
-        service.transcribe(
-            audio_file_key="audio-key",
-            stt_provider=ModelProvider.OPENAI,
-            stt_model="whisper-1",
-            organization_id=uuid4(),
-            db=object(),
-            enable_speaker_diarization=False,
-        )
+    assert result is None

@@ -414,36 +414,25 @@ class TestAgentBridgeService:
             if not persona or not scenario:
                 raise ValueError("Persona or scenario not found")
 
-            # Helper function to resolve API key (same logic as voice_agent.py + env fallback)
-            def resolve_api_key_for_provider(provider: ModelProvider) -> str | None:
+            # Helper to resolve API key for a provider, honoring an optional
+            # explicit credential row pinned in the voice bundle. Selection
+            # precedence: explicit credential_id -> default row -> active row
+            # -> environment variable fallback.
+            from app.services.credentials import (
+                resolve_ai_provider as _resolve_ai_provider,
+                resolve_integration as _resolve_voice_integration,
+            )
+
+            def resolve_api_key_for_provider(
+                provider: ModelProvider,
+                credential_id: Optional[UUID] = None,
+            ) -> str | None:
                 """Resolve API key from AIProvider (preferred), Integration, or environment."""
                 import os
-                from sqlalchemy import func
 
-                # 1) Check AIProvider table first
-                provider_value = provider.value if hasattr(provider, "value") else provider
-
-                ai_provider_rec = (
-                    db.query(AIProvider)
-                    .filter(
-                        AIProvider.organization_id == organization_id,
-                        AIProvider.provider == provider_value,
-                        AIProvider.is_active == True,
-                    )
-                    .first()
+                ai_provider_rec = _resolve_ai_provider(
+                    provider, db, organization_id, credential_id=credential_id
                 )
-
-                # If not found, try case-insensitive match
-                if not ai_provider_rec:
-                    ai_provider_rec = (
-                        db.query(AIProvider)
-                        .filter(
-                            AIProvider.organization_id == organization_id,
-                            func.lower(AIProvider.provider) == provider_value.lower(),
-                            AIProvider.is_active == True,
-                        )
-                        .first()
-                    )
                 if ai_provider_rec:
                     try:
                         key = decrypt_api_key(ai_provider_rec.api_key)
@@ -454,7 +443,6 @@ class TestAgentBridgeService:
                     except Exception as e:
                         logger.error(f"[Bridge WebRTC] Failed to decrypt AIProvider key for {provider}: {e}")
 
-                # 2) Check Integration table
                 platform_map = {
                     ModelProvider.DEEPGRAM: IntegrationPlatform.DEEPGRAM,
                     ModelProvider.CARTESIA: IntegrationPlatform.CARTESIA,
@@ -463,28 +451,9 @@ class TestAgentBridgeService:
                 }
                 plat = platform_map.get(provider)
                 if plat:
-                    plat_value = plat.value if hasattr(plat, "value") else plat
-                    integ = (
-                        db.query(Integration)
-                        .filter(
-                            Integration.organization_id == organization_id,
-                            Integration.platform == plat_value,
-                            Integration.is_active == True,
-                        )
-                        .first()
+                    integ = _resolve_voice_integration(
+                        plat, db, organization_id, credential_id=credential_id
                     )
-
-                    # If not found, try case-insensitive match
-                    if not integ:
-                        integ = (
-                            db.query(Integration)
-                            .filter(
-                                Integration.organization_id == organization_id,
-                                func.lower(Integration.platform) == plat_value.lower(),
-                                Integration.is_active == True,
-                            )
-                            .first()
-                        )
                     if integ:
                         try:
                             key = decrypt_api_key(integ.api_key)
@@ -495,7 +464,6 @@ class TestAgentBridgeService:
                         except Exception as e:
                             logger.error(f"[Bridge WebRTC] Failed to decrypt Integration key for {provider}: {e}")
 
-                # 3) Fallback to environment variables
                 env_map = {
                     ModelProvider.OPENAI: "OPENAI_API_KEY",
                     ModelProvider.CARTESIA: "CARTESIA_API_KEY",
@@ -549,8 +517,15 @@ class TestAgentBridgeService:
                 )
 
             logger.info(f"[Bridge WebRTC] Resolving API keys for test agent (org: {organization_id}, tts_provider={tts_provider_str})")
-            llm_api_key = resolve_api_key_for_provider(ModelProvider.OPENAI)
-            tts_api_key = resolve_api_key_for_provider(tts_model_provider)
+            # Honor per-leg credential pins on the voice bundle when present.
+            llm_credential_id = getattr(voice_bundle, "llm_credential_id", None) if voice_bundle else None
+            tts_credential_id = getattr(voice_bundle, "tts_credential_id", None) if voice_bundle else None
+            llm_api_key = resolve_api_key_for_provider(
+                ModelProvider.OPENAI, credential_id=llm_credential_id
+            )
+            tts_api_key = resolve_api_key_for_provider(
+                tts_model_provider, credential_id=tts_credential_id
+            )
 
             logger.info(f"[Bridge WebRTC] API keys found: OpenAI={'yes' if llm_api_key else 'no'}, {tts_provider_str}={'yes' if tts_api_key else 'no'}")
 

@@ -593,7 +593,7 @@ export default function PromptPartials() {
 
       {/* Delete Confirmation */}
       {showDeleteConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-500 bg-opacity-75">
           <div className="bg-white rounded-xl shadow-xl p-6 max-w-sm w-full mx-4">
             <h3 className="text-lg font-semibold text-gray-900 mb-2">Delete Prompt Partial</h3>
             <p className="text-sm text-gray-500 mb-6">
@@ -718,7 +718,7 @@ function PromptPartialModal({
   const isPending = createMutation.isPending || updateMutation.isPending
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-500 bg-opacity-75">
       <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl mx-4 max-h-[90vh] flex flex-col">
         {/* Modal Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
@@ -1020,7 +1020,7 @@ function AIGenerateModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-500 bg-opacity-75">
       <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl mx-4 max-h-[90vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">

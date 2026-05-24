@@ -1,15 +1,18 @@
 {
   "whisper-1": {
     "provider": "openai",
-    "model_type": "stt"
+    "model_type": "stt",
+    "description": "Original Whisper transcription API (verbose_json + word/segment timestamps)"
   },
   "gpt-4o-transcribe": {
     "provider": "openai",
-    "model_type": "stt"
+    "model_type": "stt",
+    "description": "GPT-4o speech-to-text; higher accuracy, no granular word timestamps"
   },
   "gpt-4o-mini-transcribe": {
     "provider": "openai",
-    "model_type": "stt"
+    "model_type": "stt",
+    "description": "Cheaper / faster GPT-4o transcription; no granular word timestamps"
   },
   "gpt-4.1": {
     "provider": "openai",
@@ -131,6 +134,21 @@
   "google-speech-v2": {
     "provider": "google",
     "model_type": "stt"
+  },
+  "gemini-2.5-pro-stt": {
+    "provider": "google",
+    "model_type": "stt",
+    "description": "Gemini 2.5 Pro used for audio transcription via LiteLLM proxy (audio input -> text)"
+  },
+  "gemini-2.5-flash-stt": {
+    "provider": "google",
+    "model_type": "stt",
+    "description": "Gemini 2.5 Flash used for audio transcription via LiteLLM proxy (fast, cost-efficient)"
+  },
+  "gemini-2.5-flash-lite-stt": {
+    "provider": "google",
+    "model_type": "stt",
+    "description": "Gemini 2.5 Flash Lite used for audio transcription via LiteLLM proxy (lowest cost)"
   },
   "gemini-2.0-flash": {
     "provider": "google",
@@ -364,10 +382,10 @@
     "model_type": "stt",
     "description": "State-of-the-art highly accurate Indian language STT"
   },
-  "saaras:v1": {
+  "saaras:v3": {
     "provider": "sarvam",
     "model_type": "stt",
-    "description": "Highly accurate Indian language STT with Translate"
+    "description": "State-of-the-art Sarvam STT model with transcribe/translate modes"
   },
   "bulbul:v3": {
     "provider": "sarvam",

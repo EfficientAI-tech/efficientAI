@@ -40,6 +40,21 @@ def run_prompt_optimization_task(self, optimization_run_id: str):
             logger.error(f"[GEPA] Optimization run {optimization_run_id} not found")
             return
 
+        # Judge-alignment optimisation runs are dispatched here too so they
+        # share the same status/candidate UI, but they have a different
+        # execution path (judge prompt rather than agent prompt).
+        if isinstance(run.config, dict) and run.config.get("source") == "judge_alignment":
+            from app.services.judge_alignment.gepa_bridge import execute_judge_gepa
+            try:
+                return execute_judge_gepa(str(run.id), db)
+            except Exception as exc:
+                logger.error(
+                    f"[GEPA][JudgeAlignment] Run {run.id} failed: {exc}",
+                    exc_info=True,
+                )
+                _fail_run(db, run, str(exc))
+                return
+
         run.status = PromptOptimizationStatus.RUNNING.value
         db.commit()
 
@@ -114,6 +129,7 @@ def run_prompt_optimization_task(self, optimization_run_id: str):
         for i, cand in enumerate(result.get("candidates", [])):
             db.add(PromptOptimizationCandidate(
                 optimization_run_id=run.id,
+                workspace_id=run.workspace_id,
                 prompt_text=cand["prompt_text"],
                 score=cand.get("score"),
                 reflection_summary=cand.get("reflection_summary"),

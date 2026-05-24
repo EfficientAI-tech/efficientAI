@@ -111,6 +111,7 @@ class TelephonyProvider(str, enum.Enum):
 class ModelProvider(str, enum.Enum):
     """Model provider enumeration for extensibility."""
     OPENAI = "openai"
+    OPENROUTER = "openrouter"
     ANTHROPIC = "anthropic"
     GOOGLE = "google"
     XAI = "xai"
@@ -145,10 +146,16 @@ class TestAgentConversationStatus(str, enum.Enum):
     CANCELLED = "cancelled"
 
 class MetricType(str, enum.Enum):
-    """Metric type enumeration."""
+    """Metric type enumeration.
+
+    ``TEXT`` is for free-form LLM-generated text (summaries, classifications,
+    explanations) where the value is a string rather than a number/boolean.
+    Text metrics are *not* aggregated in numeric dashboards.
+    """
     NUMBER = "number"
     BOOLEAN = "boolean"
     RATING = "rating"
+    TEXT = "text"
 
 class MetricTrigger(str, enum.Enum):
     """Metric trigger enumeration."""
@@ -228,8 +235,24 @@ class PromptOptimizationStatus(str, enum.Enum):
 
 
 class CallImportStatus(str, enum.Enum):
-    """Status of a CSV-driven call import batch."""
+    """Status of a CSV-driven call import batch.
+
+    The lifecycle is now split into three independent stages so the
+    upload, mapping, and import are each idempotent on their own:
+
+      ``uploaded``   -> source file landed in S3, no mapping yet.
+      ``mapped``     -> user picked a schema + sheet + column mapping;
+                        no rows materialised yet, no worker enqueued.
+      ``processing`` -> rows materialised + workers enqueued (today's
+                        post-upload state).
+
+    ``pending`` is kept for backward compatibility with the legacy
+    one-shot ``POST /upload`` endpoint which still flips through it
+    momentarily before transitioning to ``processing``.
+    """
     PENDING = "pending"
+    UPLOADED = "uploaded"
+    MAPPED = "mapped"
     PROCESSING = "processing"
     COMPLETED = "completed"
     PARTIAL = "partial"
@@ -242,3 +265,23 @@ class CallImportRowStatus(str, enum.Enum):
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+class CallImportParameterType(str, enum.Enum):
+    """Allowed types for a :class:`CallImportSchemaParameter`.
+
+    The first three values feed dedicated columns on
+    :class:`CallImportRow` (``conversation_id``, ``recording_url``,
+    ``transcript``); the rest are generic typed text fields whose values
+    are preserved per row in ``raw_columns`` and surfaced under the
+    parameter name in the evaluation export.
+    """
+
+    CONVERSATION_ID = "conversation_id"
+    RECORDING_URL = "recording_url"
+    TRANSCRIPT = "transcript"
+    TEXT = "text"
+    NUMBER = "number"
+    BOOLEAN = "boolean"
+    DATETIME = "datetime"
+    URL = "url"

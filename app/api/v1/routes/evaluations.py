@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from typing import List
 from uuid import UUID
 from app.database import get_db
-from app.dependencies import get_api_key, get_organization_id
+from app.dependencies import get_api_key, get_organization_id, get_workspace_id
 from app.models.database import Evaluation, EvaluationStatus
 from app.models.schemas import (
     EvaluationCreate,
@@ -24,21 +24,14 @@ def create_evaluation(
     evaluation_data: EvaluationCreate,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """
-    Create a new evaluation job.
+    """Create a new evaluation job stamped with the active workspace.
 
-    Args:
-        evaluation_data: Evaluation creation data
-        api_key: Validated API key
-        organization_id: Organization ID from API key
-        db: Database session
-
-    Returns:
-        Created evaluation
+    Audio files are organization-scoped so the only workspace check here
+    is on the evaluation record itself.
     """
-    # Verify audio file exists and belongs to organization
     from app.models.database import AudioFile
 
     audio_file = db.query(AudioFile).filter(
@@ -48,9 +41,9 @@ def create_evaluation(
     if not audio_file:
         raise HTTPException(status_code=404, detail="Audio file not found")
 
-    # Create evaluation record
     evaluation = Evaluation(
         organization_id=organization_id,
+        workspace_id=workspace_id,
         audio_id=evaluation_data.audio_id,
         reference_text=evaluation_data.reference_text,
         evaluation_type=evaluation_data.evaluation_type,
@@ -73,20 +66,10 @@ def get_evaluation(
     evaluation_id: str,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """
-    Get evaluation details.
-
-    Args:
-        evaluation_id: Evaluation ID
-        api_key: Validated API key
-        organization_id: Organization ID from API key
-        db: Database session
-
-    Returns:
-        Evaluation details
-    """
+    """Get evaluation details from the active workspace."""
     try:
         eval_id = UUID(evaluation_id)
     except ValueError:
@@ -94,7 +77,8 @@ def get_evaluation(
 
     evaluation = db.query(Evaluation).filter(
         Evaluation.id == eval_id,
-        Evaluation.organization_id == organization_id
+        Evaluation.organization_id == organization_id,
+        Evaluation.workspace_id == workspace_id,
     ).first()
     if not evaluation:
         raise HTTPException(status_code=404, detail="Evaluation not found")
@@ -109,23 +93,14 @@ def list_evaluations(
     status: EvaluationStatus = None,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """
-    List evaluations (paginated, optionally filtered by status) for the organization.
-
-    Args:
-        skip: Number of records to skip
-        limit: Maximum number of records to return
-        status: Optional status filter
-        api_key: Validated API key
-        organization_id: Organization ID from API key
-        db: Database session
-
-    Returns:
-        List of evaluations
-    """
-    query = db.query(Evaluation).filter(Evaluation.organization_id == organization_id)
+    """List evaluations in the active workspace, optionally filtered by status."""
+    query = db.query(Evaluation).filter(
+        Evaluation.organization_id == organization_id,
+        Evaluation.workspace_id == workspace_id,
+    )
     if status:
         query = query.filter(Evaluation.status == status)
 
@@ -138,20 +113,10 @@ def cancel_evaluation(
     evaluation_id: str,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """
-    Cancel a pending evaluation.
-
-    Args:
-        evaluation_id: Evaluation ID
-        api_key: Validated API key
-        organization_id: Organization ID from API key
-        db: Database session
-
-    Returns:
-        Success message
-    """
+    """Cancel a pending evaluation in the active workspace."""
     try:
         eval_id = UUID(evaluation_id)
     except ValueError:
@@ -159,7 +124,8 @@ def cancel_evaluation(
 
     evaluation = db.query(Evaluation).filter(
         Evaluation.id == eval_id,
-        Evaluation.organization_id == organization_id
+        Evaluation.organization_id == organization_id,
+        Evaluation.workspace_id == workspace_id,
     ).first()
     if not evaluation:
         raise HTTPException(status_code=404, detail="Evaluation not found")
@@ -180,20 +146,10 @@ def delete_evaluation(
     evaluation_id: str,
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ):
-    """
-    Delete an evaluation.
-
-    Args:
-        evaluation_id: Evaluation ID
-        api_key: Validated API key
-        organization_id: Organization ID from API key
-        db: Database session
-
-    Returns:
-        Success message
-    """
+    """Delete an evaluation in the active workspace."""
     try:
         eval_id = UUID(evaluation_id)
     except ValueError:
@@ -201,7 +157,8 @@ def delete_evaluation(
 
     evaluation = db.query(Evaluation).filter(
         Evaluation.id == eval_id,
-        Evaluation.organization_id == organization_id
+        Evaluation.organization_id == organization_id,
+        Evaluation.workspace_id == workspace_id,
     ).first()
     if not evaluation:
         raise HTTPException(status_code=404, detail="Evaluation not found")

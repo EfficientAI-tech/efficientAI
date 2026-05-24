@@ -1,6 +1,22 @@
 """SQLAlchemy database models."""
 
-from sqlalchemy import Column, String, Integer, Float, DateTime, ForeignKey, Boolean, JSON, Enum, UniqueConstraint, Text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    DDL,
+    Enum,
+    event,
+    Float,
+    ForeignKey,
+    Integer,
+    JSON,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -33,6 +49,10 @@ class Organization(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(255), nullable=False)
     voice_playground_threshold_overrides = Column(JSON, nullable=True)
+    # AlignEval-style judge alignment thresholds.
+    # Shape: {"min_labels_to_evaluate": int, "min_labels_to_optimize": int}
+    # Falls back to system defaults (20 / 50) when null.
+    judge_alignment_settings = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -40,6 +60,79 @@ class Organization(Base):
     api_keys = relationship("APIKey", back_populates="organization")
     members = relationship("OrganizationMember", back_populates="organization", cascade="all, delete-orphan")
     invitations = relationship("Invitation", back_populates="organization", cascade="all, delete-orphan")
+    workspaces = relationship(
+        "Workspace",
+        back_populates="organization",
+        cascade="all, delete-orphan",
+    )
+
+
+class Workspace(Base):
+    """Workspace - in-org isolation boundary for call imports and metrics.
+
+    Every organization has at least one workspace (``is_default = True``,
+    seeded by migration 033). Users pick an "active workspace" in the UI;
+    list endpoints filter by it so users only see calls/metrics from the
+    project they're currently working in. There's no per-workspace ACL in
+    v1 - every org member can switch into any of their org's workspaces.
+    """
+
+    __tablename__ = "workspaces"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "slug", name="uq_workspaces_org_slug"),
+    )
+
+    # ``server_default`` is required so that raw-SQL INSERTs (e.g. the
+    # per-org Default seed in migration 033) can omit ``id`` and let the
+    # database fill it in. Without it, ``create_all`` produces a column
+    # with NOT NULL but no DEFAULT, and the migration crashes with
+    # ``null value in column "id"``.
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    name = Column(String(255), nullable=False)
+    slug = Column(String(255), nullable=False)
+    # At most one default per org. Enforced on Postgres by the partial
+    # unique index attached via the after_create event below; on
+    # SQLite (test runs) we rely on the route-level _check_slug_unique
+    # check + the Default-workspace conftest fixture instead, because
+    # SQLite doesn't support partial indexes the same way.
+    is_default = Column(Boolean, nullable=False, default=False, server_default="false")
+    created_by_user_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    organization = relationship("Organization", back_populates="workspaces")
+
+
+# Partial unique index: "at most one default workspace per org". This
+# is attached as an after_create event (rather than declared in
+# ``__table_args__``) because SQLAlchemy's ``Index(...,
+# postgresql_where=...)`` silently degrades to a *full* unique index on
+# SQLite - which then forbids any second workspace per org and breaks
+# the test suite. ``execute_if(dialect="postgresql")`` makes this DDL
+# a no-op on SQLite while still emitting it on Postgres (prod, CI).
+event.listen(
+    Workspace.__table__,
+    "after_create",
+    DDL(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_workspaces_org_default "
+        "ON workspaces (organization_id) WHERE is_default"
+    ).execute_if(dialect="postgresql"),
+)
 
 
 class User(Base):
@@ -165,6 +258,15 @@ class Evaluation(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    # Workspace isolation: every legacy audio evaluation belongs to a
+    # workspace within its org. Stamped from the X-Workspace-Id header
+    # (falling back to the org's Default workspace).
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     audio_id = Column(UUID(as_uuid=True), ForeignKey("audio_files.id"), nullable=False)
     reference_text = Column(String, nullable=True)  # For WER calculation
     evaluation_type = Column(String, nullable=False)
@@ -191,6 +293,14 @@ class EvaluationResult(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     evaluation_id = Column(UUID(as_uuid=True), ForeignKey("evaluations.id"), nullable=False, unique=True)
+    # Workspace isolation: mirrors the parent Evaluation's workspace.
+    # Denormalized for fast filter-by-workspace listings without a join.
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     transcript = Column(String, nullable=True)
     metrics = Column(JSON, nullable=False)  # {"wer": 0.05, "latency_ms": 1250, ...}
     raw_output = Column(JSON, nullable=True)  # Full model output
@@ -216,6 +326,15 @@ class Agent(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     agent_id = Column(String(6), unique=True, nullable=True, index=True)  # 6-digit ID
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    # Workspace isolation: every agent belongs to a workspace within its
+    # org. Stamped from the X-Workspace-Id header (falling back to the
+    # org's Default workspace).
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     name = Column(String, nullable=False)
     phone_number = Column(String, nullable=True)  # Optional, required only for phone_call
     language = Column(String, nullable=False, default=LanguageEnum.ENGLISH.value)
@@ -253,6 +372,15 @@ class Persona(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    # Workspace isolation: every persona belongs to a workspace within
+    # its org. Stamped from the X-Workspace-Id header (falling back to
+    # the org's Default workspace).
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     name = Column(String, nullable=False)
     gender = Column(String, nullable=False, default=GenderEnum.NEUTRAL.value)
     tts_provider = Column(String(100), nullable=True)
@@ -271,6 +399,15 @@ class Scenario(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    # Workspace isolation: every scenario belongs to a workspace within
+    # its org. Stamped from the X-Workspace-Id header (falling back to
+    # the org's Default workspace).
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id", ondelete="SET NULL"), nullable=True, index=True)
     name = Column(String, nullable=False)
     description = Column(String)
@@ -298,6 +435,11 @@ class Integration(Base):
     api_key = Column(String, nullable=False)  # Encrypted Private API key for the platform
     public_key = Column(String, nullable=True)  # Optional Public API key (e.g. for Vapi)
     is_active = Column(Boolean, default=True, nullable=False)
+    # Multiple credentials per (org, platform) are allowed. is_default marks
+    # the row used when a caller does not explicitly select a credential.
+    # A partial unique index in migration 028 enforces at most one default
+    # per (org, platform) at the DB level.
+    is_default = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     last_tested_at = Column(DateTime(timezone=True), nullable=True)  # When API key was last validated
@@ -365,14 +507,13 @@ class AIProvider(Base):
     api_key = Column(String, nullable=False)  # Encrypted API key
     name = Column(String, nullable=True)  # Optional friendly name
     is_active = Column(Boolean, default=True, nullable=False)
+    # Multiple AIProvider rows per (org, provider) are allowed. is_default
+    # marks the row resolved when no explicit credential id is selected.
+    # A partial unique index in migration 028 enforces at most one default.
+    is_default = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     last_tested_at = Column(DateTime(timezone=True), nullable=True)  # When API key was last validated
-    
-    # Unique constraint: one active provider per organization
-    __table_args__ = (
-        UniqueConstraint('organization_id', 'provider', name='unique_org_provider'),
-    )
 
 
 # Enums moved to enums.py
@@ -394,11 +535,16 @@ class VoiceBundle(Base):
     
     # STT Configuration (references AIProvider via provider name) - required for STT_LLM_TTS, optional for S2S
     stt_provider = Column(String, nullable=True)
+    # Optional explicit credential row (aiproviders.id or integrations.id).
+    # When NULL the credential resolver picks the default row for the
+    # provider. No FK is set because the target table varies by provider.
+    stt_credential_id = Column(UUID(as_uuid=True), nullable=True)
 
     stt_model = Column(String, nullable=True)  # e.g., "whisper-1", "google-speech-v2"
     
     # LLM Configuration (references AIProvider via provider name) - required for STT_LLM_TTS, optional for S2S
     llm_provider = Column(String, nullable=True)
+    llm_credential_id = Column(UUID(as_uuid=True), nullable=True)
 
     llm_model = Column(String, nullable=True)  # e.g., "gpt-4", "claude-3-opus"
     llm_temperature = Column(Float, nullable=True, default=0.7)
@@ -407,6 +553,7 @@ class VoiceBundle(Base):
     
     # TTS Configuration (references AIProvider via provider name) - required for STT_LLM_TTS, optional for S2S
     tts_provider = Column(String, nullable=True)
+    tts_credential_id = Column(UUID(as_uuid=True), nullable=True)
 
     tts_model = Column(String, nullable=True)  # e.g., "tts-1", "neural-voice"
     tts_voice = Column(String, nullable=True)  # Voice selection if applicable
@@ -414,6 +561,7 @@ class VoiceBundle(Base):
     
     # S2S Configuration - required for S2S type, optional for STT_LLM_TTS
     s2s_provider = Column(String, nullable=True)
+    s2s_credential_id = Column(UUID(as_uuid=True), nullable=True)
 
 
 
@@ -438,6 +586,15 @@ class TestAgentConversation(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    # Workspace isolation: every playground conversation belongs to a
+    # workspace within its org. Stamped from the X-Workspace-Id header
+    # (falling back to the org's Default workspace).
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     
     # Configuration
     agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False)
@@ -474,6 +631,15 @@ class Evaluator(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     evaluator_id = Column(String(6), unique=True, nullable=False, index=True)  # 6-digit ID
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    # Workspace isolation: every evaluator belongs to a workspace within
+    # its org. Stamped from the X-Workspace-Id header (falling back to
+    # the org's Default workspace).
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     
     # Display name (required for custom evaluators, optional for standard)
     name = Column(String, nullable=True)
@@ -503,16 +669,41 @@ class Evaluator(Base):
 
 
 class Metric(Base):
-    """Metric - Configuration for evaluation metrics."""
+    """Metric - Configuration for evaluation metrics.
+
+    Supports a 2-level hierarchy via ``parent_metric_id``: a "category"
+    parent metric (e.g. "Call Outcome") owns N child sub-metric labels
+    (e.g. "happy_completion", "angry_hangup"). ``selection_mode`` is set
+    only on parents and controls how the LLM scores children together
+    (``single_choice`` = pick exactly one; ``multi_label`` = independent
+    yes/no with logical consistency). Children are always boolean.
+    """
     __tablename__ = "metrics"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
-    
+    # Workspace isolation: every metric belongs to exactly one workspace
+    # within its org. Children inherit their parent's workspace_id (the
+    # promote/add-child endpoints enforce this).
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+
     # Basic information
     name = Column(String, nullable=False)
     description = Column(String, nullable=True)
-    
+    # Free-form illustrative example used to sharpen the LLM judge's
+    # rubric. Today this is consumed by child sub-labels of a
+    # categorization parent metric so each label can carry "what does
+    # this look like in a transcript?" text alongside the rubric in
+    # ``description``. The column lives on every Metric row for
+    # forward-compat: a standalone metric could later surface its own
+    # example without another migration.
+    example = Column(Text, nullable=True)
+
     # Configuration
     metric_type = Column(String, nullable=False, default=MetricType.RATING.value)
     trigger = Column(String, nullable=False, default=MetricTrigger.ALWAYS.value)
@@ -523,6 +714,77 @@ class Metric(Base):
     custom_config = Column(JSON, nullable=True)  # enum options / number range config
     tags = Column(JSON, nullable=True)  # ["tone", "latency", ...]
 
+    # Hierarchy: NULL = standalone or parent. When set, this row is a
+    # child sub-metric of the referenced parent. ON DELETE CASCADE so
+    # deleting a category removes its children atomically.
+    parent_metric_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("metrics.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    # Set only on parent rows (``parent_metric_id IS NULL``). Either
+    # ``single_choice`` or ``multi_label``. NULL = legacy / non-hierarchical
+    # metric (no children).
+    selection_mode = Column(String(20), nullable=True)
+
+    # When true on a parent metric (any selection_mode), the LLM is
+    # invited during call-import evaluation to emit additional
+    # candidate sub-labels beyond the user-defined children. The
+    # candidates surface in a "Discovered labels" panel where the user
+    # manually promotes them into real child Metric rows. For
+    # ``single_choice`` parents the discovered entries are
+    # supplemental — the chosen child is still picked from the
+    # predefined children so the exactly-one-true invariant holds.
+    # The validator rejects this flag on standalone / child metrics.
+    allow_discovery = Column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+
+    # When non-empty, this metric is a "column-input judge": the
+    # call-import evaluator looks up each entry in
+    # ``call_import_rows.raw_columns`` for each row and feeds the
+    # values to the LLM as "Context inputs" instead of the transcript.
+    # Each entry is either a verbatim CSV header (from the import's
+    # ``extra_columns``) or a friendly name the uploader gave a column
+    # via ``CallImport.custom_column_mapping`` — the worker resolves
+    # both via ``_resolve_column_value`` so a metric storing
+    # ``customer_intent`` keeps working across imports that map that
+    # name to different underlying CSV headers.
+    # Empty list = today's behavior (transcript-based judge).
+    input_columns = Column(
+        JSON, nullable=False, default=list, server_default="[]"
+    )
+
+    # When True, this metric is a "transcript-compare judge": the
+    # call-import evaluator feeds BOTH the production transcript
+    # (``call_import_rows.transcript``, CSV-supplied) and the diarised
+    # transcript (``call_import_rows.diarised_transcript``, worker-
+    # produced by the STT/diarisation pipeline) to the LLM as a
+    # labeled pair instead of feeding one transcript. The parent
+    # evaluation's ``CallImportEvaluation.transcript_source`` is
+    # ignored for these metrics — they always read both columns.
+    # Rows where either transcript is missing are skipped per-metric
+    # with ``skipped="comparison_missing_transcript"`` so the rest of
+    # the row's metrics still produce scores. v1 keeps these metrics
+    # standalone: the Pydantic validator rejects ``compare_transcripts``
+    # combined with ``input_columns``, ``parent_metric_id`` or
+    # ``selection_mode`` (i.e. they can't simultaneously be a
+    # column-input judge or part of a parent/child hierarchy).
+    compare_transcripts = Column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+
+    parent = relationship(
+        "Metric",
+        remote_side=[id],
+        backref="children",
+    )
+
+    # When true, the LLM-judge is asked to also return a short free-form
+    # rationale alongside the value (stored under ``metric_scores[id].rationale``).
+    # Adds a second "<Name> - LLM Rationale" column in the call-import CSV export.
+    capture_rationale = Column(Boolean, nullable=False, default=False)
 
     enabled = Column(Boolean, nullable=False, default=True)
     
@@ -540,6 +802,15 @@ class EvaluatorResult(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     result_id = Column(String(6), unique=True, nullable=False, index=True)  # 6-digit ID
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    # Workspace isolation: every evaluator result belongs to a workspace
+    # within its org. Stamped from the active workspace at creation time
+    # (either the X-Workspace-Id header or the org's Default workspace).
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     
     # References
     evaluator_id = Column(UUID(as_uuid=True), ForeignKey("evaluators.id"), nullable=True, index=True)  # Optional - can be None for test calls without persona/scenario
@@ -596,6 +867,16 @@ class CallRecording(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    # Workspace isolation: every recording belongs to a workspace within
+    # its org. For playground-origin rows this is stamped from the active
+    # workspace at creation time; for webhook-origin rows the worker
+    # looks up the recording's agent and inherits its workspace_id.
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     call_short_id = Column(String(6), unique=True, nullable=False, index=True)  # 6-digit ID
     status = Column(Enum(CallRecordingStatus), nullable=False, default=CallRecordingStatus.PENDING, index=True)
     call_event = Column(String, nullable=True, index=True)  # Latest webhook event (e.g., call_started, call_ended)
@@ -748,6 +1029,15 @@ class TTSComparison(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    # Workspace isolation: every voice playground comparison belongs to
+    # a workspace within its org. Children (samples, report jobs, blind
+    # test shares) inherit this workspace_id.
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     simulation_id = Column(String(6), unique=True, index=True, nullable=True)
 
     name = Column(String(255), nullable=True)
@@ -792,6 +1082,14 @@ class TTSSample(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     comparison_id = Column(UUID(as_uuid=True), ForeignKey("tts_comparisons.id", ondelete="CASCADE"), nullable=False, index=True)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    # Workspace isolation: mirrors the parent TTSComparison's workspace.
+    # Denormalized for fast filter-by-workspace listings without a join.
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
 
     provider = Column(String(100), nullable=True)
     model = Column(String(100), nullable=True)
@@ -833,6 +1131,13 @@ class TTSReportJob(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    # Workspace isolation: mirrors the parent TTSComparison's workspace.
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     comparison_id = Column(UUID(as_uuid=True), ForeignKey("tts_comparisons.id", ondelete="CASCADE"), nullable=False, index=True)
 
     status = Column(String(50), nullable=False, default=TTSReportJobStatus.PENDING.value)
@@ -873,6 +1178,13 @@ class TTSBlindTestShare(Base):
         index=True,
     )
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    # Workspace isolation: mirrors the parent TTSComparison's workspace.
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
 
     share_token = Column(String(64), unique=True, nullable=False, index=True)
 
@@ -916,6 +1228,13 @@ class TTSBlindTestResponse(Base):
         nullable=False,
         index=True,
     )
+    # Workspace isolation: mirrors the parent TTSBlindTestShare's workspace.
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
 
     rater_name = Column(String(255), nullable=False)
     rater_email = Column(String(320), nullable=False, index=True)
@@ -945,6 +1264,14 @@ class PromptPartial(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    # Workspace isolation: every prompt partial belongs to a workspace
+    # within its org. Versions inherit this workspace_id.
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     name = Column(String(255), nullable=False)
     description = Column(String, nullable=True)
     content = Column(Text, nullable=False)
@@ -964,6 +1291,13 @@ class PromptPartialVersion(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     prompt_partial_id = Column(UUID(as_uuid=True), ForeignKey("prompt_partials.id", ondelete="CASCADE"), nullable=False, index=True)
+    # Workspace isolation: mirrors the parent PromptPartial's workspace.
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     version = Column(Integer, nullable=False)
     content = Column(Text, nullable=False)
     change_summary = Column(String, nullable=True)
@@ -1003,6 +1337,14 @@ class PromptOptimizationRun(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    # Workspace isolation: every optimization run belongs to a workspace
+    # within its org. Candidates inherit this workspace_id.
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True)
     evaluator_id = Column(UUID(as_uuid=True), ForeignKey("evaluators.id"), nullable=True)
     voice_bundle_id = Column(UUID(as_uuid=True), ForeignKey("voicebundles.id"), nullable=True)
@@ -1035,6 +1377,13 @@ class PromptOptimizationCandidate(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     optimization_run_id = Column(UUID(as_uuid=True), ForeignKey("prompt_optimization_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    # Workspace isolation: mirrors the parent PromptOptimizationRun's workspace.
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
 
     prompt_text = Column(Text, nullable=False)
     score = Column(Float, nullable=True)
@@ -1052,16 +1401,21 @@ class PromptOptimizationCandidate(Base):
 
 
 class TelephonyIntegration(Base):
-    """Per-organization telephony provider credentials and configuration."""
+    """Per-organization telephony provider credentials and configuration.
+
+    Multiple rows per (organization_id, provider) are allowed so that an
+    organization can keep several Plivo / Exotel accounts side-by-side.
+    A partial unique index in migration 028 enforces at most one row with
+    is_default = TRUE per (org, provider); resolution falls back to that
+    default row when the caller does not pin a specific credential.
+    """
 
     __tablename__ = "telephony_integrations"
-    __table_args__ = (
-        UniqueConstraint("organization_id", "provider", name="uq_telephony_integration_org_provider"),
-    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
     provider = Column(String(50), nullable=False, default="plivo")
+    name = Column(String(255), nullable=True)  # Optional friendly name to disambiguate multiple credentials
 
     auth_id = Column(String(255), nullable=False)
     auth_token = Column(String(512), nullable=False)
@@ -1072,6 +1426,7 @@ class TelephonyIntegration(Base):
     masking_config = Column(JSON, nullable=True)
 
     is_active = Column(Boolean, default=True, nullable=False)
+    is_default = Column(Boolean, default=False, nullable=False)
     last_tested_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -1156,6 +1511,98 @@ class TelephonyMaskedSession(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class CallImportSchema(Base):
+    """Reusable Input Parameter schema for the call-uploads flow.
+
+    A schema is workspace-scoped: users define a named bundle of typed
+    Input Parameters once (e.g. "Standard Voice QA" with conversation_id +
+    recording_url + transcript + agent_name) and then map those parameters
+    to CSV/Excel headers each time they upload a new batch.
+
+    Every schema MUST contain exactly one parameter with
+    ``type='conversation_id'`` and ``is_required=True`` - that's the
+    mandatory identity field every imported row needs. The invariant is
+    enforced in app code on create/update (no DB-level CHECK because the
+    parent + children are written across two tables in one transaction).
+    """
+
+    __tablename__ = "call_import_schemas"
+    __table_args__ = (
+        # Case-insensitive uniqueness is enforced via the matching partial
+        # index on ``LOWER(name)`` in the migration; this constraint here
+        # would be case-sensitive and is intentionally omitted to avoid
+        # confusing the user.
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    created_by_user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    parameters = relationship(
+        "CallImportSchemaParameter",
+        back_populates="schema",
+        cascade="all, delete-orphan",
+        order_by="CallImportSchemaParameter.ordering",
+    )
+
+
+class CallImportSchemaParameter(Base):
+    """A single typed parameter inside a :class:`CallImportSchema`.
+
+    ``type`` is one of the strings tracked by
+    :data:`app.models.enums.CallImportParameterType`. ``conversation_id``
+    is reserved for the mandatory identity parameter every schema must
+    contain.
+    """
+
+    __tablename__ = "call_import_schema_parameters"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    schema_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_import_schemas.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    name = Column(String(255), nullable=False)
+    type = Column(String(32), nullable=False)
+    description = Column(Text, nullable=True)
+    is_required = Column(Boolean, nullable=False, default=False)
+    # Stable ordering so the UI renders parameters in the order the
+    # schema author defined them (matters when conversation_id is pinned
+    # first and the user re-orders the rest).
+    ordering = Column(Integer, nullable=False, default=0)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    schema = relationship("CallImportSchema", back_populates="parameters")
+
+
 class CallImport(Base):
     """Batch record for a CSV-driven call import job."""
 
@@ -1163,10 +1610,93 @@ class CallImport(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    # Workspace isolation: every imported batch belongs to a workspace
+    # within its org. The /upload endpoint stamps it from the active
+    # workspace header (or the org's Default if absent).
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
     created_by_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
 
-    provider = Column(String(50), nullable=False, default="exotel")
+    # Telephony provider key (e.g. ``'exotel'``, ``'plivo'``). In the
+    # legacy one-shot ``POST /upload`` endpoint this is supplied with the
+    # file; in the three-stage flow (UPLOAD -> MAP -> IMPORT) the value
+    # isn't known until the IMPORT stage, so the column is nullable for
+    # ``uploaded`` / ``mapped`` batches.
+    provider = Column(String(50), nullable=True, default="exotel")
+    # Pin a specific telephony credential for this batch so the worker
+    # downloads recordings using *that* row instead of the org default.
+    # NULL preserves legacy behavior (resolve by provider + default).
+    telephony_integration_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("telephony_integrations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     original_filename = Column(String(512), nullable=True)
+    # When the source file was a multi-sheet Excel workbook, this records
+    # the worksheet the rows came from (one batch per sheet). NULL for CSV
+    # uploads since CSV has no sheet concept.
+    sheet_name = Column(String(255), nullable=True)
+
+    # --- Source-file staging (UPLOAD stage) ---------------------------
+    # The raw CSV / Excel file is stored in S3 between stages so the
+    # user can come back later to MAP and IMPORT without re-uploading.
+    # ``source_s3_key`` is NULL on legacy batches that were imported via
+    # the one-shot endpoint (those batches stay read-only post-import).
+    source_s3_key = Column(Text, nullable=True)
+    source_format = Column(String(16), nullable=True)
+    source_size_bytes = Column(BigInteger, nullable=True)
+    source_content_type = Column(String(255), nullable=True)
+
+    # Snapshot of the file's sheets + headers captured at UPLOAD time
+    # so the MAP UI doesn't need to re-fetch the source bytes from S3.
+    # Shape: ``[{"name": str, "headers": [str, ...], "row_count": int}, ...]``.
+    available_sheets = Column(JSON, nullable=True)
+
+    # User's explicit "drop these columns" decision captured at MAP
+    # time. Was validation-only and ephemeral in the legacy flow; now
+    # persisted so the IMPORT stage can re-parse the file with the same
+    # mapping/skip intent.
+    skipped_columns = Column(JSON, nullable=False, default=list)
+
+    # Free-text high-level segregation label. Powers the "Dataset" filter
+    # at the top of the imports page; multiple imports can share a value.
+    dataset = Column(String(255), nullable=True, index=True)
+
+    # Reusable Input Parameter schema this batch was uploaded against.
+    # NULL on legacy batches uploaded before the schema-driven flow
+    # shipped; those still render via ``column_mapping`` + ``extra_columns``
+    # + ``custom_column_mapping`` below.
+    schema_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_import_schemas.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    # New schema-driven mapping: ``{schema_parameter_name: csv_header}``.
+    # Populated for new uploads; empty dict on legacy batches.
+    parameter_mapping = Column(JSON, nullable=False, default=dict)
+
+    # Legacy free-form mapping (pre-schema-flow). Kept on the model so
+    # batches that were uploaded before the schema feature shipped still
+    # render correctly on the detail page; new uploads stop writing here.
+    # Keys: external_call_id (required), transcript, recording_url.
+    # (DB column ``external_call_id`` is now ``conversation_id``; this
+    # JSON key stays as-is for historical batches.)
+    # Values: original CSV header strings (preserve user casing for export).
+    column_mapping = Column(JSON, nullable=False, default=dict)
+    # Ordered list of additional CSV header strings the uploader wants
+    # preserved verbatim into the evaluation export CSV.
+    extra_columns = Column(JSON, nullable=False, default=list)
+    # User-defined ``{custom_field_name: csv_header}`` mappings on top of
+    # the three system fields above. Cells from the mapped CSV columns are
+    # preserved per row (keyed by the CSV header in ``raw_columns``) and
+    # surface in the evaluation export under the uploader-chosen name.
+    custom_column_mapping = Column(JSON, nullable=False, default=dict)
 
     total_rows = Column(Integer, nullable=False, default=0)
     completed_rows = Column(Integer, nullable=False, default=0)
@@ -1189,6 +1719,17 @@ class CallImport(Base):
         cascade="all, delete-orphan",
         order_by="CallImportRow.row_index",
     )
+    tags = relationship(
+        "CallImportTag",
+        secondary="call_import_tag_assignments",
+        backref="call_imports",
+        lazy="selectin",
+    )
+    evaluations = relationship(
+        "CallImportEvaluation",
+        back_populates="call_import",
+        cascade="all, delete-orphan",
+    )
 
 
 class CallImportRow(Base):
@@ -1209,11 +1750,73 @@ class CallImportRow(Base):
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
 
     row_index = Column(Integer, nullable=False)
-    external_call_id = Column(String(255), nullable=False, index=True)
+    # Was historically named ``external_call_id``; renamed to
+    # ``conversation_id`` so the new schema-driven upload flow can refer
+    # to it by a single canonical name across the schema definition,
+    # exports, and downstream evaluation tables.
+    conversation_id = Column(String(255), nullable=False, index=True)
     # Optional at upload time; the worker resolves it via Exotel's Calls API when
     # absent and writes the resolved URL back here so retries are cheap.
     recording_url = Column(Text, nullable=True)
+    # The "production" transcript: the value supplied via the CSV
+    # upload mapping. Never overwritten by the diarisation worker —
+    # the worker writes its output into ``diarised_transcript`` so
+    # the user keeps both versions side by side.
     transcript = Column(Text, nullable=True)
+    # Snapshot of the original CSV row keyed by the user's headers so the
+    # evaluation export can reproduce every column the uploader supplied
+    # (mapped + extra). NULL on legacy rows imported before this column.
+    raw_columns = Column(JSON, nullable=True)
+
+    # Where the value in ``transcript`` came from. ``csv`` = supplied via
+    # the upload mapping, ``edited`` = manually changed in the UI. NULL
+    # on rows that have never had a production transcript.
+    # (Worker-produced transcripts now live in ``diarised_transcript``
+    # and are tracked via ``diarised_transcript_*`` metadata below.)
+    transcript_source = Column(String(20), nullable=True)
+    # Provider/model recorded by the (legacy) post-hoc transcription
+    # worker. New worker runs leave these NULL and write into the
+    # ``diarised_transcript_*`` columns instead; kept on the model for
+    # backwards compatibility with pre-split rows that still carry the
+    # original transcription metadata here.
+    transcript_provider = Column(String(50), nullable=True)
+    transcript_model = Column(String(100), nullable=True)
+    # Lifecycle status for the legacy transcription workflow itself,
+    # independent of the row's recording-fetch ``status``. ``idle`` =
+    # no transcribe task has touched this column. New diarisation runs
+    # update ``diarised_transcript_status`` instead.
+    transcript_status = Column(
+        String(20),
+        nullable=False,
+        default="idle",
+    )
+    transcript_error = Column(Text, nullable=True)
+    transcribed_at = Column(DateTime(timezone=True), nullable=True)
+
+    # The "diarised" transcript: produced by the post-hoc
+    # transcription/diarisation worker. Stored separately so a manual
+    # diarisation run never clobbers the production transcript above.
+    # Evaluations can be configured to score against either column
+    # (see ``CallImportEvaluation.transcript_source``).
+    diarised_transcript = Column(Text, nullable=True)
+    # Provider/model the diarisation worker used. Surfaced in the UI
+    # as "Diarised via deepgram/nova-2" next to the diarised
+    # transcript section.
+    diarised_transcript_provider = Column(String(50), nullable=True)
+    diarised_transcript_model = Column(String(100), nullable=True)
+    # Lifecycle status for the diarisation workflow.
+    # ``idle`` = no diarisation task has run; ``pending``/``running`` =
+    # a Celery task is queued or in flight; ``completed``/``failed`` =
+    # terminal. Independent of ``transcript_status`` so the two
+    # transcripts can be in different lifecycle states.
+    diarised_transcript_status = Column(
+        String(20),
+        nullable=False,
+        default="idle",
+        server_default="idle",
+    )
+    diarised_transcript_error = Column(Text, nullable=True)
+    diarised_at = Column(DateTime(timezone=True), nullable=True)
 
     status = Column(
         Enum(CallImportRowStatus, values_callable=get_enum_values),
@@ -1234,3 +1837,435 @@ class CallImportRow(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     call_import = relationship("CallImport", back_populates="rows")
+
+
+class CallImportTag(Base):
+    """User-defined tag that can be attached to one or more call imports.
+
+    Tags coexist with the free-text ``CallImport.dataset`` column: dataset
+    is the primary high-level segregation, tags are an optional secondary
+    classification (an import can have many tags).
+    """
+
+    __tablename__ = "call_import_tags"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "name", name="uq_call_import_tag_org_name"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(
+        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    name = Column(String(255), nullable=False)
+    color = Column(String(32), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CallImportTagAssignment(Base):
+    """Many-to-many join table between CallImport and CallImportTag."""
+
+    __tablename__ = "call_import_tag_assignments"
+
+    call_import_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_imports.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    tag_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_import_tags.id", ondelete="CASCADE"),
+        primary_key=True,
+        index=True,
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class CallImportEvaluation(Base):
+    """Parent record for an evaluation run over a CallImport batch.
+
+    A user picks a subset of org ``Metric`` rows and triggers an evaluation;
+    we fan out one ``CallImportEvaluationRow`` per source row and roll up
+    counters as workers finish. Status mirrors ``CallImportStatus`` plus a
+    ``RUNNING`` value so the UI can distinguish "queued" from "in flight".
+    """
+
+    __tablename__ = "call_import_evaluations"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    call_import_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_imports.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    organization_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id"),
+        nullable=False,
+        index=True,
+    )
+    # Workspace isolation: mirrors the parent CallImport's workspace.
+    # Denormalized for fast filter-by-workspace listings without a join.
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    created_by_user_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+
+    # Optional user-supplied label for this run. Lets the UI surface
+    # something more meaningful than the UUID prefix (e.g. "March QA pass").
+    name = Column(String(255), nullable=True)
+
+    # JSON list of Metric UUID strings selected for this run. Stored as text
+    # in JSON so we don't have to deal with PG arrays of UUIDs / cascade
+    # delete policies when metrics are removed; the loader filters for
+    # still-existing org metrics at run time.
+    selected_metric_ids = Column(JSON, nullable=False, default=list)
+    # Hierarchy grouping snapshot: ``{parent_id_str: [child_id_str, ...]}``.
+    # Captures which children belong to which parent for THIS run so the UI
+    # / aggregator can reconstruct the tree even when the user selected
+    # only a subset of children, or after metrics are deleted / renamed.
+    # NULL on legacy rows means "no hierarchy" → fall back to flat
+    # ``selected_metric_ids`` semantics.
+    selected_metric_groups = Column(JSON, nullable=True)
+    # User-driven merges of LLM-discovered candidate sub-labels for
+    # ``allow_discovery`` parents. Shape:
+    # ``{"<parent_metric_id>": {"<from_slug>": "<to_slug>", ...}}``.
+    # Populated via ``POST .../discovered-labels/merge``; consulted by
+    # the discovered-labels aggregator, the flow graph builder, and the
+    # worker so that rows finishing AFTER a merge cannot reintroduce
+    # the merged-away slug. Empty dict on fresh rows.
+    discovered_label_aliases = Column(
+        JSON, nullable=False, default=dict, server_default="{}"
+    )
+
+    # Per-run opt-in for top-level metric discovery. When True, the LLM
+    # is asked to propose brand-new top-level metrics (boolean / rating /
+    # category) observed in the transcripts in addition to scoring the
+    # ``selected_metric_ids`` for the row. Candidates surface in a
+    # "Discovered metrics" panel on the evaluation's Flow tab and can
+    # be promoted into real standalone ``Metric`` rows via
+    # ``POST /metrics/from-discovered``. Defaults to False so existing
+    # evaluation creation payloads keep their previous behaviour.
+    discover_new_metrics = Column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    # Flat slug-to-slug redirect map for user merges + tombstones of
+    # discovered top-level metric candidates. Mirrors
+    # ``discovered_label_aliases`` but is NOT nested per parent —
+    # top-level metric discovery is not scoped to any parent. Shape::
+    #
+    #     {"<from_slug>": "<to_slug>", ...}
+    #
+    # An empty-string value tombstones the slug so workers finishing
+    # later can't re-introduce it.
+    discovered_metric_aliases = Column(
+        JSON, nullable=False, default=dict, server_default="{}"
+    )
+
+    # Run-level LLM config picked from the Run Evaluation modal. NULL on
+    # legacy rows means "use the historical OpenAI/gpt-4o default" — the
+    # worker checks for this and falls back accordingly. ``llm_credential_id``
+    # pins a specific AIProvider row when the org has multiple credentials
+    # for the same provider.
+    llm_provider = Column(String(50), nullable=True)
+    llm_model = Column(String(100), nullable=True)
+    llm_credential_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("aiproviders.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # Optional per-metric LLM override:
+    # ``{"<metric_id>": {"provider": "...", "model": "...", "credential_id": "..."}}``.
+    # Each entry overrides the run-level default for that metric only;
+    # missing keys = use run-level default. Stored as JSON so the UI can
+    # round-trip arbitrary {provider, model} pairs without migrations.
+    metric_llm_overrides = Column(JSON, nullable=True)
+
+    # When ``auto_transcribe`` was set on the create payload, record the
+    # STT provider/model used so the UI can show "Auto-transcribed via
+    # deepgram/nova-2" on the evaluation header. ``stt_credential_id`` is
+    # untyped (no FK) because STT keys may live in either ``aiproviders``
+    # (OpenAI) or ``integrations`` (Deepgram, ElevenLabs) — the
+    # transcription service handles the lookup.
+    stt_provider = Column(String(50), nullable=True)
+    stt_model = Column(String(100), nullable=True)
+    stt_credential_id = Column(UUID(as_uuid=True), nullable=True)
+
+    # Which of the two transcripts on each ``CallImportRow`` this run
+    # scored against. ``'production'`` reads ``CallImportRow.transcript``
+    # (the CSV-supplied value); ``'diarised'`` reads
+    # ``CallImportRow.diarised_transcript`` (the worker output). When
+    # the user ticks both checkboxes in the Run Evaluation modal we
+    # create two ``CallImportEvaluation`` rows — one per source — so
+    # the two scorings can be compared side-by-side. Defaults to
+    # ``'production'`` so legacy runs (which always read the single
+    # historical ``transcript`` column) keep their semantics.
+    transcript_source = Column(
+        String(20),
+        nullable=False,
+        default="production",
+        server_default="production",
+    )
+
+    # Cached LLM-generated TLDR rendered above the Visualizations charts.
+    # Populated lazily by ``POST /evaluations/{eval_id}/insights`` so we
+    # never auto-burn LLM tokens on page load. Shape::
+    #   {"narrative": str, "patterns": [str, ...],
+    #    "generated_at": iso8601, "generated_at_completed_rows": int,
+    #    "provider": str, "model": str}
+    # NULL on rows that have never been summarised.
+    tldr_summary = Column(JSON, nullable=True)
+
+    status = Column(String(20), nullable=False, default="pending", index=True)
+
+    total_rows = Column(Integer, nullable=False, default=0)
+    completed_rows = Column(Integer, nullable=False, default=0)
+    failed_rows = Column(Integer, nullable=False, default=0)
+    error_message = Column(Text, nullable=True)
+    celery_group_id = Column(String(255), nullable=True)
+
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    call_import = relationship("CallImport", back_populates="evaluations")
+    row_results = relationship(
+        "CallImportEvaluationRow",
+        back_populates="evaluation",
+        cascade="all, delete-orphan",
+    )
+
+
+class CallImportEvaluationRow(Base):
+    """Per-source-row scoring output for a CallImportEvaluation parent."""
+
+    __tablename__ = "call_import_evaluation_rows"
+    __table_args__ = (
+        UniqueConstraint(
+            "evaluation_id", "call_import_row_id", name="uq_call_import_evaluation_row"
+        ),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    evaluation_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_import_evaluations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    call_import_row_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_import_rows.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    # Same shape as EvaluatorResult.metric_scores: {metric_id_str: {value, type, metric_name, ...}}
+    metric_scores = Column(JSON, nullable=False, default=dict)
+    error_message = Column(Text, nullable=True)
+    celery_task_id = Column(String(255), nullable=True)
+
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    evaluation = relationship("CallImportEvaluation", back_populates="row_results")
+    source_row = relationship("CallImportRow")
+
+
+# ---------------------------------------------------------------------------
+# Judge Alignment (AlignEval-style hybrid integration)
+#
+# Three tables back the "Judge Alignment" surface:
+#   - JudgeDataset:     a labeled dataset materialised from one of three sources
+#                       (voice transcripts, existing Metric/Evaluator outputs,
+#                       or a generic CSV upload). Holds the dataset's source
+#                       config + which fields play the role of input/output.
+#   - JudgeSample:      one row in a dataset (input/output pair plus an
+#                       optional binary pass/fail human label).
+#   - JudgeRun:         a single run of an LLM-judge (existing Evaluator) over
+#                       a subset of samples, with computed alignment metrics
+#                       (precision/recall/F1/Cohen's kappa) and per-sample
+#                       predictions. Optionally links to a GEPA optimization
+#                       run when the user kicks off prompt tuning from a
+#                       dataset.
+# ---------------------------------------------------------------------------
+
+
+class JudgeDataset(Base):
+    """Container for binary-labeled samples used to calibrate an LLM-judge."""
+
+    __tablename__ = "judge_datasets"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(
+        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    # Workspace isolation: every judge dataset belongs to a workspace
+    # within its org. Samples and runs inherit this workspace_id.
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+
+    # One of: "transcript", "metric_output", "csv"
+    source_type = Column(String(32), nullable=False, index=True)
+    # Source-specific config. Examples:
+    #   transcript:     {"transcription_ids": [...]} or {"agent_id": "..."}
+    #   metric_output:  {"metric_id": "...", "evaluator_id": "..."}
+    #   csv:            {"s3_key": "...", "filename": "..."}
+    source_config = Column(JSON, nullable=False, default=dict)
+
+    # Field roles - which textual content is "input" vs "output" for the judge.
+    # For voice transcripts both default to the transcript text but can be
+    # tightened (e.g. agent-only turns vs full conversation).
+    input_field = Column(String(64), nullable=False, default="input")
+    output_field = Column(String(64), nullable=False, default="output")
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_by = Column(String, nullable=True)
+
+    samples = relationship(
+        "JudgeSample",
+        back_populates="dataset",
+        cascade="all, delete-orphan",
+        order_by="JudgeSample.created_at",
+    )
+    runs = relationship(
+        "JudgeRun",
+        back_populates="dataset",
+        cascade="all, delete-orphan",
+        order_by="JudgeRun.created_at.desc()",
+    )
+
+
+class JudgeSample(Base):
+    """One labelable input/output pair within a JudgeDataset."""
+
+    __tablename__ = "judge_samples"
+    __table_args__ = (
+        UniqueConstraint("dataset_id", "external_id", name="uq_judge_samples_dataset_external"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    dataset_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("judge_datasets.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # Workspace isolation: mirrors the parent JudgeDataset's workspace.
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+
+    # Stable identifier within the source (e.g. transcription UUID, CSV row id).
+    # Used to dedupe re-imports and link back to the originating record.
+    external_id = Column(String(128), nullable=True, index=True)
+
+    input_text = Column(Text, nullable=False)
+    output_text = Column(Text, nullable=False)
+
+    # Binary human label: "pass" | "fail" | null (unlabeled).
+    # Stored as string (rather than enum) so it stays trivially extendable.
+    label = Column(String(16), nullable=True, index=True)
+    labeled_by = Column(String(255), nullable=True)
+    labeled_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Source-specific context (e.g. agent_id, original metric value, csv row).
+    extra = Column(JSON, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    dataset = relationship("JudgeDataset", back_populates="samples")
+
+
+class JudgeRun(Base):
+    """One execution of an LLM-judge against a JudgeDataset, with alignment metrics."""
+
+    __tablename__ = "judge_runs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    dataset_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("judge_datasets.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    organization_id = Column(
+        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    # Workspace isolation: mirrors the parent JudgeDataset's workspace.
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+
+    # Reuses the existing Evaluator row (its custom_prompt + llm_provider + llm_model
+    # define the judge under test). Nullable so a run may target an inline prompt
+    # in the future without inflating the Evaluator table.
+    evaluator_id = Column(
+        UUID(as_uuid=True), ForeignKey("evaluators.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+
+    # Which subset was scored: "all" | "dev" | "test"
+    split = Column(String(16), nullable=False, default="all")
+
+    # Snapshot of the model used (so a later Evaluator edit doesn't rewrite history).
+    llm_provider = Column(String(64), nullable=True)
+    llm_model = Column(String(128), nullable=True)
+
+    # Computed alignment metrics:
+    #   {"precision": float, "recall": float, "f1": float, "kappa": float,
+    #    "tp": int, "fp": int, "tn": int, "fn": int, "n": int}
+    metrics = Column(JSON, nullable=True)
+
+    # Per-sample predictions, keyed by sample_id (UUID string):
+    #   {sample_id: {"prediction": "pass"|"fail", "explanation": str, "raw": str}}
+    predictions = Column(JSON, nullable=True)
+
+    # Run lifecycle.
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    error_message = Column(Text, nullable=True)
+    celery_task_id = Column(String, nullable=True, index=True)
+
+    # Optional link to a GEPA optimization run kicked off from this dataset.
+    gepa_optimization_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("prompt_optimization_runs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_by = Column(String, nullable=True)
+
+    dataset = relationship("JudgeDataset", back_populates="runs")

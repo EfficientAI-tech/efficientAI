@@ -4,11 +4,10 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_api_key, get_db, get_organization_id
-from app.models.database import TelephonyIntegration, TelephonyMaskedSession, TelephonyPhoneNumber
+from app.models.database import TelephonyIntegration, TelephonyMaskedSession
 from app.models.schemas import (
     TelephonyIntegrationCreate,
     TelephonyIntegrationResponse,
@@ -28,14 +27,6 @@ from app.services.telephony.telephony_service import telephony_service
 router = APIRouter(prefix="/telephony", tags=["Telephony"])
 
 
-class TelephonyNumberUpdateRequest(BaseModel):
-    """Patch schema for organization number configuration."""
-
-    is_masking_pool: Optional[bool] = None
-    agent_id: Optional[UUID] = None
-    is_active: Optional[bool] = None
-
-
 @router.post("/config", response_model=TelephonyIntegrationResponse, status_code=status.HTTP_201_CREATED)
 async def create_telephony_config(
     data: TelephonyIntegrationCreate,
@@ -43,11 +34,38 @@ async def create_telephony_config(
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
+    """Create a new telephony credential row.
+
+    Multiple credentials per provider are supported. The first row for a
+    given (org, provider) is auto-promoted to default. ``POST`` always
+    inserts a new row; use ``PUT /telephony/config`` (with ``id``) to
+    update an existing one.
+    """
     del api_key
     try:
-        return telephony_service.save_integration(organization_id, data.model_dump(), db)
+        return telephony_service.save_integration(
+            organization_id,
+            data.model_dump(),
+            db,
+            allow_implicit_update=False,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/configs", response_model=List[TelephonyIntegrationResponse])
+async def list_telephony_configs(
+    provider: Optional[str] = None,
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+):
+    """List every TelephonyIntegration row for this org (newest first).
+
+    Optional ``provider`` filter narrows the list to a single provider.
+    """
+    del api_key
+    return telephony_service.list_org_integrations(organization_id, db, provider=provider)
 
 
 @router.get("/config", response_model=TelephonyIntegrationResponse)
@@ -57,6 +75,7 @@ async def get_telephony_config(
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
+    """Resolve the default (or only) telephony config for ``provider``."""
     del api_key
     try:
         return telephony_service.get_org_integration(organization_id, db, provider=provider)
@@ -71,6 +90,12 @@ async def update_telephony_config(
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
+    """Update a telephony credential.
+
+    When ``data.id`` is provided the named row is updated in place. When
+    omitted, the legacy single-row-per-provider flow is preserved (only
+    works while the org still has exactly one row for the provider).
+    """
     del api_key
     try:
         return telephony_service.save_integration(
@@ -82,33 +107,73 @@ async def update_telephony_config(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/config/test")
-async def test_telephony_config(
-    provider: str = "plivo",
+@router.post(
+    "/config/{integration_id}/set-default",
+    response_model=TelephonyIntegrationResponse,
+)
+async def set_default_telephony_config(
+    integration_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
+    """Mark this telephony credential as the default for its (org, provider)."""
     del api_key
     try:
-        ok = telephony_service.test_connection(organization_id, db, provider=provider)
-        return {"success": ok}
+        return telephony_service.set_default_integration(organization_id, integration_id, db)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e))
 
 
-@router.post("/numbers/sync", response_model=List[TelephonyPhoneNumberResponse])
-async def sync_telephony_numbers(
-    provider: str = "plivo",
+@router.delete(
+    "/config/{integration_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_telephony_config(
+    integration_id: UUID,
     organization_id: UUID = Depends(get_organization_id),
     api_key: str = Depends(get_api_key),
     db: Session = Depends(get_db),
 ):
+    """Delete a telephony credential row.
+
+    If the deleted row was the default, the most recently updated active
+    row is auto-promoted in its place.
+    """
     del api_key
-    try:
-        return telephony_service.sync_numbers(organization_id, db, provider=provider)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    integration = (
+        db.query(TelephonyIntegration)
+        .filter(
+            TelephonyIntegration.id == integration_id,
+            TelephonyIntegration.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not integration:
+        raise HTTPException(status_code=404, detail="Telephony integration not found")
+
+    was_default = bool(integration.is_default)
+    provider_value = integration.provider
+    db.delete(integration)
+    db.flush()
+
+    if was_default:
+        from sqlalchemy import desc, func
+        replacement = (
+            db.query(TelephonyIntegration)
+            .filter(
+                TelephonyIntegration.organization_id == organization_id,
+                func.lower(TelephonyIntegration.provider) == provider_value.lower(),
+                TelephonyIntegration.is_active.is_(True),
+            )
+            .order_by(desc(TelephonyIntegration.updated_at), desc(TelephonyIntegration.created_at))
+            .first()
+        )
+        if replacement:
+            replacement.is_default = True
+
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/numbers", response_model=List[TelephonyPhoneNumberResponse])
@@ -120,31 +185,6 @@ async def list_telephony_numbers(
 ):
     del api_key
     return telephony_service.list_numbers(organization_id, db, provider=provider)
-
-
-@router.patch("/numbers/{number_id}", response_model=TelephonyPhoneNumberResponse)
-async def update_telephony_number(
-    number_id: UUID,
-    data: TelephonyNumberUpdateRequest,
-    organization_id: UUID = Depends(get_organization_id),
-    api_key: str = Depends(get_api_key),
-    db: Session = Depends(get_db),
-):
-    del api_key
-    number = (
-        db.query(TelephonyPhoneNumber)
-        .filter(TelephonyPhoneNumber.id == number_id, TelephonyPhoneNumber.organization_id == organization_id)
-        .first()
-    )
-    if not number:
-        raise HTTPException(status_code=404, detail="Phone number not found")
-
-    update_data = data.model_dump(exclude_none=True)
-    for key, value in update_data.items():
-        setattr(number, key, value)
-    db.commit()
-    db.refresh(number)
-    return number
 
 
 @router.post("/calls/outbound", response_model=TelephonyOutboundCallResponse)

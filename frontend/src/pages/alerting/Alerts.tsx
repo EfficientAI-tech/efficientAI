@@ -448,7 +448,7 @@ export default function Alerts() {
         <div className="fixed inset-0 z-50 overflow-y-auto">
           <div className="flex min-h-screen items-center justify-center p-4">
             <div
-              className="fixed inset-0 bg-gray-900/60 backdrop-blur-sm transition-opacity"
+              className="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity"
               onClick={closeModal}
             />
             <div className="relative bg-white rounded-2xl shadow-2xl max-w-3xl w-full p-8 max-h-[90vh] overflow-y-auto">

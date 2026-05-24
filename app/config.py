@@ -109,6 +109,12 @@ class Settings(BaseSettings):
     PLIVO_VERIFY_APP_UUID: str = ""
     PLIVO_WEBHOOK_BASE_URL: str = ""
 
+    # Judge Alignment (AlignEval-style hybrid integration).
+    # Operator-only knobs. Per-org thresholds and judge model selection
+    # live in the database / UI, not here.
+    JUDGE_ALIGNMENT_ENABLED: bool = True
+    JUDGE_ALIGNMENT_CSV_MAX_ROWS: int = 5000
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -465,6 +471,13 @@ def load_config_from_file(config_path: str) -> None:
             settings.PLIVO_VERIFY_APP_UUID = plivo_cfg["verify_app_uuid"]
         if plivo_cfg.get("webhook_base_url"):
             settings.PLIVO_WEBHOOK_BASE_URL = plivo_cfg["webhook_base_url"]
+
+    if "judge_alignment" in config_data:
+        ja_cfg = config_data["judge_alignment"]
+        if "enabled" in ja_cfg:
+            settings.JUDGE_ALIGNMENT_ENABLED = bool(ja_cfg["enabled"])
+        if "csv_max_rows" in ja_cfg:
+            settings.JUDGE_ALIGNMENT_CSV_MAX_ROWS = int(ja_cfg["csv_max_rows"])
 
     # Update Celery URLs if they weren't explicitly set
     if not settings.CELERY_BROKER_URL:

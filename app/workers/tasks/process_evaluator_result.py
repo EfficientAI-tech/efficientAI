@@ -452,6 +452,11 @@ def process_evaluator_result_task(self, result_id: str):
                 db.commit()
 
             # Step 2: Load and categorize metrics
+            # Include metrics that have "agent" in their enabled_surfaces so users can
+            # restrict metrics to specific surfaces from the metrics page. Legacy rows
+            # (created before the surfaces column existed, or via fixtures that don't
+            # set the field) keep the original behavior: an enabled=True metric with
+            # an empty enabled_surfaces list is treated as agent-enabled.
             enabled_metrics = db.query(Metric).filter(
                 Metric.organization_id == result.organization_id,
                 Metric.enabled == True,
@@ -459,6 +464,10 @@ def process_evaluator_result_task(self, result_id: str):
             enabled_metrics = [
                 m for m in enabled_metrics
                 if (m.name or "").strip().lower() not in REMOVED_EVALUATION_METRIC_NAMES
+                and (
+                    "agent" in (m.enabled_surfaces or [])
+                    or not (m.enabled_surfaces or [])  # legacy/unset → default to agent
+                )
             ]
 
             has_audio = bool(result.audio_s3_key)

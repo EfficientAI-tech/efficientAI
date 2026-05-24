@@ -329,7 +329,21 @@ export default function Results() {
       if (isNaN(numValue)) return <span className="text-gray-300">--</span>
       return <span className="text-sm font-semibold text-gray-900 tabular-nums">{numValue.toFixed(1)}</span>
     }
-    
+
+    if (normalizedType === 'text') {
+      const text = String(value)
+      const TRUNCATE_AT = 140
+      const isLong = text.length > TRUNCATE_AT
+      return (
+        <span
+          className="block text-sm text-gray-700 leading-snug whitespace-pre-wrap break-words max-w-md"
+          title={isLong ? text : undefined}
+        >
+          {isLong ? `${text.slice(0, TRUNCATE_AT).trimEnd()}\u2026` : text}
+        </span>
+      )
+    }
+
     return <span className="text-sm text-gray-700">{String(value)}</span>
   }
 
@@ -645,7 +659,7 @@ export default function Results() {
             exit={{ opacity: 0 }}
           >
             <div
-              className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+              className="absolute inset-0 bg-gray-500 bg-opacity-75"
               onClick={() => {
                 setShowManualModal(false)
                 setSelectedAudioFile(null)
@@ -779,7 +793,7 @@ export default function Results() {
             exit={{ opacity: 0 }}
           >
             <div
-              className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+              className="absolute inset-0 bg-gray-500 bg-opacity-75"
               onClick={() => setShowDeleteModal(false)}
             />
             <motion.div

@@ -1,70 +1,473 @@
 """CSV-driven call import routes.
 
-Users upload a CSV with columns CallID, Transcript (and optionally
-Recording URL). The backend persists a CallImport batch + one
-CallImportRow per line, then fans the rows out to the Celery `imports`
-queue where each row is fetched from the configured voice provider
-(currently Exotel) and stored in S3. When a row has no Recording URL,
-the worker resolves it from the provider's call detail endpoint using
-the CallID.
+Users upload a CSV plus a per-batch column mapping (CSV header -> system
+field). The backend persists a CallImport batch + one CallImportRow per
+line, then fans the rows out to the Celery ``imports`` queue where each
+row is downloaded using the telephony credential pinned on the batch.
+When a row has no recording URL, the worker resolves it via the chosen
+provider's call detail endpoint (Exotel today; Plivo CSVs must include
+the URL).
 """
 
 from __future__ import annotations
 
 import csv
 import io
-from typing import List, Optional
+import json
+from datetime import date, datetime, time, timedelta
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from loguru import logger
-from sqlalchemy import desc
+from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import get_api_key, get_organization_id
+from app.dependencies import (
+    get_api_key,
+    get_organization_id,
+    get_workspace_id,
+    require_enterprise_feature,
+)
 from app.models.database import (
     CallImport,
     CallImportRow,
+    CallImportSchema,
+    CallImportSchemaParameter,
+    CallImportTag,
     TelephonyIntegration,
 )
 from app.models.enums import (
+    CallImportParameterType,
     CallImportRowStatus,
     CallImportStatus,
-    TelephonyProvider,
 )
 from app.models.schemas import (
     CallImportDetailResponse,
+    CallImportInsightsMetric,
+    CallImportInsightsResponse,
+    CallImportInsightsRunPoint,
     CallImportListResponse,
+    CallImportMappingUpdate,
+    CallImportMetricAggregate,
+    CallImportPreviewResponse,
+    CallImportPreviewSheet,
     CallImportResponse,
+    CallImportRowBulkDelete,
+    CallImportRowBulkDeleteResponse,
     CallImportRowResponse,
+    CallImportStartRequest,
+    CallImportTranscribeRequest,
+    CallImportTranscribeResponse,
+    CallImportUpdate,
     CallImportUploadResponse,
 )
 
 
-router = APIRouter(prefix="/call-imports", tags=["Call Imports"])
+router = APIRouter(
+    prefix="/call-imports",
+    tags=["Call Imports"],
+    dependencies=[Depends(require_enterprise_feature("call_imports"))],
+)
 
 
-REQUIRED_HEADERS = {"callid", "transcript"}
-OPTIONAL_HEADERS = {"recording url"}
-MAX_CSV_BYTES = 10 * 1024 * 1024  # 10 MB CSV cap
+def _normalize_dataset(raw: Optional[str]) -> Optional[str]:
+    """Trim and treat empty strings as 'no dataset' (NULL)."""
+    if raw is None:
+        return None
+    cleaned = raw.strip()
+    return cleaned or None
+
+
+def _resolve_tags(
+    db: Session, organization_id: UUID, tag_ids: Optional[List[UUID]]
+) -> List[CallImportTag]:
+    """Look up tag rows by id, scoped to the organization.
+
+    Raises HTTPException(400) if any id is unknown for the org.
+    """
+    if not tag_ids:
+        return []
+    rows = (
+        db.query(CallImportTag)
+        .filter(
+            CallImportTag.organization_id == organization_id,
+            CallImportTag.id.in_(tag_ids),
+        )
+        .all()
+    )
+    found_ids = {row.id for row in rows}
+    missing = [str(tag_id) for tag_id in tag_ids if tag_id not in found_ids]
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown call_import_tag id(s): {missing}",
+        )
+    return rows
+
+
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB upload cap (CSV or Excel)
+
+# File extensions accepted by the upload + preview endpoints. Keep in
+# lockstep with the frontend ``accept`` attribute on the file picker.
+CSV_EXTENSIONS = (".csv",)
+XLSX_EXTENSIONS = (".xlsx", ".xlsm")
+ALLOWED_EXTENSIONS = CSV_EXTENSIONS + XLSX_EXTENSIONS
+
+
+def _file_format(filename: Optional[str]) -> Optional[str]:
+    """Classify ``filename`` as ``'csv'`` / ``'xlsx'`` or ``None`` if unsupported."""
+    if not filename:
+        return None
+    name = filename.lower()
+    if name.endswith(CSV_EXTENSIONS):
+        return "csv"
+    if name.endswith(XLSX_EXTENSIONS):
+        return "xlsx"
+    return None
 
 
 def _normalize_header(name: str) -> str:
     return (name or "").strip().lower()
 
 
-def _header_lookup(fieldnames: List[str]) -> dict[str, str]:
-    """Map normalized header -> original header so DictReader access works regardless of case."""
+def _header_lookup(fieldnames: List[str]) -> Dict[str, str]:
+    """Map normalized header -> original header for case-insensitive lookup."""
     return {_normalize_header(h): h for h in fieldnames or []}
 
 
-def _parse_csv(file_bytes: bytes) -> List[dict]:
-    """Parse the CSV bytes into a list of {callid, recording_url, transcript} dicts.
+def _resolve_mapped_header(
+    mapping_value: Optional[str], header_lookup: Dict[str, str]
+) -> Optional[str]:
+    """Translate a user-supplied CSV header into the actual column key.
 
-    Raises HTTPException(400) on empty input, missing headers, or rows missing
-    required values.
+    The frontend sends headers exactly as they appear in the source file,
+    but we still normalize on the server so trailing whitespace / casing
+    doesn't break matching. Returns the canonical fieldname or ``None``
+    if not present in the file.
     """
+    if not mapping_value:
+        return None
+    return header_lookup.get(_normalize_header(mapping_value))
+
+
+def _xlsx_cell_to_str(value: Any) -> str:
+    """Coerce an openpyxl cell value to the string the rest of the
+    pipeline expects.
+
+    openpyxl returns native Python types (int, float, datetime, bool,
+    None). The CSV path always works with strings, so we mirror that:
+    integers stringify cleanly (no ``.0`` suffix on whole-number floats),
+    datetimes use ISO-8601, booleans use SQL-style ``TRUE`` / ``FALSE``.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if value.is_integer():
+            return str(int(value))
+        return str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, time):
+        return value.isoformat()
+    if isinstance(value, timedelta):
+        return str(value)
+    return str(value)
+
+
+def _coerce_parameter_value(
+    raw: str,
+    param_type: CallImportParameterType,
+    *,
+    row_idx: int,
+    param_name: str,
+) -> Any:
+    """Validate + coerce a single CSV cell against its declared type.
+
+    Returns the typed Python value to surface in ``raw_columns``. Empty
+    strings are returned as ``None`` regardless of the parameter type so
+    optional cells stay null end-to-end. Coercion failures raise a
+    400 with a row-anchored message.
+    """
+    cell = (raw or "").strip()
+    if not cell:
+        return None
+
+    if param_type == CallImportParameterType.CONVERSATION_ID:
+        return cell
+    if param_type == CallImportParameterType.RECORDING_URL:
+        # Recording URLs are exercised by the worker (which downloads
+        # them); we only do a light "starts with http" check here so a
+        # paste-error surfaces immediately at upload time.
+        lower = cell.lower()
+        if not (lower.startswith("http://") or lower.startswith("https://")):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Row {row_idx + 1}: value for '{param_name}' is not a "
+                    "valid recording URL (must start with http:// or https://)."
+                ),
+            )
+        return cell
+    if param_type == CallImportParameterType.TRANSCRIPT:
+        return cell
+    if param_type == CallImportParameterType.TEXT:
+        return cell
+    if param_type == CallImportParameterType.NUMBER:
+        try:
+            value = float(cell)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Row {row_idx + 1}: value for '{param_name}' is not a "
+                    f"valid number ({cell!r})."
+                ),
+            )
+        if value.is_integer():
+            return int(value)
+        return value
+    if param_type == CallImportParameterType.BOOLEAN:
+        truthy = {"true", "yes", "y", "1", "t"}
+        falsy = {"false", "no", "n", "0", "f"}
+        norm = cell.lower()
+        if norm in truthy:
+            return True
+        if norm in falsy:
+            return False
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Row {row_idx + 1}: value for '{param_name}' is not a "
+                f"valid boolean ({cell!r})."
+            ),
+        )
+    if param_type == CallImportParameterType.DATETIME:
+        try:
+            parsed = datetime.fromisoformat(cell.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Row {row_idx + 1}: value for '{param_name}' is not a "
+                    f"valid ISO-8601 date/time ({cell!r})."
+                ),
+            )
+        return parsed.isoformat()
+    if param_type == CallImportParameterType.URL:
+        lower = cell.lower()
+        if not (lower.startswith("http://") or lower.startswith("https://")):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Row {row_idx + 1}: value for '{param_name}' is not a "
+                    "valid URL (must start with http:// or https://)."
+                ),
+            )
+        return cell
+    # Unknown types: store as text and let the next migration catch up.
+    return cell
+
+
+def _apply_schema_mapping(
+    fieldnames: List[str],
+    rows_iter: Iterable[Dict[str, str]],
+    parameters: List[CallImportSchemaParameter],
+    parameter_mapping: Dict[str, str],
+    skipped_columns: List[str],
+    *,
+    source_label: str = "CSV",
+    validate_only: bool = False,
+) -> List[Dict[str, Any]]:
+    """Schema-driven row projection: parameter -> CSV header -> typed value.
+
+    Validates that every required schema parameter is mapped to a CSV
+    header that actually exists in the file, and that every CSV header
+    is either mapped to a parameter or explicitly listed in
+    ``skipped_columns``. Returns one dict per non-empty data row with:
+
+      * ``conversation_id`` (str, mandatory)
+      * ``recording_url`` (Optional[str])
+      * ``transcript`` (Optional[str])
+      * ``parameter_values`` (Dict[str, Any]) of typed values keyed by
+        parameter name (drives ``raw_columns`` so the export can
+        reproduce the source).
+
+    ``validate_only=True`` runs the header / mapping / skipped-column
+    checks (every check that doesn't need to read row data) and then
+    returns an empty list — used by the MAP stage to validate a
+    mapping payload against the cached sheet snapshot without
+    re-fetching the source bytes from S3.
+    """
+    header_lookup = _header_lookup(list(fieldnames))
+
+    # 1. Look up the conversation_id parameter so we can address it
+    #    directly while building each row.
+    conv_param = next(
+        (p for p in parameters if p.type == CallImportParameterType.CONVERSATION_ID),
+        None,
+    )
+    if conv_param is None:
+        # The schema invariant should have caught this on create/update,
+        # but a defensive 400 here keeps us safe against hand-rolled
+        # API callers that bypassed validation.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Selected schema is missing the mandatory conversation_id parameter.",
+        )
+
+    # 2. Resolve every mapped parameter to a canonical fieldname.
+    #    Required parameters MUST resolve; optional ones may resolve to
+    #    None if the user left them blank (no mapping).
+    canonical_by_param: Dict[str, Optional[str]] = {}
+    rec_url_param_name: Optional[str] = None
+    transcript_param_name: Optional[str] = None
+    for param in parameters:
+        mapped_header = parameter_mapping.get(param.name)
+        canonical = (
+            _resolve_mapped_header(mapped_header, header_lookup)
+            if mapped_header
+            else None
+        )
+        if param.is_required and canonical is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"{source_label} does not contain the column "
+                    f"'{mapped_header or ''}' mapped to required parameter "
+                    f"'{param.name}'."
+                ),
+            )
+        canonical_by_param[param.name] = canonical
+        if param.type == CallImportParameterType.RECORDING_URL:
+            rec_url_param_name = param.name
+        elif param.type == CallImportParameterType.TRANSCRIPT:
+            transcript_param_name = param.name
+
+    # 3. Every CSV column must either be mapped to a parameter or
+    #    explicitly skipped. Catches "I forgot to skip the email
+    #    column" gracefully instead of dropping data silently.
+    mapped_canonicals = {c for c in canonical_by_param.values() if c}
+    skipped_canonicals = {
+        _resolve_mapped_header(h, header_lookup)
+        for h in skipped_columns
+    }
+    skipped_canonicals.discard(None)
+    unhandled = [
+        h
+        for h in fieldnames
+        if h not in mapped_canonicals and h not in skipped_canonicals
+    ]
+    if unhandled:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"{source_label} columns must either be mapped to a schema "
+                f"parameter or explicitly skipped. Unhandled: {unhandled}."
+            ),
+        )
+
+    conv_canonical = canonical_by_param[conv_param.name]
+    rec_canonical = (
+        canonical_by_param.get(rec_url_param_name)
+        if rec_url_param_name
+        else None
+    )
+    transcript_canonical = (
+        canonical_by_param.get(transcript_param_name)
+        if transcript_param_name
+        else None
+    )
+
+    if validate_only:
+        # MAP-stage validation: every header check above has already
+        # run; the row loop only matters at IMPORT time. Skip it (and
+        # the "no data rows" guard at the bottom of the function) so
+        # the caller gets a clean pass when the mapping is shaped right.
+        return []
+
+    parsed: List[Dict[str, Any]] = []
+    for idx, row in enumerate(rows_iter):
+        # Drop fully-blank lines - matches the legacy parser behavior so
+        # trailing-newline edge cases don't fail an otherwise-good upload.
+        non_blank = any(
+            (row.get(c) or "").strip()
+            for c in mapped_canonicals
+            if c
+        )
+        if not non_blank:
+            continue
+
+        conv_value = (row.get(conv_canonical) or "").strip() if conv_canonical else ""
+        if not conv_value:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Row {idx + 1} is missing the '{conv_param.name}' "
+                    "(conversation_id) value."
+                ),
+            )
+
+        # Materialize every mapped parameter into the per-row snapshot,
+        # running per-type coercion so a bad cell aborts the upload
+        # rather than silently storing garbage.
+        parameter_values: Dict[str, Any] = {}
+        for param in parameters:
+            canonical = canonical_by_param[param.name]
+            if canonical is None:
+                continue
+            try:
+                param_type = CallImportParameterType(param.type)
+            except ValueError:
+                param_type = CallImportParameterType.TEXT
+            parameter_values[param.name] = _coerce_parameter_value(
+                row.get(canonical) or "",
+                param_type,
+                row_idx=idx,
+                param_name=param.name,
+            )
+
+        rec_value = (
+            (row.get(rec_canonical) or "").strip() if rec_canonical else ""
+        )
+        transcript_value = (
+            (row.get(transcript_canonical) or "").strip()
+            if transcript_canonical
+            else ""
+        )
+
+        parsed.append(
+            {
+                "conversation_id": conv_value,
+                "recording_url": rec_value or None,
+                "transcript": transcript_value or None,
+                "parameter_values": parameter_values,
+            }
+        )
+
+    if not parsed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{source_label} did not contain any data rows.",
+        )
+
+    return parsed
+
+
+def _parse_csv(
+    file_bytes: bytes,
+    parameters: List[CallImportSchemaParameter],
+    parameter_mapping: Dict[str, str],
+    skipped_columns: List[str],
+) -> List[Dict[str, Any]]:
+    """Parse a CSV file using the resolved schema parameters."""
     if not file_bytes:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -86,135 +489,485 @@ def _parse_csv(file_bytes: bytes) -> List[dict]:
             detail="CSV is missing a header row.",
         )
 
-    headers = _header_lookup(reader.fieldnames)
-    missing = REQUIRED_HEADERS - set(headers.keys())
-    if missing:
+    return _apply_schema_mapping(
+        list(reader.fieldnames),
+        reader,
+        parameters,
+        parameter_mapping,
+        skipped_columns,
+        source_label="CSV",
+    )
+
+
+def _open_xlsx_workbook(file_bytes: bytes):
+    """Open an xlsx/xlsm workbook from in-memory bytes (read-only stream).
+
+    Imports openpyxl lazily so the module loads even in environments that
+    haven't installed the optional dep yet (e.g. lightweight tooling
+    images). Surfaces a clean 400 if openpyxl is missing or the file is
+    not a valid Office Open XML workbook.
+    """
+    if not file_bytes:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "CSV is missing required headers: "
-                f"{sorted(missing)}. Required headers (case-insensitive): "
-                "CallID, Transcript. Optional: Recording URL "
-                "(resolved from the provider when omitted)."
-            ),
+            detail="Uploaded Excel file is empty.",
         )
+    try:
+        from openpyxl import load_workbook  # type: ignore
+        from openpyxl.utils.exceptions import InvalidFileException  # type: ignore
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                "Excel uploads require the 'openpyxl' package which is "
+                "not installed in this environment."
+            ),
+        ) from exc
 
-    callid_h = headers["callid"]
-    url_h = headers.get("recording url")
-    transcript_h = headers["transcript"]
+    try:
+        return load_workbook(
+            io.BytesIO(file_bytes),
+            read_only=True,
+            data_only=True,
+        )
+    except InvalidFileException as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"File is not a valid .xlsx workbook: {exc}",
+        ) from exc
+    except Exception as exc:  # zipfile.BadZipFile etc.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Could not open Excel workbook: {exc}",
+        ) from exc
 
-    parsed: List[dict] = []
-    for idx, row in enumerate(reader):
-        call_id = (row.get(callid_h) or "").strip()
-        url = (row.get(url_h) or "").strip() if url_h else ""
-        transcript = (row.get(transcript_h) or "").strip()
-        if not call_id and not url and not transcript:
+
+def _xlsx_sheet_headers_and_rows(
+    worksheet,
+) -> Tuple[List[str], List[Dict[str, str]]]:
+    """Read row 1 as headers and the rest as dicts of stringified cells.
+
+    Empty trailing header cells are dropped. Duplicate headers preserve
+    the first occurrence (matches ``csv.DictReader`` behavior, which
+    silently drops duplicates).
+    """
+    iterator = worksheet.iter_rows(values_only=True)
+    try:
+        header_row = next(iterator)
+    except StopIteration:
+        return [], []
+
+    headers: List[str] = []
+    seen: set[str] = set()
+    for cell in header_row:
+        name = _xlsx_cell_to_str(cell).strip()
+        if not name:
+            # Stop at the first blank header — treats trailing empty
+            # columns as not part of the table (matches typical Excel
+            # workbook conventions).
+            break
+        norm = name.lower()
+        if norm in seen:
             continue
-        if not call_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Row {idx + 1} is missing CallID.",
-            )
-        parsed.append(
+        seen.add(norm)
+        headers.append(name)
+
+    rows: List[Dict[str, str]] = []
+    for row in iterator:
+        if row is None:
+            continue
+        # Pad / truncate to the header length so dict construction is
+        # stable even when a row has fewer / extra cells than the header.
+        cells = list(row[: len(headers)])
+        if len(cells) < len(headers):
+            cells.extend([None] * (len(headers) - len(cells)))
+        if not any(_xlsx_cell_to_str(c).strip() for c in cells):
+            # Skip fully-blank rows (openpyxl read_only routinely yields
+            # trailing empties when the worksheet's used range exceeds
+            # the actual data).
+            continue
+        rows.append(
             {
-                "external_call_id": call_id,
-                "recording_url": url or None,
-                "transcript": transcript or None,
+                header: _xlsx_cell_to_str(value)
+                for header, value in zip(headers, cells)
             }
         )
 
-    if not parsed:
+    return headers, rows
+
+
+def _parse_xlsx(
+    file_bytes: bytes,
+    sheet_name: Optional[str],
+    parameters: List[CallImportSchemaParameter],
+    parameter_mapping: Dict[str, str],
+    skipped_columns: List[str],
+) -> List[Dict[str, Any]]:
+    """Parse a single worksheet from an xlsx/xlsm workbook.
+
+    ``sheet_name`` must match one of the workbook's sheets (case
+    insensitive whitespace-trimmed match). Returns the same shape as
+    :func:`_parse_csv` so the upload handler can persist either format
+    through the same code path.
+    """
+    if not sheet_name or not sheet_name.strip():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="CSV did not contain any data rows.",
+            detail="sheet_name is required when uploading an Excel workbook.",
         )
 
-    return parsed
+    workbook = _open_xlsx_workbook(file_bytes)
+    try:
+        sheet_names = list(workbook.sheetnames)
+        target_norm = sheet_name.strip().lower()
+        match = next(
+            (s for s in sheet_names if s.strip().lower() == target_norm),
+            None,
+        )
+        if match is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Sheet '{sheet_name}' not found in workbook. "
+                    f"Available sheets: {sheet_names}"
+                ),
+            )
+        worksheet = workbook[match]
+        headers, rows = _xlsx_sheet_headers_and_rows(worksheet)
+    finally:
+        workbook.close()
 
-
-@router.post(
-    "/upload",
-    response_model=CallImportUploadResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-    operation_id="uploadCallImportCsv",
-)
-async def upload_call_import_csv(
-    file: UploadFile = File(...),
-    api_key: str = Depends(get_api_key),
-    organization_id: UUID = Depends(get_organization_id),
-    db: Session = Depends(get_db),
-) -> CallImportUploadResponse:
-    """Accept a CSV (CallID, Recording URL, Transcript) and queue per-row import jobs."""
-
-    if not file.filename or not file.filename.lower().endswith(".csv"):
+    if not headers:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="File must be a .csv",
+            detail=f"Sheet '{sheet_name}' is missing a header row.",
         )
 
-    file_bytes = await file.read()
-    if len(file_bytes) > MAX_CSV_BYTES:
+    return _apply_schema_mapping(
+        headers,
+        rows,
+        parameters,
+        parameter_mapping,
+        skipped_columns,
+        source_label=f"Sheet '{sheet_name}'",
+    )
+
+
+def _csv_preview_sheets(
+    file_bytes: bytes, filename: Optional[str]
+) -> List[CallImportPreviewSheet]:
+    """Build the synthetic single-sheet preview entry for a CSV upload."""
+    if not file_bytes:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"CSV exceeds {MAX_CSV_BYTES} bytes",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Uploaded CSV is empty.",
+        )
+    try:
+        text_stream = io.StringIO(file_bytes.decode("utf-8-sig"))
+    except UnicodeDecodeError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="CSV must be UTF-8 encoded.",
+        )
+    reader = csv.DictReader(text_stream)
+    if not reader.fieldnames:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="CSV is missing a header row.",
+        )
+    headers = list(reader.fieldnames)
+    row_count = 0
+    for row in reader:
+        # Match the parse-time skip: ignore fully blank rows so the
+        # count the user sees lines up with what /upload will ingest.
+        if any((v or "").strip() for v in row.values()):
+            row_count += 1
+
+    sheet_label = (filename or "sheet1").rsplit("/", 1)[-1] or "sheet1"
+    return [
+        CallImportPreviewSheet(
+            name=sheet_label,
+            headers=headers,
+            row_count=row_count,
+        )
+    ]
+
+
+def _xlsx_preview_sheets(file_bytes: bytes) -> List[CallImportPreviewSheet]:
+    """List every worksheet in the workbook with its headers and row count."""
+    workbook = _open_xlsx_workbook(file_bytes)
+    sheets: List[CallImportPreviewSheet] = []
+    try:
+        for name in workbook.sheetnames:
+            worksheet = workbook[name]
+            headers, rows = _xlsx_sheet_headers_and_rows(worksheet)
+            sheets.append(
+                CallImportPreviewSheet(
+                    name=name,
+                    headers=headers,
+                    row_count=len(rows),
+                )
+            )
+    finally:
+        workbook.close()
+    return sheets
+
+
+def _parse_json_form_field(name: str, raw: Optional[str], default):
+    """Decode a JSON-encoded form field with a friendly 400 on bad JSON."""
+    if raw is None or raw == "":
+        return default
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{name} must be valid JSON: {exc}",
         )
 
-    rows = _parse_csv(file_bytes)
 
+# ---------------------------------------------------------------------------
+# Shared helpers used by the staged endpoints (UPLOAD / MAP / IMPORT) and the
+# legacy one-shot ``POST /upload`` shim. Extracted here so each stage and the
+# back-compat path operate on the exact same validation + persistence code.
+# ---------------------------------------------------------------------------
+
+
+def _source_content_type(fmt: str) -> str:
+    """Return the canonical ``Content-Type`` for a parsed file format."""
+    if fmt == "csv":
+        return "text/csv"
+    if fmt == "xlsx":
+        return (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    return "application/octet-stream"
+
+
+def _source_s3_key(
+    organization_id: UUID, call_import_id: UUID, fmt: str
+) -> str:
+    """Build the canonical S3 key for an upload's source file.
+
+    Mirrors the per-row recording key convention used by
+    ``process_call_import_row`` so a single prefix sweep on delete still
+    cleans up both the source artefact and every fetched recording.
+    """
+    from app.services.storage.s3_service import s3_service
+
+    ext = "xlsx" if fmt == "xlsx" else "csv"
+    return (
+        f"{s3_service.prefix}organizations/{organization_id}/call_imports/"
+        f"{call_import_id}/source.{ext}"
+    )
+
+
+def _build_available_sheets(
+    file_bytes: bytes, fmt: str, filename: Optional[str]
+) -> List[CallImportPreviewSheet]:
+    """Snapshot of sheets + headers cached on the batch at UPLOAD time."""
+    if fmt == "csv":
+        return _csv_preview_sheets(file_bytes, filename)
+    return _xlsx_preview_sheets(file_bytes)
+
+
+def _resolve_schema(
+    db: Session,
+    organization_id: UUID,
+    workspace_id: UUID,
+    schema_id: UUID,
+) -> CallImportSchema:
+    """Fetch + validate a schema row in the active workspace.
+
+    Eager-loads ``parameters`` so callers can iterate without re-querying.
+    """
+    from sqlalchemy.orm import selectinload as _selectinload
+
+    schema = (
+        db.query(CallImportSchema)
+        .options(_selectinload(CallImportSchema.parameters))
+        .filter(
+            CallImportSchema.id == schema_id,
+            CallImportSchema.organization_id == organization_id,
+            CallImportSchema.workspace_id == workspace_id,
+        )
+        .first()
+    )
+    if not schema:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Call import schema not found in the active workspace.",
+        )
+    if not list(schema.parameters):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Selected schema has no parameters defined.",
+        )
+    return schema
+
+
+def _resolve_telephony_integration(
+    db: Session,
+    organization_id: UUID,
+    telephony_integration_id: UUID,
+    provider: str,
+) -> TelephonyIntegration:
+    """Fetch + validate a telephony credential against the requested provider."""
     integration = (
         db.query(TelephonyIntegration)
         .filter(
+            TelephonyIntegration.id == telephony_integration_id,
             TelephonyIntegration.organization_id == organization_id,
-            TelephonyIntegration.provider == TelephonyProvider.EXOTEL.value,
-            TelephonyIntegration.is_active.is_(True),
         )
         .first()
     )
     if not integration:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Telephony credential not found for this organization.",
+        )
+    if (integration.provider or "").lower() != provider.lower():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                "No active Exotel telephony integration is configured for this "
-                "organization. Add one via /api/v1/telephony before importing."
+                f"Selected credential is for provider '{integration.provider}', "
+                f"but request specified '{provider}'."
+            ),
+        )
+    if not integration.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Selected telephony credential is inactive.",
+        )
+    return integration
+
+
+def _clean_parameter_mapping(
+    mapping_payload: Any,
+    parameters: List[CallImportSchemaParameter],
+    schema_name: str,
+) -> Dict[str, str]:
+    """Trim values and drop empties; reject unknown parameter names.
+
+    Accepts an already-decoded value (dict-shaped) so the same helper
+    works for the JSON-form upload path and the JSON-body PATCH path.
+    """
+    if not isinstance(mapping_payload, dict) or not all(
+        isinstance(k, str) and (v is None or isinstance(v, str))
+        for k, v in mapping_payload.items()
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "parameter_mapping must be an object of "
+                "{parameter_name: csv_header}."
             ),
         )
 
-    call_import = CallImport(
-        organization_id=organization_id,
-        provider=TelephonyProvider.EXOTEL.value,
-        original_filename=file.filename,
-        total_rows=len(rows),
-        completed_rows=0,
-        failed_rows=0,
-        status=CallImportStatus.PENDING,
-    )
-    db.add(call_import)
-    db.flush()  # populate call_import.id
+    valid_param_names = {p.name for p in parameters}
+    cleaned: Dict[str, str] = {}
+    for raw_name, raw_header in mapping_payload.items():
+        if raw_name not in valid_param_names:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"parameter_mapping references unknown parameter "
+                    f"'{raw_name}' on schema '{schema_name}'."
+                ),
+            )
+        header = (raw_header or "").strip()
+        if header:
+            cleaned[raw_name] = header
+    return cleaned
 
+
+def _clean_skipped_columns(skipped_payload: Any) -> List[str]:
+    """Dedupe (case-insensitively) and drop blanks; preserve original casing."""
+    if not isinstance(skipped_payload, list) or not all(
+        isinstance(item, str) for item in skipped_payload
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="skipped_columns must be a list of header strings.",
+        )
+    cleaned: List[str] = []
+    seen: set[str] = set()
+    for item in skipped_payload:
+        norm = _normalize_header(item)
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        cleaned.append(item)
+    return cleaned
+
+
+def _parse_source_file(
+    file_bytes: bytes,
+    fmt: str,
+    sheet_name: Optional[str],
+    parameters: List[CallImportSchemaParameter],
+    cleaned_mapping: Dict[str, str],
+    cleaned_skipped: List[str],
+) -> List[Dict[str, Any]]:
+    """Run the format-appropriate parser against a buffer of file bytes."""
+    if fmt == "csv":
+        return _parse_csv(file_bytes, parameters, cleaned_mapping, cleaned_skipped)
+    return _parse_xlsx(
+        file_bytes, sheet_name, parameters, cleaned_mapping, cleaned_skipped
+    )
+
+
+def _materialize_rows(
+    db: Session,
+    call_import: CallImport,
+    parsed_rows: List[Dict[str, Any]],
+    organization_id: UUID,
+) -> List[CallImportRow]:
+    """Insert one ``CallImportRow`` per parsed row, returning the new models."""
     row_models: List[CallImportRow] = []
-    for idx, row in enumerate(rows):
+    for idx, row in enumerate(parsed_rows):
+        # Stamp ``transcript_source='csv'`` when the upload actually
+        # provided a transcript so the UI badge ("From CSV") works from
+        # day one. Blank cells stay NULL so the row reads as "no
+        # production transcript yet".
+        csv_transcript = row["transcript"]
         row_model = CallImportRow(
             call_import_id=call_import.id,
             organization_id=organization_id,
             row_index=idx,
-            external_call_id=row["external_call_id"],
+            conversation_id=row["conversation_id"],
             recording_url=row["recording_url"],
-            transcript=row["transcript"],
+            transcript=csv_transcript,
+            transcript_source=(
+                "csv" if csv_transcript and csv_transcript.strip() else None
+            ),
+            raw_columns=row["parameter_values"] or None,
             status=CallImportRowStatus.PENDING,
         )
         db.add(row_model)
         row_models.append(row_model)
+    return row_models
 
-    call_import.status = CallImportStatus.PROCESSING
-    db.commit()
-    db.refresh(call_import)
 
-    from app.workers.tasks.process_call_import_row import process_call_import_row_task
+def _enqueue_row_tasks(
+    db: Session,
+    call_import: CallImport,
+    row_models: List[CallImportRow],
+) -> None:
+    """Fan rows out to the ``imports`` Celery queue.
+
+    Mirrors the legacy upload handler: on enqueue failure we mark the
+    individual row FAILED and keep going so the rest of the batch
+    still makes progress.
+    """
+    from app.workers.tasks.process_call_import_row import (
+        process_call_import_row_task,
+    )
 
     for row_model in row_models:
         try:
             process_call_import_row_task.delay(str(row_model.id))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "Failed to enqueue call import row {} for import {}",
                 row_model.id,
@@ -224,10 +977,731 @@ async def upload_call_import_csv(
             row_model.error_message = f"Failed to enqueue: {exc}"
     db.commit()
 
+
+def _ensure_s3_enabled() -> None:
+    """Hard-fail UPLOAD if S3 isn't configured (no local fallback)."""
+    from app.services.storage.s3_service import s3_service
+
+    if not s3_service.is_enabled():
+        err = (
+            s3_service.get_status_message()
+            or "S3 is not enabled or not configured"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Call uploads require S3 storage so the file can be "
+                f"persisted between stages: {err}"
+            ),
+        )
+
+
+def _validate_sheet_choice(
+    fmt: str,
+    sheet_name: Optional[str],
+    available_sheets: Optional[List[Dict[str, Any]]],
+) -> Optional[str]:
+    """Normalize / validate ``sheet_name`` against the persisted snapshot.
+
+    Returns the canonical sheet name (matching the workbook's casing)
+    so downstream parsing addresses the right worksheet.
+    """
+    if fmt == "csv":
+        if sheet_name and sheet_name.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="sheet_name is not applicable to CSV uploads.",
+            )
+        return None
+
+    cleaned = (sheet_name or "").strip() or None
+    if cleaned is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="sheet_name is required when the source is an Excel workbook.",
+        )
+
+    if not available_sheets:
+        # Nothing to validate against (e.g. legacy batch without snapshot);
+        # let downstream parsing error out instead of silently importing.
+        return cleaned
+
+    target = cleaned.strip().lower()
+    for entry in available_sheets:
+        name = entry.get("name") if isinstance(entry, dict) else None
+        if isinstance(name, str) and name.strip().lower() == target:
+            return name
+    sheet_names = [
+        entry.get("name") for entry in available_sheets if isinstance(entry, dict)
+    ]
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=(
+            f"Sheet '{cleaned}' not found in the staged file. "
+            f"Available sheets: {sheet_names}"
+        ),
+    )
+
+
+def _tag_response_payload(tags: Optional[List[CallImportTag]]) -> List[Dict[str, Any]]:
+    """Shape a CallImport's tag relationship for the upload response."""
+    return [
+        {
+            "id": tag.id,
+            "name": tag.name,
+            "color": tag.color,
+            "created_at": tag.created_at,
+            "updated_at": tag.updated_at,
+        }
+        for tag in (tags or [])
+    ]
+
+
+@router.post(
+    "/preview",
+    response_model=CallImportPreviewResponse,
+    operation_id="previewCallImportFile",
+)
+async def preview_call_import_file(
+    file: UploadFile = File(...),
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+) -> CallImportPreviewResponse:
+    """Inspect an uploaded CSV / Excel file and return its sheets + headers.
+
+    Drives the column-mapping UI without forcing the frontend to parse
+    CSV / xlsx itself — keeps client and server in lockstep on quoted
+    fields, encodings, and Excel cell coercion. CSVs return a single
+    synthetic sheet named after the filename; Excel workbooks return one
+    entry per worksheet (in workbook order).
+    """
+    del api_key, organization_id, workspace_id, db  # auth only
+
+    fmt = _file_format(file.filename)
+    if fmt is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Unsupported file format. Allowed extensions: "
+                f"{', '.join(ALLOWED_EXTENSIONS)}."
+            ),
+        )
+
+    file_bytes = await file.read()
+    if len(file_bytes) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File exceeds {MAX_UPLOAD_BYTES} bytes",
+        )
+
+    if fmt == "csv":
+        sheets = _csv_preview_sheets(file_bytes, file.filename)
+    else:
+        sheets = _xlsx_preview_sheets(file_bytes)
+
+    return CallImportPreviewResponse(format=fmt, sheets=sheets)
+
+
+@router.post(
+    "",
+    response_model=CallImportResponse,
+    status_code=status.HTTP_201_CREATED,
+    operation_id="createCallImport",
+)
+async def create_call_import(
+    file: UploadFile = File(
+        ...,
+        description="CSV / Excel file to stage. Persisted to S3 between stages.",
+    ),
+    dataset: str = Form(
+        ...,
+        description=(
+            "Required free-text dataset label. Collected up-front so the "
+            "batch is filterable from the moment it lands."
+        ),
+    ),
+    tag_ids: Optional[List[UUID]] = Form(
+        None,
+        description="Optional list of CallImportTag ids to attach to the new batch.",
+    ),
+    schema_id: Optional[UUID] = Form(
+        None,
+        description=(
+            "Optional schema pre-pick. The user can still change it during "
+            "the MAP stage; provided here only so the detail page can pre-"
+            "select the schema dropdown."
+        ),
+    ),
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+) -> CallImportResponse:
+    """UPLOAD stage of the staged call-import flow.
+
+    Persists the source file to S3 and creates a ``CallImport`` row with
+    ``status='uploaded'``. No mapping, no provider, no rows yet — the
+    user moves through MAP and IMPORT as separate idempotent steps.
+
+    Dataset is collected here (rather than at IMPORT) so the batch is
+    filterable from the moment it appears in the list view.
+    """
+    del api_key
+
+    fmt = _file_format(file.filename)
+    if fmt is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Unsupported file format. Allowed extensions: "
+                f"{', '.join(ALLOWED_EXTENSIONS)}."
+            ),
+        )
+
+    normalized_dataset = _normalize_dataset(dataset)
+    if not normalized_dataset:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="dataset is required and must be a non-empty string.",
+        )
+
+    file_bytes = await file.read()
+    if len(file_bytes) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File exceeds {MAX_UPLOAD_BYTES} bytes",
+        )
+
+    # Parse-now so we (a) reject garbage uploads up-front instead of
+    # later in the MAP step, and (b) capture the sheets snapshot the
+    # MAP UI needs without having to re-fetch the file from S3.
+    sheets = _build_available_sheets(file_bytes, fmt, file.filename)
+
+    # Optional schema pre-pick: validated only if supplied (the user is
+    # allowed to set it for the first time during MAP).
+    if schema_id is not None:
+        _resolve_schema(db, organization_id, workspace_id, schema_id)
+
+    tag_rows = _resolve_tags(db, organization_id, tag_ids)
+
+    _ensure_s3_enabled()
+
+    # Pre-generate the id so we can compute a deterministic S3 key
+    # before the row is persisted, keeping ``source_s3_key`` consistent
+    # with the prefix sweep used at delete-time.
+    import uuid as _uuid
+
+    call_import_id = _uuid.uuid4()
+    s3_key = _source_s3_key(organization_id, call_import_id, fmt)
+    content_type = _source_content_type(fmt)
+
+    from app.services.storage.s3_service import s3_service, StorageError
+
+    try:
+        s3_service.upload_file_by_key(file_bytes, s3_key, content_type=content_type)
+    except StorageError as exc:
+        logger.exception(
+            "Failed to upload source file to S3 for new call import {}",
+            call_import_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Failed to persist upload to S3: {exc}",
+        )
+
+    call_import = CallImport(
+        id=call_import_id,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        # Provider + credential aren't known until the IMPORT stage; leave
+        # them NULL so the staged-vs-legacy distinction is visible at a
+        # glance from the DB.
+        provider=None,
+        telephony_integration_id=None,
+        original_filename=file.filename,
+        sheet_name=None,
+        dataset=normalized_dataset,
+        schema_id=schema_id,
+        parameter_mapping={},
+        skipped_columns=[],
+        column_mapping={},
+        extra_columns=[],
+        custom_column_mapping={},
+        source_s3_key=s3_key,
+        source_format=fmt,
+        source_size_bytes=len(file_bytes),
+        source_content_type=content_type,
+        available_sheets=[sheet.model_dump() for sheet in sheets],
+        total_rows=0,
+        completed_rows=0,
+        failed_rows=0,
+        status=CallImportStatus.UPLOADED,
+    )
+    if tag_rows:
+        call_import.tags = tag_rows
+
+    db.add(call_import)
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        # Best-effort cleanup of the uploaded S3 object so a failed
+        # commit doesn't leak storage.
+        try:
+            s3_service.delete_file_by_key(s3_key)
+        except Exception as cleanup_exc:  # noqa: BLE001
+            logger.warning(
+                "Failed to clean up orphaned S3 object {} after DB rollback: {}",
+                s3_key,
+                cleanup_exc,
+            )
+        raise
+
+    db.refresh(call_import)
+    return CallImportResponse.model_validate(call_import)
+
+
+@router.patch(
+    "/{call_import_id}/mapping",
+    response_model=CallImportResponse,
+    operation_id="updateCallImportMapping",
+)
+async def update_call_import_mapping(
+    call_import_id: UUID,
+    payload: CallImportMappingUpdate,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+) -> CallImportResponse:
+    """MAP stage of the staged call-import flow.
+
+    Validates ``parameter_mapping`` + ``skipped_columns`` against the
+    sheet headers captured at UPLOAD time and persists them on the
+    batch. Idempotent: callers may submit this multiple times while
+    the batch is in ``uploaded`` or ``mapped`` state.
+    """
+    del api_key
+
+    call_import = (
+        db.query(CallImport)
+        .filter(
+            CallImport.id == call_import_id,
+            CallImport.organization_id == organization_id,
+            CallImport.workspace_id == workspace_id,
+        )
+        .first()
+    )
+    if not call_import:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Call import not found",
+        )
+
+    if call_import.status not in (
+        CallImportStatus.UPLOADED,
+        CallImportStatus.MAPPED,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Cannot edit mapping on a batch in status "
+                f"'{call_import.status.value}'. Mapping can only be edited "
+                "before the IMPORT stage."
+            ),
+        )
+
+    if not call_import.source_s3_key or not call_import.source_format:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This batch was not uploaded through the staged flow and "
+                "cannot have its mapping edited."
+            ),
+        )
+
+    schema = _resolve_schema(
+        db, organization_id, workspace_id, payload.schema_id
+    )
+    parameters = list(schema.parameters)
+
+    canonical_sheet = _validate_sheet_choice(
+        call_import.source_format,
+        payload.sheet_name,
+        call_import.available_sheets,
+    )
+
+    # Pull the headers for the selected sheet straight out of the
+    # snapshot so we don't have to re-download the file from S3 just to
+    # validate the mapping.
+    headers: List[str] = []
+    if call_import.available_sheets:
+        if canonical_sheet is None:
+            # CSV: single synthetic sheet.
+            entry = call_import.available_sheets[0]
+            headers = list(entry.get("headers") or [])
+        else:
+            for entry in call_import.available_sheets:
+                if not isinstance(entry, dict):
+                    continue
+                name = entry.get("name")
+                if isinstance(name, str) and name == canonical_sheet:
+                    headers = list(entry.get("headers") or [])
+                    break
+
+    cleaned_mapping = _clean_parameter_mapping(
+        payload.parameter_mapping, parameters, schema.name
+    )
+    cleaned_skipped = _clean_skipped_columns(payload.skipped_columns)
+
+    # Run the same per-column validation as the parse path so the user
+    # gets an immediate 400 if a required parameter is left unmapped or
+    # a header is neither mapped nor skipped — without needing to read
+    # the file. ``validate_only`` skips the row loop (and the empty-rows
+    # guard) since the row data lives in S3, not in this request.
+    if headers:
+        _apply_schema_mapping(
+            headers,
+            iter(()),
+            parameters,
+            cleaned_mapping,
+            cleaned_skipped,
+            source_label=(
+                f"Sheet '{canonical_sheet}'"
+                if canonical_sheet is not None
+                else "CSV"
+            ),
+            validate_only=True,
+        )
+
+    call_import.schema_id = schema.id
+    call_import.parameter_mapping = dict(cleaned_mapping)
+    call_import.skipped_columns = list(cleaned_skipped)
+    call_import.sheet_name = canonical_sheet
+    call_import.status = CallImportStatus.MAPPED
+    db.commit()
+    db.refresh(call_import)
+    return CallImportResponse.model_validate(call_import)
+
+
+@router.post(
+    "/{call_import_id}/import",
+    response_model=CallImportUploadResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    operation_id="startCallImport",
+)
+async def start_call_import(
+    call_import_id: UUID,
+    payload: CallImportStartRequest,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+) -> CallImportUploadResponse:
+    """IMPORT stage of the staged call-import flow.
+
+    Re-fetches the staged source file from S3, materialises one row per
+    parsed data line, and fans them out to the ``imports`` Celery queue
+    so the existing per-row pipeline takes over.
+    """
+    del api_key
+
+    from sqlalchemy.orm import selectinload as _selectinload
+
+    call_import = (
+        db.query(CallImport)
+        .options(_selectinload(CallImport.tags))
+        .filter(
+            CallImport.id == call_import_id,
+            CallImport.organization_id == organization_id,
+            CallImport.workspace_id == workspace_id,
+        )
+        .first()
+    )
+    if not call_import:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Call import not found",
+        )
+
+    if call_import.status != CallImportStatus.MAPPED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Cannot start import for a batch in status "
+                f"'{call_import.status.value}'. Map the columns first."
+            ),
+        )
+
+    if not call_import.source_s3_key or not call_import.source_format:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This batch has no staged source file and cannot be imported "
+                "through the staged flow."
+            ),
+        )
+
+    if not call_import.schema_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot start import without a mapped schema.",
+        )
+
+    schema = _resolve_schema(
+        db, organization_id, workspace_id, call_import.schema_id
+    )
+    parameters = list(schema.parameters)
+
+    integration = _resolve_telephony_integration(
+        db,
+        organization_id,
+        payload.telephony_integration_id,
+        payload.provider,
+    )
+
+    # Re-fetch the staged source file from S3 each time IMPORT runs so
+    # the parse is always against the artefact we promised the user
+    # (vs. drifting state from a half-cached buffer).
+    from app.services.storage.s3_service import s3_service, StorageError
+
+    if not s3_service.is_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "S3 is required to read the staged source file: "
+                f"{s3_service.get_status_message() or 'not configured'}"
+            ),
+        )
+
+    try:
+        file_bytes = s3_service.download_file_by_key(call_import.source_s3_key)
+    except StorageError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Could not read staged source file from S3: {exc}",
+        )
+
+    cleaned_skipped = _clean_skipped_columns(
+        list(call_import.skipped_columns or [])
+    )
+
+    parsed_rows = _parse_source_file(
+        file_bytes,
+        call_import.source_format,
+        call_import.sheet_name,
+        parameters,
+        dict(call_import.parameter_mapping or {}),
+        cleaned_skipped,
+    )
+
+    call_import.provider = integration.provider
+    call_import.telephony_integration_id = integration.id
+    call_import.total_rows = len(parsed_rows)
+    call_import.completed_rows = 0
+    call_import.failed_rows = 0
+
+    row_models = _materialize_rows(
+        db, call_import, parsed_rows, organization_id
+    )
+
+    call_import.status = CallImportStatus.PROCESSING
+    db.commit()
+    db.refresh(call_import)
+
+    _enqueue_row_tasks(db, call_import, row_models)
+
     return CallImportUploadResponse(
         id=call_import.id,
         total_rows=call_import.total_rows,
         status=call_import.status,
+        dataset=call_import.dataset,
+        tags=_tag_response_payload(call_import.tags),
+        message=(
+            f"Accepted {call_import.total_rows} rows for import. "
+            "Recordings will be fetched asynchronously."
+        ),
+    )
+
+
+@router.post(
+    "/upload",
+    response_model=CallImportUploadResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    operation_id="uploadCallImportCsv",
+    deprecated=True,
+)
+async def upload_call_import_csv(
+    file: UploadFile = File(...),
+    provider: str = Form(
+        ...,
+        description=(
+            "Telephony provider key (e.g. 'exotel', 'plivo'). Must match the "
+            "selected telephony_integration_id's provider."
+        ),
+    ),
+    telephony_integration_id: UUID = Form(
+        ...,
+        description=(
+            "Specific TelephonyIntegration credential row to use when "
+            "downloading recordings for this batch."
+        ),
+    ),
+    schema_id: UUID = Form(
+        ...,
+        description=(
+            "Reusable Input Parameter schema this upload is mapped against. "
+            "Must belong to the active workspace."
+        ),
+    ),
+    parameter_mapping: str = Form(
+        ...,
+        description=(
+            "JSON-encoded ``{schema_parameter_name: source_header}`` map "
+            "covering every required schema parameter. Optional parameters "
+            "may be omitted or set to an empty string."
+        ),
+    ),
+    skipped_columns: Optional[str] = Form(
+        None,
+        description=(
+            "JSON-encoded list of source header strings the uploader has "
+            "explicitly skipped. Every header in the file must either be "
+            "mapped or appear here; otherwise the upload is rejected so a "
+            "forgotten column never silently drops."
+        ),
+    ),
+    dataset: Optional[str] = Form(
+        None,
+        description=(
+            "Optional free-text dataset label for high-level segregation. "
+            "Empty strings are stored as NULL."
+        ),
+    ),
+    tag_ids: Optional[List[UUID]] = Form(
+        None,
+        description="Optional list of CallImportTag ids to attach to the new batch.",
+    ),
+    sheet_name: Optional[str] = Form(
+        None,
+        description=(
+            "Worksheet to import when the file is an Excel workbook "
+            "(.xlsx / .xlsm). REQUIRED for Excel uploads. Ignored for CSV "
+            "uploads (rejected with 400 if non-empty so typos surface "
+            "instead of silently importing the wrong source)."
+        ),
+    ),
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+) -> CallImportUploadResponse:
+    """Legacy one-shot upload kept for backward compatibility.
+
+    DEPRECATED: prefer the staged flow
+    (``POST /`` → ``PATCH /{id}/mapping`` → ``POST /{id}/import``) so
+    each step is idempotent and resumable. This endpoint runs all three
+    stages inline in a single transaction so existing scripts /
+    integrations keep working unchanged.
+    """
+    del api_key
+
+    fmt = _file_format(file.filename)
+    if fmt is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Unsupported file format. Allowed extensions: "
+                f"{', '.join(ALLOWED_EXTENSIONS)}."
+            ),
+        )
+
+    sheet_name_clean = (sheet_name or "").strip() or None
+    if fmt == "csv" and sheet_name_clean is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="sheet_name is not applicable to CSV uploads.",
+        )
+    if fmt == "xlsx" and sheet_name_clean is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="sheet_name is required when uploading an Excel workbook.",
+        )
+
+    file_bytes = await file.read()
+    if len(file_bytes) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File exceeds {MAX_UPLOAD_BYTES} bytes",
+        )
+
+    schema = _resolve_schema(db, organization_id, workspace_id, schema_id)
+    parameters = list(schema.parameters)
+
+    mapping_payload = _parse_json_form_field(
+        "parameter_mapping", parameter_mapping, {}
+    )
+    cleaned_mapping = _clean_parameter_mapping(
+        mapping_payload, parameters, schema.name
+    )
+
+    skipped_payload = _parse_json_form_field("skipped_columns", skipped_columns, [])
+    cleaned_skipped = _clean_skipped_columns(skipped_payload)
+
+    integration = _resolve_telephony_integration(
+        db, organization_id, telephony_integration_id, provider
+    )
+
+    parsed_rows = _parse_source_file(
+        file_bytes, fmt, sheet_name_clean, parameters, cleaned_mapping, cleaned_skipped
+    )
+
+    tag_rows = _resolve_tags(db, organization_id, tag_ids)
+
+    call_import = CallImport(
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        provider=integration.provider,
+        telephony_integration_id=integration.id,
+        original_filename=file.filename,
+        sheet_name=sheet_name_clean,
+        dataset=_normalize_dataset(dataset),
+        schema_id=schema.id,
+        parameter_mapping=dict(cleaned_mapping),
+        skipped_columns=list(cleaned_skipped),
+        # Legacy columns are left empty on new uploads; the detail page
+        # falls back to ``parameter_mapping`` when ``schema_id`` is set.
+        column_mapping={},
+        extra_columns=[],
+        custom_column_mapping={},
+        total_rows=len(parsed_rows),
+        completed_rows=0,
+        failed_rows=0,
+        status=CallImportStatus.PENDING,
+    )
+    if tag_rows:
+        call_import.tags = tag_rows
+    db.add(call_import)
+    db.flush()  # populate call_import.id
+
+    row_models = _materialize_rows(
+        db, call_import, parsed_rows, organization_id
+    )
+
+    call_import.status = CallImportStatus.PROCESSING
+    db.commit()
+    db.refresh(call_import)
+
+    _enqueue_row_tasks(db, call_import, row_models)
+
+    return CallImportUploadResponse(
+        id=call_import.id,
+        total_rows=call_import.total_rows,
+        status=call_import.status,
+        dataset=call_import.dataset,
+        tags=_tag_response_payload(call_import.tags),
         message=(
             f"Accepted {call_import.total_rows} rows for import. "
             "Recordings will be fetched asynchronously."
@@ -244,15 +1718,59 @@ async def list_call_imports(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     status_filter: Optional[CallImportStatus] = Query(None, alias="status"),
+    dataset: Optional[str] = Query(
+        None,
+        description=(
+            "Filter by exact dataset string (case-insensitive). Pass the "
+            "literal value '__none__' to filter to imports with no dataset."
+        ),
+    ),
+    tag_id: Optional[List[UUID]] = Query(
+        None,
+        description="Filter to imports tagged with ALL of the given tag ids.",
+    ),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
 ) -> CallImportListResponse:
-    """List call-import batches for the organization, newest first."""
+    """List call-import batches for the active workspace, newest first.
 
-    query = db.query(CallImport).filter(CallImport.organization_id == organization_id)
+    Scoped to (organization_id, workspace_id) so users only see imports
+    for the workspace they're currently in. Supports a high-level
+    ``dataset`` filter (powers the segregation dropdown at the top of
+    the imports page) plus an AND-style multi-tag filter via repeated
+    ``tag_id`` parameters.
+    """
+
+    query = (
+        db.query(CallImport)
+        .filter(
+            CallImport.organization_id == organization_id,
+            CallImport.workspace_id == workspace_id,
+        )
+    )
     if status_filter is not None:
         query = query.filter(CallImport.status == status_filter)
+
+    if dataset is not None:
+        if dataset == "__none__":
+            query = query.filter(CallImport.dataset.is_(None))
+        elif dataset.strip():
+            query = query.filter(
+                func.lower(CallImport.dataset) == dataset.strip().lower()
+            )
+
+    if tag_id:
+        from app.models.database import CallImportTagAssignment
+
+        for single_tag_id in tag_id:
+            sub = (
+                db.query(CallImportTagAssignment.call_import_id)
+                .filter(CallImportTagAssignment.tag_id == single_tag_id)
+                .subquery()
+            )
+            query = query.filter(CallImport.id.in_(sub))
 
     total = query.count()
     items = (
@@ -271,19 +1789,61 @@ async def list_call_imports(
 
 
 @router.get(
-    "/{call_import_id}",
-    response_model=CallImportDetailResponse,
-    operation_id="getCallImportDetail",
+    "/datasets",
+    response_model=List[str],
+    operation_id="listCallImportDatasets",
 )
-async def get_call_import_detail(
-    call_import_id: UUID,
-    row_limit: int = Query(500, ge=1, le=5000),
-    row_offset: int = Query(0, ge=0),
+async def list_call_import_datasets(
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
     db: Session = Depends(get_db),
-) -> CallImportDetailResponse:
-    """Fetch a single import batch with a slice of its rows."""
+) -> List[str]:
+    """Return the distinct, non-null dataset labels in use for the active
+    workspace.
+
+    Scoped per-workspace so each workspace's Dataset dropdown only shows
+    its own segregation labels.
+    """
+    rows = (
+        db.query(CallImport.dataset)
+        .filter(
+            CallImport.organization_id == organization_id,
+            CallImport.workspace_id == workspace_id,
+            CallImport.dataset.isnot(None),
+            CallImport.dataset != "",
+        )
+        .distinct()
+        .order_by(CallImport.dataset.asc())
+        .all()
+    )
+    return [row[0] for row in rows if row[0]]
+
+
+@router.patch(
+    "/{call_import_id}",
+    response_model=CallImportResponse,
+    operation_id="updateCallImport",
+)
+async def update_call_import(
+    call_import_id: UUID,
+    payload: CallImportUpdate,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+) -> CallImportResponse:
+    """Edit dataset / tag assignments (and schema, pre-import) on a batch.
+
+    ``dataset = ""`` clears the label; ``tag_ids = []`` removes all tag
+    assignments. Fields omitted from the body are left untouched.
+
+    ``schema_id`` is only honoured while the batch is in
+    ``uploaded`` / ``mapped`` state — once rows have been materialised
+    the schema is locked. Changing the schema resets any persisted
+    mapping (the user must re-MAP) and rewinds status to ``uploaded``.
+    """
+    del api_key
 
     call_import = (
         db.query(CallImport)
@@ -299,17 +1859,112 @@ async def get_call_import_detail(
             detail="Call import not found",
         )
 
-    rows = (
-        db.query(CallImportRow)
-        .filter(CallImportRow.call_import_id == call_import.id)
-        .order_by(CallImportRow.row_index)
-        .offset(row_offset)
-        .limit(row_limit)
-        .all()
+    body = payload.model_dump(exclude_unset=True)
+    if "dataset" in body:
+        call_import.dataset = _normalize_dataset(body["dataset"])
+
+    if "tag_ids" in body:
+        tag_ids = body["tag_ids"] or []
+        call_import.tags = _resolve_tags(db, organization_id, tag_ids)
+
+    if "schema_id" in body and body["schema_id"] is not None:
+        if call_import.status not in (
+            CallImportStatus.UPLOADED,
+            CallImportStatus.MAPPED,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Cannot reassign schema on a batch in status "
+                    f"'{call_import.status.value}'."
+                ),
+            )
+        new_schema = _resolve_schema(
+            db, organization_id, workspace_id, body["schema_id"]
+        )
+        if call_import.schema_id != new_schema.id:
+            # Switching schemas invalidates the persisted mapping —
+            # parameter names won't line up with the new schema, so
+            # reset to UPLOADED and force a fresh MAP.
+            call_import.schema_id = new_schema.id
+            call_import.parameter_mapping = {}
+            call_import.skipped_columns = []
+            call_import.sheet_name = None
+            call_import.status = CallImportStatus.UPLOADED
+
+    db.commit()
+    db.refresh(call_import)
+    return CallImportResponse.model_validate(call_import)
+
+
+@router.get(
+    "/{call_import_id}",
+    response_model=CallImportDetailResponse,
+    operation_id="getCallImportDetail",
+)
+async def get_call_import_detail(
+    call_import_id: UUID,
+    row_limit: int = Query(500, ge=0, le=5000),
+    row_offset: int = Query(0, ge=0),
+    q: Optional[str] = Query(
+        None,
+        description=(
+            "Optional case-insensitive substring filter on "
+            "``conversation_id``. When set, ``filtered_total_rows`` in "
+            "the response reflects the post-filter row count so the UI "
+            "can paginate against the filtered slice."
+        ),
+    ),
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportDetailResponse:
+    """Fetch a single import batch with a slice of its rows.
+
+    ``row_limit=0`` is intentionally allowed so callers that only need the
+    batch metadata (e.g. the evaluation-detail page rendering the parent's
+    column mapping) can skip the rows payload entirely.
+    """
+
+    call_import = (
+        db.query(CallImport)
+        .filter(
+            CallImport.id == call_import_id,
+            CallImport.organization_id == organization_id,
+        )
+        .first()
     )
+    if not call_import:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Call import not found",
+        )
+
+    rows_query = db.query(CallImportRow).filter(
+        CallImportRow.call_import_id == call_import.id
+    )
+
+    search_term = (q or "").strip()
+    filtered_total_rows: Optional[int] = None
+    if search_term:
+        rows_query = rows_query.filter(
+            CallImportRow.conversation_id.ilike(f"%{search_term}%")
+        )
+        filtered_total_rows = rows_query.count()
+
+    if row_limit == 0:
+        rows: List[CallImportRow] = []
+    else:
+        rows = (
+            rows_query.order_by(CallImportRow.row_index)
+            .offset(row_offset)
+            .limit(row_limit)
+            .all()
+        )
 
     detail = CallImportDetailResponse.model_validate(call_import)
     detail.rows = [CallImportRowResponse.model_validate(r) for r in rows]
+    detail.filtered_total_rows = filtered_total_rows
     return detail
 
 
@@ -344,6 +1999,11 @@ def _delete_s3_objects(
     rows: List[CallImportRow],
 ) -> tuple[int, int]:
     """Delete every recording associated with ``rows`` plus a prefix sweep.
+
+    The prefix sweep also cleans up the staged source file written at
+    UPLOAD time (``…/call_imports/{id}/source.{csv,xlsx}``) — both the
+    per-row recording keys and the source artefact share the same
+    organization-scoped prefix, so a single sweep covers them all.
 
     Returns ``(deleted_count, error_count)``. Never raises — callers proceed
     with the DB delete regardless; orphans, if any, can be cleaned up by
@@ -519,14 +2179,41 @@ async def delete_call_import_row(
     db.delete(row)
     db.flush()
 
-    # Recompute parent counters/status from what's left.
+    _recompute_call_import_counters(db, call_import)
+    db.commit()
+
+    logger.info(
+        "Deleted call_import_row {} (call_import={}, org={})",
+        row_id,
+        call_import.id,
+        organization_id,
+    )
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+def _recompute_call_import_counters(
+    db: Session, call_import: CallImport
+) -> None:
+    """Resync ``total/completed/failed_rows`` + status on the parent batch.
+
+    Called after row-level mutations (single delete, bulk delete) so the
+    UI's progress bar stays consistent with the actual row set. The
+    rules mirror :func:`delete_call_import_row` so behavior doesn't
+    diverge between the per-row and bulk paths.
+    """
+
     remaining = (
         db.query(CallImportRow)
         .filter(CallImportRow.call_import_id == call_import.id)
         .all()
     )
-    completed = sum(1 for r in remaining if r.status == CallImportRowStatus.COMPLETED)
-    failed = sum(1 for r in remaining if r.status == CallImportRowStatus.FAILED)
+    completed = sum(
+        1 for r in remaining if r.status == CallImportRowStatus.COMPLETED
+    )
+    failed = sum(
+        1 for r in remaining if r.status == CallImportRowStatus.FAILED
+    )
     pending_or_processing = sum(
         1
         for r in remaining
@@ -550,13 +2237,476 @@ async def delete_call_import_row(
     else:
         call_import.status = CallImportStatus.PARTIAL
 
+
+@router.post(
+    "/{call_import_id}/rows/bulk-delete",
+    response_model=CallImportRowBulkDeleteResponse,
+    operation_id="bulkDeleteCallImportRows",
+)
+async def bulk_delete_call_import_rows(
+    call_import_id: UUID,
+    payload: CallImportRowBulkDelete,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportRowBulkDeleteResponse:
+    """Delete multiple ``CallImportRow`` rows in one request.
+
+    Unknown / cross-tenant row ids are silently skipped — the response
+    reports how many actually went away so a UI that holds onto stale
+    ids (e.g. after another tab already deleted a row) doesn't 404
+    the entire bulk action.
+    """
+    del api_key
+
+    from app.services.storage.s3_service import s3_service
+
+    call_import = (
+        db.query(CallImport)
+        .filter(
+            CallImport.id == call_import_id,
+            CallImport.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not call_import:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Call import not found",
+        )
+
+    rows = (
+        db.query(CallImportRow)
+        .filter(
+            CallImportRow.id.in_(payload.row_ids),
+            CallImportRow.call_import_id == call_import.id,
+        )
+        .all()
+    )
+    if not rows:
+        return CallImportRowBulkDeleteResponse(deleted=0)
+
+    _revoke_pending_tasks(rows)
+
+    if s3_service.is_enabled():
+        for row in rows:
+            if not row.recording_s3_key:
+                continue
+            try:
+                s3_service.delete_file_by_key(row.recording_s3_key)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Failed to delete S3 object {} for row {}: {}",
+                    row.recording_s3_key,
+                    row.id,
+                    exc,
+                )
+
+    deleted = 0
+    for row in rows:
+        db.delete(row)
+        deleted += 1
+    db.flush()
+
+    _recompute_call_import_counters(db, call_import)
     db.commit()
 
     logger.info(
-        "Deleted call_import_row {} (call_import={}, org={})",
-        row_id,
+        "Bulk-deleted {} call_import_rows (call_import={}, org={})",
+        deleted,
         call_import.id,
         organization_id,
     )
 
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return CallImportRowBulkDeleteResponse(deleted=deleted)
+
+
+# ---------------------------------------------------------------------------
+# Diarization / transcription endpoints
+# ---------------------------------------------------------------------------
+
+
+def _select_rows_for_transcription(
+    db: Session,
+    call_import: CallImport,
+    payload: CallImportTranscribeRequest,
+    requested_row_ids: Optional[List[UUID]] = None,
+) -> tuple[List[CallImportRow], Dict[str, int]]:
+    """Pick which rows to enqueue for diarisation.
+
+    Centralises the "should this row be touched?" decision so both the
+    batch endpoint and the per-row endpoint apply the same rules:
+
+    * row must exist on the import,
+    * row must have an S3 recording (otherwise nothing to transcribe),
+    * if ``only_missing`` is set and ``overwrite_existing`` is not, rows
+      with a non-empty ``diarised_transcript`` are skipped (the
+      production ``transcript`` is intentionally ignored here — it
+      lives in a separate column and is never overwritten by this
+      worker).
+
+    Returns the list of rows to enqueue plus a per-reason skip count
+    that the response can surface so the user knows why a "no-op"
+    happened.
+    """
+
+    query = db.query(CallImportRow).filter(
+        CallImportRow.call_import_id == call_import.id
+    )
+    if requested_row_ids:
+        query = query.filter(CallImportRow.id.in_(requested_row_ids))
+    rows = query.order_by(CallImportRow.row_index.asc()).all()
+
+    if requested_row_ids:
+        found_ids = {r.id for r in rows}
+        missing = [rid for rid in requested_row_ids if rid not in found_ids]
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Some row ids were not found on this import: "
+                    f"{[str(m) for m in missing]}"
+                ),
+            )
+
+    selected: List[CallImportRow] = []
+    skip_counts: Dict[str, int] = {}
+
+    for row in rows:
+        recording = (row.recording_s3_key or "").strip()
+        if not recording:
+            skip_counts["no_recording"] = skip_counts.get("no_recording", 0) + 1
+            continue
+        existing = (row.diarised_transcript or "").strip()
+        if existing and payload.only_missing and not payload.overwrite_existing:
+            skip_counts["transcript_present"] = (
+                skip_counts.get("transcript_present", 0) + 1
+            )
+            continue
+        selected.append(row)
+
+    return selected, skip_counts
+
+
+@router.post(
+    "/{call_import_id}/transcribe",
+    response_model=CallImportTranscribeResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    operation_id="transcribeCallImport",
+)
+async def transcribe_call_import(
+    call_import_id: UUID,
+    payload: CallImportTranscribeRequest,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportTranscribeResponse:
+    """Fan out diarization tasks for many rows in a single call.
+
+    Returns a summary with how many rows were queued and how many were
+    skipped (broken down by reason) so the UI can show a meaningful
+    toast even when nothing actually got enqueued (e.g. "All 12 rows
+    already have transcripts").
+    """
+
+    del api_key
+
+    call_import = (
+        db.query(CallImport)
+        .filter(
+            CallImport.id == call_import_id,
+            CallImport.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not call_import:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Call import not found",
+        )
+
+    rows, skip_counts = _select_rows_for_transcription(
+        db, call_import, payload, requested_row_ids=payload.row_ids
+    )
+
+    # Mark the about-to-be-enqueued rows as ``pending`` so the UI can
+    # show a "Queued for diarisation" badge immediately, even before
+    # the worker picks the row up. The worker flips it to ``running``
+    # on entry.
+    for row in rows:
+        row.diarised_transcript_status = "pending"
+        row.diarised_transcript_error = None
+    db.commit()
+
+    if not rows:
+        return CallImportTranscribeResponse(
+            queued=0,
+            skipped_rows=sum(skip_counts.values()),
+            skipped_reason_counts=skip_counts,
+        )
+
+    from app.workers.tasks.transcribe_call_import_row import (
+        transcribe_call_import_row_task,
+    )
+
+    enqueued = 0
+    for row in rows:
+        try:
+            transcribe_call_import_row_task.delay(
+                str(row.id),
+                payload.stt_provider,
+                payload.stt_model,
+                str(payload.credential_id) if payload.credential_id else None,
+                payload.language,
+                payload.overwrite_existing,
+            )
+            enqueued += 1
+        except Exception as exc:
+            logger.exception(
+                "Failed to enqueue transcribe for row {}: {}", row.id, exc
+            )
+            row.diarised_transcript_status = "failed"
+            row.diarised_transcript_error = f"Failed to enqueue: {exc}"
+    db.commit()
+
+    return CallImportTranscribeResponse(
+        queued=enqueued,
+        skipped_rows=sum(skip_counts.values()),
+        skipped_reason_counts=skip_counts,
+    )
+
+
+@router.post(
+    "/{call_import_id}/rows/{row_id}/transcribe",
+    response_model=CallImportTranscribeResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    operation_id="transcribeCallImportRow",
+)
+async def transcribe_call_import_row(
+    call_import_id: UUID,
+    row_id: UUID,
+    payload: CallImportTranscribeRequest,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportTranscribeResponse:
+    """Diarize / transcribe a single row.
+
+    Thin wrapper over the batch endpoint that hard-codes a single
+    ``row_ids`` filter. Skip counts still surface so the UI can render
+    "Skipped — transcript present" diagnostics consistently.
+    """
+
+    del api_key
+
+    call_import = (
+        db.query(CallImport)
+        .filter(
+            CallImport.id == call_import_id,
+            CallImport.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not call_import:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Call import not found",
+        )
+
+    rows, skip_counts = _select_rows_for_transcription(
+        db, call_import, payload, requested_row_ids=[row_id]
+    )
+
+    for row in rows:
+        row.diarised_transcript_status = "pending"
+        row.diarised_transcript_error = None
+    db.commit()
+
+    if not rows:
+        return CallImportTranscribeResponse(
+            queued=0,
+            skipped_rows=sum(skip_counts.values()),
+            skipped_reason_counts=skip_counts,
+        )
+
+    from app.workers.tasks.transcribe_call_import_row import (
+        transcribe_call_import_row_task,
+    )
+
+    target = rows[0]
+    try:
+        transcribe_call_import_row_task.delay(
+            str(target.id),
+            payload.stt_provider,
+            payload.stt_model,
+            str(payload.credential_id) if payload.credential_id else None,
+            payload.language,
+            payload.overwrite_existing,
+        )
+        return CallImportTranscribeResponse(
+            queued=1,
+            skipped_rows=sum(skip_counts.values()),
+            skipped_reason_counts=skip_counts,
+        )
+    except Exception as exc:
+        logger.exception(
+            "Failed to enqueue transcribe for row {}: {}", target.id, exc
+        )
+        target.diarised_transcript_status = "failed"
+        target.diarised_transcript_error = f"Failed to enqueue: {exc}"
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to enqueue transcription: {exc}",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Cross-run insights for the import detail page
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/{call_import_id}/insights",
+    response_model=CallImportInsightsResponse,
+    operation_id="getCallImportInsights",
+)
+async def get_call_import_insights(
+    call_import_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportInsightsResponse:
+    """Aggregate signals across every evaluation run on this import.
+
+    Powers the Insights tab on the call-import detail page: returns
+    per-metric "latest run" summaries plus a trend series of mean values
+    across runs so the UI can render a small line chart per metric. Also
+    bundles transcript coverage stats since those are the cheapest
+    pre-eval health-check (e.g. "30 of 50 rows still missing
+    transcripts").
+    """
+
+    del api_key
+
+    from app.models.database import (
+        CallImportEvaluation,
+        CallImportEvaluationRow,
+        Metric,
+    )
+
+    call_import = (
+        db.query(CallImport)
+        .filter(
+            CallImport.id == call_import_id,
+            CallImport.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not call_import:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Call import not found",
+        )
+
+    rows = (
+        db.query(CallImportRow)
+        .filter(CallImportRow.call_import_id == call_import_id)
+        .all()
+    )
+    # A row "has a transcript" if EITHER the production (CSV) or the
+    # diarised (worker) column is populated — the insights tile reports
+    # the union so users see total coverage regardless of which source
+    # produced the value.
+    rows_with_transcript = sum(
+        1
+        for r in rows
+        if (r.transcript or "").strip()
+        or (r.diarised_transcript or "").strip()
+    )
+    rows_without_transcript = len(rows) - rows_with_transcript
+    source_counts: Dict[str, int] = {}
+    for r in rows:
+        has_production = bool((r.transcript or "").strip())
+        has_diarised = bool((r.diarised_transcript or "").strip())
+        if has_production:
+            key = r.transcript_source or "csv"
+            source_counts[key] = source_counts.get(key, 0) + 1
+        if has_diarised:
+            source_counts["diarised"] = source_counts.get("diarised", 0) + 1
+
+    evaluations = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .order_by(CallImportEvaluation.created_at.asc())
+        .all()
+    )
+
+    # Defer heavy lifting to the aggregation helper so this endpoint and
+    # the per-run aggregate endpoint share the exact same metric
+    # bucketing math (no chance of "trend" disagreeing with "latest" on
+    # the same data set).
+    from app.api.v1.routes.call_import_evaluations import (
+        _compute_metric_aggregates,
+    )
+
+    metric_history: Dict[str, List[CallImportInsightsRunPoint]] = {}
+    metric_meta: Dict[str, Metric] = {}
+    metric_latest: Dict[str, CallImportMetricAggregate] = {}
+
+    for evaluation in evaluations:
+        eval_rows = (
+            db.query(CallImportEvaluationRow)
+            .filter(CallImportEvaluationRow.evaluation_id == evaluation.id)
+            .all()
+        )
+        aggregates = _compute_metric_aggregates(db, evaluation, eval_rows)
+        for agg in aggregates:
+            if agg.metric_id not in metric_meta:
+                metric_obj = (
+                    db.query(Metric)
+                    .filter(
+                        Metric.id == UUID(agg.metric_id),
+                        Metric.organization_id == organization_id,
+                    )
+                    .first()
+                )
+                if metric_obj is not None:
+                    metric_meta[agg.metric_id] = metric_obj
+            history = metric_history.setdefault(agg.metric_id, [])
+            history.append(
+                CallImportInsightsRunPoint(
+                    evaluation_id=evaluation.id,
+                    name=evaluation.name,
+                    created_at=evaluation.created_at,
+                    mean=agg.mean,
+                    completed_rows=agg.count,
+                )
+            )
+            metric_latest[agg.metric_id] = agg
+
+    metrics_payload: List[CallImportInsightsMetric] = []
+    for metric_id, latest in metric_latest.items():
+        meta = metric_meta.get(metric_id)
+        metrics_payload.append(
+            CallImportInsightsMetric(
+                metric_id=metric_id,
+                metric_name=(meta.name if meta else latest.metric_name),
+                metric_type=(meta.metric_type if meta else latest.metric_type),
+                latest=latest,
+                trend=metric_history.get(metric_id, []),
+            )
+        )
+
+    return CallImportInsightsResponse(
+        call_import_id=call_import_id,
+        total_rows=len(rows),
+        rows_with_transcript=rows_with_transcript,
+        rows_without_transcript=rows_without_transcript,
+        transcript_source_counts=source_counts,
+        evaluation_count=len(evaluations),
+        metrics=metrics_payload,
+    )

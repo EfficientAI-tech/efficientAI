@@ -164,7 +164,19 @@ def client(db_session, api_key, org_id):
 
     if "app.services.ai" not in sys.modules:
         fake_ai_pkg = types.ModuleType("app.services.ai")
-        fake_ai_pkg.__path__ = []
+        # Point the stubbed package at the real on-disk directory so
+        # genuinely-needed submodules (like ``llm_resolver``) can still
+        # be imported from disk even when the rest of the package is
+        # replaced by light stubs above.
+        import os as _os
+
+        _real_ai_dir = _os.path.join(
+            _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+            "app",
+            "services",
+            "ai",
+        )
+        fake_ai_pkg.__path__ = [_real_ai_dir]
         fake_model_config_module = types.ModuleType("app.services.ai.model_config_service")
         fake_llm_module = types.ModuleType("app.services.ai.llm_service")
         fake_transcription_module = types.ModuleType("app.services.ai.transcription_service")
@@ -305,10 +317,22 @@ def client(db_session, api_key, org_id):
     fake_workers_tasks_pkg.evaluate_tts_comparison_task = _FakePromptOptTask()
     fake_workers_tasks_pkg.generate_tts_report_pdf_task = _FakePromptOptTask()
     fake_workers_tasks_pkg.run_prompt_optimization_task = _FakePromptOptTask()
+    # Required by app.workers.celery_app's eager import block - missing
+    # these makes any test that imports a route file fail before the
+    # fixture can install dependency overrides.
+    fake_workers_tasks_pkg.process_call_import_row_task = _FakePromptOptTask()
+    fake_workers_tasks_pkg.evaluate_call_import_row_task = _FakePromptOptTask()
+    fake_workers_tasks_pkg.transcribe_call_import_row_task = _FakePromptOptTask()
+    fake_workers_tasks_pkg.run_judge_alignment_task = _FakePromptOptTask()
 
     from app.database import get_db
-    from app.dependencies import get_api_key, get_organization_id, require_enterprise_feature
-    from app.models.database import Organization
+    from app.dependencies import (
+        get_api_key,
+        get_organization_id,
+        get_workspace_id,
+        require_enterprise_feature,
+    )
+    from app.models.database import Organization, Workspace
     import app.dependencies as app_dependencies
     from app.api.v1.routes import (
         aiproviders,
@@ -316,6 +340,10 @@ def client(db_session, api_key, org_id):
         alerts,
         audio,
         auth,
+        call_import_evaluations,
+        call_import_schemas,
+        call_import_tags,
+        call_imports,
         chat,
         conversation_evaluations,
         cron_jobs,
@@ -337,10 +365,12 @@ def client(db_session, api_key, org_id):
         results,
         scenarios,
         settings,
+        telephony,
         test_agents,
         voice_agent,
         voice_playground,
         voicebundles,
+        workspaces,
     )
 
     app = FastAPI()
@@ -374,6 +404,12 @@ def client(db_session, api_key, org_id):
     app.include_router(prompt_optimization.router, prefix="/api/v1")
     app.include_router(voice_agent.router, prefix="/api/v1")
     app.include_router(voice_playground.router, prefix="/api/v1")
+    app.include_router(telephony.router, prefix="/api/v1")
+    app.include_router(call_imports.router, prefix="/api/v1")
+    app.include_router(call_import_schemas.router, prefix="/api/v1")
+    app.include_router(call_import_tags.router, prefix="/api/v1")
+    app.include_router(call_import_evaluations.router, prefix="/api/v1")
+    app.include_router(workspaces.router, prefix="/api/v1")
 
     # Enterprise route dependencies call app.dependencies.is_feature_enabled at runtime.
     # Force-enable it for API tests so tests remain focused on route behavior.
@@ -386,10 +422,46 @@ def client(db_session, api_key, org_id):
     async def _noop_lifespan(_: object):
         yield
 
+    # The TestClient flow doesn't run migration 033, so we manually
+    # ensure the test org has a Default workspace before any route
+    # that depends on ``get_workspace_id`` runs. This mirrors what the
+    # real migration would have produced.
+    def _ensure_default_workspace() -> Workspace:
+        org = (
+            db_session.query(Organization)
+            .filter(Organization.id == org_id)
+            .first()
+        )
+        if org is None:
+            org = Organization(id=org_id, name="Test Organization")
+            db_session.add(org)
+            db_session.flush()
+        ws = (
+            db_session.query(Workspace)
+            .filter(
+                Workspace.organization_id == org_id,
+                Workspace.is_default.is_(True),
+            )
+            .first()
+        )
+        if ws is None:
+            ws = Workspace(
+                organization_id=org_id,
+                name="Default",
+                slug="default",
+                is_default=True,
+            )
+            db_session.add(ws)
+            db_session.commit()
+        return ws
+
+    default_workspace = _ensure_default_workspace()
+
     app.router.lifespan_context = _noop_lifespan
     app.dependency_overrides[get_db] = _override_get_db
     app.dependency_overrides[get_api_key] = lambda: api_key
     app.dependency_overrides[get_organization_id] = lambda: org_id
+    app.dependency_overrides[get_workspace_id] = lambda: default_workspace.id
     app.dependency_overrides[require_enterprise_feature] = lambda: None
 
     with TestClient(app) as test_client:

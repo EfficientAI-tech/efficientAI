@@ -17,6 +17,7 @@ from loguru import logger
 from sqlalchemy.orm import Session
 
 from app.models.database import ModelProvider, AIProvider
+from app.services.credentials import resolve_ai_provider
 
 # LiteLLM will silently drop params the target provider doesn't support
 # rather than raising an error.
@@ -42,26 +43,17 @@ class LLMService:
         provider: ModelProvider,
         db: Session,
         organization_id: UUID,
+        credential_id: Optional[UUID] = None,
     ) -> Optional[AIProvider]:
-        """Get AI provider configuration from database."""
-        from sqlalchemy import func
+        """Resolve the AIProvider row to use for this organization.
 
-        provider_value = provider.value if hasattr(provider, "value") else provider
-
-        ai_provider = db.query(AIProvider).filter(
-            AIProvider.provider == provider_value,
-            AIProvider.organization_id == organization_id,
-            AIProvider.is_active == True,
-        ).first()
-
-        if not ai_provider:
-            ai_provider = db.query(AIProvider).filter(
-                func.lower(AIProvider.provider) == provider_value.lower(),
-                AIProvider.organization_id == organization_id,
-                AIProvider.is_active == True,
-            ).first()
-
-        return ai_provider
+        Delegates to :func:`resolve_ai_provider` so that callers can pin a
+        specific credential row when multiple keys exist for the same
+        provider.
+        """
+        return resolve_ai_provider(
+            provider, db, organization_id, credential_id=credential_id
+        )
 
     @staticmethod
     def _litellm_model_name(provider: ModelProvider, model: str) -> str:
@@ -80,17 +72,21 @@ class LLMService:
         temperature: Optional[float] = 0.7,
         max_tokens: Optional[int] = None,
         config: Optional[Dict[str, Any]] = None,
+        credential_id: Optional[UUID] = None,
     ) -> Dict[str, Any]:
         """Generate a text response using the specified LLM via LiteLLM.
 
-        The public interface (parameters and return shape) is identical to
-        the previous hand-rolled implementation, so all existing callers
-        continue to work without changes.
+        ``credential_id`` lets callers pin a specific AIProvider row when an
+        organization has multiple keys for the same provider; when omitted
+        the resolver falls back to the row marked ``is_default`` (or the
+        most recently updated active row for back-compat).
         """
         start_time = time.time()
 
         # --- resolve API key from database --------------------------------
-        ai_provider = self._get_ai_provider(llm_provider, db, organization_id)
+        ai_provider = self._get_ai_provider(
+            llm_provider, db, organization_id, credential_id=credential_id
+        )
         if not ai_provider:
             raise RuntimeError(
                 f"AI provider {llm_provider} not configured for this organization."

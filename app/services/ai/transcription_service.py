@@ -47,6 +47,7 @@ from uuid import UUID
 from pathlib import Path
 
 from app.models.database import ModelProvider, AIProvider, Integration
+from app.services.credentials import resolve_ai_provider, resolve_integration
 from app.services.storage.s3_service import s3_service
 from app.core.exceptions import StorageError
 from sqlalchemy.orm import Session
@@ -61,51 +62,44 @@ class TranscriptionService:
         """Initialize transcription service."""
         self._pyannote_pipeline = None
 
-    def _get_ai_provider(self, provider: ModelProvider, db: Session, organization_id: UUID) -> Optional[AIProvider]:
-        """Get AI provider configuration from database."""
-        from sqlalchemy import func
-
-        # Handle both string and enum comparisons (database might have uppercase or lowercase)
-        provider_value = provider.value if hasattr(provider, "value") else provider
-
-        # Try exact match first
-        ai_provider = db.query(AIProvider).filter(
-            AIProvider.provider == provider_value,
-            AIProvider.organization_id == organization_id,
-            AIProvider.is_active == True,
-        ).first()
-
-        # If not found, try case-insensitive match
-        if not ai_provider:
-            ai_provider = db.query(AIProvider).filter(
-                func.lower(AIProvider.provider) == provider_value.lower(),
-                AIProvider.organization_id == organization_id,
-                AIProvider.is_active == True,
-            ).first()
-
-        return ai_provider
+    def _get_ai_provider(
+        self,
+        provider: ModelProvider,
+        db: Session,
+        organization_id: UUID,
+        credential_id: Optional[UUID] = None,
+    ) -> Optional[AIProvider]:
+        """Resolve the AIProvider row to use, honoring ``credential_id``."""
+        return resolve_ai_provider(
+            provider, db, organization_id, credential_id=credential_id
+        )
 
     def _get_api_key_for_provider(
-        self, provider: ModelProvider, db: Session, organization_id: UUID
+        self,
+        provider: ModelProvider,
+        db: Session,
+        organization_id: UUID,
+        credential_id: Optional[UUID] = None,
     ) -> Optional[str]:
         """Resolve and decrypt API key from AIProvider or Integration tables.
 
         Checks AIProvider first (LLM-style providers like OpenAI), then falls
-        back to the Integration table (voice platforms like Deepgram, ElevenLabs).
+        back to the Integration table (voice platforms like Deepgram,
+        ElevenLabs). When ``credential_id`` is given the explicit row is
+        preferred in either table; otherwise the row marked ``is_default``
+        wins, with a back-compat fallback to the most recent active row.
         """
         from app.core.encryption import decrypt_api_key
-        from sqlalchemy import func
 
-        ai_provider = self._get_ai_provider(provider, db, organization_id)
+        ai_provider = self._get_ai_provider(
+            provider, db, organization_id, credential_id=credential_id
+        )
         if ai_provider:
             return decrypt_api_key(ai_provider.api_key)
 
-        provider_value = provider.value if hasattr(provider, "value") else provider
-        integration = db.query(Integration).filter(
-            func.lower(Integration.platform) == provider_value.lower(),
-            Integration.organization_id == organization_id,
-            Integration.is_active == True,
-        ).first()
+        integration = resolve_integration(
+            provider, db, organization_id, credential_id=credential_id
+        )
         if integration:
             return decrypt_api_key(integration.api_key)
 
@@ -501,6 +495,8 @@ class TranscriptionService:
         stt_model: str,
         organization_id: UUID,
         db: Session,
+        language: Optional[str] = None,
+        credential_id: Optional[UUID] = None,
     ) -> Optional[str]:
         """Transcribe a local audio file and return just the text.
 
@@ -508,7 +504,9 @@ class TranscriptionService:
         diarization, and segment extraction.  Designed for WER/CER
         evaluation where only the transcript string is needed.
         """
-        api_key = self._get_api_key_for_provider(stt_provider, db, organization_id)
+        api_key = self._get_api_key_for_provider(
+            stt_provider, db, organization_id, credential_id=credential_id
+        )
         if not api_key:
             logger.warning(
                 f"[TranscriptionService] No API key found for {stt_provider} "
@@ -520,18 +518,24 @@ class TranscriptionService:
             transcribe_openai,
             transcribe_deepgram,
             transcribe_elevenlabs,
+            transcribe_google,
+            transcribe_sarvam,
             transcribe_smallest,
         )
 
         try:
             if stt_provider == ModelProvider.OPENAI:
-                result = transcribe_openai(audio_file_path, stt_model, api_key)
+                result = transcribe_openai(audio_file_path, stt_model, api_key, language)
             elif stt_provider == ModelProvider.DEEPGRAM:
-                result = transcribe_deepgram(audio_file_path, stt_model, api_key)
+                result = transcribe_deepgram(audio_file_path, stt_model, api_key, language)
             elif stt_provider == ModelProvider.ELEVENLABS:
-                result = transcribe_elevenlabs(audio_file_path, stt_model, api_key)
+                result = transcribe_elevenlabs(audio_file_path, stt_model, api_key, language)
+            elif stt_provider == ModelProvider.GOOGLE:
+                result = transcribe_google(audio_file_path, stt_model, api_key, language)
+            elif stt_provider == ModelProvider.SARVAM:
+                result = transcribe_sarvam(audio_file_path, stt_model, api_key, language)
             elif stt_provider == ModelProvider.SMALLEST:
-                result = transcribe_smallest(audio_file_path, stt_model, api_key)
+                result = transcribe_smallest(audio_file_path, stt_model, api_key, language)
             else:
                 logger.warning(f"[TranscriptionService] Unsupported STT provider for text-only: {stt_provider}")
                 return None
@@ -551,6 +555,7 @@ class TranscriptionService:
         db: Session,
         language: Optional[str] = None,
         enable_speaker_diarization: bool = True,
+        credential_id: Optional[UUID] = None,
     ) -> Dict[str, Any]:
         """
         Transcribe audio file from S3.
@@ -562,7 +567,9 @@ class TranscriptionService:
             # Download audio to temporary file
             temp_file_path = self._download_audio_to_temp(audio_file_key, db=db)
 
-            api_key = self._get_api_key_for_provider(stt_provider, db, organization_id)
+            api_key = self._get_api_key_for_provider(
+                stt_provider, db, organization_id, credential_id=credential_id
+            )
             if not api_key:
                 raise RuntimeError(
                     f"No API key found for {stt_provider} (checked AIProvider and Integration tables). "
@@ -573,23 +580,35 @@ class TranscriptionService:
                 transcribe_openai,
                 transcribe_deepgram,
                 transcribe_elevenlabs,
+                transcribe_google,
+                transcribe_sarvam,
                 transcribe_smallest,
             )
 
             if stt_provider == ModelProvider.OPENAI:
-                if stt_model.startswith("whisper-"):
-                    result = transcribe_openai(temp_file_path, stt_model, api_key, language)
-                else:
-                    model_name = stt_model.replace("whisper-", "") if stt_model.startswith("whisper-") else "base"
-                    result = self._transcribe_with_whisper_local(temp_file_path, model_name)
+                # All OpenAI STT models in app/config/models.json
+                # (``whisper-1``, ``gpt-4o-transcribe``,
+                # ``gpt-4o-mini-transcribe``) are hosted-API models, so
+                # always go through the OpenAI client. ``transcribe_openai``
+                # handles the per-model differences in ``response_format``
+                # / ``timestamp_granularities`` internally. Local Whisper
+                # is reserved for the unknown-provider fallback below.
+                result = transcribe_openai(temp_file_path, stt_model, api_key, language)
             elif stt_provider == ModelProvider.DEEPGRAM:
                 result = transcribe_deepgram(temp_file_path, stt_model, api_key, language)
             elif stt_provider == ModelProvider.ELEVENLABS:
                 result = transcribe_elevenlabs(temp_file_path, stt_model, api_key, language)
+            elif stt_provider == ModelProvider.SARVAM:
+                result = transcribe_sarvam(temp_file_path, stt_model, api_key, language)
             elif stt_provider == ModelProvider.SMALLEST:
                 result = transcribe_smallest(temp_file_path, stt_model, api_key, language)
             elif stt_provider == ModelProvider.GOOGLE:
-                raise NotImplementedError("Google Speech-to-Text not yet implemented")
+                # Gemini STT models (``gemini-2.5-pro-stt``,
+                # ``gemini-2.5-flash-stt``, ``gemini-2.5-flash-lite-stt``)
+                # are routed through LiteLLM as multimodal completions.
+                # Legacy ``google-speech-v2`` would also land here, but
+                # we don't yet have a Cloud Speech client wired up.
+                result = transcribe_google(temp_file_path, stt_model, api_key, language)
             elif stt_provider == ModelProvider.AZURE:
                 raise NotImplementedError("Azure Speech Services not yet implemented")
             elif stt_provider == ModelProvider.AWS:
