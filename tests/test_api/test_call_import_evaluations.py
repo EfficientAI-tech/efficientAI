@@ -662,6 +662,12 @@ def test_cancel_evaluation_row_flips_only_target_row(
     rows = _force_running(db_session, created["id"])
     target = rows[0]
     sibling = rows[1]
+    # Snapshot the celery_task_ids as plain strings before the cancel call.
+    # The cancel endpoint clears ``celery_task_id`` on the target row, and the
+    # ``db_session.expire_all()`` below invalidates the ORM cache so accessing
+    # ``rows[i].celery_task_id`` afterwards would reload from DB.
+    original_task_ids = {row.celery_task_id for row in rows}
+    target_original_task_id = target.celery_task_id
 
     response = authenticated_client.post(
         f"/api/v1/call-imports/{call_import.id}/evaluations/"
@@ -687,10 +693,10 @@ def test_cancel_evaluation_row_flips_only_target_row(
     assert parent.status == "running"
 
     revoke.assert_called_once()
-    assert revoke.call_args.args[0] == target.celery_task_id or (
+    assert revoke.call_args.args[0] == target_original_task_id or (
         # ``celery_task_id`` is cleared post-revoke; cross-check via the
         # original snapshot we captured before the call.
-        revoke.call_args.args[0] in {row.celery_task_id for row in rows}
+        revoke.call_args.args[0] in original_task_ids
     )
 
 
