@@ -3278,16 +3278,29 @@ async def get_call_import_insights(
         aggregates = _compute_metric_aggregates(db, evaluation, eval_rows)
         for agg in aggregates:
             if agg.metric_id not in metric_meta:
-                metric_obj = (
-                    db.query(Metric)
-                    .filter(
-                        Metric.id == UUID(agg.metric_id),
-                        Metric.organization_id == organization_id,
+                # ``agg.metric_id`` is normally a UUID string, but the
+                # aggregator also emits ids that surface in row scores
+                # without a matching ``Metric`` row (e.g. a metric the
+                # user deleted mid-run, or LLM-discovered slugs). Those
+                # are not valid UUIDs, so coerce defensively and skip
+                # the metric registry lookup when the cast fails — the
+                # ``meta is None`` branch below already handles the
+                # display via the values stored on ``agg`` itself.
+                try:
+                    metric_uuid = UUID(agg.metric_id)
+                except (ValueError, AttributeError, TypeError):
+                    metric_uuid = None
+                if metric_uuid is not None:
+                    metric_obj = (
+                        db.query(Metric)
+                        .filter(
+                            Metric.id == metric_uuid,
+                            Metric.organization_id == organization_id,
+                        )
+                        .first()
                     )
-                    .first()
-                )
-                if metric_obj is not None:
-                    metric_meta[agg.metric_id] = metric_obj
+                    if metric_obj is not None:
+                        metric_meta[agg.metric_id] = metric_obj
             history = metric_history.setdefault(agg.metric_id, [])
             history.append(
                 CallImportInsightsRunPoint(
