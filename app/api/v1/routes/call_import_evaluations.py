@@ -2055,6 +2055,55 @@ async def cancel_call_import_evaluation(
 
 
 @router.post(
+    "/{eval_id}/force-fail-pending",
+    response_model=CallImportEvaluationResponse,
+    status_code=status.HTTP_200_OK,
+    operation_id="forceFailCallImportEvaluationPending",
+)
+async def force_fail_pending_call_import_evaluation_rows(
+    call_import_id: UUID,
+    eval_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportEvaluationResponse:
+    """Force-fail only rows currently in ``pending`` for a single run.
+
+    This is narrower than :func:`cancel_call_import_evaluation`: it leaves
+    ``running`` rows untouched so operators can clear permanently queued rows
+    without interrupting in-flight evaluations.
+    """
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation not found"
+        )
+
+    pending_rows = [
+        row
+        for row in evaluation.row_results
+        if (row.status or "").lower() == "pending"
+    ]
+    _apply_evaluation_cancel(pending_rows)
+    db.flush()
+    _rollup_evaluation_status(evaluation, db)
+    db.commit()
+    db.refresh(evaluation)
+    return _serialize_eval(db, evaluation)
+
+
+@router.post(
     "/{eval_id}/rows/{eval_row_id}/cancel",
     response_model=CallImportEvaluationRowResponse,
     status_code=status.HTTP_200_OK,

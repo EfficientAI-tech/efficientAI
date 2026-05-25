@@ -43,6 +43,7 @@ import type {
   CallImportInsightsResponse,
   CallImportTranscribeRequest,
   CallImportTranscribeResponse,
+  CallImportRetryFailedRowsResponse,
   Workspace,
 } from '../types/api'
 
@@ -1664,6 +1665,22 @@ class ApiClient {
   }
 
   /**
+   * Re-enqueue every failed import row in this batch.
+   *
+   * Rows are reset to `pending` first so the UI can immediately show that
+   * the retry sweep started; rows that fail to enqueue again are returned
+   * in `enqueue_failed` and stay `failed`.
+   */
+  async retryFailedCallImportRows(
+    callImportId: string,
+  ): Promise<CallImportRetryFailedRowsResponse> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/retry-failed`,
+    )
+    return response.data
+  }
+
+  /**
    * Abort an in-flight (or queued) diarisation for a single row.
    *
    * Idempotent — calling on a row whose diarisation is already in a
@@ -1868,6 +1885,23 @@ class ApiClient {
   ): Promise<CallImportEvaluation> {
     const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/cancel`,
+    )
+    return response.data
+  }
+
+  /**
+   * Force-fail only rows currently in ``pending`` for an evaluation run.
+   *
+   * Unlike ``cancelCallImportEvaluation``, this does NOT touch rows that
+   * are already ``running``. Useful when queued rows are stuck indefinitely
+   * but active workers should keep progressing.
+   */
+  async forceFailCallImportEvaluationPending(
+    callImportId: string,
+    evaluationId: string,
+  ): Promise<CallImportEvaluation> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/force-fail-pending`,
     )
     return response.data
   }

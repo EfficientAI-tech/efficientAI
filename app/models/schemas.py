@@ -3043,6 +3043,32 @@ class CallImportRowBulkDeleteResponse(BaseModel):
     )
 
 
+class CallImportRetryFailedRowsResponse(BaseModel):
+    """Summary of a retry pass over failed call-import rows."""
+
+    requeued: int = Field(
+        ...,
+        description=(
+            "Rows reset to pending and successfully re-enqueued on the "
+            "``imports`` worker queue."
+        ),
+    )
+    enqueue_failed: int = Field(
+        default=0,
+        description=(
+            "Rows that were eligible for retry but failed to enqueue again. "
+            "These rows are left in ``failed`` with an enqueue error."
+        ),
+    )
+    skipped: int = Field(
+        default=0,
+        description=(
+            "Rows skipped because they were no longer in ``failed`` at retry "
+            "time (for example, already retried from another tab)."
+        ),
+    )
+
+
 # --- Diarization / Transcription request/response shapes ---
 
 

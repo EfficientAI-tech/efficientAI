@@ -44,7 +44,10 @@ from app.models.enums import (
     CallImportStatus,
 )
 from app.models.schemas import (
+    CallImportCancelDiarisationRequest,
+    CallImportCancelDiarisationResponse,
     CallImportDetailResponse,
+    CallImportDiarisationPromptDefaultResponse,
     CallImportInsightsMetric,
     CallImportInsightsResponse,
     CallImportInsightsRunPoint,
@@ -53,13 +56,11 @@ from app.models.schemas import (
     CallImportMetricAggregate,
     CallImportPreviewResponse,
     CallImportPreviewSheet,
+    CallImportRetryFailedRowsResponse,
     CallImportResponse,
-    CallImportDiarisationPromptDefaultResponse,
+    CallImportRowIdsResponse,
     CallImportRowBulkDelete,
     CallImportRowBulkDeleteResponse,
-    CallImportCancelDiarisationRequest,
-    CallImportCancelDiarisationResponse,
-    CallImportRowIdsResponse,
     CallImportRowResponse,
     CallImportStartRequest,
     CallImportTranscribeRequest,
@@ -2350,6 +2351,104 @@ def _recompute_call_import_counters(
         call_import.status = CallImportStatus.FAILED
     else:
         call_import.status = CallImportStatus.PARTIAL
+
+
+@router.post(
+    "/{call_import_id}/retry-failed",
+    response_model=CallImportRetryFailedRowsResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    operation_id="retryFailedCallImportRows",
+)
+async def retry_failed_call_import_rows(
+    call_import_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportRetryFailedRowsResponse:
+    """Re-enqueue every failed import row in this batch.
+
+    Useful when transient provider issues are resolved and the operator wants
+    a one-click "try failed downloads again" pass without re-uploading the CSV.
+    """
+    del api_key
+
+    call_import = (
+        db.query(CallImport)
+        .filter(
+            CallImport.id == call_import_id,
+            CallImport.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not call_import:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Call import not found",
+        )
+
+    failed_rows = (
+        db.query(CallImportRow)
+        .filter(
+            CallImportRow.call_import_id == call_import.id,
+            CallImportRow.status == CallImportRowStatus.FAILED,
+        )
+        .order_by(CallImportRow.row_index.asc())
+        .all()
+    )
+    if not failed_rows:
+        return CallImportRetryFailedRowsResponse(
+            requeued=0,
+            enqueue_failed=0,
+            skipped=0,
+        )
+
+    from app.workers.tasks.process_call_import_row import (
+        process_call_import_row_task,
+    )
+
+    # Reset rows to pending BEFORE enqueue so the UI reflects "retry in
+    # progress" immediately even if the worker queue is backlogged.
+    for row in failed_rows:
+        row.status = CallImportRowStatus.PENDING
+        row.error_message = None
+        row.celery_task_id = None
+
+    db.flush()
+    _recompute_call_import_counters(db, call_import)
+    db.commit()
+
+    requeued = 0
+    enqueue_failed = 0
+    skipped = 0
+
+    for row in failed_rows:
+        try:
+            process_call_import_row_task.delay(str(row.id))
+            requeued += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "Failed to re-enqueue call import row {} for import {}",
+                row.id,
+                call_import.id,
+            )
+            db.refresh(row)
+            if row.status != CallImportRowStatus.PENDING:
+                skipped += 1
+                continue
+            row.status = CallImportRowStatus.FAILED
+            row.error_message = f"Failed to enqueue retry: {exc}"
+            enqueue_failed += 1
+
+    if enqueue_failed > 0:
+        db.flush()
+        _recompute_call_import_counters(db, call_import)
+        db.commit()
+
+    return CallImportRetryFailedRowsResponse(
+        requeued=requeued,
+        enqueue_failed=enqueue_failed,
+        skipped=skipped,
+    )
 
 
 @router.post(

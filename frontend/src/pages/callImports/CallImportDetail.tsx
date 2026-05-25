@@ -203,6 +203,15 @@ export default function CallImportDetail() {
   const audioRef = useRef<HTMLAudioElement>(null)
 
   const [showDeleteImport, setShowDeleteImport] = useState(false)
+  const [showRetryFailedImportConfirm, setShowRetryFailedImportConfirm] =
+    useState(false)
+  const [retryFailedImportError, setRetryFailedImportError] = useState<string | null>(
+    null,
+  )
+  const [showForceFailDiarisationConfirm, setShowForceFailDiarisationConfirm] =
+    useState(false)
+  const [forceFailDiarisationError, setForceFailDiarisationError] =
+    useState<string | null>(null)
   const [pendingDeleteRow, setPendingDeleteRow] = useState<CallImportRow | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [showRunEval, setShowRunEval] = useState(false)
@@ -328,6 +337,26 @@ export default function CallImportDetail() {
     null,
   )
 
+  // Prompt-partial *save* sub-modal. Mirrors the import sub-modal but
+  // pushes the current textarea content back into the Prompt Partials
+  // library. ``target`` decides which textarea sources the content;
+  // ``mode`` chooses between creating a brand-new partial and updating
+  // an existing one (which appends a new version under the hood).
+  const [savePartialTarget, setSavePartialTarget] = useState<
+    'standalone' | 'eval' | null
+  >(null)
+  const [savePartialMode, setSavePartialMode] = useState<'new' | 'existing'>(
+    'new',
+  )
+  const [savePartialName, setSavePartialName] = useState('')
+  const [savePartialDescription, setSavePartialDescription] = useState('')
+  const [savePartialChangeSummary, setSavePartialChangeSummary] = useState('')
+  const [savePartialExistingId, setSavePartialExistingId] = useState<string>('')
+  const [savePartialError, setSavePartialError] = useState<string | null>(null)
+  const [savePartialSuccess, setSavePartialSuccess] = useState<string | null>(
+    null,
+  )
+
   // The canonical default diariser prompt. Fetched once when the
   // modal opens so the textarea can pre-fill with the *actual*
   // server-side default rather than a duplicated hardcoded copy.
@@ -372,6 +401,52 @@ export default function CallImportDetail() {
     onError: (err: any) => {
       setDeleteError(
         err?.response?.data?.detail || err?.message || 'Failed to delete import.',
+      )
+    },
+  })
+
+  const retryFailedImportMutation = useMutation({
+    mutationFn: () => apiClient.retryFailedCallImportRows(id!),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ['call-import', id] })
+      queryClient.invalidateQueries({ queryKey: ['call-imports'] })
+      setShowRetryFailedImportConfirm(false)
+      const parts = [`Re-queued ${result.requeued} failed row${result.requeued === 1 ? '' : 's'}`]
+      if (result.enqueue_failed > 0) {
+        parts.push(`enqueue failed for ${result.enqueue_failed}`)
+      }
+      if (result.skipped > 0) {
+        parts.push(`skipped ${result.skipped}`)
+      }
+      setRetryFailedImportError(null)
+      setBulkActionResult(parts.join(' · '))
+    },
+    onError: (err: any) => {
+      setRetryFailedImportError(
+        err?.response?.data?.detail ||
+          err?.message ||
+          'Failed to retry failed import rows.',
+      )
+    },
+  })
+
+  const forceFailDiarisationMutation = useMutation({
+    mutationFn: () => apiClient.cancelCallImportDiarisation(id!, null),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ['call-import', id] })
+      setShowForceFailDiarisationConfirm(false)
+      const parts = [`Force-failed ${result.cancelled} diarisation row${result.cancelled === 1 ? '' : 's'}`]
+      if (result.skipped > 0) {
+        parts.push(`skipped ${result.skipped}`)
+      }
+      setForceFailDiarisationError(null)
+      setBulkActionResult(parts.join(' · '))
+    },
+    onError: (err: any) => {
+      setForceFailDiarisationError(
+        err?.response?.data?.detail ||
+          err?.message ||
+          'Failed to force-fail in-flight diarisation rows.',
       )
     },
   })
@@ -438,7 +513,9 @@ export default function CallImportDetail() {
         100,
         partialsSearchQuery ? partialsSearchQuery : undefined,
       ),
-    enabled: partialsImportTarget !== null,
+    enabled:
+      partialsImportTarget !== null ||
+      (savePartialTarget !== null && savePartialMode === 'existing'),
   })
 
   const importPartialMutation = useMutation({
@@ -476,6 +553,94 @@ export default function CallImportDetail() {
     setPartialsSearchQuery('')
     setSelectedPartialId('')
     setPartialsImportError(null)
+  }
+
+  // Mutation backing the "Save as partial" sub-modal. The body shape
+  // depends on ``savePartialMode``: ``new`` calls ``createPromptPartial``
+  // with a fresh name/description, ``existing`` calls
+  // ``updatePromptPartial`` against the selected partial which appends
+  // a new version to its history.
+  const savePartialMutation = useMutation({
+    mutationFn: async (input: {
+      content: string
+      mode: 'new' | 'existing'
+      name?: string
+      description?: string
+      partialId?: string
+      changeSummary?: string
+    }) => {
+      if (input.mode === 'new') {
+        return apiClient.createPromptPartial({
+          name: input.name || 'Untitled diarisation prompt',
+          description: input.description || undefined,
+          content: input.content,
+        })
+      }
+      return apiClient.updatePromptPartial(input.partialId!, {
+        content: input.content,
+        change_summary: input.changeSummary || undefined,
+      })
+    },
+    onSuccess: (partial: any) => {
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-prompt-partials'],
+      })
+      const label =
+        partial?.name || (savePartialMode === 'new' ? 'new partial' : 'partial')
+      setSavePartialSuccess(
+        savePartialMode === 'new'
+          ? `Saved as new prompt partial “${label}”.`
+          : `Updated prompt partial “${label}” (new version saved).`,
+      )
+      setSavePartialError(null)
+      // Auto-close shortly after so the user sees the confirmation.
+      setTimeout(() => {
+        setSavePartialTarget(null)
+        setSavePartialMode('new')
+        setSavePartialName('')
+        setSavePartialDescription('')
+        setSavePartialChangeSummary('')
+        setSavePartialExistingId('')
+        setSavePartialError(null)
+        setSavePartialSuccess(null)
+        setPartialsSearchInput('')
+        setPartialsSearchQuery('')
+      }, 1200)
+    },
+    onError: (err: any) => {
+      setSavePartialError(
+        err?.response?.data?.detail ||
+          err?.message ||
+          'Failed to save prompt partial.',
+      )
+    },
+  })
+
+  const closeSavePartialModal = () => {
+    if (savePartialMutation.isPending) return
+    setSavePartialTarget(null)
+    setSavePartialMode('new')
+    setSavePartialName('')
+    setSavePartialDescription('')
+    setSavePartialChangeSummary('')
+    setSavePartialExistingId('')
+    setSavePartialError(null)
+    setSavePartialSuccess(null)
+    setPartialsSearchInput('')
+    setPartialsSearchQuery('')
+  }
+
+  const openSavePartialModal = (target: 'standalone' | 'eval') => {
+    setSavePartialTarget(target)
+    setSavePartialMode('new')
+    setSavePartialName('')
+    setSavePartialDescription('')
+    setSavePartialChangeSummary('')
+    setSavePartialExistingId('')
+    setSavePartialError(null)
+    setSavePartialSuccess(null)
+    setPartialsSearchInput('')
+    setPartialsSearchQuery('')
   }
 
   // Snap back to the first page whenever the active query changes —
@@ -869,6 +1034,9 @@ export default function CallImportDetail() {
   }, [])
 
   const totalRows = data?.total_rows ?? 0
+  const failedImportRowsCount = data?.failed_rows ?? 0
+  const diarisationInFlightCount =
+    (data?.diarised_pending_rows ?? 0) + (data?.diarised_running_rows ?? 0)
   // ``filtered_total_rows`` is set whenever any filter (search OR
   // diarisation-status) is active; pagination should always page
   // against whatever slice the user is actually looking at.
@@ -1173,6 +1341,40 @@ export default function CallImportDetail() {
           >
             Refresh
           </Button>
+          {failedImportRowsCount > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              leftIcon={<RefreshCw className="h-4 w-4" />}
+              onClick={() => {
+                setRetryFailedImportError(null)
+                setShowRetryFailedImportConfirm(true)
+              }}
+              className="text-amber-700 hover:text-amber-800 hover:bg-amber-50 border-amber-200"
+              title={`Retry ${failedImportRowsCount} failed import row${
+                failedImportRowsCount === 1 ? '' : 's'
+              }`}
+            >
+              Retry failed imports ({failedImportRowsCount})
+            </Button>
+          )}
+          {diarisationInFlightCount > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              leftIcon={<Square className="h-4 w-4" />}
+              onClick={() => {
+                setForceFailDiarisationError(null)
+                setShowForceFailDiarisationConfirm(true)
+              }}
+              className="text-amber-700 hover:text-amber-800 hover:bg-amber-50 border-amber-200"
+              title={`Force-fail ${diarisationInFlightCount} pending/running diarisation row${
+                diarisationInFlightCount === 1 ? '' : 's'
+              }`}
+            >
+              Force-fail diarisation ({diarisationInFlightCount})
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="sm"
@@ -2614,10 +2816,6 @@ export default function CallImportDetail() {
                       <p className="text-sm font-medium text-gray-900 truncate">
                         {headerLabel}
                       </p>
-                      <p className="text-xs text-gray-600 truncate">
-                        {evaluation.metrics.map((metric) => metric.name).join(', ') ||
-                          'No metrics'}
-                      </p>
                       <p className="text-[11px] text-gray-400 mt-0.5">
                         Created {new Date(evaluation.created_at).toLocaleString()}
                       </p>
@@ -2934,6 +3132,266 @@ export default function CallImportDetail() {
           </div>,
         )}
 
+      {savePartialTarget !== null &&
+        renderModal(
+          (() => {
+            const currentContent =
+              savePartialTarget === 'standalone'
+                ? transcribeDiarisationPrompt
+                : evalDiarisationPrompt
+            const trimmedContent = currentContent.trim()
+            const canSubmit =
+              savePartialMode === 'new'
+                ? !!savePartialName.trim() && !!trimmedContent
+                : !!savePartialExistingId && !!trimmedContent
+            return (
+              <div
+                className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[10000]"
+                onClick={closeSavePartialModal}
+              >
+                <div
+                  className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[85vh] overflow-hidden flex flex-col"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+                    <h3 className="text-lg font-semibold text-gray-900">
+                      Save diarisation prompt to partials
+                    </h3>
+                    <button
+                      onClick={closeSavePartialModal}
+                      className="text-gray-400 hover:text-gray-600"
+                      aria-label="Close save prompt partial modal"
+                      disabled={savePartialMutation.isPending}
+                    >
+                      <X className="h-5 w-5" />
+                    </button>
+                  </div>
+                  <div className="p-6 space-y-4 overflow-y-auto flex-1">
+                    <div
+                      role="tablist"
+                      aria-label="Save prompt mode"
+                      className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5"
+                    >
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-pressed={savePartialMode === 'new'}
+                        onClick={() => {
+                          setSavePartialMode('new')
+                          setSavePartialError(null)
+                        }}
+                        className={`px-3 py-1 text-xs font-medium rounded-md transition ${
+                          savePartialMode === 'new'
+                            ? 'bg-white text-gray-900 shadow-sm ring-1 ring-inset ring-gray-200'
+                            : 'text-gray-600 hover:text-gray-900'
+                        }`}
+                      >
+                        Save as new
+                      </button>
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-pressed={savePartialMode === 'existing'}
+                        onClick={() => {
+                          setSavePartialMode('existing')
+                          setSavePartialError(null)
+                        }}
+                        className={`px-3 py-1 text-xs font-medium rounded-md transition ${
+                          savePartialMode === 'existing'
+                            ? 'bg-white text-gray-900 shadow-sm ring-1 ring-inset ring-gray-200'
+                            : 'text-gray-600 hover:text-gray-900'
+                        }`}
+                      >
+                        Update existing
+                      </button>
+                    </div>
+
+                    {!trimmedContent && (
+                      <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+                        The diarisation prompt textarea is empty — there's
+                        nothing to save yet.
+                      </div>
+                    )}
+
+                    {savePartialMode === 'new' ? (
+                      <div className="space-y-3">
+                        <div>
+                          <label className="block text-xs font-medium text-gray-700 mb-1">
+                            Name
+                            <span
+                              className="ml-1 text-red-600"
+                              aria-label="required"
+                            >
+                              *
+                            </span>
+                          </label>
+                          <input
+                            type="text"
+                            value={savePartialName}
+                            onChange={(e) =>
+                              setSavePartialName(e.target.value)
+                            }
+                            placeholder="e.g. Hindi support — Gemini diarisation"
+                            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-700 mb-1">
+                            Description
+                          </label>
+                          <textarea
+                            value={savePartialDescription}
+                            onChange={(e) =>
+                              setSavePartialDescription(e.target.value)
+                            }
+                            rows={2}
+                            placeholder="Optional: short context for teammates browsing the library."
+                            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                          />
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        <p className="text-xs text-gray-500">
+                          Pick the saved Prompt Partial to overwrite. A new
+                          version row is appended — previous versions stay
+                          in the partial's history and can be reverted to.
+                        </p>
+                        <input
+                          type="text"
+                          value={partialsSearchInput}
+                          onChange={(e) =>
+                            setPartialsSearchInput(e.target.value)
+                          }
+                          placeholder="Search saved prompts..."
+                          className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                        />
+
+                        {isLoadingPartials ? (
+                          <div className="flex items-center justify-center py-8 text-sm text-gray-500">
+                            <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                            Loading saved prompts...
+                          </div>
+                        ) : promptPartials.length === 0 ? (
+                          <div className="rounded-lg border border-gray-200 p-8 text-center text-sm text-gray-500">
+                            {partialsSearchQuery
+                              ? `No saved prompt partials match “${partialsSearchQuery}”.`
+                              : 'No saved prompt partials yet. Switch to "Save as new" to create one.'}
+                          </div>
+                        ) : (
+                          <div className="space-y-2 max-h-[35vh] overflow-y-auto">
+                            {promptPartials.map((partial) => {
+                              const isSelected =
+                                savePartialExistingId === partial.id
+                              return (
+                                <label
+                                  key={partial.id}
+                                  className={`block cursor-pointer rounded-lg border p-3 transition-colors ${
+                                    isSelected
+                                      ? 'border-primary-300 bg-primary-50'
+                                      : 'border-gray-200 hover:bg-gray-50'
+                                  }`}
+                                >
+                                  <div className="flex items-start gap-3">
+                                    <input
+                                      type="radio"
+                                      name="call-import-save-partial"
+                                      checked={isSelected}
+                                      onChange={() =>
+                                        setSavePartialExistingId(partial.id)
+                                      }
+                                      className="mt-1 h-4 w-4 border-gray-300 text-primary-600 focus:ring-primary-500"
+                                    />
+                                    <div className="min-w-0 flex-1">
+                                      <p className="text-sm font-semibold text-gray-900">
+                                        {partial.name}
+                                      </p>
+                                      {partial.description ? (
+                                        <p className="mt-0.5 text-xs text-gray-500">
+                                          {partial.description}
+                                        </p>
+                                      ) : null}
+                                    </div>
+                                  </div>
+                                </label>
+                              )
+                            })}
+                          </div>
+                        )}
+                        <div>
+                          <label className="block text-xs font-medium text-gray-700 mb-1">
+                            Change summary
+                          </label>
+                          <input
+                            type="text"
+                            value={savePartialChangeSummary}
+                            onChange={(e) =>
+                              setSavePartialChangeSummary(e.target.value)
+                            }
+                            placeholder="Optional: what changed in this version?"
+                            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    <details className="rounded-md border border-gray-200 bg-gray-50 p-3 text-xs">
+                      <summary className="cursor-pointer font-medium text-gray-700">
+                        Preview prompt content
+                        <span className="ml-1 font-normal text-gray-500">
+                          ({trimmedContent.length} chars)
+                        </span>
+                      </summary>
+                      <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded border border-gray-200 bg-white p-2 font-mono text-[11px] text-gray-800">
+                        {trimmedContent || '(empty)'}
+                      </pre>
+                    </details>
+
+                    {savePartialError && (
+                      <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+                        {savePartialError}
+                      </div>
+                    )}
+                    {savePartialSuccess && (
+                      <div className="rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-800">
+                        {savePartialSuccess}
+                      </div>
+                    )}
+                  </div>
+                  <div className="px-6 py-4 border-t border-gray-200 flex justify-end gap-2 bg-gray-50 rounded-b-lg">
+                    <Button
+                      variant="outline"
+                      onClick={closeSavePartialModal}
+                      disabled={savePartialMutation.isPending}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      variant="primary"
+                      onClick={() =>
+                        savePartialMutation.mutate({
+                          content: trimmedContent,
+                          mode: savePartialMode,
+                          name: savePartialName.trim(),
+                          description: savePartialDescription.trim(),
+                          partialId: savePartialExistingId,
+                          changeSummary: savePartialChangeSummary.trim(),
+                        })
+                      }
+                      isLoading={savePartialMutation.isPending}
+                      disabled={!canSubmit}
+                    >
+                      {savePartialMode === 'new'
+                        ? 'Create Partial'
+                        : 'Save New Version'}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )
+          })(),
+        )}
+
       {showTranscribeModal &&
         renderModal(
           (() => {
@@ -3112,6 +3570,19 @@ export default function CallImportDetail() {
                             className="text-[11px] text-primary-600 hover:text-primary-700"
                           >
                             Import from saved partials
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openSavePartialModal('standalone')}
+                            disabled={!transcribeDiarisationPrompt.trim()}
+                            title={
+                              transcribeDiarisationPrompt.trim()
+                                ? 'Save the current prompt to your Prompt Partials library'
+                                : 'Enter or import a prompt first'
+                            }
+                            className="text-[11px] text-primary-600 hover:text-primary-700 disabled:text-gray-400 disabled:cursor-not-allowed"
+                          >
+                            Save as partial
                           </button>
                           {defaultDiarisationPrompt && (
                             <button
@@ -3793,6 +4264,23 @@ export default function CallImportDetail() {
                                       >
                                         Import from saved partials
                                       </button>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          openSavePartialModal('eval')
+                                        }
+                                        disabled={
+                                          !evalDiarisationPrompt.trim()
+                                        }
+                                        title={
+                                          evalDiarisationPrompt.trim()
+                                            ? 'Save the current prompt to your Prompt Partials library'
+                                            : 'Enter or import a prompt first'
+                                        }
+                                        className="text-[11px] text-primary-600 hover:text-primary-700 disabled:text-gray-400 disabled:cursor-not-allowed"
+                                      >
+                                        Save as partial
+                                      </button>
                                       {defaultDiarisationPrompt && (
                                         <button
                                           type="button"
@@ -4051,6 +4539,66 @@ export default function CallImportDetail() {
             )
           })(),
         )}
+
+      <ConfirmModal
+        isOpen={showRetryFailedImportConfirm}
+        title={`Retry ${failedImportRowsCount} failed import row${
+          failedImportRowsCount === 1 ? '' : 's'
+        }?`}
+        description={(() => {
+          const lines = [
+            `This will re-enqueue every currently failed import row in this batch (${failedImportRowsCount}).`,
+            'Use this after fixing transient provider/credential issues so failed recording fetches can run again.',
+            retryFailedImportError ? `Error: ${retryFailedImportError}` : '',
+          ]
+          return lines.filter(Boolean).join('\n\n')
+        })()}
+        confirmLabel={`Retry ${failedImportRowsCount} failed row${
+          failedImportRowsCount === 1 ? '' : 's'
+        }`}
+        cancelLabel="Cancel"
+        variant="warning"
+        isLoading={retryFailedImportMutation.isPending}
+        onConfirm={() => {
+          if (retryFailedImportMutation.isPending) return
+          retryFailedImportMutation.mutate()
+        }}
+        onCancel={() => {
+          if (retryFailedImportMutation.isPending) return
+          setShowRetryFailedImportConfirm(false)
+          setRetryFailedImportError(null)
+        }}
+      />
+
+      <ConfirmModal
+        isOpen={showForceFailDiarisationConfirm}
+        title={`Force-fail ${diarisationInFlightCount} in-flight diarisation row${
+          diarisationInFlightCount === 1 ? '' : 's'
+        }?`}
+        description={(() => {
+          const lines = [
+            'Any row currently pending/running in diarisation will be marked failed immediately.',
+            'You can then re-diarise those failed rows from the same page.',
+            forceFailDiarisationError ? `Error: ${forceFailDiarisationError}` : '',
+          ]
+          return lines.filter(Boolean).join('\n\n')
+        })()}
+        confirmLabel={`Force-fail ${diarisationInFlightCount} row${
+          diarisationInFlightCount === 1 ? '' : 's'
+        }`}
+        cancelLabel="Cancel"
+        variant="danger"
+        isLoading={forceFailDiarisationMutation.isPending}
+        onConfirm={() => {
+          if (forceFailDiarisationMutation.isPending) return
+          forceFailDiarisationMutation.mutate()
+        }}
+        onCancel={() => {
+          if (forceFailDiarisationMutation.isPending) return
+          setShowForceFailDiarisationConfirm(false)
+          setForceFailDiarisationError(null)
+        }}
+      />
 
       <ConfirmModal
         isOpen={showDeleteImport}

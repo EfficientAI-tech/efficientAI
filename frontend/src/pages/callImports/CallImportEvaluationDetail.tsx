@@ -149,14 +149,14 @@ function SortableHeader({
           onClick={() => onCycle(columnKey)}
           title={title || (typeof children === 'string' ? children : undefined)}
           className={
-            'inline-flex items-center gap-1 rounded px-1 -mx-1 py-0.5 hover:bg-gray-100 transition-colors ' +
+            'inline-flex items-start gap-1 rounded px-1 -mx-1 py-0.5 hover:bg-gray-100 transition-colors ' +
             (isActive ? 'text-gray-900' : 'text-gray-500')
           }
         >
-          <span className="truncate">{children}</span>
+          <span className="min-w-0">{children}</span>
           <Icon
             className={
-              'h-3 w-3 flex-shrink-0 ' +
+              'h-3 w-3 flex-shrink-0 mt-0.5 ' +
               (isActive ? 'text-primary-600' : 'text-gray-300')
             }
           />
@@ -179,6 +179,7 @@ export default function CallImportEvaluationDetail() {
   const [pendingDeleteRow, setPendingDeleteRow] =
     useState<CallImportEvaluationRow | null>(null)
   const [deleteEvalOpen, setDeleteEvalOpen] = useState(false)
+  const [forceFailPendingOpen, setForceFailPendingOpen] = useState(false)
   const [downloadMenuOpen, setDownloadMenuOpen] = useState(false)
   const downloadMenuRef = useRef<HTMLDivElement>(null)
   const [rowDeleteError, setRowDeleteError] = useState<string | null>(null)
@@ -487,6 +488,21 @@ export default function CallImportEvaluationDetail() {
         has_discovered: discoveredFilter?.anyDiscovered || undefined,
         sort_by: sortBy || undefined,
         sort_dir: sortBy ? sortDir : undefined,
+      }),
+    enabled: !!id && !!evalId,
+    refetchInterval: () => {
+      const status = evaluationQuery.data?.status
+      return status === 'pending' || status === 'running' ? 3000 : false
+    },
+  })
+
+  const pendingRowsQuery = useQuery({
+    queryKey: ['call-import-evaluation-pending-rows-count', id, evalId],
+    queryFn: () =>
+      apiClient.listCallImportEvaluationRows(id!, evalId!, {
+        page: 1,
+        page_size: 1,
+        status: 'pending',
       }),
     enabled: !!id && !!evalId,
     refetchInterval: () => {
@@ -812,6 +828,35 @@ export default function CallImportEvaluationDetail() {
     },
   })
 
+  const forceFailPendingMutation = useMutation({
+    mutationFn: () => apiClient.forceFailCallImportEvaluationPending(id!, evalId!),
+    onMutate: () => {
+      setCancelError(null)
+    },
+    onSuccess: () => {
+      setForceFailPendingOpen(false)
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-evaluation', id, evalId],
+      })
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-evaluation-rows', id, evalId],
+      })
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-evaluation-pending-rows-count', id, evalId],
+      })
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-evaluations', id],
+      })
+    },
+    onError: (err: any) => {
+      setCancelError(
+        err?.response?.data?.detail ||
+          err?.message ||
+          'Failed to force-fail pending rows.',
+      )
+    },
+  })
+
   // Row-level cancel: same shape as the run-level mutation but
   // scoped to a single row so the operator can stop one wedged row
   // without aborting siblings that are progressing fine.
@@ -1113,6 +1158,18 @@ export default function CallImportEvaluationDetail() {
   const headerLabel = evaluation.name?.trim()
     ? evaluation.name
     : `Evaluation ${evaluation.id.slice(0, 8)}`
+  const pendingRowCount = pendingRowsQuery.data?.total ?? 0
+  const getMetricLlmLabel = (metricId: string): string => {
+    const override = evaluation.metric_llm_overrides?.[metricId]
+    const overrideProvider = override?.provider?.trim()
+    const overrideModel = override?.model?.trim()
+    if (overrideProvider && overrideModel) {
+      return `${overrideProvider} / ${overrideModel}`
+    }
+    const runProvider = evaluation.llm_provider?.trim()
+    const runModel = evaluation.llm_model?.trim()
+    return `${runProvider || 'openai'} / ${runModel || 'gpt-4o'}`
+  }
 
   const totalPages = rowsQuery.data
     ? Math.max(1, Math.ceil(rowsQuery.data.total / rowsQuery.data.page_size))
@@ -1145,6 +1202,26 @@ export default function CallImportEvaluationDetail() {
               title="Abort every in-flight or queued row in this run"
             >
               Abort run
+            </Button>
+          )}
+          {pendingRowCount > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              leftIcon={<AlertTriangle className="h-4 w-4" />}
+              onClick={() => {
+                if (forceFailPendingMutation.isPending) return
+                setCancelError(null)
+                setForceFailPendingOpen(true)
+              }}
+              isLoading={forceFailPendingMutation.isPending}
+              disabled={forceFailPendingMutation.isPending}
+              className="text-amber-700 hover:text-amber-800 hover:bg-amber-50 border-amber-200"
+              title={`Mark ${pendingRowCount} pending row${
+                pendingRowCount === 1 ? '' : 's'
+              } as failed without aborting running rows`}
+            >
+              Force-fail pending ({pendingRowCount})
             </Button>
           )}
           {evaluation.failed_rows > 0 && (
@@ -2058,6 +2135,7 @@ export default function CallImportEvaluationDetail() {
                       Status
                     </SortableHeader>
                     {displayMetrics.flatMap((metric) => {
+                      const llmLabel = getMetricLlmLabel(metric.id)
                       const headers = [
                         <SortableHeader
                           key={metric.id}
@@ -2067,7 +2145,14 @@ export default function CallImportEvaluationDetail() {
                           onCycle={handleColumnSort}
                           title={metric.name}
                         >
-                          {metric.name}
+                          <span className="flex flex-col items-start leading-tight normal-case">
+                            <span className="truncate max-w-[220px] text-xs font-medium text-gray-700">
+                              {metric.name}
+                            </span>
+                            <span className="text-[10px] font-normal text-gray-400 mt-0.5">
+                              {llmLabel}
+                            </span>
+                          </span>
                         </SortableHeader>,
                       ]
                       if (metric.hasRationale) {
@@ -2077,7 +2162,15 @@ export default function CallImportEvaluationDetail() {
                             className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase whitespace-nowrap"
                             title={`${metric.name} - LLM Rationale`}
                           >
-                            {metric.name} <span className="text-gray-400">- LLM Rationale</span>
+                            <span className="flex flex-col items-start leading-tight normal-case">
+                              <span className="text-xs font-medium text-gray-700">
+                                {metric.name}{' '}
+                                <span className="text-gray-400">- LLM Rationale</span>
+                              </span>
+                              <span className="text-[10px] font-normal text-gray-400 mt-0.5">
+                                {llmLabel}
+                              </span>
+                            </span>
                           </th>,
                         )
                       }
@@ -2368,6 +2461,30 @@ export default function CallImportEvaluationDetail() {
           if (deleteRowMutation.isPending) return
           setPendingDeleteRow(null)
           setRowDeleteError(null)
+        }}
+      />
+      <ConfirmModal
+        isOpen={forceFailPendingOpen}
+        title={`Force-fail ${pendingRowCount} pending row${
+          pendingRowCount === 1 ? '' : 's'
+        }?`}
+        description={`This marks ${pendingRowCount} pending row${
+          pendingRowCount === 1 ? '' : 's'
+        } as failed immediately.\n\nThis won't affect rows currently running.`}
+        confirmLabel={`Force-fail ${pendingRowCount} pending row${
+          pendingRowCount === 1 ? '' : 's'
+        }`}
+        cancelLabel="Cancel"
+        variant="danger"
+        isLoading={forceFailPendingMutation.isPending}
+        onConfirm={() => {
+          if (!forceFailPendingMutation.isPending) {
+            forceFailPendingMutation.mutate()
+          }
+        }}
+        onCancel={() => {
+          if (forceFailPendingMutation.isPending) return
+          setForceFailPendingOpen(false)
         }}
       />
 

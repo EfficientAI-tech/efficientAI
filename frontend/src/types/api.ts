@@ -1209,6 +1209,12 @@ export interface CallImportTranscribeResponse {
   skipped_reason_counts: Record<string, number>
 }
 
+export interface CallImportRetryFailedRowsResponse {
+  requeued: number
+  enqueue_failed: number
+  skipped: number
+}
+
 export interface CallImportDiarisationPromptDefaultResponse {
   prompt: string
 }

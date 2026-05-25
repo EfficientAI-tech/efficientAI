@@ -514,7 +514,11 @@ def build_evaluation_prompt(
     is_custom_evaluator = evaluator and (
         bool(evaluator.custom_prompt)
         or bool(getattr(evaluator, "metric_ids", None))
-        or (evaluator.agent_id is None)
+        # Some call-import code paths pass a lightweight SimpleNamespace
+        # carrying only provider/model overrides (no ``agent_id`` field).
+        # Treat missing ``agent_id`` exactly like ``None`` so prompt
+        # construction stays robust across evaluator shapes.
+        or (getattr(evaluator, "agent_id", None) is None)
     )
     is_comparison = comparison_pair is not None
 
