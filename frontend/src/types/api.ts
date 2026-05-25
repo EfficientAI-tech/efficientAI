@@ -1232,6 +1232,18 @@ export interface CallImportMetricValueCount {
   count: number
 }
 
+/**
+ * One unordered pair-count cell from a multi-label parent's
+ * co-occurrence matrix. ``a`` and ``b`` are child label names with
+ * ``a < b`` lexicographically; ``count`` is the number of rows on
+ * which both labels fired together.
+ */
+export interface CallImportMetricLabelPair {
+  a: string
+  b: string
+  count: number
+}
+
 export interface CallImportMetricAggregate {
   metric_id: string
   metric_name: string
@@ -1257,6 +1269,13 @@ export interface CallImportMetricAggregate {
   stddev: number | null
   histogram_buckets: CallImportMetricHistogramBucket[]
   value_counts: CallImportMetricValueCount[]
+  /**
+   * Pairwise label intersections for multi-label parent metrics.
+   * Empty for everything else. The Visualizations tab reconstructs
+   * a square symmetric matrix from these unordered pairs to render
+   * the co-occurrence heatmap chart type.
+   */
+  co_occurrence?: CallImportMetricLabelPair[]
 }
 
 export interface CallImportEvaluationAggregateResponse {

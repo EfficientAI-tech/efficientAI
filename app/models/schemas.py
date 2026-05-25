@@ -3345,6 +3345,21 @@ class CallImportMetricValueCount(BaseModel):
     count: int
 
 
+class CallImportMetricLabelPair(BaseModel):
+    """One unordered pair-count cell of a multi-label parent's
+    co-occurrence matrix.
+
+    ``a`` and ``b`` are child label names; ``count`` is the number of
+    rows on which both labels fired together (intersection size).
+    Pairs are emitted with ``a < b`` lexicographically so the matrix
+    can be reconstructed without duplicates on the frontend.
+    """
+
+    a: str
+    b: str
+    count: int
+
+
 class CallImportMetricAggregate(BaseModel):
     """Per-metric aggregate computed from an evaluation run's rows.
 
@@ -3380,6 +3395,11 @@ class CallImportMetricAggregate(BaseModel):
         default_factory=list
     )
     value_counts: List[CallImportMetricValueCount] = Field(default_factory=list)
+    # Pairwise label intersections for multi-label parent metrics.
+    # Empty for everything else. The frontend reconstructs a square
+    # symmetric matrix from these unordered pairs and renders the
+    # co-occurrence heatmap chart type.
+    co_occurrence: List[CallImportMetricLabelPair] = Field(default_factory=list)
 
 
 class CallImportEvaluationAggregateResponse(BaseModel):

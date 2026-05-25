@@ -44,6 +44,7 @@ from app.models.schemas import (
     CallImportEvaluationUpdate,
     CallImportMetricAggregate,
     CallImportMetricHistogramBucket,
+    CallImportMetricLabelPair,
     CallImportMetricSummary,
     CallImportMetricValueCount,
     DiscoveredLabelDeleteRequest,
@@ -2423,6 +2424,11 @@ def _compute_metric_aggregates(
         # were scored (each row votes for >=1 label) so the n-badge in
         # the UI shows "n=50" instead of the misleading "n=208" sum.
         multi_label_rows_scored = 0
+        # Unordered pair tally for the co-occurrence heatmap. Keys are
+        # ``(label_a, label_b)`` with ``a < b`` so we never double-count
+        # the same unordered pair. Only populated for multi-label
+        # parents — every other metric leaves this empty.
+        multi_label_pair_counts: Dict[Tuple[str, str], int] = {}
         skipped = 0
         errored = 0
         observed_metric_type: Optional[str] = None
@@ -2466,11 +2472,24 @@ def _compute_metric_aggregates(
                 selected = entry.get("selected_child_names")
                 if isinstance(selected, list) and selected:
                     multi_label_rows_scored += 1
+                    cleaned: List[str] = []
                     for label in selected:
                         text_label = str(label).strip() or None
                         if text_label:
+                            cleaned.append(text_label)
                             category_counts[text_label] = (
                                 category_counts.get(text_label, 0) + 1
+                            )
+                    # Emit one increment per unordered pair of distinct
+                    # labels that fired together on this row. ``cleaned``
+                    # is deduplicated first because the LLM occasionally
+                    # repeats a label inside ``selected_child_names``.
+                    distinct = sorted(set(cleaned))
+                    for i in range(len(distinct)):
+                        for j in range(i + 1, len(distinct)):
+                            pair = (distinct[i], distinct[j])
+                            multi_label_pair_counts[pair] = (
+                                multi_label_pair_counts.get(pair, 0) + 1
                             )
                 continue
 
@@ -2531,6 +2550,25 @@ def _compute_metric_aggregates(
                 CallImportMetricValueCount(label=label, count=count)
                 for label, count in sorted_counts[:_TOP_VALUE_COUNTS]
             ]
+            # Restrict the heatmap to pairs of labels we actually
+            # rendered above so the frontend never has to match
+            # against truncated/missing rows. Sorted desc by pair
+            # count to keep the most informative cells in the
+            # response when ``_TOP_VALUE_COUNTS`` clipped the matrix.
+            if is_multi_label_parent and multi_label_pair_counts:
+                kept_labels = {
+                    label for label, _ in sorted_counts[:_TOP_VALUE_COUNTS]
+                }
+                pair_items = [
+                    (a, b, count)
+                    for (a, b), count in multi_label_pair_counts.items()
+                    if a in kept_labels and b in kept_labels
+                ]
+                pair_items.sort(key=lambda t: t[2], reverse=True)
+                agg.co_occurrence = [
+                    CallImportMetricLabelPair(a=a, b=b, count=count)
+                    for a, b, count in pair_items
+                ]
 
         results.append(agg)
 

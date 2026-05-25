@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  Activity,
   AlertCircle,
   ArrowLeft,
   ArrowLeftRight,
@@ -11,12 +12,15 @@ import {
   Check,
   ChevronRight,
   Copy,
+  Database,
   Download,
   Edit3,
   FileText,
+  Layers,
   ListTree,
   Mic,
   MessageSquare,
+  MicOff,
   Pause,
   Play,
   RefreshCw,
@@ -27,17 +31,6 @@ import {
   X,
   XCircle,
 } from 'lucide-react'
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from 'recharts'
 import { apiClient } from '../../lib/api'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import type {
@@ -55,6 +48,9 @@ import ProviderModelPicker, {
 } from '../../components/providers/ProviderModelPicker'
 import CallImportProgressBar from './components/CallImportProgressBar'
 import ImportPanel from './components/ImportPanel'
+import InsightsMetricCard, {
+  INSIGHTS_PALETTE,
+} from './components/InsightsMetricCard'
 import MappingPanel from './components/MappingPanel'
 import StageTracker from './components/StageTracker'
 import TranscriptView from './components/TranscriptView'
@@ -92,6 +88,150 @@ function formatBytes(bytes: number | null): string {
 function isNonRetryableError(message: string | null | undefined): boolean {
   if (!message) return false
   return /(401|403|404|forbidden|unauthor|not found|exceeds|too large|invalid content)/i.test(message)
+}
+
+// --- Insights tab helpers ---------------------------------------------
+//
+// KPI cards in the Insights header use a tinted gradient background +
+// matching icon chip so each metric is colour-coded at a glance. The
+// tone is purely cosmetic — no semantics are encoded beyond
+// emerald=positive (transcripts present), amber=needs-attention
+// (rows without transcripts) and the rest neutral-but-distinct.
+
+type KpiTone = 'indigo' | 'emerald' | 'amber' | 'violet' | 'gray'
+
+const KPI_TONE_CLASS: Record<
+  KpiTone,
+  { card: string; chip: string; icon: string; value: string }
+> = {
+  indigo: {
+    card: 'from-indigo-50 to-white border-indigo-100',
+    chip: 'bg-indigo-100 text-indigo-700',
+    icon: 'text-indigo-600',
+    value: 'text-indigo-900',
+  },
+  emerald: {
+    card: 'from-emerald-50 to-white border-emerald-100',
+    chip: 'bg-emerald-100 text-emerald-700',
+    icon: 'text-emerald-600',
+    value: 'text-emerald-900',
+  },
+  amber: {
+    card: 'from-amber-50 to-white border-amber-100',
+    chip: 'bg-amber-100 text-amber-700',
+    icon: 'text-amber-600',
+    value: 'text-amber-900',
+  },
+  violet: {
+    card: 'from-violet-50 to-white border-violet-100',
+    chip: 'bg-violet-100 text-violet-700',
+    icon: 'text-violet-600',
+    value: 'text-violet-900',
+  },
+  gray: {
+    card: 'from-gray-50 to-white border-gray-200',
+    chip: 'bg-gray-100 text-gray-600',
+    icon: 'text-gray-500',
+    value: 'text-gray-900',
+  },
+}
+
+function KpiCard({
+  Icon,
+  label,
+  value,
+  sub,
+  tone = 'gray',
+}: {
+  Icon: React.ComponentType<{ className?: string }>
+  label: string
+  value: string | number
+  sub?: string | null
+  tone?: KpiTone
+}) {
+  const cls = KPI_TONE_CLASS[tone]
+  return (
+    <div
+      className={`rounded-xl border bg-gradient-to-br ${cls.card} px-3 py-2.5 flex items-start gap-3`}
+    >
+      <span
+        className={`shrink-0 inline-flex items-center justify-center h-8 w-8 rounded-lg ${cls.chip}`}
+      >
+        <Icon className={`h-4 w-4 ${cls.icon}`} />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="text-[10px] uppercase tracking-wider text-gray-500 truncate">
+          {label}
+        </p>
+        <p className={`text-2xl font-semibold leading-tight tabular-nums ${cls.value}`}>
+          {value}
+        </p>
+        {sub ? (
+          <p className="text-[10px] text-gray-500 truncate">{sub}</p>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Stacked horizontal bar (single row) showing the proportion of
+ * transcripts produced by each STT provider, plus a colour-coded
+ * legend below. Replaces the old gray-pill list which was hard to
+ * compare at a glance once you had >2 sources.
+ */
+function TranscriptSourceMix({
+  counts,
+}: {
+  counts: Record<string, number>
+}) {
+  const entries = Object.entries(counts)
+    .filter(([, count]) => count > 0)
+    .sort((a, b) => b[1] - a[1])
+  const total = entries.reduce((s, [, c]) => s + c, 0) || 1
+  if (entries.length === 0) return null
+  return (
+    <div>
+      <h3 className="text-sm font-semibold text-gray-800 mb-2">
+        Transcript source mix
+      </h3>
+      <div
+        className="flex h-6 w-full overflow-hidden rounded-md border border-gray-200"
+        role="img"
+        aria-label="Transcript source breakdown"
+      >
+        {entries.map(([source, count], i) => {
+          const pct = (count / total) * 100
+          const color = INSIGHTS_PALETTE[i % INSIGHTS_PALETTE.length]
+          return (
+            <div
+              key={source}
+              style={{ width: `${pct}%`, background: color }}
+              title={`${source}: ${count} (${pct.toFixed(1)}%)`}
+            />
+          )
+        })}
+      </div>
+      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-gray-700">
+        {entries.map(([source, count], i) => {
+          const pct = (count / total) * 100
+          const color = INSIGHTS_PALETTE[i % INSIGHTS_PALETTE.length]
+          return (
+            <div key={source} className="inline-flex items-center gap-1.5">
+              <span
+                className="h-2.5 w-2.5 rounded-sm"
+                style={{ background: color }}
+              />
+              <span className="font-medium capitalize">{source}</span>
+              <span className="text-gray-500 tabular-nums">
+                · {count} ({pct.toFixed(0)}%)
+              </span>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
 }
 
 export default function CallImportDetail() {
@@ -2882,133 +3022,69 @@ export default function CallImportDetail() {
           ) : (
             <>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                <div className="border border-gray-200 rounded-lg px-3 py-2">
-                  <p className="text-[11px] text-gray-500 uppercase tracking-wide">
-                    Total rows
-                  </p>
-                  <p className="text-2xl font-semibold text-gray-900">
-                    {insightsData.total_rows}
-                  </p>
-                </div>
-                <div className="border border-gray-200 rounded-lg px-3 py-2">
-                  <p className="text-[11px] text-gray-500 uppercase tracking-wide">
-                    With transcript
-                  </p>
-                  <p className="text-2xl font-semibold text-gray-900">
-                    {insightsData.rows_with_transcript}
-                  </p>
-                </div>
-                <div className="border border-gray-200 rounded-lg px-3 py-2">
-                  <p className="text-[11px] text-gray-500 uppercase tracking-wide">
-                    Missing transcript
-                  </p>
-                  <p className="text-2xl font-semibold text-gray-900">
-                    {insightsData.rows_without_transcript}
-                  </p>
-                </div>
-                <div className="border border-gray-200 rounded-lg px-3 py-2">
-                  <p className="text-[11px] text-gray-500 uppercase tracking-wide">
-                    Eval runs
-                  </p>
-                  <p className="text-2xl font-semibold text-gray-900">
-                    {insightsData.evaluation_count}
-                  </p>
-                </div>
+                <KpiCard
+                  Icon={Database}
+                  label="Total rows"
+                  value={insightsData.total_rows}
+                  tone="indigo"
+                />
+                <KpiCard
+                  Icon={Mic}
+                  label="With transcript"
+                  value={insightsData.rows_with_transcript}
+                  sub={
+                    insightsData.total_rows > 0
+                      ? `${Math.round(
+                          (insightsData.rows_with_transcript /
+                            insightsData.total_rows) *
+                            100,
+                        )}% coverage`
+                      : null
+                  }
+                  tone="emerald"
+                />
+                <KpiCard
+                  Icon={MicOff}
+                  label="Missing transcript"
+                  value={insightsData.rows_without_transcript}
+                  tone={
+                    insightsData.rows_without_transcript > 0
+                      ? 'amber'
+                      : 'gray'
+                  }
+                />
+                <KpiCard
+                  Icon={Activity}
+                  label="Eval runs"
+                  value={insightsData.evaluation_count}
+                  tone="violet"
+                />
               </div>
 
               {Object.keys(insightsData.transcript_source_counts).length >
                 0 && (
-                <div>
-                  <h3 className="text-sm font-semibold text-gray-800 mb-2">
-                    Transcript source mix
-                  </h3>
-                  <div className="flex gap-2 flex-wrap">
-                    {Object.entries(
-                      insightsData.transcript_source_counts,
-                    ).map(([source, count]) => (
-                      <span
-                        key={source}
-                        className="inline-flex items-center gap-1 rounded-full bg-gray-100 text-gray-800 px-3 py-1 text-xs"
-                      >
-                        <span className="font-medium capitalize">{source}</span>
-                        <span className="tabular-nums">· {count}</span>
-                      </span>
-                    ))}
-                  </div>
-                </div>
+                <TranscriptSourceMix
+                  counts={insightsData.transcript_source_counts}
+                />
               )}
 
               {insightsData.metrics.length === 0 ? (
-                <p className="text-sm text-gray-500">
-                  Run at least one evaluation to populate metric trends.
-                </p>
+                <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50/40 px-6 py-10 text-center">
+                  <Layers className="h-6 w-6 text-gray-400 mx-auto mb-2" />
+                  <p className="text-sm text-gray-600">
+                    Run at least one evaluation to populate metric trends.
+                  </p>
+                </div>
               ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {insightsData.metrics.map((m) => {
-                    const trend = m.trend
-                      .filter((p) => p.mean !== null)
-                      .map((p) => ({
-                        x: new Date(p.created_at).toLocaleDateString(),
-                        mean: p.mean as number,
-                        name: p.name,
-                      }))
-                    const latest = m.latest
-                    return (
-                      <div
-                        key={m.metric_id}
-                        className="border border-gray-200 rounded-lg p-3 space-y-2"
-                      >
-                        <div className="flex items-center justify-between">
-                          <p className="text-sm font-medium text-gray-900">
-                            {m.metric_name}
-                          </p>
-                          {latest?.mean != null && (
-                            <span className="text-sm font-semibold text-primary-700 tabular-nums">
-                              μ {latest.mean.toFixed(2)}
-                            </span>
-                          )}
-                        </div>
-                        {trend.length > 1 ? (
-                          <ResponsiveContainer width="100%" height={120}>
-                            <LineChart data={trend}>
-                              <CartesianGrid strokeDasharray="3 3" />
-                              <XAxis dataKey="x" tick={{ fontSize: 10 }} />
-                              <YAxis tick={{ fontSize: 10 }} />
-                              <Tooltip />
-                              <Line
-                                type="monotone"
-                                dataKey="mean"
-                                strokeWidth={2}
-                                stroke="#6366f1"
-                                dot={{ r: 3 }}
-                              />
-                            </LineChart>
-                          </ResponsiveContainer>
-                        ) : latest && latest.value_counts.length ? (
-                          <ResponsiveContainer width="100%" height={120}>
-                            <BarChart data={latest.value_counts}>
-                              <CartesianGrid strokeDasharray="3 3" />
-                              <XAxis dataKey="label" tick={{ fontSize: 10 }} />
-                              <YAxis tick={{ fontSize: 10 }} />
-                              <Tooltip />
-                              <Bar dataKey="count" fill="#10b981" />
-                            </BarChart>
-                          </ResponsiveContainer>
-                        ) : (
-                          <p className="text-xs text-gray-400 italic">
-                            Need at least two runs to plot a trend.
-                          </p>
-                        )}
-                        {latest && (
-                          <div className="grid grid-cols-3 text-[11px] text-gray-500 gap-1">
-                            <span>n={latest.count}</span>
-                            <span>p50={latest.median?.toFixed(2) ?? '—'}</span>
-                            <span>p95={latest.p95?.toFixed(2) ?? '—'}</span>
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })}
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-800 mb-3">
+                    Metric trends
+                  </h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {insightsData.metrics.map((m) => (
+                      <InsightsMetricCard key={m.metric_id} metric={m} />
+                    ))}
+                  </div>
                 </div>
               )}
             </>
