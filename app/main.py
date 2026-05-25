@@ -111,11 +111,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Per-org logging middleware (active only when multi-tenant Loki is enabled)
-if settings.LOKI_ENABLED and settings.LOKI_MULTI_TENANT:
-    from app.core.observability_middleware import OrgLoggingMiddleware
-    app.add_middleware(OrgLoggingMiddleware)
-
 # Prometheus metrics instrumentation - exposes /metrics for scraping
 Instrumentator(
     should_group_status_codes=True,
