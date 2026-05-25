@@ -3562,6 +3562,127 @@ function truncateLabel(label: string, max = 24): string {
 }
 
 /**
+ * Side-legend below the chart. Every category is clickable so the
+ * user can drill in even when the chart itself is hard to click
+ * (e.g. tiny treemap tiles or thin pie slices). Defaults to showing
+ * the top 6 with a "Show all" toggle so a long-tail metric doesn't
+ * dominate the card vertically.
+ */
+function CategoryLegend({
+  valueCounts,
+  totalCategorical,
+  activeValue,
+  onValueClick,
+}: {
+  valueCounts: CallImportMetricAggregate['value_counts']
+  totalCategorical: number
+  activeValue: string | null
+  onValueClick: (value: string) => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const COLLAPSED_LIMIT = 6
+  const visible =
+    expanded || valueCounts.length <= COLLAPSED_LIMIT
+      ? valueCounts
+      : valueCounts.slice(0, COLLAPSED_LIMIT)
+  const hidden = valueCounts.length - visible.length
+  return (
+    <div className="mt-3 text-[11px]">
+      <ul className="space-y-1">
+        {visible.map((vc, i) => {
+          const pct = (vc.count / totalCategorical) * 100
+          const isFiltered = activeValue === vc.label
+          return (
+            <li key={vc.label}>
+              <button
+                type="button"
+                onClick={() => onValueClick(vc.label)}
+                className={`group/row w-full flex items-center gap-2 rounded px-1.5 py-1 transition ${
+                  isFiltered
+                    ? 'bg-primary-50 text-primary-800'
+                    : 'hover:bg-gray-50 text-gray-700'
+                }`}
+              >
+                <span
+                  className="h-2 w-2 rounded-full shrink-0"
+                  style={{ background: PIE_COLORS[i % PIE_COLORS.length] }}
+                />
+                <span
+                  className="text-left flex-1 break-words"
+                  title={vc.label}
+                >
+                  {vc.label}
+                </span>
+                <span className="font-medium text-gray-900 tabular-nums">
+                  {vc.count}
+                </span>
+                <span className="text-gray-400 w-10 text-right tabular-nums">
+                  {pct.toFixed(0)}%
+                </span>
+              </button>
+            </li>
+          )
+        })}
+      </ul>
+      {hidden > 0 && (
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          className="mt-1 text-[10px] text-primary-600 hover:text-primary-800 px-1.5"
+        >
+          Show {hidden} more
+        </button>
+      )}
+      {expanded && valueCounts.length > COLLAPSED_LIMIT && (
+        <button
+          type="button"
+          onClick={() => setExpanded(false)}
+          className="mt-1 text-[10px] text-gray-500 hover:text-gray-700 px-1.5"
+        >
+          Show less
+        </button>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Custom Y-axis tick for the horizontal categorical charts (lollipop
+ * and ranked bar). Sizes its truncation to the column width the
+ * caller passes via ``colWidth`` (recharts itself does not forward
+ * the YAxis ``width`` prop into custom tick components, so we plumb
+ * it explicitly) and exposes the full text via an SVG ``<title>``
+ * so hovering a clipped row reveals the original label. Long labels
+ * also drop one font size so we squeeze in a few extra characters
+ * before having to clip.
+ */
+function LongLabelTick(props: any) {
+  const { x, y, payload, colWidth } = props
+  const value: string = String(payload?.value ?? '')
+  const slot = typeof colWidth === 'number' && colWidth > 0 ? colWidth : 200
+  const fontSize = value.length > 22 ? 10 : 11
+  const charPx = fontSize * 0.58
+  const maxChars = Math.max(8, Math.floor((slot - 12) / charPx))
+  const display =
+    value.length > maxChars ? `${value.slice(0, maxChars - 1)}…` : value
+  return (
+    <g transform={`translate(${x},${y})`}>
+      <title>{value}</title>
+      <text
+        x={-6}
+        y={0}
+        dy={4}
+        textAnchor="end"
+        fill="#334155"
+        fontSize={fontSize}
+      >
+        {display}
+      </text>
+    </g>
+  )
+}
+
+/**
  * Single-metric chart card used inside the Visualizations tab. Picks
  * the chart shape from the aggregate payload: numeric histograms beat
  * categorical pie/bar charts when both are present, since numeric
@@ -3788,42 +3909,12 @@ function MetricVisualization({
       )}
 
       {hasCategorical && totalCategorical > 0 && (
-        <ul className="mt-3 space-y-1 text-[11px]">
-          {valueCounts.slice(0, 4).map((vc, i) => {
-            const pct = (vc.count / totalCategorical) * 100
-            const isFiltered = activeValue === vc.label
-            return (
-              <li key={vc.label}>
-                <button
-                  type="button"
-                  onClick={() => onValueClick(vc.label)}
-                  className={`group/row w-full flex items-center gap-2 rounded px-1.5 py-1 transition ${
-                    isFiltered
-                      ? 'bg-primary-50 text-primary-800'
-                      : 'hover:bg-gray-50 text-gray-700'
-                  }`}
-                >
-                  <span
-                    className="h-2 w-2 rounded-full shrink-0"
-                    style={{ background: PIE_COLORS[i % PIE_COLORS.length] }}
-                  />
-                  <span className="truncate text-left flex-1" title={vc.label}>
-                    {vc.label}
-                  </span>
-                  <span className="font-medium text-gray-900">{vc.count}</span>
-                  <span className="text-gray-400 w-10 text-right">
-                    {pct.toFixed(0)}%
-                  </span>
-                </button>
-              </li>
-            )
-          })}
-          {valueCounts.length > 4 && (
-            <li className="text-[10px] text-gray-400 px-1.5">
-              +{valueCounts.length - 4} more
-            </li>
-          )}
-        </ul>
+        <CategoryLegend
+          valueCounts={valueCounts}
+          totalCategorical={totalCategorical}
+          activeValue={activeValue}
+          onValueClick={onValueClick}
+        />
       )}
     </div>
   )
@@ -4008,6 +4099,11 @@ function CategoricalBarChart({
   activeValue,
   onValueClick,
 }: CategoricalChartProps) {
+  const longestLabel = valueCounts.reduce(
+    (m, v) => Math.max(m, v.label.length),
+    0,
+  )
+  const yAxisWidth = Math.min(260, Math.max(160, longestLabel * 7 + 24))
   return (
     <ResponsiveContainer
       width="100%"
@@ -4045,12 +4141,11 @@ function CategoricalBarChart({
         <YAxis
           type="category"
           dataKey="label"
-          tick={{ fontSize: 11, fill: '#334155' }}
+          tick={(p: any) => <LongLabelTick {...p} colWidth={yAxisWidth} />}
           axisLine={false}
           tickLine={false}
-          width={180}
+          width={yAxisWidth}
           interval={0}
-          tickFormatter={(value: string) => truncateLabel(value, 28)}
         />
         <Tooltip
           contentStyle={CHART_TOOLTIP_STYLE}
@@ -4114,6 +4209,14 @@ function CategoricalLollipopChart({
   activeValue,
   onValueClick,
 }: CategoricalChartProps) {
+  // Sized so the longest label gets all the space it can, capped at
+  // ~45% of the typical card width (cards are 480-560px wide in the
+  // 2-up grid, so 240 leaves ~240-320 for the bars themselves).
+  const longestLabel = valueCounts.reduce(
+    (m, v) => Math.max(m, v.label.length),
+    0,
+  )
+  const yAxisWidth = Math.min(260, Math.max(160, longestLabel * 7 + 24))
   return (
     <ResponsiveContainer
       width="100%"
@@ -4139,12 +4242,11 @@ function CategoricalLollipopChart({
         <YAxis
           type="category"
           dataKey="label"
-          tick={{ fontSize: 11, fill: '#334155' }}
+          tick={(p: any) => <LongLabelTick {...p} colWidth={yAxisWidth} />}
           axisLine={false}
           tickLine={false}
-          width={180}
+          width={yAxisWidth}
           interval={0}
-          tickFormatter={(value: string) => truncateLabel(value, 28)}
         />
         <Tooltip
           contentStyle={CHART_TOOLTIP_STYLE}

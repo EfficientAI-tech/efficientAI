@@ -67,6 +67,57 @@ function truncateLabel(label: string, max = 22): string {
 }
 
 /**
+ * Custom Y-axis tick for the horizontal categorical charts. Sizes
+ * its truncation to the column width the caller passes via
+ * ``colWidth`` (recharts does not forward the YAxis ``width`` prop
+ * into custom tick components, so we plumb it explicitly) and
+ * exposes the full text via an SVG ``<title>`` so hovering a
+ * clipped row reveals the original label.
+ */
+function LongLabelTick(props: any) {
+  const { x, y, payload, colWidth } = props
+  const value: string = String(payload?.value ?? '')
+  const slot = typeof colWidth === 'number' && colWidth > 0 ? colWidth : 160
+  const fontSize = value.length > 22 ? 10 : 11
+  const charPx = fontSize * 0.58
+  const maxChars = Math.max(8, Math.floor((slot - 12) / charPx))
+  const display =
+    value.length > maxChars ? `${value.slice(0, maxChars - 1)}…` : value
+  return (
+    <g transform={`translate(${x},${y})`}>
+      <title>{value}</title>
+      <text
+        x={-6}
+        y={0}
+        dy={4}
+        textAnchor="end"
+        fill="#334155"
+        fontSize={fontSize}
+      >
+        {display}
+      </text>
+    </g>
+  )
+}
+
+/**
+ * Compute a generous Y-axis width for the horizontal categorical
+ * charts based on the longest label in the dataset. Capped at ~50%
+ * of typical card width so the bars themselves still get enough
+ * horizontal room to read.
+ */
+function computeYAxisWidth(
+  valueCounts: { label: string }[],
+  cap = 220,
+): number {
+  const longest = valueCounts.reduce(
+    (m, v) => Math.max(m, v.label.length),
+    0,
+  )
+  return Math.min(cap, Math.max(120, longest * 7 + 24))
+}
+
+/**
  * Render the percent label on the coloured slice itself instead of
  * recharts' default outside placement, which clips against the
  * container edge for slices whose midpoint sits at the top or sides
@@ -510,6 +561,7 @@ function CategoricalChart({
   }
 
   if (chartType === 'lollipop') {
+    const yAxisWidth = computeYAxisWidth(valueCounts)
     return (
       <ResponsiveContainer
         width="100%"
@@ -535,12 +587,11 @@ function CategoricalChart({
           <YAxis
             type="category"
             dataKey="label"
-            tick={{ fontSize: 11, fill: '#334155' }}
+            tick={(p: any) => <LongLabelTick {...p} colWidth={yAxisWidth} />}
             axisLine={false}
             tickLine={false}
-            width={140}
+            width={yAxisWidth}
             interval={0}
-            tickFormatter={(v: string) => truncateLabel(v, 22)}
           />
           <Tooltip
             contentStyle={TOOLTIP_CONTENT_STYLE}
@@ -584,6 +635,7 @@ function CategoricalChart({
     )
   }
 
+  const yAxisWidth = computeYAxisWidth(valueCounts)
   return (
     <ResponsiveContainer
       width="100%"
@@ -621,12 +673,11 @@ function CategoricalChart({
         <YAxis
           type="category"
           dataKey="label"
-          tick={{ fontSize: 11, fill: '#334155' }}
+          tick={(p: any) => <LongLabelTick {...p} colWidth={yAxisWidth} />}
           axisLine={false}
           tickLine={false}
-          width={140}
+          width={yAxisWidth}
           interval={0}
-          tickFormatter={(v: string) => truncateLabel(v, 22)}
         />
         <Tooltip
           contentStyle={TOOLTIP_CONTENT_STYLE}
