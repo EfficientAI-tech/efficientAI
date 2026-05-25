@@ -8,6 +8,7 @@ mapping, and endpoint selection (e.g. OpenAI Responses API vs Chat
 Completions) automatically.
 """
 
+import re
 import time
 from typing import Optional, Dict, Any, List
 from uuid import UUID
@@ -33,6 +34,107 @@ _LITELLM_PROVIDER_PREFIX: Dict[str, str] = {
     "deepseek": "deepseek",
     "groq": "groq",
 }
+
+# Matches the model-name half of the Gemini 2.5 family: ``gemini-2.5-pro``,
+# ``gemini-2.5-flash``, ``gemini-2.5-flash-lite``, plus the ``-stt`` /
+# ``-tts`` / ``-preview-XX-YYYY`` suffix variants. Anchored on a clean
+# ``2.5`` token so future ``gemini-25-foo`` typos don't sneak in.
+_GEMINI_25_RE = re.compile(r"(?:^|[/-])gemini-2\.5(?:[-.]|$)", re.IGNORECASE)
+
+# Matches the Gemini 3 family: ``gemini-3-pro-preview``,
+# ``gemini-3-flash-preview``, ``gemini-3.1-pro-preview``,
+# ``gemini-3.2-flash``, etc. Loose on the minor version so 3.1 / 3.2 /
+# next-month's-preview all route through the same thinking-policy
+# branch without code edits.
+_GEMINI_3_RE = re.compile(
+    r"(?:^|[/-])gemini-3(?:\.\d+)?(?:[-.]|$)", re.IGNORECASE
+)
+
+
+def _gemini_family(model: str) -> Optional[str]:
+    """Return ``"2.5"``, ``"3"``, or ``None`` for the given model name.
+
+    Encapsulates the family detection in one place so the thinking-
+    policy branch and the ``max_tokens`` floor branch can't drift out
+    of sync. Returns ``None`` for non-Gemini models AND for older
+    Gemini families (1.5 / 2.0) that don't need a thinking workaround
+    because thinking either isn't a feature or is already off by
+    default.
+    """
+    if not model:
+        return None
+    if _GEMINI_25_RE.search(model):
+        return "2.5"
+    if _GEMINI_3_RE.search(model):
+        return "3"
+    return None
+
+
+def _gemini_thinking_kwargs(model: str) -> Dict[str, Any]:
+    """Build the LiteLLM kwargs that minimise / disable thinking.
+
+    The two Gemini "thinking" generations are controlled by
+    **mutually exclusive** parameters — passing both makes Gemini 3
+    return HTTP 400 — so this helper picks the right one per family:
+
+    * **Gemini 2.5** (``thinkingBudget`` integer):
+      - Flash / Flash-Lite: ``thinkingBudget=0`` fully disables
+        thinking — ideal for structured-JSON workloads (diariser,
+        evaluator) where chain-of-thought is wasted output budget.
+      - Pro: cannot be disabled below ``128``; we still pass
+        ``reasoning_effort="disable"`` so LiteLLM clamps to the
+        provider minimum rather than the default ``8192``.
+      The native ``thinking={type: disabled, budget_tokens: 0}``
+      flag is sent alongside as belt-and-braces — LiteLLM honours
+      whichever the installed Gemini SDK version understands.
+
+    * **Gemini 3** (``thinkingLevel`` enum):
+      - Flash: ``thinking_level="minimal"`` — the lowest setting the
+        Flash variants accept (Pro doesn't expose ``MINIMAL``).
+      - Pro: ``thinking_level="low"`` — the floor for Pro. Thinking
+        cannot be fully disabled on Gemini 3 Pro.
+      We send ONLY ``reasoning_effort`` (no native ``thinking={...}``)
+      because Gemini 3 errors on the conflict. LiteLLM's
+      cross-provider ``reasoning_effort`` switch maps the enum string
+      to ``thinkingLevel`` for Gemini 3 and ``thinkingBudget`` for
+      Gemini 2.5, so we get correct behaviour for both families
+      through the same surface.
+
+    Returns an empty dict for non-Gemini models or pre-2.5 Gemini
+    models so the caller can ``call_kwargs.update(...)`` unconditionally.
+    """
+    family = _gemini_family(model)
+    if family is None:
+        return {}
+
+    model_lower = (model or "").lower()
+    is_pro = "pro" in model_lower
+    is_flash = "flash" in model_lower
+
+    if family == "2.5":
+        kwargs: Dict[str, Any] = {
+            # LiteLLM cross-provider switch → ``thinkingBudget=0``
+            # for Gemini 2.5; silently dropped by other providers.
+            "reasoning_effort": "disable",
+            # Belt-and-braces: provider-native flag in case LiteLLM's
+            # mapping has a stale signature for the installed SDK.
+            "thinking": {"type": "disabled", "budget_tokens": 0},
+        }
+        return kwargs
+
+    # family == "3"
+    # Gemini 3 cannot be fully disabled and rejects the native
+    # ``thinking={budget_tokens: 0}`` form, so we ONLY pass the
+    # cross-provider ``reasoning_effort`` string here.
+    if is_flash:
+        return {"reasoning_effort": "minimal"}
+    if is_pro:
+        return {"reasoning_effort": "low"}
+    # Unknown 3.x variant (e.g. a future ``gemini-3-nano``) — pick
+    # the more conservative "low" so we never accidentally upgrade a
+    # diariser/evaluator to HIGH thinking on a model we haven't
+    # explicitly characterised.
+    return {"reasoning_effort": "low"}
 
 
 class LLMService:
@@ -110,33 +212,32 @@ class LLMService:
             "api_key": api_key,
             "temperature": temperature,
         }
-        # Gemini 2.5 series (Flash / Pro / Flash-Lite) ships with "thinking"
-        # enabled by default. Thinking tokens are deducted from
-        # ``max_output_tokens``, so a budget like 2000 can be entirely
-        # consumed by reasoning, leaving the visible JSON truncated mid-
-        # string (finish_reason="length"). For structured-JSON evaluation
-        # calls we don't need chain-of-thought, so disable thinking and
-        # ensure the budget is generous enough for the actual answer.
-        is_gemini_25 = (
-            self._litellm_model_name(llm_provider, llm_model).startswith("gemini/")
-            and "2.5" in (llm_model or "").lower()
-        )
-        if is_gemini_25:
-            # LiteLLM cross-provider switch that maps to thinkingBudget=0
-            # for Gemini 2.5 and is silently dropped by others.
-            call_kwargs.setdefault("reasoning_effort", "disable")
-            # Belt-and-braces: pass the provider-native flag too.
-            call_kwargs.setdefault(
-                "thinking", {"type": "disabled", "budget_tokens": 0}
-            )
+        # Gemini "thinking" families (2.5 + 3.x) ship with reasoning
+        # enabled by default. For structured-JSON workloads (the
+        # diariser and evaluator) chain-of-thought is wasted output
+        # budget — and on Gemini 2.5 it actively breaks parsing
+        # because thinking tokens are deducted from ``max_output_tokens``,
+        # so a tight budget gets consumed by reasoning and the visible
+        # JSON is truncated mid-string (``finish_reason="length"``).
+        # ``_gemini_thinking_kwargs`` picks the right minimisation
+        # parameter for each family (``thinkingBudget`` vs
+        # ``thinkingLevel``) and is a no-op for non-Gemini models.
+        gemini_family = _gemini_family(llm_model)
+        thinking_kwargs = _gemini_thinking_kwargs(llm_model)
+        for key, value in thinking_kwargs.items():
+            call_kwargs.setdefault(key, value)
 
         if max_tokens:
-            # Gemini 2.5 with thinking disabled still benefits from a
-            # larger ceiling because some evaluation prompts request many
-            # metrics + rationales. Bump the caller-supplied cap to a sane
-            # floor so we don't keep tripping `finish_reason="length"`.
+            # Gemini families with minimised-but-not-disabled thinking
+            # still need a generous ceiling because some evaluation
+            # prompts request many metrics + rationales. Bump the
+            # caller-supplied cap to a sane floor so we don't keep
+            # tripping ``finish_reason="length"``. Applies to both
+            # Gemini 2.5 (where thinking can be 0 but the answer
+            # itself can be long) and Gemini 3 (where ``MINIMAL`` /
+            # ``LOW`` thinking still consumes some of the budget).
             effective_max_tokens = max_tokens
-            if is_gemini_25 and effective_max_tokens < 4096:
+            if gemini_family is not None and effective_max_tokens < 4096:
                 effective_max_tokens = 4096
             call_kwargs["max_tokens"] = effective_max_tokens
         if config:

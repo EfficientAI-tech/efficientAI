@@ -10,6 +10,7 @@ from loguru import logger
 
 from app.models.database import ModelProvider
 
+from .json_utils import repair_truncated_json
 from .score_utils import (
     provider_matches,
     extract_score,
@@ -1020,93 +1021,6 @@ Example of WRONG format (DO NOT do this):
 {{"metrics": {{"Clarity": {{"score": 7}}}}}}"""
 
 
-def _repair_truncated_json(text: str) -> Optional[str]:
-    """Best-effort repair of a JSON document that was cut off mid-output.
-
-    Handles the common Gemini 2.5 failure mode where ``max_output_tokens``
-    is exhausted (often by internal thinking tokens) and the response
-    stops mid-string, e.g.::
-
-        {"a": 1, "b": "some long ration
-
-    We walk the string, track quote/escape/bracket state, drop any
-    dangling trailing key-without-value or comma, close the open string
-    if needed, then close any still-open ``{`` / ``[`` in reverse order.
-    Returns the repaired text on success or ``None`` if nothing
-    salvageable is found.
-    """
-    if not text:
-        return None
-
-    in_string = False
-    escape = False
-    stack: list[str] = []
-    last_safe = -1  # index just after the last fully-parsed key:value pair
-
-    i = 0
-    n = len(text)
-    while i < n:
-        ch = text[i]
-        if in_string:
-            if escape:
-                escape = False
-            elif ch == "\\":
-                escape = True
-            elif ch == '"':
-                in_string = False
-        else:
-            if ch == '"':
-                in_string = True
-            elif ch in "{[":
-                stack.append(ch)
-            elif ch in "}]":
-                if stack:
-                    stack.pop()
-                # A balanced root object/array is itself a safe cut-point.
-                if not stack:
-                    last_safe = i + 1
-            elif ch == "," and len(stack) >= 1 and stack[-1] == "{":
-                # Comma at object scope = previous key:value pair just closed.
-                last_safe = i
-        i += 1
-
-    if last_safe <= 0:
-        # No complete key:value pair seen yet — try to close an open string
-        # and unbalanced brackets to at least get an empty object.
-        repaired = text
-        if in_string:
-            repaired += '"'
-        for opener in reversed(stack):
-            repaired += "}" if opener == "{" else "]"
-        return repaired if repaired != text else None
-
-    # Truncate to the last clean point and re-close the outer containers.
-    head = text[:last_safe].rstrip().rstrip(",")
-    # Re-derive bracket stack for the trimmed head, since `stack` reflects
-    # the full (truncated) text.
-    head_stack: list[str] = []
-    in_string = False
-    escape = False
-    for ch in head:
-        if in_string:
-            if escape:
-                escape = False
-            elif ch == "\\":
-                escape = True
-            elif ch == '"':
-                in_string = False
-        else:
-            if ch == '"':
-                in_string = True
-            elif ch in "{[":
-                head_stack.append(ch)
-            elif ch in "}]" and head_stack:
-                head_stack.pop()
-
-    closers = "".join("}" if op == "{" else "]" for op in reversed(head_stack))
-    return head + closers
-
-
 def _parse_llm_response(response_text: str, result_id: str) -> dict:
     """Parse LLM response text to extract evaluation data.
 
@@ -1142,7 +1056,7 @@ def _parse_llm_response(response_text: str, result_id: str) -> dict:
         # Last resort: repair truncated/unterminated JSON so a partially
         # successful evaluation still yields whatever scores were emitted
         # before the cut-off.
-        repaired = _repair_truncated_json(text)
+        repaired = repair_truncated_json(text)
         if repaired:
             try:
                 parsed = json.loads(repaired)

@@ -57,6 +57,8 @@ from sqlalchemy.orm import Session
 from app.models.enums import ModelProvider
 from app.services.ai.llm_service import llm_service
 
+from .json_utils import repair_truncated_json
+
 
 DEFAULT_DIARIZATION_PROMPT = (
     "You are a transcript diariser. Split the following raw call "
@@ -78,11 +80,36 @@ DEFAULT_DIARIZATION_PROMPT = (
     "transformation, follow THOSE instructions when producing the "
     "`text` field. Operator instructions take precedence over this "
     "default.\n"
-    "4. Preserve the original turn order regardless of any text "
-    "transformation requested in rule 3. When no transformation is "
-    "requested, the concatenation of every turn's `text`, in order, "
-    "should be a near-lossless reconstruction of the input.\n"
-    "5. Use exactly the keys `speaker` and `text` in each entry. "
+    "4. SCRIPT NORMALISATION — Indic languages must be romanised: "
+    "When the spoken language is Hindi, Bengali, Telugu, Tamil, "
+    "Malayalam, Kannada, Marathi, Gujarati, Punjabi, Urdu, Odia, "
+    "Assamese, or any other Indic / South Asian language, "
+    "transliterate the spoken words into Latin (English) alphabets "
+    "while keeping the original words, meaning, and code-switching "
+    "intact. Do NOT translate the speech into English, and do NOT "
+    "emit Devanagari, Tamil, Telugu, Malayalam, Kannada, Bengali, "
+    "Gurmukhi, Gujarati, Odia, or any other Indic script — output "
+    "Latin script only. This is the conventional \"Hinglish\" / "
+    "romanised-Indic style operators expect. Example: a Hindi "
+    "agent greeting whose literal Devanagari form is \"मैं आपकी "
+    "क्या सहायता कर सकती हूं\" must be transcribed as \"Main aap "
+    "ki kya sahayata kar sakthi hu\" — NOT as the English "
+    "translation \"How can I help you\", and NOT in Devanagari. "
+    "Code-switched speech (Indic words mixed with English in the "
+    "same turn, e.g. \"Mera order kab deliver hoga, sir?\") stays "
+    "mixed, with the Indic portion romanised. English-only calls "
+    "are unaffected and stay in English. If the operator's "
+    "instructions explicitly request a different script (e.g. "
+    "\"transcribe in Devanagari\") or an actual translation into "
+    "another language, those instructions take precedence over "
+    "this rule (per rule 3).\n"
+    "5. Preserve the original turn order regardless of any text "
+    "transformation requested in rule 3 or script normalisation in "
+    "rule 4. When no transformation is requested, the concatenation "
+    "of every turn's `text`, in order, should be a near-lossless "
+    "reconstruction of the input (modulo Latin-script "
+    "transliteration for Indic languages).\n"
+    "6. Use exactly the keys `speaker` and `text` in each entry. "
     "Do NOT substitute `content`, `utterance`, `message`, `role`, "
     "`dialog`, `line`, etc., even if the operator's instructions "
     "imply a different shape.\n\n"
@@ -110,7 +137,7 @@ _MAX_TRANSCRIPT_CHARS = 60_000
 # producing a misleading "empty / unusable turn list" error across
 # providers. We pick the first non-empty string value out of each
 # tuple so the strict schema is still preferred when the model honours
-# it. The system prompt also explicitly forbids these synonyms (rule 5
+# it. The system prompt also explicitly forbids these synonyms (rule 6
 # in ``DEFAULT_DIARIZATION_PROMPT``); the leniency below is a safety
 # net for operator-customised prompts and lazy models.
 _TEXT_KEYS: tuple[str, ...] = (
@@ -153,16 +180,74 @@ class LLMDiarisationError(RuntimeError):
     """Raised when the LLM diariser cannot produce valid structured turns."""
 
 
+# Keys we'll peek inside when the LLM wraps the turn array in an
+# object instead of returning a bare array. ``turns`` is our prompted
+# contract; the rest are common drift patterns we've observed
+# (OpenAI / Gemini sometimes emit ``diarization`` or ``segments``
+# even when the prompt explicitly asks for ``turns``).
+_TURN_WRAPPER_KEYS: tuple[str, ...] = (
+    "turns",
+    "diarization",
+    "diarisation",
+    "segments",
+    "transcript",
+    "conversation",
+    "dialog",
+    "dialogue",
+    "results",
+    "output",
+    "data",
+)
+
+
+def _extract_array_from_object(parsed: Any) -> Optional[list]:
+    """Pull the turn array out of an LLM-wrapped JSON object.
+
+    Returns ``parsed`` itself when it's already a list; otherwise
+    looks for a known wrapper key (``turns`` first, then drift
+    aliases). Returns ``None`` when nothing array-shaped is found so
+    the caller can keep trying other recovery paths.
+    """
+    if isinstance(parsed, list):
+        return parsed
+    if isinstance(parsed, dict):
+        for key in _TURN_WRAPPER_KEYS:
+            value = parsed.get(key)
+            if isinstance(value, list):
+                return value
+        # Last-ditch: if there's exactly one list-valued key, take it.
+        # Catches the case where the model invents an unfamiliar
+        # wrapper key (e.g. ``call_transcript``) but still respects
+        # the array shape.
+        list_values = [v for v in parsed.values() if isinstance(v, list)]
+        if len(list_values) == 1:
+            return list_values[0]
+    return None
+
+
 def _extract_json_array(text: str) -> Optional[list]:
     """Best-effort extraction of a JSON array from an LLM response.
 
-    Tries the cheap-and-cheerful paths in order:
+    Tries the cheap-and-cheerful paths in order, from highest-fidelity
+    to most aggressive:
 
     1. The response is already a bare JSON array → ``json.loads``.
-    2. The response is wrapped in a ``` ```json fence — strip the fence
-       and parse the body.
-    3. The response contains a JSON array somewhere in the middle —
+    2. The response is a JSON OBJECT that wraps the array under a
+       known key (``turns`` per our prompt, plus a few drift aliases)
+       → parse the object, pluck the inner array. This is the case
+       OpenAI / Gemini hit most often because both providers' "JSON
+       mode" REQUIRES a top-level object — our prompt itself asks for
+       ``{"turns": [...]}`` for that reason.
+    3. The response is wrapped in a ```` ```json ```` code fence —
+       strip the fence and parse the body (handles either array or
+       object inside).
+    4. The response contains a JSON array somewhere in the middle —
        walk to the first ``[`` / last ``]`` and parse the slice.
+    5. The response was TRUNCATED mid-stream (common when Gemini
+       blows past ``max_output_tokens`` on a long call) — run the
+       shared ``repair_truncated_json`` helper and retry steps 1-2 on
+       the patched text. This is what recovers partial diarisations
+       instead of failing the whole row.
 
     Returns ``None`` when nothing parses; the caller treats that as
     a hard failure and surfaces the raw output for debugging.
@@ -171,24 +256,34 @@ def _extract_json_array(text: str) -> Optional[list]:
         return None
     candidate = text.strip()
 
+    # ---- Path 1 + 2: full JSON parse, then unwrap if it's an object. ----
+    # Combined because ``json.loads`` succeeds on both shapes and we
+    # want the object-unwrap to win over the bracket-scan fallback
+    # (a wrapped ``{"turns": [...]}`` would otherwise route through
+    # bracket-scan, which is correct only when the inner array's
+    # text content has no ``[`` / ``]`` chars).
     try:
         parsed = json.loads(candidate)
-        if isinstance(parsed, list):
-            return parsed
+        unwrapped = _extract_array_from_object(parsed)
+        if unwrapped is not None:
+            return unwrapped
     except json.JSONDecodeError:
         pass
 
+    # ---- Path 3: code fence (matches ``` ```json [...] ``` or ``` ```json {...} ```). ----
     fence_match = re.search(
-        r"```(?:json)?\s*(\[.*?\])\s*```", candidate, flags=re.DOTALL
+        r"```(?:json)?\s*([\[{].*[\]}])\s*```", candidate, flags=re.DOTALL
     )
     if fence_match:
         try:
             parsed = json.loads(fence_match.group(1))
-            if isinstance(parsed, list):
-                return parsed
+            unwrapped = _extract_array_from_object(parsed)
+            if unwrapped is not None:
+                return unwrapped
         except json.JSONDecodeError:
             pass
 
+    # ---- Path 4: bracket-scan slice. ----
     first_bracket = candidate.find("[")
     last_bracket = candidate.rfind("]")
     if first_bracket != -1 and last_bracket > first_bracket:
@@ -198,7 +293,28 @@ def _extract_json_array(text: str) -> Optional[list]:
             if isinstance(parsed, list):
                 return parsed
         except json.JSONDecodeError:
-            return None
+            pass
+
+    # ---- Path 5: truncation repair, then retry path 1+2. ----
+    # Recovers partial diarisations from responses that got cut off
+    # mid-string (typically because the audio was long and Gemini
+    # hit ``max_output_tokens``). Without this the row would fail
+    # outright even though e.g. 40 of 50 turns were already emitted
+    # cleanly before the cut.
+    repaired = repair_truncated_json(candidate)
+    if repaired and repaired != candidate:
+        try:
+            parsed = json.loads(repaired)
+            unwrapped = _extract_array_from_object(parsed)
+            if unwrapped is not None:
+                logger.warning(
+                    "LLM diariser response was truncated; recovered "
+                    "{} turn(s) via JSON repair.",
+                    len(unwrapped),
+                )
+                return unwrapped
+        except json.JSONDecodeError:
+            pass
 
     return None
 
@@ -355,7 +471,27 @@ def diarize_transcript_with_llm(
         config=config,
     )
 
-    return _parse_turns_from_response(response)
+    turns = _parse_turns_from_response(response)
+
+    # Latin-script compliance check (text path).
+    #
+    # ``DEFAULT_DIARIZATION_PROMPT`` rule 4 instructs the model to
+    # romanise Indic-language speech into Latin script. Most providers
+    # comply, but Gemini 2.5 Flash / Flash Lite specifically continue
+    # to emit Devanagari / Tamil / Telugu output on a material slice of
+    # Hinglish calls. We deliberately do NOT auto-retry on a violation:
+    # at 1000s of evaluations a day the doubled LLM cost outweighs the
+    # marginal compliance gain. Instead we just emit a structured
+    # ``WARNING`` log line so operators can see how often each
+    # provider/model leaks non-Latin script, and they can manually
+    # re-run diarisation from the UI if they need a romanised
+    # transcript on a specific row.
+    from .script_enforcement import log_script_violations
+
+    return log_script_violations(
+        turns,
+        log_label=f"diarize_transcript_with_llm[{llm_provider}/{llm_model}]",
+    )
 
 
 def _parse_turns_from_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -369,10 +505,23 @@ def _parse_turns_from_response(response: Dict[str, Any]) -> List[Dict[str, Any]]
     raw_text = (response.get("text") or "").strip()
     parsed = _extract_json_array(raw_text)
     if parsed is None:
+        # When ``llm_service.generate_response`` flagged the call as
+        # ``finish_reason="length"`` the response is almost certainly
+        # a truncated JSON object — the parser tried the truncation
+        # repair fallback and still couldn't recover anything usable.
+        # Surface that in the error message so the operator knows to
+        # raise ``max_tokens`` (or shorten the transcript) rather
+        # than chase a prompt bug.
+        was_truncated = bool(response.get("truncated"))
         snippet = raw_text[:400].replace("\n", " ")
+        prefix = (
+            "LLM diariser response was truncated by max_tokens and "
+            "could not be repaired. Got: "
+            if was_truncated
+            else "LLM diariser did not return a JSON array. Got: "
+        )
         raise LLMDiarisationError(
-            "LLM diariser did not return a JSON array. Got: "
-            f"{snippet}{'…' if len(raw_text) > 400 else ''}"
+            f"{prefix}{snippet}{'…' if len(raw_text) > 400 else ''}"
         )
 
     turns: List[Dict[str, Any]] = []
@@ -699,11 +848,32 @@ def _build_audio_messages(
     JSON output contract in the conversation (mirrors the text-path
     helper's reason for the wrapper).
     """
+    # The "no audible speech" clause below is the most important line
+    # in this string and worth the inline rationale: without it,
+    # multimodal models — Gemini in particular — will confabulate a
+    # plausible-sounding agent/customer dialogue when handed silence,
+    # static, hold music, or a corrupt / truncated recording, because
+    # every other instruction in the operator's system prompt is
+    # imperative ("transcribe verbatim", "use these labels", …) and
+    # nothing gives the model permission to return nothing. We grant
+    # that permission here at the wire layer (rather than baking it
+    # into ``DEFAULT_DIARIZATION_PROMPT``) so even operators with a
+    # heavily-customised system prompt still get the hallucination
+    # backstop. The empty-array result is fully handled downstream by
+    # the worker (treated as a clean "no speech detected" completion,
+    # not a failure).
     user_instructions = (
         "Transcribe AND diarise the attached call recording according "
         "to the system prompt. Return ONLY a JSON object with a single "
         "key `turns` whose value is the array of turn objects "
-        "described above — no prose, no markdown fence."
+        "described above — no prose, no markdown fence.\n\n"
+        "CRITICAL — no-speech rule: If the recording contains no "
+        "audible human speech (silence, static, hold music, ringtone, "
+        "DTMF tones only, or audio that is too corrupt / truncated to "
+        "interpret), return `{\"turns\": []}` exactly. Do NOT invent, "
+        "guess, hallucinate, or fabricate any dialogue under any "
+        "circumstance — an empty turns array is the correct, "
+        "expected answer for empty / non-speech audio."
     )
 
     if provider_value == "openai":
@@ -899,7 +1069,20 @@ def diarize_audio_with_llm(
             )
         ) from exc
 
-    return _parse_turns_from_response(response)
+    turns = _parse_turns_from_response(response)
+
+    # Latin-script compliance check (audio / LLM-only path).
+    #
+    # Mirrors the text-diariser's check: detect non-Latin output and
+    # log a structured warning, but never auto-retry. See the matching
+    # comment in :func:`diarize_transcript_with_llm` for the rationale
+    # (cost vs. marginal compliance gain at evaluation scale).
+    from .script_enforcement import log_script_violations
+
+    return log_script_violations(
+        turns,
+        log_label=f"diarize_audio_with_llm[{llm_provider}/{llm_model}]",
+    )
 
 
 # Substring fingerprints LiteLLM/OpenAI/Gemini surface when the chosen

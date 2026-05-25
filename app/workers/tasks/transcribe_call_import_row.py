@@ -326,6 +326,36 @@ def transcribe_call_import_row_task(
             )
             return {"status": "skipped", "reason": "row_not_found"}
 
+        # Cancellation guard at task entry.
+        #
+        # The cancel endpoint (``POST /v1/call-imports/{id}/rows/{row_id}/cancel-diarisation``)
+        # flips the row to ``failed`` + :data:`_CANCELLED_BY_USER_ERROR` and
+        # then ``celery_app.control.revoke(..., terminate=True, signal="SIGTERM")``
+        # the in-flight task. Combined with ``task_acks_late=True`` (see
+        # :mod:`app.workers.config`) the SIGTERM-killed task is NOT ACKed,
+        # so the broker redelivers the same ``task_id`` to another (or
+        # recycled) prefork child. Celery's default in-memory revoke list
+        # is per-worker and not persisted, so the redelivery target has no
+        # idea this task was revoked and would otherwise overwrite the
+        # cancel sentinel a few lines below (``status = "running"``,
+        # ``error = None``) and re-run the entire diarisation pipeline —
+        # which is exactly the "Stop diarisation removes the row, then it
+        # comes back and re-diarises" bug operators were hitting.
+        #
+        # The cheap, robust mitigation is to detect the sentinel at task
+        # entry and bail out as a no-op; the row stays in its cancelled-
+        # by-user terminal state and the redelivered task acks cleanly.
+        if (
+            (row.diarised_transcript_status or "").lower() == "failed"
+            and (row.diarised_transcript_error or "") == _CANCELLED_BY_USER_ERROR
+        ):
+            logger.info(
+                "transcribe_call_import_row: row {} already cancelled by "
+                "user (likely a redelivery after SIGTERM revoke); skipping",
+                row_id,
+            )
+            return {"status": "skipped", "reason": "cancelled_by_user"}
+
         existing_diarised = (row.diarised_transcript or "").strip()
         if existing_diarised and not overwrite_existing:
             row.diarised_transcript_status = "completed"
@@ -442,6 +472,14 @@ def transcribe_call_import_row_task(
             DEFAULT_DIARIZATION_PROMPT
         )
         row.diarised_prompt = effective_prompt
+
+        # ``plain_text`` is the STT pass output and only meaningful in
+        # ``stt_llm`` mode. We initialise it here so the shared
+        # finaliser block below ("transcript_to_store = rendered_turns
+        # or plain_text") can reference it unconditionally without
+        # raising NameError on the ``llm_only`` path (where STT is
+        # skipped entirely).
+        plain_text: Optional[str] = None
 
         if normalised_mode == "stt_llm":
             # ---- Two-stage path: STT then LLM diarise ---------------
@@ -594,6 +632,56 @@ def transcribe_call_import_row_task(
                 return {
                     "status": "failed",
                     "reason": "llm_only_diarisation_error",
+                }
+
+            # No-audible-speech short-circuit (LLM-only path).
+            #
+            # The audio-diariser wire wrapper (see
+            # ``_build_audio_messages`` in ``llm_diarisation.py``)
+            # explicitly grants the model permission to return
+            # ``{"turns": []}`` for silence / static / hold music /
+            # corrupt audio. When that path triggers — or when the
+            # model legitimately decides the recording has no speech
+            # in it — we treat the row as a clean ``completed`` with
+            # an empty transcript instead of a failure: there's
+            # nothing for the operator to fix on a recording that
+            # genuinely has no speech, and a "failed" row would
+            # otherwise nag them to retry forever.
+            #
+            # The audit-trail ``diarised_transcript_error`` carries
+            # the human-readable reason so reviewers can distinguish
+            # this short-circuit from a real diarisation result even
+            # though the row's terminal status is ``completed``.
+            if not raw_turns:
+                logger.info(
+                    "transcribe_call_import_row: row {} LLM-only diariser "
+                    "returned no turns (no audible speech detected); "
+                    "marking diarisation completed with empty transcript.",
+                    row_id,
+                )
+                if _was_cancelled_externally(db, row):
+                    return {
+                        "status": "cancelled",
+                        "reason": "cancelled_by_user",
+                    }
+                row.diarised_transcript = ""
+                row.diarised_segments = []
+                row.diarised_speaker_swap = False
+                row.transcribe_mode = normalised_mode
+                row.diarised_transcript_status = "completed"
+                row.diarised_transcript_error = (
+                    "No audible speech detected in the recording; "
+                    "diariser returned no turns."
+                )
+                row.diarised_at = _now()
+                db.commit()
+                return {
+                    "status": "completed",
+                    "row_id": row_id,
+                    "mode": normalised_mode,
+                    "reason": "no_speech_detected",
+                    "turn_count": 0,
+                    "characters": 0,
                 }
 
         turns = _segments_to_user_agent_turns(raw_turns)
