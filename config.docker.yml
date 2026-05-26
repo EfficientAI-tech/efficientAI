@@ -68,8 +68,9 @@ api:
 # storage: "filesystem" (default, local Docker volume) or "s3" (durable, for production)
 # multi_tenant: false (default, single tenant) or true (per-org log isolation)
 observability:
+  enabled: false
   loki:
-    enabled: true
+    enabled: false
     url: "http://loki:3100"
     storage: filesystem
     multi_tenant: false

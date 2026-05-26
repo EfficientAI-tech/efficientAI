@@ -89,7 +89,8 @@ class Settings(BaseSettings):
     DIARIZATION_NUM_SPEAKERS: Optional[int] = 2  # Force pyannote to detect this many speakers (None = auto-detect)
 
     # Observability / Loki
-    LOKI_ENABLED: bool = True
+    OBSERVABILITY_ENABLED: bool = False
+    LOKI_ENABLED: bool = False
     LOKI_URL: str = "http://loki:3100"
     LOKI_STORAGE: str = "filesystem"  # "filesystem" or "s3"
     LOKI_MULTI_TENANT: bool = False
@@ -437,10 +438,12 @@ def load_config_from_file(config_path: str) -> None:
 
     if "observability" in config_data:
         obs_config = config_data["observability"]
+        if "enabled" in obs_config:
+            settings.OBSERVABILITY_ENABLED = bool(obs_config["enabled"])
         if "loki" in obs_config:
             loki_config = obs_config["loki"]
             if "enabled" in loki_config:
-                settings.LOKI_ENABLED = loki_config["enabled"]
+                settings.LOKI_ENABLED = bool(loki_config["enabled"])
             if "url" in loki_config:
                 settings.LOKI_URL = loki_config["url"]
             if "storage" in loki_config:
@@ -527,4 +530,3 @@ except Exception as e:
     else:
         # No .env file, create normally
         settings = Settings()
-
