@@ -993,12 +993,13 @@ class ConversationEvaluationResponse(BaseModel):
 
 # Evaluator Schemas
 class EvaluatorCreate(BaseModel):
-    """Schema for creating an evaluator. Either provide agent_id+persona_id+scenario_id (standard) or custom_prompt (custom)."""
+    """Schema for creating an evaluator. Either provide agent_id+persona_id+scenario_id (standard) or metric_ids/custom_prompt (custom)."""
     name: Optional[str] = None
     agent_id: Optional[UUID] = None
     persona_id: Optional[UUID] = None
     scenario_id: Optional[UUID] = None
     custom_prompt: Optional[str] = None
+    metric_ids: Optional[List[UUID]] = None
     llm_provider: Optional[ModelProvider] = None
     llm_model: Optional[str] = None
     tags: Optional[List[str]] = None
@@ -1011,6 +1012,7 @@ class EvaluatorUpdate(BaseModel):
     persona_id: Optional[UUID] = None
     scenario_id: Optional[UUID] = None
     custom_prompt: Optional[str] = None
+    metric_ids: Optional[List[UUID]] = None
     llm_provider: Optional[ModelProvider] = None
     llm_model: Optional[str] = None
     tags: Optional[List[str]] = None
@@ -1026,6 +1028,7 @@ class EvaluatorResponse(BaseModel):
     persona_id: Optional[UUID] = None
     scenario_id: Optional[UUID] = None
     custom_prompt: Optional[str] = None
+    metric_ids: Optional[List[UUID]] = None
     llm_provider: Optional[ModelProvider] = None
     llm_model: Optional[str] = None
     tags: Optional[List[str]]
@@ -1092,6 +1095,9 @@ class RunEvaluatorsResponse(BaseModel):
 SelectionMode = Literal["single_choice", "multi_label"]
 
 
+MetricScope = Literal["workspace", "organization"]
+
+
 class MetricCreate(BaseModel):
     """Schema for creating a metric.
 
@@ -1100,6 +1106,14 @@ class MetricCreate(BaseModel):
       is forced to ``boolean`` server-side; ``selection_mode`` must be None.
     - ``selection_mode`` set => this is a parent category metric.
       ``parent_metric_id`` must be None (max depth = 2).
+
+    Scope:
+    - ``scope="workspace"`` (default) stamps the metric with the active
+      ``X-Workspace-Id`` so it only shows up inside that workspace.
+    - ``scope="organization"`` stamps ``workspace_id=NULL`` so the metric
+      is visible in every workspace of the org. Children always inherit
+      their parent's scope; setting ``scope`` on a child request body is
+      ignored server-side.
     """
     name: str
     description: Optional[str] = None
@@ -1124,26 +1138,26 @@ class MetricCreate(BaseModel):
     # When true, the LLM is invited during call-import evaluation to emit
     # additional candidate sub-labels beyond the user-defined children.
     allow_discovery: bool = False
-    # When non-empty, this metric is a "column-input judge": at
-    # call-import evaluation time the worker reads the listed entries
-    # from each row's ``raw_columns`` and feeds those values to the
-    # LLM as "Context inputs" instead of the transcript. Entries can
-    # be either a verbatim CSV header (from the import's
-    # ``extra_columns``) or the friendly key the uploader gave a
-    # column in ``custom_column_mapping`` — the worker resolves both.
-    # Empty list preserves the default transcript-based behavior.
-    input_columns: List[str] = Field(default_factory=list)
     # When true, this metric is a "transcript-compare judge": at
     # call-import evaluation time the worker feeds BOTH the production
     # transcript (``call_import_rows.transcript``, CSV-supplied) and
     # the diarised transcript (``call_import_rows.diarised_transcript``,
     # worker-produced) to the LLM as a labeled pair. The parent
     # evaluation's ``transcript_source`` is ignored for these metrics.
-    # Mutually exclusive with ``input_columns`` (column-input judge),
-    # ``parent_metric_id`` and ``selection_mode`` — v1 keeps comparison
-    # metrics standalone so the LLM grouping logic doesn't have to
-    # second-guess which prompt template to use within a hierarchy.
+    # Mutually exclusive with ``parent_metric_id`` / ``selection_mode``
+    # — comparison metrics stay standalone so the LLM grouping logic
+    # doesn't have to second-guess which prompt template to use within
+    # a hierarchy. (Parent-level keyword auto-detection in the worker
+    # still routes a categorisation parent through the comparison
+    # prompt without setting this flag.)
     compare_transcripts: bool = False
+    # When ``"organization"``, the metric is stored with
+    # ``workspace_id=NULL`` so it surfaces in every workspace of the
+    # caller's org. Default ``"workspace"`` preserves the historical
+    # behavior of stamping the metric with the active ``X-Workspace-Id``.
+    # Ignored when ``parent_metric_id`` is set (children inherit the
+    # parent's scope unconditionally).
+    scope: MetricScope = "workspace"
 
     @model_validator(mode='after')
     def validate_compare_transcripts_exclusions(self):
@@ -1152,18 +1166,12 @@ class MetricCreate(BaseModel):
 
         The Metric ORM column accepts the value; the validator just
         prevents the user from accidentally requesting an incoherent
-        metric shape (e.g. "compare two transcripts but also read
-        columns instead of the transcript" — those are contradictory
-        prompt templates).
+        metric shape (e.g. "compare two transcripts but also live
+        inside a categorisation hierarchy" — different prompt
+        templates).
         """
         if not self.compare_transcripts:
             return self
-        if self.input_columns:
-            raise ValueError(
-                "A metric can be either a column-input judge "
-                "(input_columns) or a transcript-compare judge "
-                "(compare_transcripts), not both."
-            )
         if self.parent_metric_id is not None:
             raise ValueError(
                 "Transcript-compare metrics must be standalone: "
@@ -1231,6 +1239,11 @@ class MetricCreateWithChildren(BaseModel):
         default_factory=list,
         description="Child sub-metric labels under this parent.",
     )
+    # See ``MetricCreate.scope``. Same semantics: ``"organization"``
+    # creates the parent + all children with ``workspace_id=NULL`` so
+    # the whole category subtree is shared across every workspace in
+    # the org.
+    scope: MetricScope = "workspace"
 
 
 class MetricUpdate(BaseModel):
@@ -1252,16 +1265,11 @@ class MetricUpdate(BaseModel):
     capture_rationale: Optional[bool] = None
     selection_mode: Optional[SelectionMode] = None
     allow_discovery: Optional[bool] = None
-    # See ``MetricCreate.input_columns``. ``None`` here means "leave
-    # unchanged"; an empty list explicitly clears any previously
-    # configured column inputs.
-    input_columns: Optional[List[str]] = None
     # See ``MetricCreate.compare_transcripts``. ``None`` here means
     # "leave unchanged". The route layer enforces mutual exclusion
-    # against the row's existing ``input_columns`` /
-    # ``parent_metric_id`` / ``selection_mode`` when this is set to
-    # True, because the patch body alone doesn't have enough context
-    # to validate cross-state.
+    # against the row's existing ``parent_metric_id`` /
+    # ``selection_mode`` when this is set to True, because the patch
+    # body alone doesn't have enough context to validate cross-state.
     compare_transcripts: Optional[bool] = None
 
     @model_validator(mode='after')
@@ -1270,17 +1278,11 @@ class MetricUpdate(BaseModel):
         ALSO trying to set a conflicting field in the same request.
 
         Cross-state validation against the persisted row (e.g. "the
-        existing metric already has input_columns") is done in the
+        existing metric already has a parent") is done in the
         update route since the schema doesn't have the row in hand.
         """
         if self.compare_transcripts is not True:
             return self
-        if self.input_columns:
-            raise ValueError(
-                "A metric can be either a column-input judge "
-                "(input_columns) or a transcript-compare judge "
-                "(compare_transcripts), not both."
-            )
         if self.selection_mode is not None:
             raise ValueError(
                 "Transcript-compare metrics must be standalone: "
@@ -1300,7 +1302,13 @@ class MetricResponse(BaseModel):
     """
     id: UUID
     organization_id: UUID
-    workspace_id: UUID
+    # ``None`` when the metric is org-shared (``scope == "organization"``).
+    # See the ORM ``Metric.workspace_id`` docstring.
+    workspace_id: Optional[UUID] = None
+    # Computed convenience field so the UI doesn't have to do
+    # ``workspace_id == null`` checks everywhere. Always one of
+    # ``"workspace"`` or ``"organization"``.
+    scope: MetricScope = "workspace"
     name: str
     description: Optional[str]
     # Optional illustrative example. Populated mainly on categorization
@@ -1321,7 +1329,6 @@ class MetricResponse(BaseModel):
     parent_metric_id: Optional[UUID] = None
     selection_mode: Optional[SelectionMode] = None
     allow_discovery: bool = False
-    input_columns: List[str] = Field(default_factory=list)
     # See ``MetricCreate.compare_transcripts``. Surfaced so the UI can
     # render a "Compare transcripts" badge in the metric picker and
     # know to skip the run's transcript_source toggle for this metric.
@@ -1380,14 +1387,6 @@ class MetricResponse(BaseModel):
         if v is None:
             return "custom"
         return str(v).lower()
-
-    @validator('input_columns', pre=True)
-    def normalize_input_columns(cls, v):
-        if v is None:
-            return []
-        if isinstance(v, (list, tuple)):
-            return [str(item) for item in v if item is not None and str(item).strip() != ""]
-        return []
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -2045,6 +2044,28 @@ class CallImportRowResponse(BaseModel):
     diarised_transcript_status: Optional[str] = None
     diarised_transcript_error: Optional[str] = None
     diarised_at: Optional[datetime] = None
+    # LLM that turned the STT plain-text output into structured
+    # ``diarised_segments``. Surfaced in the row detail panel so
+    # reviewers can see "Diarised by openai/gpt-4o-mini" next to
+    # the swap toggle. NULL on rows diarised by the legacy pyannote
+    # worker (which has been removed).
+    diarised_llm_provider: Optional[str] = None
+    diarised_llm_model: Optional[str] = None
+    # The exact prompt the LLM diariser ran with. Persisted so a
+    # reviewer can copy it back into the modal and reproduce the
+    # turn layout against a different STT pass.
+    diarised_prompt: Optional[str] = None
+    # Structured speaker turns produced by the diarisation worker. Each
+    # entry is `{ "speaker": "agent"|"user"|"speaker_N", "text": str,
+    # "start": float, "end": float, "raw_speaker": "Speaker 1" }`. The
+    # plain ``diarised_transcript`` field above is a `<speaker>: <text>`
+    # rendering of this list with ``diarised_speaker_swap`` applied.
+    diarised_segments: Optional[List[Dict[str, Any]]] = None
+    # When True the agent <-> user mapping in ``diarised_segments`` is
+    # inverted at render / export time. The worker writes the canonical
+    # mapping using the "first speaker is the agent" heuristic; the swap
+    # toggle lets reviewers correct that without re-running diarisation.
+    diarised_speaker_swap: bool = False
     status: CallImportRowStatus
     recording_s3_key: Optional[str] = None
     recording_content_type: Optional[str] = None
@@ -2316,10 +2337,22 @@ class CallImportDetailResponse(CallImportResponse):
     ``filtered_total_rows`` is only set when the caller passed a ``q``
     search term — it lets the UI paginate against the filtered subset
     while still showing the unfiltered ``total_rows`` in the header.
+
+    The ``diarised_*_rows`` counters aggregate
+    ``CallImportRow.diarised_transcript_status`` across the batch so the
+    UI can render a transcribe-and-diarise progress bar without paging
+    through every row. Rows that have never been touched by the
+    transcribe/diarise worker (``status='idle'``) are NOT counted here —
+    callers compute the idle bucket as
+    ``total_rows - (pending + running + completed + failed)``.
     """
 
     rows: List[CallImportRowResponse] = Field(default_factory=list)
     filtered_total_rows: Optional[int] = None
+    diarised_pending_rows: int = 0
+    diarised_running_rows: int = 0
+    diarised_completed_rows: int = 0
+    diarised_failed_rows: int = 0
 
 
 class CallImportListResponse(BaseModel):
@@ -2566,15 +2599,34 @@ class CallImportEvaluationCreate(BaseModel):
             "instead of skipping rows that already have one."
         ),
     )
+    transcribe_mode: Literal["stt_llm", "llm_only"] = Field(
+        default="stt_llm",
+        description=(
+            "Diarisation pipeline shape for the auto-transcribe step. "
+            "'stt_llm' (default) runs STT then an LLM diariser over the "
+            "resulting text — ``stt_provider`` + ``stt_model`` must be "
+            "provided. 'llm_only' skips STT and feeds the audio "
+            "directly to the multimodal ``diarization_llm_*`` model "
+            "along with ``diarization_prompt``; STT fields must be "
+            "omitted in that case."
+        ),
+    )
     stt_provider: Optional[str] = Field(
         default=None,
         max_length=50,
-        description="STT provider key, e.g. 'deepgram', 'openai'.",
+        description=(
+            "STT provider key, e.g. 'deepgram', 'openai'. Required when "
+            "``transcribe_mode='stt_llm'`` (the default); must be omitted "
+            "when ``transcribe_mode='llm_only'``."
+        ),
     )
     stt_model: Optional[str] = Field(
         default=None,
         max_length=100,
-        description="STT model name, e.g. 'nova-2', 'whisper-1'.",
+        description=(
+            "STT model name, e.g. 'nova-2', 'whisper-1'. Same presence "
+            "rules as ``stt_provider``."
+        ),
     )
     stt_credential_id: Optional[UUID] = Field(
         default=None,
@@ -2584,6 +2636,37 @@ class CallImportEvaluationCreate(BaseModel):
         default=None,
         max_length=20,
         description="ISO language hint for the STT provider, e.g. 'en'.",
+    )
+    # --- LLM diariser config (mirror of CallImportTranscribeRequest) ---
+    # Auto-diarised eval rows go through the same LLM-based diariser as
+    # the standalone Transcribe modal — the run remembers the provider /
+    # model / prompt so a follow-up retry can reproduce them without
+    # having to re-prompt the user.
+    diarization_llm_provider: Optional[str] = Field(
+        default=None,
+        max_length=50,
+        description=(
+            "LLM provider for diarising STT output into agent/user "
+            "turns. Required when ``auto_transcribe`` is set (the worker "
+            "no longer falls back to pyannote)."
+        ),
+    )
+    diarization_llm_model: Optional[str] = Field(
+        default=None,
+        max_length=100,
+        description="LLM model for the diariser.",
+    )
+    diarization_llm_credential_id: Optional[UUID] = Field(
+        default=None,
+        description="Optional AIProvider row to pin for the diariser LLM.",
+    )
+    diarization_prompt: Optional[str] = Field(
+        default=None,
+        max_length=10_000,
+        description=(
+            "Custom system prompt for the diariser LLM; falls back to "
+            "the canonical default when blank."
+        ),
     )
     discover_new_metrics: bool = Field(
         default=False,
@@ -2647,6 +2730,34 @@ class CallImportEvaluationRetryRequest(BaseModel):
         ),
     )
 
+    # --- Metric-subset re-run ---
+    # When ``metric_ids`` is set, the retry recomputes ONLY those
+    # metrics instead of the whole row, and the new scores are merged
+    # into the existing ``metric_scores`` JSON (other metrics'
+    # previously-computed values are preserved). This is the path
+    # taken by the "Re-run metrics" UI in CallImportEvaluationDetail.
+    metric_ids: Optional[List[UUID]] = Field(
+        default=None,
+        description=(
+            "Restrict the retry to a specific subset of metrics. When "
+            "set, the worker recomputes only these metrics and merges "
+            "the new scores into the row's existing metric_scores "
+            "(other metrics' previous values are preserved). When "
+            "omitted, the row is fully re-scored as before. Every id "
+            "must already be present in the run's selected_metric_ids."
+        ),
+    )
+    include_completed: bool = Field(
+        default=False,
+        description=(
+            "When True, rows whose status is currently 'completed' "
+            "become eligible for retry (otherwise only 'failed' rows "
+            "are picked up). Required when ``metric_ids`` is set on a "
+            "successful row, since otherwise the whole metric-subset "
+            "retry would be skipped as 'completed'."
+        ),
+    )
+
     # --- LLM overrides ---
     llm_provider: Optional[str] = Field(
         default=None,
@@ -2700,6 +2811,37 @@ class CallImportEvaluationRetryRequest(BaseModel):
     stt_credential_id: Optional[UUID] = Field(
         default=None,
         description="Pin a specific credential row for the STT call.",
+    )
+    # --- LLM diariser overrides ---
+    # When set, replace the run-stored diariser configuration for any
+    # rows that have to be re-diarised as part of the retry (i.e.
+    # ``transcribe_overwrite=True`` or the row never had a diarised
+    # transcript). Same provider+model pairing rule as STT.
+    diarization_llm_provider: Optional[str] = Field(
+        default=None,
+        max_length=50,
+        description=(
+            "Override the run's diariser LLM provider. Must be paired "
+            "with ``diarization_llm_model``."
+        ),
+    )
+    diarization_llm_model: Optional[str] = Field(
+        default=None,
+        max_length=100,
+        description="Override the run's diariser LLM model.",
+    )
+    diarization_llm_credential_id: Optional[UUID] = Field(
+        default=None,
+        description="Pin a specific credential row for the diariser LLM.",
+    )
+    diarization_prompt: Optional[str] = Field(
+        default=None,
+        max_length=10_000,
+        description=(
+            "Override the run's diariser prompt. Pass an empty string "
+            "to clear the override and fall back to the canonical "
+            "default; pass None to leave the existing value untouched."
+        ),
     )
     transcribe_overwrite: bool = Field(
         default=False,
@@ -2791,6 +2933,20 @@ class CallImportEvaluationResponse(BaseModel):
     stt_provider: Optional[str] = None
     stt_model: Optional[str] = None
     stt_credential_id: Optional[UUID] = None
+    # Run-level LLM diariser config. Surfaced so the UI can show
+    # "Diarised via openai/gpt-4o-mini" on the evaluation header and
+    # pre-fill the retry modal with the previously-used prompt.
+    diarisation_llm_provider: Optional[str] = None
+    diarisation_llm_model: Optional[str] = None
+    diarisation_llm_credential_id: Optional[UUID] = None
+    diarisation_prompt: Optional[str] = None
+    # Diarisation pipeline shape this run was created with. ``stt_llm``
+    # (default) is the legacy STT-then-LLM-diariser flow; ``llm_only``
+    # means the audio was fed directly to a multimodal diariser LLM.
+    # Surfaced so the retry modal can preselect the right mode and the
+    # eval header can render "Diarised via LLM only (Gemini)" instead of
+    # an empty STT label.
+    transcribe_mode: Literal["stt_llm", "llm_only"] = "stt_llm"
     # Which transcript column this run scored against. See the
     # ``CallImportEvaluation.transcript_source`` model docstring for
     # the semantics. Defaults to ``'production'`` on legacy rows.
@@ -2887,6 +3043,32 @@ class CallImportRowBulkDeleteResponse(BaseModel):
     )
 
 
+class CallImportRetryFailedRowsResponse(BaseModel):
+    """Summary of a retry pass over failed call-import rows."""
+
+    requeued: int = Field(
+        ...,
+        description=(
+            "Rows reset to pending and successfully re-enqueued on the "
+            "``imports`` worker queue."
+        ),
+    )
+    enqueue_failed: int = Field(
+        default=0,
+        description=(
+            "Rows that were eligible for retry but failed to enqueue again. "
+            "These rows are left in ``failed`` with an enqueue error."
+        ),
+    )
+    skipped: int = Field(
+        default=0,
+        description=(
+            "Rows skipped because they were no longer in ``failed`` at retry "
+            "time (for example, already retried from another tab)."
+        ),
+    )
+
+
 # --- Diarization / Transcription request/response shapes ---
 
 
@@ -2897,17 +3079,47 @@ class CallImportTranscribeRequest(BaseModel):
     is ignored) and the batch-level endpoint. ``only_missing`` is the
     safe default — rows with an existing transcript are skipped unless
     ``overwrite_existing`` is set.
+
+    Two modes are supported:
+
+    * ``mode="stt_llm"`` (default) — the legacy two-stage pipeline: STT
+      produces plain text, an LLM splits it into agent/user turns using
+      ``diarization_prompt``. ``stt_provider`` and ``stt_model`` are
+      required in this mode.
+    * ``mode="llm_only"`` — skip STT entirely and hand the recording's
+      audio bytes to a multimodal chat model along with
+      ``diarization_prompt``. The model both transcribes and diarises in
+      a single pass. The STT fields are ignored (and must be omitted /
+      null). Only providers whose chat API accepts audio input (OpenAI
+      ``gpt-4o-audio-*``, Google Gemini ``1.5/2.0``) are usable; other
+      providers will surface a typed error on the row.
     """
 
-    stt_provider: str = Field(
-        ...,
-        max_length=50,
-        description="STT provider key, e.g. 'deepgram' or 'openai'.",
+    mode: Literal["stt_llm", "llm_only"] = Field(
+        default="stt_llm",
+        description=(
+            "Pipeline shape. 'stt_llm' (default) runs STT then an LLM "
+            "diariser over the resulting text. 'llm_only' skips STT and "
+            "feeds the raw audio to a multimodal LLM together with "
+            "``diarization_prompt`` for a single-pass transcribe + "
+            "diarise."
+        ),
     )
-    stt_model: str = Field(
-        ...,
+    stt_provider: Optional[str] = Field(
+        default=None,
+        max_length=50,
+        description=(
+            "STT provider key, e.g. 'deepgram' or 'openai'. Required when "
+            "``mode='stt_llm'``; must be omitted when ``mode='llm_only'``."
+        ),
+    )
+    stt_model: Optional[str] = Field(
+        default=None,
         max_length=100,
-        description="STT model name, e.g. 'nova-2' or 'whisper-1'.",
+        description=(
+            "STT model name, e.g. 'nova-2' or 'whisper-1'. Required when "
+            "``mode='stt_llm'``; must be omitted when ``mode='llm_only'``."
+        ),
     )
     credential_id: Optional[UUID] = Field(
         default=None,
@@ -2939,6 +3151,112 @@ class CallImportTranscribeRequest(BaseModel):
             "row in the import (subject to only_missing)."
         ),
     )
+    # --- LLM diariser config ---
+    # In ``stt_llm`` mode diarisation runs as a *second* step: STT
+    # produces plain text, then this LLM splits it into agent/user
+    # turns. In ``llm_only`` mode this same LLM directly receives the
+    # audio and the prompt. Both fields are always mandatory because
+    # there is no longer a pyannote fallback and ``llm_only`` cannot
+    # function without an LLM either.
+    diarization_llm_provider: str = Field(
+        ...,
+        max_length=50,
+        description=(
+            "LLM provider that diarises the call. In ``stt_llm`` it sees "
+            "the STT text; in ``llm_only`` it sees the raw audio."
+        ),
+    )
+    diarization_llm_model: str = Field(
+        ...,
+        max_length=100,
+        description=(
+            "LLM model name. In ``llm_only`` mode this must be a model "
+            "that accepts audio input (e.g. 'gpt-4o-audio-preview', "
+            "'gemini-1.5-pro')."
+        ),
+    )
+    diarization_llm_credential_id: Optional[UUID] = Field(
+        default=None,
+        description=(
+            "Optional AIProvider row to pin for the diarisation LLM."
+        ),
+    )
+    diarization_prompt: Optional[str] = Field(
+        default=None,
+        max_length=10_000,
+        description=(
+            "Operator-supplied system prompt for the diariser LLM. "
+            "When NULL/empty the worker uses the canonical default "
+            "(see ``GET /api/v1/call-imports/diarisation-prompt-default``)."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_mode_fields(self) -> "CallImportTranscribeRequest":
+        """Enforce STT-field presence rules based on ``mode``.
+
+        ``stt_llm`` (default) requires both STT fields — the worker
+        cannot diarise without a transcript. ``llm_only`` forbids them
+        so the API contract makes it clear that the audio is going
+        straight to the LLM; passing both would be ambiguous about
+        which path the worker should take.
+        """
+        stt_provider = (self.stt_provider or "").strip() if self.stt_provider else None
+        stt_model = (self.stt_model or "").strip() if self.stt_model else None
+        if self.mode == "stt_llm":
+            if not stt_provider or not stt_model:
+                raise ValueError(
+                    "stt_provider and stt_model are required when "
+                    "mode='stt_llm'."
+                )
+        else:  # llm_only
+            if stt_provider or stt_model:
+                raise ValueError(
+                    "stt_provider/stt_model must be omitted when "
+                    "mode='llm_only'; the LLM consumes the audio "
+                    "directly."
+                )
+        return self
+
+
+class CallImportDiarisationPromptDefaultResponse(BaseModel):
+    """Wrapper for the canonical diariser-prompt fetched by the modal."""
+
+    prompt: str = Field(
+        ...,
+        description=(
+            "The exact prompt the worker falls back to when the caller "
+            "leaves ``diarization_prompt`` blank. The frontend pre-fills "
+            "the textarea with this value so the operator can edit it."
+        ),
+    )
+
+
+class CallImportRowIdsResponse(BaseModel):
+    """Flat row-id list for cross-page bulk selection.
+
+    Powers the "Select all M rows in this import" affordance on the
+    detail page — returning only ids keeps the payload tiny so the UI
+    can hold the full set in memory even for batches with thousands
+    of rows. The frontend then passes those ids straight to the
+    existing bulk-delete / bulk-transcribe endpoints.
+    """
+
+    ids: List[UUID] = Field(
+        default_factory=list,
+        description=(
+            "Every ``CallImportRow.id`` that matches the ``q`` and "
+            "``diarised_status`` filters (or every row when neither is "
+            "supplied), sorted by ``row_index``."
+        ),
+    )
+    total: int = Field(
+        ...,
+        description=(
+            "Length of ``ids``. Sent explicitly so callers can show a "
+            "count without re-measuring the array."
+        ),
+    )
 
 
 class CallImportTranscribeResponse(BaseModel):
@@ -2962,6 +3280,53 @@ class CallImportTranscribeResponse(BaseModel):
     )
 
 
+class CallImportCancelDiarisationRequest(BaseModel):
+    """Body for the batch cancel-diarisation endpoint.
+
+    Omit ``row_ids`` (or pass ``null``) to cancel every row in the
+    import whose ``diarised_transcript_status`` is currently
+    ``pending`` or ``running``. Pass an explicit list to scope the
+    cancel to a subset (e.g. the rows the operator selected in the
+    UI).
+    """
+
+    row_ids: Optional[List[UUID]] = Field(
+        default=None,
+        description=(
+            "Optional subset of CallImportRow UUIDs. ``None`` cancels "
+            "every pending / running diarisation in the import."
+        ),
+    )
+
+
+class CallImportCancelDiarisationResponse(BaseModel):
+    """Summary of a cancel-diarisation request.
+
+    ``cancelled`` counts rows that were actively pending / running
+    when the cancel landed and got flipped to ``failed`` with a
+    "Cancelled by user" error. ``skipped`` counts rows that were
+    requested (or matched the implicit "all rows" filter) but were
+    not in a cancellable state — typically because they had already
+    finished or were never queued for diarisation in the first place.
+    """
+
+    cancelled: int = Field(
+        ...,
+        description=(
+            "Rows whose in-flight Celery task was revoked and whose "
+            "``diarised_transcript_status`` was flipped to ``failed`` "
+            "with a 'Cancelled by user' error message."
+        ),
+    )
+    skipped: int = Field(
+        default=0,
+        description=(
+            "Rows that were requested but not in a cancellable state "
+            "(idle / completed / already failed)."
+        ),
+    )
+
+
 # --- Per-run aggregation / visualization payloads ---
 
 
@@ -2977,6 +3342,21 @@ class CallImportMetricValueCount(BaseModel):
     """One row of a categorical metric's value frequency table."""
 
     label: str
+    count: int
+
+
+class CallImportMetricLabelPair(BaseModel):
+    """One unordered pair-count cell of a multi-label parent's
+    co-occurrence matrix.
+
+    ``a`` and ``b`` are child label names; ``count`` is the number of
+    rows on which both labels fired together (intersection size).
+    Pairs are emitted with ``a < b`` lexicographically so the matrix
+    can be reconstructed without duplicates on the frontend.
+    """
+
+    a: str
+    b: str
     count: int
 
 
@@ -3015,6 +3395,11 @@ class CallImportMetricAggregate(BaseModel):
         default_factory=list
     )
     value_counts: List[CallImportMetricValueCount] = Field(default_factory=list)
+    # Pairwise label intersections for multi-label parent metrics.
+    # Empty for everything else. The frontend reconstructs a square
+    # symmetric matrix from these unordered pairs and renders the
+    # co-occurrence heatmap chart type.
+    co_occurrence: List[CallImportMetricLabelPair] = Field(default_factory=list)
 
 
 class CallImportEvaluationAggregateResponse(BaseModel):

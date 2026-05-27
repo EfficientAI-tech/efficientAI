@@ -42,76 +42,6 @@ router = APIRouter(prefix="/metrics", tags=["metrics"])
 
 _VALID_SELECTION_MODES = {"single_choice", "multi_label"}
 
-# Defensive caps so a malformed UI payload can't blow up the prompt
-# we send to the LLM later.
-_MAX_INPUT_COLUMNS = 25
-_MAX_INPUT_COLUMN_NAME_LEN = 200
-
-
-def _normalize_input_columns(
-    raw: Optional[List[str]],
-    *,
-    parent_metric_id: Optional[UUID],
-) -> List[str]:
-    """Validate and de-duplicate ``input_columns`` from a request body.
-
-    Empty / None means "this metric scores the transcript like before".
-    A non-empty list switches the metric to a "column-input judge" at
-    evaluation time. Children of a parent category are intentionally
-    excluded from the feature for the first cut: they always inherit
-    their parent's prompt context, so layering CSV-column inputs on top
-    would make the parent-level grouping ambiguous.
-    """
-    if raw is None:
-        return []
-
-    cleaned: List[str] = []
-    seen: set[str] = set()
-    for entry in raw:
-        if entry is None:
-            continue
-        if not isinstance(entry, str):
-            raise HTTPException(
-                status_code=400,
-                detail="input_columns must be a list of strings.",
-            )
-        value = entry.strip()
-        if not value:
-            raise HTTPException(
-                status_code=400,
-                detail="input_columns entries cannot be blank.",
-            )
-        if len(value) > _MAX_INPUT_COLUMN_NAME_LEN:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "input_columns entries must be <= "
-                    f"{_MAX_INPUT_COLUMN_NAME_LEN} characters."
-                ),
-            )
-        key = value.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        cleaned.append(value)
-
-    if len(cleaned) > _MAX_INPUT_COLUMNS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"input_columns supports at most {_MAX_INPUT_COLUMNS} entries.",
-        )
-
-    if cleaned and parent_metric_id is not None:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "input_columns cannot be set on a child sub-metric. Move it "
-                "to a standalone or parent category metric."
-            ),
-        )
-
-    return cleaned
-
 
 def _validate_hierarchy_fields(
     organization_id: UUID,
@@ -221,6 +151,12 @@ def _serialize_metric_tree(metric: Metric) -> Dict[str, Any]:
         "id": metric.id,
         "organization_id": metric.organization_id,
         "workspace_id": metric.workspace_id,
+        # Convenience field for the UI: NULL workspace_id == org-shared.
+        # Computed here rather than stored on the row so the source of
+        # truth stays the column itself.
+        "scope": (
+            "organization" if metric.workspace_id is None else "workspace"
+        ),
         "name": metric.name,
         "description": metric.description,
         "example": getattr(metric, "example", None),
@@ -238,7 +174,6 @@ def _serialize_metric_tree(metric: Metric) -> Dict[str, Any]:
         "parent_metric_id": metric.parent_metric_id,
         "selection_mode": metric.selection_mode,
         "allow_discovery": bool(getattr(metric, "allow_discovery", False)),
-        "input_columns": list(getattr(metric, "input_columns", None) or []),
         "compare_transcripts": bool(
             getattr(metric, "compare_transcripts", False)
         ),
@@ -264,9 +199,16 @@ def create_metric(
     ``(organization_id, workspace_id, parent_metric_id)`` so the same
     label can exist in multiple workspaces (and under multiple parents).
 
-    Children always inherit their parent's workspace - we override the
-    request's workspace when ``parent_metric_id`` is set so a stale UI
-    can't accidentally split a tree across workspaces.
+    Scope:
+      * ``scope="workspace"`` (default) stamps the metric with the
+        active ``X-Workspace-Id`` (existing behavior).
+      * ``scope="organization"`` stamps ``workspace_id=NULL`` so the
+        metric appears in every workspace of the caller's org.
+
+    Children always inherit their parent's scope (workspace UUID or
+    NULL) - we override the request's workspace + scope when
+    ``parent_metric_id`` is set so a stale UI can't accidentally split
+    a tree across workspaces or scopes.
     """
     _validate_hierarchy_fields(
         organization_id,
@@ -277,12 +219,10 @@ def create_metric(
         allow_discovery=metric_data.allow_discovery,
     )
 
-    normalized_input_columns = _normalize_input_columns(
-        metric_data.input_columns,
-        parent_metric_id=metric_data.parent_metric_id,
-    )
-
-    effective_workspace_id = workspace_id
+    # Resolve the effective workspace for this row:
+    #   * Child:        inherit parent.workspace_id (possibly NULL).
+    #   * Org-shared:   NULL.
+    #   * Workspace:    active workspace from X-Workspace-Id.
     if metric_data.parent_metric_id is not None:
         parent_row = (
             db.query(Metric)
@@ -296,17 +236,33 @@ def create_metric(
             raise HTTPException(
                 status_code=400, detail="Parent metric not found."
             )
-        effective_workspace_id = parent_row.workspace_id
+        effective_workspace_id: Optional[UUID] = parent_row.workspace_id
+    elif metric_data.scope == "organization":
+        effective_workspace_id = None
+    else:
+        effective_workspace_id = workspace_id
 
+    # Duplicate-name check must respect BOTH the workspace AND the parent.
+    # ``workspace_id IS NULL`` is a separate slot from any specific
+    # workspace (matching the partial unique indexes added in
+    # 041_org_shared_metrics.py).
+    workspace_filter = (
+        Metric.workspace_id.is_(None)
+        if effective_workspace_id is None
+        else Metric.workspace_id == effective_workspace_id
+    )
+    parent_filter = (
+        Metric.parent_metric_id.is_(None)
+        if metric_data.parent_metric_id is None
+        else Metric.parent_metric_id == metric_data.parent_metric_id
+    )
     existing = (
         db.query(Metric)
         .filter(
             Metric.name == metric_data.name,
             Metric.organization_id == organization_id,
-            Metric.workspace_id == effective_workspace_id,
-            Metric.parent_metric_id.is_(metric_data.parent_metric_id)
-            if metric_data.parent_metric_id is None
-            else Metric.parent_metric_id == metric_data.parent_metric_id,
+            workspace_filter,
+            parent_filter,
         )
         .first()
     )
@@ -350,7 +306,6 @@ def create_metric(
         parent_metric_id=metric_data.parent_metric_id,
         selection_mode=metric_data.selection_mode,
         allow_discovery=bool(metric_data.allow_discovery),
-        input_columns=normalized_input_columns,
         compare_transcripts=bool(metric_data.compare_transcripts),
     )
     db.add(metric)
@@ -378,7 +333,9 @@ def create_metric_with_children(
     score) and ``selection_mode`` from the payload. Every child is
     forced to ``boolean`` so the LLM-evaluation path treats them as
     yes/no labels. Both the parent and all children are stamped with
-    the active workspace.
+    the same scope: either the active workspace (``scope="workspace"``,
+    default) or ``workspace_id=NULL`` (``scope="organization"``, the
+    org-shared shape).
     """
     if payload.selection_mode not in _VALID_SELECTION_MODES:
         raise HTTPException(
@@ -389,12 +346,22 @@ def create_metric_with_children(
             ),
         )
 
+    # Org-shared categories live with ``workspace_id=NULL`` so every
+    # workspace in the org sees the same category + children.
+    effective_workspace_id: Optional[UUID] = (
+        None if payload.scope == "organization" else workspace_id
+    )
+    parent_workspace_filter = (
+        Metric.workspace_id.is_(None)
+        if effective_workspace_id is None
+        else Metric.workspace_id == effective_workspace_id
+    )
     parent_existing = (
         db.query(Metric)
         .filter(
             Metric.name == payload.name,
             Metric.organization_id == organization_id,
-            Metric.workspace_id == workspace_id,
+            parent_workspace_filter,
             Metric.parent_metric_id.is_(None),
         )
         .first()
@@ -445,7 +412,7 @@ def create_metric_with_children(
 
     parent = Metric(
         organization_id=organization_id,
-        workspace_id=workspace_id,
+        workspace_id=effective_workspace_id,
         name=payload.name,
         description=payload.description,
         # The parent itself stores no numeric value — its "result" is the
@@ -474,7 +441,10 @@ def create_metric_with_children(
     for child_draft in payload.children:
         child = Metric(
             organization_id=organization_id,
-            workspace_id=workspace_id,
+            # Children inherit the parent's scope (workspace UUID or
+            # NULL for org-shared) so the whole category subtree stays
+            # in one place.
+            workspace_id=effective_workspace_id,
             name=child_draft.name,
             description=child_draft.description,
             example=child_draft.example,
@@ -880,13 +850,21 @@ def list_metrics(
 ):
     """List metrics with optional nesting for the parent/child hierarchy.
 
-    Scoped to (organization_id, workspace_id) so each workspace shows
-    only its own metric library. Switching workspace in the UI is the
-    canonical way to see a different metric set.
+    Returns the union of:
+      * Metrics scoped to the active workspace (``workspace_id == ws``).
+      * Metrics shared at the org level (``workspace_id IS NULL``).
+
+    This is what makes org-shared metrics appear inside every workspace
+    of the org without the user having to recreate them. Switching
+    workspace in the UI still narrows the workspace-scoped half; the
+    org-shared half is identical across workspaces.
     """
     query = db.query(Metric).filter(
         Metric.organization_id == organization_id,
-        Metric.workspace_id == workspace_id,
+        or_(
+            Metric.workspace_id == workspace_id,
+            Metric.workspace_id.is_(None),
+        ),
         ~Metric.name.in_(REMOVED_DEFAULT_METRICS),
     )
     metrics = (
@@ -1088,33 +1066,13 @@ def update_metric(
             )
         metric.allow_discovery = bool(metric_data.allow_discovery)
 
-    if metric_data.input_columns is not None:
-        metric.input_columns = _normalize_input_columns(
-            metric_data.input_columns,
-            parent_metric_id=metric.parent_metric_id,
-        )
-
     if metric_data.compare_transcripts is not None:
         # Cross-state validation: a Metric can be a transcript-compare
-        # judge only if it's standalone and has no column-input
-        # configuration. ``compare_transcripts=False`` clears the flag
-        # unconditionally (used to "downgrade" a comparison metric back
-        # to a regular transcript judge).
+        # judge only if it's standalone (not a child sub-metric and not
+        # a parent category). ``compare_transcripts=False`` clears the
+        # flag unconditionally (used to "downgrade" a comparison metric
+        # back to a regular transcript judge).
         if bool(metric_data.compare_transcripts):
-            # Use the row's post-patch input_columns so a patch that
-            # simultaneously clears input_columns AND enables
-            # compare_transcripts is accepted in one round-trip.
-            effective_input_columns = list(metric.input_columns or [])
-            if effective_input_columns:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "Clear input_columns before enabling "
-                        "compare_transcripts: a metric can be either "
-                        "a column-input judge or a transcript-compare "
-                        "judge, not both."
-                    ),
-                )
             if metric.parent_metric_id is not None:
                 raise HTTPException(
                     status_code=400,
@@ -1124,8 +1082,8 @@ def update_metric(
                         "metric first."
                     ),
                 )
-            # Same logic for selection_mode but read the freshly-patched
-            # value so users can clear+set in one PATCH.
+            # Read the freshly-patched selection_mode value so users
+            # can clear+set in one PATCH.
             if metric.selection_mode is not None:
                 raise HTTPException(
                     status_code=400,

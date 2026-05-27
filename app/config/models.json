@@ -166,6 +166,11 @@
     "provider": "google",
     "model_type": "llm"
   },
+  "gemini-2.5-flash-lite": {
+    "provider": "google",
+    "model_type": "llm",
+    "description": "Gemini 2.5 Flash Lite — lowest-latency 2.5 model; ideal for diarisation, classification, and other low-reasoning multimodal tasks"
+  },
   "gemini-3-pro-preview": {
     "provider": "google",
     "model_type": "llm",

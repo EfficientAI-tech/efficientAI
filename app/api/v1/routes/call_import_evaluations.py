@@ -7,7 +7,7 @@ import io
 import json
 import math
 import statistics
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Literal, Optional, Set, Tuple
 from uuid import UUID
 
 from datetime import datetime, timezone
@@ -44,6 +44,7 @@ from app.models.schemas import (
     CallImportEvaluationUpdate,
     CallImportMetricAggregate,
     CallImportMetricHistogramBucket,
+    CallImportMetricLabelPair,
     CallImportMetricSummary,
     CallImportMetricValueCount,
     DiscoveredLabelDeleteRequest,
@@ -84,6 +85,26 @@ def _require_import(
     if not call_import:
         raise HTTPException(status_code=404, detail="Call import not found")
     return call_import
+
+
+def _flatten_transcript(text: Optional[str]) -> str:
+    """Collapse a multi-line transcript onto a single line for spreadsheet export.
+
+    The diarised transcript is stored as ``<speaker>: <text>`` lines joined
+    by ``\\n`` because the in-app ``TranscriptView`` parses those line
+    breaks to render chat bubbles. In Excel / Google Sheets that same
+    newline-per-turn formatting causes each cell to balloon vertically,
+    which the user reads as "lots of empty space on top of the cell".
+    Flattening at export time keeps the DB shape intact while giving the
+    spreadsheet a single-line cell per row.
+    """
+    if not text:
+        return ""
+    parts = [
+        segment.strip()
+        for segment in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    ]
+    return " ".join(p for p in parts if p)
 
 
 def _serialize_selected_metric_ids(value) -> List[UUID]:
@@ -311,6 +332,15 @@ def _serialize_eval(
         stt_provider=row.stt_provider,
         stt_model=row.stt_model,
         stt_credential_id=row.stt_credential_id,
+        diarisation_llm_provider=getattr(row, "diarisation_llm_provider", None),
+        diarisation_llm_model=getattr(row, "diarisation_llm_model", None),
+        diarisation_llm_credential_id=getattr(
+            row, "diarisation_llm_credential_id", None
+        ),
+        diarisation_prompt=getattr(row, "diarisation_prompt", None),
+        transcribe_mode=(
+            (getattr(row, "transcribe_mode", None) or "stt_llm")
+        ),
         transcript_source=(row.transcript_source or "production"),
         sibling_evaluation_ids=list(sibling_evaluation_ids or []),
         started_at=row.started_at,
@@ -587,39 +617,117 @@ async def create_call_import_evaluation(
     # provider+model are mandatory on every request (the
     # ``auto_transcribe`` flag is preserved on the schema for API
     # compatibility but is effectively always true at this point).
-    if not payload.stt_provider:
+    # ``transcribe_mode`` controls whether STT is required: the
+    # ``llm_only`` path skips STT entirely and feeds audio directly to
+    # the diariser LLM, so STT fields must be absent. The ``stt_llm``
+    # path (default) keeps the original behaviour.
+    transcribe_mode_norm = (payload.transcribe_mode or "stt_llm").strip().lower()
+    if transcribe_mode_norm not in {"stt_llm", "llm_only"}:
         raise HTTPException(
             status_code=400,
             detail=(
-                "stt_provider is required: every evaluation run "
-                "auto-diarises rows that are missing a diarised "
-                "transcript."
+                f"Unknown transcribe_mode '{payload.transcribe_mode}'. "
+                "Expected 'stt_llm' or 'llm_only'."
             ),
         )
-    if not payload.stt_model:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "stt_model is required: every evaluation run "
-                "auto-diarises rows that are missing a diarised "
-                "transcript."
-            ),
-        )
+
     auto_transcribe = True
+    stt_provider_norm: Optional[str] = None
+    stt_model_norm: Optional[str] = None
+    if transcribe_mode_norm == "stt_llm":
+        if not payload.stt_provider:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "stt_provider is required when "
+                    "transcribe_mode='stt_llm': every evaluation run "
+                    "auto-diarises rows that are missing a diarised "
+                    "transcript."
+                ),
+            )
+        if not payload.stt_model:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "stt_model is required when transcribe_mode='stt_llm'."
+                ),
+            )
+        try:
+            stt_provider_norm = ModelProvider(
+                payload.stt_provider.lower()
+            ).value
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown STT provider '{payload.stt_provider}'.",
+            )
+        stt_model_norm = payload.stt_model.strip() or None
+        if not stt_model_norm:
+            raise HTTPException(
+                status_code=400, detail="stt_model cannot be empty."
+            )
+    else:
+        # llm_only — explicitly reject lingering STT inputs so the
+        # contract is unambiguous (the worker would ignore them but
+        # silent acceptance hides accidental misconfiguration).
+        if (payload.stt_provider or "").strip() or (
+            payload.stt_model or ""
+        ).strip():
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "stt_provider / stt_model must be omitted when "
+                    "transcribe_mode='llm_only'; the LLM consumes the "
+                    "audio directly."
+                ),
+            )
+
+    # --- Validate LLM diariser settings -----
+    # The post-STT diariser is mandatory now that pyannote is no longer
+    # in the loop. We reject the request up-front (instead of letting
+    # individual rows fail at task time) so the operator gets a clean
+    # 400 in the modal.
+    if not payload.diarization_llm_provider:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "diarization_llm_provider is required: every evaluation "
+                "run diarises STT output with an LLM."
+            ),
+        )
+    if not payload.diarization_llm_model:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "diarization_llm_model is required: every evaluation "
+                "run diarises STT output with an LLM."
+            ),
+        )
     try:
-        stt_provider_norm: Optional[str] = ModelProvider(
-            payload.stt_provider.lower()
+        diarisation_llm_provider_norm: Optional[str] = ModelProvider(
+            payload.diarization_llm_provider.lower()
         ).value
     except ValueError:
         raise HTTPException(
             status_code=400,
-            detail=f"Unknown STT provider '{payload.stt_provider}'.",
+            detail=(
+                f"Unknown diarisation LLM provider "
+                f"'{payload.diarization_llm_provider}'."
+            ),
         )
-    stt_model_norm: Optional[str] = payload.stt_model.strip() or None
-    if not stt_model_norm:
+    diarisation_llm_model_norm: Optional[str] = (
+        payload.diarization_llm_model.strip() or None
+    )
+    if not diarisation_llm_model_norm:
         raise HTTPException(
-            status_code=400, detail="stt_model cannot be empty."
+            status_code=400,
+            detail="diarization_llm_model cannot be empty.",
         )
+    diarisation_prompt_norm: Optional[str] = (
+        payload.diarization_prompt.strip()
+        if isinstance(payload.diarization_prompt, str)
+        else None
+    ) or None
 
     completed_rows = (
         db.query(CallImportRow)
@@ -675,6 +783,13 @@ async def create_call_import_evaluation(
             stt_credential_id=(
                 payload.stt_credential_id if auto_transcribe else None
             ),
+            diarisation_llm_provider=diarisation_llm_provider_norm,
+            diarisation_llm_model=diarisation_llm_model_norm,
+            diarisation_llm_credential_id=(
+                payload.diarization_llm_credential_id
+            ),
+            diarisation_prompt=diarisation_prompt_norm,
+            transcribe_mode=transcribe_mode_norm,
             transcript_source=source,
             discover_new_metrics=bool(
                 getattr(payload, "discover_new_metrics", False)
@@ -795,6 +910,13 @@ async def create_call_import_evaluation(
                     payload.stt_language,
                     payload.transcribe_overwrite,
                     str(primary_eval_row.id),
+                    diarisation_llm_provider_norm,
+                    diarisation_llm_model_norm,
+                    str(payload.diarization_llm_credential_id)
+                    if payload.diarization_llm_credential_id
+                    else None,
+                    diarisation_prompt_norm,
+                    transcribe_mode_norm,
                 )
                 # Any sibling diarised evals on the same row enqueue
                 # immediately — they will read the same
@@ -969,6 +1091,22 @@ async def list_call_import_evaluation_rows(
             "rows that have at least one LLM-discovered label for the "
             "parent. Useful to triage which calls produced novel labels."
         ),
+    ),
+    sort_by: Optional[str] = Query(
+        None,
+        description=(
+            "Column to sort by. Accepted values: ``row_index`` (default "
+            "when omitted), ``conversation_id``, ``status`` (the "
+            "evaluation-row status), or ``metric:<metric_uuid>`` to sort "
+            "by ``metric_scores[<uuid>].value``. Metric sorts compare "
+            "the extracted JSON text — adequate for booleans, enum "
+            "labels, and 0-1 ratings; large integer values may sort "
+            "lexicographically (10 before 2)."
+        ),
+    ),
+    sort_dir: Optional[str] = Query(
+        "asc",
+        description="Sort direction: ``asc`` (default) or ``desc``.",
     ),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
@@ -1208,7 +1346,93 @@ async def list_call_import_evaluation_rows(
             ).bindparams(p_id=d_parent_str)
             query = query.filter(has_disc_sql)
 
-    query = query.order_by(CallImportRow.row_index.asc())
+    # --- Sorting ----------------------------------------------------------
+    # Column-click sorting from the UI. Falls back to ``row_index`` so
+    # paging stays stable when the user clears the sort. We always add a
+    # secondary ``row_index`` tiebreaker so duplicate sort keys (e.g.
+    # many rows with ``status = 'completed'``) keep a deterministic
+    # order across page boundaries — without this, pagination can
+    # double-show or skip rows when Postgres picks a different physical
+    # order on each query.
+    direction_desc = (sort_dir or "asc").strip().lower() == "desc"
+
+    def _apply_direction(column_expr):
+        return column_expr.desc() if direction_desc else column_expr.asc()
+
+    # Whether the caller's ``sort_by`` resolved to a known column. We
+    # use this flag to decide whether ``sort_dir`` is honoured on the
+    # fallback path: unrecognized columns (typos, stale UI state) fall
+    # back to the implicit ``row_index ASC`` default and intentionally
+    # ignore ``sort_dir`` so users don't get a surprise reverse order
+    # from a typo'd column name.
+    sort_recognized = False
+    sort_by_clean = (sort_by or "").strip()
+    primary_sort = None
+    if sort_by_clean == "row_index":
+        sort_recognized = True
+        # Falls through to the default ``order_by`` below with
+        # ``primary_sort`` still None — but ``sort_recognized=True``
+        # tells the fallback branch to apply the requested direction.
+    elif sort_by_clean == "conversation_id":
+        sort_recognized = True
+        primary_sort = _apply_direction(CallImportRow.conversation_id)
+    elif sort_by_clean == "status":
+        sort_recognized = True
+        primary_sort = _apply_direction(CallImportEvaluationRow.status)
+    elif sort_by_clean.startswith("metric:"):
+        raw_metric_id = sort_by_clean.split(":", 1)[1].strip()
+        try:
+            metric_uuid = UUID(raw_metric_id)
+        except (TypeError, ValueError):
+            metric_uuid = None
+        if metric_uuid is not None:
+            sort_recognized = True
+            # ``metric_scores`` is JSON-typed but the helper functions
+            # for path extraction differ between Postgres (production)
+            # and SQLite (default test backend). Branch on the active
+            # dialect so we can use the right primitive:
+            #   * Postgres → ``json_extract_path_text(col, key, "value")``
+            #     which returns the value as TEXT for both ``json`` and
+            #     ``jsonb`` columns.
+            #   * SQLite   → ``json_extract(col, '$."<uuid>".value')``
+            #     using JSONPath syntax. ``metric_uuid`` is already
+            #     validated above (``UUID(raw_metric_id)``), so the
+            #     interpolated path is safe from injection.
+            # NULL values (rows where the metric wasn't scored) sort
+            # to the END regardless of direction so un-scored rows
+            # don't crowd the top of an ascending sort.
+            dialect_name = (
+                db.bind.dialect.name if db.bind is not None else "postgresql"
+            )
+            if dialect_name == "sqlite":
+                json_path = f'$."{metric_uuid}".value'
+                path_value = func.json_extract(
+                    CallImportEvaluationRow.metric_scores,
+                    json_path,
+                )
+            else:
+                path_value = func.json_extract_path_text(
+                    CallImportEvaluationRow.metric_scores,
+                    str(metric_uuid),
+                    "value",
+                )
+            primary_sort = (
+                path_value.desc().nullslast()
+                if direction_desc
+                else path_value.asc().nullslast()
+            )
+
+    if primary_sort is not None:
+        query = query.order_by(primary_sort, CallImportRow.row_index.asc())
+    elif sort_recognized:
+        # Explicit ``sort_by=row_index`` request — honour direction.
+        query = query.order_by(_apply_direction(CallImportRow.row_index))
+    else:
+        # No sort requested OR unrecognized column — safe default of
+        # ``row_index ASC``. We deliberately ignore ``sort_dir`` here
+        # so a typo'd / stale ``sort_by`` doesn't quietly invert the
+        # default order.
+        query = query.order_by(CallImportRow.row_index.asc())
     total = query.count()
     rows = query.offset((page - 1) * page_size).limit(page_size).all()
 
@@ -1267,6 +1491,13 @@ async def list_call_import_evaluation_rows(
 async def export_call_import_evaluation_csv(
     call_import_id: UUID,
     eval_id: UUID,
+    format: Literal["csv", "xlsx"] = Query(
+        "csv",
+        description=(
+            "Output format. ``csv`` returns a UTF-8 BOM CSV; ``xlsx`` "
+            "returns a native Excel workbook (single sheet)."
+        ),
+    ),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
@@ -1442,10 +1673,6 @@ async def export_call_import_evaluation_csv(
         *metric_headers,
     ]
 
-    output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
-    writer.writeheader()
-
     rows = (
         db.query(CallImportEvaluationRow, CallImportRow)
         .join(CallImportRow, CallImportRow.id == CallImportEvaluationRow.call_import_row_id)
@@ -1460,55 +1687,132 @@ async def export_call_import_evaluation_csv(
         else "Production"
     )
 
-    for eval_row, source_row in rows:
-        row_out: Dict[str, str] = {}
-        raw = source_row.raw_columns if isinstance(source_row.raw_columns, dict) else {}
-        for header in standard_export_headers:
-            value = raw.get(header)
-            row_out[header] = "" if value is None else str(value)
-        for export_header, csv_header in custom_export:
-            value = raw.get(csv_header)
-            row_out[export_header] = "" if value is None else str(value)
+    def _project_rows() -> Iterator[Dict[str, str]]:
+        for eval_row, source_row in rows:
+            row_out: Dict[str, str] = {}
+            raw = (
+                source_row.raw_columns
+                if isinstance(source_row.raw_columns, dict)
+                else {}
+            )
+            for header in standard_export_headers:
+                value = raw.get(header)
+                row_out[header] = "" if value is None else str(value)
+            for export_header, csv_header in custom_export:
+                value = raw.get(csv_header)
+                row_out[export_header] = "" if value is None else str(value)
 
-        # Live transcripts pulled from the row, NOT from raw_columns,
-        # so re-diarised values are always reflected in the export.
-        row_out[PRODUCTION_TRANSCRIPT_HEADER] = source_row.transcript or ""
-        row_out[DIARISED_TRANSCRIPT_HEADER] = (
-            source_row.diarised_transcript or ""
-        )
-        row_out[EVAL_SOURCE_HEADER] = evaluated_source_label
+            # Live transcripts pulled from the row, NOT from raw_columns,
+            # so re-diarised values are always reflected in the export.
+            # Both transcript columns are flattened to a single line so the
+            # spreadsheet cell doesn't balloon vertically — the in-app
+            # ``TranscriptView`` still has the DB copy with line breaks
+            # intact for chat-bubble rendering.
+            row_out[PRODUCTION_TRANSCRIPT_HEADER] = _flatten_transcript(
+                source_row.transcript
+            )
+            row_out[DIARISED_TRANSCRIPT_HEADER] = _flatten_transcript(
+                source_row.diarised_transcript
+            )
+            row_out[EVAL_SOURCE_HEADER] = evaluated_source_label
 
-        scores = eval_row.metric_scores if isinstance(eval_row.metric_scores, dict) else {}
-        for metric in metrics:
-            metric_score = scores.get(str(metric.id)) if isinstance(scores, dict) else None
-            value = metric_score.get("value") if isinstance(metric_score, dict) else None
-            # Parent metrics (selection_mode set) render the chosen
-            # child name for single_choice or the ";"-joined list of
-            # true child names for multi_label.
-            if (
-                metric.selection_mode
-                and not metric.parent_metric_id
-                and isinstance(metric_score, dict)
-            ):
-                if metric.selection_mode == "multi_label":
-                    selected = metric_score.get("selected_child_names")
-                    if isinstance(selected, list):
-                        value = ";".join(str(s) for s in selected)
-                else:
-                    value = (
-                        metric_score.get("chosen_child_name")
-                        or metric_score.get("value")
-                    )
-            row_out[metric.name] = "" if value is None else str(value)
-            rationale_header = rationale_headers.get(str(metric.id))
-            if rationale_header is not None:
-                rationale = (
-                    metric_score.get("rationale")
+            scores = (
+                eval_row.metric_scores
+                if isinstance(eval_row.metric_scores, dict)
+                else {}
+            )
+            for metric in metrics:
+                metric_score = (
+                    scores.get(str(metric.id))
+                    if isinstance(scores, dict)
+                    else None
+                )
+                value = (
+                    metric_score.get("value")
                     if isinstance(metric_score, dict)
                     else None
                 )
-                row_out[rationale_header] = "" if rationale is None else str(rationale)
-        writer.writerow(row_out)
+                # Parent metrics (selection_mode set) render the chosen
+                # child name for single_choice or the ";"-joined list of
+                # true child names for multi_label.
+                if (
+                    metric.selection_mode
+                    and not metric.parent_metric_id
+                    and isinstance(metric_score, dict)
+                ):
+                    if metric.selection_mode == "multi_label":
+                        selected = metric_score.get("selected_child_names")
+                        if isinstance(selected, list):
+                            value = ";".join(str(s) for s in selected)
+                    else:
+                        value = (
+                            metric_score.get("chosen_child_name")
+                            or metric_score.get("value")
+                        )
+                row_out[metric.name] = "" if value is None else str(value)
+                rationale_header = rationale_headers.get(str(metric.id))
+                if rationale_header is not None:
+                    rationale = (
+                        metric_score.get("rationale")
+                        if isinstance(metric_score, dict)
+                        else None
+                    )
+                    row_out[rationale_header] = (
+                        "" if rationale is None else str(rationale)
+                    )
+            yield row_out
+
+    base_filename = f"call-import-{call_import_id}-evaluation-{eval_id}"
+
+    if format == "xlsx":
+        # xlsx is unicode-native (Hindi/Devanagari, emoji, etc.) so the
+        # UTF-8-BOM dance isn't needed here. ``write_only`` mode keeps
+        # peak memory bounded for large evaluations because openpyxl
+        # only buffers the current row.
+        try:
+            from openpyxl import Workbook  # type: ignore
+            from openpyxl.cell import WriteOnlyCell  # type: ignore
+            from openpyxl.styles import Font  # type: ignore
+        except ImportError as exc:  # pragma: no cover - exercised by pyproject lock
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Excel export requires the 'openpyxl' package which is "
+                    "not installed."
+                ),
+            ) from exc
+
+        workbook = Workbook(write_only=True)
+        worksheet = workbook.create_sheet(title="Evaluation")
+
+        bold_font = Font(bold=True)
+        header_cells = []
+        for header in fieldnames:
+            cell = WriteOnlyCell(worksheet, value=header)
+            cell.font = bold_font
+            header_cells.append(cell)
+        worksheet.append(header_cells)
+
+        for row_dict in _project_rows():
+            worksheet.append([row_dict.get(h, "") for h in fieldnames])
+
+        buffer = io.BytesIO()
+        workbook.save(buffer)
+        xlsx_bytes = buffer.getvalue()
+        filename = f"{base_filename}.xlsx"
+        return StreamingResponse(
+            iter([xlsx_bytes]),
+            media_type=(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ),
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    for row_dict in _project_rows():
+        writer.writerow(row_dict)
 
     # Excel on Windows defaults to the system ANSI codepage (Windows-1252)
     # when a CSV has no encoding marker, which turns UTF-8 Hindi/Devanagari
@@ -1522,7 +1826,7 @@ async def export_call_import_evaluation_csv(
     # codec in the Content-Type header so well-behaved HTTP clients (incl.
     # ``httpx`` / ``requests`` in our tests) strip the BOM during decode.
     csv_bytes = csv_text.encode("utf-8-sig")
-    filename = f"call-import-{call_import_id}-evaluation-{eval_id}.csv"
+    filename = f"{base_filename}.csv"
     return StreamingResponse(
         iter([csv_bytes]),
         media_type="text/csv; charset=utf-8-sig",
@@ -1592,6 +1896,300 @@ def _revoke_pending_tasks(evaluation: CallImportEvaluation) -> None:
     except Exception:
         # Best effort — DB delete remains the source of truth.
         pass
+
+
+# ---------------------------------------------------------------------------
+# User-initiated cancel for in-flight evaluation rows
+# ---------------------------------------------------------------------------
+#
+# Evaluation rows can sit in ``running`` for many minutes when the underlying
+# LLM / audio metric call is slow or wedged (the worker carries an 8 min
+# soft / 10 min hard time limit). Without a cancel affordance the operator's
+# only recourse is to wait for Celery's time limit to fire — or to manually
+# mutate the DB. These helpers + the two endpoints below give the UI a
+# first-class "Abort" button mirroring the diarisation cancel pattern at
+# ``app.api.v1.routes.call_imports`` (``_apply_diarisation_cancel`` etc.).
+#
+# Why ``terminate=True``: the legacy ``_revoke_pending_tasks`` above uses
+# ``terminate=False`` because it's called from delete-flow paths where the
+# task may simply not get to run (a worker pulls it off the queue and drops
+# it). For a user-initiated cancel we want SIGTERM to interrupt the worker
+# mid-LLM/audio call so the in-flight HTTP request actually aborts.
+# ``terminate=True`` routes the signal to the executing process; we spell
+# ``signal="SIGTERM"`` out for clarity even though it's the default.
+
+# Sentinel error message stamped on cancelled rows. Read by the eval worker's
+# ``_was_cancelled_externally`` guard (see
+# :mod:`app.workers.tasks.evaluate_call_import_row`) so a worker that's already
+# past its slowest operation can't overwrite the cancelled state with its own
+# terminal status. Touching either copy means touching both.
+EVAL_CANCELLED_BY_USER_ERROR: str = "Evaluation cancelled by user"
+
+
+def _cancellable_eval_states() -> Tuple[str, ...]:
+    """States that an evaluation row can be cancelled from.
+
+    Kept as a tiny helper so adding a future ``"queued"`` / ``"retrying"``
+    state only needs one edit.
+    """
+    return ("pending", "running")
+
+
+def _revoke_eval_task(eval_row: CallImportEvaluationRow) -> None:
+    """Best-effort revoke of a single eval row's Celery task.
+
+    Always swallows control-plane exceptions — Celery's control bus is
+    inherently best-effort and a missed revoke is not catastrophic
+    because the DB row is already flipped to ``failed`` by the caller
+    before this runs (so the UI immediately reflects the cancel; if
+    the task happens to finish anyway, the worker's finaliser skips
+    over the row via :data:`EVAL_CANCELLED_BY_USER_ERROR`).
+    """
+    task_id = (eval_row.celery_task_id or "").strip()
+    if not task_id:
+        return
+    try:
+        from app.workers.celery_app import celery_app
+
+        celery_app.control.revoke(
+            task_id, terminate=True, signal="SIGTERM"
+        )
+        logger.info(
+            "Revoked evaluation task {} for eval row {}",
+            task_id,
+            eval_row.id,
+        )
+    except Exception as exc:  # noqa: BLE001 — revoke is best-effort
+        logger.warning(
+            "Failed to revoke evaluation task {} for eval row {}: {}",
+            task_id,
+            eval_row.id,
+            exc,
+        )
+
+
+def _apply_evaluation_cancel(
+    eval_rows: List[CallImportEvaluationRow],
+) -> Tuple[int, int]:
+    """Cancel every cancellable row in ``eval_rows``.
+
+    Returns ``(cancelled, skipped)`` so the caller can build a typed
+    response without re-querying the DB. The caller is responsible for
+    ``db.commit()`` after this returns — we deliberately don't commit
+    here so a batch endpoint can flush all rows in one transaction.
+    """
+    cancellable_states = _cancellable_eval_states()
+    cancelled = 0
+    skipped = 0
+    now = datetime.now(timezone.utc)
+    for eval_row in eval_rows:
+        if (eval_row.status or "").lower() not in cancellable_states:
+            skipped += 1
+            continue
+        # Flip the row state BEFORE we revoke so the UI's next poll
+        # already shows the cancel, even if Celery's control plane is
+        # slow to ack.
+        eval_row.status = "failed"
+        eval_row.error_message = EVAL_CANCELLED_BY_USER_ERROR
+        eval_row.finished_at = now
+        _revoke_eval_task(eval_row)
+        # Drop the task id so a follow-up retry (or a stale poll) can't
+        # accidentally re-revoke or get confused.
+        eval_row.celery_task_id = None
+        cancelled += 1
+    return cancelled, skipped
+
+
+@router.post(
+    "/{eval_id}/cancel",
+    response_model=CallImportEvaluationResponse,
+    status_code=status.HTTP_200_OK,
+    operation_id="cancelCallImportEvaluation",
+)
+async def cancel_call_import_evaluation(
+    call_import_id: UUID,
+    eval_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportEvaluationResponse:
+    """Abort all in-flight (or queued) rows in a single evaluation run.
+
+    Idempotent: calling on a run whose rows are already terminal returns
+    the run unchanged with a 200, so the UI can fire this from an
+    "Abort" button without having to pre-check the state.
+
+    Race notes:
+
+    * Each cancellable row's ``status`` is flipped to ``failed`` with
+      :data:`EVAL_CANCELLED_BY_USER_ERROR` BEFORE the Celery revoke,
+      so the polling UI sees the cancel immediately.
+    * If the worker happens to finish between our DB flip and the
+      SIGTERM landing, its ``_was_cancelled_externally`` guard will
+      detect the cancelled sentinel on the row and skip its own
+      status / score writes (see
+      :mod:`app.workers.tasks.evaluate_call_import_row`).
+    """
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation not found"
+        )
+
+    _apply_evaluation_cancel(list(evaluation.row_results))
+    db.flush()
+    _rollup_evaluation_status(evaluation, db)
+    db.commit()
+    db.refresh(evaluation)
+    return _serialize_eval(db, evaluation)
+
+
+@router.post(
+    "/{eval_id}/force-fail-pending",
+    response_model=CallImportEvaluationResponse,
+    status_code=status.HTTP_200_OK,
+    operation_id="forceFailCallImportEvaluationPending",
+)
+async def force_fail_pending_call_import_evaluation_rows(
+    call_import_id: UUID,
+    eval_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportEvaluationResponse:
+    """Force-fail only rows currently in ``pending`` for a single run.
+
+    This is narrower than :func:`cancel_call_import_evaluation`: it leaves
+    ``running`` rows untouched so operators can clear permanently queued rows
+    without interrupting in-flight evaluations.
+    """
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation not found"
+        )
+
+    pending_rows = [
+        row
+        for row in evaluation.row_results
+        if (row.status or "").lower() == "pending"
+    ]
+    _apply_evaluation_cancel(pending_rows)
+    db.flush()
+    _rollup_evaluation_status(evaluation, db)
+    db.commit()
+    db.refresh(evaluation)
+    return _serialize_eval(db, evaluation)
+
+
+@router.post(
+    "/{eval_id}/rows/{eval_row_id}/cancel",
+    response_model=CallImportEvaluationRowResponse,
+    status_code=status.HTTP_200_OK,
+    operation_id="cancelCallImportEvaluationRow",
+)
+async def cancel_call_import_evaluation_row(
+    call_import_id: UUID,
+    eval_id: UUID,
+    eval_row_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportEvaluationRowResponse:
+    """Abort an in-flight (or queued) evaluation for a single row.
+
+    Idempotent: calling on a row that's already terminal (``completed``
+    / ``failed``) returns the row unchanged with a 200 so the UI can
+    wire this to a "Stop" button without having to pre-check the
+    state. Updates the parent run's rollup so its counters reflect
+    the cancel immediately.
+    """
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation not found"
+        )
+
+    eval_row = (
+        db.query(CallImportEvaluationRow)
+        .filter(
+            CallImportEvaluationRow.id == eval_row_id,
+            CallImportEvaluationRow.evaluation_id == eval_id,
+        )
+        .first()
+    )
+    if not eval_row:
+        raise HTTPException(
+            status_code=404, detail="Evaluation row not found in this run"
+        )
+
+    _apply_evaluation_cancel([eval_row])
+    db.flush()
+    _rollup_evaluation_status(evaluation, db)
+    db.commit()
+    db.refresh(eval_row)
+
+    source_row = (
+        db.query(CallImportRow)
+        .filter(CallImportRow.id == eval_row.call_import_row_id)
+        .first()
+    )
+
+    return CallImportEvaluationRowResponse(
+        id=eval_row.id,
+        evaluation_id=eval_row.evaluation_id,
+        call_import_row_id=eval_row.call_import_row_id,
+        row_index=source_row.row_index if source_row else None,
+        conversation_id=source_row.conversation_id if source_row else None,
+        transcript=(
+            (source_row.diarised_transcript or source_row.transcript)
+            if source_row
+            else None
+        ),
+        raw_columns=source_row.raw_columns if source_row else None,
+        recording_url=source_row.recording_url if source_row else None,
+        recording_s3_key=source_row.recording_s3_key if source_row else None,
+        status=eval_row.status,
+        metric_scores=eval_row.metric_scores or {},
+        error_message=eval_row.error_message,
+        started_at=eval_row.started_at,
+        finished_at=eval_row.finished_at,
+        created_at=eval_row.created_at,
+        updated_at=eval_row.updated_at,
+    )
 
 
 @router.delete(
@@ -1826,6 +2424,11 @@ def _compute_metric_aggregates(
         # were scored (each row votes for >=1 label) so the n-badge in
         # the UI shows "n=50" instead of the misleading "n=208" sum.
         multi_label_rows_scored = 0
+        # Unordered pair tally for the co-occurrence heatmap. Keys are
+        # ``(label_a, label_b)`` with ``a < b`` so we never double-count
+        # the same unordered pair. Only populated for multi-label
+        # parents — every other metric leaves this empty.
+        multi_label_pair_counts: Dict[Tuple[str, str], int] = {}
         skipped = 0
         errored = 0
         observed_metric_type: Optional[str] = None
@@ -1869,11 +2472,24 @@ def _compute_metric_aggregates(
                 selected = entry.get("selected_child_names")
                 if isinstance(selected, list) and selected:
                     multi_label_rows_scored += 1
+                    cleaned: List[str] = []
                     for label in selected:
                         text_label = str(label).strip() or None
                         if text_label:
+                            cleaned.append(text_label)
                             category_counts[text_label] = (
                                 category_counts.get(text_label, 0) + 1
+                            )
+                    # Emit one increment per unordered pair of distinct
+                    # labels that fired together on this row. ``cleaned``
+                    # is deduplicated first because the LLM occasionally
+                    # repeats a label inside ``selected_child_names``.
+                    distinct = sorted(set(cleaned))
+                    for i in range(len(distinct)):
+                        for j in range(i + 1, len(distinct)):
+                            pair = (distinct[i], distinct[j])
+                            multi_label_pair_counts[pair] = (
+                                multi_label_pair_counts.get(pair, 0) + 1
                             )
                 continue
 
@@ -1934,6 +2550,25 @@ def _compute_metric_aggregates(
                 CallImportMetricValueCount(label=label, count=count)
                 for label, count in sorted_counts[:_TOP_VALUE_COUNTS]
             ]
+            # Restrict the heatmap to pairs of labels we actually
+            # rendered above so the frontend never has to match
+            # against truncated/missing rows. Sorted desc by pair
+            # count to keep the most informative cells in the
+            # response when ``_TOP_VALUE_COUNTS`` clipped the matrix.
+            if is_multi_label_parent and multi_label_pair_counts:
+                kept_labels = {
+                    label for label, _ in sorted_counts[:_TOP_VALUE_COUNTS]
+                }
+                pair_items = [
+                    (a, b, count)
+                    for (a, b), count in multi_label_pair_counts.items()
+                    if a in kept_labels and b in kept_labels
+                ]
+                pair_items.sort(key=lambda t: t[2], reverse=True)
+                agg.co_occurrence = [
+                    CallImportMetricLabelPair(a=a, b=b, count=count)
+                    for a, b, count in pair_items
+                ]
 
         results.append(agg)
 
@@ -4207,12 +4842,23 @@ async def delete_call_import_evaluation_row(
 # like "just fix it" instead of "fail again immediately".
 
 
-def _reset_eval_row_for_retry(eval_row: CallImportEvaluationRow) -> None:
+def _reset_eval_row_for_retry(
+    eval_row: CallImportEvaluationRow,
+    *,
+    metric_ids: Optional[List[UUID]] = None,
+) -> None:
     """Wipe per-row state so the worker can re-run it cleanly.
 
     Mirrors the initial state used by ``create_call_import_evaluation``
     when it first inserts a row, with the addition of revoking any
     lingering Celery task id.
+
+    When ``metric_ids`` is provided, this is a **metric-subset retry**:
+    only the scores for those metrics are removed from
+    ``metric_scores`` (other metrics' previously-computed values are
+    preserved so the worker's partial-merge write keeps them intact).
+    Otherwise the entire ``metric_scores`` dict is reset, matching the
+    legacy behaviour.
     """
     if eval_row.celery_task_id and eval_row.status in {"pending", "running"}:
         try:
@@ -4223,7 +4869,22 @@ def _reset_eval_row_for_retry(eval_row: CallImportEvaluationRow) -> None:
             pass
     eval_row.status = "pending"
     eval_row.error_message = None
-    eval_row.metric_scores = {}
+    if metric_ids:
+        # Strip ONLY the targeted metric keys. Both string and UUID
+        # forms can appear in ``metric_scores`` depending on which
+        # code path wrote the dict, so we normalise to lower-case
+        # strings for the comparison.
+        existing = (
+            eval_row.metric_scores if isinstance(eval_row.metric_scores, dict) else {}
+        )
+        target_keys = {str(mid).lower() for mid in metric_ids}
+        eval_row.metric_scores = {
+            key: value
+            for key, value in existing.items()
+            if str(key).lower() not in target_keys
+        }
+    else:
+        eval_row.metric_scores = {}
     eval_row.started_at = None
     eval_row.finished_at = None
     eval_row.celery_task_id = None
@@ -4237,6 +4898,7 @@ def _enqueue_eval_rows_with_optional_transcribe(
     ],
     *,
     transcribe_overwrite: bool = False,
+    restricted_metric_ids: Optional[List[UUID]] = None,
 ) -> Tuple[int, int]:
     """Fan out evaluate (and optionally transcribe) tasks for a set of
     already-reset eval rows.
@@ -4259,7 +4921,25 @@ def _enqueue_eval_rows_with_optional_transcribe(
 
     transcript_source = (evaluation.transcript_source or "").strip().lower()
     is_diarised_run = transcript_source == "diarised"
+    # ``transcribe_mode`` was added in migration 041; legacy runs read as
+    # NULL → default to the historical ``stt_llm`` behavior so retries
+    # of pre-feature evaluations stay byte-identical.
+    transcribe_mode = (
+        getattr(evaluation, "transcribe_mode", None) or "stt_llm"
+    ).strip().lower()
     has_stt_config = bool(evaluation.stt_provider and evaluation.stt_model)
+    has_diariser_config = bool(
+        getattr(evaluation, "diarisation_llm_provider", None)
+        and getattr(evaluation, "diarisation_llm_model", None)
+    )
+    # In ``llm_only`` mode the run never had STT config (the create
+    # endpoint rejects it), so ``has_stt_config`` would be False — but
+    # we still want to chain through transcribe because the LLM is
+    # what produces the diarised text. Gate on the diariser config
+    # instead in that case.
+    can_auto_transcribe = (
+        has_stt_config if transcribe_mode == "stt_llm" else has_diariser_config
+    )
 
     eval_only_row_ids: List[str] = []
     deferred: List[Tuple[CallImportEvaluationRow, CallImportRow]] = []
@@ -4269,7 +4949,7 @@ def _enqueue_eval_rows_with_optional_transcribe(
         needs_diarisation = not existing_dia or transcribe_overwrite
         if (
             is_diarised_run
-            and has_stt_config
+            and can_auto_transcribe
             and has_audio
             and needs_diarisation
         ):
@@ -4289,26 +4969,76 @@ def _enqueue_eval_rows_with_optional_transcribe(
             source_row.diarised_transcript_error = None
         db.commit()
 
+        # ``restricted_metric_ids`` propagates through the transcribe
+        # task as a kwarg so the evaluate task chained at the end of
+        # transcribe (see ``transcribe_call_import_row_task``'s
+        # ``run_eval_row_id`` branch) can apply the same metric
+        # filter. Stringify so Celery's JSON serializer is happy.
+        restricted_metric_ids_str: Optional[List[str]] = (
+            [str(mid) for mid in restricted_metric_ids]
+            if restricted_metric_ids
+            else None
+        )
+
         for eval_row, source_row in deferred:
-            transcribe_call_import_row_task.delay(
-                str(source_row.id),
-                evaluation.stt_provider,
-                evaluation.stt_model,
-                str(evaluation.stt_credential_id)
-                if evaluation.stt_credential_id
+            transcribe_call_import_row_task.apply_async(
+                args=(
+                    str(source_row.id),
+                    # STT fields are ignored by the worker in llm_only
+                    # mode; passing None keeps the wire format clean
+                    # and avoids accidentally re-introducing stale
+                    # config.
+                    evaluation.stt_provider
+                    if transcribe_mode == "stt_llm"
+                    else None,
+                    evaluation.stt_model
+                    if transcribe_mode == "stt_llm"
+                    else None,
+                    str(evaluation.stt_credential_id)
+                    if (
+                        transcribe_mode == "stt_llm"
+                        and evaluation.stt_credential_id
+                    )
+                    else None,
+                    None,  # language hint not persisted on the run
+                    transcribe_overwrite,
+                    str(eval_row.id),
+                    getattr(evaluation, "diarisation_llm_provider", None),
+                    getattr(evaluation, "diarisation_llm_model", None),
+                    str(evaluation.diarisation_llm_credential_id)
+                    if getattr(
+                        evaluation, "diarisation_llm_credential_id", None
+                    )
+                    else None,
+                    getattr(evaluation, "diarisation_prompt", None),
+                    transcribe_mode,
+                ),
+                kwargs={
+                    "eval_restricted_metric_ids": restricted_metric_ids_str,
+                }
+                if restricted_metric_ids_str
                 else None,
-                None,  # language hint not persisted on the run
-                transcribe_overwrite,
-                str(eval_row.id),
             )
 
     if eval_only_row_ids:
-        group(
-            [
-                evaluate_call_import_row_task.s(eval_row_id)
-                for eval_row_id in eval_only_row_ids
-            ]
-        ).apply_async()
+        if restricted_metric_ids:
+            restricted_str = [str(mid) for mid in restricted_metric_ids]
+            group(
+                [
+                    evaluate_call_import_row_task.s(
+                        eval_row_id,
+                        restricted_metric_ids=restricted_str,
+                    )
+                    for eval_row_id in eval_only_row_ids
+                ]
+            ).apply_async()
+        else:
+            group(
+                [
+                    evaluate_call_import_row_task.s(eval_row_id)
+                    for eval_row_id in eval_only_row_ids
+                ]
+            ).apply_async()
 
     return len(eval_only_row_ids), len(deferred)
 
@@ -4462,11 +5192,64 @@ def _apply_retry_overrides(
     if payload.stt_credential_id is not None:
         evaluation.stt_credential_id = payload.stt_credential_id
 
+    # --- LLM diariser provider + model (must be sent together) ---
+    if (
+        payload.diarization_llm_provider is not None
+        or payload.diarization_llm_model is not None
+    ):
+        if not (
+            payload.diarization_llm_provider
+            and payload.diarization_llm_model
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Both diarization_llm_provider and "
+                    "diarization_llm_model are required when overriding "
+                    "the run diariser on retry."
+                ),
+            )
+        try:
+            evaluation.diarisation_llm_provider = ModelProvider(
+                payload.diarization_llm_provider.lower()
+            ).value
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Unknown diarisation LLM provider "
+                    f"'{payload.diarization_llm_provider}'."
+                ),
+            )
+        new_diariser_model = (
+            payload.diarization_llm_model.strip() or None
+        )
+        if not new_diariser_model:
+            raise HTTPException(
+                status_code=400,
+                detail="diarization_llm_model cannot be empty.",
+            )
+        evaluation.diarisation_llm_model = new_diariser_model
+
+    if payload.diarization_llm_credential_id is not None:
+        evaluation.diarisation_llm_credential_id = (
+            payload.diarization_llm_credential_id
+        )
+
+    # ``diarization_prompt`` semantics: None = leave untouched;
+    # empty string = clear (fall back to the canonical default at
+    # worker time); anything else = persist verbatim.
+    if payload.diarization_prompt is not None:
+        cleaned = payload.diarization_prompt.strip()
+        evaluation.diarisation_prompt = cleaned or None
+
 
 def _gather_retry_targets(
     db: Session,
     evaluation: CallImportEvaluation,
     requested_ids: Optional[List[UUID]],
+    *,
+    include_completed: bool = False,
 ) -> Tuple[
     List[Tuple[CallImportEvaluationRow, CallImportRow]],
     List[CallImportEvaluationRetrySkippedItem],
@@ -4474,9 +5257,12 @@ def _gather_retry_targets(
     """Resolve which rows to retry + reasons for any we refuse.
 
     When ``requested_ids`` is None we retry every row whose status is
-    ``failed``. When the caller passes ids explicitly we still filter
-    out rows that are already completed or currently in flight — the
-    retry endpoint deliberately doesn't blow away in-progress work.
+    ``failed`` (or every row when ``include_completed`` is also set —
+    used by the metric-subset retry path which legitimately wants to
+    recompute a metric on already-successful rows). When the caller
+    passes ids explicitly we still filter out rows that are currently
+    in flight; ``include_completed`` controls whether previously-
+    successful rows are eligible.
     """
     eval_rows_query = db.query(CallImportEvaluationRow).filter(
         CallImportEvaluationRow.evaluation_id == evaluation.id
@@ -4486,9 +5272,17 @@ def _gather_retry_targets(
     skipped: List[CallImportEvaluationRetrySkippedItem] = []
 
     if requested_ids is None:
-        candidate_rows = eval_rows_query.filter(
-            CallImportEvaluationRow.status == "failed"
-        ).all()
+        if include_completed:
+            # "Retry everything" path used by the metric-subset re-run
+            # UI. Still skip in-flight rows below so we don't trample
+            # work the worker is actively doing.
+            candidate_rows = eval_rows_query.filter(
+                CallImportEvaluationRow.status.in_(["failed", "completed"])
+            ).all()
+        else:
+            candidate_rows = eval_rows_query.filter(
+                CallImportEvaluationRow.status == "failed"
+            ).all()
     else:
         requested_set = set(requested_ids)
         candidate_rows = eval_rows_query.filter(
@@ -4523,7 +5317,7 @@ def _gather_retry_targets(
                 )
             )
             continue
-        if eval_row.status == "completed":
+        if eval_row.status == "completed" and not include_completed:
             skipped.append(
                 CallImportEvaluationRetrySkippedItem(
                     eval_row_id=eval_row.id,
@@ -4567,10 +5361,18 @@ async def retry_call_import_evaluation(
     in-flight or already completed are returned in ``skipped`` rather
     than re-enqueued, so this endpoint is always safe to call.
 
+    When ``metric_ids`` is set in the payload, this is a **metric-
+    subset retry**: only the listed metrics are recomputed (and merged
+    into the row's existing ``metric_scores`` — other metrics' values
+    are preserved). The route auto-flips ``include_completed=True`` in
+    that case so previously-successful rows are eligible for re-
+    scoring; without it the call would no-op because every row would
+    be skipped as ``completed``.
+
     The worker contract is the same as the create endpoint:
-    ``evaluate_call_import_row_task(eval_row_id)``. When the run is
-    configured for diarised transcripts and the row's diarised
-    transcript is missing, we chain through
+    ``evaluate_call_import_row_task(eval_row_id, [restricted_metric_ids])``.
+    When the run is configured for diarised transcripts and the row's
+    diarised transcript is missing, we chain through
     ``transcribe_call_import_row_task`` first — matching the
     auto-transcribe behavior of POST ``/evaluations``.
     """
@@ -4592,7 +5394,129 @@ async def retry_call_import_evaluation(
         )
 
     requested_ids = payload.eval_row_ids if payload else None
-    targets, skipped = _gather_retry_targets(db, evaluation, requested_ids)
+    # Metric-subset retry: validate that every metric is something this
+    # run actually scored. Empty list is rejected too — callers that
+    # want a full re-run should omit the field entirely.
+    #
+    # ``selected_metric_ids`` holds the LEAVES only (children for
+    # hierarchical / category metrics, standalone metrics otherwise) —
+    # see ``leaf_metric_ids`` in :func:`create_call_import_evaluation`.
+    # Parent IDs for hierarchical metrics live separately in
+    # ``selected_metric_groups`` (``{parent_id: [child_ids]}``) so the
+    # UI can reconstruct the tree without round-tripping through the
+    # metric table.
+    #
+    # The Re-run-metrics modal surfaces PARENTS for hierarchical
+    # metrics (it suppresses individual children via
+    # ``childrenInGroups`` in ``CallImportEvaluationDetail.tsx``), so a
+    # naive ``metric_ids ⊆ selected_metric_ids`` check rejects every
+    # parent-ID request with a misleading "unknown ids" 400. We accept
+    # both shapes here and then EXPAND any parent IDs into
+    # ``{parent_id, *child_ids}`` so the downstream helpers see the
+    # full set of keys that need clearing + the full set of leaves
+    # that need re-scoring.
+    metric_ids: Optional[List[UUID]] = (
+        payload.metric_ids if payload else None
+    )
+    if metric_ids is not None:
+        if not metric_ids:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "metric_ids must be a non-empty list. Omit the "
+                    "field to re-run all metrics."
+                ),
+            )
+
+        leaf_set: Set[str] = {
+            str(item).lower()
+            for item in (evaluation.selected_metric_ids or [])
+        }
+        # ``selected_metric_groups`` is a dict ``{parent_id_str:
+        # [child_id_str, ...]}`` (see line ~487 in
+        # ``create_call_import_evaluation``). We tolerate stale data
+        # (string / UUID / non-dict) without crashing the retry path —
+        # if it's malformed we just treat it as "no parents" and fall
+        # back to the leaf-only check.
+        groups_raw = (
+            evaluation.selected_metric_groups
+            if isinstance(evaluation.selected_metric_groups, dict)
+            else {}
+        )
+        parent_to_children_str: Dict[str, List[str]] = {}
+        for parent_key, children_raw in groups_raw.items():
+            if not isinstance(children_raw, (list, tuple)):
+                continue
+            children_norm = [
+                str(c).lower() for c in children_raw if c is not None
+            ]
+            parent_to_children_str[str(parent_key).lower()] = children_norm
+        parent_set = set(parent_to_children_str.keys())
+
+        unknown = [
+            mid for mid in metric_ids
+            if str(mid).lower() not in leaf_set
+            and str(mid).lower() not in parent_set
+        ]
+        if unknown:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "metric_ids must be a subset of this evaluation's "
+                    f"selected metrics; unknown ids: {[str(u) for u in unknown]}."
+                ),
+            )
+
+        # Expand parent IDs into ``{parent, *children}`` so:
+        #   * ``_reset_eval_row_for_retry`` strips BOTH the parent
+        #     entry (with ``chosen_child_id`` / rationale) AND every
+        #     per-child boolean entry that the LLM evaluator wrote
+        #     under each child's ID (see
+        #     ``app/workers/tasks/helpers/llm_evaluation.py`` lines
+        #     1584 and 1649).
+        #   * ``_enqueue_eval_rows_with_optional_transcribe`` →
+        #     ``evaluate_call_import_row_task`` filters the work-list
+        #     off ``selected_metric_ids`` (leaves), so we MUST hand it
+        #     the child IDs for the parent to actually get re-scored.
+        # Leaves pass through unchanged.
+        expanded: List[UUID] = []
+        seen: Set[str] = set()
+        for mid in metric_ids:
+            mid_norm = str(mid).lower()
+            children_str = parent_to_children_str.get(mid_norm)
+            if children_str is not None:
+                # Parent: include the parent ID itself (so the parent
+                # entry in ``metric_scores`` is also cleared) and all
+                # of its children.
+                candidates = [mid_norm, *children_str]
+            else:
+                candidates = [mid_norm]
+            for candidate in candidates:
+                if candidate in seen:
+                    continue
+                try:
+                    expanded.append(UUID(candidate))
+                except (TypeError, ValueError):
+                    # Defensive: skip junk values rather than 500.
+                    continue
+                seen.add(candidate)
+        metric_ids = expanded
+
+    # ``include_completed`` is auto-enabled when the caller asked for a
+    # metric subset (otherwise the metric-subset retry would always
+    # no-op on a green run, which is the whole reason this feature
+    # exists). The explicit payload flag wins for full-row retries.
+    include_completed = bool(
+        (payload.include_completed if payload else False)
+        or (metric_ids is not None)
+    )
+
+    targets, skipped = _gather_retry_targets(
+        db,
+        evaluation,
+        requested_ids,
+        include_completed=include_completed,
+    )
 
     if not targets:
         # Nothing actually changed — return early without touching the
@@ -4615,7 +5539,7 @@ async def retry_call_import_evaluation(
     )
 
     for eval_row, _ in targets:
-        _reset_eval_row_for_retry(eval_row)
+        _reset_eval_row_for_retry(eval_row, metric_ids=metric_ids)
 
     # Flip the parent back to ``running`` and clear any old enqueue
     # error so the UI's polling resumes. Counters get recomputed by
@@ -4635,6 +5559,7 @@ async def retry_call_import_evaluation(
                 evaluation,
                 targets,
                 transcribe_overwrite=transcribe_overwrite,
+                restricted_metric_ids=metric_ids,
             )
         )
     except Exception as exc:  # noqa: BLE001 — surface but don't 500

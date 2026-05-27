@@ -3,39 +3,34 @@ import { createPortal } from 'react-dom'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  Activity,
   AlertCircle,
   ArrowLeft,
+  ArrowLeftRight,
   AudioLines,
   BarChart3,
   Check,
-  ChevronLeft,
   ChevronRight,
+  Copy,
+  Database,
   Download,
   Edit3,
   FileText,
+  Layers,
   ListTree,
   Mic,
   MessageSquare,
+  MicOff,
   Pause,
   Play,
   RefreshCw,
   Search,
+  Square,
   Trash2,
   Volume2,
   X,
   XCircle,
 } from 'lucide-react'
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from 'recharts'
 import { apiClient } from '../../lib/api'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import type {
@@ -46,12 +41,16 @@ import type {
 } from '../../types/api'
 import Button from '../../components/Button'
 import ConfirmModal from '../../components/ConfirmModal'
+import Pagination from '../../components/Pagination'
 import StatusBadge from '../../components/shared/StatusBadge'
 import ProviderModelPicker, {
   type ProviderModelValue,
 } from '../../components/providers/ProviderModelPicker'
 import CallImportProgressBar from './components/CallImportProgressBar'
 import ImportPanel from './components/ImportPanel'
+import InsightsMetricCard, {
+  INSIGHTS_PALETTE,
+} from './components/InsightsMetricCard'
 import MappingPanel from './components/MappingPanel'
 import StageTracker from './components/StageTracker'
 import TranscriptView from './components/TranscriptView'
@@ -91,6 +90,150 @@ function isNonRetryableError(message: string | null | undefined): boolean {
   return /(401|403|404|forbidden|unauthor|not found|exceeds|too large|invalid content)/i.test(message)
 }
 
+// --- Insights tab helpers ---------------------------------------------
+//
+// KPI cards in the Insights header use a tinted gradient background +
+// matching icon chip so each metric is colour-coded at a glance. The
+// tone is purely cosmetic — no semantics are encoded beyond
+// emerald=positive (transcripts present), amber=needs-attention
+// (rows without transcripts) and the rest neutral-but-distinct.
+
+type KpiTone = 'indigo' | 'emerald' | 'amber' | 'violet' | 'gray'
+
+const KPI_TONE_CLASS: Record<
+  KpiTone,
+  { card: string; chip: string; icon: string; value: string }
+> = {
+  indigo: {
+    card: 'from-indigo-50 to-white border-indigo-100',
+    chip: 'bg-indigo-100 text-indigo-700',
+    icon: 'text-indigo-600',
+    value: 'text-indigo-900',
+  },
+  emerald: {
+    card: 'from-emerald-50 to-white border-emerald-100',
+    chip: 'bg-emerald-100 text-emerald-700',
+    icon: 'text-emerald-600',
+    value: 'text-emerald-900',
+  },
+  amber: {
+    card: 'from-amber-50 to-white border-amber-100',
+    chip: 'bg-amber-100 text-amber-700',
+    icon: 'text-amber-600',
+    value: 'text-amber-900',
+  },
+  violet: {
+    card: 'from-violet-50 to-white border-violet-100',
+    chip: 'bg-violet-100 text-violet-700',
+    icon: 'text-violet-600',
+    value: 'text-violet-900',
+  },
+  gray: {
+    card: 'from-gray-50 to-white border-gray-200',
+    chip: 'bg-gray-100 text-gray-600',
+    icon: 'text-gray-500',
+    value: 'text-gray-900',
+  },
+}
+
+function KpiCard({
+  Icon,
+  label,
+  value,
+  sub,
+  tone = 'gray',
+}: {
+  Icon: React.ComponentType<{ className?: string }>
+  label: string
+  value: string | number
+  sub?: string | null
+  tone?: KpiTone
+}) {
+  const cls = KPI_TONE_CLASS[tone]
+  return (
+    <div
+      className={`rounded-xl border bg-gradient-to-br ${cls.card} px-3 py-2.5 flex items-start gap-3`}
+    >
+      <span
+        className={`shrink-0 inline-flex items-center justify-center h-8 w-8 rounded-lg ${cls.chip}`}
+      >
+        <Icon className={`h-4 w-4 ${cls.icon}`} />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="text-[10px] uppercase tracking-wider text-gray-500 truncate">
+          {label}
+        </p>
+        <p className={`text-2xl font-semibold leading-tight tabular-nums ${cls.value}`}>
+          {value}
+        </p>
+        {sub ? (
+          <p className="text-[10px] text-gray-500 truncate">{sub}</p>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Stacked horizontal bar (single row) showing the proportion of
+ * transcripts produced by each STT provider, plus a colour-coded
+ * legend below. Replaces the old gray-pill list which was hard to
+ * compare at a glance once you had >2 sources.
+ */
+function TranscriptSourceMix({
+  counts,
+}: {
+  counts: Record<string, number>
+}) {
+  const entries = Object.entries(counts)
+    .filter(([, count]) => count > 0)
+    .sort((a, b) => b[1] - a[1])
+  const total = entries.reduce((s, [, c]) => s + c, 0) || 1
+  if (entries.length === 0) return null
+  return (
+    <div>
+      <h3 className="text-sm font-semibold text-gray-800 mb-2">
+        Transcript source mix
+      </h3>
+      <div
+        className="flex h-6 w-full overflow-hidden rounded-md border border-gray-200"
+        role="img"
+        aria-label="Transcript source breakdown"
+      >
+        {entries.map(([source, count], i) => {
+          const pct = (count / total) * 100
+          const color = INSIGHTS_PALETTE[i % INSIGHTS_PALETTE.length]
+          return (
+            <div
+              key={source}
+              style={{ width: `${pct}%`, background: color }}
+              title={`${source}: ${count} (${pct.toFixed(1)}%)`}
+            />
+          )
+        })}
+      </div>
+      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-gray-700">
+        {entries.map(([source, count], i) => {
+          const pct = (count / total) * 100
+          const color = INSIGHTS_PALETTE[i % INSIGHTS_PALETTE.length]
+          return (
+            <div key={source} className="inline-flex items-center gap-1.5">
+              <span
+                className="h-2.5 w-2.5 rounded-sm"
+                style={{ background: color }}
+              />
+              <span className="font-medium capitalize">{source}</span>
+              <span className="text-gray-500 tabular-nums">
+                · {count} ({pct.toFixed(0)}%)
+              </span>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 export default function CallImportDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
@@ -98,16 +241,96 @@ export default function CallImportDetail() {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
   const [rowOffset, setRowOffset] = useState(0)
   const [expandedRowIds, setExpandedRowIds] = useState<Set<string>>(new Set())
+  // Transient "✓ Copied" feedback on the per-row Copy button next to
+  // the conversation_id. Keyed by row.id so the badge can flip on the
+  // exact button that was clicked without affecting the rest of the
+  // table. Auto-clears after 1.5s via a setTimeout inside the handler.
+  const [copiedRowId, setCopiedRowId] = useState<string | null>(null)
+  const handleCopyConversationId = (
+    row: CallImportRow,
+    event: React.MouseEvent,
+  ) => {
+    // Stop the synthetic click from bubbling up to the expand button
+    // that wraps the row header — otherwise copying would also toggle
+    // the row open/closed.
+    event.preventDefault()
+    event.stopPropagation()
+    const text = row.conversation_id || ''
+    if (!text) return
+    const finalize = () => {
+      setCopiedRowId(row.id)
+      window.setTimeout(() => {
+        // Only clear if THIS row is still the active one — a quick
+        // double-click on two different rows shouldn't prematurely
+        // wipe the badge on the second.
+        setCopiedRowId((prev) => (prev === row.id ? null : prev))
+      }, 1500)
+    }
+    // ``navigator.clipboard`` is async + requires a secure context.
+    // Fall back to the legacy ``execCommand`` path so localhost-over-
+    // http (e.g. ``http://10.x.x.x:5173`` LAN dev) still works.
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(finalize).catch(() => {
+        // Best-effort fallback if the async API rejects (permission /
+        // not focused / unsupported MIME, …).
+        try {
+          const ta = document.createElement('textarea')
+          ta.value = text
+          ta.style.position = 'fixed'
+          ta.style.opacity = '0'
+          document.body.appendChild(ta)
+          ta.select()
+          document.execCommand('copy')
+          document.body.removeChild(ta)
+          finalize()
+        } catch {
+          // Swallow — user can still drag-select the visible text.
+        }
+      })
+    } else {
+      try {
+        const ta = document.createElement('textarea')
+        ta.value = text
+        ta.style.position = 'fixed'
+        ta.style.opacity = '0'
+        document.body.appendChild(ta)
+        ta.select()
+        document.execCommand('copy')
+        document.body.removeChild(ta)
+        finalize()
+      } catch {
+        // Swallow — drag-select still works.
+      }
+    }
+  }
   // Row search: debounce keystrokes so we don't refire the rows fetch on
   // every character — the backend filters by conversation_id ILIKE %q%
   // and reports the post-filter total in ``filtered_total_rows``.
   const [rowSearchInput, setRowSearchInput] = useState('')
   const [rowSearchQuery, setRowSearchQuery] = useState('')
+  // Optional filter on per-row diarised transcript status. Lets the
+  // user find rows where diarisation failed (or is still running)
+  // without having to expand each row. Backed by the new
+  // ``diarised_status`` query param on ``GET /call-imports/{id}``.
+  type DiarisedStatusFilter =
+    | 'all'
+    | 'pending'
+    | 'running'
+    | 'completed'
+    | 'failed'
+  const [diarisedStatusFilter, setDiarisedStatusFilter] =
+    useState<DiarisedStatusFilter>('all')
   // Multi-select state for the row list — drives the bulk-action
   // toolbar (delete / transcribe). The header checkbox toggles every
-  // row currently visible on the page; selection is intentionally
-  // scoped to the current page so cross-page operations stay explicit.
+  // row currently visible on the page; an explicit "Select all in
+  // import" affordance extends the selection across pages by harvesting
+  // ids from ``GET /call-imports/{id}/row-ids``.
   const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set())
+  // Loading flag for the cross-page select-all click; surfaces a tiny
+  // spinner on the affordance button so the user knows the harvest is
+  // in flight.
+  const [isSelectingAllInImport, setIsSelectingAllInImport] = useState(false)
+  const [selectAllError, setSelectAllError] = useState<string | null>(null)
   const [showBulkDeleteRows, setShowBulkDeleteRows] = useState(false)
   const [bulkDeleteRowsError, setBulkDeleteRowsError] = useState<string | null>(
     null,
@@ -120,6 +343,15 @@ export default function CallImportDetail() {
   const audioRef = useRef<HTMLAudioElement>(null)
 
   const [showDeleteImport, setShowDeleteImport] = useState(false)
+  const [showRetryFailedImportConfirm, setShowRetryFailedImportConfirm] =
+    useState(false)
+  const [retryFailedImportError, setRetryFailedImportError] = useState<string | null>(
+    null,
+  )
+  const [showForceFailDiarisationConfirm, setShowForceFailDiarisationConfirm] =
+    useState(false)
+  const [forceFailDiarisationError, setForceFailDiarisationError] =
+    useState<string | null>(null)
   const [pendingDeleteRow, setPendingDeleteRow] = useState<CallImportRow | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [showRunEval, setShowRunEval] = useState(false)
@@ -147,12 +379,35 @@ export default function CallImportDetail() {
   // no longer user-editable so we don't track it as state; the request
   // payload below hardcodes ``auto_transcribe: true``.
   const [transcribeOverwrite, setTranscribeOverwrite] = useState(false)
+  // Same toggle as the standalone Transcribe modal: ``stt_llm`` (the
+  // legacy two-stage path) vs ``llm_only`` (multimodal audio→LLM in
+  // one pass). The Run-Evaluation modal carries an independent copy
+  // so flipping the standalone modal doesn't quietly mutate the eval
+  // run's transcribe step.
+  //
+  // Default is ``llm_only`` because a single audio-in multimodal call
+  // is faster, cheaper, and produces a tighter transcript than the
+  // two-stage STT+LLM dance in the vast majority of real-world rows.
+  // Operators who explicitly want the legacy pipeline (e.g. to reuse
+  // an existing STT contract) flip the segmented control over to
+  // "STT + LLM diariser" which is presented as the advanced fallback.
+  const [evalTranscribeMode, setEvalTranscribeMode] = useState<
+    'stt_llm' | 'llm_only'
+  >('llm_only')
   const [evalSTT, setEvalSTT] = useState<ProviderModelValue>({
     provider: null,
     model: null,
     credential_id: null,
   })
   const [evalSTTLanguage, setEvalSTTLanguage] = useState('')
+  // LLM diariser config for the auto-diarise step. Mirrors the
+  // standalone Transcribe modal; required by the backend.
+  const [evalDiariserLLM, setEvalDiariserLLM] = useState<ProviderModelValue>({
+    provider: null,
+    model: null,
+    credential_id: null,
+  })
+  const [evalDiarisationPrompt, setEvalDiarisationPrompt] = useState('')
   // Opt into LLM-driven discovery of brand-new top-level metrics for
   // this run. Defaults to off so existing users get the same behaviour
   // as before; flipping it on adds a single instruction block to the
@@ -170,15 +425,86 @@ export default function CallImportDetail() {
   const [transcribeTargetRows, setTranscribeTargetRows] = useState<
     CallImportRow[] | null
   >(null)
+  // Which diarisation pipeline the operator has selected for THIS
+  // modal instance. ``stt_llm`` is the legacy two-stage path (STT
+  // then LLM diariser); ``llm_only`` hides the STT picker and feeds
+  // the audio straight to a multimodal chat model. Persists across
+  // modal opens within a session so power-users don't have to re-
+  // toggle every time. ``llm_only`` is the default — see the
+  // matching note on ``evalTranscribeMode`` above.
+  const [transcribeMode, setTranscribeMode] = useState<
+    'stt_llm' | 'llm_only'
+  >('llm_only')
   const [transcribeSTT, setTranscribeSTT] = useState<ProviderModelValue>({
     provider: null,
     model: null,
     credential_id: null,
   })
+  // LLM that diarises the STT plain-text into agent/user turns.
+  // Pyannote has been removed — this picker is required to start a
+  // run. We default to OpenAI/gpt-4o-mini because it's the cheapest
+  // chat model on the curated list; the user can override it.
+  const [transcribeDiariserLLM, setTranscribeDiariserLLM] =
+    useState<ProviderModelValue>({
+      provider: null,
+      model: null,
+      credential_id: null,
+    })
+  const [transcribeDiarisationPrompt, setTranscribeDiarisationPrompt] =
+    useState('')
+  // Defaults to ON: when the user clicks the Diarize button they almost
+  // always want to re-run on top of any existing diarised transcript;
+  // the safe-off default forced an extra click for every re-run. The
+  // user can still untick it before submitting if they explicitly want
+  // to skip rows that already have a transcript.
   const [transcribeOverwriteStandalone, setTranscribeOverwriteStandalone] =
-    useState(false)
+    useState(true)
   const [transcribeLanguage, setTranscribeLanguage] = useState('')
   const [transcribeError, setTranscribeError] = useState<string | null>(null)
+
+  // Prompt-partial import sub-modal. ``target`` decides which
+  // diarisation prompt textarea the chosen partial's ``content``
+  // replaces — ``standalone`` is the Diarize-modal textarea,
+  // ``eval`` is the Run-Evaluation modal's. ``null`` keeps the
+  // sub-modal hidden.
+  const [partialsImportTarget, setPartialsImportTarget] = useState<
+    'standalone' | 'eval' | null
+  >(null)
+  const [partialsSearchInput, setPartialsSearchInput] = useState('')
+  const [partialsSearchQuery, setPartialsSearchQuery] = useState('')
+  const [selectedPartialId, setSelectedPartialId] = useState<string>('')
+  const [partialsImportError, setPartialsImportError] = useState<string | null>(
+    null,
+  )
+
+  // Prompt-partial *save* sub-modal. Mirrors the import sub-modal but
+  // pushes the current textarea content back into the Prompt Partials
+  // library. ``target`` decides which textarea sources the content;
+  // ``mode`` chooses between creating a brand-new partial and updating
+  // an existing one (which appends a new version under the hood).
+  const [savePartialTarget, setSavePartialTarget] = useState<
+    'standalone' | 'eval' | null
+  >(null)
+  const [savePartialMode, setSavePartialMode] = useState<'new' | 'existing'>(
+    'new',
+  )
+  const [savePartialName, setSavePartialName] = useState('')
+  const [savePartialDescription, setSavePartialDescription] = useState('')
+  const [savePartialChangeSummary, setSavePartialChangeSummary] = useState('')
+  const [savePartialExistingId, setSavePartialExistingId] = useState<string>('')
+  const [savePartialError, setSavePartialError] = useState<string | null>(null)
+  const [savePartialSuccess, setSavePartialSuccess] = useState<string | null>(
+    null,
+  )
+
+  // The canonical default diariser prompt. Fetched once when the
+  // modal opens so the textarea can pre-fill with the *actual*
+  // server-side default rather than a duplicated hardcoded copy.
+  const { data: defaultDiarisationPrompt } = useQuery({
+    queryKey: ['call-import-diarisation-prompt-default'],
+    queryFn: () => apiClient.getCallImportDiarisationPromptDefault(),
+    staleTime: Infinity,
+  })
 
   const [editingMeta, setEditingMeta] = useState(false)
   const [draftDataset, setDraftDataset] = useState('')
@@ -215,6 +541,52 @@ export default function CallImportDetail() {
     onError: (err: any) => {
       setDeleteError(
         err?.response?.data?.detail || err?.message || 'Failed to delete import.',
+      )
+    },
+  })
+
+  const retryFailedImportMutation = useMutation({
+    mutationFn: () => apiClient.retryFailedCallImportRows(id!),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ['call-import', id] })
+      queryClient.invalidateQueries({ queryKey: ['call-imports'] })
+      setShowRetryFailedImportConfirm(false)
+      const parts = [`Re-queued ${result.requeued} failed row${result.requeued === 1 ? '' : 's'}`]
+      if (result.enqueue_failed > 0) {
+        parts.push(`enqueue failed for ${result.enqueue_failed}`)
+      }
+      if (result.skipped > 0) {
+        parts.push(`skipped ${result.skipped}`)
+      }
+      setRetryFailedImportError(null)
+      setBulkActionResult(parts.join(' · '))
+    },
+    onError: (err: any) => {
+      setRetryFailedImportError(
+        err?.response?.data?.detail ||
+          err?.message ||
+          'Failed to retry failed import rows.',
+      )
+    },
+  })
+
+  const forceFailDiarisationMutation = useMutation({
+    mutationFn: () => apiClient.cancelCallImportDiarisation(id!, null),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ['call-import', id] })
+      setShowForceFailDiarisationConfirm(false)
+      const parts = [`Force-failed ${result.cancelled} diarisation row${result.cancelled === 1 ? '' : 's'}`]
+      if (result.skipped > 0) {
+        parts.push(`skipped ${result.skipped}`)
+      }
+      setForceFailDiarisationError(null)
+      setBulkActionResult(parts.join(' · '))
+    },
+    onError: (err: any) => {
+      setForceFailDiarisationError(
+        err?.response?.data?.detail ||
+          err?.message ||
+          'Failed to force-fail in-flight diarisation rows.',
       )
     },
   })
@@ -262,28 +634,180 @@ export default function CallImportDetail() {
     return () => clearTimeout(handle)
   }, [rowSearchInput])
 
+  // Debounce the partials-search input so we don't refire the list
+  // query on every character while the import sub-modal is open.
+  useEffect(() => {
+    const handle = setTimeout(() => {
+      setPartialsSearchQuery(partialsSearchInput.trim())
+    }, 250)
+    return () => clearTimeout(handle)
+  }, [partialsSearchInput])
+
+  const { data: promptPartials = [], isLoading: isLoadingPartials } = useQuery<
+    Array<{ id: string; name: string; description?: string | null }>
+  >({
+    queryKey: ['call-import-prompt-partials', partialsSearchQuery],
+    queryFn: () =>
+      apiClient.listPromptPartials(
+        0,
+        100,
+        partialsSearchQuery ? partialsSearchQuery : undefined,
+      ),
+    enabled:
+      partialsImportTarget !== null ||
+      (savePartialTarget !== null && savePartialMode === 'existing'),
+  })
+
+  const importPartialMutation = useMutation({
+    mutationFn: (partialId: string) => apiClient.getPromptPartial(partialId),
+    onSuccess: (partial) => {
+      const content = ((partial?.content as string | undefined) || '').trim()
+      if (!content) {
+        setPartialsImportError('Selected prompt partial has no content.')
+        return
+      }
+      if (partialsImportTarget === 'standalone') {
+        setTranscribeDiarisationPrompt(content)
+      } else if (partialsImportTarget === 'eval') {
+        setEvalDiarisationPrompt(content)
+      }
+      setPartialsImportTarget(null)
+      setPartialsSearchInput('')
+      setPartialsSearchQuery('')
+      setSelectedPartialId('')
+      setPartialsImportError(null)
+    },
+    onError: (err: any) => {
+      setPartialsImportError(
+        err?.response?.data?.detail ||
+          err?.message ||
+          'Failed to load prompt partial.',
+      )
+    },
+  })
+
+  const closePartialsImportModal = () => {
+    if (importPartialMutation.isPending) return
+    setPartialsImportTarget(null)
+    setPartialsSearchInput('')
+    setPartialsSearchQuery('')
+    setSelectedPartialId('')
+    setPartialsImportError(null)
+  }
+
+  // Mutation backing the "Save as partial" sub-modal. The body shape
+  // depends on ``savePartialMode``: ``new`` calls ``createPromptPartial``
+  // with a fresh name/description, ``existing`` calls
+  // ``updatePromptPartial`` against the selected partial which appends
+  // a new version to its history.
+  const savePartialMutation = useMutation({
+    mutationFn: async (input: {
+      content: string
+      mode: 'new' | 'existing'
+      name?: string
+      description?: string
+      partialId?: string
+      changeSummary?: string
+    }) => {
+      if (input.mode === 'new') {
+        return apiClient.createPromptPartial({
+          name: input.name || 'Untitled diarisation prompt',
+          description: input.description || undefined,
+          content: input.content,
+        })
+      }
+      return apiClient.updatePromptPartial(input.partialId!, {
+        content: input.content,
+        change_summary: input.changeSummary || undefined,
+      })
+    },
+    onSuccess: (partial: any) => {
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-prompt-partials'],
+      })
+      const label =
+        partial?.name || (savePartialMode === 'new' ? 'new partial' : 'partial')
+      setSavePartialSuccess(
+        savePartialMode === 'new'
+          ? `Saved as new prompt partial “${label}”.`
+          : `Updated prompt partial “${label}” (new version saved).`,
+      )
+      setSavePartialError(null)
+      // Auto-close shortly after so the user sees the confirmation.
+      setTimeout(() => {
+        setSavePartialTarget(null)
+        setSavePartialMode('new')
+        setSavePartialName('')
+        setSavePartialDescription('')
+        setSavePartialChangeSummary('')
+        setSavePartialExistingId('')
+        setSavePartialError(null)
+        setSavePartialSuccess(null)
+        setPartialsSearchInput('')
+        setPartialsSearchQuery('')
+      }, 1200)
+    },
+    onError: (err: any) => {
+      setSavePartialError(
+        err?.response?.data?.detail ||
+          err?.message ||
+          'Failed to save prompt partial.',
+      )
+    },
+  })
+
+  const closeSavePartialModal = () => {
+    if (savePartialMutation.isPending) return
+    setSavePartialTarget(null)
+    setSavePartialMode('new')
+    setSavePartialName('')
+    setSavePartialDescription('')
+    setSavePartialChangeSummary('')
+    setSavePartialExistingId('')
+    setSavePartialError(null)
+    setSavePartialSuccess(null)
+    setPartialsSearchInput('')
+    setPartialsSearchQuery('')
+  }
+
+  const openSavePartialModal = (target: 'standalone' | 'eval') => {
+    setSavePartialTarget(target)
+    setSavePartialMode('new')
+    setSavePartialName('')
+    setSavePartialDescription('')
+    setSavePartialChangeSummary('')
+    setSavePartialExistingId('')
+    setSavePartialError(null)
+    setSavePartialSuccess(null)
+    setPartialsSearchInput('')
+    setPartialsSearchQuery('')
+  }
+
   // Snap back to the first page whenever the active query changes —
   // otherwise the user could be sitting on page 3 of a filtered set
   // that only has one page of results.
   useEffect(() => {
     setRowOffset(0)
-  }, [rowSearchQuery])
+  }, [rowSearchQuery, diarisedStatusFilter])
 
-  // Clear any active row selection when the visible slice changes
-  // (search / pagination). Selection is scoped to the current page so
-  // keeping stale ids around just leads to confusing "X selected"
-  // counters that don't match what's on screen.
+  // Clear any active row selection when the filter set changes — the
+  // ids the user picked may no longer match the new slice. Pagination
+  // alone no longer resets the selection so users can still pick rows
+  // across pages (the "Select all in import" affordance relies on this).
   useEffect(() => {
     setSelectedRowIds(new Set())
-  }, [rowSearchQuery, rowOffset])
+    setSelectAllError(null)
+  }, [rowSearchQuery, diarisedStatusFilter])
 
   const queryParams = useMemo(
     () => ({
       row_limit: ROW_PAGE_SIZE,
       row_offset: rowOffset,
       q: rowSearchQuery || undefined,
+      diarised_status:
+        diarisedStatusFilter === 'all' ? undefined : diarisedStatusFilter,
     }),
-    [rowOffset, rowSearchQuery],
+    [rowOffset, rowSearchQuery, diarisedStatusFilter],
   )
 
   const { data, isLoading, isFetching, refetch, error } = useQuery({
@@ -367,6 +891,12 @@ export default function CallImportDetail() {
       setTranscribeOverwrite(false)
       setEvalSTT({ provider: null, model: null, credential_id: null })
       setEvalSTTLanguage('')
+      setEvalDiariserLLM({
+        provider: null,
+        model: null,
+        credential_id: null,
+      })
+      setEvalDiarisationPrompt('')
       setDiscoverNewMetrics(false)
       setActiveTab('evaluations')
       // When the user picked both Production and Diarised the backend
@@ -386,36 +916,49 @@ export default function CallImportDetail() {
   const transcribeRowsMutation = useMutation({
     mutationFn: ({
       rowIds,
+      mode,
       stt,
+      diariserLLM,
+      diarisationPrompt,
       language,
       overwrite,
     }: {
       rowIds: string[] | null
+      mode: 'stt_llm' | 'llm_only'
       stt: ProviderModelValue
+      diariserLLM: ProviderModelValue
+      diarisationPrompt: string
       language: string
       overwrite: boolean
     }) => {
       const trimmedLang = language.trim() || null
+      const trimmedPrompt = diarisationPrompt.trim() || null
+      // STT fields are conditionally present: required when the
+      // operator picked the legacy STT+LLM path, omitted (sent as
+      // null) when they picked LLM-only so the backend's validator
+      // accepts the request. We always send `mode` explicitly so the
+      // server never has to guess from the absence of stt_*.
+      const base = {
+        mode,
+        stt_provider: mode === 'stt_llm' ? (stt.provider as string) : null,
+        stt_model: mode === 'stt_llm' ? (stt.model as string) : null,
+        credential_id: mode === 'stt_llm' ? (stt.credential_id ?? null) : null,
+        language: trimmedLang,
+        only_missing: !overwrite,
+        overwrite_existing: overwrite,
+        diarization_llm_provider: diariserLLM.provider as string,
+        diarization_llm_model: diariserLLM.model as string,
+        diarization_llm_credential_id: diariserLLM.credential_id ?? null,
+        diarization_prompt: trimmedPrompt,
+      }
       // Single-row endpoint vs batch endpoint: prefer the single-row
       // endpoint when the modal targets exactly one row so the API
       // surface stays self-documenting.
       if (rowIds && rowIds.length === 1) {
-        return apiClient.transcribeCallImportRow(id!, rowIds[0], {
-          stt_provider: stt.provider as string,
-          stt_model: stt.model as string,
-          credential_id: stt.credential_id ?? null,
-          language: trimmedLang,
-          only_missing: !overwrite,
-          overwrite_existing: overwrite,
-        })
+        return apiClient.transcribeCallImportRow(id!, rowIds[0], base)
       }
       return apiClient.transcribeCallImport(id!, {
-        stt_provider: stt.provider as string,
-        stt_model: stt.model as string,
-        credential_id: stt.credential_id ?? null,
-        language: trimmedLang,
-        only_missing: !overwrite,
-        overwrite_existing: overwrite,
+        ...base,
         row_ids: rowIds ?? undefined,
       })
     },
@@ -433,6 +976,118 @@ export default function CallImportDetail() {
       setTranscribeError(
         err?.response?.data?.detail || err?.message || 'Failed to enqueue transcription.',
       )
+    },
+  })
+
+  // Tracks which row's diarisation we're currently asking the backend
+  // to cancel. Used to inline-spinner the Stop button on the row
+  // without blocking the rest of the row's controls. Cleared in
+  // ``onSettled`` so a transient 5xx still releases the spinner.
+  const [cancellingRowId, setCancellingRowId] = useState<string | null>(null)
+
+  const cancelDiarisationMutation = useMutation({
+    mutationFn: ({ rowId }: { rowId: string }) =>
+      apiClient.cancelCallImportRowDiarisation(id!, rowId),
+    onMutate: ({ rowId }) => {
+      setCancellingRowId(rowId)
+    },
+    onSuccess: () => {
+      // The backend has already flipped the row to ``failed`` with the
+      // "cancelled by user" sentinel; refetch so the diarisation pill
+      // and error message in the row drawer pick up the new state
+      // immediately instead of waiting for the next poll tick.
+      queryClient.invalidateQueries({ queryKey: ['call-import', id] })
+    },
+    onError: (err: any) => {
+      // Cancel is idempotent on the server — the most likely failure
+      // is a 404 because the row was just deleted, in which case the
+      // refetch below will reconcile state. Surface a console.error
+      // so the failure isn't completely silent for an operator with
+      // dev-tools open, but skip the inline banner: the row strip
+      // itself reflects truth on the next poll.
+      // eslint-disable-next-line no-console
+      console.error('cancelDiarisationMutation failed:', err)
+    },
+    onSettled: () => {
+      setCancellingRowId(null)
+    },
+  })
+
+  // Consolidated "Bulk actions" modal. The toolbar used to have one
+  // button per action (Transcribe / Delete) which crowded the strip;
+  // now there's a single entry point that opens a modal listing every
+  // action with its own per-action count + execute button. This also
+  // makes the new "Stop diarisation (selected)" affordance a natural
+  // fit without growing the toolbar further.
+  const [showBulkActionsModal, setShowBulkActionsModal] = useState(false)
+  const [bulkActionResult, setBulkActionResult] = useState<string | null>(
+    null,
+  )
+  const [bulkActionError, setBulkActionError] = useState<string | null>(null)
+
+  const bulkCancelDiarisationMutation = useMutation({
+    mutationFn: (rowIds: string[]) =>
+      apiClient.cancelCallImportDiarisation(id!, rowIds),
+    onMutate: () => {
+      setBulkActionError(null)
+      setBulkActionResult(null)
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['call-import', id] })
+      // The endpoint returns a typed ``{cancelled, skipped}`` summary;
+      // surface it inline in the modal so the operator sees the
+      // breakdown without having to scan the rows table for green
+      // diarise pills.
+      const cancelled = data?.cancelled ?? 0
+      const skipped = data?.skipped ?? 0
+      const parts = [
+        `Cancelled ${cancelled} row${cancelled === 1 ? '' : 's'}`,
+      ]
+      if (skipped > 0) {
+        parts.push(
+          `skipped ${skipped} (not in a cancellable state — typically already completed or never queued)`,
+        )
+      }
+      setBulkActionResult(parts.join(' · '))
+    },
+    onError: (err: any) => {
+      setBulkActionError(
+        err?.response?.data?.detail ||
+          err?.message ||
+          'Failed to cancel diarisation for the selected rows.',
+      )
+    },
+  })
+
+  // Tracks which row is currently being swapped so we can show a tiny
+  // spinner inline on its toggle button without blocking the rest of
+  // the row UI. Cleared on success or error.
+  const [swappingRowId, setSwappingRowId] = useState<string | null>(null)
+  const [swapError, setSwapError] = useState<string | null>(null)
+
+  const swapSpeakersMutation = useMutation({
+    mutationFn: ({ rowId }: { rowId: string }) =>
+      apiClient.toggleCallImportRowSpeakerSwap(id!, rowId),
+    onMutate: ({ rowId }) => {
+      setSwappingRowId(rowId)
+      setSwapError(null)
+    },
+    onSuccess: () => {
+      // The PATCH already returns the updated row, but we still want
+      // the parent ``call-import`` query to refetch so the row list /
+      // pagination / search index stay in sync (the row object is
+      // embedded inside a much larger response).
+      queryClient.invalidateQueries({ queryKey: ['call-import', id] })
+    },
+    onError: (err: any) => {
+      setSwapError(
+        err?.response?.data?.detail ||
+          err?.message ||
+          'Failed to swap speaker labels.',
+      )
+    },
+    onSettled: () => {
+      setSwappingRowId(null)
     },
   })
 
@@ -454,6 +1109,62 @@ export default function CallImportDetail() {
     },
   })
 
+  // Tracks which evaluation run is currently being aborted so we can show
+  // a tiny spinner inline on its Abort button without blocking the rest
+  // of the evaluations list. Cleared on success or error.
+  const [cancellingEvalId, setCancellingEvalId] = useState<string | null>(null)
+
+  const cancelEvaluationMutation = useMutation({
+    mutationFn: (evaluationId: string) =>
+      apiClient.cancelCallImportEvaluation(id!, evaluationId),
+    onMutate: (evaluationId) => {
+      setCancellingEvalId(evaluationId)
+    },
+    onSuccess: () => {
+      // Backend has already flipped any running/pending rows to
+      // ``failed`` with the cancelled-by-user sentinel; refetch so the
+      // status pill and counters in this list reflect the cancel
+      // immediately rather than waiting for the 3s poll tick.
+      queryClient.invalidateQueries({ queryKey: ['call-import-evaluations', id] })
+    },
+    onError: (err: any) => {
+      // Cancel is idempotent on the server — the most likely failure
+      // is a 404 because the run was just deleted, in which case the
+      // refetch above will reconcile state. Surface a console.error
+      // so dev-tools shows it without breaking the layout.
+      // eslint-disable-next-line no-console
+      console.error('cancelEvaluationMutation failed:', err)
+    },
+    onSettled: () => {
+      setCancellingEvalId(null)
+    },
+  })
+
+  // Bulk-abort companion to ``cancelEvaluationMutation`` — fires the
+  // single-run cancel endpoint per selected run in parallel. We
+  // deliberately keep this client-side fan-out (rather than a new
+  // bulk endpoint) so the UI surface stays small; cancel is cheap
+  // server-side because each call only revokes the rows that are
+  // still in-flight.
+  const bulkCancelEvalsMutation = useMutation({
+    mutationFn: async (ids: string[]) => {
+      const results = await Promise.allSettled(
+        ids.map((evalId) => apiClient.cancelCallImportEvaluation(id!, evalId)),
+      )
+      const fulfilled = results.filter((r) => r.status === 'fulfilled').length
+      const rejected = results.filter((r) => r.status === 'rejected').length
+      return { fulfilled, rejected }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['call-import-evaluations', id] })
+      setSelectedEvalIds(new Set())
+    },
+    onError: (err: any) => {
+      // eslint-disable-next-line no-console
+      console.error('bulkCancelEvalsMutation failed:', err)
+    },
+  })
+
   useEffect(() => {
     return () => {
       if (audioRef.current) {
@@ -463,10 +1174,15 @@ export default function CallImportDetail() {
   }, [])
 
   const totalRows = data?.total_rows ?? 0
-  // ``filtered_total_rows`` is only set when ``q`` is on; pagination
-  // should always page against whatever slice the user is actually
-  // looking at (filtered or otherwise).
-  const filteredTotalRows = rowSearchQuery
+  const failedImportRowsCount = data?.failed_rows ?? 0
+  const diarisationInFlightCount =
+    (data?.diarised_pending_rows ?? 0) + (data?.diarised_running_rows ?? 0)
+  // ``filtered_total_rows`` is set whenever any filter (search OR
+  // diarisation-status) is active; pagination should always page
+  // against whatever slice the user is actually looking at.
+  const hasActiveFilter =
+    !!rowSearchQuery || diarisedStatusFilter !== 'all'
+  const filteredTotalRows = hasActiveFilter
     ? data?.filtered_total_rows ?? 0
     : totalRows
   const rowPage = Math.floor(rowOffset / ROW_PAGE_SIZE) + 1
@@ -596,7 +1312,7 @@ export default function CallImportDetail() {
   const openTranscribeModal = (rows: CallImportRow[]) => {
     setTranscribeTargetRows(rows)
     setTranscribeError(null)
-    setTranscribeOverwriteStandalone(false)
+    setTranscribeOverwriteStandalone(true)
     // Default to deepgram/nova-2 since it's the most common diarization
     // setup; the user can change it before submitting.
     if (!transcribeSTT.provider) {
@@ -605,6 +1321,21 @@ export default function CallImportDetail() {
         model: 'nova-2',
         credential_id: null,
       })
+    }
+    // Default diariser LLM: openai/gpt-4o-mini is cheap and good
+    // enough for two-speaker call diarisation. The user can change
+    // it before submitting.
+    if (!transcribeDiariserLLM.provider) {
+      setTranscribeDiariserLLM({
+        provider: 'openai',
+        model: 'gpt-4o-mini',
+        credential_id: null,
+      })
+    }
+    // Seed the prompt textarea with the canonical default the first
+    // time the modal opens; preserve any local edits across re-opens.
+    if (!transcribeDiarisationPrompt && defaultDiarisationPrompt) {
+      setTranscribeDiarisationPrompt(defaultDiarisationPrompt)
     }
     setShowTranscribeModal(true)
   }
@@ -655,18 +1386,48 @@ export default function CallImportDetail() {
   // pre-import so the user has a single linear next-action.
   const preImport = data.status === 'uploaded' || data.status === 'mapped'
 
-  // Selection state derived from the current page's row list. We
-  // intentionally scope selection to the current page so a "Select all"
-  // tick on screen always matches the rows the user can see.
+  // Selection state — ``selectedRowIds`` can now span pages (we no
+  // longer wipe it on pagination), so distinguish "how many of the
+  // currently-visible rows are ticked" from "how many rows are
+  // selected in total". The header checkbox toggles only the on-page
+  // rows; a separate affordance appears once every on-page row is
+  // selected to let the user extend the selection across every page.
   const selectedOnPage = rows.filter((r) => selectedRowIds.has(r.id))
-  const selectedCount = selectedOnPage.length
-  const allOnPageSelected = rows.length > 0 && selectedCount === rows.length
+  const selectedOnPageCount = selectedOnPage.length
+  const selectedCount = selectedRowIds.size
+  const allOnPageSelected =
+    rows.length > 0 && selectedOnPageCount === rows.length
+  const allMatchingSelected =
+    filteredTotalRows > 0 && selectedCount >= filteredTotalRows
+  // ``transcribeReadySelection`` previously gated the Transcribe
+  // button on the on-page filter; with cross-page selection we can't
+  // cheaply check every off-page row's status from here, so we trust
+  // the worker's own ``_select_rows_for_transcription`` filter to
+  // skip rows lacking audio / in-flight. We still surface an on-page
+  // optimistic count for the button label.
   const transcribeReadySelection = selectedOnPage.filter(
     (r) =>
       !!r.recording_s3_key &&
       r.diarised_transcript_status !== 'pending' &&
       r.diarised_transcript_status !== 'running',
   )
+  // Rows in the selection (on-page slice we can see) whose diarisation
+  // is actually cancellable (queued OR currently running). The same
+  // cross-page caveat as ``transcribeReadySelection`` applies — if the
+  // user has selected rows on pages we don't have loaded, this counter
+  // undercounts and we surface that ambiguity in the modal copy. The
+  // backend filters again server-side so a hopeful click on a stale
+  // count just reports back ``cancelled / skipped`` in the toast.
+  const cancellableSelection = selectedOnPage.filter(
+    (r) =>
+      r.diarised_transcript_status === 'pending' ||
+      r.diarised_transcript_status === 'running',
+  )
+  // True when the user's selection covers rows we don't have loaded on
+  // the current page (cross-page selection). In that case any
+  // per-action count is on-page-only, so the modal degrades to "we'll
+  // act on N selected rows; the server filters the rest".
+  const selectionSpansPages = selectedCount > selectedOnPageCount
 
   return (
     <div className="space-y-6">
@@ -685,6 +1446,20 @@ export default function CallImportDetail() {
               size="sm"
               onClick={() => {
                 setSelectedMetricIds([])
+                // Seed sensible diariser defaults; the user can
+                // override before submitting. Same defaults as the
+                // standalone Transcribe modal so the two paths feel
+                // consistent.
+                if (!evalDiariserLLM.provider) {
+                  setEvalDiariserLLM({
+                    provider: 'openai',
+                    model: 'gpt-4o-mini',
+                    credential_id: null,
+                  })
+                }
+                if (!evalDiarisationPrompt && defaultDiarisationPrompt) {
+                  setEvalDiarisationPrompt(defaultDiarisationPrompt)
+                }
                 setShowRunEval(true)
               }}
               disabled={!rows.length}
@@ -706,6 +1481,40 @@ export default function CallImportDetail() {
           >
             Refresh
           </Button>
+          {failedImportRowsCount > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              leftIcon={<RefreshCw className="h-4 w-4" />}
+              onClick={() => {
+                setRetryFailedImportError(null)
+                setShowRetryFailedImportConfirm(true)
+              }}
+              className="text-amber-700 hover:text-amber-800 hover:bg-amber-50 border-amber-200"
+              title={`Retry ${failedImportRowsCount} failed import row${
+                failedImportRowsCount === 1 ? '' : 's'
+              }`}
+            >
+              Retry failed imports ({failedImportRowsCount})
+            </Button>
+          )}
+          {diarisationInFlightCount > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              leftIcon={<Square className="h-4 w-4" />}
+              onClick={() => {
+                setForceFailDiarisationError(null)
+                setShowForceFailDiarisationConfirm(true)
+              }}
+              className="text-amber-700 hover:text-amber-800 hover:bg-amber-50 border-amber-200"
+              title={`Force-fail ${diarisationInFlightCount} pending/running diarisation row${
+                diarisationInFlightCount === 1 ? '' : 's'
+              }`}
+            >
+              Force-fail diarisation ({diarisationInFlightCount})
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="sm"
@@ -749,6 +1558,9 @@ export default function CallImportDetail() {
             </div>
           </div>
           <div className="w-72 flex-shrink-0">
+            <div className="text-xs font-medium text-gray-600 mb-1">
+              Recording import
+            </div>
             <CallImportProgressBar
               total={data.total_rows}
               completed={data.completed_rows}
@@ -768,6 +1580,46 @@ export default function CallImportDetail() {
                 <div className="font-semibold text-red-800">{data.failed_rows}</div>
               </div>
             </div>
+
+            {/*
+              Transcription + diarisation progress, surfaced only once
+              the worker has actually been kicked off on at least one
+              row (otherwise every fresh batch would show a permanent
+              0% bar that means nothing). The ``pending`` + ``running``
+              counter is shown next to the bar so the user can see
+              "still working on N" while the bar fills with completed
+              + failed.
+            */}
+            {(() => {
+              const diariseInFlight =
+                (data.diarised_pending_rows ?? 0) +
+                (data.diarised_running_rows ?? 0)
+              const diariseDone =
+                (data.diarised_completed_rows ?? 0) +
+                (data.diarised_failed_rows ?? 0)
+              const hasActivity = diariseInFlight + diariseDone > 0
+              if (!hasActivity) return null
+              return (
+                <div className="mt-4 pt-4 border-t border-gray-100">
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="text-xs font-medium text-gray-600">
+                      Transcription &amp; diarisation
+                    </div>
+                    {diariseInFlight > 0 && (
+                      <div className="flex items-center gap-1 text-[11px] text-primary-700">
+                        <RefreshCw className="h-3 w-3 animate-spin" />
+                        {diariseInFlight} in progress
+                      </div>
+                    )}
+                  </div>
+                  <CallImportProgressBar
+                    total={data.total_rows}
+                    completed={data.diarised_completed_rows ?? 0}
+                    failed={data.diarised_failed_rows ?? 0}
+                  />
+                </div>
+              )
+            })()}
           </div>
         </div>
 
@@ -1034,7 +1886,7 @@ export default function CallImportDetail() {
             <p className="text-sm text-gray-500">
               Showing {rows.length === 0 ? 0 : rowOffset + 1}&ndash;
               {rowOffset + rows.length} of {filteredTotalRows}
-              {rowSearchQuery ? ` (filtered from ${totalRows})` : ''}
+              {hasActiveFilter ? ` (filtered from ${totalRows})` : ''}
             </p>
           </div>
         </div>
@@ -1061,6 +1913,47 @@ export default function CallImportDetail() {
               </button>
             )}
           </div>
+          {/* Diarisation status filter chips — finally lets the user
+              find rows where diarisation failed without expanding every
+              row in turn. The active chip drives ``diarised_status`` on
+              the rows query and updates ``filtered_total_rows``. */}
+          <div
+            className="flex items-center gap-1 flex-wrap"
+            role="group"
+            aria-label="Filter rows by diarisation status"
+          >
+            <span className="text-[11px] uppercase tracking-wide text-gray-500 mr-1">
+              Diarisation:
+            </span>
+            {(
+              [
+                { id: 'all', label: 'All' },
+                { id: 'pending', label: 'Pending' },
+                { id: 'running', label: 'Running' },
+                { id: 'completed', label: 'Completed' },
+                { id: 'failed', label: 'Failed' },
+              ] as Array<{ id: DiarisedStatusFilter; label: string }>
+            ).map((chip) => {
+              const active = diarisedStatusFilter === chip.id
+              return (
+                <button
+                  key={chip.id}
+                  type="button"
+                  onClick={() => setDiarisedStatusFilter(chip.id)}
+                  className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${
+                    active
+                      ? chip.id === 'failed'
+                        ? 'bg-red-600 border-red-600 text-white'
+                        : 'bg-primary-600 border-primary-600 text-white'
+                      : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'
+                  }`}
+                  aria-pressed={active}
+                >
+                  {chip.label}
+                </button>
+              )
+            })}
+          </div>
           {selectedCount > 0 && (
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-xs text-gray-600">
@@ -1073,34 +1966,23 @@ export default function CallImportDetail() {
               >
                 Clear
               </Button>
+              {/* Single entry point for every multi-row operation:
+                  Diarise, Stop diarisation, Delete. The modal
+                  surfaces per-action counts and explicit confirm
+                  affordances, so the toolbar can stay uncluttered
+                  even as we keep adding bulk verbs. */}
               <Button
                 variant="ghost"
                 size="sm"
-                leftIcon={<Mic className="h-4 w-4" />}
-                disabled={transcribeReadySelection.length === 0}
-                title={
-                  transcribeReadySelection.length === 0
-                    ? 'Selected rows have no downloaded recording or are already transcribing'
-                    : `Transcribe ${transcribeReadySelection.length} row${
-                        transcribeReadySelection.length === 1 ? '' : 's'
-                      }`
-                }
-                onClick={() => openTranscribeModal(transcribeReadySelection)}
-                className="text-purple-600 hover:text-purple-700 hover:bg-purple-50"
-              >
-                Transcribe selected
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                leftIcon={<Trash2 className="h-4 w-4" />}
+                leftIcon={<ListTree className="h-4 w-4" />}
                 onClick={() => {
-                  setBulkDeleteRowsError(null)
-                  setShowBulkDeleteRows(true)
+                  setBulkActionError(null)
+                  setBulkActionResult(null)
+                  setShowBulkActionsModal(true)
                 }}
-                className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                className="text-primary-700 hover:text-primary-800 hover:bg-primary-50"
               >
-                Delete selected
+                Bulk actions
               </Button>
             </div>
           )}
@@ -1115,6 +1997,16 @@ export default function CallImportDetail() {
                 <span className="font-mono text-gray-700">
                   &quot;{rowSearchQuery}&quot;
                 </span>
+                {diarisedStatusFilter !== 'all'
+                  ? ` with diarisation status ${diarisedStatusFilter}.`
+                  : '.'}
+              </p>
+            ) : diarisedStatusFilter !== 'all' ? (
+              <p>
+                No rows with diarisation status{' '}
+                <span className="font-medium text-gray-700">
+                  {diarisedStatusFilter}
+                </span>
                 .
               </p>
             ) : (
@@ -1123,30 +2015,126 @@ export default function CallImportDetail() {
           </div>
         ) : (
           <div className="space-y-2">
-            <div className="flex items-center gap-2 px-3 py-2 border border-gray-200 rounded-lg bg-gray-50">
-              <input
-                type="checkbox"
-                aria-label="Select all rows on this page"
-                checked={allOnPageSelected}
-                ref={(el) => {
-                  if (el) el.indeterminate = selectedCount > 0 && !allOnPageSelected
-                }}
-                onChange={(e) => {
-                  if (e.target.checked) {
-                    setSelectedRowIds(new Set(rows.map((r) => r.id)))
-                  } else {
-                    setSelectedRowIds(new Set())
-                  }
-                }}
-              />
-              <span className="text-xs text-gray-600">
-                {allOnPageSelected
-                  ? `All ${rows.length} on this page selected`
-                  : selectedCount > 0
-                  ? `${selectedCount} of ${rows.length} on this page selected`
-                  : `Select all on this page (${rows.length})`}
-              </span>
+            <div className="flex items-center gap-3 px-3 py-2 border border-gray-200 rounded-lg bg-gray-50 flex-wrap">
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  aria-label="Select all rows on this page"
+                  checked={allOnPageSelected}
+                  ref={(el) => {
+                    if (el)
+                      el.indeterminate =
+                        selectedOnPageCount > 0 && !allOnPageSelected
+                  }}
+                  onChange={(e) => {
+                    if (e.target.checked) {
+                      // Add every on-page row to the selection without
+                      // disturbing rows the user already ticked on
+                      // other pages.
+                      setSelectedRowIds((prev) => {
+                        const next = new Set(prev)
+                        for (const r of rows) next.add(r.id)
+                        return next
+                      })
+                    } else {
+                      // Drop only the on-page rows from the selection
+                      // so the user can unselect this page without
+                      // wiping cross-page picks.
+                      setSelectedRowIds((prev) => {
+                        const next = new Set(prev)
+                        for (const r of rows) next.delete(r.id)
+                        return next
+                      })
+                    }
+                  }}
+                />
+                <span className="text-xs text-gray-600">
+                  {allOnPageSelected
+                    ? `All ${rows.length} on this page selected`
+                    : selectedOnPageCount > 0
+                    ? `${selectedOnPageCount} of ${rows.length} on this page selected`
+                    : `Select all on this page (${rows.length})`}
+                </span>
+              </div>
+              {/* "Select all in import" affordance — only shown once
+                  the on-page checkbox is satisfied AND there are off-page
+                  rows that the user could still benefit from selecting.
+                  Clicking it hits the lightweight ``/row-ids`` endpoint
+                  with the active filters so the selection respects the
+                  search / status chips. */}
+              {allOnPageSelected &&
+                filteredTotalRows > rows.length &&
+                !allMatchingSelected && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-gray-400">·</span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      isLoading={isSelectingAllInImport}
+                      onClick={async () => {
+                        if (isSelectingAllInImport) return
+                        setSelectAllError(null)
+                        setIsSelectingAllInImport(true)
+                        try {
+                          const { ids } =
+                            await apiClient.listCallImportRowIds(id!, {
+                              q: rowSearchQuery || undefined,
+                              diarised_status:
+                                diarisedStatusFilter === 'all'
+                                  ? undefined
+                                  : diarisedStatusFilter,
+                            })
+                          setSelectedRowIds(new Set(ids))
+                        } catch (err: any) {
+                          setSelectAllError(
+                            err?.response?.data?.detail ||
+                              err?.message ||
+                              'Failed to select all rows.',
+                          )
+                        } finally {
+                          setIsSelectingAllInImport(false)
+                        }
+                      }}
+                    >
+                      {`Select all ${filteredTotalRows} rows in this import${
+                        hasActiveFilter ? ' (matching filters)' : ''
+                      }`}
+                    </Button>
+                  </div>
+                )}
+              {allMatchingSelected &&
+                filteredTotalRows > rows.length && (
+                  <span className="text-xs text-primary-700">
+                    All {filteredTotalRows} matching rows selected.
+                  </span>
+                )}
             </div>
+            {selectAllError && (
+              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+                {selectAllError}
+              </div>
+            )}
+            {/* Top pagination — mirrors the bottom bar so users don't
+                have to scroll past hundreds of rows to flip pages.
+                Renders nothing when there's only one page of results. */}
+            <Pagination
+              page={rowPage}
+              pageCount={rowTotalPages}
+              total={filteredTotalRows}
+              pageSize={ROW_PAGE_SIZE}
+              variant="card"
+              className="mb-2"
+              onPrev={() =>
+                setRowOffset((o) => Math.max(0, o - ROW_PAGE_SIZE))
+              }
+              onNext={() =>
+                setRowOffset((o) =>
+                  o + ROW_PAGE_SIZE >= filteredTotalRows
+                    ? o
+                    : o + ROW_PAGE_SIZE,
+                )
+              }
+            />
             {rows.map((row) => {
               const hasRecording = !!row.recording_s3_key
               const isThisPlaying = playingRowId === row.id && isPlaying
@@ -1229,13 +2217,95 @@ export default function CallImportDetail() {
                       <span className="text-xs text-gray-400 w-10 tabular-nums flex-shrink-0">
                         #{row.row_index + 1}
                       </span>
+                      {/*
+                        ``conversation_id`` is the user-visible row
+                        identifier. It used to sit inside the expand
+                        button untouched, which meant:
+                          (a) browsers default ``user-select: none`` on
+                              ``<button>`` contents, so drag-select
+                              didn't work, and
+                          (b) any mouse-up on the text triggered the
+                              expand toggle, swallowing accidental
+                              clicks that the user intended as a
+                              double-click-to-select-word.
+                        We now stop click + mousedown propagation on
+                        the span so the button's onClick never fires
+                        from interactions with the text, force
+                        ``user-select: text`` to re-enable drag-select,
+                        and expose a one-click Copy affordance next to
+                        it for the common case.
+                       */}
                       <span
-                        className="font-mono text-sm text-gray-900 truncate flex-1 min-w-0"
+                        className="font-mono text-sm text-gray-900 truncate flex-1 min-w-0 select-text cursor-text"
                         title={row.conversation_id}
+                        onClick={(e) => e.stopPropagation()}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onDoubleClick={(e) => e.stopPropagation()}
                       >
                         {row.conversation_id}
                       </span>
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        aria-label={
+                          copiedRowId === row.id
+                            ? `Copied ${row.conversation_id}`
+                            : `Copy ${row.conversation_id}`
+                        }
+                        title={
+                          copiedRowId === row.id
+                            ? 'Copied!'
+                            : 'Copy conversation ID'
+                        }
+                        onClick={(e) => handleCopyConversationId(row, e)}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            handleCopyConversationId(
+                              row,
+                              e as unknown as React.MouseEvent,
+                            )
+                          }
+                        }}
+                        className={`flex-shrink-0 inline-flex items-center justify-center w-6 h-6 rounded transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 cursor-pointer ${
+                          copiedRowId === row.id
+                            ? 'text-green-600 bg-green-50'
+                            : 'text-gray-400 hover:text-primary-600 hover:bg-primary-50'
+                        }`}
+                      >
+                        {copiedRowId === row.id ? (
+                          <Check className="h-3.5 w-3.5" />
+                        ) : (
+                          <Copy className="h-3.5 w-3.5" />
+                        )}
+                      </span>
                       <StatusBadge status={row.status} size="sm" />
+                      {/* Diarisation status pill: only surfaced once
+                          the diarise/transcribe worker has touched
+                          this row. Lets the user spot failed rows
+                          inline without expanding the row, and makes
+                          the new diarisation status filter chip set
+                          self-evident. */}
+                      {(() => {
+                        const ds = row.diarised_transcript_status
+                        if (!ds || ds === 'idle') return null
+                        const tone =
+                          ds === 'failed'
+                            ? 'bg-red-100 text-red-700 border-red-200'
+                            : ds === 'completed'
+                            ? 'bg-green-100 text-green-700 border-green-200'
+                            : ds === 'running'
+                            ? 'bg-blue-100 text-blue-700 border-blue-200'
+                            : 'bg-gray-100 text-gray-700 border-gray-200'
+                        return (
+                          <span
+                            className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border ${tone}`}
+                            title={`Diarisation: ${ds}`}
+                          >
+                            Diarise: {ds}
+                          </span>
+                        )
+                      })()}
                     </button>
 
                     <div className="flex items-center gap-1 flex-shrink-0">
@@ -1290,6 +2360,42 @@ export default function CallImportDetail() {
                               <Mic className="h-4 w-4" />
                             )}
                           </button>
+                          {/*
+                            Stop / abort button. Only visible while
+                            the diarisation pipeline is actually in
+                            flight (``pending`` queued OR ``running``
+                            inside the worker). Calls the cancel
+                            endpoint which revokes the Celery task
+                            (SIGTERM) and stamps the row with a
+                            "Cancelled by user" failure so the UI
+                            immediately reflects the abort. Disabled
+                            while we already have an in-flight cancel
+                            request for THIS row so a double-click
+                            doesn't fire two revokes (it's idempotent
+                            on the server, but the spinner state would
+                            flicker).
+                           */}
+                          {(row.diarised_transcript_status === 'pending' ||
+                            row.diarised_transcript_status === 'running') && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                cancelDiarisationMutation.mutate({
+                                  rowId: row.id,
+                                })
+                              }
+                              disabled={cancellingRowId === row.id}
+                              title="Stop diarisation"
+                              aria-label={`Stop diarisation for ${row.conversation_id}`}
+                              className="p-1.5 rounded text-gray-500 hover:text-red-600 hover:bg-red-50 transition-colors disabled:opacity-40"
+                            >
+                              {cancellingRowId === row.id ? (
+                                <RefreshCw className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Square className="h-4 w-4" />
+                              )}
+                            </button>
+                          )}
                         </>
                       ) : (
                         <span className="text-[11px] text-gray-400 px-2">
@@ -1328,6 +2434,25 @@ export default function CallImportDetail() {
                       </div>
                     </div>
                   )}
+
+                  {/* Surface diarisation-specific failures even when
+                      the row's recording download itself succeeded.
+                      Previously these only showed inside the expanded
+                      panel, so the new "Failed" filter chip would land
+                      the user on rows with no inline indication of why
+                      they failed. */}
+                  {row.diarised_transcript_status === 'failed' &&
+                    row.diarised_transcript_error && (
+                      <div className="border-t border-red-100 bg-red-50 px-3 py-2 text-xs text-red-800 flex items-start gap-2">
+                        <AlertCircle className="h-3.5 w-3.5 text-red-600 flex-shrink-0 mt-0.5" />
+                        <div className="min-w-0 flex-1 break-words">
+                          <span className="font-medium">
+                            Diarisation error:
+                          </span>{' '}
+                          {row.diarised_transcript_error}
+                        </div>
+                      </div>
+                    )}
 
                   {isExpanded && (
                     <div className="border-t border-gray-200 px-4 py-4 bg-gray-100 space-y-3">
@@ -1412,24 +2537,77 @@ export default function CallImportDetail() {
                                   </span>
                                 )}
                               </div>
-                              {hasRecording && (
+                              <div className="flex items-center gap-3">
+                                {Array.isArray(row.diarised_segments) &&
+                                  row.diarised_segments.length > 0 && (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        swapSpeakersMutation.mutate({
+                                          rowId: row.id,
+                                        })
+                                      }
+                                      disabled={
+                                        swappingRowId === row.id ||
+                                        row.diarised_transcript_status ===
+                                          'pending' ||
+                                        row.diarised_transcript_status ===
+                                          'running'
+                                      }
+                                      title={
+                                        row.diarised_speaker_swap
+                                          ? 'Speaker labels have been swapped. Click to revert to the diarisation default.'
+                                          : 'Swap user and agent labels on this row.'
+                                      }
+                                      className="inline-flex items-center gap-1 text-[11px] font-medium text-purple-700 hover:text-purple-900 disabled:opacity-50"
+                                    >
+                                      {swappingRowId === row.id ? (
+                                        <RefreshCw className="h-3 w-3 animate-spin" />
+                                      ) : (
+                                        <ArrowLeftRight className="h-3 w-3" />
+                                      )}
+                                      Swap user/agent
+                                      {row.diarised_speaker_swap && (
+                                        <span className="text-[9px] uppercase tracking-wider text-purple-500">
+                                          (swapped)
+                                        </span>
+                                      )}
+                                    </button>
+                                  )}
+                                {hasRecording && (
+                                  <button
+                                    type="button"
+                                    onClick={() => openTranscribeModal([row])}
+                                    disabled={
+                                      row.diarised_transcript_status ===
+                                        'pending' ||
+                                      row.diarised_transcript_status ===
+                                        'running'
+                                    }
+                                    className="text-[11px] font-medium text-purple-700 hover:text-purple-900 disabled:opacity-50"
+                                  >
+                                    {row.diarised_transcript
+                                      ? 'Re-diarise'
+                                      : 'Diarise'}
+                                  </button>
+                                )}
+                              </div>
+                            </header>
+                            {swapError && swappingRowId === null && (
+                              <div className="border-b border-red-100 bg-red-50 px-3 py-2 text-xs text-red-800 flex items-start gap-2">
+                                <AlertCircle className="h-3.5 w-3.5 text-red-600 flex-shrink-0 mt-0.5" />
+                                <div className="min-w-0 flex-1 break-words">
+                                  {swapError}
+                                </div>
                                 <button
                                   type="button"
-                                  onClick={() => openTranscribeModal([row])}
-                                  disabled={
-                                    row.diarised_transcript_status ===
-                                      'pending' ||
-                                    row.diarised_transcript_status ===
-                                      'running'
-                                  }
-                                  className="text-[11px] font-medium text-purple-700 hover:text-purple-900 disabled:opacity-50"
+                                  onClick={() => setSwapError(null)}
+                                  className="text-red-600 hover:text-red-800 flex-shrink-0"
                                 >
-                                  {row.diarised_transcript
-                                    ? 'Re-diarise'
-                                    : 'Diarise'}
+                                  <X className="h-3.5 w-3.5" />
                                 </button>
-                              )}
-                            </header>
+                              </div>
+                            )}
                             {row.diarised_transcript_status === 'failed' &&
                               row.diarised_transcript_error && (
                                 <div className="border-b border-red-100 bg-red-50 px-3 py-2 text-xs text-red-800 flex items-start gap-2">
@@ -1587,37 +2765,24 @@ export default function CallImportDetail() {
               )
             })}
 
-            {rowTotalPages > 1 && (
-              <div className="px-4 py-3 bg-gray-50 border border-gray-200 flex items-center justify-between mt-3 rounded-lg">
-                <p className="text-sm text-gray-600">
-                  Page {rowPage} of {rowTotalPages}
-                </p>
-                <div className="flex gap-2">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setRowOffset((o) => Math.max(0, o - ROW_PAGE_SIZE))}
-                    disabled={rowOffset <= 0}
-                    leftIcon={<ChevronLeft className="h-4 w-4" />}
-                  >
-                    Prev
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() =>
-                      setRowOffset((o) =>
-                        o + ROW_PAGE_SIZE >= filteredTotalRows ? o : o + ROW_PAGE_SIZE,
-                      )
-                    }
-                    disabled={rowOffset + ROW_PAGE_SIZE >= filteredTotalRows}
-                    rightIcon={<ChevronRight className="h-4 w-4" />}
-                  >
-                    Next
-                  </Button>
-                </div>
-              </div>
-            )}
+            <Pagination
+              page={rowPage}
+              pageCount={rowTotalPages}
+              total={filteredTotalRows}
+              pageSize={ROW_PAGE_SIZE}
+              variant="card"
+              className="mt-3"
+              onPrev={() =>
+                setRowOffset((o) => Math.max(0, o - ROW_PAGE_SIZE))
+              }
+              onNext={() =>
+                setRowOffset((o) =>
+                  o + ROW_PAGE_SIZE >= filteredTotalRows
+                    ? o
+                    : o + ROW_PAGE_SIZE,
+                )
+              }
+            />
           </div>
         )}
 
@@ -1665,32 +2830,64 @@ export default function CallImportDetail() {
               button at the top to start a new run.
             </p>
           </div>
-          {selectedEvalIds.size > 0 && (
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-600">
-                {selectedEvalIds.size} selected
-              </span>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setSelectedEvalIds(new Set())}
-              >
-                Clear
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                leftIcon={<Trash2 className="h-4 w-4" />}
-                onClick={() => {
-                  setBulkDeleteEvalsError(null)
-                  setShowBulkDeleteEvals(true)
-                }}
-                className="text-red-600 hover:text-red-700 hover:bg-red-50"
-              >
-                Delete selected
-              </Button>
-            </div>
-          )}
+          {selectedEvalIds.size > 0 && (() => {
+            // Surface "Abort selected" only when at least one selected
+            // run is still in a cancellable state (``pending`` /
+            // ``running``) — otherwise the button would be a no-op
+            // for the operator and just clutter the toolbar.
+            const items = evaluationsData?.items ?? []
+            const cancellableSelected = items.filter(
+              (run) =>
+                selectedEvalIds.has(run.id) &&
+                (run.status === 'pending' || run.status === 'running'),
+            )
+            return (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-600">
+                  {selectedEvalIds.size} selected
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setSelectedEvalIds(new Set())}
+                >
+                  Clear
+                </Button>
+                {cancellableSelected.length > 0 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    leftIcon={<XCircle className="h-4 w-4" />}
+                    isLoading={bulkCancelEvalsMutation.isPending}
+                    disabled={bulkCancelEvalsMutation.isPending}
+                    onClick={() =>
+                      bulkCancelEvalsMutation.mutate(
+                        cancellableSelected.map((run) => run.id),
+                      )
+                    }
+                    className="text-amber-700 hover:text-amber-800 hover:bg-amber-50"
+                    title={`Abort ${cancellableSelected.length} in-progress run${
+                      cancellableSelected.length === 1 ? '' : 's'
+                    }`}
+                  >
+                    Abort selected ({cancellableSelected.length})
+                  </Button>
+                )}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  leftIcon={<Trash2 className="h-4 w-4" />}
+                  onClick={() => {
+                    setBulkDeleteEvalsError(null)
+                    setShowBulkDeleteEvals(true)
+                  }}
+                  className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                >
+                  Delete selected
+                </Button>
+              </div>
+            )
+          })()}
         </div>
 
         {(evaluationsData?.items?.length || 0) === 0 ? (
@@ -1759,10 +2956,6 @@ export default function CallImportDetail() {
                       <p className="text-sm font-medium text-gray-900 truncate">
                         {headerLabel}
                       </p>
-                      <p className="text-xs text-gray-600 truncate">
-                        {evaluation.metrics.map((metric) => metric.name).join(', ') ||
-                          'No metrics'}
-                      </p>
                       <p className="text-[11px] text-gray-400 mt-0.5">
                         Created {new Date(evaluation.created_at).toLocaleString()}
                       </p>
@@ -1774,6 +2967,34 @@ export default function CallImportDetail() {
                       </p>
                     </div>
                   </Link>
+                  {(evaluation.status === 'pending' ||
+                    evaluation.status === 'running') && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      leftIcon={<XCircle className="h-4 w-4" />}
+                      isLoading={
+                        cancellingEvalId === evaluation.id &&
+                        cancelEvaluationMutation.isPending
+                      }
+                      disabled={
+                        cancellingEvalId === evaluation.id &&
+                        cancelEvaluationMutation.isPending
+                      }
+                      onClick={(e) => {
+                        // Stop the click from bubbling into the parent
+                        // Link (which would navigate to the evaluation
+                        // detail page mid-cancel).
+                        e.preventDefault()
+                        e.stopPropagation()
+                        cancelEvaluationMutation.mutate(evaluation.id)
+                      }}
+                      className="flex-shrink-0 text-amber-700 hover:text-amber-800 hover:bg-amber-50"
+                      title="Abort this evaluation run"
+                    >
+                      Abort
+                    </Button>
+                  )}
                 </div>
               )
             })}
@@ -1801,139 +3022,451 @@ export default function CallImportDetail() {
           ) : (
             <>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                <div className="border border-gray-200 rounded-lg px-3 py-2">
-                  <p className="text-[11px] text-gray-500 uppercase tracking-wide">
-                    Total rows
-                  </p>
-                  <p className="text-2xl font-semibold text-gray-900">
-                    {insightsData.total_rows}
-                  </p>
-                </div>
-                <div className="border border-gray-200 rounded-lg px-3 py-2">
-                  <p className="text-[11px] text-gray-500 uppercase tracking-wide">
-                    With transcript
-                  </p>
-                  <p className="text-2xl font-semibold text-gray-900">
-                    {insightsData.rows_with_transcript}
-                  </p>
-                </div>
-                <div className="border border-gray-200 rounded-lg px-3 py-2">
-                  <p className="text-[11px] text-gray-500 uppercase tracking-wide">
-                    Missing transcript
-                  </p>
-                  <p className="text-2xl font-semibold text-gray-900">
-                    {insightsData.rows_without_transcript}
-                  </p>
-                </div>
-                <div className="border border-gray-200 rounded-lg px-3 py-2">
-                  <p className="text-[11px] text-gray-500 uppercase tracking-wide">
-                    Eval runs
-                  </p>
-                  <p className="text-2xl font-semibold text-gray-900">
-                    {insightsData.evaluation_count}
-                  </p>
-                </div>
+                <KpiCard
+                  Icon={Database}
+                  label="Total rows"
+                  value={insightsData.total_rows}
+                  tone="indigo"
+                />
+                <KpiCard
+                  Icon={Mic}
+                  label="With transcript"
+                  value={insightsData.rows_with_transcript}
+                  sub={
+                    insightsData.total_rows > 0
+                      ? `${Math.round(
+                          (insightsData.rows_with_transcript /
+                            insightsData.total_rows) *
+                            100,
+                        )}% coverage`
+                      : null
+                  }
+                  tone="emerald"
+                />
+                <KpiCard
+                  Icon={MicOff}
+                  label="Missing transcript"
+                  value={insightsData.rows_without_transcript}
+                  tone={
+                    insightsData.rows_without_transcript > 0
+                      ? 'amber'
+                      : 'gray'
+                  }
+                />
+                <KpiCard
+                  Icon={Activity}
+                  label="Eval runs"
+                  value={insightsData.evaluation_count}
+                  tone="violet"
+                />
               </div>
 
               {Object.keys(insightsData.transcript_source_counts).length >
                 0 && (
-                <div>
-                  <h3 className="text-sm font-semibold text-gray-800 mb-2">
-                    Transcript source mix
-                  </h3>
-                  <div className="flex gap-2 flex-wrap">
-                    {Object.entries(
-                      insightsData.transcript_source_counts,
-                    ).map(([source, count]) => (
-                      <span
-                        key={source}
-                        className="inline-flex items-center gap-1 rounded-full bg-gray-100 text-gray-800 px-3 py-1 text-xs"
-                      >
-                        <span className="font-medium capitalize">{source}</span>
-                        <span className="tabular-nums">· {count}</span>
-                      </span>
-                    ))}
-                  </div>
-                </div>
+                <TranscriptSourceMix
+                  counts={insightsData.transcript_source_counts}
+                />
               )}
 
               {insightsData.metrics.length === 0 ? (
-                <p className="text-sm text-gray-500">
-                  Run at least one evaluation to populate metric trends.
-                </p>
+                <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50/40 px-6 py-10 text-center">
+                  <Layers className="h-6 w-6 text-gray-400 mx-auto mb-2" />
+                  <p className="text-sm text-gray-600">
+                    Run at least one evaluation to populate metric trends.
+                  </p>
+                </div>
               ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {insightsData.metrics.map((m) => {
-                    const trend = m.trend
-                      .filter((p) => p.mean !== null)
-                      .map((p) => ({
-                        x: new Date(p.created_at).toLocaleDateString(),
-                        mean: p.mean as number,
-                        name: p.name,
-                      }))
-                    const latest = m.latest
-                    return (
-                      <div
-                        key={m.metric_id}
-                        className="border border-gray-200 rounded-lg p-3 space-y-2"
-                      >
-                        <div className="flex items-center justify-between">
-                          <p className="text-sm font-medium text-gray-900">
-                            {m.metric_name}
-                          </p>
-                          {latest?.mean != null && (
-                            <span className="text-sm font-semibold text-primary-700 tabular-nums">
-                              μ {latest.mean.toFixed(2)}
-                            </span>
-                          )}
-                        </div>
-                        {trend.length > 1 ? (
-                          <ResponsiveContainer width="100%" height={120}>
-                            <LineChart data={trend}>
-                              <CartesianGrid strokeDasharray="3 3" />
-                              <XAxis dataKey="x" tick={{ fontSize: 10 }} />
-                              <YAxis tick={{ fontSize: 10 }} />
-                              <Tooltip />
-                              <Line
-                                type="monotone"
-                                dataKey="mean"
-                                strokeWidth={2}
-                                stroke="#6366f1"
-                                dot={{ r: 3 }}
-                              />
-                            </LineChart>
-                          </ResponsiveContainer>
-                        ) : latest && latest.value_counts.length ? (
-                          <ResponsiveContainer width="100%" height={120}>
-                            <BarChart data={latest.value_counts}>
-                              <CartesianGrid strokeDasharray="3 3" />
-                              <XAxis dataKey="label" tick={{ fontSize: 10 }} />
-                              <YAxis tick={{ fontSize: 10 }} />
-                              <Tooltip />
-                              <Bar dataKey="count" fill="#10b981" />
-                            </BarChart>
-                          </ResponsiveContainer>
-                        ) : (
-                          <p className="text-xs text-gray-400 italic">
-                            Need at least two runs to plot a trend.
-                          </p>
-                        )}
-                        {latest && (
-                          <div className="grid grid-cols-3 text-[11px] text-gray-500 gap-1">
-                            <span>n={latest.count}</span>
-                            <span>p50={latest.median?.toFixed(2) ?? '—'}</span>
-                            <span>p95={latest.p95?.toFixed(2) ?? '—'}</span>
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })}
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-800 mb-3">
+                    Metric trends
+                  </h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {insightsData.metrics.map((m) => (
+                      <InsightsMetricCard key={m.metric_id} metric={m} />
+                    ))}
+                  </div>
                 </div>
               )}
             </>
           )}
         </div>
       )}
+
+      {partialsImportTarget !== null &&
+        renderModal(
+          <div
+            className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[10000]"
+            onClick={closePartialsImportModal}
+          >
+            <div
+              className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[85vh] overflow-hidden flex flex-col"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+                <h3 className="text-lg font-semibold text-gray-900">
+                  Import diarisation prompt from saved partials
+                </h3>
+                <button
+                  onClick={closePartialsImportModal}
+                  className="text-gray-400 hover:text-gray-600"
+                  aria-label="Close prompt partials modal"
+                  disabled={importPartialMutation.isPending}
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+              <div className="p-6 space-y-4 overflow-y-auto flex-1">
+                <p className="text-xs text-gray-500">
+                  Pick a saved Prompt Partial; its content will replace
+                  the current diarisation prompt textarea.
+                </p>
+                <input
+                  type="text"
+                  value={partialsSearchInput}
+                  onChange={(e) => setPartialsSearchInput(e.target.value)}
+                  placeholder="Search saved prompts..."
+                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                />
+
+                {isLoadingPartials ? (
+                  <div className="flex items-center justify-center py-8 text-sm text-gray-500">
+                    <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                    Loading saved prompts...
+                  </div>
+                ) : promptPartials.length === 0 ? (
+                  <div className="rounded-lg border border-gray-200 p-8 text-center text-sm text-gray-500">
+                    {partialsSearchQuery
+                      ? `No saved prompt partials match “${partialsSearchQuery}”.`
+                      : 'No saved prompt partials yet.'}
+                  </div>
+                ) : (
+                  <div className="space-y-2 max-h-[45vh] overflow-y-auto">
+                    {promptPartials.map((partial) => {
+                      const isSelected = selectedPartialId === partial.id
+                      return (
+                        <label
+                          key={partial.id}
+                          className={`block cursor-pointer rounded-lg border p-3 transition-colors ${
+                            isSelected
+                              ? 'border-primary-300 bg-primary-50'
+                              : 'border-gray-200 hover:bg-gray-50'
+                          }`}
+                        >
+                          <div className="flex items-start gap-3">
+                            <input
+                              type="radio"
+                              name="call-import-prompt-partial"
+                              checked={isSelected}
+                              onChange={() =>
+                                setSelectedPartialId(partial.id)
+                              }
+                              className="mt-1 h-4 w-4 border-gray-300 text-primary-600 focus:ring-primary-500"
+                            />
+                            <div className="min-w-0 flex-1">
+                              <p className="text-sm font-semibold text-gray-900">
+                                {partial.name}
+                              </p>
+                              {partial.description ? (
+                                <p className="mt-0.5 text-xs text-gray-500">
+                                  {partial.description}
+                                </p>
+                              ) : null}
+                            </div>
+                          </div>
+                        </label>
+                      )
+                    })}
+                  </div>
+                )}
+
+                {partialsImportError && (
+                  <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+                    {partialsImportError}
+                  </div>
+                )}
+              </div>
+              <div className="px-6 py-4 border-t border-gray-200 flex justify-end gap-2 bg-gray-50 rounded-b-lg">
+                <Button
+                  variant="outline"
+                  onClick={closePartialsImportModal}
+                  disabled={importPartialMutation.isPending}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="primary"
+                  onClick={() =>
+                    importPartialMutation.mutate(selectedPartialId)
+                  }
+                  isLoading={importPartialMutation.isPending}
+                  disabled={!selectedPartialId}
+                >
+                  Use Selected Prompt
+                </Button>
+              </div>
+            </div>
+          </div>,
+        )}
+
+      {savePartialTarget !== null &&
+        renderModal(
+          (() => {
+            const currentContent =
+              savePartialTarget === 'standalone'
+                ? transcribeDiarisationPrompt
+                : evalDiarisationPrompt
+            const trimmedContent = currentContent.trim()
+            const canSubmit =
+              savePartialMode === 'new'
+                ? !!savePartialName.trim() && !!trimmedContent
+                : !!savePartialExistingId && !!trimmedContent
+            return (
+              <div
+                className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[10000]"
+                onClick={closeSavePartialModal}
+              >
+                <div
+                  className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[85vh] overflow-hidden flex flex-col"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+                    <h3 className="text-lg font-semibold text-gray-900">
+                      Save diarisation prompt to partials
+                    </h3>
+                    <button
+                      onClick={closeSavePartialModal}
+                      className="text-gray-400 hover:text-gray-600"
+                      aria-label="Close save prompt partial modal"
+                      disabled={savePartialMutation.isPending}
+                    >
+                      <X className="h-5 w-5" />
+                    </button>
+                  </div>
+                  <div className="p-6 space-y-4 overflow-y-auto flex-1">
+                    <div
+                      role="tablist"
+                      aria-label="Save prompt mode"
+                      className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5"
+                    >
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-pressed={savePartialMode === 'new'}
+                        onClick={() => {
+                          setSavePartialMode('new')
+                          setSavePartialError(null)
+                        }}
+                        className={`px-3 py-1 text-xs font-medium rounded-md transition ${
+                          savePartialMode === 'new'
+                            ? 'bg-white text-gray-900 shadow-sm ring-1 ring-inset ring-gray-200'
+                            : 'text-gray-600 hover:text-gray-900'
+                        }`}
+                      >
+                        Save as new
+                      </button>
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-pressed={savePartialMode === 'existing'}
+                        onClick={() => {
+                          setSavePartialMode('existing')
+                          setSavePartialError(null)
+                        }}
+                        className={`px-3 py-1 text-xs font-medium rounded-md transition ${
+                          savePartialMode === 'existing'
+                            ? 'bg-white text-gray-900 shadow-sm ring-1 ring-inset ring-gray-200'
+                            : 'text-gray-600 hover:text-gray-900'
+                        }`}
+                      >
+                        Update existing
+                      </button>
+                    </div>
+
+                    {!trimmedContent && (
+                      <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+                        The diarisation prompt textarea is empty — there's
+                        nothing to save yet.
+                      </div>
+                    )}
+
+                    {savePartialMode === 'new' ? (
+                      <div className="space-y-3">
+                        <div>
+                          <label className="block text-xs font-medium text-gray-700 mb-1">
+                            Name
+                            <span
+                              className="ml-1 text-red-600"
+                              aria-label="required"
+                            >
+                              *
+                            </span>
+                          </label>
+                          <input
+                            type="text"
+                            value={savePartialName}
+                            onChange={(e) =>
+                              setSavePartialName(e.target.value)
+                            }
+                            placeholder="e.g. Hindi support — Gemini diarisation"
+                            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-700 mb-1">
+                            Description
+                          </label>
+                          <textarea
+                            value={savePartialDescription}
+                            onChange={(e) =>
+                              setSavePartialDescription(e.target.value)
+                            }
+                            rows={2}
+                            placeholder="Optional: short context for teammates browsing the library."
+                            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                          />
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        <p className="text-xs text-gray-500">
+                          Pick the saved Prompt Partial to overwrite. A new
+                          version row is appended — previous versions stay
+                          in the partial's history and can be reverted to.
+                        </p>
+                        <input
+                          type="text"
+                          value={partialsSearchInput}
+                          onChange={(e) =>
+                            setPartialsSearchInput(e.target.value)
+                          }
+                          placeholder="Search saved prompts..."
+                          className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                        />
+
+                        {isLoadingPartials ? (
+                          <div className="flex items-center justify-center py-8 text-sm text-gray-500">
+                            <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                            Loading saved prompts...
+                          </div>
+                        ) : promptPartials.length === 0 ? (
+                          <div className="rounded-lg border border-gray-200 p-8 text-center text-sm text-gray-500">
+                            {partialsSearchQuery
+                              ? `No saved prompt partials match “${partialsSearchQuery}”.`
+                              : 'No saved prompt partials yet. Switch to "Save as new" to create one.'}
+                          </div>
+                        ) : (
+                          <div className="space-y-2 max-h-[35vh] overflow-y-auto">
+                            {promptPartials.map((partial) => {
+                              const isSelected =
+                                savePartialExistingId === partial.id
+                              return (
+                                <label
+                                  key={partial.id}
+                                  className={`block cursor-pointer rounded-lg border p-3 transition-colors ${
+                                    isSelected
+                                      ? 'border-primary-300 bg-primary-50'
+                                      : 'border-gray-200 hover:bg-gray-50'
+                                  }`}
+                                >
+                                  <div className="flex items-start gap-3">
+                                    <input
+                                      type="radio"
+                                      name="call-import-save-partial"
+                                      checked={isSelected}
+                                      onChange={() =>
+                                        setSavePartialExistingId(partial.id)
+                                      }
+                                      className="mt-1 h-4 w-4 border-gray-300 text-primary-600 focus:ring-primary-500"
+                                    />
+                                    <div className="min-w-0 flex-1">
+                                      <p className="text-sm font-semibold text-gray-900">
+                                        {partial.name}
+                                      </p>
+                                      {partial.description ? (
+                                        <p className="mt-0.5 text-xs text-gray-500">
+                                          {partial.description}
+                                        </p>
+                                      ) : null}
+                                    </div>
+                                  </div>
+                                </label>
+                              )
+                            })}
+                          </div>
+                        )}
+                        <div>
+                          <label className="block text-xs font-medium text-gray-700 mb-1">
+                            Change summary
+                          </label>
+                          <input
+                            type="text"
+                            value={savePartialChangeSummary}
+                            onChange={(e) =>
+                              setSavePartialChangeSummary(e.target.value)
+                            }
+                            placeholder="Optional: what changed in this version?"
+                            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    <details className="rounded-md border border-gray-200 bg-gray-50 p-3 text-xs">
+                      <summary className="cursor-pointer font-medium text-gray-700">
+                        Preview prompt content
+                        <span className="ml-1 font-normal text-gray-500">
+                          ({trimmedContent.length} chars)
+                        </span>
+                      </summary>
+                      <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded border border-gray-200 bg-white p-2 font-mono text-[11px] text-gray-800">
+                        {trimmedContent || '(empty)'}
+                      </pre>
+                    </details>
+
+                    {savePartialError && (
+                      <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+                        {savePartialError}
+                      </div>
+                    )}
+                    {savePartialSuccess && (
+                      <div className="rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-800">
+                        {savePartialSuccess}
+                      </div>
+                    )}
+                  </div>
+                  <div className="px-6 py-4 border-t border-gray-200 flex justify-end gap-2 bg-gray-50 rounded-b-lg">
+                    <Button
+                      variant="outline"
+                      onClick={closeSavePartialModal}
+                      disabled={savePartialMutation.isPending}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      variant="primary"
+                      onClick={() =>
+                        savePartialMutation.mutate({
+                          content: trimmedContent,
+                          mode: savePartialMode,
+                          name: savePartialName.trim(),
+                          description: savePartialDescription.trim(),
+                          partialId: savePartialExistingId,
+                          changeSummary: savePartialChangeSummary.trim(),
+                        })
+                      }
+                      isLoading={savePartialMutation.isPending}
+                      disabled={!canSubmit}
+                    >
+                      {savePartialMode === 'new'
+                        ? 'Create Partial'
+                        : 'Save New Version'}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )
+          })(),
+        )}
 
       {showTranscribeModal &&
         renderModal(
@@ -1943,14 +3476,22 @@ export default function CallImportDetail() {
               targets.length === 1
                 ? `Transcribe row #${(targets[0]?.row_index ?? 0) + 1}`
                 : `Transcribe ${targets.length} rows`
+            // The STT picker is only required in the legacy two-stage
+            // path; the new ``llm_only`` path skips STT entirely so we
+            // drop the STT-validity check from ``canSubmit`` when that
+            // mode is active. The diariser LLM picker is required in
+            // both modes (it's the model that produces the turns).
             const canSubmit =
-              !!transcribeSTT.provider &&
-              !!transcribeSTT.model &&
+              (transcribeMode === 'llm_only'
+                ? true
+                : !!transcribeSTT.provider && !!transcribeSTT.model) &&
+              !!transcribeDiariserLLM.provider &&
+              !!transcribeDiariserLLM.model &&
               targets.length > 0 &&
               !transcribeRowsMutation.isPending
             return (
               <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]">
-                <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
+                <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] flex flex-col">
                   <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
                     <h3 className="text-lg font-semibold">{headerLabel}</h3>
                     <button
@@ -1964,41 +3505,205 @@ export default function CallImportDetail() {
                       <X className="h-5 w-5" />
                     </button>
                   </div>
-                  <div className="p-6 space-y-3">
-                    <p className="text-sm text-gray-600">
-                      Pick the STT provider and model. Diarization is enabled
-                      automatically — the transcript is stored in
-                      <code className="mx-1 px-1 bg-gray-100 rounded text-[11px]">
-                        Speaker N:
-                      </code>
-                      format that the conversation viewer renders as bubbles.
-                    </p>
-                    <ProviderModelPicker
-                      kind="stt"
-                      value={transcribeSTT}
-                      onChange={setTranscribeSTT}
-                      providerAllowList={STT_PROVIDER_ALLOWLIST}
-                      defaultLabel="Pick an STT provider"
-                      allowCredentialPick
-                    />
-                    <input
-                      type="text"
-                      value={transcribeLanguage}
-                      onChange={(e) => setTranscribeLanguage(e.target.value)}
-                      placeholder="Language hint (e.g. en, hi)"
-                      className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                    />
-                    <label className="flex items-start gap-2 text-xs">
+                  <div className="p-6 space-y-4 overflow-y-auto">
+                    {/* Mode toggle: STT+LLM vs LLM only. Rendered as a
+                        segmented control so the active path is
+                        unambiguous at a glance and the user can flip
+                        between the two without scrolling. */}
+                    <div className="space-y-2">
+                      <p className="text-xs uppercase tracking-wide text-gray-500 font-semibold">
+                        Diarisation mode
+                      </p>
+                      {/* Order intentionally puts LLM-only on the LEFT
+                          (the recommended default) and STT+LLM on the
+                          RIGHT, badged as "Advanced". This matches the
+                          product direction: audio-in multimodal is the
+                          first-class path and the two-stage STT pipeline
+                          is the escape hatch for orgs that need a
+                          specific STT contract or transcript artefact. */}
+                      <div
+                        role="tablist"
+                        aria-label="Diarisation mode"
+                        className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5"
+                      >
+                        <button
+                          type="button"
+                          role="tab"
+                          aria-pressed={transcribeMode === 'llm_only'}
+                          onClick={() => setTranscribeMode('llm_only')}
+                          className={`px-3 py-1.5 text-xs font-medium rounded-md transition ${
+                            transcribeMode === 'llm_only'
+                              ? 'bg-white text-gray-900 shadow-sm'
+                              : 'text-gray-600 hover:text-gray-900'
+                          }`}
+                        >
+                          LLM only (audio in)
+                        </button>
+                        <button
+                          type="button"
+                          role="tab"
+                          aria-pressed={transcribeMode === 'stt_llm'}
+                          onClick={() => setTranscribeMode('stt_llm')}
+                          className={`px-3 py-1.5 text-xs font-medium rounded-md transition inline-flex items-center gap-1.5 ${
+                            transcribeMode === 'stt_llm'
+                              ? 'bg-white text-gray-900 shadow-sm'
+                              : 'text-gray-600 hover:text-gray-900'
+                          }`}
+                        >
+                          STT + LLM diariser
+                          <span className="rounded-full bg-gray-200 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-gray-600">
+                            Advanced
+                          </span>
+                        </button>
+                      </div>
+                      <p className="text-[11px] text-gray-500">
+                        {transcribeMode === 'llm_only'
+                          ? 'Recommended. Single-stage pipeline: the audio is fed directly to a multimodal LLM along with your prompt; the model both transcribes and diarises in one call. Pick a model that accepts audio input (e.g. Gemini 1.5/2.0, GPT-4o audio-preview).'
+                          : 'Advanced fallback. Two-stage pipeline: STT transcribes the audio, then an LLM splits it into agent / user turns using your prompt. Use this when you need a specific STT contract or to reuse an existing transcript artefact.'}
+                      </p>
+                    </div>
+                    {transcribeMode === 'stt_llm' && (
+                      <div className="space-y-2">
+                        <p className="text-xs uppercase tracking-wide text-gray-500 font-semibold">
+                          1. Speech-to-text
+                        </p>
+                        <p className="text-sm text-gray-600">
+                          The STT step produces plain text only; the LLM
+                          below splits it into agent / user turns.
+                        </p>
+                        <ProviderModelPicker
+                          kind="stt"
+                          value={transcribeSTT}
+                          onChange={setTranscribeSTT}
+                          providerAllowList={STT_PROVIDER_ALLOWLIST}
+                          defaultLabel="Pick an STT provider"
+                          allowCredentialPick
+                        />
+                        <input
+                          type="text"
+                          value={transcribeLanguage}
+                          onChange={(e) =>
+                            setTranscribeLanguage(e.target.value)
+                          }
+                          placeholder="Language hint (e.g. en, hi)"
+                          className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                        />
+                      </div>
+                    )}
+                    <div className="space-y-2 pt-1 border-t border-gray-100">
+                      <p className="text-xs uppercase tracking-wide text-gray-500 font-semibold pt-3">
+                        {transcribeMode === 'stt_llm'
+                          ? '2. LLM diariser'
+                          : 'Multimodal diariser LLM'}
+                      </p>
+                      <p className="text-sm text-gray-600">
+                        {transcribeMode === 'stt_llm' ? (
+                          <>
+                            Pick a chat model and tweak the prompt below.
+                            The model receives the STT plain text and the
+                            prompt and must return a JSON array of{' '}
+                            <code className="px-1 bg-gray-100 rounded text-[11px]">
+                              {'{ speaker, text }'}
+                            </code>{' '}
+                            turns.
+                          </>
+                        ) : (
+                          <>
+                            Pick a chat model that accepts audio input
+                            (e.g. <code className="px-1 bg-gray-100 rounded text-[11px]">gemini-1.5-pro</code>,{' '}
+                            <code className="px-1 bg-gray-100 rounded text-[11px]">gpt-4o-audio-preview</code>).
+                            The model receives the recording bytes and
+                            the prompt and must return a JSON array of{' '}
+                            <code className="px-1 bg-gray-100 rounded text-[11px]">
+                              {'{ speaker, text }'}
+                            </code>{' '}
+                            turns.
+                          </>
+                        )}
+                      </p>
+                      <ProviderModelPicker
+                        kind="llm"
+                        value={transcribeDiariserLLM}
+                        onChange={setTranscribeDiariserLLM}
+                        defaultLabel="Pick an LLM for diarisation"
+                        allowCredentialPick
+                        audioCapableOnly={transcribeMode === 'llm_only'}
+                      />
+                      <div className="flex items-center justify-between pt-1">
+                        <label className="text-xs font-medium text-gray-700">
+                          Diarisation prompt
+                        </label>
+                        <div className="flex items-center gap-3">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPartialsImportError(null)
+                              setSelectedPartialId('')
+                              setPartialsSearchInput('')
+                              setPartialsSearchQuery('')
+                              setPartialsImportTarget('standalone')
+                            }}
+                            className="text-[11px] text-primary-600 hover:text-primary-700"
+                          >
+                            Import from saved partials
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openSavePartialModal('standalone')}
+                            disabled={!transcribeDiarisationPrompt.trim()}
+                            title={
+                              transcribeDiarisationPrompt.trim()
+                                ? 'Save the current prompt to your Prompt Partials library'
+                                : 'Enter or import a prompt first'
+                            }
+                            className="text-[11px] text-primary-600 hover:text-primary-700 disabled:text-gray-400 disabled:cursor-not-allowed"
+                          >
+                            Save as partial
+                          </button>
+                          {defaultDiarisationPrompt && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setTranscribeDiarisationPrompt(
+                                  defaultDiarisationPrompt,
+                                )
+                              }
+                              className="text-[11px] text-primary-600 hover:text-primary-700"
+                            >
+                              Reset to default
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <textarea
+                        value={transcribeDiarisationPrompt}
+                        onChange={(e) =>
+                          setTranscribeDiarisationPrompt(e.target.value)
+                        }
+                        rows={10}
+                        placeholder={
+                          defaultDiarisationPrompt ||
+                          'Describe how the LLM should split the transcript into agent / user turns…'
+                        }
+                        className="w-full px-3 py-2 text-xs font-mono border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                      />
+                      <p className="text-[11px] text-gray-500">
+                        Leave blank to fall back to the canonical default
+                        prompt the worker ships with.
+                      </p>
+                    </div>
+                    <label className="flex items-start gap-2 text-xs pt-2 border-t border-gray-100">
                       <input
                         type="checkbox"
+                        className="mt-0.5"
                         checked={transcribeOverwriteStandalone}
                         onChange={(e) =>
                           setTranscribeOverwriteStandalone(e.target.checked)
                         }
                       />
                       <span>
-                        Overwrite existing transcripts (otherwise rows with
-                        a transcript are skipped).
+                        Overwrite existing transcripts (otherwise rows
+                        with a transcript are skipped).
                       </span>
                     </label>
                     {transcribeError && (
@@ -2006,36 +3711,39 @@ export default function CallImportDetail() {
                         {transcribeError}
                       </div>
                     )}
-                    <div className="flex gap-2 pt-2">
-                      <Button
-                        variant="outline"
-                        onClick={() => {
-                          if (transcribeRowsMutation.isPending) return
-                          setShowTranscribeModal(false)
-                          setTranscribeTargetRows(null)
-                        }}
-                        disabled={transcribeRowsMutation.isPending}
-                        className="flex-1"
-                      >
-                        Cancel
-                      </Button>
-                      <Button
-                        variant="primary"
-                        isLoading={transcribeRowsMutation.isPending}
-                        disabled={!canSubmit}
-                        onClick={() =>
-                          transcribeRowsMutation.mutate({
-                            rowIds: targets.map((r) => r.id),
-                            stt: transcribeSTT,
-                            language: transcribeLanguage,
-                            overwrite: transcribeOverwriteStandalone,
-                          })
-                        }
-                        className="flex-1"
-                      >
-                        Start
-                      </Button>
-                    </div>
+                  </div>
+                  <div className="px-6 py-4 border-t border-gray-200 flex gap-2 bg-gray-50 rounded-b-lg">
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        if (transcribeRowsMutation.isPending) return
+                        setShowTranscribeModal(false)
+                        setTranscribeTargetRows(null)
+                      }}
+                      disabled={transcribeRowsMutation.isPending}
+                      className="flex-1"
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      variant="primary"
+                      isLoading={transcribeRowsMutation.isPending}
+                      disabled={!canSubmit}
+                      onClick={() =>
+                        transcribeRowsMutation.mutate({
+                          rowIds: targets.map((r) => r.id),
+                          mode: transcribeMode,
+                          stt: transcribeSTT,
+                          diariserLLM: transcribeDiariserLLM,
+                          diarisationPrompt: transcribeDiarisationPrompt,
+                          language: transcribeLanguage,
+                          overwrite: transcribeOverwriteStandalone,
+                        })
+                      }
+                      className="flex-1"
+                    >
+                      Start
+                    </Button>
                   </div>
                 </div>
               </div>
@@ -2445,12 +4153,25 @@ export default function CallImportDetail() {
                             selector has been removed: runs always
                             score the diarised transcript. */}
                         {(() => {
+                          // In ``llm_only`` mode there is no STT —
+                          // the diariser LLM consumes the audio
+                          // directly. We adapt the "is the auto-
+                          // diarise step ready?" check to reflect
+                          // that so the banner doesn't yell about a
+                          // missing STT picker that's intentionally
+                          // hidden.
                           const sttMissing =
-                            !evalSTT.provider || !evalSTT.model
+                            evalTranscribeMode === 'stt_llm' &&
+                            (!evalSTT.provider || !evalSTT.model)
+                          const diariserMissing =
+                            !evalDiariserLLM.provider || !evalDiariserLLM.model
+                          const sectionIncomplete = sttMissing || (
+                            evalTranscribeMode === 'llm_only' && diariserMissing
+                          )
                           return (
                             <div
                               className={`rounded-md border p-3 space-y-2 ${
-                                sttMissing
+                                sectionIncomplete
                                   ? 'border-red-300 bg-red-50/40 ring-1 ring-red-200'
                                   : 'border-gray-200 bg-gray-50'
                               }`}
@@ -2472,50 +4193,102 @@ export default function CallImportDetail() {
                                     </span>
                                     <span
                                       className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                                        sttMissing
+                                        sectionIncomplete
                                           ? 'bg-red-100 text-red-700 ring-1 ring-inset ring-red-200'
                                           : 'bg-green-50 text-green-700 ring-1 ring-inset ring-green-200'
                                       }`}
                                     >
-                                      {sttMissing ? 'Required' : 'Set'}
+                                      {sectionIncomplete ? 'Required' : 'Set'}
                                     </span>
                                   </span>
                                   <span className="block text-[11px] text-gray-500">
-                                    Every evaluation scores the diarised
-                                    transcript. Rows that don't already
-                                    have one are diarised first via the
-                                    STT provider you pick below.
+                                    {evalTranscribeMode === 'stt_llm'
+                                      ? "Every evaluation scores the diarised transcript. Rows that don't already have one are diarised first via the STT provider you pick below."
+                                      : "Every evaluation scores the diarised transcript. Rows that don't already have one are diarised by feeding the audio directly to the multimodal LLM you pick below."}
                                   </span>
                                 </span>
                               </label>
                               <div className="pl-6 space-y-2">
-                                <ProviderModelPicker
-                                  kind="stt"
-                                  value={evalSTT}
-                                  onChange={setEvalSTT}
-                                  providerAllowList={STT_PROVIDER_ALLOWLIST}
-                                  defaultLabel="Pick an STT provider"
-                                  allowCredentialPick
-                                />
-                                {sttMissing && (
-                                  <p className="flex items-start gap-1 text-[11px] font-medium text-red-700">
-                                    <AlertCircle className="h-3 w-3 mt-0.5 flex-shrink-0" />
-                                    <span>
-                                      {!evalSTT.provider
-                                        ? 'Pick an STT provider — auto-diarisation is mandatory for every run.'
-                                        : 'Pick a model for this STT provider to enable the run.'}
+                                {/* Mode toggle. Hidden behind the
+                                    "Auto-diarise" checkbox row so the
+                                    flow reads top-to-bottom: enable
+                                    auto-diarise → pick pipeline → pick
+                                    models. */}
+                                {/* Same ordering rationale as the
+                                    standalone Transcribe modal:
+                                    LLM-only is the recommended default
+                                    and STT+LLM is the advanced
+                                    fallback. */}
+                                <div
+                                  role="tablist"
+                                  aria-label="Auto-diarise pipeline"
+                                  className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5"
+                                >
+                                  <button
+                                    type="button"
+                                    role="tab"
+                                    aria-pressed={evalTranscribeMode === 'llm_only'}
+                                    onClick={() =>
+                                      setEvalTranscribeMode('llm_only')
+                                    }
+                                    className={`px-3 py-1 text-[11px] font-medium rounded-md transition ${
+                                      evalTranscribeMode === 'llm_only'
+                                        ? 'bg-primary-50 text-primary-700 ring-1 ring-inset ring-primary-200'
+                                        : 'text-gray-600 hover:text-gray-900'
+                                    }`}
+                                  >
+                                    LLM only (audio in)
+                                  </button>
+                                  <button
+                                    type="button"
+                                    role="tab"
+                                    aria-pressed={evalTranscribeMode === 'stt_llm'}
+                                    onClick={() =>
+                                      setEvalTranscribeMode('stt_llm')
+                                    }
+                                    className={`px-3 py-1 text-[11px] font-medium rounded-md transition inline-flex items-center gap-1.5 ${
+                                      evalTranscribeMode === 'stt_llm'
+                                        ? 'bg-primary-50 text-primary-700 ring-1 ring-inset ring-primary-200'
+                                        : 'text-gray-600 hover:text-gray-900'
+                                    }`}
+                                  >
+                                    STT + LLM diariser
+                                    <span className="rounded-full bg-gray-200 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-gray-600">
+                                      Advanced
                                     </span>
-                                  </p>
+                                  </button>
+                                </div>
+                                {evalTranscribeMode === 'stt_llm' && (
+                                  <>
+                                    <ProviderModelPicker
+                                      kind="stt"
+                                      value={evalSTT}
+                                      onChange={setEvalSTT}
+                                      providerAllowList={STT_PROVIDER_ALLOWLIST}
+                                      defaultLabel="Pick an STT provider"
+                                      allowCredentialPick
+                                    />
+                                    {sttMissing && (
+                                      <p className="flex items-start gap-1 text-[11px] font-medium text-red-700">
+                                        <AlertCircle className="h-3 w-3 mt-0.5 flex-shrink-0" />
+                                        <span>
+                                          {!evalSTT.provider
+                                            ? 'Pick an STT provider — auto-diarisation is mandatory for every run.'
+                                            : 'Pick a model for this STT provider to enable the run.'}
+                                        </span>
+                                      </p>
+                                    )}
+                                    <input
+                                      type="text"
+                                      value={evalSTTLanguage}
+                                      onChange={(e) =>
+                                        setEvalSTTLanguage(e.target.value)
+                                      }
+                                      placeholder="Language hint (e.g. en, hi)"
+                                      className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                                    />
+                                  </>
                                 )}
-                                <input
-                                  type="text"
-                                  value={evalSTTLanguage}
-                                  onChange={(e) =>
-                                    setEvalSTTLanguage(e.target.value)
-                                  }
-                                  placeholder="Language hint (e.g. en, hi)"
-                                  className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
-                                />
                                 <label className="flex items-start gap-2 text-xs">
                                   <input
                                     type="checkbox"
@@ -2530,6 +4303,92 @@ export default function CallImportDetail() {
                                     are reused).
                                   </span>
                                 </label>
+                                <div className="pt-3 border-t border-gray-200 space-y-2">
+                                  <p className="text-xs font-medium text-gray-700">
+                                    {evalTranscribeMode === 'stt_llm'
+                                      ? 'Diariser LLM'
+                                      : 'Multimodal diariser LLM'}
+                                  </p>
+                                  <p className="text-[11px] text-gray-500">
+                                    {evalTranscribeMode === 'stt_llm'
+                                      ? 'After the STT step, this chat model splits the plain transcript into agent / user turns using the prompt below.'
+                                      : 'This chat model receives the audio bytes and the prompt and produces structured agent / user turns in one call. Pick a model that accepts audio input (e.g. Gemini 1.5/2.0 or GPT-4o audio-preview).'}
+                                  </p>
+                                  <ProviderModelPicker
+                                    kind="llm"
+                                    value={evalDiariserLLM}
+                                    onChange={setEvalDiariserLLM}
+                                    defaultLabel="Pick an LLM for diarisation"
+                                    allowCredentialPick
+                                    audioCapableOnly={evalTranscribeMode === 'llm_only'}
+                                  />
+                                  <div className="flex items-center justify-between pt-1">
+                                    <label className="text-[11px] font-medium text-gray-700">
+                                      Diarisation prompt
+                                    </label>
+                                    <div className="flex items-center gap-3">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setPartialsImportError(null)
+                                          setSelectedPartialId('')
+                                          setPartialsSearchInput('')
+                                          setPartialsSearchQuery('')
+                                          setPartialsImportTarget('eval')
+                                        }}
+                                        className="text-[11px] text-primary-600 hover:text-primary-700"
+                                      >
+                                        Import from saved partials
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          openSavePartialModal('eval')
+                                        }
+                                        disabled={
+                                          !evalDiarisationPrompt.trim()
+                                        }
+                                        title={
+                                          evalDiarisationPrompt.trim()
+                                            ? 'Save the current prompt to your Prompt Partials library'
+                                            : 'Enter or import a prompt first'
+                                        }
+                                        className="text-[11px] text-primary-600 hover:text-primary-700 disabled:text-gray-400 disabled:cursor-not-allowed"
+                                      >
+                                        Save as partial
+                                      </button>
+                                      {defaultDiarisationPrompt && (
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            setEvalDiarisationPrompt(
+                                              defaultDiarisationPrompt,
+                                            )
+                                          }
+                                          className="text-[11px] text-primary-600 hover:text-primary-700"
+                                        >
+                                          Reset to default
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+                                  <textarea
+                                    value={evalDiarisationPrompt}
+                                    onChange={(e) =>
+                                      setEvalDiarisationPrompt(e.target.value)
+                                    }
+                                    rows={6}
+                                    placeholder={
+                                      defaultDiarisationPrompt ||
+                                      'Describe how the LLM should split the transcript into agent / user turns…'
+                                    }
+                                    className="w-full px-3 py-2 text-[11px] font-mono border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500"
+                                  />
+                                  <p className="text-[11px] text-gray-500">
+                                    Leave blank to fall back to the
+                                    canonical default prompt.
+                                  </p>
+                                </div>
                               </div>
                             </div>
                           )
@@ -2597,13 +4456,30 @@ export default function CallImportDetail() {
                       } else if (selectedMetricIds.length === 0) {
                         disabledReasons.push('Select at least one metric to score.')
                       }
-                      if (!evalSTT.provider) {
+                      // STT is only required in the legacy two-stage
+                      // mode. ``llm_only`` mode feeds the audio
+                      // straight to the diariser LLM, so the STT
+                      // checks are gated on the active mode.
+                      if (evalTranscribeMode === 'stt_llm') {
+                        if (!evalSTT.provider) {
+                          disabledReasons.push(
+                            'Pick an STT provider (auto-diarisation is required).',
+                          )
+                        } else if (!evalSTT.model) {
+                          disabledReasons.push(
+                            'Pick an STT model for the selected provider.',
+                          )
+                        }
+                      }
+                      if (!evalDiariserLLM.provider) {
                         disabledReasons.push(
-                          'Pick an STT provider (auto-diarisation is required).',
+                          evalTranscribeMode === 'llm_only'
+                            ? 'Pick a multimodal LLM provider — the recording is fed to it directly in LLM-only mode.'
+                            : 'Pick a diariser LLM provider — the STT output is split into agent / user turns by an LLM.',
                         )
-                      } else if (!evalSTT.model) {
+                      } else if (!evalDiariserLLM.model) {
                         disabledReasons.push(
-                          'Pick an STT model for the selected provider.',
+                          'Pick a diariser LLM model for the selected provider.',
                         )
                       }
                       if (
@@ -2691,14 +4567,37 @@ export default function CallImportDetail() {
                             metric_llm_overrides: Object.keys(overrides).length
                               ? overrides
                               : null,
-                            // Auto-diarise is always on; the STT fields
-                            // are mandatory and validated above.
+                            // Auto-diarise is always on; ``transcribe_mode``
+                            // decides whether the STT step actually runs
+                            // (and therefore whether the STT fields are
+                            // sent or nulled out for the backend's
+                            // validator).
                             auto_transcribe: true,
                             transcribe_overwrite: transcribeOverwrite,
-                            stt_provider: evalSTT.provider,
-                            stt_model: evalSTT.model,
-                            stt_credential_id: evalSTT.credential_id || null,
-                            stt_language: evalSTTLanguage.trim() || null,
+                            transcribe_mode: evalTranscribeMode,
+                            stt_provider:
+                              evalTranscribeMode === 'stt_llm'
+                                ? evalSTT.provider
+                                : null,
+                            stt_model:
+                              evalTranscribeMode === 'stt_llm'
+                                ? evalSTT.model
+                                : null,
+                            stt_credential_id:
+                              evalTranscribeMode === 'stt_llm'
+                                ? evalSTT.credential_id || null
+                                : null,
+                            stt_language:
+                              evalTranscribeMode === 'stt_llm'
+                                ? evalSTTLanguage.trim() || null
+                                : null,
+                            diarization_llm_provider:
+                              evalDiariserLLM.provider,
+                            diarization_llm_model: evalDiariserLLM.model,
+                            diarization_llm_credential_id:
+                              evalDiariserLLM.credential_id || null,
+                            diarization_prompt:
+                              evalDiarisationPrompt.trim() || null,
                             discover_new_metrics: discoverNewMetrics,
                           })
                         }}
@@ -2716,6 +4615,66 @@ export default function CallImportDetail() {
             )
           })(),
         )}
+
+      <ConfirmModal
+        isOpen={showRetryFailedImportConfirm}
+        title={`Retry ${failedImportRowsCount} failed import row${
+          failedImportRowsCount === 1 ? '' : 's'
+        }?`}
+        description={(() => {
+          const lines = [
+            `This will re-enqueue every currently failed import row in this batch (${failedImportRowsCount}).`,
+            'Use this after fixing transient provider/credential issues so failed recording fetches can run again.',
+            retryFailedImportError ? `Error: ${retryFailedImportError}` : '',
+          ]
+          return lines.filter(Boolean).join('\n\n')
+        })()}
+        confirmLabel={`Retry ${failedImportRowsCount} failed row${
+          failedImportRowsCount === 1 ? '' : 's'
+        }`}
+        cancelLabel="Cancel"
+        variant="warning"
+        isLoading={retryFailedImportMutation.isPending}
+        onConfirm={() => {
+          if (retryFailedImportMutation.isPending) return
+          retryFailedImportMutation.mutate()
+        }}
+        onCancel={() => {
+          if (retryFailedImportMutation.isPending) return
+          setShowRetryFailedImportConfirm(false)
+          setRetryFailedImportError(null)
+        }}
+      />
+
+      <ConfirmModal
+        isOpen={showForceFailDiarisationConfirm}
+        title={`Force-fail ${diarisationInFlightCount} in-flight diarisation row${
+          diarisationInFlightCount === 1 ? '' : 's'
+        }?`}
+        description={(() => {
+          const lines = [
+            'Any row currently pending/running in diarisation will be marked failed immediately.',
+            'You can then re-diarise those failed rows from the same page.',
+            forceFailDiarisationError ? `Error: ${forceFailDiarisationError}` : '',
+          ]
+          return lines.filter(Boolean).join('\n\n')
+        })()}
+        confirmLabel={`Force-fail ${diarisationInFlightCount} row${
+          diarisationInFlightCount === 1 ? '' : 's'
+        }`}
+        cancelLabel="Cancel"
+        variant="danger"
+        isLoading={forceFailDiarisationMutation.isPending}
+        onConfirm={() => {
+          if (forceFailDiarisationMutation.isPending) return
+          forceFailDiarisationMutation.mutate()
+        }}
+        onCancel={() => {
+          if (forceFailDiarisationMutation.isPending) return
+          setShowForceFailDiarisationConfirm(false)
+          setForceFailDiarisationError(null)
+        }}
+      />
 
       <ConfirmModal
         isOpen={showDeleteImport}
@@ -2843,6 +4802,274 @@ export default function CallImportDetail() {
           setBulkDeleteRowsError(null)
         }}
       />
+
+      {/*
+        Consolidated bulk-actions modal.
+
+        Rationale: instead of growing the toolbar with one button per
+        verb (Transcribe / Stop / Delete / …), the toolbar exposes a
+        single "Bulk actions" entry point that opens this modal. Each
+        action lives in its own card, shows the count of rows it'll
+        actually affect (with a "selection spans pages" disclaimer
+        when we can only see the on-page slice), and either fires
+        immediately (Stop) or hands off to the existing dedicated
+        modal (Transcribe → Diarise modal, Delete → ConfirmModal) so
+        all the per-flow validation / config UI is preserved.
+       */}
+      {showBulkActionsModal &&
+        selectedCount > 0 &&
+        renderModal(
+          <div
+            className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-50"
+            onClick={() => {
+              if (bulkCancelDiarisationMutation.isPending) return
+              setShowBulkActionsModal(false)
+              setBulkActionError(null)
+              setBulkActionResult(null)
+            }}
+          >
+            <div
+              className="bg-white rounded-lg shadow-xl max-w-xl w-full mx-4 max-h-[85vh] overflow-hidden flex flex-col"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-start gap-3">
+                <div className="min-w-0">
+                  <h3 className="text-lg font-semibold text-gray-900">
+                    Bulk actions
+                  </h3>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    {selectedCount} row{selectedCount === 1 ? '' : 's'}{' '}
+                    selected
+                    {selectionSpansPages
+                      ? ' · selection spans pages (per-action counts below are for on-page rows only; the backend filters the rest)'
+                      : ''}
+                    .
+                  </p>
+                </div>
+                <button
+                  onClick={() => {
+                    if (bulkCancelDiarisationMutation.isPending) return
+                    setShowBulkActionsModal(false)
+                    setBulkActionError(null)
+                    setBulkActionResult(null)
+                  }}
+                  className="text-gray-400 hover:text-gray-600 flex-shrink-0"
+                  aria-label="Close bulk actions modal"
+                  disabled={bulkCancelDiarisationMutation.isPending}
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              <div className="p-5 space-y-3 overflow-y-auto flex-1">
+                {/*
+                  Action card 1 — Diarise / re-diarise.
+
+                  ``transcribeReadySelection`` counts on-page rows that
+                  have a recording AND aren't already in-flight. With
+                  cross-page selections we hand off the full
+                  ``selectedRowIds`` set and rely on the worker's
+                  server-side filter to skip rows that don't qualify.
+                 */}
+                <div className="rounded-lg border border-gray-200 p-4 hover:border-purple-300 hover:bg-purple-50/40 transition-colors">
+                  <div className="flex items-start gap-3">
+                    <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-purple-100 text-purple-700 flex items-center justify-center">
+                      <Mic className="h-5 w-5" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h4 className="text-sm font-semibold text-gray-900">
+                        Diarise / re-diarise
+                      </h4>
+                      <p className="text-xs text-gray-600 mt-1">
+                        {selectionSpansPages
+                          ? `Run diarisation on the ${selectedCount} selected rows. Rows without a recording or already in flight are skipped server-side.`
+                          : transcribeReadySelection.length === 0
+                          ? 'No rows in this selection are ready to diarise (each is either missing a recording or already in flight).'
+                          : `${transcribeReadySelection.length} of ${selectedCount} selected row${
+                              selectedCount === 1 ? '' : 's'
+                            } can be diarised right now. The rest will be skipped.`}
+                      </p>
+                    </div>
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      disabled={
+                        !selectionSpansPages &&
+                        transcribeReadySelection.length === 0
+                      }
+                      onClick={() => {
+                        setShowBulkActionsModal(false)
+                        setBulkActionError(null)
+                        setBulkActionResult(null)
+                        if (selectionSpansPages) {
+                          // Cross-page selection: forward synthetic
+                          // rows (id-only) so the modal targets the
+                          // batch endpoint without inventing fake
+                          // row_index values for the header label.
+                          openTranscribeModal(
+                            Array.from(selectedRowIds).map(
+                              (rowId) =>
+                                ({
+                                  id: rowId,
+                                  row_index: 0,
+                                } as unknown as CallImportRow),
+                            ),
+                          )
+                        } else {
+                          openTranscribeModal(transcribeReadySelection)
+                        }
+                      }}
+                      className="flex-shrink-0"
+                    >
+                      Diarise
+                    </Button>
+                  </div>
+                </div>
+
+                {/*
+                  Action card 2 — Stop diarisation.
+
+                  The button is disabled when there's nothing in flight
+                  on the visible page; for cross-page selections we
+                  allow the click and let the server's
+                  ``cancelled / skipped`` summary do the talking.
+                 */}
+                <div className="rounded-lg border border-gray-200 p-4 hover:border-amber-300 hover:bg-amber-50/40 transition-colors">
+                  <div className="flex items-start gap-3">
+                    <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-amber-100 text-amber-700 flex items-center justify-center">
+                      <Square className="h-5 w-5" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h4 className="text-sm font-semibold text-gray-900">
+                        Stop diarisation
+                      </h4>
+                      <p className="text-xs text-gray-600 mt-1">
+                        {selectionSpansPages
+                          ? `Revoke any in-flight or queued diarisation across the ${selectedCount} selected rows. Rows that finished already are skipped.`
+                          : cancellableSelection.length === 0
+                          ? 'No rows in this selection are currently queued or running. Nothing to stop.'
+                          : `Stop diarisation for ${cancellableSelection.length} pending / running row${
+                              cancellableSelection.length === 1 ? '' : 's'
+                            }. Each row is flipped to "failed" with a "Cancelled by user" message.`}
+                      </p>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      isLoading={bulkCancelDiarisationMutation.isPending}
+                      disabled={
+                        bulkCancelDiarisationMutation.isPending ||
+                        (!selectionSpansPages &&
+                          cancellableSelection.length === 0)
+                      }
+                      onClick={() => {
+                        if (bulkCancelDiarisationMutation.isPending) return
+                        // For on-page selections we narrow to the
+                        // cancellable subset so the server doesn't
+                        // need to discover skips; for cross-page we
+                        // send everything and let the server filter.
+                        const ids = selectionSpansPages
+                          ? Array.from(selectedRowIds)
+                          : cancellableSelection.map((r) => r.id)
+                        if (ids.length === 0) return
+                        bulkCancelDiarisationMutation.mutate(ids)
+                      }}
+                      className="flex-shrink-0 text-amber-700 border-amber-300 hover:bg-amber-50"
+                    >
+                      Stop
+                    </Button>
+                  </div>
+                </div>
+
+                {/*
+                  Action card 3 — Delete rows.
+
+                  We close THIS modal and hand off to the existing
+                  ConfirmModal so the destructive flow keeps its
+                  "type-aware confirm" behaviour. No duplication of
+                  the irreversible-action copy here.
+                 */}
+                <div className="rounded-lg border border-gray-200 p-4 hover:border-red-300 hover:bg-red-50/40 transition-colors">
+                  <div className="flex items-start gap-3">
+                    <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-red-100 text-red-700 flex items-center justify-center">
+                      <Trash2 className="h-5 w-5" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h4 className="text-sm font-semibold text-gray-900">
+                        Delete rows
+                      </h4>
+                      <p className="text-xs text-gray-600 mt-1">
+                        Permanently remove {selectedCount} selected row
+                        {selectedCount === 1 ? '' : 's'} from this import,
+                        along with their stored recordings in S3. In-flight
+                        tasks for these rows will be revoked. This cannot
+                        be undone.
+                      </p>
+                    </div>
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      onClick={() => {
+                        setShowBulkActionsModal(false)
+                        setBulkActionError(null)
+                        setBulkActionResult(null)
+                        setBulkDeleteRowsError(null)
+                        setShowBulkDeleteRows(true)
+                      }}
+                      className="flex-shrink-0"
+                    >
+                      Delete
+                    </Button>
+                  </div>
+                </div>
+
+                {bulkActionResult && (
+                  <div className="rounded-md border border-green-200 bg-green-50 p-3 text-xs text-green-800 flex items-start gap-2">
+                    <Check className="h-4 w-4 text-green-600 flex-shrink-0 mt-0.5" />
+                    <div className="min-w-0 flex-1">{bulkActionResult}</div>
+                    <button
+                      type="button"
+                      onClick={() => setBulkActionResult(null)}
+                      className="text-green-700 hover:text-green-900 flex-shrink-0"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                )}
+
+                {bulkActionError && (
+                  <div className="rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-800 flex items-start gap-2">
+                    <AlertCircle className="h-4 w-4 text-red-600 flex-shrink-0 mt-0.5" />
+                    <div className="min-w-0 flex-1">{bulkActionError}</div>
+                    <button
+                      type="button"
+                      onClick={() => setBulkActionError(null)}
+                      className="text-red-700 hover:text-red-900 flex-shrink-0"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div className="px-6 py-3 border-t border-gray-200 bg-gray-50 flex justify-end">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={bulkCancelDiarisationMutation.isPending}
+                  onClick={() => {
+                    if (bulkCancelDiarisationMutation.isPending) return
+                    setShowBulkActionsModal(false)
+                    setBulkActionError(null)
+                    setBulkActionResult(null)
+                  }}
+                >
+                  Close
+                </Button>
+              </div>
+            </div>
+          </div>,
+        )}
     </div>
   )
 }

@@ -12,7 +12,7 @@ from loguru import logger
 
 from app.database import get_db
 from app.dependencies import get_organization_id, get_workspace_id, get_api_key
-from app.models.database import Evaluator, Agent, Persona, Scenario, EvaluatorResult, EvaluatorResultStatus, VoiceBundle
+from app.models.database import Evaluator, Agent, Persona, Scenario, EvaluatorResult, EvaluatorResultStatus, VoiceBundle, Metric
 from app.models.schemas import (
     EvaluatorCreate,
     EvaluatorUpdate,
@@ -117,11 +117,51 @@ def create_evaluator(
     Standard evaluators (agent + persona + scenario) require all three
     referenced resources to live in the *same* workspace as the caller.
     """
-    is_custom = bool(evaluator_data.custom_prompt)
-    
+    is_custom = bool(evaluator_data.custom_prompt) or bool(evaluator_data.metric_ids)
+
+    validated_metric_ids: list[str] = []
+
     if is_custom:
         if not evaluator_data.name:
             raise HTTPException(status_code=400, detail="Name is required for custom evaluators")
+        # New metric-driven custom evaluators must select at least one metric.
+        # Legacy clients that only send ``custom_prompt`` keep working.
+        if evaluator_data.metric_ids is not None:
+            if not evaluator_data.metric_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Select at least one metric for the custom evaluator",
+                )
+            metric_uuids = list({m for m in evaluator_data.metric_ids})
+            metrics = db.query(Metric).filter(
+                and_(
+                    Metric.id.in_(metric_uuids),
+                    Metric.organization_id == organization_id,
+                )
+            ).all()
+            if len(metrics) != len(metric_uuids):
+                raise HTTPException(
+                    status_code=404,
+                    detail="One or more selected metrics were not found in this organization",
+                )
+            for m in metrics:
+                if not m.enabled:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Metric '{m.name}' is disabled. Enable it before selecting it.",
+                    )
+                surfaces = m.enabled_surfaces or []
+                if surfaces and "agent" not in surfaces:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Metric '{m.name}' is not enabled for the agent surface.",
+                    )
+            validated_metric_ids = [str(mid) for mid in metric_uuids]
+        elif not evaluator_data.custom_prompt:
+            raise HTTPException(
+                status_code=400,
+                detail="Provide metric_ids (or a custom_prompt) for custom evaluators",
+            )
     else:
         if not evaluator_data.agent_id or not evaluator_data.persona_id or not evaluator_data.scenario_id:
             raise HTTPException(
@@ -185,6 +225,7 @@ def create_evaluator(
         persona_id=evaluator_data.persona_id if not is_custom else None,
         scenario_id=evaluator_data.scenario_id if not is_custom else None,
         custom_prompt=evaluator_data.custom_prompt if is_custom else None,
+        metric_ids=validated_metric_ids if (is_custom and validated_metric_ids) else None,
         llm_provider=evaluator_data.llm_provider.value if evaluator_data.llm_provider else None,
         llm_model=evaluator_data.llm_model,
         tags=evaluator_data.tags,
@@ -401,6 +442,36 @@ def update_evaluator(
     if evaluator_data.custom_prompt is not None:
         evaluator.custom_prompt = evaluator_data.custom_prompt
 
+    if evaluator_data.metric_ids is not None:
+        if evaluator_data.metric_ids:
+            metric_uuids = list({m for m in evaluator_data.metric_ids})
+            metrics = db.query(Metric).filter(
+                and_(
+                    Metric.id.in_(metric_uuids),
+                    Metric.organization_id == organization_id,
+                )
+            ).all()
+            if len(metrics) != len(metric_uuids):
+                raise HTTPException(
+                    status_code=404,
+                    detail="One or more selected metrics were not found in this organization",
+                )
+            for m in metrics:
+                if not m.enabled:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Metric '{m.name}' is disabled. Enable it before selecting it.",
+                    )
+                surfaces = m.enabled_surfaces or []
+                if surfaces and "agent" not in surfaces:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Metric '{m.name}' is not enabled for the agent surface.",
+                    )
+            evaluator.metric_ids = [str(mid) for mid in metric_uuids]
+        else:
+            evaluator.metric_ids = None
+
     if evaluator_data.llm_provider is not None:
         evaluator.llm_provider = evaluator_data.llm_provider.value
     
@@ -518,7 +589,7 @@ def run_evaluators(
             continue
             
         try:
-            is_custom = bool(evaluator.custom_prompt)
+            is_custom = bool(evaluator.custom_prompt) or bool(evaluator.metric_ids) or evaluator.agent_id is None
             if is_custom:
                 scenario_name = evaluator.name or "Custom Evaluation"
             else:

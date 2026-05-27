@@ -10,6 +10,7 @@ from loguru import logger
 
 from app.models.database import ModelProvider
 
+from .json_utils import repair_truncated_json
 from .score_utils import (
     provider_matches,
     extract_score,
@@ -463,6 +464,7 @@ def build_evaluation_prompt(
     parent_metric=None,
     running_discovered: list | None = None,
     extra_context: str | None = None,
+    all_columns_block: str | None = None,
     comparison_pair: tuple[str, str] | None = None,
     discover_new_metrics: bool = False,
     running_discovered_metrics: list | None = None,
@@ -480,28 +482,45 @@ def build_evaluation_prompt(
         parent_metric: Optional parent Metric when ``llm_metrics`` are all
             children of the same parent. When set, the metrics block is
             rendered as a single hierarchical category instead of N
-            independent metric lines.
-        extra_context: Optional pre-formatted block of additional inputs
-            (e.g. selected CSV column values from a call import row).
-            When set, it is injected as a "Context Inputs" section before
-            the transcript so column-input judge metrics can score named
-            columns instead of (or in addition to) the transcript.
+            independent metric lines. May be combined with
+            ``comparison_pair`` for categorisation metrics whose prompt
+            asks the LLM to compare the production and diarised
+            transcripts.
+        extra_context: Legacy: pre-formatted block injected as a
+            "Context Inputs" section. Kept on the signature for
+            backwards-compatibility with non-call-import callers (e.g.
+            scenario evaluator) that may still use it. The call-import
+            worker now uses ``all_columns_block`` instead.
+        all_columns_block: Optional pre-formatted block of EVERY CSV
+            column from a call-import row. When set, rendered as a
+            "## Imported Columns" section below ``context_block`` so the
+            LLM has full row context for every metric without needing a
+            per-metric column allow-list.
         comparison_pair: Optional ``(production, diarised)`` transcript
             pair. When set, the single ``## Conversation Transcript``
             section is replaced by a labeled ``## Transcripts to
             Compare`` block with ``### Production Transcript`` and
             ``### Diarised Transcript`` subsections, and ``transcription``
             is ignored. Used by transcript-compare judge metrics
-            (``Metric.compare_transcripts=True``) so the LLM scores the
-            metric based on the relationship between the two transcripts
-            rather than the content of one. ``parent_metric`` is not
-            supported in this mode — v1 keeps comparison metrics
-            standalone.
+            (``Metric.compare_transcripts=True`` *or* metrics whose
+            description references the production transcript — see
+            ``_metric_text_references_production`` in
+            ``evaluate_call_import_row``). Can be combined with
+            ``parent_metric`` so a categorisation parent can score
+            against the pair.
 
     Returns:
         Complete evaluation prompt string
     """
-    is_custom_evaluator = evaluator and bool(evaluator.custom_prompt)
+    is_custom_evaluator = evaluator and (
+        bool(evaluator.custom_prompt)
+        or bool(getattr(evaluator, "metric_ids", None))
+        # Some call-import code paths pass a lightweight SimpleNamespace
+        # carrying only provider/model overrides (no ``agent_id`` field).
+        # Treat missing ``agent_id`` exactly like ``None`` so prompt
+        # construction stays robust across evaluator shapes.
+        or (getattr(evaluator, "agent_id", None) is None)
+    )
     is_comparison = comparison_pair is not None
 
     context_block = ""
@@ -511,6 +530,21 @@ def build_evaluation_prompt(
             "The following named values come from the source row's imported "
             "columns. Treat them as authoritative inputs for the metrics below.\n\n"
             f"{extra_context.strip()}\n"
+        )
+
+    if all_columns_block and all_columns_block.strip():
+        # Rendered AFTER ``context_block`` so the explicit per-metric
+        # context wins precedence when both are present (today only the
+        # call-import worker sets ``all_columns_block`` and it doesn't
+        # set ``extra_context``, but the ordering keeps the legacy
+        # contract intact for any other caller).
+        context_block += (
+            "\n## Imported Columns\n"
+            "The following are every column from the source CSV row, in upload "
+            "order. Treat them as supporting context; the metric is still scored "
+            "against the transcript(s) above unless the metric description "
+            "explicitly asks otherwise.\n\n"
+            f"{all_columns_block.strip()}\n"
         )
 
     # Build the transcript section once so the custom-evaluator and
@@ -544,12 +578,20 @@ def build_evaluation_prompt(
         )
 
     if is_custom_evaluator:
-        prompt = f"""You are evaluating a conversation transcript against the agent's system prompt. You MUST evaluate ONLY the specific metrics listed below and use the EXACT metric keys provided.
+        has_prompt = bool(evaluator.custom_prompt and evaluator.custom_prompt.strip())
+        if has_prompt:
+            prompt = f"""You are evaluating a conversation transcript against the agent's system prompt. You MUST evaluate ONLY the specific metrics listed below and use the EXACT metric keys provided.
 
 ## Agent System Prompt
 The following is the system prompt / instructions that the agent was configured with. Use this to understand the agent's goals, rules, and expected behavior when evaluating the conversation.
 
 {evaluator.custom_prompt}
+{context_block}
+{transcript_section}
+## Metrics to Evaluate (use EXACT keys below)
+"""
+        else:
+            prompt = f"""You are evaluating a conversation transcript against the listed metrics. You MUST evaluate ONLY the specific metrics listed below and use the EXACT metric keys provided. Base your scoring on the transcript and each metric's description.
 {context_block}
 {transcript_section}
 ## Metrics to Evaluate (use EXACT keys below)
@@ -594,7 +636,12 @@ The following is the system prompt / instructions that the agent was configured 
     if parent_metric is not None:
         # Hierarchical mode: render ONE category block with the children
         # plus a sequence array. Falls through to the format
-        # instructions which understand the parent grouping.
+        # instructions which understand the parent grouping. When
+        # ``comparison_pair`` is also set (categorisation parent whose
+        # prompt references the production / diarised transcript pair),
+        # the labeled transcript pair was already rendered as the
+        # ``transcript_section`` above so the category block just
+        # follows it.
         prompt += _render_parent_block(
             parent_metric,
             llm_metrics,
@@ -975,25 +1022,59 @@ Example of WRONG format (DO NOT do this):
 
 
 def _parse_llm_response(response_text: str, result_id: str) -> dict:
-    """Parse LLM response text to extract evaluation data."""
-    text = response_text.strip()
+    """Parse LLM response text to extract evaluation data.
+
+    Robust to: markdown code fences, leading/trailing prose, and
+    responses truncated by ``finish_reason="length"`` (common with
+    Gemini 2.5 Flash where thinking tokens consume the output budget).
+    """
+    text = (response_text or "").strip()
 
     if text.startswith("```json"):
-        text = text.replace("```json", "").replace("```", "").strip()
+        text = text[len("```json"):].strip()
+        if text.endswith("```"):
+            text = text[: -len("```")].strip()
     elif text.startswith("```"):
-        text = text.replace("```", "").strip()
+        text = text[len("```"):].strip()
+        if text.endswith("```"):
+            text = text[: -len("```")].strip()
 
     try:
         return json.loads(text)
-    except json.JSONDecodeError:
-        logger.warning(f"[EvaluatorResult {result_id}] JSON parsing failed, attempting regex extraction")
+    except json.JSONDecodeError as initial_err:
+        logger.warning(
+            f"[EvaluatorResult {result_id}] JSON parsing failed ({initial_err}); "
+            "attempting regex extraction"
+        )
         json_match = re.search(r"\{[\s\S]*\}", text)
         if json_match:
             try:
                 return json.loads(json_match.group())
             except json.JSONDecodeError:
-                raise ValueError("Could not parse extracted JSON")
-        raise ValueError("Could not parse LLM response as JSON")
+                pass
+
+        # Last resort: repair truncated/unterminated JSON so a partially
+        # successful evaluation still yields whatever scores were emitted
+        # before the cut-off.
+        repaired = repair_truncated_json(text)
+        if repaired:
+            try:
+                parsed = json.loads(repaired)
+                logger.warning(
+                    f"[EvaluatorResult {result_id}] Recovered partial JSON "
+                    "from truncated LLM response (response was likely cut off "
+                    "at max_tokens; check finish_reason)."
+                )
+                return parsed
+            except json.JSONDecodeError:
+                pass
+
+        # Surface a useful error that hints at the real cause.
+        snippet = text[-160:] if len(text) > 160 else text
+        raise ValueError(
+            "Could not parse LLM response as JSON "
+            f"(likely truncated at max_tokens). Tail: {snippet!r}"
+        )
 
 
 def evaluate_with_llm(
@@ -1010,6 +1091,7 @@ def evaluate_with_llm(
     parent_metric=None,
     running_discovered: list | None = None,
     extra_context: str | None = None,
+    all_columns_block: str | None = None,
     comparison_pair: tuple[str, str] | None = None,
     discover_new_metrics: bool = False,
     running_discovered_metrics: list | None = None,
@@ -1055,6 +1137,7 @@ def evaluate_with_llm(
         parent_metric=parent_metric,
         running_discovered=running_discovered,
         extra_context=extra_context,
+        all_columns_block=all_columns_block,
         comparison_pair=comparison_pair,
         discover_new_metrics=discover_new_metrics,
         running_discovered_metrics=running_discovered_metrics,
@@ -1094,6 +1177,20 @@ def evaluate_with_llm(
         {"role": "user", "content": evaluation_prompt},
     ]
 
+    # Size the output budget to the prompt: more metrics + rationales
+    # means more JSON. 2000 tokens was too tight on Gemini 2.5 Flash where
+    # internal "thinking" tokens are deducted from max_output_tokens and
+    # truncated responses surfaced as JSONDecodeError. Scale to roughly
+    # 300 tokens per metric (covers value + rationale + comma/quotes),
+    # clamped to a reasonable ceiling. ``llm_service`` will additionally
+    # disable thinking and enforce a floor for Gemini 2.5.
+    metric_count = max(1, len(llm_metrics))
+    rationale_count = sum(1 for m in llm_metrics if _wants_rationale(m))
+    dynamic_max_tokens = min(
+        8192,
+        max(2000, 300 * metric_count + 200 * rationale_count),
+    )
+
     evaluation_start_time = time.time()
     llm_result = llm_service.generate_response(
         messages=messages,
@@ -1102,9 +1199,16 @@ def evaluate_with_llm(
         organization_id=organization_id,
         db=db,
         temperature=0.3,
-        max_tokens=2000,
+        max_tokens=dynamic_max_tokens,
     )
     evaluation_time = time.time() - evaluation_start_time
+
+    if llm_result.get("truncated"):
+        logger.warning(
+            f"[EvaluatorResult {result_id}] LLM response was truncated "
+            f"(finish_reason=length, model={llm_model}, "
+            f"max_tokens={dynamic_max_tokens}). Parser will attempt recovery."
+        )
 
     evaluation_data = _parse_llm_response(llm_result["text"], result_id)
 

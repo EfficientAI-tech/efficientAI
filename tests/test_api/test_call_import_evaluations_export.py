@@ -419,3 +419,150 @@ def test_export_surfaces_both_transcripts_and_diarised_source(
     assert rows[0]["Production Transcript"] == "hello world"
     assert rows[0]["Diarised Transcript"] == "worker output text"
     assert rows[0]["Evaluated Transcript Source"] == "Diarised"
+
+
+def test_export_flattens_multi_line_diarised_transcript(
+    authenticated_client, db_session, org_id, seed_org
+):
+    """Diarised transcripts are stored as ``<speaker>: <text>`` lines joined
+    by ``\\n`` so the in-app TranscriptView can render chat bubbles. When
+    exporting to CSV those newlines explode the spreadsheet cell vertically
+    — every turn becomes its own line in Excel. The export endpoint must
+    collapse them to a single space-separated line so the cell stays
+    readable in Excel / Google Sheets without disturbing the DB shape."""
+    call_import = _make_call_import(db_session, org_id)
+    source_row = _make_call_import_row(db_session, call_import)
+    source_row.diarised_transcript = (
+        "agent: hi there\nuser: hello\nagent: how can I help"
+    )
+    # Production transcript with a stray newline — both transcript columns
+    # are flattened so the spreadsheet stays consistent regardless of
+    # which source the operator picks.
+    source_row.transcript = "line one\nline two"
+    db_session.commit()
+
+    metric = _make_metric(
+        db_session, org_id, name="Quality", capture_rationale=False
+    )
+    evaluation = _make_evaluation_with_row(
+        db_session,
+        call_import=call_import,
+        source_row=source_row,
+        metrics=[metric],
+        metric_scores={
+            str(metric.id): {
+                "value": 1.0,
+                "type": "rating",
+                "metric_name": "Quality",
+            }
+        },
+    )
+
+    response = authenticated_client.get(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/export"
+    )
+    assert response.status_code == 200, response.text
+    _, rows = _parse_csv(response.content)
+
+    assert (
+        rows[0]["Diarised Transcript"]
+        == "agent: hi there user: hello agent: how can I help"
+    )
+    assert "\n" not in rows[0]["Diarised Transcript"]
+    assert rows[0]["Production Transcript"] == "line one line two"
+    assert "\n" not in rows[0]["Production Transcript"]
+
+
+def test_export_supports_xlsx_format(
+    authenticated_client, db_session, org_id, seed_org
+):
+    """The ``format=xlsx`` query param returns a native Excel workbook
+    rather than a CSV — same column layout, same flattened transcripts,
+    UTF-8-native cells (no BOM dance needed)."""
+    import io as io_module
+
+    from openpyxl import load_workbook
+
+    call_import = _make_call_import(db_session, org_id)
+    source_row = _make_call_import_row(db_session, call_import)
+    # Use Devanagari text + multi-line diarisation to exercise both the
+    # unicode handling and the cell-flattening in the xlsx writer.
+    source_row.diarised_transcript = "agent: नमस्ते\nuser: हेलो"
+    db_session.commit()
+
+    metric = _make_metric(
+        db_session, org_id, name="Quality", capture_rationale=False
+    )
+    evaluation = _make_evaluation_with_row(
+        db_session,
+        call_import=call_import,
+        source_row=source_row,
+        metrics=[metric],
+        metric_scores={
+            str(metric.id): {
+                "value": 0.75,
+                "type": "rating",
+                "metric_name": "Quality",
+            }
+        },
+    )
+
+    response = authenticated_client.get(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/export",
+        params={"format": "xlsx"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith(
+        "application/vnd.openxmlformats-officedocument"
+    )
+    disposition = response.headers.get("content-disposition", "")
+    assert ".xlsx" in disposition
+
+    workbook = load_workbook(io_module.BytesIO(response.content), read_only=True)
+    worksheet = workbook.active
+    rows_iter = worksheet.iter_rows(values_only=True)
+    header_row = list(next(rows_iter))
+    assert "Production Transcript" in header_row
+    assert "Diarised Transcript" in header_row
+    assert "Quality" in header_row
+
+    data_rows = [list(r) for r in rows_iter]
+    assert len(data_rows) == 1
+
+    diarised_idx = header_row.index("Diarised Transcript")
+    quality_idx = header_row.index("Quality")
+    assert data_rows[0][diarised_idx] == "agent: नमस्ते user: हेलो"
+    assert data_rows[0][quality_idx] == "0.75"
+
+
+def test_export_defaults_to_csv_when_format_omitted(
+    authenticated_client, db_session, org_id, seed_org
+):
+    """Backwards-compat: callers that don't pass ``format`` still get the
+    same CSV response they used to (UTF-8 BOM, ``text/csv`` content-type)."""
+    call_import = _make_call_import(db_session, org_id)
+    source_row = _make_call_import_row(db_session, call_import)
+    metric = _make_metric(
+        db_session, org_id, name="Quality", capture_rationale=False
+    )
+    evaluation = _make_evaluation_with_row(
+        db_session,
+        call_import=call_import,
+        source_row=source_row,
+        metrics=[metric],
+        metric_scores={
+            str(metric.id): {
+                "value": 0.5,
+                "type": "rating",
+                "metric_name": "Quality",
+            }
+        },
+    )
+
+    response = authenticated_client.get(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/export"
+    )
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("text/csv")
+    disposition = response.headers.get("content-disposition", "")
+    assert ".csv" in disposition

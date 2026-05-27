@@ -44,7 +44,10 @@ from app.models.enums import (
     CallImportStatus,
 )
 from app.models.schemas import (
+    CallImportCancelDiarisationRequest,
+    CallImportCancelDiarisationResponse,
     CallImportDetailResponse,
+    CallImportDiarisationPromptDefaultResponse,
     CallImportInsightsMetric,
     CallImportInsightsResponse,
     CallImportInsightsRunPoint,
@@ -53,7 +56,9 @@ from app.models.schemas import (
     CallImportMetricAggregate,
     CallImportPreviewResponse,
     CallImportPreviewSheet,
+    CallImportRetryFailedRowsResponse,
     CallImportResponse,
+    CallImportRowIdsResponse,
     CallImportRowBulkDelete,
     CallImportRowBulkDeleteResponse,
     CallImportRowResponse,
@@ -1915,6 +1920,18 @@ async def get_call_import_detail(
             "can paginate against the filtered slice."
         ),
     ),
+    diarised_status: Optional[str] = Query(
+        None,
+        description=(
+            "Optional filter on ``CallImportRow.diarised_transcript_status``. "
+            "Accepts one of ``pending``, ``running``, ``completed``, "
+            "``failed``. When set, ``filtered_total_rows`` reflects the "
+            "post-filter row count (combined with the ``q`` filter when "
+            "both are supplied) so the UI can paginate against the same "
+            "slice it's displaying."
+        ),
+        pattern="^(pending|running|completed|failed)$",
+    ),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
@@ -1945,11 +1962,19 @@ async def get_call_import_detail(
     )
 
     search_term = (q or "").strip()
+    diarised_status_filter = (diarised_status or "").strip() or None
     filtered_total_rows: Optional[int] = None
     if search_term:
         rows_query = rows_query.filter(
             CallImportRow.conversation_id.ilike(f"%{search_term}%")
         )
+    if diarised_status_filter:
+        rows_query = rows_query.filter(
+            CallImportRow.diarised_transcript_status == diarised_status_filter
+        )
+    # Surface the post-filter total whenever any filter is active so
+    # the UI can paginate against the slice it's actually displaying.
+    if search_term or diarised_status_filter:
         filtered_total_rows = rows_query.count()
 
     if row_limit == 0:
@@ -1962,10 +1987,100 @@ async def get_call_import_detail(
             .all()
         )
 
+    # Batch-wide diarisation status aggregate. One ``GROUP BY`` query
+    # across the whole batch — much cheaper than paging through every
+    # row to recount on the client and lets the UI render a
+    # transcribe/diarise progress bar without a separate roundtrip.
+    diarised_status_counts: Dict[str, int] = {}
+    for status_value, count in (
+        db.query(CallImportRow.diarised_transcript_status, func.count())
+        .filter(CallImportRow.call_import_id == call_import.id)
+        .group_by(CallImportRow.diarised_transcript_status)
+        .all()
+    ):
+        if isinstance(status_value, str):
+            diarised_status_counts[status_value] = int(count or 0)
+
     detail = CallImportDetailResponse.model_validate(call_import)
     detail.rows = [CallImportRowResponse.model_validate(r) for r in rows]
     detail.filtered_total_rows = filtered_total_rows
+    detail.diarised_pending_rows = diarised_status_counts.get("pending", 0)
+    detail.diarised_running_rows = diarised_status_counts.get("running", 0)
+    detail.diarised_completed_rows = diarised_status_counts.get("completed", 0)
+    detail.diarised_failed_rows = diarised_status_counts.get("failed", 0)
     return detail
+
+
+@router.get(
+    "/{call_import_id}/row-ids",
+    response_model=CallImportRowIdsResponse,
+    operation_id="listCallImportRowIds",
+)
+async def list_call_import_row_ids(
+    call_import_id: UUID,
+    q: Optional[str] = Query(
+        None,
+        description=(
+            "Optional case-insensitive substring filter on "
+            "``conversation_id``. Same semantics as the detail endpoint."
+        ),
+    ),
+    diarised_status: Optional[str] = Query(
+        None,
+        description=(
+            "Optional filter on ``CallImportRow.diarised_transcript_status``. "
+            "Accepts ``pending`` / ``running`` / ``completed`` / ``failed``."
+        ),
+        pattern="^(pending|running|completed|failed)$",
+    ),
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportRowIdsResponse:
+    """Return every matching ``CallImportRow.id`` for cross-page bulk select.
+
+    Lightweight companion to ``GET /{call_import_id}`` — the detail
+    endpoint caps ``row_limit`` at 5000 and ships the entire row body
+    on each page, so harvesting ids that way is wasteful when the
+    user just wants to bulk-delete or bulk-transcribe everything that
+    matches the current filters. This endpoint applies the same ``q``
+    and ``diarised_status`` filters and returns only the ids.
+    """
+    del api_key
+
+    call_import = (
+        db.query(CallImport)
+        .filter(
+            CallImport.id == call_import_id,
+            CallImport.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not call_import:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Call import not found",
+        )
+
+    rows_query = db.query(CallImportRow.id).filter(
+        CallImportRow.call_import_id == call_import.id
+    )
+    search_term = (q or "").strip()
+    if search_term:
+        rows_query = rows_query.filter(
+            CallImportRow.conversation_id.ilike(f"%{search_term}%")
+        )
+    status_filter = (diarised_status or "").strip() or None
+    if status_filter:
+        rows_query = rows_query.filter(
+            CallImportRow.diarised_transcript_status == status_filter
+        )
+
+    ids = [
+        row_id
+        for (row_id,) in rows_query.order_by(CallImportRow.row_index).all()
+    ]
+    return CallImportRowIdsResponse(ids=ids, total=len(ids))
 
 
 def _revoke_pending_tasks(rows: List[CallImportRow]) -> None:
@@ -2239,6 +2354,104 @@ def _recompute_call_import_counters(
 
 
 @router.post(
+    "/{call_import_id}/retry-failed",
+    response_model=CallImportRetryFailedRowsResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    operation_id="retryFailedCallImportRows",
+)
+async def retry_failed_call_import_rows(
+    call_import_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportRetryFailedRowsResponse:
+    """Re-enqueue every failed import row in this batch.
+
+    Useful when transient provider issues are resolved and the operator wants
+    a one-click "try failed downloads again" pass without re-uploading the CSV.
+    """
+    del api_key
+
+    call_import = (
+        db.query(CallImport)
+        .filter(
+            CallImport.id == call_import_id,
+            CallImport.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not call_import:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Call import not found",
+        )
+
+    failed_rows = (
+        db.query(CallImportRow)
+        .filter(
+            CallImportRow.call_import_id == call_import.id,
+            CallImportRow.status == CallImportRowStatus.FAILED,
+        )
+        .order_by(CallImportRow.row_index.asc())
+        .all()
+    )
+    if not failed_rows:
+        return CallImportRetryFailedRowsResponse(
+            requeued=0,
+            enqueue_failed=0,
+            skipped=0,
+        )
+
+    from app.workers.tasks.process_call_import_row import (
+        process_call_import_row_task,
+    )
+
+    # Reset rows to pending BEFORE enqueue so the UI reflects "retry in
+    # progress" immediately even if the worker queue is backlogged.
+    for row in failed_rows:
+        row.status = CallImportRowStatus.PENDING
+        row.error_message = None
+        row.celery_task_id = None
+
+    db.flush()
+    _recompute_call_import_counters(db, call_import)
+    db.commit()
+
+    requeued = 0
+    enqueue_failed = 0
+    skipped = 0
+
+    for row in failed_rows:
+        try:
+            process_call_import_row_task.delay(str(row.id))
+            requeued += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "Failed to re-enqueue call import row {} for import {}",
+                row.id,
+                call_import.id,
+            )
+            db.refresh(row)
+            if row.status != CallImportRowStatus.PENDING:
+                skipped += 1
+                continue
+            row.status = CallImportRowStatus.FAILED
+            row.error_message = f"Failed to enqueue retry: {exc}"
+            enqueue_failed += 1
+
+    if enqueue_failed > 0:
+        db.flush()
+        _recompute_call_import_counters(db, call_import)
+        db.commit()
+
+    return CallImportRetryFailedRowsResponse(
+        requeued=requeued,
+        enqueue_failed=enqueue_failed,
+        skipped=skipped,
+    )
+
+
+@router.post(
     "/{call_import_id}/rows/bulk-delete",
     response_model=CallImportRowBulkDeleteResponse,
     operation_id="bulkDeleteCallImportRows",
@@ -2324,6 +2537,34 @@ async def bulk_delete_call_import_rows(
 # ---------------------------------------------------------------------------
 # Diarization / transcription endpoints
 # ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/diarisation-prompt-default",
+    response_model=CallImportDiarisationPromptDefaultResponse,
+    operation_id="getCallImportDiarisationPromptDefault",
+)
+async def get_call_import_diarisation_prompt_default(
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+) -> CallImportDiarisationPromptDefaultResponse:
+    """Return the canonical LLM diariser prompt.
+
+    The Transcribe / Run Evaluation modals call this on open so they
+    can pre-fill the prompt textarea. Returning the constant from the
+    backend (rather than hard-coding it in the frontend) keeps the
+    fallback used by the worker and the placeholder shown in the UI
+    in lock-step — operators always see the *actual* default they'd
+    get if they leave the field blank.
+    """
+    del api_key, organization_id
+    from app.workers.tasks.helpers.llm_diarisation import (
+        DEFAULT_DIARIZATION_PROMPT,
+    )
+
+    return CallImportDiarisationPromptDefaultResponse(
+        prompt=DEFAULT_DIARIZATION_PROMPT
+    )
 
 
 def _select_rows_for_transcription(
@@ -2459,6 +2700,14 @@ async def transcribe_call_import(
                 str(payload.credential_id) if payload.credential_id else None,
                 payload.language,
                 payload.overwrite_existing,
+                None,  # run_eval_row_id — not chained from this route
+                payload.diarization_llm_provider,
+                payload.diarization_llm_model,
+                str(payload.diarization_llm_credential_id)
+                if payload.diarization_llm_credential_id
+                else None,
+                payload.diarization_prompt,
+                payload.mode,
             )
             enqueued += 1
         except Exception as exc:
@@ -2542,6 +2791,14 @@ async def transcribe_call_import_row(
             str(payload.credential_id) if payload.credential_id else None,
             payload.language,
             payload.overwrite_existing,
+            None,  # run_eval_row_id — not chained from this route
+            payload.diarization_llm_provider,
+            payload.diarization_llm_model,
+            str(payload.diarization_llm_credential_id)
+            if payload.diarization_llm_credential_id
+            else None,
+            payload.diarization_prompt,
+            payload.mode,
         )
         return CallImportTranscribeResponse(
             queued=1,
@@ -2559,6 +2816,361 @@ async def transcribe_call_import_row(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to enqueue transcription: {exc}",
         )
+
+
+# ---------------------------------------------------------------------------
+# Cancel-in-flight diarisation
+# ---------------------------------------------------------------------------
+#
+# Long-running multimodal LLM diarisation calls (especially LLM-only mode on
+# slow audio) can sit in ``pending`` / ``running`` for tens of minutes when an
+# upstream provider stalls. Without an abort affordance the operator's only
+# recourse is to wait for Celery's ``time_limit`` to fire — which can be
+# several minutes — or to manually mutate the DB. These helpers + the two
+# endpoints below give the UI a first-class "Stop diarisation" button.
+#
+# Why ``terminate=True``: the legacy ``_revoke_pending_tasks`` helper uses
+# ``terminate=False`` because it's called from delete-flow paths where the
+# task may simply not get to run (a worker pulls it off the queue and drops
+# it). For a user-initiated cancel we want SIGTERM to interrupt the worker
+# mid-LLM call so the audio HTTP request actually aborts. ``terminate=True``
+# routes SIGTERM to the executing process; ``signal="SIGTERM"`` is the
+# default but we spell it out so the intent is obvious to reviewers.
+
+# Sentinel error message stamped on cancelled rows. Read by the transcribe
+# worker's finaliser (see ``app/workers/tasks/transcribe_call_import_row.py``)
+# to detect a row that was cancelled mid-flight and AVOID overwriting it
+# with whatever partial result the worker had managed to compute before the
+# SIGTERM landed.
+CANCELLED_BY_USER_ERROR: str = "Diarisation cancelled by user"
+
+
+def _cancellable_diarisation_states() -> Tuple[str, ...]:
+    """States that a diarisation row can be cancelled from.
+
+    Kept as a tiny helper so adding a future ``"queued"`` / ``"retrying"``
+    state only needs one edit.
+    """
+    return ("pending", "running")
+
+
+def _revoke_diarisation_task(row: CallImportRow) -> None:
+    """Best-effort revoke of a single row's diarisation Celery task.
+
+    Always swallows control-plane exceptions — Celery's control bus is
+    inherently best-effort and a missed revoke is not catastrophic
+    because the DB row is already flipped to ``failed`` by the caller
+    before this runs (so the UI immediately reflects the cancel; if
+    the task happens to finish anyway, the worker's finaliser skips
+    over the row via :data:`CANCELLED_BY_USER_ERROR`).
+    """
+    task_id = (row.celery_task_id or "").strip()
+    if not task_id:
+        return
+    try:
+        from app.workers.celery_app import celery_app
+
+        celery_app.control.revoke(
+            task_id, terminate=True, signal="SIGTERM"
+        )
+        logger.info(
+            "Revoked diarisation task {} for call-import row {}",
+            task_id,
+            row.id,
+        )
+    except Exception as exc:  # noqa: BLE001 — revoke is best-effort
+        logger.warning(
+            "Failed to revoke diarisation task {} for row {}: {}",
+            task_id,
+            row.id,
+            exc,
+        )
+
+
+def _apply_diarisation_cancel(rows: List[CallImportRow]) -> Tuple[int, int]:
+    """Cancel diarisation on every cancellable row in ``rows``.
+
+    Returns ``(cancelled, skipped)`` so the caller can build a typed
+    response without re-querying the DB. The caller is responsible for
+    ``db.commit()`` after this returns — we deliberately don't commit
+    here so a batch endpoint can flush all rows in one transaction.
+    """
+    cancellable_states = _cancellable_diarisation_states()
+    cancelled = 0
+    skipped = 0
+    for row in rows:
+        if (row.diarised_transcript_status or "").lower() not in cancellable_states:
+            skipped += 1
+            continue
+        # Flip the row state BEFORE we revoke so the UI's next poll
+        # already shows the cancel, even if Celery's control plane is
+        # slow to ack.
+        row.diarised_transcript_status = "failed"
+        row.diarised_transcript_error = CANCELLED_BY_USER_ERROR
+        _revoke_diarisation_task(row)
+        # Drop the task id so a follow-up retry (or a stale poll) can't
+        # accidentally re-revoke or get confused.
+        row.celery_task_id = None
+        cancelled += 1
+    return cancelled, skipped
+
+
+@router.post(
+    "/{call_import_id}/rows/{row_id}/cancel-diarisation",
+    response_model=CallImportRowResponse,
+    status_code=status.HTTP_200_OK,
+    operation_id="cancelCallImportRowDiarisation",
+)
+async def cancel_call_import_row_diarisation(
+    call_import_id: UUID,
+    row_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportRowResponse:
+    """Abort an in-flight (or queued) diarisation for a single row.
+
+    Idempotent: calling on a row that's already terminal (``completed``
+    / ``failed`` / ``idle``) returns the row unchanged with a 200, so
+    the UI can fire this from a "Stop" button without having to
+    pre-check the state.
+
+    Race notes:
+
+    * The row's ``diarised_transcript_status`` is flipped to ``failed``
+      with :data:`CANCELLED_BY_USER_ERROR` BEFORE the Celery revoke,
+      so the polling UI sees the cancel immediately.
+    * If the worker happens to finish between our DB flip and the
+      SIGTERM landing, its finaliser will detect the cancelled
+      sentinel on the row and skip its own status / score writes
+      (see :mod:`app.workers.tasks.transcribe_call_import_row`).
+    """
+    del api_key
+
+    call_import = (
+        db.query(CallImport)
+        .filter(
+            CallImport.id == call_import_id,
+            CallImport.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not call_import:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Call import not found",
+        )
+
+    row = (
+        db.query(CallImportRow)
+        .filter(
+            CallImportRow.id == row_id,
+            CallImportRow.call_import_id == call_import_id,
+        )
+        .first()
+    )
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Call import row not found",
+        )
+
+    _apply_diarisation_cancel([row])
+    db.commit()
+    db.refresh(row)
+    return CallImportRowResponse.model_validate(row)
+
+
+@router.post(
+    "/{call_import_id}/cancel-diarisation",
+    response_model=CallImportCancelDiarisationResponse,
+    status_code=status.HTTP_200_OK,
+    operation_id="cancelCallImportDiarisation",
+)
+async def cancel_call_import_diarisation(
+    call_import_id: UUID,
+    payload: Optional[CallImportCancelDiarisationRequest] = None,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportCancelDiarisationResponse:
+    """Abort in-flight diarisation for many rows in a single call.
+
+    Default body (no ``row_ids``) cancels every row in this import
+    whose ``diarised_transcript_status`` is ``pending`` or
+    ``running`` — the "stop everything" button. Pass ``row_ids`` to
+    scope the cancel to the rows the operator has selected.
+
+    Returns ``(cancelled, skipped)`` so the UI can render a tight
+    toast ("Cancelled 3 rows · 1 skipped (already completed)").
+    """
+    del api_key
+
+    call_import = (
+        db.query(CallImport)
+        .filter(
+            CallImport.id == call_import_id,
+            CallImport.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not call_import:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Call import not found",
+        )
+
+    base_query = db.query(CallImportRow).filter(
+        CallImportRow.call_import_id == call_import_id
+    )
+
+    requested_ids = (
+        payload.row_ids if payload and payload.row_ids is not None else None
+    )
+    if requested_ids is not None:
+        if not requested_ids:
+            # Empty list is "no rows requested" — treat as a no-op
+            # 200 rather than 400 so the UI can pass through an empty
+            # selection without a special-case.
+            return CallImportCancelDiarisationResponse(cancelled=0, skipped=0)
+        rows = base_query.filter(CallImportRow.id.in_(requested_ids)).all()
+        found_ids = {r.id for r in rows}
+        # Treat requested-but-not-found ids as ``skipped`` so the UI's
+        # numbers reconcile (a stale selection that includes deleted
+        # rows shouldn't 404 the whole call).
+        missing = [rid for rid in requested_ids if rid not in found_ids]
+        skipped_missing = len(missing)
+    else:
+        # Implicit "cancel every cancellable row in this import" path.
+        rows = base_query.filter(
+            CallImportRow.diarised_transcript_status.in_(
+                list(_cancellable_diarisation_states())
+            )
+        ).all()
+        skipped_missing = 0
+
+    cancelled, skipped = _apply_diarisation_cancel(rows)
+    db.commit()
+    return CallImportCancelDiarisationResponse(
+        cancelled=cancelled,
+        skipped=skipped + skipped_missing,
+    )
+
+
+def _render_diarised_segments_text(
+    segments: Optional[List[Dict[str, Any]]],
+    *,
+    swap: bool = False,
+) -> str:
+    """Render ``CallImportRow.diarised_segments`` as ``<speaker>: <text>`` lines.
+
+    Mirrors the worker's ``_render_turns_as_text`` (kept duplicated so
+    the route doesn't need to import a Celery task module just to
+    rebuild the rendered transcript). Only ``agent`` and ``user`` are
+    swapped — multi-party calls keep their ``speaker_N`` labels through
+    a swap so we don't silently collapse a third speaker into the user
+    side.
+    """
+    if not segments:
+        return ""
+    out: List[str] = []
+    for turn in segments:
+        if not isinstance(turn, dict):
+            continue
+        speaker = (turn.get("speaker") or "").strip()
+        text = (turn.get("text") or "").strip()
+        if not speaker or not text:
+            continue
+        if swap:
+            if speaker == "agent":
+                speaker = "user"
+            elif speaker == "user":
+                speaker = "agent"
+        out.append(f"{speaker}: {text}")
+    return "\n".join(out)
+
+
+@router.post(
+    "/{call_import_id}/rows/{row_id}/diarised-speaker-swap",
+    response_model=CallImportRowResponse,
+    operation_id="toggleCallImportRowSpeakerSwap",
+)
+async def toggle_call_import_row_speaker_swap(
+    call_import_id: UUID,
+    row_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportRowResponse:
+    """Flip the user <-> agent mapping on a diarised row.
+
+    The worker's "first speaker is the agent" heuristic is right most of
+    the time but does fail on inbound recordings where the customer
+    greets first, on recordings where the agent stays silent for the
+    intro, etc. Rather than rerun the (expensive) STT + pyannote
+    pipeline for those cases, we let reviewers flip the mapping in
+    place: the structured ``diarised_segments`` are the source of truth
+    and we re-render the plain-text ``diarised_transcript`` from them
+    with the swap applied. The next CSV export will then show the
+    corrected labels.
+
+    Returns the updated row so the frontend can refresh without an
+    extra round-trip.
+    """
+
+    del api_key
+
+    call_import = (
+        db.query(CallImport)
+        .filter(
+            CallImport.id == call_import_id,
+            CallImport.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not call_import:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Call import not found",
+        )
+
+    row = (
+        db.query(CallImportRow)
+        .filter(
+            CallImportRow.id == row_id,
+            CallImportRow.call_import_id == call_import_id,
+            CallImportRow.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Call import row not found",
+        )
+
+    segments = row.diarised_segments if isinstance(row.diarised_segments, list) else None
+    if not segments:
+        # Without structured turns the swap toggle would have nothing to
+        # re-render — surface a clear error rather than silently
+        # flipping a flag the UI never read.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This row has no structured diarised segments to swap. "
+                "Re-run diarisation to generate per-speaker turns first."
+            ),
+        )
+
+    new_swap = not bool(row.diarised_speaker_swap)
+    row.diarised_speaker_swap = new_swap
+    row.diarised_transcript = (
+        _render_diarised_segments_text(segments, swap=new_swap) or None
+    )
+    db.commit()
+    db.refresh(row)
+
+    return CallImportRowResponse.model_validate(row)
 
 
 # ---------------------------------------------------------------------------
@@ -2666,16 +3278,29 @@ async def get_call_import_insights(
         aggregates = _compute_metric_aggregates(db, evaluation, eval_rows)
         for agg in aggregates:
             if agg.metric_id not in metric_meta:
-                metric_obj = (
-                    db.query(Metric)
-                    .filter(
-                        Metric.id == UUID(agg.metric_id),
-                        Metric.organization_id == organization_id,
+                # ``agg.metric_id`` is normally a UUID string, but the
+                # aggregator also emits ids that surface in row scores
+                # without a matching ``Metric`` row (e.g. a metric the
+                # user deleted mid-run, or LLM-discovered slugs). Those
+                # are not valid UUIDs, so coerce defensively and skip
+                # the metric registry lookup when the cast fails — the
+                # ``meta is None`` branch below already handles the
+                # display via the values stored on ``agg`` itself.
+                try:
+                    metric_uuid = UUID(agg.metric_id)
+                except (ValueError, AttributeError, TypeError):
+                    metric_uuid = None
+                if metric_uuid is not None:
+                    metric_obj = (
+                        db.query(Metric)
+                        .filter(
+                            Metric.id == metric_uuid,
+                            Metric.organization_id == organization_id,
+                        )
+                        .first()
                     )
-                    .first()
-                )
-                if metric_obj is not None:
-                    metric_meta[agg.metric_id] = metric_obj
+                    if metric_obj is not None:
+                        metric_meta[agg.metric_id] = metric_obj
             history = metric_history.setdefault(agg.metric_id, [])
             history.append(
                 CallImportInsightsRunPoint(

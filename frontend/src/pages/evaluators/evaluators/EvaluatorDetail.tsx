@@ -5,7 +5,7 @@ import ReactMarkdown from 'react-markdown'
 import { apiClient } from '../../../lib/api'
 import { ModelProvider, AIProvider, Integration, IntegrationPlatform } from '../../../types/api'
 import Button from '../../../components/Button'
-import { ArrowLeft, Edit, Save, X, Phone, Globe, Sparkles, Trash2, AlertCircle, Brain, ChevronDown } from 'lucide-react'
+import { ArrowLeft, Edit, Save, X, Phone, Globe, Trash2, AlertCircle, Brain, ChevronDown } from 'lucide-react'
 import { useToast } from '../../../hooks/useToast'
 import { getProviderLabel, getProviderLogo } from '../../../config/providers'
 
@@ -17,6 +17,7 @@ interface Evaluator {
   persona_id?: string | null
   scenario_id?: string | null
   custom_prompt?: string | null
+  metric_ids?: string[] | null
   llm_provider?: string | null
   llm_model?: string | null
   tags?: string[]
@@ -54,7 +55,6 @@ export default function EvaluatorDetail() {
   const [isEditing, setIsEditing] = useState(false)
   const [editData, setEditData] = useState<Evaluator | null>(null)
   const [editTagInput, setEditTagInput] = useState('')
-  const [isFormattingPrompt, setIsFormattingPrompt] = useState(false)
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [deleteDependencies, setDeleteDependencies] = useState<Record<string, number> | null>(null)
   const [showLlmDropdown, setShowLlmDropdown] = useState(false)
@@ -66,7 +66,69 @@ export default function EvaluatorDetail() {
     enabled: !!id,
   })
 
-  const isCustom = !!evaluator?.custom_prompt
+  const isCustom = !!evaluator && (!!evaluator.custom_prompt || (evaluator.metric_ids?.length ?? 0) > 0 || !evaluator.agent_id)
+  const hasLegacyPrompt = !!evaluator?.custom_prompt
+  const hasMetricSelection = (evaluator?.metric_ids?.length ?? 0) > 0
+
+  const { data: metrics = [] } = useQuery({
+    queryKey: ['metrics', 'agent'],
+    queryFn: () => apiClient.listMetrics('agent', true),
+    enabled: isCustom,
+  })
+
+  const [selectedMetricIds, setSelectedMetricIds] = useState<string[]>([])
+
+  useEffect(() => {
+    if (isEditing && editData) {
+      setSelectedMetricIds(editData.metric_ids || [])
+    }
+  }, [isEditing, editData])
+
+  const toggleMetric = (metricId: string) => {
+    setSelectedMetricIds((prev) =>
+      prev.includes(metricId) ? prev.filter((id) => id !== metricId) : [...prev, metricId],
+    )
+  }
+
+  const toggleParentMetric = (parent: any) => {
+    const childIds: string[] = Array.isArray(parent.children)
+      ? parent.children.filter((c: any) => c.enabled).map((c: any) => c.id)
+      : []
+    setSelectedMetricIds((prev) => {
+      const set = new Set(prev)
+      const parentSelected = set.has(parent.id)
+      const someChildren = childIds.some((cid) => set.has(cid))
+      if (parentSelected || someChildren) {
+        set.delete(parent.id)
+        for (const cid of childIds) set.delete(cid)
+      } else {
+        set.add(parent.id)
+        for (const cid of childIds) set.add(cid)
+      }
+      return Array.from(set)
+    })
+  }
+
+  const toggleChildMetric = (parent: any, childId: string) => {
+    const childIds: string[] = Array.isArray(parent.children)
+      ? parent.children.filter((c: any) => c.enabled).map((c: any) => c.id)
+      : []
+    setSelectedMetricIds((prev) => {
+      const set = new Set(prev)
+      if (set.has(childId)) {
+        set.delete(childId)
+      } else {
+        set.add(childId)
+      }
+      const allSelected = childIds.length > 0 && childIds.every((cid) => set.has(cid))
+      if (allSelected) {
+        set.add(parent.id)
+      } else {
+        set.delete(parent.id)
+      }
+      return Array.from(set)
+    })
+  }
 
   const { data: details, isLoading: loadingDetails } = useQuery({
     queryKey: ['evaluator-details', id],
@@ -204,25 +266,20 @@ export default function EvaluatorDetail() {
     const data: any = { tags: editData.tags || [] }
     data.name = (editData.name || '').trim()
     if (isCustom) {
-      data.custom_prompt = editData.custom_prompt || ''
+      if (hasMetricSelection || (!hasLegacyPrompt && selectedMetricIds.length > 0)) {
+        if (selectedMetricIds.length === 0) {
+          showToast('Select at least one metric for the evaluator', 'error')
+          return
+        }
+        data.metric_ids = selectedMetricIds
+      }
+      if (hasLegacyPrompt) {
+        data.custom_prompt = editData.custom_prompt || ''
+      }
     }
     if (editData.llm_provider) data.llm_provider = editData.llm_provider
     if (editData.llm_model) data.llm_model = editData.llm_model
     updateMutation.mutate({ evalId: evaluator.id, data })
-  }
-
-  const handleFormatPrompt = async () => {
-    if (!editData?.custom_prompt?.trim()) return
-    setIsFormattingPrompt(true)
-    try {
-      const { formatted_prompt } = await apiClient.formatCustomPrompt(editData.custom_prompt)
-      setEditData({ ...editData, custom_prompt: formatted_prompt })
-    } catch (error: any) {
-      const msg = error.response?.data?.detail || error.message || 'Formatting failed'
-      showToast(`Failed to format prompt: ${msg}`, 'error')
-    } finally {
-      setIsFormattingPrompt(false)
-    }
   }
 
   if (isLoading) {
@@ -331,40 +388,247 @@ export default function EvaluatorDetail() {
 
             {isCustom ? (
               <>
-                {/* Custom Prompt */}
-                <div className="bg-white shadow rounded-lg overflow-hidden">
-                  <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
-                    <h2 className="text-lg font-semibold text-gray-900">Agent Prompt / Instructions</h2>
-                    {isEditing && editData && (
-                      <button
-                        type="button"
-                        disabled={!(editData.custom_prompt || '').trim() || isFormattingPrompt}
-                        onClick={handleFormatPrompt}
-                        className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md bg-violet-50 text-violet-700 border border-violet-200 hover:bg-violet-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                      >
-                        <Sparkles className={`h-3.5 w-3.5 ${isFormattingPrompt ? 'animate-spin' : ''}`} />
-                        {isFormattingPrompt ? 'Formatting...' : 'Format with AI'}
-                      </button>
-                    )}
+                {/* Metrics */}
+                {(hasMetricSelection || !hasLegacyPrompt) && (
+                  <div className="bg-white shadow rounded-lg overflow-hidden">
+                    <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+                      <h2 className="text-lg font-semibold text-gray-900">Metrics</h2>
+                      {isEditing && editData && (
+                        <span className="text-xs text-gray-500">
+                          {selectedMetricIds.length} selected
+                        </span>
+                      )}
+                    </div>
+                    <div className="p-6">
+                      {isEditing && editData ? (
+                        (() => {
+                          const enabledMetrics = (metrics as any[]).filter((m: any) => m.enabled)
+                          if (enabledMetrics.length === 0) {
+                            return (
+                              <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                                <p className="font-medium">No enabled agent metrics yet.</p>
+                                <p>Enable metrics in the Metrics page before editing this evaluator.</p>
+                              </div>
+                            )
+                          }
+                          return (
+                            <div className="space-y-2 max-h-[600px] overflow-y-auto">
+                              {enabledMetrics.map((metric: any) => {
+                                const children: any[] = Array.isArray(metric.children)
+                                  ? metric.children.filter((c: any) => c.enabled)
+                                  : []
+                                const isParent = !!metric.selection_mode && children.length > 0
+                                if (!isParent) {
+                                  return (
+                                    <label key={metric.id} className="flex items-start gap-2 text-sm cursor-pointer">
+                                      <input
+                                        type="checkbox"
+                                        checked={selectedMetricIds.includes(metric.id)}
+                                        onChange={() => toggleMetric(metric.id)}
+                                        className="mt-1"
+                                      />
+                                      <span>
+                                        <span className="font-medium text-gray-900">{metric.name}</span>
+                                        {metric.description ? (
+                                          <span className="block text-xs text-gray-500">{metric.description}</span>
+                                        ) : null}
+                                      </span>
+                                    </label>
+                                  )
+                                }
+                                const childIds = children.map((c) => c.id)
+                                const selectedChildCount = childIds.filter((cid) =>
+                                  selectedMetricIds.includes(cid),
+                                ).length
+                                const allSelected = selectedChildCount === childIds.length && childIds.length > 0
+                                const someSelected = selectedChildCount > 0 && !allSelected
+                                return (
+                                  <div key={metric.id} className="rounded-md border border-gray-200 bg-gray-50 p-2 space-y-1">
+                                    <label className="flex items-start gap-2 text-sm cursor-pointer">
+                                      <input
+                                        type="checkbox"
+                                        ref={(el) => {
+                                          if (el) el.indeterminate = someSelected
+                                        }}
+                                        checked={allSelected}
+                                        onChange={() => toggleParentMetric(metric)}
+                                        className="mt-1"
+                                      />
+                                      <span className="flex-1">
+                                        <span className="font-medium text-gray-900">{metric.name}</span>
+                                        <span className="ml-2 inline-flex items-center rounded-full bg-primary-100 px-2 py-0.5 text-[10px] font-medium text-primary-700">
+                                          {metric.selection_mode === 'single_choice' ? 'pick one' : 'multi-label'}
+                                        </span>
+                                        <span className="ml-2 text-[11px] text-gray-500">
+                                          {selectedChildCount}/{childIds.length} selected
+                                        </span>
+                                        {metric.description ? (
+                                          <span className="block text-xs text-gray-500">{metric.description}</span>
+                                        ) : null}
+                                      </span>
+                                    </label>
+                                    <div className="ml-6 space-y-1 border-l border-gray-200 pl-3">
+                                      {children.map((child: any) => (
+                                        <label key={child.id} className="flex items-start gap-2 text-xs cursor-pointer">
+                                          <input
+                                            type="checkbox"
+                                            checked={selectedMetricIds.includes(child.id)}
+                                            onChange={() => toggleChildMetric(metric, child.id)}
+                                            className="mt-0.5"
+                                          />
+                                          <span>
+                                            <span className="font-medium text-gray-800">{child.name}</span>
+                                            {child.description ? (
+                                              <span className="block text-[11px] text-gray-500">{child.description}</span>
+                                            ) : null}
+                                          </span>
+                                        </label>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          )
+                        })()
+                      ) : (
+                        (() => {
+                          const ids = new Set(evaluator.metric_ids || [])
+                          if (ids.size === 0) {
+                            return (
+                              <p className="text-sm text-gray-500">
+                                No specific metrics selected. This evaluator scores all enabled agent metrics.
+                              </p>
+                            )
+                          }
+                          type Group = {
+                            id: string
+                            name: string
+                            description?: string
+                            selectionMode?: string | null
+                            isParent: boolean
+                            children: { id: string; name: string; description?: string }[]
+                          }
+                          const groups: Group[] = []
+                          let matched = 0
+                          for (const m of metrics as any[]) {
+                            const children: any[] = Array.isArray(m.children) ? m.children : []
+                            const isParent = !!m.selection_mode && children.length > 0
+                            if (isParent) {
+                              const selectedChildren = children
+                                .filter((c: any) => ids.has(c.id))
+                                .map((c: any) => ({ id: c.id, name: c.name, description: c.description }))
+                              if (selectedChildren.length > 0) {
+                                groups.push({
+                                  id: m.id,
+                                  name: m.name,
+                                  description: m.description,
+                                  selectionMode: m.selection_mode,
+                                  isParent: true,
+                                  children: selectedChildren,
+                                })
+                                matched += selectedChildren.length
+                              }
+                            } else if (ids.has(m.id)) {
+                              groups.push({
+                                id: m.id,
+                                name: m.name,
+                                description: m.description,
+                                isParent: false,
+                                children: [],
+                              })
+                              matched += 1
+                            }
+                          }
+                          if (matched === 0) {
+                            return (
+                              <p className="text-sm text-gray-500">
+                                {ids.size} metric{ids.size === 1 ? '' : 's'} selected (details unavailable).
+                              </p>
+                            )
+                          }
+                          return (
+                            <div className="space-y-3 max-h-[600px] overflow-y-auto">
+                              {groups.map((g) =>
+                                g.isParent ? (
+                                  <div
+                                    key={g.id}
+                                    className="rounded-md border border-gray-200 bg-gray-50 p-3"
+                                  >
+                                    <div className="flex items-center gap-2 mb-1">
+                                      <p className="text-sm font-semibold text-gray-900">{g.name}</p>
+                                      {g.selectionMode && (
+                                        <span className="inline-flex items-center rounded-full bg-primary-100 px-2 py-0.5 text-[10px] font-medium text-primary-700">
+                                          {g.selectionMode === 'single_choice' ? 'pick one' : 'multi-label'}
+                                        </span>
+                                      )}
+                                      <span className="text-[11px] text-gray-500">
+                                        {g.children.length} selected
+                                      </span>
+                                    </div>
+                                    {g.description ? (
+                                      <p className="text-xs text-gray-500 mb-2">{g.description}</p>
+                                    ) : null}
+                                    <ul className="ml-2 space-y-1.5 border-l border-gray-200 pl-3">
+                                      {g.children.map((child) => (
+                                        <li key={child.id}>
+                                          <p className="text-xs font-medium text-gray-800">{child.name}</p>
+                                          {child.description ? (
+                                            <p className="text-[11px] text-gray-500">{child.description}</p>
+                                          ) : null}
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                ) : (
+                                  <div key={g.id} className="border-l-2 border-primary-200 pl-3">
+                                    <p className="text-sm font-medium text-gray-900">{g.name}</p>
+                                    {g.description ? (
+                                      <p className="text-xs text-gray-500">{g.description}</p>
+                                    ) : null}
+                                  </div>
+                                ),
+                              )}
+                            </div>
+                          )
+                        })()
+                      )}
+                    </div>
                   </div>
-                  <div className="p-6">
-                    {isEditing && editData ? (
-                      <textarea
-                        value={editData.custom_prompt || ''}
-                        onChange={(e) => setEditData({ ...editData, custom_prompt: e.target.value })}
-                        rows={16}
-                        placeholder="Paste the full system prompt or description of what the agent is supposed to do..."
-                        className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500 text-sm font-mono"
-                      />
-                    ) : (
-                      <div className="max-h-[600px] overflow-y-auto">
-                        <ReactMarkdown components={markdownComponents}>
-                          {evaluator.custom_prompt || ''}
-                        </ReactMarkdown>
-                      </div>
-                    )}
+                )}
+
+                {/* Legacy custom prompt (read-only when metrics are selected) */}
+                {hasLegacyPrompt && (
+                  <div className="bg-white shadow rounded-lg overflow-hidden">
+                    <div className="px-6 py-4 border-b border-gray-200">
+                      <h2 className="text-lg font-semibold text-gray-900">
+                        {hasMetricSelection ? 'Legacy Prompt' : 'Agent Prompt / Instructions'}
+                      </h2>
+                      {hasMetricSelection && (
+                        <p className="text-xs text-gray-500 mt-0.5">
+                          This evaluator was created with a free-text prompt before metric selection was supported. It is kept for reference.
+                        </p>
+                      )}
+                    </div>
+                    <div className="p-6">
+                      {isEditing && editData && !hasMetricSelection ? (
+                        <textarea
+                          value={editData.custom_prompt || ''}
+                          onChange={(e) => setEditData({ ...editData, custom_prompt: e.target.value })}
+                          rows={16}
+                          placeholder="Paste the full system prompt or description of what the agent is supposed to do..."
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-primary-500 focus:border-primary-500 text-sm font-mono"
+                        />
+                      ) : (
+                        <div className="max-h-[600px] overflow-y-auto">
+                          <ReactMarkdown components={markdownComponents}>
+                            {evaluator.custom_prompt || ''}
+                          </ReactMarkdown>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
+                )}
               </>
             ) : (
               <>

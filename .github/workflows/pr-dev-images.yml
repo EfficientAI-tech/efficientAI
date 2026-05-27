@@ -1,0 +1,171 @@
+name: PR Dev Images
+
+on:
+  pull_request:
+    branches:
+      - main
+      - master
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number used for tagging when run manually
+        required: true
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  API_IMAGE_NAME: ${{ github.repository }}-api
+  WORKER_IMAGE_NAME: ${{ github.repository }}-worker
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: pr-dev-images-${{ github.event.pull_request.number || inputs.pr_number || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  compute-metadata:
+    name: Compute dev version metadata
+    runs-on: ubuntu-latest
+    outputs:
+      pr_number: ${{ steps.compute.outputs.pr_number }}
+      short_sha: ${{ steps.compute.outputs.short_sha }}
+      dev_version: ${{ steps.compute.outputs.dev_version }}
+      push_images: ${{ steps.compute.outputs.push_images }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute semver-like dev version
+        id: compute
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            pr_number="${{ github.event.pull_request.number }}"
+            head_sha="${{ github.event.pull_request.head.sha }}"
+            if [[ "${{ github.event.pull_request.head.repo.full_name }}" == "${{ github.repository }}" && "${{ github.event.pull_request.draft }}" != "true" ]]; then
+              push_images="true"
+            else
+              push_images="false"
+            fi
+          else
+            pr_number="${{ inputs.pr_number }}"
+            head_sha="${{ github.sha }}"
+            push_images="true"
+          fi
+
+          short_sha="${head_sha:0:7}"
+
+          git fetch --tags --force
+          latest_tag="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | sed -n '1p')"
+          if [[ -z "$latest_tag" ]]; then
+            latest_tag="v0.0.0"
+          fi
+
+          current="${latest_tag#v}"
+          IFS='.' read -r major minor patch <<< "$current"
+          if [[ -z "${major:-}" || -z "${minor:-}" || -z "${patch:-}" ]]; then
+            echo "Latest tag '$latest_tag' is not semver format (v<major>.<minor>.<patch>)."
+            exit 1
+          fi
+
+          next_patch=$((patch + 1))
+          dev_version="${major}.${minor}.${next_patch}-dev.pr${pr_number}.${GITHUB_RUN_NUMBER}"
+
+          echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$short_sha" >> "$GITHUB_OUTPUT"
+          echo "dev_version=$dev_version" >> "$GITHUB_OUTPUT"
+          echo "push_images=$push_images" >> "$GITHUB_OUTPUT"
+
+  build-and-publish:
+    name: Build and publish PR dev images
+    needs: compute-metadata
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: api
+            dockerfile: docker/Dockerfile.api
+            image_name_var: API_IMAGE_NAME
+            cache_scope: api-pr-dev
+            build_args: ""
+          - service: worker
+            dockerfile: docker/Dockerfile.worker
+            image_name_var: WORKER_IMAGE_NAME
+            cache_scope: worker-pr-dev
+            build_args: |
+              INSTALL_EXTRAS=qualitative-voice,reports
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve image name
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ matrix.image_name_var }}" == "API_IMAGE_NAME" ]]; then
+            image_name="${API_IMAGE_NAME,,}"
+          else
+            image_name="${WORKER_IMAGE_NAME,,}"
+          fi
+          echo "name=$image_name" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        if: needs.compute-metadata.outputs.push_images == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}
+          tags: |
+            type=raw,value=pr-${{ needs.compute-metadata.outputs.pr_number }}
+            type=raw,value=pr-${{ needs.compute-metadata.outputs.pr_number }}-${{ needs.compute-metadata.outputs.short_sha }}
+            type=raw,value=${{ needs.compute-metadata.outputs.dev_version }}
+            type=raw,value=dev-latest-pr-${{ needs.compute-metadata.outputs.pr_number }}
+
+      - name: Build and optionally push image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: ${{ needs.compute-metadata.outputs.push_images == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.cache_scope }}
+          cache-to: type=gha,scope=${{ matrix.cache_scope }},mode=max
+          platforms: linux/amd64
+          build-args: ${{ matrix.build_args }}
+
+      - name: Publish image references
+        if: needs.compute-metadata.outputs.push_images == 'true'
+        shell: bash
+        run: |
+          image="${{ env.REGISTRY }}/${{ steps.image.outputs.name }}"
+          echo "Published ${{ matrix.service }} image tags:"
+          echo "- ${image}:pr-${{ needs.compute-metadata.outputs.pr_number }}"
+          echo "- ${image}:pr-${{ needs.compute-metadata.outputs.pr_number }}-${{ needs.compute-metadata.outputs.short_sha }}"
+          echo "- ${image}:${{ needs.compute-metadata.outputs.dev_version }}"
+          echo "- ${image}:dev-latest-pr-${{ needs.compute-metadata.outputs.pr_number }}"

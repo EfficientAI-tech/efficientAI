@@ -90,6 +90,45 @@ export interface ProviderModelPickerProps {
   /** When true, show a "credential" row that lets the user pin a specific AIProvider row. */
   allowCredentialPick?: boolean
   disabled?: boolean
+  /**
+   * When true, restrict the LLM picker to providers + models that accept
+   * audio input via Chat Completions. Set this from "LLM-only" diarisation
+   * modals so the operator can't pick e.g. ``gpt-4.1`` / ``gpt-5`` (which
+   * have no ``input_audio`` content part on Chat Completions) and hit a
+   * cryptic provider 400 at runtime.
+   *
+   * Implementation: providers are clamped to OpenAI + Google (the only
+   * two that have audio-capable chat models in our LiteLLM wiring today),
+   * and the model dropdown is filtered to substring matches in
+   * :data:`AUDIO_CAPABLE_MODEL_MATCHERS`. Both rules are intentionally
+   * lenient (substrings, not exact strings) so newer dated snapshots
+   * (e.g. ``gpt-4o-audio-preview-2025-06-03``) flow through automatically
+   * without a code change.
+   */
+  audioCapableOnly?: boolean
+}
+
+// Per-provider substring fingerprints for "this chat model accepts audio
+// input". We bias toward substrings rather than exact names so new dated
+// snapshots get picked up automatically as providers ship them.
+const AUDIO_CAPABLE_MODEL_MATCHERS: Record<string, RegExp[]> = {
+  // OpenAI: only the ``gpt-4o-audio-preview`` family (and the new
+  // ``gpt-realtime`` family) accept ``input_audio`` on Chat Completions.
+  // ``gpt-4o`` w/o the ``-audio`` suffix is text+vision only. We match
+  // on the literal ``audio`` token so any future ``-audio-`` model
+  // qualifies, plus ``realtime`` for the realtime family.
+  openai: [/audio/i, /realtime/i],
+  // Google: every Gemini 1.5+ model accepts inline audio data parts.
+  // We exclude the legacy ``gemini-pro`` / ``gemini-1.0-pro`` shapes
+  // by requiring a 1.5+ major-minor.
+  google: [/^gemini-(1\.5|[2-9])/i],
+}
+const AUDIO_CAPABLE_PROVIDERS = Object.keys(AUDIO_CAPABLE_MODEL_MATCHERS)
+
+function isAudioCapableModel(provider: string, model: string): boolean {
+  const matchers = AUDIO_CAPABLE_MODEL_MATCHERS[provider]
+  if (!matchers) return false
+  return matchers.some((re) => re.test(model))
 }
 
 export default function ProviderModelPicker({
@@ -101,6 +140,7 @@ export default function ProviderModelPicker({
   className,
   allowCredentialPick = false,
   disabled = false,
+  audioCapableOnly = false,
 }: ProviderModelPickerProps) {
   const { data: aiProviders = [] } = useQuery<AIProviderRow[]>({
     queryKey: ['ai-providers'],
@@ -143,10 +183,18 @@ export default function ProviderModelPicker({
   const allowSet = providerAllowList
     ? new Set(providerAllowList.map((p) => p.toLowerCase()))
     : null
+  // When `audioCapableOnly` is on we intersect the caller's allow-list
+  // with the providers we know how to send audio to. Doing this as an
+  // intersection rather than an override keeps the LLM-only mode honest
+  // even if a caller forgets to pre-restrict.
+  const audioProviderSet = audioCapableOnly
+    ? new Set(AUDIO_CAPABLE_PROVIDERS)
+    : null
   const eligibleProviders = allCredentials.filter((p) => {
     if (!p.is_active) return false
-    if (!allowSet) return true
-    return allowSet.has(p.provider)
+    if (allowSet && !allowSet.has(p.provider)) return false
+    if (audioProviderSet && !audioProviderSet.has(p.provider)) return false
+    return true
   })
   // Group rows by provider key so the dropdown shows one entry per
   // provider; credential pinning happens in the secondary select.
@@ -160,8 +208,14 @@ export default function ProviderModelPicker({
     enabled: !!value.provider,
   })
 
-  const models =
+  const rawModels =
     (kind === 'stt' ? modelOptions?.stt : modelOptions?.llm) || []
+  // Audio-capable filtering is intentionally LLM-only (Chat Completions
+  // audio is an LLM feature; STT lists are already model-specific).
+  const models =
+    audioCapableOnly && kind === 'llm' && value.provider
+      ? rawModels.filter((m) => isAudioCapableModel(value.provider as string, m))
+      : rawModels
 
   // Auto-pick the first model when the provider changes and the
   // currently-selected model isn't valid for it. Avoids a confusing
@@ -173,6 +227,21 @@ export default function ProviderModelPicker({
     onChange({ ...value, model: models[0] })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value.provider, models])
+
+  // When the audio-capable toggle flips ON after the user has already
+  // picked a non-audio provider/model (e.g. Anthropic + Claude), clear
+  // the stale selection so the parent form doesn't submit something we
+  // just hid from the dropdown. The provider auto-clears via the
+  // ``onChange`` above as soon as it's no longer in ``eligibleProviders``;
+  // the model side is handled by the same auto-pick effect above.
+  useEffect(() => {
+    if (!audioCapableOnly) return
+    if (!value.provider) return
+    if (!AUDIO_CAPABLE_PROVIDERS.includes(value.provider)) {
+      onChange({ provider: null, model: null, credential_id: null })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [audioCapableOnly, value.provider])
 
   const credentialRows = value.provider
     ? allCredentials.filter(
@@ -231,7 +300,11 @@ export default function ProviderModelPicker({
             {!value.provider ? (
               <option value="">Pick a provider first</option>
             ) : models.length === 0 ? (
-              <option value="">Loading models...</option>
+              <option value="">
+                {audioCapableOnly && kind === 'llm' && rawModels.length > 0
+                  ? 'No audio-capable models for this provider'
+                  : 'Loading models...'}
+              </option>
             ) : (
               models.map((m) => (
                 <option key={m} value={m}>
@@ -240,6 +313,17 @@ export default function ProviderModelPicker({
               ))
             )}
           </select>
+          {audioCapableOnly &&
+            kind === 'llm' &&
+            value.provider &&
+            rawModels.length > 0 &&
+            models.length === 0 && (
+              <p className="mt-1 text-xs text-amber-600">
+                This provider has no audio-capable Chat Completions
+                models. Use OpenAI's gpt-4o-audio-preview /
+                gpt-4o-mini-audio-preview, or a Google Gemini 1.5+ model.
+              </p>
+            )}
         </div>
       </div>
       {showCredentialPicker && (

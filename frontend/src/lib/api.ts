@@ -24,6 +24,7 @@ import type {
   CallImport,
   CallImportDetail,
   CallImportListResponse,
+  CallImportRow,
   CallImportSchema,
   CallImportSchemaCreate,
   CallImportSchemaListResponse,
@@ -42,6 +43,7 @@ import type {
   CallImportInsightsResponse,
   CallImportTranscribeRequest,
   CallImportTranscribeResponse,
+  CallImportRetryFailedRowsResponse,
   Workspace,
 } from '../types/api'
 
@@ -1259,9 +1261,34 @@ class ApiClient {
 
   async getCallImport(
     id: string,
-    params: { row_limit?: number; row_offset?: number; q?: string } = {}
+    params: {
+      row_limit?: number
+      row_offset?: number
+      q?: string
+      /**
+       * Optional filter on ``CallImportRow.diarised_transcript_status``.
+       * When set, ``filtered_total_rows`` on the response reflects the
+       * post-filter row count (combined with ``q`` when both are
+       * supplied) so the UI can paginate against the same slice.
+       */
+      diarised_status?: 'pending' | 'running' | 'completed' | 'failed'
+    } = {}
   ): Promise<CallImportDetail> {
     const response = await this.client.get(`/api/v1/call-imports/${id}`, { params })
+    return response.data
+  }
+
+  async listCallImportRowIds(
+    id: string,
+    params: {
+      q?: string
+      diarised_status?: 'pending' | 'running' | 'completed' | 'failed'
+    } = {}
+  ): Promise<{ ids: string[]; total: number }> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${id}/row-ids`,
+      { params },
+    )
     return response.data
   }
 
@@ -1321,10 +1348,29 @@ class ApiClient {
       /** When true, diarize rows missing transcripts before evaluation. */
       auto_transcribe?: boolean
       transcribe_overwrite?: boolean
+      /**
+       * Diarisation pipeline shape for the auto-transcribe step.
+       * 'stt_llm' (default) runs STT then an LLM diariser over the
+       * resulting text. 'llm_only' skips STT and feeds the audio
+       * directly to the multimodal ``diarization_llm_*`` model — STT
+       * fields must be omitted in that case.
+       */
+      transcribe_mode?: 'stt_llm' | 'llm_only'
       stt_provider?: string | null
       stt_model?: string | null
       stt_credential_id?: string | null
       stt_language?: string | null
+      /**
+       * LLM diariser config: post-STT, an LLM splits the plain
+       * transcript into agent/user turns using ``diarization_prompt``
+       * (or the canonical default when empty). Required by the server
+       * when ``auto_transcribe`` is set. Also used in 'llm_only' mode
+       * where this same LLM receives the audio directly.
+       */
+      diarization_llm_provider?: string | null
+      diarization_llm_model?: string | null
+      diarization_llm_credential_id?: string | null
+      diarization_prompt?: string | null
       /**
        * Opt into LLM-driven discovery of brand-new top-level metrics
        * for this run. Surfaces candidates in the Discovered metrics
@@ -1581,6 +1627,18 @@ class ApiClient {
     return response.data
   }
 
+  /**
+   * Fetch the canonical LLM diariser prompt. Used by the Transcribe /
+   * Run Evaluation modals to pre-fill the prompt textarea so the
+   * operator sees the actual default they'd otherwise get.
+   */
+  async getCallImportDiarisationPromptDefault(): Promise<string> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/diarisation-prompt-default`,
+    )
+    return (response.data?.prompt ?? '') as string
+  }
+
   /** Fan out diarization tasks for a batch of rows. */
   async transcribeCallImport(
     callImportId: string,
@@ -1602,6 +1660,88 @@ class ApiClient {
     const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/rows/${rowId}/transcribe`,
       payload,
+    )
+    return response.data
+  }
+
+  /**
+   * Re-enqueue every failed import row in this batch.
+   *
+   * Rows are reset to `pending` first so the UI can immediately show that
+   * the retry sweep started; rows that fail to enqueue again are returned
+   * in `enqueue_failed` and stay `failed`.
+   */
+  async retryFailedCallImportRows(
+    callImportId: string,
+  ): Promise<CallImportRetryFailedRowsResponse> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/retry-failed`,
+    )
+    return response.data
+  }
+
+  /**
+   * Abort an in-flight (or queued) diarisation for a single row.
+   *
+   * Idempotent — calling on a row whose diarisation is already in a
+   * terminal state (``completed`` / ``failed`` / ``idle``) returns the
+   * row unchanged so the UI can wire this to a "Stop" button without
+   * pre-checking state. The backend flips the row's
+   * ``diarised_transcript_status`` to ``failed`` and stamps
+   * ``"Diarisation cancelled by user"`` as the error so the existing
+   * diarisation pill in the row header renders the right state on the
+   * next poll.
+   */
+  async cancelCallImportRowDiarisation(
+    callImportId: string,
+    rowId: string,
+  ): Promise<CallImportRow> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/rows/${rowId}/cancel-diarisation`,
+    )
+    return response.data
+  }
+
+  /**
+   * Abort in-flight diarisation for many rows in one call.
+   *
+   * Pass ``rowIds`` to cancel a specific subset. Omit it (or pass
+   * ``null``) to cancel every row in the import whose
+   * ``diarised_transcript_status`` is currently ``pending`` or
+   * ``running`` — the "stop everything" affordance.
+   */
+  async cancelCallImportDiarisation(
+    callImportId: string,
+    rowIds?: string[] | null,
+  ): Promise<{ cancelled: number; skipped: number }> {
+    const body =
+      rowIds === undefined || rowIds === null
+        ? {}
+        : { row_ids: rowIds }
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/cancel-diarisation`,
+      body,
+    )
+    return response.data
+  }
+
+  /**
+   * Flip ``diarised_speaker_swap`` on a row and re-render
+   * ``diarised_transcript`` from ``diarised_segments``. Returns the
+   * updated row so the caller can swap it into local state without an
+   * extra refetch.
+   *
+   * The backend rejects this with 409 when the row has no structured
+   * segments (e.g. legacy diarisations done before turns were
+   * persisted) — callers should surface that as "re-diarise to enable
+   * speaker swapping".
+   */
+  async toggleCallImportRowSpeakerSwap(
+    callImportId: string,
+    rowId: string,
+  ): Promise<CallImportRow> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/rows/${rowId}/diarised-speaker-swap`,
     )
     return response.data
   }
@@ -1664,6 +1804,20 @@ class ApiClient {
       sttModel?: string | null
       sttCredentialId?: string | null
       transcribeOverwrite?: boolean
+      /**
+       * Metric-subset retry: when set, only these metrics are
+       * recomputed and merged into the row's existing metric_scores
+       * (other metrics' previous values are preserved). The backend
+       * auto-flips ``include_completed`` to true in this case so
+       * already-successful rows are eligible.
+       */
+      metricIds?: string[]
+      /**
+       * When true, rows currently ``completed`` are eligible for
+       * retry too (otherwise only ``failed`` rows are picked up).
+       * Required-and-implied when ``metricIds`` is set.
+       */
+      includeCompleted?: boolean
     },
   ): Promise<CallImportEvaluationRetryResponse> {
     const body: Record<string, unknown> = {}
@@ -1682,6 +1836,12 @@ class ApiClient {
     }
     if (options?.transcribeOverwrite) {
       body.transcribe_overwrite = true
+    }
+    if (options?.metricIds && options.metricIds.length > 0) {
+      body.metric_ids = options.metricIds
+    }
+    if (options?.includeCompleted) {
+      body.include_completed = true
     }
     const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/retry`,
@@ -1703,6 +1863,64 @@ class ApiClient {
   ): Promise<CallImportEvaluationRow> {
     const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/rows/${evalRowId}/retry`,
+    )
+    return response.data
+  }
+
+  /**
+   * Abort an entire in-flight (or queued) evaluation run.
+   *
+   * Idempotent — calling on a run whose rows are already terminal
+   * returns the run unchanged so the UI can wire this to an "Abort
+   * run" button without pre-checking state. The backend flips every
+   * cancellable row's ``status`` to ``failed`` and stamps
+   * ``"Evaluation cancelled by user"`` as the error so the polling UI
+   * surfaces the cancel on the next tick. Pairs with the worker's
+   * cancellation guard which prevents a late-finishing task from
+   * overwriting the cancelled state.
+   */
+  async cancelCallImportEvaluation(
+    callImportId: string,
+    evaluationId: string,
+  ): Promise<CallImportEvaluation> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/cancel`,
+    )
+    return response.data
+  }
+
+  /**
+   * Force-fail only rows currently in ``pending`` for an evaluation run.
+   *
+   * Unlike ``cancelCallImportEvaluation``, this does NOT touch rows that
+   * are already ``running``. Useful when queued rows are stuck indefinitely
+   * but active workers should keep progressing.
+   */
+  async forceFailCallImportEvaluationPending(
+    callImportId: string,
+    evaluationId: string,
+  ): Promise<CallImportEvaluation> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/force-fail-pending`,
+    )
+    return response.data
+  }
+
+  /**
+   * Abort an in-flight (or queued) evaluation for a single row.
+   *
+   * Mirrors :func:`cancelCallImportEvaluation` but scoped to one row,
+   * intended for the per-row Stop button on the evaluation detail
+   * rows table. The parent run's counters are rolled up server-side
+   * so the run-level pill updates on the same response.
+   */
+  async cancelCallImportEvaluationRow(
+    callImportId: string,
+    evaluationId: string,
+    evalRowId: string,
+  ): Promise<CallImportEvaluationRow> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/rows/${evalRowId}/cancel`,
     )
     return response.data
   }
@@ -1746,6 +1964,12 @@ class ApiClient {
       discovered_parent_id?: string
       discovered_label_key?: string
       has_discovered?: boolean
+      // Column-click sorting from the UI. ``sort_by`` is either a
+      // built-in column key (``row_index`` / ``conversation_id`` /
+      // ``status``) or ``metric:<metric_uuid>`` for per-metric value
+      // sorting; ``sort_dir`` is ``asc`` (default) or ``desc``.
+      sort_by?: string
+      sort_dir?: 'asc' | 'desc'
     } = {},
   ): Promise<CallImportEvaluationRowListResponse> {
     const cleaned: Record<string, any> = {}
@@ -1762,10 +1986,11 @@ class ApiClient {
   async exportCallImportEvaluation(
     callImportId: string,
     evaluationId: string,
+    format: 'csv' | 'xlsx' = 'csv',
   ): Promise<Blob> {
     const response = await this.client.get(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/export`,
-      { responseType: 'blob' },
+      { params: { format }, responseType: 'blob' },
     )
     return response.data
   }
@@ -2161,6 +2386,7 @@ class ApiClient {
     persona_id?: string
     scenario_id?: string
     custom_prompt?: string
+    metric_ids?: string[]
     llm_provider?: string
     llm_model?: string
     tags?: string[]
@@ -2201,6 +2427,7 @@ class ApiClient {
     scenario_id?: string
     name?: string
     custom_prompt?: string
+    metric_ids?: string[]
     llm_provider?: string
     llm_model?: string
     tags?: string[]
@@ -2244,11 +2471,15 @@ class ApiClient {
     parent_metric_id?: string | null
     selection_mode?: 'single_choice' | 'multi_label' | null
     /**
-     * CSV header names from imported call rows that this metric should
-     * read instead of the transcript. Empty / omitted means today's
-     * transcript-based behavior.
+     * Scope of the new metric:
+     *   - "workspace" (default): stamped with the active X-Workspace-Id
+     *     header so it only appears inside that workspace.
+     *   - "organization": stored with workspace_id=NULL so it surfaces
+     *     in every workspace of the caller's org.
+     * Ignored when parent_metric_id is set — children always inherit
+     * their parent's scope.
      */
-    input_columns?: string[]
+    scope?: 'workspace' | 'organization'
   }): Promise<any> {
     const response = await this.client.post('/api/v1/metrics', data)
     return response.data
@@ -2286,6 +2517,13 @@ class ApiClient {
       capture_rationale?: boolean | null
       tags?: string[] | null
     }>
+    /**
+     * Same semantics as {@link createMetric}'s ``scope``: when
+     * ``"organization"`` the parent + every child are stored with
+     * ``workspace_id=NULL`` so the whole category subtree is visible
+     * in every workspace of the org.
+     */
+    scope?: 'workspace' | 'organization'
   }): Promise<any> {
     const response = await this.client.post(
       '/api/v1/metrics/with-children',
@@ -2402,12 +2640,6 @@ class ApiClient {
     selection_mode?: 'single_choice' | 'multi_label' | null
     /** Only honored on multi_label parents; backend 400s otherwise. */
     allow_discovery?: boolean
-    /**
-     * Pass an empty array to clear; ``null`` / omit to leave unchanged.
-     * Sending a non-empty list switches this metric to a column-input
-     * judge for the next call-import evaluation run.
-     */
-    input_columns?: string[] | null
   }): Promise<any> {
     const response = await this.client.put(`/api/v1/metrics/${metricId}`, data)
     return response.data

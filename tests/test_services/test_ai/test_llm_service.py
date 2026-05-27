@@ -43,8 +43,17 @@ def test_generate_response_success_with_normalized_usage(monkeypatch):
     encryption_module = importlib.import_module("app.core.encryption")
     monkeypatch.setattr(encryption_module, "decrypt_api_key", lambda value: f"decrypted::{value}")
 
+    # ``llm_service.generate_response`` reads ``finish_reason`` off the
+    # first choice to flag truncated outputs (so JSON-parsing callers
+    # can blame the right thing). The stub has to include it; "stop"
+    # = the normal completion path.
     fake_response = SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content="hello from model"))],
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content="hello from model"),
+                finish_reason="stop",
+            )
+        ],
         usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15),
     )
     monkeypatch.setattr(llm_module.litellm, "completion", lambda **_kwargs: fake_response)

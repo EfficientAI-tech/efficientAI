@@ -1,20 +1,27 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
   AlertTriangle,
+  ArrowDown,
   ArrowLeft,
+  ArrowUp,
+  ArrowUpDown,
   BarChart3,
   Check,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  CircleDot,
+  Copy,
   Download,
   Edit3,
   ExternalLink,
   Filter,
+  Grid3x3,
+  LayoutGrid,
   Loader2,
   Merge,
   PieChart as PieChartIcon,
@@ -24,19 +31,28 @@ import {
   Search,
   Sparkles,
   Table,
+  Target,
+  TrendingUp,
   Trash2,
   Workflow,
   X,
+  XCircle,
 } from 'lucide-react'
 import {
   Bar,
   BarChart,
   Cell,
   CartesianGrid,
+  Line,
+  LineChart,
   Pie,
   PieChart,
+  PolarAngleAxis,
+  RadialBar,
+  RadialBarChart,
   ResponsiveContainer,
   Tooltip,
+  Treemap,
   XAxis,
   YAxis,
 } from 'recharts'
@@ -50,15 +66,147 @@ import type {
 import AIProviderModelPicker from '../../components/AIProviderModelPicker'
 import Button from '../../components/Button'
 import ConfirmModal from '../../components/ConfirmModal'
+import Pagination from '../../components/Pagination'
 import ProviderModelPicker, {
   type ProviderModelValue,
 } from '../../components/providers/ProviderModelPicker'
 import StatusBadge from '../../components/shared/StatusBadge'
+import CallImportProgressBar from './components/CallImportProgressBar'
 import MetricFlowChart, {
   flowFromSequence,
 } from './components/MetricFlowChart'
 
-const PIE_COLORS = ['#10b981', '#ef4444', '#6366f1', '#f59e0b', '#a855f7']
+const PIE_COLORS = [
+  '#6366f1',
+  '#10b981',
+  '#f59e0b',
+  '#ef4444',
+  '#a855f7',
+  '#0ea5e9',
+  '#ec4899',
+  '#14b8a6',
+  '#f97316',
+  '#84cc16',
+]
+
+// All categorical chart types the Visualizations tab can render. Each
+// type has a corresponding icon shown in the per-metric chart picker
+// and the global default selector. Multi-label-only types (heatmap /
+// coverage) are still in the union — the picker just hides them for
+// non-multi-label metrics.
+type CategoricalChartType =
+  | 'pie'
+  | 'bar'
+  | 'lollipop'
+  | 'radial'
+  | 'treemap'
+  | 'waffle'
+  | 'heatmap'
+  | 'coverage'
+
+// "auto" lets us pick the best fit per metric (numeric → histogram,
+// few categories → radial, more → lollipop, lots → treemap). When the
+// user picks an explicit chart type at the global level, every
+// non-overridden categorical metric uses that type instead of the
+// per-metric auto pick.
+type CategoricalChartChoice = 'auto' | CategoricalChartType
+
+const CHART_PREFS_KEY = 'callImportEval.chartPrefs.v1'
+const CHART_GLOBAL_DEFAULT_KEY = 'callImportEval.chartGlobalDefault.v1'
+
+function loadChartGlobalDefault(): CategoricalChartChoice {
+  if (typeof window === 'undefined') return 'auto'
+  try {
+    const raw = window.localStorage.getItem(CHART_GLOBAL_DEFAULT_KEY)
+    if (!raw) return 'auto'
+    return JSON.parse(raw) as CategoricalChartChoice
+  } catch {
+    return 'auto'
+  }
+}
+
+function saveChartGlobalDefault(value: CategoricalChartChoice): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(
+      CHART_GLOBAL_DEFAULT_KEY,
+      JSON.stringify(value),
+    )
+  } catch {
+    /* ignore quota / privacy-mode errors */
+  }
+}
+
+function loadChartPerMetric(): Record<string, CategoricalChartType> {
+  if (typeof window === 'undefined') return {}
+  try {
+    const raw = window.localStorage.getItem(CHART_PREFS_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function saveChartPerMetric(
+  value: Record<string, CategoricalChartType>,
+): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(CHART_PREFS_KEY, JSON.stringify(value))
+  } catch {
+    /* ignore quota / privacy-mode errors */
+  }
+}
+
+/**
+ * Pick the best-fitting chart type for a categorical metric when the
+ * user hasn't explicitly chosen one. Defaults to a ranked lollipop
+ * for everything because it scales cleanly from 2 to ~12 categories,
+ * never overlaps labels, and reads as a sorted top-N list at a
+ * glance. Truly wide categorical sets (>12 unique values) graduate
+ * to a treemap so the lollipop's vertical run doesn't get unwieldy.
+ */
+function autoPickCategoricalChart(
+  metric: CallImportMetricAggregate,
+): CategoricalChartType {
+  const n = metric.value_counts.length
+  if (n > 12) return 'treemap'
+  return 'lollipop'
+}
+
+/**
+ * Resolve the chart type the renderer should use for a given metric,
+ * combining (in priority order): per-metric override → global default
+ * (when set to a concrete type) → auto pick by cardinality.
+ */
+function resolveCategoricalChart(
+  metric: CallImportMetricAggregate,
+  perMetric: Record<string, CategoricalChartType>,
+  globalDefault: CategoricalChartChoice,
+): CategoricalChartType {
+  const override = perMetric[metric.metric_id]
+  if (override) return override
+  if (globalDefault !== 'auto') {
+    if (
+      metric.is_multi_label_parent &&
+      (globalDefault === 'pie' ||
+        globalDefault === 'radial' ||
+        globalDefault === 'waffle')
+    ) {
+      return 'bar'
+    }
+    if (
+      !metric.is_multi_label_parent &&
+      (globalDefault === 'heatmap' || globalDefault === 'coverage')
+    ) {
+      return autoPickCategoricalChart(metric)
+    }
+    return globalDefault
+  }
+  return autoPickCategoricalChart(metric)
+}
 
 const ROWS_PAGE_SIZE = 50
 
@@ -80,6 +228,86 @@ function formatDateTime(value: string | null | undefined): string {
   return new Date(value).toLocaleString()
 }
 
+interface SortableHeaderProps {
+  /** Stable column key used as the ``sort_by`` value sent to the API. */
+  columnKey: string
+  /** Currently-active sort column (``null`` when no sort is set). */
+  activeKey: string | null
+  /** Currently-active sort direction; ignored when ``activeKey`` differs. */
+  activeDir: 'asc' | 'desc'
+  /** Tooltip + accessibility label fallback. */
+  title?: string
+  /** Cycles the sort state for this column. */
+  onCycle: (key: string) => void
+  /** Optional extra ``<th>`` className (alignment, sticky, etc.). */
+  className?: string
+  /** Optional trailing slot rendered AFTER the sort glyph (e.g. a
+   *  filter popover trigger). Kept outside the sort button so its
+   *  click doesn't trigger the sort cycle. */
+  rightSlot?: React.ReactNode
+  children: React.ReactNode
+}
+
+/**
+ * Header cell that reads as plain-text until the user clicks it, at
+ * which point the column starts cycling through ``asc → desc → off``.
+ * The active sort direction renders a solid up/down arrow; inactive
+ * columns render a dim double-arrow so users discover the affordance
+ * without it being visually noisy.
+ */
+function SortableHeader({
+  columnKey,
+  activeKey,
+  activeDir,
+  title,
+  onCycle,
+  className,
+  rightSlot,
+  children,
+}: SortableHeaderProps) {
+  const isActive = activeKey === columnKey
+  const Icon = !isActive
+    ? ArrowUpDown
+    : activeDir === 'asc'
+      ? ArrowUp
+      : ArrowDown
+  const ariaSort = !isActive
+    ? 'none'
+    : activeDir === 'asc'
+      ? 'ascending'
+      : 'descending'
+  return (
+    <th
+      aria-sort={ariaSort}
+      className={
+        'px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase whitespace-nowrap ' +
+        (className || '')
+      }
+    >
+      <div className="inline-flex items-center gap-1">
+        <button
+          type="button"
+          onClick={() => onCycle(columnKey)}
+          title={title || (typeof children === 'string' ? children : undefined)}
+          className={
+            'inline-flex items-start gap-1 rounded px-1 -mx-1 py-0.5 hover:bg-gray-100 transition-colors ' +
+            (isActive ? 'text-gray-900' : 'text-gray-500')
+          }
+        >
+          <span className="min-w-0">{children}</span>
+          <Icon
+            className={
+              'h-3 w-3 flex-shrink-0 mt-0.5 ' +
+              (isActive ? 'text-primary-600' : 'text-gray-300')
+            }
+          />
+        </button>
+        {rightSlot}
+      </div>
+    </th>
+  )
+}
+
 export default function CallImportEvaluationDetail() {
   const { id, evalId } = useParams<{ id: string; evalId: string }>()
   const navigate = useNavigate()
@@ -92,6 +320,9 @@ export default function CallImportEvaluationDetail() {
   const [pendingDeleteRow, setPendingDeleteRow] =
     useState<CallImportEvaluationRow | null>(null)
   const [deleteEvalOpen, setDeleteEvalOpen] = useState(false)
+  const [forceFailPendingOpen, setForceFailPendingOpen] = useState(false)
+  const [downloadMenuOpen, setDownloadMenuOpen] = useState(false)
+  const downloadMenuRef = useRef<HTMLDivElement>(null)
   const [rowDeleteError, setRowDeleteError] = useState<string | null>(null)
   // Retry UX: ``retryError`` surfaces a banner on either failure path
   // (bulk or single-row). ``pendingRetryRowId`` is set while a per-row
@@ -119,15 +350,55 @@ export default function CallImportEvaluationDetail() {
   })
   const [retryTranscribeOverwrite, setRetryTranscribeOverwrite] =
     useState(false)
+
+  // "Re-run metrics" UX (separate from the failed-row retry above).
+  // The user picks one or more of the run's already-scored metrics
+  // and the worker recomputes only those, merging the new scores
+  // into the row's existing ``metric_scores`` so other metrics'
+  // values stay byte-identical. Backed by the same retry endpoint
+  // with ``metric_ids`` + ``include_completed=true``.
+  const [rerunMetricsOpen, setRerunMetricsOpen] = useState(false)
+  const [rerunMetricIds, setRerunMetricIds] = useState<Set<string>>(
+    new Set(),
+  )
+  const [rerunLLM, setRerunLLM] = useState<ProviderModelValue>({
+    provider: null,
+    model: null,
+    credential_id: null,
+  })
+  const [rerunError, setRerunError] = useState<string | null>(null)
   const [resultsTab, setResultsTab] = useState<
     'table' | 'visualizations' | 'flow'
   >('table')
-  // Categorical metrics can be rendered either as a pie (default,
-  // best for ≤5 buckets) or as a vertical bar chart. Numeric metrics
-  // always use a histogram regardless of this toggle.
-  const [categoricalChartType, setCategoricalChartType] = useState<
-    'pie' | 'bar'
-  >('pie')
+  // Categorical metrics can be rendered as one of several chart
+  // types. The user picks a global default (auto = let us pick the
+  // best fit per-metric) and can override on a per-metric basis via
+  // the small icon row in the top-right of each chart card. Both
+  // settings persist in localStorage so reloading the page keeps the
+  // user's chart layout intact. Numeric metrics always use a
+  // histogram regardless of these settings.
+  const [chartGlobalDefault, setChartGlobalDefault] =
+    useState<CategoricalChartChoice>(() => loadChartGlobalDefault())
+  const [chartPerMetric, setChartPerMetric] = useState<
+    Record<string, CategoricalChartType>
+  >(() => loadChartPerMetric())
+  useEffect(() => {
+    saveChartGlobalDefault(chartGlobalDefault)
+  }, [chartGlobalDefault])
+  useEffect(() => {
+    saveChartPerMetric(chartPerMetric)
+  }, [chartPerMetric])
+  const setMetricChartType = (
+    metricId: string,
+    type: CategoricalChartType | null,
+  ) => {
+    setChartPerMetric((prev) => {
+      const next = { ...prev }
+      if (type == null) delete next[metricId]
+      else next[metricId] = type
+      return next
+    })
+  }
 
   // --- Filters / search / drilldown state -------------------------------
   // Search input is debounced (250 ms) before becoming the actual query
@@ -173,13 +444,89 @@ export default function CallImportEvaluationDetail() {
   const [detailRow, setDetailRow] =
     useState<CallImportEvaluationRow | null>(null)
 
+  // Transient "✓ Copied" feedback on the per-row Copy button next to
+  // the ``conversation_id`` cell. Same UX as the upstream rows table
+  // on ``CallImportDetail`` — keyed by eval-row id so we can flip
+  // exactly one button at a time.
+  const [copiedRowId, setCopiedRowId] = useState<string | null>(null)
+  const handleCopyConversationId = (
+    row: CallImportEvaluationRow,
+    event: React.MouseEvent | React.KeyboardEvent,
+  ) => {
+    // The ``<tr>`` wrapping each row has an onClick that opens the
+    // detail drawer; without this guard, copying would also open the
+    // drawer for the row whose ID was just copied.
+    event.preventDefault()
+    event.stopPropagation()
+    const text = row.conversation_id || ''
+    if (!text) return
+    const finalize = () => {
+      setCopiedRowId(row.id)
+      window.setTimeout(() => {
+        setCopiedRowId((prev) => (prev === row.id ? null : prev))
+      }, 1500)
+    }
+    // Same fallback dance as ``CallImportDetail.handleCopyConversationId``
+    // — ``navigator.clipboard`` requires a secure context, so LAN dev
+    // over plain HTTP needs the ``execCommand`` escape hatch.
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(finalize).catch(() => {
+        try {
+          const ta = document.createElement('textarea')
+          ta.value = text
+          ta.style.position = 'fixed'
+          ta.style.opacity = '0'
+          document.body.appendChild(ta)
+          ta.select()
+          document.execCommand('copy')
+          document.body.removeChild(ta)
+          finalize()
+        } catch {
+          // Drag-select still works as a last resort.
+        }
+      })
+    } else {
+      try {
+        const ta = document.createElement('textarea')
+        ta.value = text
+        ta.style.position = 'fixed'
+        ta.style.opacity = '0'
+        document.body.appendChild(ta)
+        ta.select()
+        document.execCommand('copy')
+        document.body.removeChild(ta)
+        finalize()
+      } catch {
+        // Drag-select still works as a last resort.
+      }
+    }
+  }
+
+  // Column-click sort state. ``sortBy`` is one of the built-in column
+  // keys (``row_index`` / ``conversation_id`` / ``status``) or
+  // ``metric:<metric_uuid>``; ``null`` means "no sort" (server falls
+  // back to row_index asc, the original behaviour). The header cycles
+  // null → asc → desc → null per column, so power users can flip
+  // direction with two clicks and clear with a third without reaching
+  // for a separate UI.
+  const [sortBy, setSortBy] = useState<string | null>(null)
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
+
+  // Inline status-filter popover anchored on the Status column header.
+  // The toolbar above keeps its full dropdown — this just gives users a
+  // one-click affordance from the column they're already looking at.
+  const [statusFilterMenuOpen, setStatusFilterMenuOpen] = useState(false)
+  const statusFilterMenuRef = useRef<HTMLDivElement>(null)
+
   useEffect(() => {
     const t = setTimeout(() => setSearchQuery(searchInput.trim()), 250)
     return () => clearTimeout(t)
   }, [searchInput])
 
-  // Reset to first page whenever any active filter changes — otherwise we'd
-  // be paging through a filtered result set that may be smaller than ``page``.
+  // Reset to first page whenever any active filter or sort changes —
+  // otherwise we'd be paging through a filtered / re-ordered result
+  // set that may be smaller than ``page`` or whose row at the current
+  // page index has changed.
   useEffect(() => {
     setPage(1)
   }, [
@@ -193,7 +540,44 @@ export default function CallImportEvaluationDetail() {
     discoveredFilter?.parentId,
     discoveredFilter?.labelKey,
     discoveredFilter?.anyDiscovered,
+    sortBy,
+    sortDir,
   ])
+
+  // Close the inline status-filter popover when the user clicks outside it.
+  useEffect(() => {
+    if (!statusFilterMenuOpen) return
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        statusFilterMenuRef.current &&
+        !statusFilterMenuRef.current.contains(event.target as Node)
+      ) {
+        setStatusFilterMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [statusFilterMenuOpen])
+
+  // Three-state cycle when the user clicks a sortable column header.
+  // Same key + same direction is the "I already see this view" hint
+  // and we move forward in the cycle:
+  //   1st click  → ascending on this column
+  //   2nd click  → descending on the same column
+  //   3rd click  → clear sort (server reverts to row_index asc)
+  const handleColumnSort = (key: string) => {
+    if (sortBy !== key) {
+      setSortBy(key)
+      setSortDir('asc')
+      return
+    }
+    if (sortDir === 'asc') {
+      setSortDir('desc')
+      return
+    }
+    setSortBy(null)
+    setSortDir('asc')
+  }
 
   const hasActiveFilters =
     !!searchQuery ||
@@ -206,6 +590,21 @@ export default function CallImportEvaluationDetail() {
     queryKey: ['call-import', id],
     queryFn: () => apiClient.getCallImport(id!, { row_limit: 0, row_offset: 0 }),
     enabled: !!id,
+    // Poll while diarisation is in flight so the per-run "Diarising
+    // audio…" progress bar updates as the upstream transcribe / diarise
+    // worker churns through this batch's rows. Stops polling once
+    // everything settles to terminal states.
+    refetchInterval: (q) => {
+      const ci = q.state.data as
+        | {
+            diarised_pending_rows?: number
+            diarised_running_rows?: number
+          }
+        | undefined
+      const inFlight =
+        (ci?.diarised_pending_rows ?? 0) + (ci?.diarised_running_rows ?? 0)
+      return inFlight > 0 ? 4000 : false
+    },
   })
 
   const evaluationQuery = useQuery({
@@ -234,6 +633,8 @@ export default function CallImportEvaluationDetail() {
       discoveredFilter?.parentId,
       discoveredFilter?.labelKey,
       discoveredFilter?.anyDiscovered,
+      sortBy,
+      sortDir,
     ],
     queryFn: () =>
       apiClient.listCallImportEvaluationRows(id!, evalId!, {
@@ -249,6 +650,23 @@ export default function CallImportEvaluationDetail() {
         discovered_parent_id: discoveredFilter?.parentId,
         discovered_label_key: discoveredFilter?.labelKey,
         has_discovered: discoveredFilter?.anyDiscovered || undefined,
+        sort_by: sortBy || undefined,
+        sort_dir: sortBy ? sortDir : undefined,
+      }),
+    enabled: !!id && !!evalId,
+    refetchInterval: () => {
+      const status = evaluationQuery.data?.status
+      return status === 'pending' || status === 'running' ? 3000 : false
+    },
+  })
+
+  const pendingRowsQuery = useQuery({
+    queryKey: ['call-import-evaluation-pending-rows-count', id, evalId],
+    queryFn: () =>
+      apiClient.listCallImportEvaluationRows(id!, evalId!, {
+        page: 1,
+        page_size: 1,
+        status: 'pending',
       }),
     enabled: !!id && !!evalId,
     refetchInterval: () => {
@@ -422,6 +840,86 @@ export default function CallImportEvaluationDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [retryConfirmOpen])
 
+  // Same seeding pattern for the "Re-run metrics" modal. We default
+  // the LLM picker to the run's saved value (no override) and start
+  // with no metrics selected — the user must explicitly pick at
+  // least one, otherwise the action is a no-op and we surface a
+  // disabled state on the submit button.
+  useEffect(() => {
+    if (!rerunMetricsOpen) return
+    if (!evaluation) return
+    setRerunLLM({
+      provider: evaluation.llm_provider ?? null,
+      model: evaluation.llm_model ?? null,
+      credential_id: evaluation.llm_credential_id ?? null,
+    })
+    setRerunMetricIds(new Set())
+    setRerunError(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rerunMetricsOpen])
+
+  // Metric-subset re-run mutation. Forwards ``metric_ids`` to the
+  // backend so the worker recomputes only those metrics, with
+  // ``include_completed`` flipped on so already-successful rows are
+  // eligible (the whole point of this UI). LLM overrides flow
+  // through the same retry payload — when the user changes the LLM
+  // picker, the backend persists the new model on the run and uses
+  // it for every selected metric.
+  const rerunMetricsMutation = useMutation({
+    mutationFn: () => {
+      const metricIds = Array.from(rerunMetricIds)
+      if (!metricIds.length) {
+        return Promise.reject(
+          new Error('Pick at least one metric to re-run.'),
+        )
+      }
+      const llmChanged =
+        rerunLLM.provider !== (evaluation?.llm_provider ?? null) ||
+        rerunLLM.model !== (evaluation?.llm_model ?? null) ||
+        (rerunLLM.credential_id ?? null) !==
+          (evaluation?.llm_credential_id ?? null)
+      return apiClient.retryCallImportEvaluation(id!, evalId!, {
+        metricIds,
+        // ``include_completed`` would be auto-flipped server-side
+        // when ``metricIds`` is set; sending it explicitly here
+        // makes the intent obvious in the network tab.
+        includeCompleted: true,
+        llmProvider:
+          llmChanged && rerunLLM.provider && rerunLLM.model
+            ? rerunLLM.provider
+            : undefined,
+        llmModel:
+          llmChanged && rerunLLM.provider && rerunLLM.model
+            ? rerunLLM.model
+            : undefined,
+        llmCredentialId:
+          llmChanged && rerunLLM.provider && rerunLLM.model
+            ? rerunLLM.credential_id ?? null
+            : undefined,
+      })
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-evaluation', id, evalId],
+      })
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-evaluation-rows', id, evalId],
+      })
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-evaluations', id],
+      })
+      setRerunError(null)
+      setRerunMetricsOpen(false)
+    },
+    onError: (err: any) => {
+      setRerunError(
+        err?.response?.data?.detail ||
+          err?.message ||
+          'Failed to re-run the selected metrics.',
+      )
+    },
+  })
+
   // Re-enqueue a single failed row. Returns the refreshed row so we
   // can prime the cache; the next polling tick (3s while running)
   // will catch any subsequent status flips.
@@ -452,6 +950,107 @@ export default function CallImportEvaluationDetail() {
     },
     onSettled: () => {
       setPendingRetryRowId(null)
+    },
+  })
+
+  // Inline error banner shown above the run header when an Abort call
+  // fails. Cancel is idempotent on the server so the most likely cause
+  // is a network blip; we still surface the message so the operator
+  // knows the click didn't take effect rather than silently swallowing.
+  const [cancelError, setCancelError] = useState<string | null>(null)
+  // Tracks which single row is currently mid-cancel so we can render
+  // a spinner on the row's Stop button without blocking the others.
+  const [cancellingRowId, setCancellingRowId] = useState<string | null>(null)
+
+  // Run-level cancel: SIGTERM-revokes every in-flight row, flips them
+  // to ``failed`` with the cancelled-by-user sentinel, and rolls up
+  // the parent run. The 3s parent + rows pollers below pick the new
+  // state up automatically; we still invalidate so the UI updates on
+  // the next tick rather than waiting up to 3s.
+  const cancelEvaluationMutation = useMutation({
+    mutationFn: () => apiClient.cancelCallImportEvaluation(id!, evalId!),
+    onMutate: () => {
+      setCancelError(null)
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-evaluation', id, evalId],
+      })
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-evaluation-rows', id, evalId],
+      })
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-evaluations', id],
+      })
+    },
+    onError: (err: any) => {
+      setCancelError(
+        err?.response?.data?.detail ||
+          err?.message ||
+          'Failed to abort this evaluation run.',
+      )
+    },
+  })
+
+  const forceFailPendingMutation = useMutation({
+    mutationFn: () => apiClient.forceFailCallImportEvaluationPending(id!, evalId!),
+    onMutate: () => {
+      setCancelError(null)
+    },
+    onSuccess: () => {
+      setForceFailPendingOpen(false)
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-evaluation', id, evalId],
+      })
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-evaluation-rows', id, evalId],
+      })
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-evaluation-pending-rows-count', id, evalId],
+      })
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-evaluations', id],
+      })
+    },
+    onError: (err: any) => {
+      setCancelError(
+        err?.response?.data?.detail ||
+          err?.message ||
+          'Failed to force-fail pending rows.',
+      )
+    },
+  })
+
+  // Row-level cancel: same shape as the run-level mutation but
+  // scoped to a single row so the operator can stop one wedged row
+  // without aborting siblings that are progressing fine.
+  const cancelRowMutation = useMutation({
+    mutationFn: (rowId: string) =>
+      apiClient.cancelCallImportEvaluationRow(id!, evalId!, rowId),
+    onMutate: (rowId) => {
+      setCancellingRowId(rowId)
+      setCancelError(null)
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-evaluation', id, evalId],
+      })
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-evaluation-rows', id, evalId],
+      })
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-evaluations', id],
+      })
+    },
+    onError: (err: any) => {
+      setCancelError(
+        err?.response?.data?.detail ||
+          err?.message ||
+          'Failed to abort this row.',
+      )
+    },
+    onSettled: () => {
+      setCancellingRowId(null)
     },
   })
 
@@ -645,23 +1244,41 @@ export default function CallImportEvaluationDetail() {
     return rows
   }, [callImport])
 
-  const handleExport = async () => {
+  const handleExport = async (format: 'csv' | 'xlsx') => {
     if (!id || !evalId) return
+    setDownloadMenuOpen(false)
     try {
-      const blob = await apiClient.exportCallImportEvaluation(id, evalId)
+      const blob = await apiClient.exportCallImportEvaluation(id, evalId, format)
       const url = window.URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
-      link.download = `call-import-${id}-evaluation-${evalId}.csv`
+      link.download = `call-import-${id}-evaluation-${evalId}.${format}`
       document.body.appendChild(link)
       link.click()
       link.remove()
       window.URL.revokeObjectURL(url)
     } catch (e) {
       console.error('Failed to export evaluation', e)
-      alert('Failed to export evaluation CSV')
+      alert(`Failed to export evaluation ${format.toUpperCase()}`)
     }
   }
+
+  // Close the download format menu when the user clicks anywhere outside
+  // it. Only attach the listener while the menu is open so we don't
+  // pollute the global event bus.
+  useEffect(() => {
+    if (!downloadMenuOpen) return
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        downloadMenuRef.current &&
+        !downloadMenuRef.current.contains(event.target as Node)
+      ) {
+        setDownloadMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [downloadMenuOpen])
 
   if (!id || !evalId) {
     return <div className="text-sm text-red-600">Missing identifiers.</div>
@@ -705,6 +1322,18 @@ export default function CallImportEvaluationDetail() {
   const headerLabel = evaluation.name?.trim()
     ? evaluation.name
     : `Evaluation ${evaluation.id.slice(0, 8)}`
+  const pendingRowCount = pendingRowsQuery.data?.total ?? 0
+  const getMetricLlmLabel = (metricId: string): string => {
+    const override = evaluation.metric_llm_overrides?.[metricId]
+    const overrideProvider = override?.provider?.trim()
+    const overrideModel = override?.model?.trim()
+    if (overrideProvider && overrideModel) {
+      return `${overrideProvider} / ${overrideModel}`
+    }
+    const runProvider = evaluation.llm_provider?.trim()
+    const runModel = evaluation.llm_model?.trim()
+    return `${runProvider || 'openai'} / ${runModel || 'gpt-4o'}`
+  }
 
   const totalPages = rowsQuery.data
     ? Math.max(1, Math.ceil(rowsQuery.data.total / rowsQuery.data.page_size))
@@ -721,6 +1350,44 @@ export default function CallImportEvaluationDetail() {
           Back to call import
         </Link>
         <div className="flex items-center gap-2">
+          {(evaluation.status === 'pending' ||
+            evaluation.status === 'running') && (
+            <Button
+              variant="outline"
+              size="sm"
+              leftIcon={<XCircle className="h-4 w-4" />}
+              onClick={() => {
+                if (cancelEvaluationMutation.isPending) return
+                cancelEvaluationMutation.mutate()
+              }}
+              isLoading={cancelEvaluationMutation.isPending}
+              disabled={cancelEvaluationMutation.isPending}
+              className="text-amber-700 hover:text-amber-800 hover:bg-amber-50 border-amber-200"
+              title="Abort every in-flight or queued row in this run"
+            >
+              Abort run
+            </Button>
+          )}
+          {pendingRowCount > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              leftIcon={<AlertTriangle className="h-4 w-4" />}
+              onClick={() => {
+                if (forceFailPendingMutation.isPending) return
+                setCancelError(null)
+                setForceFailPendingOpen(true)
+              }}
+              isLoading={forceFailPendingMutation.isPending}
+              disabled={forceFailPendingMutation.isPending}
+              className="text-amber-700 hover:text-amber-800 hover:bg-amber-50 border-amber-200"
+              title={`Mark ${pendingRowCount} pending row${
+                pendingRowCount === 1 ? '' : 's'
+              } as failed without aborting running rows`}
+            >
+              Force-fail pending ({pendingRowCount})
+            </Button>
+          )}
           {evaluation.failed_rows > 0 && (
             <Button
               variant="outline"
@@ -740,15 +1407,63 @@ export default function CallImportEvaluationDetail() {
               Retry failed ({evaluation.failed_rows})
             </Button>
           )}
-          <Button
-            variant="outline"
-            size="sm"
-            leftIcon={<Download className="h-4 w-4" />}
-            onClick={handleExport}
-            disabled={!rowsQuery.data?.items?.length}
-          >
-            Download CSV
-          </Button>
+          {(evaluation.metrics?.length ?? 0) > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              leftIcon={<RefreshCw className="h-4 w-4" />}
+              onClick={() => {
+                setRerunError(null)
+                setRerunMetricsOpen(true)
+              }}
+              isLoading={rerunMetricsMutation.isPending}
+              disabled={rerunMetricsMutation.isPending}
+              title="Re-score selected metrics across every row in this run, merging into existing scores."
+            >
+              Re-run metrics
+            </Button>
+          )}
+          <div className="relative" ref={downloadMenuRef}>
+            <Button
+              variant="outline"
+              size="sm"
+              leftIcon={<Download className="h-4 w-4" />}
+              rightIcon={
+                <ChevronDown
+                  className={`h-4 w-4 transition-transform ${
+                    downloadMenuOpen ? 'rotate-180' : ''
+                  }`}
+                />
+              }
+              onClick={() => setDownloadMenuOpen((prev) => !prev)}
+              disabled={!rowsQuery.data?.items?.length}
+            >
+              Download
+            </Button>
+            {downloadMenuOpen && (
+              <div
+                className="absolute right-0 z-20 mt-1 w-44 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden"
+                role="menu"
+              >
+                <button
+                  type="button"
+                  className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"
+                  onClick={() => handleExport('csv')}
+                  role="menuitem"
+                >
+                  Download as CSV
+                </button>
+                <button
+                  type="button"
+                  className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"
+                  onClick={() => handleExport('xlsx')}
+                  role="menuitem"
+                >
+                  Download as Excel
+                </button>
+              </div>
+            )}
+          </div>
           <Button
             variant="ghost"
             size="sm"
@@ -862,25 +1577,86 @@ export default function CallImportEvaluationDetail() {
               )}
             </div>
           </div>
-          <div className="grid grid-cols-3 gap-2 text-center text-xs">
-            <div className="bg-gray-50 rounded p-2 min-w-[72px]">
-              <div className="text-gray-500">Total</div>
-              <div className="font-semibold text-gray-900">
-                {evaluation.total_rows}
+          <div className="w-72 flex-shrink-0">
+            <div className="text-xs font-medium text-gray-600 mb-1">
+              Evaluation progress
+            </div>
+            <CallImportProgressBar
+              total={evaluation.total_rows}
+              completed={evaluation.completed_rows}
+              failed={evaluation.failed_rows}
+            />
+            <div className="mt-2 grid grid-cols-3 gap-2 text-center text-xs">
+              <div className="bg-gray-50 rounded p-2 min-w-[72px]">
+                <div className="text-gray-500">Total</div>
+                <div className="font-semibold text-gray-900">
+                  {evaluation.total_rows}
+                </div>
+              </div>
+              <div className="bg-green-50 rounded p-2 min-w-[72px]">
+                <div className="text-green-700">Completed</div>
+                <div className="font-semibold text-green-800">
+                  {evaluation.completed_rows}
+                </div>
+              </div>
+              <div className="bg-red-50 rounded p-2 min-w-[72px]">
+                <div className="text-red-700">Failed</div>
+                <div className="font-semibold text-red-800">
+                  {evaluation.failed_rows}
+                </div>
               </div>
             </div>
-            <div className="bg-green-50 rounded p-2 min-w-[72px]">
-              <div className="text-green-700">Completed</div>
-              <div className="font-semibold text-green-800">
-                {evaluation.completed_rows}
-              </div>
-            </div>
-            <div className="bg-red-50 rounded p-2 min-w-[72px]">
-              <div className="text-red-700">Failed</div>
-              <div className="font-semibold text-red-800">
-                {evaluation.failed_rows}
-              </div>
-            </div>
+
+            {/*
+              Upstream diarisation progress. When the user kicked off
+              this run with auto-transcribe enabled on rows missing a
+              diarised transcript, the eval row stays ``pending`` while
+              the transcribe / diarise worker is in flight. Surfacing
+              the parent batch's diarisation counters here tells the
+              user the run isn't stalled — it's waiting on audio
+              processing — and the bar fills as the worker churns.
+              Polling on ``callImportQuery`` keeps these numbers fresh
+              without a manual refresh.
+            */}
+            {(() => {
+              const ci = callImport
+              if (!ci) return null
+              const diarisePending = ci.diarised_pending_rows ?? 0
+              const diariseRunning = ci.diarised_running_rows ?? 0
+              const diariseInFlight = diarisePending + diariseRunning
+              const diariseDone =
+                (ci.diarised_completed_rows ?? 0) +
+                (ci.diarised_failed_rows ?? 0)
+              const evalRunning =
+                evaluation.status === 'pending' ||
+                evaluation.status === 'running'
+              // Only render while the upstream pipeline is actively
+              // moving — once everything's settled we don't want a
+              // stale 100% bar lingering for terminal runs.
+              if (!evalRunning || diariseInFlight + diariseDone === 0) {
+                return null
+              }
+              return (
+                <div className="mt-4 pt-4 border-t border-gray-100">
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="text-xs font-medium text-gray-600">
+                      Diarising audio
+                    </div>
+                    {diariseInFlight > 0 && (
+                      <div className="flex items-center gap-1 text-[11px] text-primary-700">
+                        <RefreshCw className="h-3 w-3 animate-spin" />
+                        {diariseInFlight} in progress
+                      </div>
+                    )}
+                  </div>
+                  <CallImportProgressBar
+                    total={ci.total_rows}
+                    completed={ci.diarised_completed_rows ?? 0}
+                    failed={ci.diarised_failed_rows ?? 0}
+                  />
+                </div>
+              )
+            })()}
           </div>
         </div>
 
@@ -907,6 +1683,25 @@ export default function CallImportEvaluationDetail() {
                 onClick={() => setRetryError(null)}
                 className="p-1 rounded text-red-400 hover:text-red-600 hover:bg-red-100"
                 aria-label="Dismiss retry error"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {cancelError && (
+          <div className="mt-4 bg-red-50 border border-red-200 rounded-lg p-3">
+            <div className="flex items-start gap-2">
+              <AlertCircle className="h-4 w-4 text-red-600 mt-0.5" />
+              <div className="flex-1">
+                <p className="text-sm text-red-800">{cancelError}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCancelError(null)}
+                className="p-1 rounded text-red-400 hover:text-red-600 hover:bg-red-100"
+                aria-label="Dismiss abort error"
               >
                 <X className="h-3.5 w-3.5" />
               </button>
@@ -1254,37 +2049,31 @@ export default function CallImportEvaluationDetail() {
               <div className="mt-4 mb-3 flex items-center justify-between gap-3 flex-wrap">
                 <p className="text-xs text-gray-500 inline-flex items-center gap-1.5">
                   <Sparkles className="h-3.5 w-3.5 text-primary-500" />
-                  Click any bar or slice to filter the row table by that value.
+                  Click any bar, tile, or slice to filter the row table.
+                  Use the icon row on each card to change its chart.
                 </p>
-                <div className="inline-flex border border-gray-200 rounded-lg p-1 bg-gray-50">
-                  <button
-                    type="button"
-                    onClick={() => setCategoricalChartType('pie')}
-                    className={`px-2.5 py-1 text-[11px] font-medium rounded transition inline-flex items-center gap-1.5 ${
-                      categoricalChartType === 'pie'
-                        ? 'bg-white text-primary-700 shadow-sm'
-                        : 'text-gray-600 hover:text-gray-900'
-                    }`}
-                    aria-pressed={categoricalChartType === 'pie'}
-                    title="Render categorical metrics as pie charts"
+                <div className="inline-flex items-center gap-2">
+                  <span className="text-[11px] text-gray-500">
+                    Default chart:
+                  </span>
+                  <select
+                    value={chartGlobalDefault}
+                    onChange={(e) =>
+                      setChartGlobalDefault(
+                        e.target.value as CategoricalChartChoice,
+                      )
+                    }
+                    className="text-[11px] border border-gray-200 rounded-md bg-white px-2 py-1 text-gray-700 focus:outline-none focus:ring-1 focus:ring-primary-300"
+                    title="Default chart type for categorical metrics. Per-metric overrides win."
                   >
-                    <PieChartIcon className="h-3 w-3" />
-                    Pie
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setCategoricalChartType('bar')}
-                    className={`px-2.5 py-1 text-[11px] font-medium rounded transition inline-flex items-center gap-1.5 ${
-                      categoricalChartType === 'bar'
-                        ? 'bg-white text-primary-700 shadow-sm'
-                        : 'text-gray-600 hover:text-gray-900'
-                    }`}
-                    aria-pressed={categoricalChartType === 'bar'}
-                    title="Render categorical metrics as bar charts"
-                  >
-                    <BarChart3 className="h-3 w-3" />
-                    Bar
-                  </button>
+                    <option value="auto">Auto (smart pick)</option>
+                    <option value="pie">Pie / donut</option>
+                    <option value="bar">Bar</option>
+                    <option value="lollipop">Lollipop</option>
+                    <option value="radial">Radial</option>
+                    <option value="treemap">Treemap</option>
+                    <option value="waffle">Waffle (10×10)</option>
+                  </select>
                 </div>
               </div>
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -1320,7 +2109,15 @@ export default function CallImportEvaluationDetail() {
                     >
                       <MetricVisualization
                         metric={m}
-                        categoricalChartType={categoricalChartType}
+                        chartType={resolveCategoricalChart(
+                          m,
+                          chartPerMetric,
+                          chartGlobalDefault,
+                        )}
+                        chartOverridden={chartPerMetric[m.metric_id] != null}
+                        onChangeChartType={(t) =>
+                          setMetricChartType(m.metric_id, t)
+                        }
                         isActive={isActive}
                         activeValue={activeValue}
                         onValueClick={(value) => {
@@ -1396,28 +2193,133 @@ export default function CallImportEvaluationDetail() {
                 {totalMetricColumnCount} metric columns.
               </p>
             )}
+            {/* Top pagination mirrors the bottom controls so the user
+                doesn't have to scroll past every row to flip pages. */}
+            <Pagination
+              page={rowsQuery.data.page}
+              pageCount={totalPages}
+              total={rowsQuery.data.total}
+              pageSize={rowsQuery.data.page_size}
+              className="mb-2"
+              onPrev={() => setPage((p) => Math.max(1, p - 1))}
+              onNext={() => setPage((p) => p + 1)}
+            />
             <div className="overflow-x-auto border border-gray-100 rounded">
               <table className="min-w-max w-full divide-y divide-gray-200">
                 <thead className="bg-gray-50">
                   <tr>
-                    <th className="sticky left-0 z-10 bg-gray-50 px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase whitespace-nowrap">
+                    <SortableHeader
+                      columnKey="row_index"
+                      activeKey={sortBy}
+                      activeDir={sortDir}
+                      onCycle={handleColumnSort}
+                      title="Row index"
+                      className="sticky left-0 z-10 bg-gray-50"
+                    >
                       #
-                    </th>
-                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase whitespace-nowrap">
+                    </SortableHeader>
+                    <SortableHeader
+                      columnKey="conversation_id"
+                      activeKey={sortBy}
+                      activeDir={sortDir}
+                      onCycle={handleColumnSort}
+                    >
                       Conversation ID
-                    </th>
-                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase whitespace-nowrap">
+                    </SortableHeader>
+                    <SortableHeader
+                      columnKey="status"
+                      activeKey={sortBy}
+                      activeDir={sortDir}
+                      onCycle={handleColumnSort}
+                      rightSlot={
+                        <div className="relative" ref={statusFilterMenuRef}>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setStatusFilterMenuOpen((v) => !v)
+                            }}
+                            className={
+                              'p-1 rounded hover:bg-gray-200 transition-colors ' +
+                              (statusFilter
+                                ? 'text-primary-600'
+                                : 'text-gray-400')
+                            }
+                            title={
+                              statusFilter
+                                ? `Status filter: ${statusFilter} (click to change)`
+                                : 'Filter by status'
+                            }
+                            aria-label="Filter by status"
+                          >
+                            <Filter className="h-3 w-3" />
+                          </button>
+                          {statusFilterMenuOpen && (
+                            <div
+                              role="menu"
+                              className="absolute left-0 top-full z-30 mt-1 w-40 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden text-xs"
+                            >
+                              {[
+                                { value: '', label: 'All statuses' },
+                                { value: 'completed', label: 'Completed' },
+                                { value: 'failed', label: 'Failed' },
+                                { value: 'pending', label: 'Pending' },
+                                { value: 'running', label: 'Running' },
+                                { value: 'skipped', label: 'Skipped' },
+                              ].map((opt) => {
+                                const isCurrent =
+                                  (statusFilter ?? '') === opt.value
+                                return (
+                                  <button
+                                    key={opt.value || '__all'}
+                                    type="button"
+                                    role="menuitem"
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      setStatusFilter(opt.value || null)
+                                      setStatusFilterMenuOpen(false)
+                                    }}
+                                    className={
+                                      'w-full px-3 py-1.5 text-left normal-case font-normal hover:bg-gray-50 flex items-center justify-between ' +
+                                      (isCurrent
+                                        ? 'text-primary-700'
+                                        : 'text-gray-700')
+                                    }
+                                  >
+                                    <span>{opt.label}</span>
+                                    {isCurrent && (
+                                      <Check className="h-3 w-3" />
+                                    )}
+                                  </button>
+                                )
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      }
+                    >
                       Status
-                    </th>
+                    </SortableHeader>
                     {displayMetrics.flatMap((metric) => {
+                      const llmLabel = getMetricLlmLabel(metric.id)
                       const headers = [
-                        <th
+                        <SortableHeader
                           key={metric.id}
-                          className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase whitespace-nowrap"
+                          columnKey={`metric:${metric.id}`}
+                          activeKey={sortBy}
+                          activeDir={sortDir}
+                          onCycle={handleColumnSort}
                           title={metric.name}
                         >
-                          {metric.name}
-                        </th>,
+                          <span className="flex flex-col items-start leading-tight normal-case">
+                            <span className="truncate max-w-[220px] text-xs font-medium text-gray-700">
+                              {metric.name}
+                            </span>
+                            <span className="text-[10px] font-normal text-gray-400 mt-0.5">
+                              {llmLabel}
+                            </span>
+                          </span>
+                        </SortableHeader>,
                       ]
                       if (metric.hasRationale) {
                         headers.push(
@@ -1426,7 +2328,15 @@ export default function CallImportEvaluationDetail() {
                             className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase whitespace-nowrap"
                             title={`${metric.name} - LLM Rationale`}
                           >
-                            {metric.name} <span className="text-gray-400">- LLM Rationale</span>
+                            <span className="flex flex-col items-start leading-tight normal-case">
+                              <span className="text-xs font-medium text-gray-700">
+                                {metric.name}{' '}
+                                <span className="text-gray-400">- LLM Rationale</span>
+                              </span>
+                              <span className="text-[10px] font-normal text-gray-400 mt-0.5">
+                                {llmLabel}
+                              </span>
+                            </span>
                           </th>,
                         )
                       }
@@ -1450,8 +2360,64 @@ export default function CallImportEvaluationDetail() {
                         <td className="sticky left-0 z-10 bg-inherit px-3 py-2 text-sm text-gray-600 whitespace-nowrap">
                           {(row.row_index ?? 0) + 1}
                         </td>
-                        <td className="px-3 py-2 text-sm font-mono text-primary-700 whitespace-nowrap">
-                          {row.conversation_id || '-'}
+                        {/*
+                          The conversation-id cell is the user-visible
+                          row identifier and the most common thing an
+                          operator wants to paste into Slack / a
+                          ticket. The parent ``<tr>`` already has an
+                          onClick to open the detail drawer; we stop
+                          propagation here so drag-selecting the text
+                          or hitting the inline Copy icon doesn't also
+                          open the drawer. ``select-text`` re-enables
+                          the native selection cursor that the row's
+                          ``cursor-pointer`` would otherwise mask.
+                         */}
+                        <td
+                          className="px-3 py-2 text-sm font-mono text-primary-700 whitespace-nowrap"
+                          onClick={(e) => e.stopPropagation()}
+                          onMouseDown={(e) => e.stopPropagation()}
+                          onDoubleClick={(e) => e.stopPropagation()}
+                        >
+                          {row.conversation_id ? (
+                            <span className="inline-flex items-center gap-2">
+                              <span
+                                className="select-text cursor-text"
+                                title={row.conversation_id}
+                              >
+                                {row.conversation_id}
+                              </span>
+                              <button
+                                type="button"
+                                aria-label={
+                                  copiedRowId === row.id
+                                    ? `Copied ${row.conversation_id}`
+                                    : `Copy ${row.conversation_id}`
+                                }
+                                title={
+                                  copiedRowId === row.id
+                                    ? 'Copied!'
+                                    : 'Copy conversation ID'
+                                }
+                                onClick={(e) =>
+                                  handleCopyConversationId(row, e)
+                                }
+                                onMouseDown={(e) => e.stopPropagation()}
+                                className={`inline-flex items-center justify-center w-6 h-6 rounded transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 ${
+                                  copiedRowId === row.id
+                                    ? 'text-green-600 bg-green-50'
+                                    : 'text-gray-400 hover:text-primary-700 hover:bg-primary-50'
+                                }`}
+                              >
+                                {copiedRowId === row.id ? (
+                                  <Check className="h-3.5 w-3.5" />
+                                ) : (
+                                  <Copy className="h-3.5 w-3.5" />
+                                )}
+                              </button>
+                            </span>
+                          ) : (
+                            '-'
+                          )}
                         </td>
                         <td className="px-3 py-2 whitespace-nowrap">
                           <StatusBadge status={row.status} size="sm" />
@@ -1541,6 +2507,30 @@ export default function CallImportEvaluationDetail() {
                         })}
                         <td className="px-3 py-2 text-right whitespace-nowrap">
                           <div className="inline-flex items-center gap-1">
+                            {(row.status === 'pending' ||
+                              row.status === 'running') && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  if (cancellingRowId) return
+                                  cancelRowMutation.mutate(row.id)
+                                }}
+                                disabled={
+                                  cancellingRowId !== null &&
+                                  cancellingRowId !== row.id
+                                }
+                                className="p-1.5 rounded text-gray-400 hover:text-amber-700 hover:bg-amber-50 transition-colors disabled:opacity-40"
+                                title="Abort this row"
+                                aria-label="Abort evaluation row"
+                              >
+                                {cancellingRowId === row.id ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <XCircle className="h-4 w-4" />
+                                )}
+                              </button>
+                            )}
                             {row.status === 'failed' && (
                               <button
                                 type="button"
@@ -1590,34 +2580,15 @@ export default function CallImportEvaluationDetail() {
               </table>
             </div>
 
-            {totalPages > 1 && (
-              <div className="mt-3 flex items-center justify-between">
-                <p className="text-sm text-gray-500">
-                  Page {rowsQuery.data.page} of {totalPages}
-                </p>
-                <div className="flex gap-2">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setPage((p) => Math.max(1, p - 1))}
-                    disabled={rowsQuery.data.page <= 1}
-                  >
-                    Prev
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setPage((p) => p + 1)}
-                    disabled={
-                      rowsQuery.data.page * rowsQuery.data.page_size >=
-                      rowsQuery.data.total
-                    }
-                  >
-                    Next
-                  </Button>
-                </div>
-              </div>
-            )}
+            <Pagination
+              page={rowsQuery.data.page}
+              pageCount={totalPages}
+              total={rowsQuery.data.total}
+              pageSize={rowsQuery.data.page_size}
+              className="mt-3"
+              onPrev={() => setPage((p) => Math.max(1, p - 1))}
+              onNext={() => setPage((p) => p + 1)}
+            />
           </>
         )}
       </div>
@@ -1656,6 +2627,30 @@ export default function CallImportEvaluationDetail() {
           if (deleteRowMutation.isPending) return
           setPendingDeleteRow(null)
           setRowDeleteError(null)
+        }}
+      />
+      <ConfirmModal
+        isOpen={forceFailPendingOpen}
+        title={`Force-fail ${pendingRowCount} pending row${
+          pendingRowCount === 1 ? '' : 's'
+        }?`}
+        description={`This marks ${pendingRowCount} pending row${
+          pendingRowCount === 1 ? '' : 's'
+        } as failed immediately.\n\nThis won't affect rows currently running.`}
+        confirmLabel={`Force-fail ${pendingRowCount} pending row${
+          pendingRowCount === 1 ? '' : 's'
+        }`}
+        cancelLabel="Cancel"
+        variant="danger"
+        isLoading={forceFailPendingMutation.isPending}
+        onConfirm={() => {
+          if (!forceFailPendingMutation.isPending) {
+            forceFailPendingMutation.mutate()
+          }
+        }}
+        onCancel={() => {
+          if (forceFailPendingMutation.isPending) return
+          setForceFailPendingOpen(false)
         }}
       />
 
@@ -1824,6 +2819,193 @@ export default function CallImportEvaluationDetail() {
               </div>
             </div>
           </div>,
+          document.body,
+        )}
+
+      {rerunMetricsOpen &&
+        createPortal(
+          (() => {
+            // List every metric known on the run, sorted by name for
+            // deterministic scanning. We pull from
+            // ``displayMetrics`` (computed above) so the picker stays
+            // in sync with what the table renders: child metrics
+            // collapsed under their parent, discovered-metric
+            // candidates excluded until promoted, etc.
+            const pickableMetrics = (displayMetrics ?? [])
+              .slice()
+              .sort((a, b) => a.name.localeCompare(b.name))
+            const allIds = pickableMetrics.map((m) => m.id)
+            const selectedCount = rerunMetricIds.size
+            const allSelected =
+              allIds.length > 0 && allIds.every((id) => rerunMetricIds.has(id))
+            const noneSelected = selectedCount === 0
+            return (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
+                <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
+                  <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+                    <div>
+                      <h2 className="text-lg font-semibold text-gray-900">
+                        Re-run selected metrics
+                      </h2>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        Pick the metrics you want to recompute. Every
+                        row in this run is re-scored on just those
+                        metrics; other metrics' values stay
+                        byte-identical.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (rerunMetricsMutation.isPending) return
+                        setRerunMetricsOpen(false)
+                        setRerunError(null)
+                      }}
+                      disabled={rerunMetricsMutation.isPending}
+                      className="text-gray-400 hover:text-gray-600 disabled:opacity-50"
+                      aria-label="Close re-run metrics modal"
+                    >
+                      <X className="h-5 w-5" />
+                    </button>
+                  </div>
+
+                  <div className="px-6 py-5 overflow-y-auto flex-1 space-y-5">
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <label className="block text-sm font-medium text-gray-700">
+                          Metrics to recompute
+                        </label>
+                        {pickableMetrics.length > 0 && (
+                          <button
+                            type="button"
+                            className="text-[11px] text-primary-600 hover:text-primary-700"
+                            onClick={() => {
+                              if (allSelected) {
+                                setRerunMetricIds(new Set())
+                              } else {
+                                setRerunMetricIds(new Set(allIds))
+                              }
+                            }}
+                          >
+                            {allSelected ? 'Clear all' : 'Select all'}
+                          </button>
+                        )}
+                      </div>
+                      {pickableMetrics.length === 0 ? (
+                        <p className="text-sm text-gray-500 italic">
+                          This run has no scored metrics yet — nothing
+                          to re-run.
+                        </p>
+                      ) : (
+                        <div className="border border-gray-200 rounded-lg divide-y divide-gray-100 max-h-64 overflow-y-auto">
+                          {pickableMetrics.map((m) => {
+                            const checked = rerunMetricIds.has(m.id)
+                            return (
+                              <label
+                                key={m.id}
+                                className="flex items-start gap-3 px-3 py-2 hover:bg-gray-50 cursor-pointer"
+                              >
+                                <input
+                                  type="checkbox"
+                                  className="mt-0.5 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                                  checked={checked}
+                                  onChange={(e) => {
+                                    setRerunMetricIds((prev) => {
+                                      const next = new Set(prev)
+                                      if (e.target.checked) {
+                                        next.add(m.id)
+                                      } else {
+                                        next.delete(m.id)
+                                      }
+                                      return next
+                                    })
+                                  }}
+                                />
+                                <div className="min-w-0 flex-1">
+                                  <p className="text-sm font-medium text-gray-900 truncate">
+                                    {m.name}
+                                  </p>
+                                  <p className="text-[11px] text-gray-500 font-mono truncate">
+                                    {m.id}
+                                  </p>
+                                </div>
+                              </label>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        LLM for re-evaluation
+                      </label>
+                      <p className="text-xs text-gray-500 mb-2">
+                        Used to score the selected metrics. Leave as-is
+                        to re-run with the run's existing LLM.
+                      </p>
+                      <ProviderModelPicker
+                        kind="llm"
+                        value={rerunLLM}
+                        onChange={setRerunLLM}
+                        allowCredentialPick
+                        defaultLabel="Pick an LLM provider"
+                      />
+                    </div>
+
+                    <div className="rounded-md bg-blue-50 border border-blue-200 p-3 text-xs text-blue-900">
+                      Already-successful rows are eligible too — only
+                      the selected metrics' scores are overwritten; the
+                      rest of <code>metric_scores</code> is preserved
+                      verbatim.
+                    </div>
+
+                    {rerunError && (
+                      <div className="rounded-md bg-red-50 border border-red-200 p-3">
+                        <div className="flex items-start gap-2">
+                          <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
+                          <p className="text-sm text-red-800">{rerunError}</p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="px-6 py-4 border-t border-gray-200 flex items-center justify-end gap-3">
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        if (rerunMetricsMutation.isPending) return
+                        setRerunMetricsOpen(false)
+                        setRerunError(null)
+                      }}
+                      disabled={rerunMetricsMutation.isPending}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      variant="primary"
+                      leftIcon={<RefreshCw className="h-4 w-4" />}
+                      onClick={() => {
+                        if (!rerunMetricsMutation.isPending && !noneSelected) {
+                          rerunMetricsMutation.mutate()
+                        }
+                      }}
+                      isLoading={rerunMetricsMutation.isPending}
+                      disabled={
+                        rerunMetricsMutation.isPending ||
+                        noneSelected ||
+                        !rerunLLM.provider ||
+                        !rerunLLM.model
+                      }
+                    >
+                      Re-run {selectedCount > 0 ? `${selectedCount} ` : ''}
+                      metric{selectedCount === 1 ? '' : 's'}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )
+          })(),
           document.body,
         )}
 
@@ -2274,50 +3456,274 @@ const CHART_TOOLTIP_ITEM_STYLE: React.CSSProperties = {
 }
 
 /**
+ * Available categorical chart types for a given metric. Multi-label
+ * parents get the heatmap + cumulative coverage extras; everything
+ * else gets the pie/donut option (which would mislead on multi-label
+ * because slices wouldn't sum to 100%). The picker uses this to grey
+ * out icons that don't apply.
+ */
+function availableChartTypesFor(
+  metric: CallImportMetricAggregate,
+): CategoricalChartType[] {
+  const isMulti = metric.is_multi_label_parent === true
+  const base: CategoricalChartType[] = ['bar', 'lollipop', 'treemap']
+  if (!isMulti) {
+    base.push('pie', 'radial', 'waffle')
+  }
+  if (isMulti) {
+    base.push('coverage', 'heatmap')
+  }
+  return base
+}
+
+const CHART_TYPE_META: Record<
+  CategoricalChartType,
+  { label: string; Icon: React.ComponentType<{ className?: string }> }
+> = {
+  pie: { label: 'Pie / donut', Icon: PieChartIcon },
+  bar: { label: 'Horizontal bar', Icon: BarChart3 },
+  lollipop: { label: 'Lollipop', Icon: CircleDot },
+  radial: { label: 'Radial bar', Icon: Target },
+  treemap: { label: 'Treemap', Icon: LayoutGrid },
+  waffle: { label: 'Waffle (10×10)', Icon: Grid3x3 },
+  coverage: { label: 'Cumulative coverage', Icon: TrendingUp },
+  heatmap: { label: 'Co-occurrence heatmap', Icon: Grid3x3 },
+}
+
+/**
+ * Compact icon-row picker rendered top-right of every chart card.
+ * Clicking a non-active icon overrides the per-metric chart type;
+ * clicking the already-active icon when an override is present
+ * reverts to the global default ("auto").
+ */
+function CategoricalChartPicker({
+  metric,
+  active,
+  overridden,
+  onChange,
+}: {
+  metric: CallImportMetricAggregate
+  active: CategoricalChartType
+  overridden: boolean
+  onChange: (type: CategoricalChartType | null) => void
+}) {
+  const types = availableChartTypesFor(metric)
+  return (
+    <div className="inline-flex items-center gap-0.5 rounded-md border border-gray-200 bg-gray-50/70 p-0.5">
+      {types.map((t) => {
+        const meta = CHART_TYPE_META[t]
+        const Icon = meta.Icon
+        const isActive = active === t
+        return (
+          <button
+            key={t}
+            type="button"
+            title={meta.label}
+            aria-pressed={isActive}
+            onClick={() => {
+              if (isActive && overridden) onChange(null)
+              else onChange(t)
+            }}
+            className={`p-1 rounded transition ${
+              isActive
+                ? 'bg-white text-primary-700 shadow-sm'
+                : 'text-gray-500 hover:text-gray-800 hover:bg-white/70'
+            }`}
+          >
+            <Icon className="h-3 w-3" />
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+/**
+ * Sort categorical value counts desc by count so every chart type
+ * renders the most-impactful labels first. Backend already does this
+ * for the categorical aggregator, but defensive sorting keeps the
+ * frontend correct if a future code path returns unsorted data.
+ */
+function sortValueCounts(
+  counts: CallImportMetricAggregate['value_counts'],
+): CallImportMetricAggregate['value_counts'] {
+  return [...counts].sort((a, b) => b.count - a.count)
+}
+
+/**
+ * Truncate a long categorical label so it fits inside a tooltip /
+ * tile / legend slot. The full text is always available via the
+ * surrounding ``title`` attribute or tooltip content.
+ */
+function truncateLabel(label: string, max = 24): string {
+  if (typeof label !== 'string') return ''
+  if (label.length <= max) return label
+  return `${label.slice(0, max - 1)}…`
+}
+
+/**
+ * Side-legend below the chart. Every category is clickable so the
+ * user can drill in even when the chart itself is hard to click
+ * (e.g. tiny treemap tiles or thin pie slices). Defaults to showing
+ * the top 6 with a "Show all" toggle so a long-tail metric doesn't
+ * dominate the card vertically.
+ */
+function CategoryLegend({
+  valueCounts,
+  totalCategorical,
+  activeValue,
+  onValueClick,
+}: {
+  valueCounts: CallImportMetricAggregate['value_counts']
+  totalCategorical: number
+  activeValue: string | null
+  onValueClick: (value: string) => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const COLLAPSED_LIMIT = 6
+  const visible =
+    expanded || valueCounts.length <= COLLAPSED_LIMIT
+      ? valueCounts
+      : valueCounts.slice(0, COLLAPSED_LIMIT)
+  const hidden = valueCounts.length - visible.length
+  return (
+    <div className="mt-3 text-[11px]">
+      <ul className="space-y-1">
+        {visible.map((vc, i) => {
+          const pct = (vc.count / totalCategorical) * 100
+          const isFiltered = activeValue === vc.label
+          return (
+            <li key={vc.label}>
+              <button
+                type="button"
+                onClick={() => onValueClick(vc.label)}
+                className={`group/row w-full flex items-center gap-2 rounded px-1.5 py-1 transition ${
+                  isFiltered
+                    ? 'bg-primary-50 text-primary-800'
+                    : 'hover:bg-gray-50 text-gray-700'
+                }`}
+              >
+                <span
+                  className="h-2 w-2 rounded-full shrink-0"
+                  style={{ background: PIE_COLORS[i % PIE_COLORS.length] }}
+                />
+                <span
+                  className="text-left flex-1 break-words"
+                  title={vc.label}
+                >
+                  {vc.label}
+                </span>
+                <span className="font-medium text-gray-900 tabular-nums">
+                  {vc.count}
+                </span>
+                <span className="text-gray-400 w-10 text-right tabular-nums">
+                  {pct.toFixed(0)}%
+                </span>
+              </button>
+            </li>
+          )
+        })}
+      </ul>
+      {hidden > 0 && (
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          className="mt-1 text-[10px] text-primary-600 hover:text-primary-800 px-1.5"
+        >
+          Show {hidden} more
+        </button>
+      )}
+      {expanded && valueCounts.length > COLLAPSED_LIMIT && (
+        <button
+          type="button"
+          onClick={() => setExpanded(false)}
+          className="mt-1 text-[10px] text-gray-500 hover:text-gray-700 px-1.5"
+        >
+          Show less
+        </button>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Custom Y-axis tick for the horizontal categorical charts (lollipop
+ * and ranked bar). Sizes its truncation to the column width the
+ * caller passes via ``colWidth`` (recharts itself does not forward
+ * the YAxis ``width`` prop into custom tick components, so we plumb
+ * it explicitly) and exposes the full text via an SVG ``<title>``
+ * so hovering a clipped row reveals the original label. Long labels
+ * also drop one font size so we squeeze in a few extra characters
+ * before having to clip.
+ */
+function LongLabelTick(props: any) {
+  const { x, y, payload, colWidth } = props
+  const value: string = String(payload?.value ?? '')
+  const slot = typeof colWidth === 'number' && colWidth > 0 ? colWidth : 200
+  const fontSize = value.length > 22 ? 10 : 11
+  const charPx = fontSize * 0.58
+  const maxChars = Math.max(8, Math.floor((slot - 12) / charPx))
+  const display =
+    value.length > maxChars ? `${value.slice(0, maxChars - 1)}…` : value
+  return (
+    <g transform={`translate(${x},${y})`}>
+      <title>{value}</title>
+      <text
+        x={-6}
+        y={0}
+        dy={4}
+        textAnchor="end"
+        fill="#334155"
+        fontSize={fontSize}
+      >
+        {display}
+      </text>
+    </g>
+  )
+}
+
+/**
  * Single-metric chart card used inside the Visualizations tab. Picks
  * the chart shape from the aggregate payload: numeric histograms beat
  * categorical pie/bar charts when both are present, since numeric
  * distributions tell a richer story than the top-N category tally.
  *
- * Categorical metrics render as either a pie or a vertical bar
- * depending on ``categoricalChartType``. Wide categorical sets (>8
- * unique values) always render as a horizontal bar regardless so we
- * don't truncate labels in a cramped pie chart.
+ * Categorical metrics support pie, bar, lollipop, radial, treemap,
+ * waffle, plus multi-label-only co-occurrence heatmap and cumulative
+ * coverage. The chart type comes from the resolver in the parent so
+ * it picks up both the global default and any per-metric override.
  *
- * Categorical bars and pie slices are clickable: clicking one calls
- * ``onValueClick(label)`` with the value the user wants to drill into
- * — the parent uses that to apply a row-table filter.
+ * Clicking a tile / bar / slice / square calls ``onValueClick(label)``
+ * with the value the user wants to drill into — the parent uses that
+ * to apply a row-table filter.
  */
 function MetricVisualization({
   metric,
-  categoricalChartType,
+  chartType,
+  chartOverridden,
+  onChangeChartType,
   isActive,
   activeValue,
   onValueClick,
 }: {
   metric: CallImportMetricAggregate
-  categoricalChartType: 'pie' | 'bar'
+  chartType: CategoricalChartType
+  chartOverridden: boolean
+  onChangeChartType: (type: CategoricalChartType | null) => void
   isActive: boolean
   activeValue: string | null
   onValueClick: (value: string) => void
 }) {
   const histogram = metric.histogram_buckets
-  const valueCounts = metric.value_counts
+  const valueCounts = useMemo(
+    () => sortValueCounts(metric.value_counts),
+    [metric.value_counts],
+  )
   const hasNumeric = histogram.length > 0 || metric.mean != null
   const hasCategorical = valueCounts.length > 0
   const totalCategorical = valueCounts.reduce((sum, v) => sum + v.count, 0)
   const isMultiLabelParent = metric.is_multi_label_parent === true
 
-  // Render mode: numeric histogram, categorical pie/bar, or empty state.
-  // Numeric metrics always render as a histogram (richer than counts).
-  // Categorical pies are capped to a low-cardinality threshold (<=8) so
-  // they stay readable — beyond that we always fall back to bars.
-  // Multi-label parents NEVER render as pie because their slices
-  // wouldn't sum to 100% (each row votes for >=1 label) — a pie would
-  // misleadingly suggest exclusive proportions.
-  const wideCategorical = valueCounts.length > 8
-  const usePieForCategorical =
-    categoricalChartType === 'pie' && !wideCategorical && !isMultiLabelParent
   let chart: ReactNodeLike = null
   if (histogram.length > 0) {
     const data = histogram.map((b) => ({
@@ -2361,183 +3767,16 @@ function MetricVisualization({
         </BarChart>
       </ResponsiveContainer>
     )
-  } else if (valueCounts.length && usePieForCategorical) {
-    chart = (
-      <ResponsiveContainer width="100%" height={200}>
-        <PieChart>
-          <Tooltip
-            contentStyle={CHART_TOOLTIP_STYLE}
-            labelStyle={CHART_TOOLTIP_LABEL_STYLE}
-            itemStyle={CHART_TOOLTIP_ITEM_STYLE}
-            formatter={(value: any, name: any) => [`${value} rows`, name]}
-          />
-          <Pie
-            data={valueCounts}
-            dataKey="count"
-            nameKey="label"
-            innerRadius={42}
-            outerRadius={75}
-            paddingAngle={2}
-            stroke="#fff"
-            strokeWidth={2}
-            onClick={(slice: any) => {
-              const label = slice?.payload?.label ?? slice?.name
-              if (typeof label === 'string') onValueClick(label)
-            }}
-            label={(entry) => entry.label}
-            labelLine={false}
-          >
-            {valueCounts.map((vc, i) => (
-              <Cell
-                key={vc.label}
-                fill={PIE_COLORS[i % PIE_COLORS.length]}
-                cursor="pointer"
-                opacity={
-                  activeValue && activeValue !== vc.label ? 0.35 : 1
-                }
-              />
-            ))}
-          </Pie>
-        </PieChart>
-      </ResponsiveContainer>
-    )
   } else if (valueCounts.length) {
-    // Vertical bar chart when ``categoricalChartType === 'bar'`` and
-    // the category list is short; otherwise horizontal so long labels
-    // (e.g. "Failed to extract") don't get truncated on the X axis.
-    // Multi-label parents are forced horizontal regardless of the
-    // toggle because their child labels are typically multi-word
-    // sentences ("Pitch done with data (personalized growth)") that
-    // would never fit on a vertical axis.
-    const useVertical =
-      !isMultiLabelParent &&
-      categoricalChartType === 'bar' &&
-      valueCounts.length <= 6
-    chart = useVertical ? (
-      <ResponsiveContainer width="100%" height={220}>
-        <BarChart
-          data={valueCounts}
-          margin={{ top: 4, right: 8, left: -16, bottom: 4 }}
-        >
-          <defs>
-            <linearGradient id={`bar-cat-v-${metric.metric_id}`} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#10b981" stopOpacity={0.95} />
-              <stop offset="100%" stopColor="#10b981" stopOpacity={0.55} />
-            </linearGradient>
-          </defs>
-          <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
-          <XAxis
-            dataKey="label"
-            tick={{ fontSize: 11, fill: '#334155' }}
-            axisLine={{ stroke: '#e2e8f0' }}
-            tickLine={false}
-            interval={0}
-          />
-          <YAxis
-            tick={{ fontSize: 10, fill: '#64748b' }}
-            axisLine={false}
-            tickLine={false}
-            allowDecimals={false}
-          />
-          <Tooltip
-            contentStyle={CHART_TOOLTIP_STYLE}
-            labelStyle={CHART_TOOLTIP_LABEL_STYLE}
-            itemStyle={CHART_TOOLTIP_ITEM_STYLE}
-            cursor={{ fill: 'rgba(16,185,129,0.08)' }}
-            formatter={(value: any) => [`${value} rows`, 'Count']}
-          />
-          <Bar
-            dataKey="count"
-            fill={`url(#bar-cat-v-${metric.metric_id})`}
-            radius={[6, 6, 0, 0]}
-            onClick={(bar: any) => {
-              const label = bar?.label ?? bar?.payload?.label
-              if (typeof label === 'string') onValueClick(label)
-            }}
-          >
-            {valueCounts.map((vc) => (
-              <Cell
-                key={vc.label}
-                cursor="pointer"
-                opacity={activeValue && activeValue !== vc.label ? 0.35 : 1}
-              />
-            ))}
-          </Bar>
-        </BarChart>
-      </ResponsiveContainer>
-    ) : (
-      // Horizontal bar layout for wide categorical / multi-label
-      // metrics. Each row gets ~36px of vertical space (single-line
-      // label + breathing room) so the recharts auto-wrapped ticks
-      // never collide with the next row's label. The y-axis is wide
-      // enough (180px) for typical multi-word labels; anything
-      // longer is truncated with an ellipsis at ~28 chars and the
-      // tooltip surfaces the full text on hover.
-      <ResponsiveContainer
-        width="100%"
-        height={Math.max(180, 36 + valueCounts.length * 36)}
-      >
-        <BarChart
-          data={valueCounts}
-          layout="vertical"
-          margin={{ top: 8, right: 32, left: 0, bottom: 8 }}
-        >
-          <defs>
-            <linearGradient id={`bar-cat-${metric.metric_id}`} x1="0" y1="0" x2="1" y2="0">
-              <stop offset="0%" stopColor="#10b981" stopOpacity={0.55} />
-              <stop offset="100%" stopColor="#10b981" stopOpacity={0.95} />
-            </linearGradient>
-          </defs>
-          <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
-          <XAxis
-            type="number"
-            tick={{ fontSize: 10, fill: '#64748b' }}
-            axisLine={false}
-            tickLine={false}
-            allowDecimals={false}
-          />
-          <YAxis
-            type="category"
-            dataKey="label"
-            tick={{ fontSize: 11, fill: '#334155' }}
-            axisLine={false}
-            tickLine={false}
-            width={180}
-            interval={0}
-            tickFormatter={(value: string) =>
-              typeof value === 'string' && value.length > 28
-                ? `${value.slice(0, 27)}…`
-                : value
-            }
-          />
-          <Tooltip
-            contentStyle={CHART_TOOLTIP_STYLE}
-            labelStyle={CHART_TOOLTIP_LABEL_STYLE}
-            itemStyle={CHART_TOOLTIP_ITEM_STYLE}
-            cursor={{ fill: 'rgba(16,185,129,0.08)' }}
-            formatter={(value: any) => [`${value} rows`, 'Count']}
-          />
-          <Bar
-            dataKey="count"
-            fill={`url(#bar-cat-${metric.metric_id})`}
-            radius={[0, 4, 4, 0]}
-            onClick={(bar: any) => {
-              const label = bar?.label ?? bar?.payload?.label
-              if (typeof label === 'string') onValueClick(label)
-            }}
-          >
-            {valueCounts.map((vc) => (
-              <Cell
-                key={vc.label}
-                cursor="pointer"
-                opacity={
-                  activeValue && activeValue !== vc.label ? 0.35 : 1
-                }
-              />
-            ))}
-          </Bar>
-        </BarChart>
-      </ResponsiveContainer>
+    chart = (
+      <CategoricalChart
+        metric={metric}
+        chartType={chartType}
+        valueCounts={valueCounts}
+        totalCategorical={totalCategorical}
+        activeValue={activeValue}
+        onValueClick={onValueClick}
+      />
     )
   }
 
@@ -2592,30 +3831,70 @@ function MetricVisualization({
             )}
           </div>
         </div>
-        {isActive && (
-          <span className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-primary-100 text-primary-800 shrink-0">
-            <Filter className="h-3 w-3" />
-            Filtering
-          </span>
-        )}
+        <div className="flex items-center gap-2 shrink-0">
+          {isActive && (
+            <span className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-primary-100 text-primary-800">
+              <Filter className="h-3 w-3" />
+              Filtering
+            </span>
+          )}
+          {hasCategorical && !hasNumeric && (
+            <CategoricalChartPicker
+              metric={metric}
+              active={chartType}
+              overridden={chartOverridden}
+              onChange={onChangeChartType}
+            />
+          )}
+        </div>
       </div>
 
       {hasNumeric && (
         <div className="mb-3 grid grid-cols-4 gap-2">
           {[
-            { label: 'Mean', value: metric.mean },
-            { label: 'Median', value: metric.median },
-            { label: 'p95', value: metric.p95 },
-            { label: 'σ', value: metric.stddev },
+            {
+              label: 'Mean',
+              value: metric.mean,
+              title: 'Average score across all rows',
+              tone: 'neutral' as const,
+            },
+            {
+              label: 'Best',
+              value: metric.max,
+              title: 'Highest single-row score',
+              tone: 'good' as const,
+            },
+            {
+              label: 'Worst',
+              value: metric.min,
+              title: 'Lowest single-row score',
+              tone: 'bad' as const,
+            },
+            {
+              label: 'σ',
+              value: metric.stddev,
+              title:
+                'Standard deviation — lower means more consistent scoring',
+              tone: 'neutral' as const,
+            },
           ].map((stat) => (
             <div
               key={stat.label}
+              title={stat.title}
               className="rounded-md bg-gradient-to-br from-gray-50 to-gray-100/60 border border-gray-100 px-2 py-1.5 text-center"
             >
               <p className="text-[9px] uppercase tracking-wider text-gray-500">
                 {stat.label}
               </p>
-              <p className="text-xs font-semibold text-gray-900">
+              <p
+                className={`text-xs font-semibold tabular-nums ${
+                  stat.tone === 'good'
+                    ? 'text-emerald-700'
+                    : stat.tone === 'bad'
+                      ? 'text-rose-700'
+                      : 'text-gray-900'
+                }`}
+              >
                 {stat.value != null ? stat.value.toFixed(2) : '—'}
               </p>
             </div>
@@ -2630,42 +3909,12 @@ function MetricVisualization({
       )}
 
       {hasCategorical && totalCategorical > 0 && (
-        <ul className="mt-3 space-y-1 text-[11px]">
-          {valueCounts.slice(0, 4).map((vc, i) => {
-            const pct = (vc.count / totalCategorical) * 100
-            const isFiltered = activeValue === vc.label
-            return (
-              <li key={vc.label}>
-                <button
-                  type="button"
-                  onClick={() => onValueClick(vc.label)}
-                  className={`group/row w-full flex items-center gap-2 rounded px-1.5 py-1 transition ${
-                    isFiltered
-                      ? 'bg-primary-50 text-primary-800'
-                      : 'hover:bg-gray-50 text-gray-700'
-                  }`}
-                >
-                  <span
-                    className="h-2 w-2 rounded-full shrink-0"
-                    style={{ background: PIE_COLORS[i % PIE_COLORS.length] }}
-                  />
-                  <span className="truncate text-left flex-1" title={vc.label}>
-                    {vc.label}
-                  </span>
-                  <span className="font-medium text-gray-900">{vc.count}</span>
-                  <span className="text-gray-400 w-10 text-right">
-                    {pct.toFixed(0)}%
-                  </span>
-                </button>
-              </li>
-            )
-          })}
-          {valueCounts.length > 4 && (
-            <li className="text-[10px] text-gray-400 px-1.5">
-              +{valueCounts.length - 4} more
-            </li>
-          )}
-        </ul>
+        <CategoryLegend
+          valueCounts={valueCounts}
+          totalCategorical={totalCategorical}
+          activeValue={activeValue}
+          onValueClick={onValueClick}
+        />
       )}
     </div>
   )
@@ -2675,6 +3924,825 @@ function MetricVisualization({
 // pulling React's full ReactNode through the function signature
 // (prevents a "type-only import" tangle on tsx/lint).
 type ReactNodeLike = React.ReactNode
+
+type ValueCount = CallImportMetricAggregate['value_counts'][number]
+
+interface CategoricalChartProps {
+  metric: CallImportMetricAggregate
+  chartType: CategoricalChartType
+  valueCounts: ValueCount[]
+  totalCategorical: number
+  activeValue: string | null
+  onValueClick: (value: string) => void
+}
+
+/**
+ * Routes the categorical render to the right chart sub-component.
+ * Each sub-component owns its layout/sizing/animation but shares the
+ * tooltip styling and click-to-filter contract.
+ */
+function CategoricalChart(props: CategoricalChartProps) {
+  const { metric, chartType, valueCounts } = props
+
+  // Defensive fallback: a chart type that doesn't apply to this
+  // metric (e.g. heatmap on a single-value metric) auto-promotes to
+  // the next-best fit. Prevents a stale localStorage preference from
+  // leaving the card empty when a metric type changes.
+  const safeType: CategoricalChartType = (() => {
+    const allowed = availableChartTypesFor(metric)
+    if (allowed.includes(chartType)) return chartType
+    if (metric.is_multi_label_parent) return 'bar'
+    return autoPickCategoricalChart(metric)
+  })()
+
+  if (!valueCounts.length) return null
+
+  switch (safeType) {
+    case 'pie':
+      return <CategoricalPieChart {...props} />
+    case 'bar':
+      return <CategoricalBarChart {...props} />
+    case 'lollipop':
+      return <CategoricalLollipopChart {...props} />
+    case 'radial':
+      return <CategoricalRadialChart {...props} />
+    case 'treemap':
+      return <CategoricalTreemapChart {...props} />
+    case 'waffle':
+      return <CategoricalWaffleChart {...props} />
+    case 'coverage':
+      return <CategoricalCoverageChart {...props} />
+    case 'heatmap':
+      return <CategoricalHeatmapChart {...props} />
+    default:
+      return <CategoricalBarChart {...props} />
+  }
+}
+
+// --- Pie / donut --------------------------------------------------------
+//
+// Donut variant: hole in the middle keeps the center available for a
+// summary stat (top label / share). Slice labels are rendered at the
+// pie midpoint with a leader-line guard — small slices (<5%) drop the
+// label so they don't pile up on top of each other.
+function CategoricalPieChart({
+  valueCounts,
+  totalCategorical,
+  activeValue,
+  onValueClick,
+}: CategoricalChartProps) {
+  const top = valueCounts[0]
+  const topShare = top ? top.count / Math.max(totalCategorical, 1) : 0
+  return (
+    <div className="relative">
+      <ResponsiveContainer width="100%" height={240}>
+        <PieChart margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+          <Tooltip
+            contentStyle={CHART_TOOLTIP_STYLE}
+            labelStyle={CHART_TOOLTIP_LABEL_STYLE}
+            itemStyle={CHART_TOOLTIP_ITEM_STYLE}
+            formatter={(value: any, name: any) => [`${value} rows`, name]}
+          />
+          <Pie
+            data={valueCounts}
+            dataKey="count"
+            nameKey="label"
+            innerRadius={56}
+            outerRadius={92}
+            paddingAngle={2}
+            stroke="#fff"
+            strokeWidth={2}
+            isAnimationActive
+            animationDuration={400}
+            onClick={(slice: any) => {
+              const label = slice?.payload?.label ?? slice?.name
+              if (typeof label === 'string') onValueClick(label)
+            }}
+            label={renderInsideSliceLabel}
+            labelLine={false}
+          >
+            {valueCounts.map((vc, i) => (
+              <Cell
+                key={vc.label}
+                fill={PIE_COLORS[i % PIE_COLORS.length]}
+                cursor="pointer"
+                opacity={
+                  activeValue && activeValue !== vc.label ? 0.35 : 1
+                }
+              />
+            ))}
+          </Pie>
+        </PieChart>
+      </ResponsiveContainer>
+      {top && (
+        <div
+          className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center text-center"
+          style={{ paddingInline: 12 }}
+        >
+          <p className="text-[9px] uppercase tracking-wider text-gray-500 leading-tight">
+            Top
+          </p>
+          <p
+            className="text-[11px] font-semibold text-gray-900 max-w-[88px] truncate leading-tight mt-0.5"
+            title={top.label}
+          >
+            {truncateLabel(top.label, 12)}
+          </p>
+          <p className="text-[13px] font-bold text-primary-700 leading-tight mt-0.5 tabular-nums">
+            {Math.round(topShare * 100)}%
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Custom Pie ``label`` renderer that places the percent text on the
+ * coloured slice itself (between ``innerRadius`` and ``outerRadius``)
+ * rather than at the default outside position. The default placement
+ * overflows the container on slices whose midpoint sits near the top
+ * or sides of the chart and gets clipped by the SVG boundary; placing
+ * the label on the ring keeps it visible at every slice angle.
+ *
+ * Slices below 6% are hidden because the arc is too thin to render
+ * legible text — the side legend below the chart already exposes
+ * those values.
+ */
+function renderInsideSliceLabel(props: any) {
+  const { cx, cy, midAngle, innerRadius, outerRadius, percent } = props
+  if (percent == null || percent < 0.06) return null
+  const RADIAN = Math.PI / 180
+  const radius = innerRadius + (outerRadius - innerRadius) * 0.55
+  const x = cx + radius * Math.cos(-midAngle * RADIAN)
+  const y = cy + radius * Math.sin(-midAngle * RADIAN)
+  return (
+    <text
+      x={x}
+      y={y}
+      fill="#fff"
+      textAnchor="middle"
+      dominantBaseline="central"
+      fontSize={11}
+      fontWeight={700}
+      style={{ pointerEvents: 'none', textShadow: '0 1px 2px rgba(0,0,0,0.18)' }}
+    >
+      {`${Math.round(percent * 100)}%`}
+    </text>
+  )
+}
+
+// --- Bar (horizontal, ranked) -------------------------------------------
+function CategoricalBarChart({
+  metric,
+  valueCounts,
+  activeValue,
+  onValueClick,
+}: CategoricalChartProps) {
+  const longestLabel = valueCounts.reduce(
+    (m, v) => Math.max(m, v.label.length),
+    0,
+  )
+  const yAxisWidth = Math.min(260, Math.max(160, longestLabel * 7 + 24))
+  return (
+    <ResponsiveContainer
+      width="100%"
+      height={Math.max(180, 36 + valueCounts.length * 36)}
+    >
+      <BarChart
+        data={valueCounts}
+        layout="vertical"
+        margin={{ top: 8, right: 32, left: 0, bottom: 8 }}
+      >
+        <defs>
+          <linearGradient
+            id={`bar-cat-${metric.metric_id}`}
+            x1="0"
+            y1="0"
+            x2="1"
+            y2="0"
+          >
+            <stop offset="0%" stopColor="#10b981" stopOpacity={0.55} />
+            <stop offset="100%" stopColor="#10b981" stopOpacity={0.95} />
+          </linearGradient>
+        </defs>
+        <CartesianGrid
+          strokeDasharray="3 3"
+          stroke="#f1f5f9"
+          horizontal={false}
+        />
+        <XAxis
+          type="number"
+          tick={{ fontSize: 10, fill: '#64748b' }}
+          axisLine={false}
+          tickLine={false}
+          allowDecimals={false}
+        />
+        <YAxis
+          type="category"
+          dataKey="label"
+          tick={(p: any) => <LongLabelTick {...p} colWidth={yAxisWidth} />}
+          axisLine={false}
+          tickLine={false}
+          width={yAxisWidth}
+          interval={0}
+        />
+        <Tooltip
+          contentStyle={CHART_TOOLTIP_STYLE}
+          labelStyle={CHART_TOOLTIP_LABEL_STYLE}
+          itemStyle={CHART_TOOLTIP_ITEM_STYLE}
+          cursor={{ fill: 'rgba(16,185,129,0.08)' }}
+          formatter={(value: any) => [`${value} rows`, 'Count']}
+        />
+        <Bar
+          dataKey="count"
+          fill={`url(#bar-cat-${metric.metric_id})`}
+          radius={[0, 4, 4, 0]}
+          isAnimationActive
+          animationDuration={400}
+          onClick={(bar: any) => {
+            const label = bar?.label ?? bar?.payload?.label
+            if (typeof label === 'string') onValueClick(label)
+          }}
+        >
+          {valueCounts.map((vc) => (
+            <Cell
+              key={vc.label}
+              cursor="pointer"
+              opacity={activeValue && activeValue !== vc.label ? 0.35 : 1}
+            />
+          ))}
+        </Bar>
+      </BarChart>
+    </ResponsiveContainer>
+  )
+}
+
+// --- Lollipop -----------------------------------------------------------
+//
+// Custom Bar shape draws a thin horizontal stick + a circle end-cap
+// for each row. Visually lighter than a full bar and reads as a
+// ranked top-N list at a glance.
+function LollipopShape(props: any) {
+  const { x, y, width, height, fill } = props
+  const cy = (y ?? 0) + (height ?? 0) / 2
+  const stickH = 2
+  const r = 5
+  const safeWidth = Math.max(0, width ?? 0)
+  return (
+    <g>
+      <rect
+        x={x}
+        y={cy - stickH / 2}
+        width={safeWidth}
+        height={stickH}
+        fill={fill}
+        opacity={0.5}
+      />
+      <circle cx={(x ?? 0) + safeWidth} cy={cy} r={r} fill={fill} />
+    </g>
+  )
+}
+
+function CategoricalLollipopChart({
+  valueCounts,
+  activeValue,
+  onValueClick,
+}: CategoricalChartProps) {
+  // Sized so the longest label gets all the space it can, capped at
+  // ~45% of the typical card width (cards are 480-560px wide in the
+  // 2-up grid, so 240 leaves ~240-320 for the bars themselves).
+  const longestLabel = valueCounts.reduce(
+    (m, v) => Math.max(m, v.label.length),
+    0,
+  )
+  const yAxisWidth = Math.min(260, Math.max(160, longestLabel * 7 + 24))
+  return (
+    <ResponsiveContainer
+      width="100%"
+      height={Math.max(180, 28 + valueCounts.length * 30)}
+    >
+      <BarChart
+        data={valueCounts}
+        layout="vertical"
+        margin={{ top: 8, right: 40, left: 0, bottom: 8 }}
+      >
+        <CartesianGrid
+          strokeDasharray="3 3"
+          stroke="#f1f5f9"
+          horizontal={false}
+        />
+        <XAxis
+          type="number"
+          tick={{ fontSize: 10, fill: '#64748b' }}
+          axisLine={false}
+          tickLine={false}
+          allowDecimals={false}
+        />
+        <YAxis
+          type="category"
+          dataKey="label"
+          tick={(p: any) => <LongLabelTick {...p} colWidth={yAxisWidth} />}
+          axisLine={false}
+          tickLine={false}
+          width={yAxisWidth}
+          interval={0}
+        />
+        <Tooltip
+          contentStyle={CHART_TOOLTIP_STYLE}
+          labelStyle={CHART_TOOLTIP_LABEL_STYLE}
+          itemStyle={CHART_TOOLTIP_ITEM_STYLE}
+          cursor={{ fill: 'rgba(99,102,241,0.06)' }}
+          formatter={(value: any) => [`${value} rows`, 'Count']}
+        />
+        <Bar
+          dataKey="count"
+          shape={<LollipopShape />}
+          isAnimationActive
+          animationDuration={400}
+          onClick={(bar: any) => {
+            const label = bar?.label ?? bar?.payload?.label
+            if (typeof label === 'string') onValueClick(label)
+          }}
+        >
+          {valueCounts.map((vc, i) => (
+            <Cell
+              key={vc.label}
+              fill={PIE_COLORS[i % PIE_COLORS.length]}
+              cursor="pointer"
+              opacity={activeValue && activeValue !== vc.label ? 0.35 : 1}
+            />
+          ))}
+        </Bar>
+      </BarChart>
+    </ResponsiveContainer>
+  )
+}
+
+// --- Radial bar ---------------------------------------------------------
+//
+// Concentric rings, one per category. The angular extent of each
+// ring encodes the count; combined with the colored side legend
+// below the chart this is a punchy alternative to the donut for 3-8
+// categories.
+function CategoricalRadialChart({
+  valueCounts,
+  totalCategorical,
+  activeValue,
+  onValueClick,
+}: CategoricalChartProps) {
+  const data = valueCounts.map((vc, i) => ({
+    ...vc,
+    fill: PIE_COLORS[i % PIE_COLORS.length],
+  }))
+  const max = Math.max(...valueCounts.map((v) => v.count), 1)
+  return (
+    <ResponsiveContainer width="100%" height={220}>
+      <RadialBarChart
+        innerRadius="20%"
+        outerRadius="100%"
+        barSize={12}
+        startAngle={90}
+        endAngle={-270}
+        data={data}
+      >
+        <PolarAngleAxis
+          type="number"
+          domain={[0, max]}
+          dataKey="count"
+          tick={false}
+        />
+        <RadialBar
+          dataKey="count"
+          background={{ fill: '#f1f5f9' }}
+          cornerRadius={6}
+          isAnimationActive
+          animationDuration={400}
+          onClick={(bar: any) => {
+            const label = bar?.label ?? bar?.payload?.label
+            if (typeof label === 'string') onValueClick(label)
+          }}
+        >
+          {data.map((vc) => (
+            <Cell
+              key={vc.label}
+              fill={vc.fill}
+              cursor="pointer"
+              opacity={activeValue && activeValue !== vc.label ? 0.35 : 1}
+            />
+          ))}
+        </RadialBar>
+        <Tooltip
+          contentStyle={CHART_TOOLTIP_STYLE}
+          labelStyle={CHART_TOOLTIP_LABEL_STYLE}
+          itemStyle={CHART_TOOLTIP_ITEM_STYLE}
+          formatter={(value: any, _name: any, payload: any) => {
+            const label = payload?.payload?.label ?? '—'
+            const share = (Number(value) / Math.max(totalCategorical, 1)) * 100
+            return [`${value} rows (${share.toFixed(0)}%)`, label]
+          }}
+        />
+      </RadialBarChart>
+    </ResponsiveContainer>
+  )
+}
+
+// --- Treemap ------------------------------------------------------------
+//
+// Area-encoded categorical view that gracefully scales to many
+// labels without overflowing axis space. Each tile is colored by
+// rank in the same palette and shows the label + count when the
+// tile is wide enough; small tiles fall back to count-only.
+function CategoricalTreemapChart({
+  valueCounts,
+  totalCategorical,
+  activeValue,
+  onValueClick,
+}: CategoricalChartProps) {
+  const data = valueCounts.map((vc, i) => ({
+    name: vc.label,
+    size: vc.count,
+    label: vc.label,
+    count: vc.count,
+    fill: PIE_COLORS[i % PIE_COLORS.length],
+  }))
+  return (
+    <div>
+      <ResponsiveContainer width="100%" height={240}>
+        <Treemap
+          data={data}
+          dataKey="size"
+          stroke="#fff"
+          isAnimationActive
+          animationDuration={400}
+          content={
+            <TreemapTile
+              activeValue={activeValue}
+              total={totalCategorical}
+              onValueClick={onValueClick}
+            />
+          }
+        />
+      </ResponsiveContainer>
+    </div>
+  )
+}
+
+function TreemapTile(props: any) {
+  const {
+    x,
+    y,
+    width,
+    height,
+    name,
+    payload,
+    activeValue,
+    total,
+    onValueClick,
+  } = props
+  const fill = payload?.fill ?? '#94a3b8'
+  const count = payload?.count ?? 0
+  const isActive = activeValue && activeValue === name
+  const dimmed = activeValue && !isActive
+  if (!width || !height) return null
+  const showLabel = width > 70 && height > 32
+  const showCount = width > 36 && height > 20
+  const share = total > 0 ? (count / total) * 100 : 0
+  return (
+    <g
+      style={{ cursor: 'pointer' }}
+      onClick={() => {
+        if (typeof name === 'string') onValueClick(name)
+      }}
+    >
+      <rect
+        x={x}
+        y={y}
+        width={width}
+        height={height}
+        style={{
+          fill,
+          stroke: '#fff',
+          strokeWidth: 2,
+          opacity: dimmed ? 0.35 : 1,
+        }}
+      />
+      {showLabel ? (
+        <>
+          <text
+            x={x + 8}
+            y={y + 18}
+            fill="#fff"
+            fontSize={11}
+            fontWeight={600}
+            style={{ pointerEvents: 'none' }}
+          >
+            {truncateLabel(String(name ?? ''), Math.floor(width / 7))}
+          </text>
+          <text
+            x={x + 8}
+            y={y + 32}
+            fill="#fff"
+            fontSize={10}
+            opacity={0.85}
+            style={{ pointerEvents: 'none' }}
+          >
+            {count} · {share.toFixed(0)}%
+          </text>
+        </>
+      ) : showCount ? (
+        <text
+          x={x + width / 2}
+          y={y + height / 2 + 4}
+          textAnchor="middle"
+          fill="#fff"
+          fontSize={11}
+          fontWeight={600}
+          style={{ pointerEvents: 'none' }}
+        >
+          {count}
+        </text>
+      ) : null}
+    </g>
+  )
+}
+
+// --- Waffle / 10x10 dot grid -------------------------------------------
+//
+// Pure SVG, no recharts. 100 squares total proportionally allocated
+// to each category by largest-remainder. Reads as "X out of 100
+// calls", which non-technical users find more concrete than a pie.
+function CategoricalWaffleChart({
+  valueCounts,
+  totalCategorical,
+  activeValue,
+  onValueClick,
+}: CategoricalChartProps) {
+  const total = totalCategorical || 1
+  // Largest-remainder allocation so the rounded squares always sum
+  // to exactly 100. Tiny categories that round to 0 squares still
+  // appear in the legend.
+  const ideal = valueCounts.map((vc) => (vc.count / total) * 100)
+  const floors = ideal.map((v) => Math.floor(v))
+  const allocated = floors.reduce((s, v) => s + v, 0)
+  let remainder = 100 - allocated
+  const remainders = ideal
+    .map((v, i) => ({ i, frac: v - Math.floor(v) }))
+    .sort((a, b) => b.frac - a.frac)
+  const allocations = [...floors]
+  for (const r of remainders) {
+    if (remainder <= 0) break
+    allocations[r.i] += 1
+    remainder -= 1
+  }
+
+  // Flatten to 100 entries, each tagged with its category index.
+  const cells: { catIdx: number; label: string; count: number }[] = []
+  allocations.forEach((n, idx) => {
+    for (let k = 0; k < n; k++) {
+      cells.push({
+        catIdx: idx,
+        label: valueCounts[idx].label,
+        count: valueCounts[idx].count,
+      })
+    }
+  })
+
+  const size = 16
+  const gap = 3
+  const cols = 10
+  const rows = 10
+  const w = cols * (size + gap) - gap
+  const h = rows * (size + gap) - gap
+
+  return (
+    <div className="flex justify-center py-2">
+      <svg width={w} height={h} role="img" aria-label="Waffle chart">
+        {Array.from({ length: 100 }, (_, i) => {
+          const cell = cells[i]
+          const r = Math.floor(i / cols)
+          const c = i % cols
+          const x = c * (size + gap)
+          const y = r * (size + gap)
+          if (!cell) {
+            return (
+              <rect
+                key={i}
+                x={x}
+                y={y}
+                width={size}
+                height={size}
+                rx={2}
+                fill="#f1f5f9"
+              />
+            )
+          }
+          const fill = PIE_COLORS[cell.catIdx % PIE_COLORS.length]
+          const dim = activeValue && activeValue !== cell.label
+          return (
+            <rect
+              key={i}
+              x={x}
+              y={y}
+              width={size}
+              height={size}
+              rx={2}
+              fill={fill}
+              opacity={dim ? 0.3 : 1}
+              style={{ cursor: 'pointer' }}
+              onClick={() => onValueClick(cell.label)}
+            >
+              <title>
+                {`${cell.label}: ${cell.count} rows (${(
+                  (cell.count / total) *
+                  100
+                ).toFixed(1)}%)`}
+              </title>
+            </rect>
+          )
+        })}
+      </svg>
+    </div>
+  )
+}
+
+// --- Cumulative coverage (multi-label only) ----------------------------
+//
+// Sorted-rank line of cumulative % of label occurrences. Steep early
+// slope → distribution is concentrated in a few labels; flat tail →
+// long-tail distribution. Helps decide whether to invest more in
+// promoting tail labels into first-class metrics.
+function CategoricalCoverageChart({
+  valueCounts,
+  totalCategorical,
+}: CategoricalChartProps) {
+  const total = totalCategorical || 1
+  let running = 0
+  const data = valueCounts.map((vc, i) => {
+    running += vc.count
+    return {
+      rank: i + 1,
+      label: vc.label,
+      cumulative: (running / total) * 100,
+      count: vc.count,
+    }
+  })
+  return (
+    <ResponsiveContainer width="100%" height={220}>
+      <LineChart data={data} margin={{ top: 8, right: 16, left: -8, bottom: 8 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+        <XAxis
+          dataKey="rank"
+          tick={{ fontSize: 10, fill: '#64748b' }}
+          axisLine={{ stroke: '#e2e8f0' }}
+          tickLine={false}
+          label={{
+            value: 'Label rank',
+            position: 'insideBottomRight',
+            offset: -2,
+            fontSize: 10,
+            fill: '#64748b',
+          }}
+        />
+        <YAxis
+          tick={{ fontSize: 10, fill: '#64748b' }}
+          axisLine={false}
+          tickLine={false}
+          domain={[0, 100]}
+          tickFormatter={(v) => `${v}%`}
+        />
+        <Tooltip
+          contentStyle={CHART_TOOLTIP_STYLE}
+          labelStyle={CHART_TOOLTIP_LABEL_STYLE}
+          itemStyle={CHART_TOOLTIP_ITEM_STYLE}
+          formatter={(value: any, _name: any, payload: any) => [
+            `${Number(value).toFixed(1)}% cumulative`,
+            payload?.payload?.label ?? '—',
+          ]}
+          labelFormatter={(rank) => `Top ${rank}`}
+        />
+        <Line
+          type="monotone"
+          dataKey="cumulative"
+          stroke="#6366f1"
+          strokeWidth={2}
+          dot={{ r: 3, fill: '#6366f1' }}
+          isAnimationActive
+          animationDuration={400}
+        />
+      </LineChart>
+    </ResponsiveContainer>
+  )
+}
+
+// --- Co-occurrence heatmap (multi-label only) --------------------------
+//
+// Reads ``metric.co_occurrence`` (label_a, label_b, count) emitted
+// by the backend aggregator. Each cell encodes how often a pair of
+// labels fired together on the same row. Falls back to an empty
+// state when the field isn't populated yet (older payloads / rolling
+// deploys / single-label metrics).
+function CategoricalHeatmapChart({
+  metric,
+  valueCounts,
+  onValueClick,
+}: CategoricalChartProps) {
+  const co = metric.co_occurrence
+  const labels = valueCounts.map((v) => v.label)
+  const labelIndex = new Map(labels.map((l, i) => [l, i]))
+  const grid: number[][] = labels.map((_, i) =>
+    labels.map((_, j) => (i === j ? valueCounts[i].count : 0)),
+  )
+  if (Array.isArray(co)) {
+    for (const row of co) {
+      const ai = labelIndex.get(row.a)
+      const bi = labelIndex.get(row.b)
+      if (ai == null || bi == null) continue
+      grid[ai][bi] = row.count
+      grid[bi][ai] = row.count
+    }
+  }
+  let max = 0
+  for (const row of grid) {
+    for (const v of row) max = Math.max(max, v)
+  }
+  if (!Array.isArray(co) || max === 0) {
+    return (
+      <div className="rounded-md border border-dashed border-gray-200 bg-gray-50/50 px-4 py-6 text-center text-xs text-gray-500">
+        Co-occurrence data isn't available for this metric yet — switch
+        to another chart type or re-run the evaluation aggregate.
+      </div>
+    )
+  }
+  const cell = 22
+  const gap = 2
+  const labelW = 130
+  const w = labelW + labels.length * (cell + gap)
+  const h = labelW + labels.length * (cell + gap)
+  return (
+    <div className="overflow-auto py-1">
+      <svg width={w} height={h} role="img" aria-label="Co-occurrence heatmap">
+        {labels.map((lbl, i) => (
+          <text
+            key={`row-${i}`}
+            x={labelW - 6}
+            y={labelW + i * (cell + gap) + cell / 2 + 4}
+            textAnchor="end"
+            fontSize={10}
+            fill="#334155"
+          >
+            <title>{lbl}</title>
+            {truncateLabel(lbl, 18)}
+          </text>
+        ))}
+        {labels.map((lbl, j) => (
+          <text
+            key={`col-${j}`}
+            x={labelW + j * (cell + gap) + cell / 2}
+            y={labelW - 6}
+            transform={`rotate(-45 ${labelW + j * (cell + gap) + cell / 2} ${labelW - 6})`}
+            textAnchor="start"
+            fontSize={10}
+            fill="#334155"
+          >
+            <title>{lbl}</title>
+            {truncateLabel(lbl, 18)}
+          </text>
+        ))}
+        {grid.map((row, i) =>
+          row.map((v, j) => {
+            const t = max > 0 ? v / max : 0
+            const fill =
+              v === 0
+                ? '#f8fafc'
+                : `rgba(99, 102, 241, ${0.15 + 0.85 * t})`
+            return (
+              <rect
+                key={`${i}-${j}`}
+                x={labelW + j * (cell + gap)}
+                y={labelW + i * (cell + gap)}
+                width={cell}
+                height={cell}
+                rx={3}
+                fill={fill}
+                style={{ cursor: i === j ? 'pointer' : 'default' }}
+                onClick={() => {
+                  if (i === j) onValueClick(labels[i])
+                }}
+              >
+                <title>
+                  {i === j
+                    ? `${labels[i]}: ${v}`
+                    : `${labels[i]} ∩ ${labels[j]}: ${v}`}
+                </title>
+              </rect>
+            )
+          }),
+        )}
+      </svg>
+    </div>
+  )
+}
 
 // ---------------------------------------------------------------------------
 // TLDR summary: a punchy at-a-glance digest that sits above the charts on
