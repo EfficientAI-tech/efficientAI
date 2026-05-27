@@ -10,6 +10,7 @@ new mapping flow stays exercised in lockstep with the route code.
 import io
 import sys
 import types
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from uuid import UUID, uuid4
@@ -23,11 +24,13 @@ from app.api.v1.routes.call_imports import (
     _parse_xlsx,
     _revoke_pending_tasks,
 )
+from app.config import settings
 from app.models.database import (
     CallImport,
     CallImportRow,
     CallImportSchema,
     CallImportSchemaParameter,
+    CallImportTag,
     TelephonyIntegration,
     Workspace,
 )
@@ -376,9 +379,7 @@ def test_delete_s3_objects_skips_when_s3_disabled():
         delete_keys_by_prefix=MagicMock(),
     )
 
-    with patch(
-        "app.services.storage.s3_service.s3_service", fake_s3
-    ):
+    with _patched_s3(fake_s3):
         deleted, errors = _delete_s3_objects(
             organization_id=uuid4(),
             call_import_id=uuid4(),
@@ -407,9 +408,7 @@ def test_delete_s3_objects_deletes_known_keys_and_sweeps_prefix():
         SimpleNamespace(recording_s3_key=None),
     ]
 
-    with patch(
-        "app.services.storage.s3_service.s3_service", fake_s3
-    ):
+    with _patched_s3(fake_s3):
         deleted, errors = _delete_s3_objects(
             organization_id=org_id,
             call_import_id=import_id,
@@ -432,9 +431,7 @@ def test_delete_s3_objects_aggregates_errors_without_raising():
         delete_keys_by_prefix=MagicMock(return_value=(0, [])),
     )
 
-    with patch(
-        "app.services.storage.s3_service.s3_service", fake_s3
-    ):
+    with _patched_s3(fake_s3):
         deleted, errors = _delete_s3_objects(
             organization_id=uuid4(),
             call_import_id=uuid4(),
@@ -453,9 +450,7 @@ def test_delete_s3_objects_treats_bulk_exception_as_full_failure():
         delete_keys_by_prefix=MagicMock(return_value=(0, [])),
     )
 
-    with patch(
-        "app.services.storage.s3_service.s3_service", fake_s3
-    ):
+    with _patched_s3(fake_s3):
         deleted, errors = _delete_s3_objects(
             organization_id=uuid4(),
             call_import_id=uuid4(),
@@ -611,6 +606,161 @@ def _csv(rows=(("call-1", "https://x/recording.mp3", "hi there"),)):
     for call_id, url, transcript in rows:
         buf.write(f"{call_id},{url},{transcript}\n")
     return ("rows.csv", buf.getvalue().encode("utf-8"), "text/csv")
+
+
+def _fake_enabled_s3(prefix="myprefix/"):
+    return SimpleNamespace(
+        is_enabled=lambda: True,
+        get_status_message=lambda: None,
+        prefix=prefix,
+        upload_file_by_key=MagicMock(return_value=None),
+        delete_keys=MagicMock(return_value=(0, [])),
+    )
+
+
+@contextmanager
+def _patched_s3(fake_s3):
+    fake_module = types.ModuleType("app.services.storage.s3_service")
+    fake_module.s3_service = fake_s3
+    fake_module.StorageError = RuntimeError
+    fake_pkg = types.ModuleType("app.services.storage")
+    fake_pkg.s3_service = fake_module
+    with patch.dict(
+        sys.modules,
+        {
+            "app.services.storage": fake_pkg,
+            "app.services.storage.s3_service": fake_module,
+        },
+    ):
+        yield
+
+
+def test_audio_upload_single_file_creates_completed_import(
+    authenticated_client, db_session, org_id, seed_org
+):
+    tag = CallImportTag(
+        organization_id=org_id,
+        name="manual",
+        color="#123456",
+    )
+    db_session.add(tag)
+    db_session.commit()
+
+    fake_s3 = _fake_enabled_s3()
+    with _patched_s3(fake_s3):
+        response = authenticated_client.post(
+            "/api/v1/call-imports/audio-upload",
+            files={"files": ("sales call.wav", b"RIFFfake-wav", "audio/wav")},
+            data={"dataset": "Manual recordings", "tag_ids": str(tag.id)},
+        )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    call_import_id = UUID(body["id"])
+    assert body["total_rows"] == 1
+    assert body["status"] == "completed"
+    assert body["dataset"] == "Manual recordings"
+    assert body["tags"][0]["name"] == "manual"
+
+    call_import = db_session.query(CallImport).filter(CallImport.id == call_import_id).one()
+    assert call_import.provider is None
+    assert call_import.source_format == "audio"
+    assert call_import.completed_rows == 1
+
+    (row,) = (
+        db_session.query(CallImportRow)
+        .filter(CallImportRow.call_import_id == call_import_id)
+        .all()
+    )
+    assert row.conversation_id == "sales_call"
+    assert row.status == CallImportRowStatus.COMPLETED
+    assert row.transcript is None
+    assert row.recording_content_type == "audio/wav"
+    assert row.recording_size_bytes == len(b"RIFFfake-wav")
+    assert row.recording_s3_key.endswith(f"/{row.id}.wav")
+    fake_s3.upload_file_by_key.assert_called_once()
+
+
+def test_audio_upload_multiple_files_dedupes_filename_call_ids(
+    authenticated_client, db_session, org_id, seed_org
+):
+    fake_s3 = _fake_enabled_s3()
+    with _patched_s3(fake_s3):
+        response = authenticated_client.post(
+            "/api/v1/call-imports/audio-upload",
+            files=[
+                ("files", ("call.mp3", b"mp3-a", "audio/mpeg")),
+                ("files", ("call.mp3", b"mp3-b", "audio/mpeg")),
+                ("files", ("support flac.flac", b"flac", "audio/flac")),
+            ],
+            data={"dataset": "Manual recordings"},
+        )
+
+    assert response.status_code == 201, response.text
+    rows = (
+        db_session.query(CallImportRow)
+        .filter(CallImportRow.call_import_id == UUID(response.json()["id"]))
+        .order_by(CallImportRow.row_index)
+        .all()
+    )
+    assert [row.row_index for row in rows] == [0, 1, 2]
+    assert [row.conversation_id for row in rows] == [
+        "call",
+        "call-2",
+        "support_flac",
+    ]
+    assert fake_s3.upload_file_by_key.call_count == 3
+
+
+def test_audio_upload_rejects_invalid_inputs(
+    authenticated_client, monkeypatch, seed_org
+):
+    fake_s3 = _fake_enabled_s3()
+    with _patched_s3(fake_s3):
+        missing_dataset = authenticated_client.post(
+            "/api/v1/call-imports/audio-upload",
+            files={"files": ("call.wav", b"audio", "audio/wav")},
+            data={"dataset": "  "},
+        )
+        bad_extension = authenticated_client.post(
+            "/api/v1/call-imports/audio-upload",
+            files={"files": ("call.txt", b"audio", "text/plain")},
+            data={"dataset": "Manual recordings"},
+        )
+
+    assert missing_dataset.status_code == 400
+    assert "dataset" in missing_dataset.json()["detail"].lower()
+    assert bad_extension.status_code == 400
+    assert "unsupported" in bad_extension.json()["detail"].lower()
+
+    monkeypatch.setattr(settings, "MAX_FILE_SIZE_MB", 0)
+    with _patched_s3(fake_s3):
+        too_large = authenticated_client.post(
+            "/api/v1/call-imports/audio-upload",
+            files={"files": ("call.wav", b"audio", "audio/wav")},
+            data={"dataset": "Manual recordings"},
+        )
+
+    assert too_large.status_code == 413
+
+
+def test_audio_upload_rejects_when_s3_unavailable(
+    authenticated_client, seed_org
+):
+    fake_s3 = SimpleNamespace(
+        is_enabled=lambda: False,
+        get_status_message=lambda: "S3 disabled",
+        prefix="",
+    )
+    with _patched_s3(fake_s3):
+        response = authenticated_client.post(
+            "/api/v1/call-imports/audio-upload",
+            files={"files": ("call.wav", b"audio", "audio/wav")},
+            data={"dataset": "Manual recordings"},
+        )
+
+    assert response.status_code == 503
+    assert "s3" in response.json()["detail"].lower()
 
 
 def test_upload_rejects_when_provider_does_not_match_integration(

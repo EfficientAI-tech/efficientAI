@@ -6,7 +6,9 @@ import csv
 import io
 import json
 import math
+import re
 import statistics
+import zipfile
 from typing import Any, Dict, Iterator, List, Literal, Optional, Set, Tuple
 from uuid import UUID
 
@@ -15,6 +17,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
 from loguru import logger
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import desc, func, or_, text
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -61,12 +64,27 @@ from app.models.schemas import (
     MetricFlowNode,
     MetricFlowResponse,
 )
+from app.services.reporting.call_import_evaluation_pdf_report import (
+    call_import_evaluation_pdf_report_service,
+)
 
 router = APIRouter(
     prefix="/call-imports/{call_import_id}/evaluations",
     tags=["Call Import Evaluations"],
     dependencies=[Depends(require_enterprise_feature("call_imports"))],
 )
+
+
+class CallImportEvaluationPdfReportRequest(BaseModel):
+    vendor_name: str = Field(..., min_length=1, max_length=120)
+
+    @field_validator("vendor_name")
+    @classmethod
+    def _clean_vendor_name(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Vendor name is required.")
+        return cleaned
 
 
 def _require_import(
@@ -1830,6 +1848,142 @@ async def export_call_import_evaluation_csv(
     return StreamingResponse(
         iter([csv_bytes]),
         media_type="text/csv; charset=utf-8-sig",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _report_filename_slug(value: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", value.strip().lower()).strip("-")
+    return slug or "client"
+
+
+def _display_metrics_for_pdf_report(
+    db: Session,
+    organization_id: UUID,
+    evaluation: CallImportEvaluation,
+) -> list[Metric]:
+    selected_metric_ids = _serialize_selected_metric_ids(evaluation.selected_metric_ids)
+    lookup_ids: List[UUID] = list(selected_metric_ids)
+    groups_raw = (
+        evaluation.selected_metric_groups
+        if isinstance(evaluation.selected_metric_groups, dict)
+        else {}
+    )
+    for parent_str in groups_raw.keys():
+        try:
+            parent_id = UUID(parent_str)
+        except (TypeError, ValueError):
+            continue
+        if parent_id not in lookup_ids:
+            lookup_ids.append(parent_id)
+
+    metrics = _metrics_for_ids(db, organization_id, lookup_ids)
+    child_ids_in_groups: set[str] = set()
+    for child_strs in groups_raw.values():
+        if not isinstance(child_strs, list):
+            continue
+        child_ids_in_groups.update(str(child_id) for child_id in child_strs)
+
+    metrics_by_id = {str(metric.id): metric for metric in metrics}
+    display: list[Metric] = []
+    seen: set[str] = set()
+
+    for parent_str in groups_raw.keys():
+        parent = metrics_by_id.get(str(parent_str))
+        if parent and str(parent.id) not in seen:
+            display.append(parent)
+            seen.add(str(parent.id))
+
+    for metric in metrics:
+        metric_id = str(metric.id)
+        if metric_id in seen or metric_id in child_ids_in_groups:
+            continue
+        if metric.selection_mode and not metric.parent_metric_id:
+            continue
+        display.append(metric)
+        seen.add(metric_id)
+
+    return display
+
+
+@router.post(
+    "/{eval_id}/pdf-report",
+    operation_id="generateCallImportEvaluationPdfReport",
+)
+async def generate_call_import_evaluation_pdf_report(
+    call_import_id: UUID,
+    eval_id: UUID,
+    payload: CallImportEvaluationPdfReportRequest,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> StreamingResponse:
+    del api_key
+    call_import = _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(status_code=404, detail="Call import evaluation not found")
+
+    metrics = _display_metrics_for_pdf_report(db, organization_id, evaluation)
+    rows = (
+        db.query(CallImportEvaluationRow, CallImportRow)
+        .join(CallImportRow, CallImportRow.id == CallImportEvaluationRow.call_import_row_id)
+        .filter(CallImportEvaluationRow.evaluation_id == eval_id)
+        .order_by(CallImportRow.row_index.asc())
+        .all()
+    )
+
+    generated_at = datetime.now(timezone.utc)
+    try:
+        external_pdf = call_import_evaluation_pdf_report_service.render_pdf(
+            vendor_name=payload.vendor_name,
+            call_import=call_import,
+            evaluation=evaluation,
+            metrics=metrics,
+            rows=rows,
+            generated_at=generated_at,
+            internal=False,
+        )
+        internal_pdf = call_import_evaluation_pdf_report_service.render_pdf(
+            vendor_name=payload.vendor_name,
+            call_import=call_import,
+            evaluation=evaluation,
+            metrics=metrics,
+            rows=rows,
+            generated_at=generated_at,
+            internal=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "Failed to generate PDF report for call import {} evaluation {}",
+            call_import_id,
+            eval_id,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate PDF report: {exc}",
+        ) from exc
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("external-quality-metric-audit.pdf", external_pdf)
+        zf.writestr("internal-quality-metric-audit.pdf", internal_pdf)
+
+    filename = (
+        f"{_report_filename_slug(payload.vendor_name)}-quality-metric-audit-{eval_id}.zip"
+    )
+    return StreamingResponse(
+        iter([zip_buffer.getvalue()]),
+        media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 

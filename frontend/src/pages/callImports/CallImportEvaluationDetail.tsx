@@ -20,6 +20,7 @@ import {
   Edit3,
   ExternalLink,
   Filter,
+  FileText,
   Grid3x3,
   LayoutGrid,
   Loader2,
@@ -323,6 +324,10 @@ export default function CallImportEvaluationDetail() {
   const [forceFailPendingOpen, setForceFailPendingOpen] = useState(false)
   const [downloadMenuOpen, setDownloadMenuOpen] = useState(false)
   const downloadMenuRef = useRef<HTMLDivElement>(null)
+  const [pdfReportOpen, setPdfReportOpen] = useState(false)
+  const [pdfVendorName, setPdfVendorName] = useState('')
+  const [pdfReportError, setPdfReportError] = useState<string | null>(null)
+  const [pdfReportLoading, setPdfReportLoading] = useState(false)
   const [rowDeleteError, setRowDeleteError] = useState<string | null>(null)
   // Retry UX: ``retryError`` surfaces a banner on either failure path
   // (bulk or single-row). ``pendingRetryRowId`` is set while a per-row
@@ -1263,6 +1268,47 @@ export default function CallImportEvaluationDetail() {
     }
   }
 
+  const handlePdfReportSubmit = async () => {
+    if (!id || !evalId || pdfReportLoading) return
+    const vendorName = pdfVendorName.trim()
+    if (!vendorName) {
+      setPdfReportError('Vendor name is required.')
+      return
+    }
+    setPdfReportLoading(true)
+    setPdfReportError(null)
+    try {
+      const blob = await apiClient.generateCallImportEvaluationPdfReport(
+        id,
+        evalId,
+        vendorName,
+      )
+      const vendorSlug =
+        vendorName
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-+|-+$/g, '') || 'client'
+      const url = window.URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `${vendorSlug}-quality-metric-audit-${evalId}.zip`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.URL.revokeObjectURL(url)
+      setPdfReportOpen(false)
+      setPdfVendorName('')
+    } catch (e: any) {
+      console.error('Failed to generate PDF report', e)
+      setPdfReportError(
+        e?.response?.data?.detail ||
+          'Failed to generate PDF report. Please try again.',
+      )
+    } finally {
+      setPdfReportLoading(false)
+    }
+  }
+
   // Close the download format menu when the user clicks anywhere outside
   // it. Only attach the listener while the menu is open so we don't
   // pollute the global event bus.
@@ -1423,6 +1469,18 @@ export default function CallImportEvaluationDetail() {
               Re-run metrics
             </Button>
           )}
+          <Button
+            variant="outline"
+            size="sm"
+            leftIcon={<FileText className="h-4 w-4" />}
+            onClick={() => {
+              setPdfReportError(null)
+              setPdfReportOpen(true)
+            }}
+            disabled={!rowsQuery.data?.items?.length}
+          >
+            Generate PDF Report
+          </Button>
           <div className="relative" ref={downloadMenuRef}>
             <Button
               variant="outline"
@@ -3006,6 +3064,119 @@ export default function CallImportEvaluationDetail() {
               </div>
             )
           })(),
+          document.body,
+        )}
+
+      {pdfReportOpen &&
+        createPortal(
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden">
+              <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+                <div>
+                  <h2 className="text-lg font-semibold text-gray-900">
+                    Generate PDF report
+                  </h2>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    Creates external and internal Quality Metric Audit PDFs
+                    from this evaluation run.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (pdfReportLoading) return
+                    setPdfReportOpen(false)
+                    setPdfReportError(null)
+                  }}
+                  disabled={pdfReportLoading}
+                  className="text-gray-400 hover:text-gray-600 disabled:opacity-50"
+                  aria-label="Close PDF report modal"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              <div className="px-6 py-5 space-y-4">
+                <div>
+                  <label
+                    htmlFor="pdf-vendor-name"
+                    className="block text-sm font-medium text-gray-700 mb-1"
+                  >
+                    Vendor / client name
+                  </label>
+                  <input
+                    id="pdf-vendor-name"
+                    type="text"
+                    value={pdfVendorName}
+                    onChange={(e) => {
+                      setPdfVendorName(e.target.value)
+                      if (pdfReportError) setPdfReportError(null)
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        handlePdfReportSubmit()
+                      }
+                    }}
+                    disabled={pdfReportLoading}
+                    placeholder="Spinny"
+                    className="block w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 disabled:bg-gray-50 disabled:text-gray-500"
+                    autoFocus
+                  />
+                </div>
+
+                <div className="rounded-md border border-gray-200 bg-gray-50 p-3 text-xs text-gray-700 space-y-1">
+                  <p>
+                    The download includes{' '}
+                    <span className="font-medium">
+                      external-quality-metric-audit.pdf
+                    </span>{' '}
+                    and{' '}
+                    <span className="font-medium">
+                      internal-quality-metric-audit.pdf
+                    </span>
+                    .
+                  </p>
+                  <p>
+                    CSV and Excel downloads remain available from the existing
+                    Download menu.
+                  </p>
+                </div>
+
+                {pdfReportError && (
+                  <div className="rounded-md bg-red-50 border border-red-200 p-3">
+                    <div className="flex items-start gap-2">
+                      <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
+                      <p className="text-sm text-red-800">{pdfReportError}</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="px-6 py-4 border-t border-gray-200 flex items-center justify-end gap-3">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    if (pdfReportLoading) return
+                    setPdfReportOpen(false)
+                    setPdfReportError(null)
+                  }}
+                  disabled={pdfReportLoading}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="primary"
+                  leftIcon={<FileText className="h-4 w-4" />}
+                  onClick={handlePdfReportSubmit}
+                  isLoading={pdfReportLoading}
+                  disabled={pdfReportLoading || !pdfVendorName.trim()}
+                >
+                  Generate PDFs
+                </Button>
+              </div>
+            </div>
+          </div>,
           document.body,
         )}
 

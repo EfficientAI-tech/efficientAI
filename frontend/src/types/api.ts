@@ -888,7 +888,7 @@ export interface CallImport {
   skipped_columns: string[]
   /** S3 key for the staged source file. ``null`` on legacy batches. */
   source_s3_key: string | null
-  /** ``'csv'`` or ``'xlsx'`` of the staged source file. */
+  /** ``'csv'`` / ``'xlsx'`` for staged files, or ``'audio'`` for manual uploads. */
   source_format: string | null
   source_size_bytes: number | null
   source_content_type: string | null

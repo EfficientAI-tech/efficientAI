@@ -1139,6 +1139,29 @@ class ApiClient {
     return response.data
   }
 
+  async uploadCallImportAudio(
+    files: File[],
+    options: {
+      dataset: string
+      tagIds?: string[]
+    },
+  ): Promise<CallImportUploadResponse> {
+    const formData = new FormData()
+    for (const file of files) {
+      formData.append('files', file)
+    }
+    formData.append('dataset', options.dataset)
+    if (options.tagIds && options.tagIds.length > 0) {
+      for (const tagId of options.tagIds) {
+        formData.append('tag_ids', tagId)
+      }
+    }
+    const response = await this.client.post('/api/v1/call-imports/audio-upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    return response.data
+  }
+
   /**
    * MAP stage of the staged call-import flow.
    *
@@ -1241,6 +1264,7 @@ class ApiClient {
       status?: CallImportStatus
       dataset?: string
       tag_id?: string[]
+      source_format?: string
     } = {}
   ): Promise<CallImportListResponse> {
     // Send tag_id repeated rather than as a JSON array.
@@ -1249,6 +1273,7 @@ class ApiClient {
     if (params.page_size !== undefined) search.set('page_size', String(params.page_size))
     if (params.status) search.set('status', params.status)
     if (params.dataset !== undefined) search.set('dataset', params.dataset)
+    if (params.source_format) search.set('source_format', params.source_format)
     for (const tag of params.tag_id || []) search.append('tag_id', tag)
     const response = await this.client.get('/api/v1/call-imports', { params: search })
     return response.data
@@ -1991,6 +2016,19 @@ class ApiClient {
     const response = await this.client.get(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/export`,
       { params: { format }, responseType: 'blob' },
+    )
+    return response.data
+  }
+
+  async generateCallImportEvaluationPdfReport(
+    callImportId: string,
+    evaluationId: string,
+    vendorName: string,
+  ): Promise<Blob> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/pdf-report`,
+      { vendor_name: vendorName },
+      { responseType: 'blob' },
     )
     return response.data
   }
@@ -3592,4 +3630,3 @@ export const publicBlindTestApi = {
     return res.data
   },
 }
-
