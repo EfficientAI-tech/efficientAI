@@ -8,7 +8,6 @@ import json
 import math
 import re
 import statistics
-import zipfile
 from typing import Any, Dict, Iterator, List, Literal, Optional, Set, Tuple
 from uuid import UUID
 
@@ -77,6 +76,7 @@ router = APIRouter(
 
 class CallImportEvaluationPdfReportRequest(BaseModel):
     vendor_name: str = Field(..., min_length=1, max_length=120)
+    report_type: Literal["external", "internal"] = "external"
 
     @field_validator("vendor_name")
     @classmethod
@@ -1943,24 +1943,16 @@ async def generate_call_import_evaluation_pdf_report(
     )
 
     generated_at = datetime.now(timezone.utc)
+    is_internal = payload.report_type == "internal"
     try:
-        external_pdf = call_import_evaluation_pdf_report_service.render_pdf(
+        pdf_bytes = call_import_evaluation_pdf_report_service.render_pdf(
             vendor_name=payload.vendor_name,
             call_import=call_import,
             evaluation=evaluation,
             metrics=metrics,
             rows=rows,
             generated_at=generated_at,
-            internal=False,
-        )
-        internal_pdf = call_import_evaluation_pdf_report_service.render_pdf(
-            vendor_name=payload.vendor_name,
-            call_import=call_import,
-            evaluation=evaluation,
-            metrics=metrics,
-            rows=rows,
-            generated_at=generated_at,
-            internal=True,
+            internal=is_internal,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception(
@@ -1973,17 +1965,13 @@ async def generate_call_import_evaluation_pdf_report(
             detail=f"Failed to generate PDF report: {exc}",
         ) from exc
 
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("external-quality-metric-audit.pdf", external_pdf)
-        zf.writestr("internal-quality-metric-audit.pdf", internal_pdf)
-
     filename = (
-        f"{_report_filename_slug(payload.vendor_name)}-quality-metric-audit-{eval_id}.zip"
+        f"{_report_filename_slug(payload.vendor_name)}-"
+        f"{payload.report_type}-quality-metric-audit-{eval_id}.pdf"
     )
     return StreamingResponse(
-        iter([zip_buffer.getvalue()]),
-        media_type="application/zip",
+        iter([pdf_bytes]),
+        media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 

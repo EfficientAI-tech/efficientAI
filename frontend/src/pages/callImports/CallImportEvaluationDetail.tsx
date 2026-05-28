@@ -326,6 +326,9 @@ export default function CallImportEvaluationDetail() {
   const downloadMenuRef = useRef<HTMLDivElement>(null)
   const [pdfReportOpen, setPdfReportOpen] = useState(false)
   const [pdfVendorName, setPdfVendorName] = useState('')
+  const [pdfReportType, setPdfReportType] = useState<'external' | 'internal'>(
+    'external',
+  )
   const [pdfReportError, setPdfReportError] = useState<string | null>(null)
   const [pdfReportLoading, setPdfReportLoading] = useState(false)
   const [rowDeleteError, setRowDeleteError] = useState<string | null>(null)
@@ -1282,6 +1285,7 @@ export default function CallImportEvaluationDetail() {
         id,
         evalId,
         vendorName,
+        pdfReportType,
       )
       const vendorSlug =
         vendorName
@@ -1291,13 +1295,14 @@ export default function CallImportEvaluationDetail() {
       const url = window.URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
-      link.download = `${vendorSlug}-quality-metric-audit-${evalId}.zip`
+      link.download = `${vendorSlug}-${pdfReportType}-quality-metric-audit-${evalId}.pdf`
       document.body.appendChild(link)
       link.click()
       link.remove()
       window.URL.revokeObjectURL(url)
       setPdfReportOpen(false)
       setPdfVendorName('')
+      setPdfReportType('external')
     } catch (e: any) {
       console.error('Failed to generate PDF report', e)
       setPdfReportError(
@@ -3077,8 +3082,8 @@ export default function CallImportEvaluationDetail() {
                     Generate PDF report
                   </h2>
                   <p className="text-xs text-gray-500 mt-0.5">
-                    Creates external and internal Quality Metric Audit PDFs
-                    from this evaluation run.
+                    Choose one Quality Metric Audit PDF to generate from this
+                    evaluation run.
                   </p>
                 </div>
                 <button
@@ -3125,17 +3130,57 @@ export default function CallImportEvaluationDetail() {
                   />
                 </div>
 
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Report type
+                  </label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <label className="flex items-start gap-2 rounded-md border border-gray-200 p-3 hover:bg-gray-50 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="pdf-report-type"
+                        value="external"
+                        checked={pdfReportType === 'external'}
+                        disabled={pdfReportLoading}
+                        onChange={() => setPdfReportType('external')}
+                        className="mt-0.5 h-4 w-4 border-gray-300 text-primary-600 focus:ring-primary-500"
+                      />
+                      <span>
+                        <span className="block text-sm font-medium text-gray-900">
+                          External vendor
+                        </span>
+                        <span className="block text-xs text-gray-500">
+                          Vendor-safe report without internal diagnostic IDs.
+                        </span>
+                      </span>
+                    </label>
+                    <label className="flex items-start gap-2 rounded-md border border-gray-200 p-3 hover:bg-gray-50 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="pdf-report-type"
+                        value="internal"
+                        checked={pdfReportType === 'internal'}
+                        disabled={pdfReportLoading}
+                        onChange={() => setPdfReportType('internal')}
+                        className="mt-0.5 h-4 w-4 border-gray-300 text-primary-600 focus:ring-primary-500"
+                      />
+                      <span>
+                        <span className="block text-sm font-medium text-gray-900">
+                          Internal team
+                        </span>
+                        <span className="block text-xs text-gray-500">
+                          Includes diagnostic context for QA review.
+                        </span>
+                      </span>
+                    </label>
+                  </div>
+                </div>
+
                 <div className="rounded-md border border-gray-200 bg-gray-50 p-3 text-xs text-gray-700 space-y-1">
                   <p>
-                    The download includes{' '}
-                    <span className="font-medium">
-                      external-quality-metric-audit.pdf
-                    </span>{' '}
-                    and{' '}
-                    <span className="font-medium">
-                      internal-quality-metric-audit.pdf
-                    </span>
-                    .
+                    The selected report downloads as a single PDF. Metric
+                    panels include evaluated counts, flagged rate, passing rate,
+                    and value distributions.
                   </p>
                   <p>
                     CSV and Excel downloads remain available from the existing
@@ -3172,7 +3217,7 @@ export default function CallImportEvaluationDetail() {
                   isLoading={pdfReportLoading}
                   disabled={pdfReportLoading || !pdfVendorName.trim()}
                 >
-                  Generate PDFs
+                  Generate PDF
                 </Button>
               </div>
             </div>

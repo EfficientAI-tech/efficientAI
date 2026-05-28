@@ -6,8 +6,10 @@ import html
 import io
 import math
 import textwrap
+import base64
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Iterable
 
 from loguru import logger
@@ -42,6 +44,28 @@ class CallImportEvaluationPdfReportService:
     environments where optional native PDF dependencies are absent.
     """
 
+    def __init__(self) -> None:
+        self._logo_data_uri = self._build_logo_data_uri()
+
+    @staticmethod
+    def _build_logo_data_uri() -> str | None:
+        """Load the EfficientAI favicon used by Voice Playground reports."""
+        project_root = Path(__file__).parent.parent.parent.parent
+        candidate_paths = [
+            project_root / "frontend" / "public" / "favicon_dark.png",
+            project_root / "frontend" / "public" / "favicon_light.png",
+        ]
+
+        for logo_path in candidate_paths:
+            if logo_path.exists():
+                try:
+                    image_bytes = logo_path.read_bytes()
+                    encoded = base64.b64encode(image_bytes).decode("ascii")
+                    return f"data:image/png;base64,{encoded}"
+                except Exception:
+                    continue
+        return None
+
     def render_pdf(
         self,
         *,
@@ -58,8 +82,11 @@ class CallImportEvaluationPdfReportService:
         title = "Internal Quality Metric Audit" if internal else "Quality Metric Audit"
         payload = {
             "title": title,
+            "subtitle": "Call Import Evaluation Report",
             "vendor_name": vendor_name,
             "generated_at": generated_at.strftime("%b %d, %Y %H:%M UTC"),
+            "generated_at_iso": generated_at.strftime("%Y-%m-%d %H:%M UTC"),
+            "logo_data_uri": self._logo_data_uri,
             "call_import": call_import,
             "evaluation": evaluation,
             "metrics": summaries,
@@ -166,16 +193,74 @@ class CallImportEvaluationPdfReportService:
         parts = sorted(summary.value_counts.items(), key=lambda item: (-item[1], item[0]))
         return ", ".join(f"{label}: {count}" for label, count in parts[:4])
 
+    def _top_distribution_with_percentages(self, summary: MetricReportSummary) -> str:
+        if not summary.value_counts or summary.evaluated_count <= 0:
+            return "No completed scores"
+        parts = sorted(summary.value_counts.items(), key=lambda item: (-item[1], item[0]))
+        return ", ".join(
+            f"{label}: {count} ({self._percent(count, summary.evaluated_count)})"
+            for label, count in parts[:4]
+        )
+
+    def _measurement_label(self, summary: MetricReportSummary) -> str:
+        if summary.numeric_values:
+            return "Numeric score averaged across evaluated calls"
+        labels = {label.lower() for label in summary.value_counts.keys()}
+        if labels and labels.issubset({"flagged", "clear"}):
+            return "Boolean metric measured as flagged-call percentage"
+        return "Categorical metric measured as response distribution"
+
     def _metric_result(self, summary: MetricReportSummary) -> str:
         if summary.numeric_values:
             avg = sum(summary.numeric_values) / len(summary.numeric_values)
+            if 0 <= avg <= 1:
+                return f"Average {avg:.2f} ({avg * 100:.1f}%)"
             return f"Average {avg:.2f}"
         return self._top_distribution(summary)
+
+    def _primary_metric_percent(self, summary: MetricReportSummary) -> float:
+        if summary.numeric_values:
+            avg = sum(summary.numeric_values) / len(summary.numeric_values)
+            if 0 <= avg <= 1:
+                return avg * 100
+            return max(0.0, min(avg, 100.0))
+        if summary.evaluated_count <= 0:
+            return 0.0
+        return (summary.flagged_count / summary.evaluated_count) * 100
+
+    def _primary_metric_label(self, summary: MetricReportSummary) -> str:
+        percent = self._primary_metric_percent(summary)
+        if summary.numeric_values:
+            return f"{percent:.1f}%"
+        return self._percent(summary.flagged_count, summary.evaluated_count)
+
+    def _distribution_bars_html(self, summary: MetricReportSummary) -> str:
+        if not summary.value_counts or summary.evaluated_count <= 0:
+            return "<div class='empty-bars'>No completed scores to graph.</div>"
+        parts = sorted(summary.value_counts.items(), key=lambda item: (-item[1], item[0]))
+        bars = []
+        for label, count in parts[:6]:
+            pct = (count / summary.evaluated_count) * 100
+            bars.append(
+                f"""
+                <div class="dist-row">
+                  <div class="dist-label">{html.escape(label)}</div>
+                  <div class="dist-track"><div class="dist-fill" style="width: {pct:.1f}%"></div></div>
+                  <div class="dist-value">{count} · {pct:.1f}%</div>
+                </div>
+                """
+            )
+        return "".join(bars)
 
     def _render_html(self, payload: dict[str, Any]) -> str:
         metrics: list[MetricReportSummary] = payload["metrics"]
         rows: list[tuple[CallImportEvaluationRow, CallImportRow]] = payload["rows"]
         internal = bool(payload["internal"])
+        logo_markup = (
+            f'<img src="{payload["logo_data_uri"]}" alt="EfficientAI" class="brand-logo" />'
+            if payload.get("logo_data_uri")
+            else '<div class="brand-mark">EA</div>'
+        )
         evidence_rows = []
         for summary in metrics:
             for call_id, rationale in summary.rationales[:4]:
@@ -195,20 +280,39 @@ class CallImportEvaluationPdfReportService:
 
         metric_cards = []
         for summary in metrics:
+            clear_count = max(summary.evaluated_count - summary.flagged_count, 0)
+            primary_pct = self._primary_metric_percent(summary)
             metric_cards.append(
                 f"""
                 <article class="metric">
                   <div class="metric-head">
-                    <h3>{html.escape(summary.name)}</h3>
-                    <span>{html.escape(summary.metric_type)}</span>
+                    <div>
+                      <div class="metric-title"><span class="dot"></span>{html.escape(summary.name)}</div>
+                      <div class="metric-type">{html.escape(summary.metric_type)}</div>
+                    </div>
+                    <span class="direction">LOWER IS BETTER</span>
                   </div>
+                  <div class="metric-hero">
+                    <div class="metric-percent">{html.escape(self._primary_metric_label(summary))}</div>
+                    <div class="metric-count">FLAGGED CALLS <strong>{summary.flagged_count} of {summary.evaluated_count}</strong></div>
+                  </div>
+                  <div class="metric-bar"><div class="metric-bar-fill" style="width: {primary_pct:.1f}%"></div></div>
                   <div class="metric-grid">
                     <div><strong>{html.escape(self._metric_result(summary))}</strong><small>Current result</small></div>
                     <div><strong>{summary.flagged_count}</strong><small>Flagged / positive calls</small></div>
                     <div><strong>{summary.evaluated_count}</strong><small>Evaluated calls</small></div>
                     <div><strong>{html.escape(self._percent(summary.flagged_count, summary.evaluated_count))}</strong><small>Flagged rate</small></div>
                   </div>
-                  <p>{html.escape(summary.description or "No metric description was configured.")}</p>
+                  <div class="measurement-grid">
+                    <div><strong>{html.escape(self._measurement_label(summary))}</strong><small>Measurement standpoint</small></div>
+                    <div><strong>{html.escape(self._percent(clear_count, summary.evaluated_count))}</strong><small>Clear / passing rate</small></div>
+                  </div>
+                  <div class="distribution-bars">
+                    <div class="subhead">Metric distribution</div>
+                    {self._distribution_bars_html(summary)}
+                  </div>
+                  <p class="distribution"><strong>Distribution:</strong> {html.escape(self._top_distribution_with_percentages(summary))}</p>
+                  <p class="meaning"><strong>Business meaning:</strong> {html.escape(summary.description or "No metric description was configured.")}</p>
                 </article>
                 """
             )
@@ -244,32 +348,70 @@ class CallImportEvaluationPdfReportService:
         <head>
           <meta charset="utf-8" />
           <style>
-            @page {{ size: A4; margin: 28px; }}
-            body {{ font-family: Inter, Arial, sans-serif; color: #172033; font-size: 12px; }}
-            header {{ border-bottom: 3px solid #172033; padding-bottom: 18px; margin-bottom: 24px; }}
-            .eyebrow {{ text-transform: uppercase; letter-spacing: .12em; font-size: 10px; color: #586174; }}
-            h1 {{ font-size: 30px; margin: 6px 0; }}
-            h2 {{ font-size: 16px; margin: 24px 0 10px; color: #172033; }}
+            @page {{ size: A4; margin: 20mm 16mm; }}
+            body {{ font-family: Helvetica, Arial, sans-serif; color: #111827; font-size: 11px; line-height: 1.4; }}
+            header {{ border-bottom: 3px solid #0b1220; padding-bottom: 18px; margin-bottom: 24px; }}
+            .brand-header {{ display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }}
+            .brand-mark {{ width: 28px; height: 28px; border-radius: 7px; background: linear-gradient(135deg, #1f2937 0%, #0f172a 100%); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800; letter-spacing: .3px; }}
+            .brand-logo {{ width: 28px; height: 28px; object-fit: contain; }}
+            .brand-text {{ font-size: 20px; font-weight: 800; line-height: 1; }}
+            .brand-text .eff {{ color: #111827; }}
+            .brand-text .ai {{ color: #d16532; }}
+            .eyebrow {{ text-transform: uppercase; letter-spacing: .12em; font-size: 10px; color: #d16532; font-weight: 800; }}
+            h1 {{ font-size: 34px; font-weight: 800; margin: 6px 0; letter-spacing: .4px; }}
+            .subtitle {{ font-size: 18px; color: #666; margin-bottom: 16px; }}
+            h2 {{ font-size: 18px; margin: 26px 0 10px; color: #0b1220; border-bottom: 2px solid #0b1220; padding-bottom: 2px; }}
             h3 {{ font-size: 13px; margin: 0; }}
             .meta, .summary {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }}
             .box {{ border: 1px solid #d9dee8; padding: 10px; border-radius: 6px; background: #f7f9fc; }}
             .box strong {{ display: block; font-size: 15px; color: #111827; }}
             .box span, small {{ color: #667085; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }}
-            .metric {{ break-inside: avoid; border: 1px solid #d9dee8; border-radius: 8px; padding: 12px; margin-bottom: 10px; }}
+            .metric {{ break-inside: avoid; border: 1px solid #d9dee8; border-radius: 2px; padding: 12px; margin-bottom: 12px; background: #fff; }}
             .metric-head {{ display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid #eef1f5; padding-bottom: 8px; margin-bottom: 8px; }}
-            .metric-head span {{ color: #475467; font-size: 10px; text-transform: uppercase; }}
+            .metric-title {{ font-size: 12px; text-transform: uppercase; letter-spacing: .04em; font-weight: 800; color: #1f2937; }}
+            .dot {{ display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #b85f4b; margin-right: 8px; }}
+            .metric-type {{ color: #7a756d; font-size: 10px; text-transform: uppercase; margin-top: 3px; }}
+            .direction {{ border: 1px solid #d7cfc2; padding: 7px 10px; color: #7a756d; font-size: 10px; font-weight: 800; align-self: start; }}
+            .metric-hero {{ display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }}
+            .metric-percent {{ font-size: 30px; line-height: 1; font-weight: 800; color: #111; }}
+            .metric-count {{ color: #7a756d; font-size: 10px; letter-spacing: .04em; font-weight: 800; }}
+            .metric-count strong {{ color: #111827; font-size: 13px; letter-spacing: 0; margin-left: 8px; }}
+            .metric-bar {{ height: 10px; background: #e7ddd1; border: 1px solid #d7cfc2; margin: 10px 0; }}
+            .metric-bar-fill {{ height: 100%; background: #c7725e; }}
             .metric-grid {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }}
             .metric-grid div {{ background: #f8fafc; border-radius: 6px; padding: 8px; }}
+            .measurement-grid {{ display: grid; grid-template-columns: 2fr 1fr; gap: 8px; margin-top: 8px; }}
+            .measurement-grid div {{ background: #fff8f5; border: 1px solid #f3d3c5; border-radius: 6px; padding: 8px; }}
+            .distribution {{ margin: 8px 0 0; color: #374151; }}
+            .meaning {{ margin: 8px 0 0; color: #444; font-size: 13px; line-height: 1.45; }}
+            .distribution-bars {{ margin-top: 10px; }}
+            .subhead {{ font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: #7a756d; font-weight: 800; margin-bottom: 5px; }}
+            .dist-row {{ display: grid; grid-template-columns: 110px 1fr 74px; gap: 8px; align-items: center; margin: 4px 0; }}
+            .dist-label {{ font-size: 10px; font-weight: 700; color: #1f2937; overflow-wrap: anywhere; }}
+            .dist-track {{ height: 9px; background: #e7ddd1; border: 1px solid #d7cfc2; }}
+            .dist-fill {{ height: 100%; background: #c7725e; }}
+            .dist-value {{ text-align: right; font-size: 10px; font-weight: 800; color: #111827; }}
+            .empty-bars {{ color: #667085; font-size: 10px; font-style: italic; }}
             table {{ width: 100%; border-collapse: collapse; margin-top: 8px; }}
             th, td {{ text-align: left; border-bottom: 1px solid #e5e7eb; padding: 7px; vertical-align: top; }}
-            th {{ background: #f3f4f6; font-size: 10px; text-transform: uppercase; color: #475467; }}
+            th {{ background: #111827; color: #fff; font-size: 10px; text-transform: uppercase; }}
             .method {{ color: #475467; line-height: 1.5; }}
+            .report-footer {{ margin-top: 24px; border-top: 1px solid #1f2937; padding-top: 10px; display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; color: #4b5563; font-size: 10px; }}
+            .footer-left, .footer-right {{ display: flex; flex-direction: column; gap: 3px; }}
+            .footer-right {{ text-align: right; }}
+            .brand-title {{ color: #111827; font-weight: 800; font-size: 11px; letter-spacing: .2px; }}
+            .brand-link {{ color: #d16532; font-weight: 700; text-decoration: none; }}
           </style>
         </head>
         <body>
           <header>
+            <div class="brand-header">
+              {logo_markup}
+              <div class="brand-text"><span class="eff">Efficient</span><span class="ai">AI</span></div>
+            </div>
             <div class="eyebrow">Quality Metric Audit</div>
             <h1>{html.escape(payload["title"])}</h1>
+            <div class="subtitle">{html.escape(payload["subtitle"])}</div>
             <div class="meta">
               <div class="box"><span>Client</span><strong>{html.escape(payload["vendor_name"])}</strong></div>
               <div class="box"><span>Generated</span><strong>{html.escape(payload["generated_at"])}</strong></div>
@@ -302,6 +444,18 @@ class CallImportEvaluationPdfReportService:
             <h2>Methodology</h2>
             <p class="method">This report is generated from completed Call Import evaluation results. Metrics are derived from the saved evaluation outputs and the transcript source configured for the run. External reports omit internal row identifiers and diagnostic metadata; internal reports include operational details for QA review.</p>
           </section>
+          <div class="report-footer">
+            <div class="footer-left">
+              <div class="brand-title">Powered by EfficientAI</div>
+              <div>Voice AI Evaluation Platform</div>
+              <div>Website: <a href="https://efficientai.cloud" class="brand-link">https://efficientai.cloud</a></div>
+            </div>
+            <div class="footer-right">
+              <div>Evaluation ID: {html.escape(str(payload["evaluation"].id))}</div>
+              <div>Generated: {html.escape(payload["generated_at_iso"])}</div>
+              <div>Call import reports by EfficientAI Cloud</div>
+            </div>
+          </div>
         </body>
         </html>
         """
@@ -322,8 +476,11 @@ class CallImportEvaluationPdfReportService:
         rows: list[tuple[CallImportEvaluationRow, CallImportRow]] = payload["rows"]
         internal = bool(payload["internal"])
         lines = [
+            "EfficientAI",
+            "Powered by EfficientAI",
             "QUALITY METRIC AUDIT",
             payload["title"],
+            payload["subtitle"],
             f"Client: {payload['vendor_name']}",
             f"Generated: {payload['generated_at']}",
             f"Calls: {payload['evaluation'].total_rows}",
@@ -338,13 +495,18 @@ class CallImportEvaluationPdfReportService:
             "02 Quality Metric Panel",
         ]
         for summary in metrics:
+            clear_count = max(summary.evaluated_count - summary.flagged_count, 0)
             lines.extend(
                 [
                     f"Metric: {summary.name}",
                     f"Type: {summary.metric_type}",
+                    f"Measurement standpoint: {self._measurement_label(summary)}",
                     f"Current result: {self._metric_result(summary)}",
                     f"Flagged / positive calls: {summary.flagged_count}",
                     f"Evaluated calls: {summary.evaluated_count}",
+                    f"Flagged rate: {self._percent(summary.flagged_count, summary.evaluated_count)}",
+                    f"Clear / passing rate: {self._percent(clear_count, summary.evaluated_count)}",
+                    f"Metric distribution: {self._top_distribution_with_percentages(summary)}",
                     f"Business meaning: {summary.description or 'No metric description was configured.'}",
                     "",
                 ]
@@ -371,6 +533,9 @@ class CallImportEvaluationPdfReportService:
                 "Methodology",
                 "This report is generated from completed Call Import evaluation results. "
                 "Metrics are derived from saved evaluation outputs and the transcript source configured for the run.",
+                "",
+                "Website: https://efficientai.cloud",
+                "Call import reports by EfficientAI Cloud",
             ]
         )
         return lines

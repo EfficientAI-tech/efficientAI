@@ -2024,10 +2024,11 @@ class ApiClient {
     callImportId: string,
     evaluationId: string,
     vendorName: string,
+    reportType: 'external' | 'internal',
   ): Promise<Blob> {
     const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/pdf-report`,
-      { vendor_name: vendorName },
+      { vendor_name: vendorName, report_type: reportType },
       { responseType: 'blob' },
     )
     return response.data
