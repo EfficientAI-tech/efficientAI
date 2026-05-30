@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import base64
 import io
 import json
 import math
@@ -30,6 +31,7 @@ from app.models.database import (
     CallImportEvaluationRow,
     CallImportRow,
     Metric,
+    Workspace,
 )
 from app.models.enums import CallImportRowStatus, ModelProvider
 from app.models.schemas import (
@@ -77,6 +79,7 @@ router = APIRouter(
 class CallImportEvaluationPdfReportRequest(BaseModel):
     vendor_name: str = Field(..., min_length=1, max_length=120)
     report_type: Literal["external", "internal"] = "external"
+    include_weekly_delta: bool = False
 
     @field_validator("vendor_name")
     @classmethod
@@ -1483,6 +1486,7 @@ async def list_call_import_evaluation_rows(
                 transcript=_pick_transcript(source_row),
                 raw_columns=source_row.raw_columns,
                 recording_url=source_row.recording_url,
+                recording_date=source_row.recording_date,
                 recording_s3_key=source_row.recording_s3_key,
                 status=eval_row_obj.status,
                 metric_scores=eval_row_obj.metric_scores or {},
@@ -1857,6 +1861,43 @@ def _report_filename_slug(value: str) -> str:
     return slug or "client"
 
 
+def _report_branding_for_import_workspace(
+    db: Session,
+    organization_id: UUID,
+    workspace_id: UUID,
+) -> tuple[list[str], Optional[str]]:
+    workspace = (
+        db.query(Workspace)
+        .filter(
+            Workspace.id == workspace_id,
+            Workspace.organization_id == organization_id,
+        )
+        .first()
+    )
+    raw = workspace.report_branding if workspace and isinstance(workspace.report_branding, dict) else {}
+    images = raw.get("images") if isinstance(raw.get("images"), list) else []
+    data_uris: list[str] = []
+    for item in images:
+        if not isinstance(item, dict) or not item.get("s3_key"):
+            continue
+        content_type = str(item.get("content_type") or "image/png")
+        try:
+            from app.services.storage.s3_service import s3_service
+
+            image_bytes = s3_service.download_file_by_key(str(item["s3_key"]))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Unable to load report branding image for workspace {}: {}",
+                workspace_id,
+                exc,
+            )
+            continue
+        encoded = base64.b64encode(image_bytes).decode("ascii")
+        data_uris.append(f"data:{content_type};base64,{encoded}")
+    heading = raw.get("heading") if isinstance(raw.get("heading"), str) else None
+    return data_uris, heading
+
+
 def _display_metrics_for_pdf_report(
     db: Session,
     organization_id: UUID,
@@ -1944,6 +1985,9 @@ async def generate_call_import_evaluation_pdf_report(
 
     generated_at = datetime.now(timezone.utc)
     is_internal = payload.report_type == "internal"
+    branding_images, custom_heading = _report_branding_for_import_workspace(
+        db, organization_id, call_import.workspace_id
+    )
     try:
         pdf_bytes = call_import_evaluation_pdf_report_service.render_pdf(
             vendor_name=payload.vendor_name,
@@ -1953,6 +1997,11 @@ async def generate_call_import_evaluation_pdf_report(
             rows=rows,
             generated_at=generated_at,
             internal=is_internal,
+            logo_data_uris=branding_images,
+            custom_heading=custom_heading,
+            include_weekly_delta=(
+                payload.include_weekly_delta and not is_internal
+            ),
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception(
@@ -2323,6 +2372,7 @@ async def cancel_call_import_evaluation_row(
         ),
         raw_columns=source_row.raw_columns if source_row else None,
         recording_url=source_row.recording_url if source_row else None,
+        recording_date=source_row.recording_date if source_row else None,
         recording_s3_key=source_row.recording_s3_key if source_row else None,
         status=eval_row.status,
         metric_scores=eval_row.metric_scores or {},
@@ -5837,6 +5887,7 @@ async def retry_call_import_evaluation_row(
         transcript=source_row.transcript,
         raw_columns=source_row.raw_columns,
         recording_url=source_row.recording_url,
+        recording_date=source_row.recording_date,
         recording_s3_key=source_row.recording_s3_key,
         status=eval_row.status,
         metric_scores=eval_row.metric_scores or {},

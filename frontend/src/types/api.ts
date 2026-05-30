@@ -683,6 +683,7 @@ export interface CallImportRow {
   /** Mandatory identifier per row. Renamed from ``external_call_id``. */
   conversation_id: string
   recording_url: string | null
+  recording_date: string | null
   /** Production transcript — the value supplied via the CSV upload. */
   transcript: string | null
   /** Provenance of the stored production transcript (csv = CSV upload, edited = manual edit). */
@@ -742,8 +743,9 @@ export interface CallImportRow {
   /**
    * Per-row preservation of the mapped source cells. Values land here
    * as whatever type the schema parameter coerced them to —
-   * strings (text / url / conversation_id / recording_url / transcript /
-   * datetime), numbers, booleans, or ``null`` for blanks. Always
+   * strings (text / url / conversation_id / recording_url /
+   * recording_date / transcript / datetime), numbers, booleans, or
+   * ``null`` for blanks. Always
    * coerce with ``String(value)`` before string operations.
    */
   raw_columns: Record<string, string | number | boolean | null> | null
@@ -770,6 +772,7 @@ export interface CallImportTag {
  *
  *  - ``conversation_id``: mandatory identifier (one per schema).
  *  - ``recording_url``: feeds ``CallImportRow.recording_url``.
+ *  - ``recording_date``: date-only call recording date used for reports.
  *  - ``transcript``: feeds ``CallImportRow.transcript``.
  *  - ``text`` / ``number`` / ``boolean`` / ``datetime`` / ``url``:
  *    generic typed fields preserved per row in ``raw_columns`` and
@@ -778,6 +781,7 @@ export interface CallImportTag {
 export type CallImportSchemaParameterType =
   | 'conversation_id'
   | 'recording_url'
+  | 'recording_date'
   | 'transcript'
   | 'text'
   | 'number'
@@ -1085,6 +1089,7 @@ export interface CallImportEvaluationRow {
   transcript: string | null
   raw_columns: Record<string, any> | null
   recording_url: string | null
+  recording_date: string | null
   /**
    * S3 object key for the downloaded recording. Prefer this over
    * ``recording_url`` for playback — we resolve it to a presigned URL

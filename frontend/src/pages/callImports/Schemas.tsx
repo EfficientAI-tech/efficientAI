@@ -22,6 +22,7 @@ import Button from '../../components/Button'
 
 const PARAMETER_TYPES: { value: CallImportSchemaParameterType; label: string }[] = [
   { value: 'recording_url', label: 'Recording URL' },
+  { value: 'recording_date', label: 'Recording Date' },
   { value: 'transcript', label: 'Transcript' },
   { value: 'text', label: 'Text' },
   { value: 'number', label: 'Number' },
@@ -59,6 +60,16 @@ function makeConversationIdParameter(): EditableParameter {
   }
 }
 
+function makeRecordingDateParameter(): EditableParameter {
+  return {
+    key: 'recording_date',
+    name: 'recording_date',
+    type: 'recording_date',
+    description: 'Date the call recording was captured, stored without time.',
+    is_required: true,
+  }
+}
+
 function parametersFromSchema(
   parameters: CallImportSchemaParameter[],
 ): EditableParameter[] {
@@ -75,6 +86,7 @@ function validateParameters(params: EditableParameter[]): string | null {
   if (params.length === 0) return 'Add at least one parameter.'
   const seen = new Set<string>()
   let convCount = 0
+  let recordingDateCount = 0
   let recordingCount = 0
   let transcriptCount = 0
   for (const p of params) {
@@ -84,11 +96,15 @@ function validateParameters(params: EditableParameter[]): string | null {
     if (seen.has(lower)) return `Duplicate parameter name "${name}".`
     seen.add(lower)
     if (p.type === 'conversation_id') convCount += 1
+    if (p.type === 'recording_date') recordingDateCount += 1
     if (p.type === 'recording_url') recordingCount += 1
     if (p.type === 'transcript') transcriptCount += 1
   }
   if (convCount !== 1) {
     return 'Exactly one parameter must be of type "conversation_id".'
+  }
+  if (recordingDateCount !== 1) {
+    return 'Exactly one parameter must be of type "recording_date".'
   }
   if (recordingCount > 1) {
     return 'At most one parameter can be of type "recording_url".'
@@ -113,7 +129,7 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
   const [parameters, setParameters] = useState<EditableParameter[]>(
     schema
       ? parametersFromSchema(schema.parameters)
-      : [makeConversationIdParameter()],
+      : [makeConversationIdParameter(), makeRecordingDateParameter()],
   )
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
 
@@ -131,7 +147,7 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
       setParameters(
         schema
           ? parametersFromSchema(schema.parameters)
-          : [makeConversationIdParameter()],
+          : [makeConversationIdParameter(), makeRecordingDateParameter()],
       )
       setErrorMsg(null)
     }
@@ -147,7 +163,9 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
           type: p.type,
           description: p.description.trim() || null,
           is_required:
-            p.type === 'conversation_id' ? true : p.is_required,
+            p.type === 'conversation_id' || p.type === 'recording_date'
+              ? true
+              : p.is_required,
         })),
       }),
     onSuccess: () => {
@@ -171,7 +189,9 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
           type: p.type,
           description: p.description.trim() || null,
           is_required:
-            p.type === 'conversation_id' ? true : p.is_required,
+            p.type === 'conversation_id' || p.type === 'recording_date'
+              ? true
+              : p.is_required,
         })),
       })
     },
@@ -311,7 +331,9 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
               <div className="divide-y divide-gray-100">
                 {parameters.map((p, idx) => {
                   const isConversationId = p.type === 'conversation_id'
+                  const isRecordingDate = p.type === 'recording_date'
                   const locked = isConversationId
+                  const isSystemRequired = isConversationId || isRecordingDate
                   return (
                     <div
                       key={p.key}
@@ -372,12 +394,17 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
                         ) : (
                           <select
                             value={p.type}
-                            onChange={(e) =>
+                            onChange={(e) => {
+                              const nextType = e.target
+                                .value as CallImportSchemaParameterType
                               updateParameter(idx, {
-                                type: e.target
-                                  .value as CallImportSchemaParameterType,
+                                type: nextType,
+                                is_required:
+                                  nextType === 'recording_date'
+                                    ? true
+                                    : p.is_required,
                               })
-                            }
+                            }}
                             disabled={isSubmitting}
                             className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-primary-500"
                           >
@@ -404,8 +431,8 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
                       <div className="text-center">
                         <input
                           type="checkbox"
-                          checked={locked ? true : p.is_required}
-                          disabled={locked || isSubmitting}
+                          checked={isSystemRequired ? true : p.is_required}
+                          disabled={isSystemRequired || isSubmitting}
                           onChange={(e) =>
                             updateParameter(idx, {
                               is_required: e.target.checked,
@@ -433,8 +460,10 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
               </div>
             </div>
             <p className="mt-1 text-xs text-gray-500">
-              The first parameter is always{' '}
+              Every schema must include{' '}
               <code className="bg-gray-100 px-1 rounded">conversation_id</code>{' '}
+              and required{' '}
+              <code className="bg-gray-100 px-1 rounded">recording_date</code>{' '}
               — it identifies each imported row and cannot be removed.
             </p>
           </div>

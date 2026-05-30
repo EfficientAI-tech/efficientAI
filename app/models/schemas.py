@@ -2,7 +2,7 @@
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, validator
 from typing import Optional, List, Dict, Any, Literal
-from datetime import datetime
+from datetime import date, datetime
 from uuid import UUID
 from app.models.enums import (
     EvaluationType, EvaluationStatus, EvaluatorResultStatus, RoleEnum, InvitationStatus,
@@ -2027,6 +2027,7 @@ class CallImportRowResponse(BaseModel):
     # ``034_call_import_schemas``). Same data, same uniqueness rules.
     conversation_id: str
     recording_url: Optional[str] = None
+    recording_date: Optional[date] = None
     # Production transcript: the value supplied via the CSV upload.
     transcript: Optional[str] = None
     transcript_source: Optional[str] = None
@@ -2104,8 +2105,9 @@ class CallImportSchemaParameterBase(BaseModel):
         ...,
         description=(
             "Parameter type. One of conversation_id / recording_url / "
-            "transcript / text / number / boolean / datetime / url. "
-            "Exactly one parameter of type 'conversation_id' is required."
+            "recording_date / transcript / text / number / boolean / "
+            "datetime / url. Exactly one parameter each of type "
+            "'conversation_id' and 'recording_date' is required."
         ),
     )
     description: Optional[str] = Field(
@@ -2146,6 +2148,7 @@ def _validate_schema_parameters(
 
     seen_names: set[str] = set()
     conv_count = 0
+    recording_date_count = 0
     rec_url_count = 0
     transcript_count = 0
     for param in parameters:
@@ -2160,6 +2163,8 @@ def _validate_schema_parameters(
         seen_names.add(norm)
         if param.type == CallImportParameterType.CONVERSATION_ID:
             conv_count += 1
+        elif param.type == CallImportParameterType.RECORDING_DATE:
+            recording_date_count += 1
         elif param.type == CallImportParameterType.RECORDING_URL:
             rec_url_count += 1
         elif param.type == CallImportParameterType.TRANSCRIPT:
@@ -2169,6 +2174,11 @@ def _validate_schema_parameters(
         raise ValueError(
             "Schema must contain exactly one parameter of type "
             "'conversation_id'."
+        )
+    if recording_date_count != 1:
+        raise ValueError(
+            "Schema must contain exactly one parameter of type "
+            "'recording_date'."
         )
     if rec_url_count > 1:
         raise ValueError(
@@ -3003,6 +3013,7 @@ class CallImportEvaluationRowResponse(BaseModel):
     transcript: Optional[str] = None
     raw_columns: Optional[Dict[str, Any]] = None
     recording_url: Optional[str] = None
+    recording_date: Optional[date] = None
     recording_s3_key: Optional[str] = None
     status: str
     metric_scores: Dict[str, Any] = Field(default_factory=dict)

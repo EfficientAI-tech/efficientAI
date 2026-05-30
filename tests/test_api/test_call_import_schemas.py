@@ -39,7 +39,7 @@ def _default_workspace(db_session, org_id) -> Workspace:
 
 
 def _minimal_payload(name: str = "Standard QA") -> dict:
-    """Three-parameter schema (conv id + recording + transcript)."""
+    """Standard schema (conv id + recording date/url + transcript)."""
     return {
         "name": name,
         "description": "For voice QA pipelines",
@@ -54,6 +54,11 @@ def _minimal_payload(name: str = "Standard QA") -> dict:
                 "name": "recording_url",
                 "type": "recording_url",
                 "is_required": False,
+            },
+            {
+                "name": "recording_date",
+                "type": "recording_date",
+                "is_required": True,
             },
             {
                 "name": "transcript",
@@ -81,15 +86,20 @@ def test_create_schema_happy_path(authenticated_client, db_session, org_id, seed
     # Parameters come back in the order they were submitted; ordering is
     # stamped server-side.
     names = [p["name"] for p in body["parameters"]]
-    assert names == ["conversation_id", "recording_url", "transcript"]
-    assert [p["ordering"] for p in body["parameters"]] == [0, 1, 2]
+    assert names == [
+        "conversation_id",
+        "recording_url",
+        "recording_date",
+        "transcript",
+    ]
+    assert [p["ordering"] for p in body["parameters"]] == [0, 1, 2, 3]
     # The DB row is real (UUID parses, parameters persisted).
     schema = (
         db_session.query(CallImportSchema)
         .filter(CallImportSchema.id == UUID(body["id"]))
         .one()
     )
-    assert len(schema.parameters) == 3
+    assert len(schema.parameters) == 4
 
 
 def test_create_schema_forces_conversation_id_required(
@@ -100,6 +110,7 @@ def test_create_schema_forces_conversation_id_required(
     definition)."""
     payload = _minimal_payload()
     payload["parameters"][0]["is_required"] = False
+    payload["parameters"][2]["is_required"] = False
 
     response = authenticated_client.post("/api/v1/call-import-schemas", json=payload)
     assert response.status_code == 201, response.text
@@ -107,7 +118,11 @@ def test_create_schema_forces_conversation_id_required(
     conv_param = next(
         p for p in body["parameters"] if p["type"] == "conversation_id"
     )
+    date_param = next(
+        p for p in body["parameters"] if p["type"] == "recording_date"
+    )
     assert conv_param["is_required"] is True
+    assert date_param["is_required"] is True
 
 
 def test_create_schema_rejects_missing_conversation_id(
@@ -116,6 +131,7 @@ def test_create_schema_rejects_missing_conversation_id(
     payload = {
         "name": "Bad Schema",
         "parameters": [
+            {"name": "recording_date", "type": "recording_date", "is_required": True},
             {"name": "transcript", "type": "transcript", "is_required": True},
             {"name": "audio", "type": "recording_url"},
         ],
@@ -123,6 +139,18 @@ def test_create_schema_rejects_missing_conversation_id(
     response = authenticated_client.post("/api/v1/call-import-schemas", json=payload)
     assert response.status_code == 422
     assert "conversation_id" in response.text.lower()
+
+
+def test_create_schema_rejects_missing_recording_date(
+    authenticated_client, db_session, org_id, seed_org
+):
+    payload = _minimal_payload()
+    payload["parameters"] = [
+        p for p in payload["parameters"] if p["type"] != "recording_date"
+    ]
+    response = authenticated_client.post("/api/v1/call-import-schemas", json=payload)
+    assert response.status_code == 422
+    assert "recording_date" in response.text.lower()
 
 
 def test_create_schema_rejects_duplicate_conversation_id(
@@ -257,6 +285,7 @@ def test_get_schema_detail_returns_parameters(
     assert [p["name"] for p in body["parameters"]] == [
         "conversation_id",
         "recording_url",
+        "recording_date",
         "transcript",
     ]
 
@@ -280,6 +309,7 @@ def test_update_schema_replaces_parameters(
 
     new_params = [
         {"name": "conversation_id", "type": "conversation_id", "is_required": True},
+        {"name": "recording_date", "type": "recording_date", "is_required": True},
         {"name": "agent_name", "type": "text"},
         {"name": "latency_ms", "type": "number"},
     ]
@@ -291,7 +321,7 @@ def test_update_schema_replaces_parameters(
     body = response.json()
     assert body["name"] == "Renamed"
     names = [p["name"] for p in body["parameters"]]
-    assert names == ["conversation_id", "agent_name", "latency_ms"]
+    assert names == ["conversation_id", "recording_date", "agent_name", "latency_ms"]
 
     # The old parameters were actually deleted, not appended.
     persisted = (
@@ -299,9 +329,10 @@ def test_update_schema_replaces_parameters(
         .filter(CallImportSchemaParameter.schema_id == UUID(created["id"]))
         .all()
     )
-    assert len(persisted) == 3
+    assert len(persisted) == 4
     assert {p.name for p in persisted} == {
         "conversation_id",
+        "recording_date",
         "agent_name",
         "latency_ms",
     }
@@ -325,6 +356,7 @@ def test_update_schema_metadata_only_keeps_parameters(
     assert [p["name"] for p in body["parameters"]] == [
         "conversation_id",
         "recording_url",
+        "recording_date",
         "transcript",
     ]
 
@@ -341,12 +373,33 @@ def test_update_schema_rejects_dropping_conversation_id(
         json={
             "parameters": [
                 {"name": "transcript", "type": "transcript"},
+                {"name": "recording_date", "type": "recording_date"},
                 {"name": "agent_name", "type": "text"},
             ]
         },
     )
     assert response.status_code == 422
     assert "conversation_id" in response.text.lower()
+
+
+def test_update_schema_rejects_dropping_recording_date(
+    authenticated_client, db_session, org_id, seed_org
+):
+    created = authenticated_client.post(
+        "/api/v1/call-import-schemas", json=_minimal_payload()
+    ).json()
+
+    response = authenticated_client.patch(
+        f"/api/v1/call-import-schemas/{created['id']}",
+        json={
+            "parameters": [
+                {"name": "conversation_id", "type": "conversation_id"},
+                {"name": "agent_name", "type": "text"},
+            ]
+        },
+    )
+    assert response.status_code == 422
+    assert "recording_date" in response.text.lower()
 
 
 # ---------------------------------------------------------------------------

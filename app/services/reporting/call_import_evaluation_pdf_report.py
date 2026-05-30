@@ -6,10 +6,8 @@ import html
 import io
 import math
 import textwrap
-import base64
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
 from loguru import logger
@@ -34,6 +32,9 @@ class MetricReportSummary:
     numeric_values: list[float] = field(default_factory=list)
     value_counts: dict[str, int] = field(default_factory=dict)
     rationales: list[tuple[str, str]] = field(default_factory=list)
+    is_business_metric: bool = False
+    weekly_delta_label: str | None = None
+    weekly_delta_detail: str | None = None
 
 
 class CallImportEvaluationPdfReportService:
@@ -43,28 +44,6 @@ class CallImportEvaluationPdfReportService:
     A small built-in PDF renderer keeps the endpoint usable in lean test/dev
     environments where optional native PDF dependencies are absent.
     """
-
-    def __init__(self) -> None:
-        self._logo_data_uri = self._build_logo_data_uri()
-
-    @staticmethod
-    def _build_logo_data_uri() -> str | None:
-        """Load the EfficientAI favicon used by Voice Playground reports."""
-        project_root = Path(__file__).parent.parent.parent.parent
-        candidate_paths = [
-            project_root / "frontend" / "public" / "favicon_dark.png",
-            project_root / "frontend" / "public" / "favicon_light.png",
-        ]
-
-        for logo_path in candidate_paths:
-            if logo_path.exists():
-                try:
-                    image_bytes = logo_path.read_bytes()
-                    encoded = base64.b64encode(image_bytes).decode("ascii")
-                    return f"data:image/png;base64,{encoded}"
-                except Exception:
-                    continue
-        return None
 
     def render_pdf(
         self,
@@ -76,9 +55,15 @@ class CallImportEvaluationPdfReportService:
         rows: list[tuple[CallImportEvaluationRow, CallImportRow]],
         generated_at: datetime | None = None,
         internal: bool = False,
+        logo_data_uris: list[str] | None = None,
+        custom_heading: str | None = None,
+        include_weekly_delta: bool = False,
     ) -> bytes:
         generated_at = generated_at or datetime.now(timezone.utc)
         summaries = self._summarize_metrics(metrics, rows)
+        weekly_delta_meta = None
+        if include_weekly_delta:
+            weekly_delta_meta = self._attach_weekly_deltas(metrics, rows, summaries)
         title = "Internal Quality Metric Audit" if internal else "Quality Metric Audit"
         payload = {
             "title": title,
@@ -86,7 +71,8 @@ class CallImportEvaluationPdfReportService:
             "vendor_name": vendor_name,
             "generated_at": generated_at.strftime("%b %d, %Y %H:%M UTC"),
             "generated_at_iso": generated_at.strftime("%Y-%m-%d %H:%M UTC"),
-            "logo_data_uri": self._logo_data_uri,
+            "logo_data_uris": list(logo_data_uris or []),
+            "custom_heading": (custom_heading or "").strip() or None,
             "call_import": call_import,
             "evaluation": evaluation,
             "metrics": summaries,
@@ -95,6 +81,8 @@ class CallImportEvaluationPdfReportService:
             "completion_rate": self._percent(
                 evaluation.completed_rows, evaluation.total_rows
             ),
+            "include_weekly_delta": include_weekly_delta,
+            "weekly_delta_meta": weekly_delta_meta,
         }
         html_content = self._render_html(payload)
         pdf_bytes = self._render_weasyprint(html_content)
@@ -113,6 +101,7 @@ class CallImportEvaluationPdfReportService:
                 name=metric.name,
                 metric_type=metric.metric_type,
                 description=metric.description or "",
+                is_business_metric=self._is_business_metric(metric),
             )
             for metric in metrics
         ]
@@ -144,6 +133,106 @@ class CallImportEvaluationPdfReportService:
                         )
 
         return summaries
+
+    def _is_business_metric(self, metric: Metric) -> bool:
+        text = " ".join(
+            str(part or "").lower()
+            for part in (
+                getattr(metric, "name", ""),
+                getattr(metric, "description", ""),
+            )
+        )
+        normalized = text.replace("-", " ").replace("_", " ")
+        phrases = (
+            "call context",
+            "product identification",
+            "out of scope",
+            "identity match",
+            "user identity",
+            "frustration trigger",
+        )
+        return any(phrase in normalized for phrase in phrases)
+
+    def _attach_weekly_deltas(
+        self,
+        metrics: list[Metric],
+        rows: list[tuple[CallImportEvaluationRow, CallImportRow]],
+        summaries: list[MetricReportSummary],
+    ) -> dict[str, Any] | None:
+        dated_rows = [
+            (eval_row, source_row)
+            for eval_row, source_row in rows
+            if eval_row.status == "completed" and source_row.recording_date
+        ]
+        missing_dates = sum(
+            1
+            for eval_row, source_row in rows
+            if eval_row.status == "completed" and not source_row.recording_date
+        )
+        if not dated_rows:
+            for summary in summaries:
+                summary.weekly_delta_label = "No recording-date baseline"
+                summary.weekly_delta_detail = "Completed rows have no recording date."
+            return {"missing_dates": missing_dates}
+
+        latest_date = max(source_row.recording_date for _, source_row in dated_rows)
+        week_start = latest_date - timedelta(days=latest_date.weekday())
+        next_week_start = week_start + timedelta(days=7)
+        previous_week_start = week_start - timedelta(days=7)
+
+        current_rows = [
+            pair
+            for pair in dated_rows
+            if week_start <= pair[1].recording_date < next_week_start
+        ]
+        previous_rows = [
+            pair
+            for pair in dated_rows
+            if previous_week_start <= pair[1].recording_date < week_start
+        ]
+
+        current_by_id = {
+            summary.id: summary
+            for summary in self._summarize_metrics(metrics, current_rows)
+        }
+        previous_by_id = {
+            summary.id: summary
+            for summary in self._summarize_metrics(metrics, previous_rows)
+        }
+
+        for summary in summaries:
+            current = current_by_id.get(summary.id)
+            previous = previous_by_id.get(summary.id)
+            if (
+                current is None
+                or previous is None
+                or current.evaluated_count <= 0
+                or previous.evaluated_count <= 0
+            ):
+                summary.weekly_delta_label = "No previous-week baseline"
+                summary.weekly_delta_detail = (
+                    "Not enough dated scores in the current or previous week."
+                )
+                continue
+
+            current_value = self._primary_metric_percent(current)
+            previous_value = self._primary_metric_percent(previous)
+            delta = current_value - previous_value
+            sign = "+" if delta >= 0 else ""
+            summary.weekly_delta_label = f"{sign}{delta:.1f} pp"
+            summary.weekly_delta_detail = (
+                f"Current week {current_value:.1f}% vs previous week "
+                f"{previous_value:.1f}%"
+            )
+
+        return {
+            "latest_date": latest_date,
+            "week_start": week_start,
+            "previous_week_start": previous_week_start,
+            "current_count": len(current_rows),
+            "previous_count": len(previous_rows),
+            "missing_dates": missing_dates,
+        }
 
     def _score_value(self, score: dict[str, Any], metric: Metric | None) -> Any:
         if metric is not None and metric.selection_mode and not metric.parent_metric_id:
@@ -254,12 +343,34 @@ class CallImportEvaluationPdfReportService:
 
     def _render_html(self, payload: dict[str, Any]) -> str:
         metrics: list[MetricReportSummary] = payload["metrics"]
-        rows: list[tuple[CallImportEvaluationRow, CallImportRow]] = payload["rows"]
-        internal = bool(payload["internal"])
-        logo_markup = (
-            f'<img src="{payload["logo_data_uri"]}" alt="EfficientAI" class="brand-logo" />'
-            if payload.get("logo_data_uri")
-            else '<div class="brand-mark">EA</div>'
+        quality_metrics = [m for m in metrics if not m.is_business_metric]
+        business_metrics = [m for m in metrics if m.is_business_metric]
+        if not quality_metrics:
+            quality_metrics = metrics
+        logo_uris = payload.get("logo_data_uris") or []
+        valid_logo_uris = [uri for uri in logo_uris if isinstance(uri, str) and uri]
+        if len(valid_logo_uris) == 1:
+            logo_markup = (
+                f'<div class="brand-logo-slot brand-logo-slot-single">'
+                f'<img src="{valid_logo_uris[0]}" alt="Report branding" class="brand-logo" />'
+                f"</div>"
+            )
+        else:
+            logo_markup = "".join(
+                f'<div class="brand-logo-slot">'
+                f'<img src="{uri}" alt="Report branding" class="brand-logo" />'
+                f"</div>"
+                for uri in valid_logo_uris[:4]
+            )
+        heading_markup = (
+            f'<div class="brand-text">{html.escape(payload["custom_heading"])}</div>'
+            if payload.get("custom_heading")
+            else ""
+        )
+        brand_header_markup = (
+            f'<div class="brand-header"><div class="brand-logo-row">{logo_markup}</div>{heading_markup}</div>'
+            if logo_markup or heading_markup
+            else ""
         )
         evidence_rows = []
         for summary in metrics:
@@ -279,9 +390,19 @@ class CallImportEvaluationPdfReportService:
             )
 
         metric_cards = []
-        for summary in metrics:
+        for summary in quality_metrics:
             clear_count = max(summary.evaluated_count - summary.flagged_count, 0)
             primary_pct = self._primary_metric_percent(summary)
+            delta_markup = (
+                f"""
+                  <div class="weekly-delta">
+                    <strong>{html.escape(summary.weekly_delta_label or "No previous-week baseline")}</strong>
+                    <small>{html.escape(summary.weekly_delta_detail or "")}</small>
+                  </div>
+                """
+                if payload.get("include_weekly_delta")
+                else ""
+            )
             metric_cards.append(
                 f"""
                 <article class="metric">
@@ -303,6 +424,7 @@ class CallImportEvaluationPdfReportService:
                     <div><strong>{summary.evaluated_count}</strong><small>Evaluated calls</small></div>
                     <div><strong>{html.escape(self._percent(summary.flagged_count, summary.evaluated_count))}</strong><small>Flagged rate</small></div>
                   </div>
+                  {delta_markup}
                   <div class="measurement-grid">
                     <div><strong>{html.escape(self._measurement_label(summary))}</strong><small>Measurement standpoint</small></div>
                     <div><strong>{html.escape(self._percent(clear_count, summary.evaluated_count))}</strong><small>Clear / passing rate</small></div>
@@ -317,30 +439,46 @@ class CallImportEvaluationPdfReportService:
                 """
             )
 
-        diagnostics = ""
-        if internal:
-            diagnostic_rows = []
-            for eval_row, source_row in rows[:25]:
-                diagnostic_rows.append(
-                    f"""
-                    <tr>
-                      <td>{source_row.row_index}</td>
-                      <td>{html.escape(source_row.conversation_id)}</td>
-                      <td>{html.escape(str(eval_row.status))}</td>
-                      <td>{html.escape(str(eval_row.id))}</td>
-                      <td>{html.escape(payload["evaluation"].transcript_source or "production")}</td>
-                    </tr>
-                    """
-                )
-            diagnostics = f"""
+        business_rows = []
+        for summary in business_metrics:
+            business_rows.append(
+                f"""
+                <tr>
+                  <td>{html.escape(summary.name)}</td>
+                  <td>{summary.evaluated_count}</td>
+                  <td>{html.escape(self._top_distribution_with_percentages(summary))}</td>
+                  <td>{html.escape(summary.rationales[0][1][:280] if summary.rationales else "No rationale captured.")}</td>
+                </tr>
+                """
+            )
+        business_section = ""
+        if business_rows:
+            business_section = f"""
             <section>
-              <h2>Internal Diagnostics</h2>
+              <h2>03 Business Insights</h2>
+              <p class="method">Business metrics are configured evaluation dimensions with captured LLM rationale, separated from quality audit metrics for easier operational review.</p>
               <table>
-                <thead><tr><th>Row</th><th>Conversation ID</th><th>Status</th><th>Evaluation Row ID</th><th>Transcript Source</th></tr></thead>
-                <tbody>{''.join(diagnostic_rows)}</tbody>
+                <thead><tr><th>Business metric</th><th>Evaluated</th><th>Distribution</th><th>Representative rationale</th></tr></thead>
+                <tbody>{''.join(business_rows)}</tbody>
               </table>
             </section>
             """
+
+        weekly_meta = payload.get("weekly_delta_meta") or {}
+        weekly_methodology = ""
+        if payload.get("include_weekly_delta"):
+            missing = int(weekly_meta.get("missing_dates") or 0)
+            current = int(weekly_meta.get("current_count") or 0)
+            previous = int(weekly_meta.get("previous_count") or 0)
+            weekly_methodology = (
+                " Weekly deltas compare completed rows in the latest recording-date "
+                f"week (n={current}) with the immediately previous week (n={previous})."
+                + (
+                    f" {missing} completed row(s) without recording dates were excluded from delta calculations."
+                    if missing
+                    else ""
+                )
+            )
 
         return f"""
         <!doctype html>
@@ -350,22 +488,27 @@ class CallImportEvaluationPdfReportService:
           <style>
             @page {{ size: A4; margin: 20mm 16mm; }}
             body {{ font-family: Helvetica, Arial, sans-serif; color: #111827; font-size: 11px; line-height: 1.4; }}
-            header {{ border-bottom: 3px solid #0b1220; padding-bottom: 18px; margin-bottom: 24px; }}
-            .brand-header {{ display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }}
-            .brand-mark {{ width: 28px; height: 28px; border-radius: 7px; background: linear-gradient(135deg, #1f2937 0%, #0f172a 100%); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800; letter-spacing: .3px; }}
-            .brand-logo {{ width: 28px; height: 28px; object-fit: contain; }}
-            .brand-text {{ font-size: 20px; font-weight: 800; line-height: 1; }}
-            .brand-text .eff {{ color: #111827; }}
-            .brand-text .ai {{ color: #d16532; }}
-            .eyebrow {{ text-transform: uppercase; letter-spacing: .12em; font-size: 10px; color: #d16532; font-weight: 800; }}
-            h1 {{ font-size: 34px; font-weight: 800; margin: 6px 0; letter-spacing: .4px; }}
+            header {{ border-bottom: 0; padding-bottom: 18px; margin-bottom: 24px; }}
+            .brand-header {{ margin-bottom: 22px; }}
+            .brand-logo-row {{ display: flex; align-items: center; justify-content: space-between; gap: 42px; min-height: 104px; margin-bottom: 18px; }}
+            .brand-logo-slot {{ flex: 1; min-width: 0; display: flex; align-items: center; }}
+            .brand-logo-slot:nth-child(even) {{ justify-content: flex-end; }}
+            .brand-logo-slot:nth-child(odd) {{ justify-content: flex-start; }}
+            .brand-logo-slot-single {{ justify-content: flex-start; }}
+            .brand-logo {{ max-width: 285px; max-height: 98px; object-fit: contain; }}
+            .brand-text {{ margin-top: 4px; font-size: 18px; font-weight: 800; line-height: 1.15; color: #111827; letter-spacing: .18em; text-transform: uppercase; }}
+            .title-rule {{ height: 3px; background: #b85f4b; margin: 18px 0 18px; }}
+            .eyebrow {{ text-transform: uppercase; letter-spacing: .42em; font-size: 12px; color: #b85f4b; font-weight: 800; margin-bottom: 20px; }}
+            .eyebrow .dotsep {{ color: #7a756d; padding: 0 16px; letter-spacing: 0; }}
+            .eyebrow .muted {{ color: #7a756d; }}
+            h1 {{ font-size: 34px; font-weight: 800; margin: 6px 0; letter-spacing: .1px; }}
             .subtitle {{ font-size: 18px; color: #666; margin-bottom: 16px; }}
             h2 {{ font-size: 18px; margin: 26px 0 10px; color: #0b1220; border-bottom: 2px solid #0b1220; padding-bottom: 2px; }}
             h3 {{ font-size: 13px; margin: 0; }}
             .meta, .summary {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }}
             .box {{ border: 1px solid #d9dee8; padding: 10px; border-radius: 6px; background: #f7f9fc; }}
             .box strong {{ display: block; font-size: 15px; color: #111827; }}
-            .box span, small {{ color: #667085; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }}
+            .box span {{ color: #667085; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }}
             .metric {{ break-inside: avoid; border: 1px solid #d9dee8; border-radius: 2px; padding: 12px; margin-bottom: 12px; background: #fff; }}
             .metric-head {{ display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid #eef1f5; padding-bottom: 8px; margin-bottom: 8px; }}
             .metric-title {{ font-size: 12px; text-transform: uppercase; letter-spacing: .04em; font-weight: 800; color: #1f2937; }}
@@ -378,10 +521,15 @@ class CallImportEvaluationPdfReportService:
             .metric-count strong {{ color: #111827; font-size: 13px; letter-spacing: 0; margin-left: 8px; }}
             .metric-bar {{ height: 10px; background: #e7ddd1; border: 1px solid #d7cfc2; margin: 10px 0; }}
             .metric-bar-fill {{ height: 100%; background: #c7725e; }}
-            .metric-grid {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }}
-            .metric-grid div {{ background: #f8fafc; border-radius: 6px; padding: 8px; }}
+            .metric-grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }}
+            .metric-grid div {{ background: #f8fafc; border-radius: 6px; padding: 9px 10px; min-height: 48px; }}
+            .metric-grid strong, .measurement-grid strong {{ display: block; color: #111827; font-size: 13px; line-height: 1.25; overflow-wrap: anywhere; word-break: normal; }}
+            .metric-grid small, .measurement-grid small {{ display: block; margin-top: 4px; color: #667085; font-size: 9px; line-height: 1.2; text-transform: uppercase; letter-spacing: .04em; }}
+            .weekly-delta {{ margin-top: 8px; background: #eef6ff; border: 1px solid #bfdbfe; border-radius: 6px; padding: 9px 10px; }}
+            .weekly-delta strong {{ display: block; color: #0f172a; font-size: 14px; }}
+            .weekly-delta small {{ display: block; margin-top: 3px; color: #475569; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }}
             .measurement-grid {{ display: grid; grid-template-columns: 2fr 1fr; gap: 8px; margin-top: 8px; }}
-            .measurement-grid div {{ background: #fff8f5; border: 1px solid #f3d3c5; border-radius: 6px; padding: 8px; }}
+            .measurement-grid div {{ background: #fff8f5; border: 1px solid #f3d3c5; border-radius: 6px; padding: 9px 10px; min-height: 48px; }}
             .distribution {{ margin: 8px 0 0; color: #374151; }}
             .meaning {{ margin: 8px 0 0; color: #444; font-size: 13px; line-height: 1.45; }}
             .distribution-bars {{ margin-top: 10px; }}
@@ -405,11 +553,9 @@ class CallImportEvaluationPdfReportService:
         </head>
         <body>
           <header>
-            <div class="brand-header">
-              {logo_markup}
-              <div class="brand-text"><span class="eff">Efficient</span><span class="ai">AI</span></div>
-            </div>
-            <div class="eyebrow">Quality Metric Audit</div>
+            {brand_header_markup}
+            <div class="eyebrow">Quality Metric Audit <span class="dotsep">·</span> <span class="muted">Weekly</span></div>
+            <div class="title-rule"></div>
             <h1>{html.escape(payload["title"])}</h1>
             <div class="subtitle">{html.escape(payload["subtitle"])}</div>
             <div class="meta">
@@ -432,17 +578,17 @@ class CallImportEvaluationPdfReportService:
             <h2>02 Quality Metric Panel</h2>
             {''.join(metric_cards)}
           </section>
+          {business_section}
           <section>
-            <h2>03 User Insights / RCA</h2>
+            <h2>{'04' if business_section else '03'} User Insights / RCA</h2>
             <table>
               <thead><tr><th>Metric</th><th>Example call</th><th>Evidence / rationale</th></tr></thead>
               <tbody>{''.join(evidence_rows)}</tbody>
             </table>
           </section>
-          {diagnostics}
           <section>
             <h2>Methodology</h2>
-            <p class="method">This report is generated from completed Call Import evaluation results. Metrics are derived from the saved evaluation outputs and the transcript source configured for the run. External reports omit internal row identifiers and diagnostic metadata; internal reports include operational details for QA review.</p>
+            <p class="method">This report is generated from completed Call Import evaluation results. Metrics are derived from the saved evaluation outputs and the transcript source configured for the run.{html.escape(weekly_methodology)}</p>
           </section>
           <div class="report-footer">
             <div class="footer-left">
@@ -473,11 +619,8 @@ class CallImportEvaluationPdfReportService:
 
     def _plain_text_lines(self, payload: dict[str, Any]) -> list[str]:
         metrics: list[MetricReportSummary] = payload["metrics"]
-        rows: list[tuple[CallImportEvaluationRow, CallImportRow]] = payload["rows"]
-        internal = bool(payload["internal"])
         lines = [
-            "EfficientAI",
-            "Powered by EfficientAI",
+            payload["custom_heading"] or "",
             "QUALITY METRIC AUDIT",
             payload["title"],
             payload["subtitle"],
@@ -496,22 +639,39 @@ class CallImportEvaluationPdfReportService:
         ]
         for summary in metrics:
             clear_count = max(summary.evaluated_count - summary.flagged_count, 0)
-            lines.extend(
-                [
-                    f"Metric: {summary.name}",
-                    f"Type: {summary.metric_type}",
-                    f"Measurement standpoint: {self._measurement_label(summary)}",
-                    f"Current result: {self._metric_result(summary)}",
-                    f"Flagged / positive calls: {summary.flagged_count}",
-                    f"Evaluated calls: {summary.evaluated_count}",
-                    f"Flagged rate: {self._percent(summary.flagged_count, summary.evaluated_count)}",
-                    f"Clear / passing rate: {self._percent(clear_count, summary.evaluated_count)}",
-                    f"Metric distribution: {self._top_distribution_with_percentages(summary)}",
-                    f"Business meaning: {summary.description or 'No metric description was configured.'}",
-                    "",
-                ]
-            )
-        lines.extend(["03 User Insights / RCA"])
+            metric_lines = [
+                f"Metric: {summary.name}",
+                f"Type: {summary.metric_type}",
+                f"Measurement standpoint: {self._measurement_label(summary)}",
+                f"Current result: {self._metric_result(summary)}",
+                f"Flagged / positive calls: {summary.flagged_count}",
+                f"Evaluated calls: {summary.evaluated_count}",
+                f"Flagged rate: {self._percent(summary.flagged_count, summary.evaluated_count)}",
+                f"Clear / passing rate: {self._percent(clear_count, summary.evaluated_count)}",
+                f"Metric distribution: {self._top_distribution_with_percentages(summary)}",
+                f"Business meaning: {summary.description or 'No metric description was configured.'}",
+            ]
+            if payload.get("include_weekly_delta"):
+                metric_lines.append(
+                    "Weekly delta: "
+                    f"{summary.weekly_delta_label or 'No previous-week baseline'}"
+                    + (
+                        f" ({summary.weekly_delta_detail})"
+                        if summary.weekly_delta_detail
+                        else ""
+                    )
+                )
+            metric_lines.append("")
+            lines.extend(metric_lines)
+        business_metrics = [m for m in metrics if m.is_business_metric]
+        if business_metrics:
+            lines.extend(["03 Business Insights"])
+            for summary in business_metrics:
+                lines.append(
+                    f"{summary.name} | n={summary.evaluated_count} | "
+                    f"{self._top_distribution_with_percentages(summary)}"
+                )
+        lines.extend(["04 User Insights / RCA" if business_metrics else "03 User Insights / RCA"])
         has_rationale = False
         for summary in metrics:
             for call_id, rationale in summary.rationales[:4]:
@@ -519,20 +679,29 @@ class CallImportEvaluationPdfReportService:
                 lines.append(f"{summary.name} | {call_id} | {rationale}")
         if not has_rationale:
             lines.append("No flagged-call rationales were captured for this run.")
-        if internal:
-            lines.extend(["", "Internal Diagnostics"])
-            for eval_row, source_row in rows[:25]:
-                lines.append(
-                    f"Row {source_row.row_index} | Conversation ID {source_row.conversation_id} | "
-                    f"Status {eval_row.status} | Evaluation Row ID {eval_row.id} | "
-                    f"Transcript Source {payload['evaluation'].transcript_source or 'production'}"
-                )
+        lines = [line for line in lines if line]
         lines.extend(
             [
                 "",
                 "Methodology",
                 "This report is generated from completed Call Import evaluation results. "
                 "Metrics are derived from saved evaluation outputs and the transcript source configured for the run.",
+            ]
+        )
+        if payload.get("include_weekly_delta"):
+            meta = payload.get("weekly_delta_meta") or {}
+            lines.append(
+                "Weekly deltas compare completed rows in the latest recording-date "
+                f"week (n={int(meta.get('current_count') or 0)}) with the "
+                f"immediately previous week (n={int(meta.get('previous_count') or 0)})."
+            )
+            missing = int(meta.get("missing_dates") or 0)
+            if missing:
+                lines.append(
+                    f"{missing} completed row(s) without recording dates were excluded from delta calculations."
+                )
+        lines.extend(
+            [
                 "",
                 "Website: https://efficientai.cloud",
                 "Call import reports by EfficientAI Cloud",

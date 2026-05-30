@@ -4,6 +4,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     Column,
+    Date,
     DateTime,
     DDL,
     Enum,
@@ -107,6 +108,10 @@ class Workspace(Base):
     # check + the Default-workspace conftest fixture instead, because
     # SQLite doesn't support partial indexes the same way.
     is_default = Column(Boolean, nullable=False, default=False, server_default="false")
+    # Reusable PDF/report branding metadata scoped to this workspace. Images
+    # live in S3. Shape: {"heading": str|null, "images": [{id, s3_key,
+    # content_type, filename, size_bytes, updated_at}, ...]}.
+    report_branding = Column(JSON, nullable=True)
     created_by_user_id = Column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -1760,6 +1765,9 @@ class CallImportRow(Base):
     # Optional at upload time; the worker resolves it via Exotel's Calls API when
     # absent and writes the resolved URL back here so retries are cheap.
     recording_url = Column(Text, nullable=True)
+    # Date-only call recording date supplied by the import schema. Used
+    # for historical report comparisons without timezone/time ambiguity.
+    recording_date = Column(Date, nullable=True, index=True)
     # The "production" transcript: the value supplied via the CSV
     # upload mapping. Never overwritten by the diarisation worker —
     # the worker writes its output into ``diarised_transcript`` so

@@ -4,6 +4,7 @@ import os
 import sys
 import types
 from contextlib import asynccontextmanager
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -275,7 +276,9 @@ def client(db_session, api_key, org_id):
 
     if "app.services.reporting.voice_playground_report_service" not in sys.modules:
         fake_reporting_pkg = types.ModuleType("app.services.reporting")
-        fake_reporting_pkg.__path__ = []
+        fake_reporting_pkg.__path__ = [
+            str(Path(__file__).resolve().parents[1] / "app" / "services" / "reporting")
+        ]
         fake_report_service_module = types.ModuleType("app.services.reporting.voice_playground_report_service")
 
         class _FakeVoicePlaygroundReportService:

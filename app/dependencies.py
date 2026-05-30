@@ -81,29 +81,29 @@ def get_workspace_id(
                 status_code=400,
                 detail="X-Workspace-Id must be a valid UUID.",
             )
-        ws = (
-            db.query(Workspace)
+        ws_id_row = (
+            db.query(Workspace.id)
             .filter(
                 Workspace.id == ws_id,
                 Workspace.organization_id == organization_id,
             )
             .first()
         )
-        if ws is None:
+        if ws_id_row is None:
             raise HTTPException(
                 status_code=404, detail="Workspace not found in this organization."
             )
-        return ws.id
+        return ws_id_row[0]
 
-    default_ws = (
-        db.query(Workspace)
+    default_ws_row = (
+        db.query(Workspace.id)
         .filter(
             Workspace.organization_id == organization_id,
             Workspace.is_default.is_(True),
         )
         .first()
     )
-    if default_ws is None:
+    if default_ws_row is None:
         # Should never happen post-migration. Raising 500 is preferable
         # to silently writing rows with a NULL workspace_id and tripping
         # the NOT NULL constraint downstream.
@@ -114,7 +114,7 @@ def get_workspace_id(
                 "Please contact support; migration 033 may not have run."
             ),
         )
-    return default_ws.id
+    return default_ws_row[0]
 
 
 def get_db_session() -> Session:

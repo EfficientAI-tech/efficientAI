@@ -287,6 +287,23 @@ def _coerce_parameter_value(
                 ),
             )
         return cell
+    if param_type == CallImportParameterType.RECORDING_DATE:
+        try:
+            parsed_date = date.fromisoformat(cell)
+        except ValueError:
+            try:
+                parsed_date = datetime.fromisoformat(
+                    cell.replace("Z", "+00:00")
+                ).date()
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        f"Row {row_idx + 1}: value for '{param_name}' is not a "
+                        f"valid recording date ({cell!r}); expected YYYY-MM-DD."
+                    ),
+                )
+        return parsed_date.isoformat()
     if param_type == CallImportParameterType.TRANSCRIPT:
         return cell
     if param_type == CallImportParameterType.TEXT:
@@ -365,6 +382,7 @@ def _apply_schema_mapping(
     ``skipped_columns``. Returns one dict per non-empty data row with:
 
       * ``conversation_id`` (str, mandatory)
+      * ``recording_date`` (Optional[str], ISO date)
       * ``recording_url`` (Optional[str])
       * ``transcript`` (Optional[str])
       * ``parameter_values`` (Dict[str, Any]) of typed values keyed by
@@ -393,11 +411,21 @@ def _apply_schema_mapping(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Selected schema is missing the mandatory conversation_id parameter.",
         )
+    recording_date_param = next(
+        (p for p in parameters if p.type == CallImportParameterType.RECORDING_DATE),
+        None,
+    )
+    if recording_date_param is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Selected schema is missing the mandatory recording_date parameter.",
+        )
 
     # 2. Resolve every mapped parameter to a canonical fieldname.
     #    Required parameters MUST resolve; optional ones may resolve to
     #    None if the user left them blank (no mapping).
     canonical_by_param: Dict[str, Optional[str]] = {}
+    recording_date_param_name: Optional[str] = None
     rec_url_param_name: Optional[str] = None
     transcript_param_name: Optional[str] = None
     for param in parameters:
@@ -417,7 +445,9 @@ def _apply_schema_mapping(
                 ),
             )
         canonical_by_param[param.name] = canonical
-        if param.type == CallImportParameterType.RECORDING_URL:
+        if param.type == CallImportParameterType.RECORDING_DATE:
+            recording_date_param_name = param.name
+        elif param.type == CallImportParameterType.RECORDING_URL:
             rec_url_param_name = param.name
         elif param.type == CallImportParameterType.TRANSCRIPT:
             transcript_param_name = param.name
@@ -449,6 +479,11 @@ def _apply_schema_mapping(
     rec_canonical = (
         canonical_by_param.get(rec_url_param_name)
         if rec_url_param_name
+        else None
+    )
+    recording_date_canonical = (
+        canonical_by_param.get(recording_date_param_name)
+        if recording_date_param_name
         else None
     )
     transcript_canonical = (
@@ -498,12 +533,21 @@ def _apply_schema_mapping(
                 param_type = CallImportParameterType(param.type)
             except ValueError:
                 param_type = CallImportParameterType.TEXT
-            parameter_values[param.name] = _coerce_parameter_value(
+            coerced = _coerce_parameter_value(
                 row.get(canonical) or "",
                 param_type,
                 row_idx=idx,
                 param_name=param.name,
             )
+            if param.is_required and coerced is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        f"Row {idx + 1} is missing the required "
+                        f"'{param.name}' value."
+                    ),
+                )
+            parameter_values[param.name] = coerced
 
         rec_value = (
             (row.get(rec_canonical) or "").strip() if rec_canonical else ""
@@ -513,10 +557,16 @@ def _apply_schema_mapping(
             if transcript_canonical
             else ""
         )
+        recording_date_value = (
+            parameter_values.get(recording_date_param_name)
+            if recording_date_param_name
+            else None
+        )
 
         parsed.append(
             {
                 "conversation_id": conv_value,
+                "recording_date": recording_date_value,
                 "recording_url": rec_value or None,
                 "transcript": transcript_value or None,
                 "parameter_values": parameter_values,
@@ -1007,6 +1057,11 @@ def _materialize_rows(
             organization_id=organization_id,
             row_index=idx,
             conversation_id=row["conversation_id"],
+            recording_date=(
+                date.fromisoformat(row["recording_date"])
+                if row.get("recording_date")
+                else None
+            ),
             recording_url=row["recording_url"],
             transcript=csv_transcript,
             transcript_source=(

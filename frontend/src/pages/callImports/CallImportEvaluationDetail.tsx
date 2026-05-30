@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { type ChangeEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -57,7 +57,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { apiClient } from '../../lib/api'
+import { apiClient, type ReportBranding } from '../../lib/api'
 import type {
   CallImportEvaluation,
   CallImportEvaluationRow,
@@ -329,8 +329,18 @@ export default function CallImportEvaluationDetail() {
   const [pdfReportType, setPdfReportType] = useState<'external' | 'internal'>(
     'external',
   )
+  const [pdfIncludeWeeklyDelta, setPdfIncludeWeeklyDelta] = useState(false)
   const [pdfReportError, setPdfReportError] = useState<string | null>(null)
   const [pdfReportLoading, setPdfReportLoading] = useState(false)
+  const [reportBranding, setReportBranding] = useState<ReportBranding | null>(
+    null,
+  )
+  const [reportHeadingDraft, setReportHeadingDraft] = useState('')
+  const [reportBrandingLoading, setReportBrandingLoading] = useState(false)
+  const [reportLogoUploading, setReportLogoUploading] = useState(false)
+  const [reportLogoDeletingId, setReportLogoDeletingId] = useState<string | null>(
+    null,
+  )
   const [rowDeleteError, setRowDeleteError] = useState<string | null>(null)
   // Retry UX: ``retryError`` surfaces a banner on either failure path
   // (bulk or single-row). ``pendingRetryRowId`` is set while a per-row
@@ -1281,11 +1291,19 @@ export default function CallImportEvaluationDetail() {
     setPdfReportLoading(true)
     setPdfReportError(null)
     try {
+      if ((reportBranding?.heading || '') !== reportHeadingDraft.trim()) {
+        const branding = await apiClient.updateReportBranding({
+          heading: reportHeadingDraft.trim() || null,
+        })
+        setReportBranding(branding)
+        setReportHeadingDraft(branding.heading || '')
+      }
       const blob = await apiClient.generateCallImportEvaluationPdfReport(
         id,
         evalId,
         vendorName,
         pdfReportType,
+        pdfReportType === 'external' && pdfIncludeWeeklyDelta,
       )
       const vendorSlug =
         vendorName
@@ -1303,6 +1321,7 @@ export default function CallImportEvaluationDetail() {
       setPdfReportOpen(false)
       setPdfVendorName('')
       setPdfReportType('external')
+      setPdfIncludeWeeklyDelta(false)
     } catch (e: any) {
       console.error('Failed to generate PDF report', e)
       setPdfReportError(
@@ -1311,6 +1330,92 @@ export default function CallImportEvaluationDetail() {
       )
     } finally {
       setPdfReportLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!pdfReportOpen) return
+    let cancelled = false
+    setReportBrandingLoading(true)
+    apiClient
+      .getReportBranding()
+      .then((branding) => {
+        if (!cancelled) {
+          setReportBranding(branding)
+          setReportHeadingDraft(branding.heading || '')
+        }
+      })
+      .catch((e) => {
+        console.error('Failed to load report branding', e)
+        if (!cancelled) {
+          setPdfReportError(
+            e?.response?.data?.detail ||
+              'Failed to load saved report branding.',
+          )
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setReportBrandingLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [pdfReportOpen])
+
+  const handleReportLogoUpload = async (
+    event: ChangeEvent<HTMLInputElement>,
+  ) => {
+    const files = Array.from(event.target.files || [])
+    event.target.value = ''
+    if (!files.length || reportLogoUploading) return
+    setReportLogoUploading(true)
+    setPdfReportError(null)
+    try {
+      const branding = await apiClient.uploadReportBrandingImages(files)
+      setReportBranding(branding)
+      setReportHeadingDraft(branding.heading || '')
+    } catch (e: any) {
+      console.error('Failed to upload report logo', e)
+      setPdfReportError(
+        e?.response?.data?.detail ||
+          'Failed to upload images. Use PNG, JPG, WEBP, or SVG up to 5 MB each.',
+      )
+    } finally {
+      setReportLogoUploading(false)
+    }
+  }
+
+  const handleReportImageDelete = async (imageId: string) => {
+    if (reportLogoDeletingId) return
+    setReportLogoDeletingId(imageId)
+    setPdfReportError(null)
+    try {
+      const branding = await apiClient.deleteReportBrandingImage(imageId)
+      setReportBranding(branding)
+      setReportHeadingDraft(branding.heading || '')
+    } catch (e: any) {
+      console.error('Failed to remove report image', e)
+      setPdfReportError(
+        e?.response?.data?.detail || 'Failed to remove saved report image.',
+      )
+    } finally {
+      setReportLogoDeletingId(null)
+    }
+  }
+
+  const handleReportHeadingSave = async () => {
+    setPdfReportError(null)
+    try {
+      const branding = await apiClient.updateReportBranding({
+        heading: reportHeadingDraft.trim() || null,
+      })
+      setReportBranding(branding)
+      setReportHeadingDraft(branding.heading || '')
+    } catch (e: any) {
+      console.error('Failed to save report heading', e)
+      setPdfReportError(
+        e?.response?.data?.detail || 'Failed to save report heading.',
+      )
     }
   }
 
@@ -3131,6 +3236,110 @@ export default function CallImportEvaluationDetail() {
                 </div>
 
                 <div>
+                  <div className="flex items-center justify-between gap-3 mb-2">
+                    <label className="block text-sm font-medium text-gray-700">
+                      Header branding
+                    </label>
+                    {reportBrandingLoading && (
+                      <span className="inline-flex items-center gap-1 text-xs text-gray-500">
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                        Loading
+                      </span>
+                    )}
+                  </div>
+                  <div className="rounded-md border border-gray-200 p-3 space-y-3">
+                    <div>
+                      <label
+                        htmlFor="pdf-report-heading"
+                        className="block text-xs font-medium text-gray-600 mb-1"
+                      >
+                        Custom heading
+                      </label>
+                      <div className="flex gap-2">
+                        <input
+                          id="pdf-report-heading"
+                          type="text"
+                          value={reportHeadingDraft}
+                          onChange={(e) => setReportHeadingDraft(e.target.value)}
+                          placeholder="Quality Audit Report"
+                          className="block w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
+                          disabled={pdfReportLoading}
+                        />
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={handleReportHeadingSave}
+                          disabled={pdfReportLoading}
+                        >
+                          Save
+                        </Button>
+                      </div>
+                    </div>
+
+                    {reportBranding?.images?.length ? (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {reportBranding.images.map((image) => (
+                          <div
+                            key={image.id}
+                            className="flex items-center justify-between gap-2 rounded border border-gray-200 p-2"
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              {image.data_uri && (
+                                <img
+                                  src={image.data_uri}
+                                  alt={image.filename}
+                                  className="h-10 w-12 object-contain rounded border border-gray-200 bg-white"
+                                />
+                              )}
+                              <div className="min-w-0">
+                                <p className="text-xs font-medium text-gray-900 truncate">
+                                  {image.filename}
+                                </p>
+                                <p className="text-[11px] text-gray-500">
+                                  {Math.ceil(image.size_bytes / 1024)} KB
+                                </p>
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleReportImageDelete(image.id)}
+                              disabled={
+                                reportLogoDeletingId !== null || pdfReportLoading
+                              }
+                              className="text-xs font-medium text-red-600 hover:text-red-700 disabled:opacity-50"
+                            >
+                              {reportLogoDeletingId === image.id
+                                ? 'Removing…'
+                                : 'Remove'}
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-gray-600">
+                        No custom images saved for this workspace.
+                      </p>
+                    )}
+                    <div className="mt-3 flex items-center gap-3">
+                      <label className="inline-flex items-center justify-center rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 cursor-pointer">
+                        {reportLogoUploading ? 'Uploading…' : 'Upload images'}
+                        <input
+                          type="file"
+                          accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                          multiple
+                          className="sr-only"
+                          disabled={reportLogoUploading || pdfReportLoading}
+                          onChange={handleReportLogoUpload}
+                        />
+                      </label>
+                      <span className="text-xs text-gray-500">
+                        PNG, JPG, WEBP, or SVG up to 5 MB each. Saved per workspace.
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     Report type
                   </label>
@@ -3161,7 +3370,10 @@ export default function CallImportEvaluationDetail() {
                         value="internal"
                         checked={pdfReportType === 'internal'}
                         disabled={pdfReportLoading}
-                        onChange={() => setPdfReportType('internal')}
+                        onChange={() => {
+                          setPdfReportType('internal')
+                          setPdfIncludeWeeklyDelta(false)
+                        }}
                         className="mt-0.5 h-4 w-4 border-gray-300 text-primary-600 focus:ring-primary-500"
                       />
                       <span>
@@ -3177,6 +3389,23 @@ export default function CallImportEvaluationDetail() {
                 </div>
 
                 <div className="rounded-md border border-gray-200 bg-gray-50 p-3 text-xs text-gray-700 space-y-1">
+                  <label className="mb-2 flex items-start gap-2 text-sm text-gray-800">
+                    <input
+                      type="checkbox"
+                      checked={pdfIncludeWeeklyDelta}
+                      disabled={pdfReportLoading || pdfReportType !== 'external'}
+                      onChange={(e) => setPdfIncludeWeeklyDelta(e.target.checked)}
+                      className="mt-0.5 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500 disabled:opacity-50"
+                    />
+                    <span>
+                      <span className="block font-medium">
+                        Include previous-week metric deltas
+                      </span>
+                      <span className="block text-xs text-gray-500">
+                        Uses recording dates from this evaluation's completed rows.
+                      </span>
+                    </span>
+                  </label>
                   <p>
                     The selected report downloads as a single PDF. Metric
                     panels include evaluated counts, flagged rate, passing rate,
@@ -3373,6 +3602,9 @@ function RowDetailPanel({
               <StatusBadge status={row.status} size="sm" />
               {row.row_index !== null && (
                 <span>Row #{(row.row_index ?? 0) + 1}</span>
+              )}
+              {row.recording_date && (
+                <span>· Recorded {row.recording_date}</span>
               )}
               {row.finished_at && (
                 <span>· Finished {formatDateTime(row.finished_at)}</span>

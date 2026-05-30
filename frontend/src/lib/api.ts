@@ -90,6 +90,19 @@ export interface LicenseInfoResponse {
   organization?: string
 }
 
+export interface ReportBranding {
+  heading?: string | null
+  has_logo: boolean
+  images: Array<{
+    id: string
+    filename: string
+    content_type: string
+    size_bytes: number
+    updated_at?: string | null
+    data_uri?: string | null
+  }>
+}
+
 export interface AuthProviderConfig {
   name: 'api_key' | 'local_password' | 'external_oidc'
   enabled: boolean
@@ -2025,10 +2038,15 @@ class ApiClient {
     evaluationId: string,
     vendorName: string,
     reportType: 'external' | 'internal',
+    includeWeeklyDelta = false,
   ): Promise<Blob> {
     const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/pdf-report`,
-      { vendor_name: vendorName, report_type: reportType },
+      {
+        vendor_name: vendorName,
+        report_type: reportType,
+        include_weekly_delta: includeWeeklyDelta,
+      },
       { responseType: 'blob' },
     )
     return response.data
@@ -3287,6 +3305,32 @@ class ApiClient {
   // License / Enterprise
   async getLicenseInfo(): Promise<LicenseInfoResponse> {
     const response = await this.client.get('/api/v1/settings/license-info')
+    return response.data
+  }
+
+  async getReportBranding(): Promise<ReportBranding> {
+    const response = await this.client.get('/api/v1/settings/report-branding')
+    return response.data
+  }
+
+  async updateReportBranding(data: { heading?: string | null }): Promise<ReportBranding> {
+    const response = await this.client.patch('/api/v1/settings/report-branding', data)
+    return response.data
+  }
+
+  async uploadReportBrandingImages(files: File[]): Promise<ReportBranding> {
+    const formData = new FormData()
+    for (const file of files) {
+      formData.append('files', file)
+    }
+    const response = await this.client.post('/api/v1/settings/report-branding/images', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    return response.data
+  }
+
+  async deleteReportBrandingImage(imageId: string): Promise<ReportBranding> {
+    const response = await this.client.delete(`/api/v1/settings/report-branding/images/${imageId}`)
     return response.data
   }
 

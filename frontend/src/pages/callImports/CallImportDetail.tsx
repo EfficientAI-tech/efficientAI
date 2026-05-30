@@ -2667,6 +2667,12 @@ export default function CallImportDetail() {
                                   {row.recording_content_type || '—'}
                                 </dd>
                               </div>
+                              <div className="flex justify-between gap-2">
+                                <dt className="text-gray-500">Recording date</dt>
+                                <dd className="text-gray-800 text-right">
+                                  {row.recording_date || '-'}
+                                </dd>
+                              </div>
                               {row.recording_url && (
                                 <div className="flex flex-col gap-0.5 pt-1 border-t border-gray-50">
                                   <dt className="text-gray-500">Source URL</dt>
