@@ -289,21 +289,16 @@ def _coerce_parameter_value(
         return cell
     if param_type == CallImportParameterType.RECORDING_DATE:
         try:
-            parsed_date = date.fromisoformat(cell)
+            parsed_date = datetime.strptime(cell, "%d/%m/%Y").date()
         except ValueError:
-            try:
-                parsed_date = datetime.fromisoformat(
-                    cell.replace("Z", "+00:00")
-                ).date()
-            except ValueError:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=(
-                        f"Row {row_idx + 1}: value for '{param_name}' is not a "
-                        f"valid recording date ({cell!r}); expected YYYY-MM-DD."
-                    ),
-                )
-        return parsed_date.isoformat()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Row {row_idx + 1}: value for '{param_name}' is not a "
+                    f"valid recording date ({cell!r}); expected DD/MM/YYYY."
+                ),
+            )
+        return parsed_date.strftime("%d/%m/%Y")
     if param_type == CallImportParameterType.TRANSCRIPT:
         return cell
     if param_type == CallImportParameterType.TEXT:
@@ -382,7 +377,7 @@ def _apply_schema_mapping(
     ``skipped_columns``. Returns one dict per non-empty data row with:
 
       * ``conversation_id`` (str, mandatory)
-      * ``recording_date`` (Optional[str], ISO date)
+      * ``recording_date`` (Optional[str], DD/MM/YYYY date)
       * ``recording_url`` (Optional[str])
       * ``transcript`` (Optional[str])
       * ``parameter_values`` (Dict[str, Any]) of typed values keyed by
@@ -1058,7 +1053,7 @@ def _materialize_rows(
             row_index=idx,
             conversation_id=row["conversation_id"],
             recording_date=(
-                date.fromisoformat(row["recording_date"])
+                datetime.strptime(row["recording_date"], "%d/%m/%Y").date()
                 if row.get("recording_date")
                 else None
             ),

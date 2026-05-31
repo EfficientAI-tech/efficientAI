@@ -229,6 +229,12 @@ function formatDateTime(value: string | null | undefined): string {
   return new Date(value).toLocaleString()
 }
 
+function formatRecordingDate(value: string | null | undefined): string {
+  if (!value) return '-'
+  const [year, month, day] = value.split('-')
+  return year && month && day ? `${day}/${month}/${year}` : value
+}
+
 interface SortableHeaderProps {
   /** Stable column key used as the ``sort_by`` value sent to the API. */
   columnKey: string
@@ -3604,7 +3610,7 @@ function RowDetailPanel({
                 <span>Row #{(row.row_index ?? 0) + 1}</span>
               )}
               {row.recording_date && (
-                <span>· Recorded {row.recording_date}</span>
+                <span>· Recorded {formatRecordingDate(row.recording_date)}</span>
               )}
               {row.finished_at && (
                 <span>· Finished {formatDateTime(row.finished_at)}</span>

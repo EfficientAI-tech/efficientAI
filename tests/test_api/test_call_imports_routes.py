@@ -112,8 +112,8 @@ def _standard_skipped() -> list[str]:
 def test_parse_csv_accepts_canonical_headers():
     csv_text = (
         "CallID,Recording Date,Recording URL,Transcript\n"
-        "abc-1,2026-05-18,https://api.exotel.com/recordings/abc-1.mp3,Hello world\n"
-        "abc-2,2026-05-19,https://api.exotel.com/recordings/abc-2.mp3,Another call\n"
+        "abc-1,18/05/2026,https://api.exotel.com/recordings/abc-1.mp3,Hello world\n"
+        "abc-2,19/05/2026,https://api.exotel.com/recordings/abc-2.mp3,Another call\n"
     )
     rows = _parse_csv(
         _csv_bytes(csv_text),
@@ -123,7 +123,7 @@ def test_parse_csv_accepts_canonical_headers():
     )
     assert len(rows) == 2
     assert rows[0]["conversation_id"] == "abc-1"
-    assert rows[0]["recording_date"] == "2026-05-18"
+    assert rows[0]["recording_date"] == "18/05/2026"
     assert rows[0]["recording_url"].endswith("abc-1.mp3")
     assert rows[0]["transcript"] == "Hello world"
     assert rows[1]["conversation_id"] == "abc-2"
@@ -132,7 +132,7 @@ def test_parse_csv_accepts_canonical_headers():
 def test_parse_csv_is_case_insensitive_on_headers():
     csv_text = (
         "callid,recording date,recording url,TRANSCRIPT\n"
-        "id-1,2026-05-18,https://x/recording.mp3,Some transcript\n"
+        "id-1,18/05/2026,https://x/recording.mp3,Some transcript\n"
     )
     rows = _parse_csv(
         _csv_bytes(csv_text),
@@ -156,7 +156,7 @@ def test_parse_csv_rejects_missing_mapped_required_header():
     # The schema requires conversation_id but the CSV has no CallID column.
     csv_text = (
         "Recording Date,Recording URL,Transcript\n"
-        "2026-05-18,https://x/r.mp3,Some transcript\n"
+        "18/05/2026,https://x/r.mp3,Some transcript\n"
     )
     with pytest.raises(HTTPException) as exc:
         _parse_csv(
@@ -172,7 +172,7 @@ def test_parse_csv_rejects_missing_mapped_required_header():
 def test_parse_csv_allows_optional_param_without_mapping():
     csv_text = (
         "CallID,Recording Date,Transcript\n"
-        "abc-1,2026-05-18,Hello world\n"
+        "abc-1,18/05/2026,Hello world\n"
     )
     # Drop the recording_url mapping entry so it is treated as "not used".
     mapping = {
@@ -195,7 +195,7 @@ def test_parse_csv_allows_optional_param_without_mapping():
 def test_parse_csv_rejects_row_missing_conversation_id():
     csv_text = (
         "CallID,Recording Date,Recording URL,Transcript\n"
-        ",2026-05-18,https://x/recording.mp3,Some transcript\n"
+        ",18/05/2026,https://x/recording.mp3,Some transcript\n"
     )
     with pytest.raises(HTTPException) as exc:
         _parse_csv(
@@ -227,7 +227,7 @@ def test_parse_csv_rejects_missing_recording_date_value():
 def test_parse_csv_rejects_invalid_recording_date_value():
     csv_text = (
         "CallID,Recording Date,Recording URL,Transcript\n"
-        "abc-1,not-a-date,https://x/recording.mp3,Some transcript\n"
+        "abc-1,2026-05-18,https://x/recording.mp3,Some transcript\n"
     )
     with pytest.raises(HTTPException) as exc:
         _parse_csv(
@@ -235,17 +235,17 @@ def test_parse_csv_rejects_invalid_recording_date_value():
             _standard_params(),
             _standard_mapping(),
             _standard_skipped(),
-        )
+    )
     assert exc.value.status_code == 400
-    assert "valid recording date" in exc.value.detail.lower()
+    assert "dd/mm/yyyy" in exc.value.detail.lower()
 
 
 def test_parse_csv_skips_completely_blank_rows():
     csv_text = (
         "CallID,Recording Date,Recording URL,Transcript\n"
-        "abc-1,2026-05-18,https://x/recording.mp3,Some transcript\n"
+        "abc-1,18/05/2026,https://x/recording.mp3,Some transcript\n"
         ",,,\n"
-        "abc-2,2026-05-19,https://x/2.mp3,Other transcript\n"
+        "abc-2,19/05/2026,https://x/2.mp3,Other transcript\n"
     )
     rows = _parse_csv(
         _csv_bytes(csv_text),
@@ -260,7 +260,7 @@ def test_parse_csv_skips_completely_blank_rows():
 def test_parse_csv_strips_utf8_bom():
     csv_text = (
         "\ufeffCallID,Recording Date,Recording URL,Transcript\n"
-        "abc-1,2026-05-18,https://x/recording.mp3,T1\n"
+        "abc-1,18/05/2026,https://x/recording.mp3,T1\n"
     )
     rows = _parse_csv(
         _csv_bytes(csv_text),
@@ -277,7 +277,7 @@ def test_parse_csv_rejects_unhandled_columns():
     # marked skipped → 400 so nothing silently drops.
     csv_text = (
         "CallID,Recording Date,Recording URL,Transcript,AgentName\n"
-        "abc-1,2026-05-18,https://x/r.mp3,hi,alice\n"
+        "abc-1,18/05/2026,https://x/r.mp3,hi,alice\n"
     )
     with pytest.raises(HTTPException) as exc:
         _parse_csv(
@@ -293,7 +293,7 @@ def test_parse_csv_rejects_unhandled_columns():
 def test_parse_csv_accepts_explicitly_skipped_columns():
     csv_text = (
         "CallID,Recording Date,Recording URL,Transcript,AgentName\n"
-        "abc-1,2026-05-18,https://x/r.mp3,hi,alice\n"
+        "abc-1,18/05/2026,https://x/r.mp3,hi,alice\n"
     )
     rows = _parse_csv(
         _csv_bytes(csv_text),
@@ -316,7 +316,7 @@ def test_parse_csv_with_custom_text_parameter_is_preserved_per_row():
     }
     csv_text = (
         "CallID,Recording Date,Recording URL,Transcript,AgentName\n"
-        "conv-1,2026-05-18,https://x/r1.mp3,hello there,alice\n"
+        "conv-1,18/05/2026,https://x/r1.mp3,hello there,alice\n"
     )
     rows = _parse_csv(_csv_bytes(csv_text), params, mapping, skipped_columns=[])
     assert rows[0]["parameter_values"]["agent_name"] == "alice"
@@ -335,7 +335,7 @@ def test_parse_csv_coerces_typed_parameter_values():
     }
     csv_text = (
         "CallID,Recording Date,Recording URL,Transcript,Latency,Answered\n"
-        "conv-1,2026-05-18,https://x/r.mp3,hi,123.5,true\n"
+        "conv-1,18/05/2026,https://x/r.mp3,hi,123.5,true\n"
     )
     rows = _parse_csv(_csv_bytes(csv_text), params, mapping, skipped_columns=[])
     assert rows[0]["parameter_values"]["latency_ms"] == 123.5
@@ -349,7 +349,7 @@ def test_parse_csv_rejects_invalid_number_cell():
     mapping = {**_standard_mapping(), "latency_ms": "Latency"}
     csv_text = (
         "CallID,Recording Date,Recording URL,Transcript,Latency\n"
-        "conv-1,2026-05-18,https://x/r.mp3,hi,not-a-number\n"
+        "conv-1,18/05/2026,https://x/r.mp3,hi,not-a-number\n"
     )
     with pytest.raises(HTTPException) as exc:
         _parse_csv(_csv_bytes(csv_text), params, mapping, skipped_columns=[])
@@ -655,7 +655,7 @@ def _upload_payload(
     }
 
 
-def _csv(rows=(("call-1", "2026-05-18", "https://x/recording.mp3", "hi there"),)):
+def _csv(rows=(("call-1", "18/05/2026", "https://x/recording.mp3", "hi there"),)):
     buf = io.StringIO()
     buf.write("CallID,Recording Date,Recording URL,Transcript\n")
     for call_id, recording_date, url, transcript in rows:
@@ -948,8 +948,8 @@ def test_upload_persists_parameter_mapping_and_rows(
     schema = _seed_schema(db_session, org_id, _default_workspace_id(db_session, org_id))
 
     csv_rows = (
-        ("call-a", "2026-05-18", "https://x/a.mp3", "hello a"),
-        ("call-b", "2026-05-19", "https://x/b.mp3", "hello b"),
+        ("call-a", "18/05/2026", "https://x/a.mp3", "hello a"),
+        ("call-b", "19/05/2026", "https://x/b.mp3", "hello b"),
     )
     response = authenticated_client.post(
         "/api/v1/call-imports/upload",
@@ -985,7 +985,7 @@ def test_upload_persists_parameter_mapping_and_rows(
     # raw_columns is now keyed by PARAMETER NAME (not CSV header).
     assert rows[0].raw_columns == {
         "conversation_id": "call-a",
-        "recording_date": "2026-05-18",
+        "recording_date": "18/05/2026",
         "transcript": "hello a",
         "recording_url": "https://x/a.mp3",
     }
@@ -1003,7 +1003,7 @@ def test_upload_requires_skip_for_unmapped_csv_columns(
 
     buf = io.StringIO()
     buf.write("CallID,Recording Date,Recording URL,Transcript,AgentName\n")
-    buf.write("call-a,2026-05-18,https://x/a.mp3,hi,alice\n")
+    buf.write("call-a,18/05/2026,https://x/a.mp3,hi,alice\n")
     csv_bytes = buf.getvalue().encode("utf-8")
 
     response = authenticated_client.post(
@@ -1050,7 +1050,7 @@ def test_upload_custom_typed_parameter_is_coerced_and_preserved(
     )
     buf = io.StringIO()
     buf.write("CallID,Recording Date,Recording URL,Transcript,AgentName,Latency\n")
-    buf.write("conv-1,2026-05-18,https://x/r.mp3,hi,alice,1234\n")
+    buf.write("conv-1,18/05/2026,https://x/r.mp3,hi,alice,1234\n")
     csv_bytes = buf.getvalue().encode("utf-8")
     response = authenticated_client.post(
         "/api/v1/call-imports/upload",
@@ -1104,8 +1104,8 @@ def test_parse_xlsx_accepts_canonical_headers():
         {
             "Calls": [
                 ["CallID", "Recording Date", "Recording URL", "Transcript"],
-                ["abc-1", "2026-05-18", "https://x/recording.mp3", "Hello world"],
-                ["abc-2", "2026-05-19", "https://x/2.mp3", "Another call"],
+                ["abc-1", "18/05/2026", "https://x/recording.mp3", "Hello world"],
+                ["abc-2", "19/05/2026", "https://x/2.mp3", "Another call"],
             ]
         }
     )
@@ -1114,7 +1114,7 @@ def test_parse_xlsx_accepts_canonical_headers():
     )
     assert len(rows) == 2
     assert rows[0]["conversation_id"] == "abc-1"
-    assert rows[0]["recording_date"] == "2026-05-18"
+    assert rows[0]["recording_date"] == "18/05/2026"
     assert rows[0]["recording_url"].endswith("recording.mp3")
     assert rows[0]["transcript"] == "Hello world"
 
@@ -1124,7 +1124,7 @@ def test_parse_xlsx_coerces_numeric_call_ids_without_decimal_suffix():
         {
             "Calls": [
                 ["CallID", "Recording Date", "Recording URL", "Transcript"],
-                [12345, "2026-05-18", "https://x/r.mp3", "hi"],
+                [12345, "18/05/2026", "https://x/r.mp3", "hi"],
             ]
         }
     )
@@ -1139,9 +1139,9 @@ def test_parse_xlsx_skips_fully_blank_rows():
         {
             "Calls": [
                 ["CallID", "Recording Date", "Recording URL", "Transcript"],
-                ["abc-1", "2026-05-18", "https://x/r.mp3", "hi"],
+                ["abc-1", "18/05/2026", "https://x/r.mp3", "hi"],
                 [None, None, None, None],
-                ["abc-2", "2026-05-19", "https://x/r2.mp3", "hi 2"],
+                ["abc-2", "19/05/2026", "https://x/r2.mp3", "hi 2"],
             ]
         }
     )
@@ -1286,8 +1286,8 @@ def test_upload_xlsx_with_sheet_name_persists_rows(
             "Sheet1": [["CallID"], ["wrong"]],
             "Calls": [
                 ["CallID", "Recording Date", "Recording URL", "Transcript"],
-                ["xls-1", "2026-05-18", "https://x/a.mp3", "from xlsx"],
-                ["xls-2", "2026-05-19", "https://x/b.mp3", "second xlsx row"],
+                ["xls-1", "18/05/2026", "https://x/a.mp3", "from xlsx"],
+                ["xls-2", "19/05/2026", "https://x/b.mp3", "second xlsx row"],
             ],
         }
     )

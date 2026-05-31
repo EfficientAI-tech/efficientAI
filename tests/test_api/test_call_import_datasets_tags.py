@@ -116,7 +116,7 @@ def upload_schema(db_session, org_id, seed_org):
 
 def _csv_bytes(rows=None):
     if rows is None:
-        rows = [("call-1", "2026-05-18", "https://example.com/r.mp3", "hello")]
+        rows = [("call-1", "18/05/2026", "https://example.com/r.mp3", "hello")]
     buf = io.StringIO()
     buf.write("CallID,Recording Date,Recording URL,Transcript\n")
     for call_id, recording_date, url, transcript in rows:

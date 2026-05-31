@@ -65,7 +65,7 @@ function makeRecordingDateParameter(): EditableParameter {
     key: 'recording_date',
     name: 'recording_date',
     type: 'recording_date',
-    description: 'Date the call recording was captured, stored without time.',
+    description: 'Date the call recording was captured (DD/MM/YYYY).',
     is_required: true,
   }
 }
