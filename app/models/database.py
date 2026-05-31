@@ -27,7 +27,7 @@ from app.models.enums import (
     EvaluationType, EvaluationStatus, EvaluatorResultStatus, RoleEnum, InvitationStatus,
     LanguageEnum, CallTypeEnum, CallMediumEnum, GenderEnum, AccentEnum, BackgroundNoiseEnum,
     IntegrationPlatform, ModelProvider, VoiceBundleType, TestAgentConversationStatus,
-    MetricType, MetricTrigger, CallRecordingStatus, AlertMetricType, AlertAggregation,
+    MetricType, MetricCategory, MetricTrigger, CallRecordingStatus, AlertMetricType, AlertAggregation,
     AlertOperator, AlertNotifyFrequency, AlertStatus, AlertHistoryStatus, CronJobStatus,
     PromptOptimizationStatus, CallImportStatus, CallImportRowStatus,
 )
@@ -725,6 +725,12 @@ class Metric(Base):
 
     # Configuration
     metric_type = Column(String, nullable=False, default=MetricType.RATING.value)
+    metric_category = Column(
+        String(30),
+        nullable=False,
+        default=MetricCategory.QUALITY.value,
+        server_default=MetricCategory.QUALITY.value,
+    )
     trigger = Column(String, nullable=False, default=MetricTrigger.ALWAYS.value)
     metric_origin = Column(String(30), nullable=False, default="default")
     supported_surfaces = Column(JSON, nullable=False, default=list)  # ["agent", "voice_playground", "blind_test"]
@@ -2166,6 +2172,50 @@ class CallImportEvaluationRow(Base):
 
     evaluation = relationship("CallImportEvaluation", back_populates="row_results")
     source_row = relationship("CallImportRow")
+
+
+class CallImportEvaluationReportSnapshot(Base):
+    """Persisted PDF-report aggregate used for period-over-period deltas."""
+
+    __tablename__ = "call_import_evaluation_report_snapshots"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    evaluation_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_import_evaluations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    call_import_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_imports.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    organization_id = Column(
+        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    period_label = Column(String(64), nullable=True, index=True)
+    period_start = Column(Date, nullable=True, index=True)
+    period_end = Column(Date, nullable=True, index=True)
+    report_config = Column(JSON, nullable=False, default=dict, server_default="{}")
+    selected_metric_ids = Column(JSON, nullable=False, default=list, server_default="[]")
+    metric_aggregates = Column(JSON, nullable=False, default=list, server_default="[]")
+    insight_aggregates = Column(JSON, nullable=False, default=list, server_default="[]")
+    narrative = Column(JSON, nullable=True)
+    total_calls = Column(Integer, nullable=False, default=0)
+    selected_metric_count = Column(Integer, nullable=False, default=0)
+    total_metric_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -7,10 +7,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
-from typing import List, Optional
+from typing import List, Literal, Optional
 import secrets
 from pydantic import BaseModel
 
@@ -36,6 +36,7 @@ REPORT_LOGO_CONTENT_TYPES = {
 }
 REPORT_LOGO_EXTENSIONS = {"png", "jpg", "jpeg", "webp", "svg"}
 MAX_REPORT_LOGO_BYTES = 5 * 1024 * 1024
+REPORT_BRANDING_IMAGE_ROLES = {"internal", "external", "generic"}
 
 
 class APIKeyCreateRequest(BaseModel):
@@ -47,6 +48,7 @@ class ReportBrandingImageResponse(BaseModel):
     filename: str
     content_type: str
     size_bytes: int
+    role: Literal["internal", "external", "generic"] = "generic"
     updated_at: Optional[str] = None
     data_uri: Optional[str] = None
 
@@ -111,6 +113,11 @@ def _report_branding_response(workspace: Workspace) -> ReportBrandingResponse:
                 filename=str(item.get("filename") or "logo"),
                 content_type=str(item.get("content_type") or "image/png"),
                 size_bytes=int(item.get("size_bytes") or 0),
+                role=(
+                    str(item.get("role"))
+                    if str(item.get("role")) in REPORT_BRANDING_IMAGE_ROLES
+                    else "generic"
+                ),
                 updated_at=item.get("updated_at"),
                 data_uri=data_uri,
             )
@@ -177,6 +184,7 @@ def update_report_branding(
 @router.post("/report-branding/images", response_model=ReportBrandingResponse)
 async def upload_report_branding_images(
     files: List[UploadFile] = File(...),
+    role: Literal["internal", "external", "generic"] = Form("generic"),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
@@ -185,6 +193,11 @@ async def upload_report_branding_images(
     del api_key
     if not files:
         raise HTTPException(status_code=400, detail="Upload at least one image.")
+    if role not in REPORT_BRANDING_IMAGE_ROLES:
+        raise HTTPException(
+            status_code=400,
+            detail="Branding image role must be internal, external, or generic.",
+        )
     workspace = (
         db.query(Workspace)
         .filter(
@@ -239,6 +252,7 @@ async def upload_report_branding_images(
                 "content_type": content_type,
                 "filename": filename,
                 "size_bytes": len(content),
+                "role": role,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }
         )

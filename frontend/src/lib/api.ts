@@ -98,6 +98,7 @@ export interface ReportBranding {
     filename: string
     content_type: string
     size_bytes: number
+    role: 'internal' | 'external' | 'generic'
     updated_at?: string | null
     data_uri?: string | null
   }>
@@ -2039,6 +2040,12 @@ class ApiClient {
     vendorName: string,
     reportType: 'external' | 'internal',
     includeWeeklyDelta = false,
+    options?: {
+      internalBrandImageId?: string | null
+      externalBrandImageId?: string | null
+      useCase?: string | null
+      reportConfig?: Record<string, any>
+    },
   ): Promise<Blob> {
     const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/pdf-report`,
@@ -2046,6 +2053,11 @@ class ApiClient {
         vendor_name: vendorName,
         report_type: reportType,
         include_weekly_delta: includeWeeklyDelta,
+        include_period_delta: includeWeeklyDelta,
+        use_case: options?.useCase || null,
+        internal_brand_image_id: options?.internalBrandImageId || null,
+        external_brand_image_id: options?.externalBrandImageId || null,
+        report_config: options?.reportConfig || {},
       },
       { responseType: 'blob' },
     )
@@ -3318,11 +3330,15 @@ class ApiClient {
     return response.data
   }
 
-  async uploadReportBrandingImages(files: File[]): Promise<ReportBranding> {
+  async uploadReportBrandingImages(
+    files: File[],
+    role: 'internal' | 'external' | 'generic' = 'generic',
+  ): Promise<ReportBranding> {
     const formData = new FormData()
     for (const file of files) {
       formData.append('files', file)
     }
+    formData.append('role', role)
     const response = await this.client.post('/api/v1/settings/report-branding/images', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })

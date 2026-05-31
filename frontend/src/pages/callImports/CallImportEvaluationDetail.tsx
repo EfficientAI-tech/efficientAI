@@ -336,12 +336,26 @@ export default function CallImportEvaluationDetail() {
     'external',
   )
   const [pdfIncludeWeeklyDelta, setPdfIncludeWeeklyDelta] = useState(false)
+  const [pdfUseCase, setPdfUseCase] = useState('')
+  const [pdfIncludeAuditSummary, setPdfIncludeAuditSummary] = useState(true)
+  const [pdfIncludeQualityPanel, setPdfIncludeQualityPanel] = useState(true)
+  const [pdfIncludeUserInsights, setPdfIncludeUserInsights] = useState(true)
+  const [pdfIncludeDesignNotes, setPdfIncludeDesignNotes] = useState(true)
+  const [pdfIncludeMethodology, setPdfIncludeMethodology] = useState(true)
+  const [selectedReportMetricIds, setSelectedReportMetricIds] = useState<Set<string>>(
+    new Set(),
+  )
+  const [selectedReportInsightIds, setSelectedReportInsightIds] = useState<Set<string>>(
+    new Set(),
+  )
   const [pdfReportError, setPdfReportError] = useState<string | null>(null)
   const [pdfReportLoading, setPdfReportLoading] = useState(false)
   const [reportBranding, setReportBranding] = useState<ReportBranding | null>(
     null,
   )
   const [reportHeadingDraft, setReportHeadingDraft] = useState('')
+  const [internalBrandImageId, setInternalBrandImageId] = useState('')
+  const [externalBrandImageId, setExternalBrandImageId] = useState('')
   const [reportBrandingLoading, setReportBrandingLoading] = useState(false)
   const [reportLogoUploading, setReportLogoUploading] = useState(false)
   const [reportLogoDeletingId, setReportLogoDeletingId] = useState<string | null>(
@@ -1095,7 +1109,12 @@ export default function CallImportEvaluationDetail() {
   // plus the rationale column. Any child whose parent is part of this
   // run (via ``selected_metric_groups``) is suppressed so the user only
   // sees the parent column — matching the CSV export.
-  type DisplayMetric = { id: string; name: string; hasRationale: boolean }
+  type DisplayMetric = {
+    id: string
+    name: string
+    hasRationale: boolean
+    metricCategory: string
+  }
   const childrenInGroups = useMemo<Set<string>>(() => {
     const set = new Set<string>()
     const groups = evaluation?.selected_metric_groups
@@ -1120,12 +1139,17 @@ export default function CallImportEvaluationDetail() {
         id,
         name: patch.name || prev?.name || `Metric ${id.slice(0, 8)}`,
         hasRationale: prev?.hasRationale || patch.hasRationale || false,
+        metricCategory:
+          patch.metricCategory || prev?.metricCategory || 'quality',
       })
     }
 
     for (const m of evaluation?.metrics ?? []) {
       if (m && m.id) {
-        upsert(m.id, { name: m.name || `Metric ${m.id.slice(0, 8)}` })
+        upsert(m.id, {
+          name: m.name || `Metric ${m.id.slice(0, 8)}`,
+          metricCategory: (m as any).metric_category || 'quality',
+        })
       }
     }
     for (const mid of evaluation?.selected_metric_ids ?? []) {
@@ -1229,6 +1253,21 @@ export default function CallImportEvaluationDetail() {
     [displayMetrics],
   )
 
+  const reportQualityMetrics = useMemo(
+    () => displayMetrics.filter((metric) => metric.metricCategory !== 'user_insight'),
+    [displayMetrics],
+  )
+  const reportInsightMetrics = useMemo(
+    () => displayMetrics.filter((metric) => metric.metricCategory === 'user_insight'),
+    [displayMetrics],
+  )
+
+  useEffect(() => {
+    if (!pdfReportOpen) return
+    setSelectedReportMetricIds(new Set(reportQualityMetrics.map((metric) => metric.id)))
+    setSelectedReportInsightIds(new Set(reportInsightMetrics.map((metric) => metric.id)))
+  }, [pdfReportOpen, reportQualityMetrics, reportInsightMetrics])
+
   // Build the "Imported columns" panel from the parent CallImport's mapping
   // metadata, so users can see which CSV columns were used to drive this
   // particular evaluation run. Schema-driven batches (``schema_id`` set)
@@ -1267,6 +1306,40 @@ export default function CallImportEvaluationDetail() {
     }
     return rows
   }, [callImport])
+
+  const internalBrandImages = useMemo(
+    () =>
+      (reportBranding?.images || []).filter(
+        (image) => image.role === 'internal' || image.role === 'generic',
+      ),
+    [reportBranding?.images],
+  )
+  const externalBrandImages = useMemo(
+    () =>
+      (reportBranding?.images || []).filter(
+        (image) => image.role === 'external' || image.role === 'generic',
+      ),
+    [reportBranding?.images],
+  )
+
+  const syncSelectedBrandImages = (branding: ReportBranding) => {
+    const internalDefault =
+      branding.images.find((image) => image.role === 'internal') ||
+      branding.images.find((image) => image.role === 'generic')
+    const externalDefault =
+      branding.images.find((image) => image.role === 'external') ||
+      branding.images.find((image) => image.role === 'generic')
+    setInternalBrandImageId((current) =>
+      current && branding.images.some((image) => image.id === current)
+        ? current
+        : internalDefault?.id || '',
+    )
+    setExternalBrandImageId((current) =>
+      current && branding.images.some((image) => image.id === current)
+        ? current
+        : externalDefault?.id || '',
+    )
+  }
 
   const handleExport = async (format: 'csv' | 'xlsx') => {
     if (!id || !evalId) return
@@ -1310,6 +1383,30 @@ export default function CallImportEvaluationDetail() {
         vendorName,
         pdfReportType,
         pdfReportType === 'external' && pdfIncludeWeeklyDelta,
+        {
+          internalBrandImageId: internalBrandImageId || null,
+          externalBrandImageId: externalBrandImageId || null,
+          useCase: pdfUseCase.trim() || null,
+          reportConfig: {
+            use_case: pdfUseCase.trim() || null,
+            sections: {
+              audit_summary: pdfIncludeAuditSummary,
+              quality_panel: pdfIncludeQualityPanel,
+              user_insights: pdfIncludeUserInsights,
+              design_notes: pdfIncludeDesignNotes,
+              methodology: pdfIncludeMethodology,
+            },
+            quality_metric_ids: Array.from(selectedReportMetricIds),
+            insights: Array.from(selectedReportInsightIds).map((metricId) => ({
+              metric_id: metricId,
+              show_observation: true,
+              show_evidence: true,
+            })),
+            include_period_delta:
+              pdfReportType === 'external' && pdfIncludeWeeklyDelta,
+            order: { insights: Array.from(selectedReportInsightIds) },
+          },
+        },
       )
       const vendorSlug =
         vendorName
@@ -1328,6 +1425,7 @@ export default function CallImportEvaluationDetail() {
       setPdfVendorName('')
       setPdfReportType('external')
       setPdfIncludeWeeklyDelta(false)
+      setPdfUseCase('')
     } catch (e: any) {
       console.error('Failed to generate PDF report', e)
       setPdfReportError(
@@ -1349,6 +1447,7 @@ export default function CallImportEvaluationDetail() {
         if (!cancelled) {
           setReportBranding(branding)
           setReportHeadingDraft(branding.heading || '')
+          syncSelectedBrandImages(branding)
         }
       })
       .catch((e) => {
@@ -1370,6 +1469,7 @@ export default function CallImportEvaluationDetail() {
 
   const handleReportLogoUpload = async (
     event: ChangeEvent<HTMLInputElement>,
+    role: 'internal' | 'external' | 'generic',
   ) => {
     const files = Array.from(event.target.files || [])
     event.target.value = ''
@@ -1377,9 +1477,19 @@ export default function CallImportEvaluationDetail() {
     setReportLogoUploading(true)
     setPdfReportError(null)
     try {
-      const branding = await apiClient.uploadReportBrandingImages(files)
+      const branding = await apiClient.uploadReportBrandingImages(files, role)
       setReportBranding(branding)
       setReportHeadingDraft(branding.heading || '')
+      const newestForRole = [...branding.images]
+        .reverse()
+        .find((image) => image.role === role)
+      if (role === 'internal') {
+        setInternalBrandImageId(newestForRole?.id || '')
+      } else if (role === 'external') {
+        setExternalBrandImageId(newestForRole?.id || '')
+      } else {
+        syncSelectedBrandImages(branding)
+      }
     } catch (e: any) {
       console.error('Failed to upload report logo', e)
       setPdfReportError(
@@ -1399,6 +1509,7 @@ export default function CallImportEvaluationDetail() {
       const branding = await apiClient.deleteReportBrandingImage(imageId)
       setReportBranding(branding)
       setReportHeadingDraft(branding.heading || '')
+      syncSelectedBrandImages(branding)
     } catch (e: any) {
       console.error('Failed to remove report image', e)
       setPdfReportError(
@@ -2250,8 +2361,14 @@ export default function CallImportEvaluationDetail() {
                   </select>
                 </div>
               </div>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                {aggregateQuery.data.metrics.map((m) => {
+              {(() => {
+                const qualityAggregates = aggregateQuery.data.metrics.filter(
+                  (m) => (m.metric_category || 'quality') !== 'user_insight',
+                )
+                const insightAggregates = aggregateQuery.data.metrics.filter(
+                  (m) => m.metric_category === 'user_insight',
+                )
+                const renderAggregate = (m: CallImportMetricAggregate) => {
                   // For multi-label parents, the visualization "active"
                   // state is driven by the flowFilter (we route bar
                   // clicks through it because the parent's stored
@@ -2329,8 +2446,36 @@ export default function CallImportEvaluationDetail() {
                       />
                     </div>
                   )
-                })}
-              </div>
+                }
+                return (
+                  <div className="space-y-6">
+                    {qualityAggregates.length ? (
+                      <section>
+                        <h3 className="text-sm font-semibold text-gray-900 mb-3">
+                          Quality Metric Panel
+                        </h3>
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                          {qualityAggregates.map(renderAggregate)}
+                        </div>
+                      </section>
+                    ) : null}
+                    {insightAggregates.length ? (
+                      <section>
+                        <h3 className="text-sm font-semibold text-gray-900 mb-1">
+                          User Insights
+                        </h3>
+                        <p className="text-xs text-gray-500 mb-3">
+                          Distribution classifiers derived from the same per-call
+                          evaluation pass.
+                        </p>
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                          {insightAggregates.map(renderAggregate)}
+                        </div>
+                      </section>
+                    ) : null}
+                  </div>
+                )
+              })()}
             </>
           )
         ) : rowsQuery.isLoading ? (
@@ -3186,8 +3331,8 @@ export default function CallImportEvaluationDetail() {
       {pdfReportOpen &&
         createPortal(
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
-            <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden">
-              <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
+              <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between flex-shrink-0">
                 <div>
                   <h2 className="text-lg font-semibold text-gray-900">
                     Generate PDF report
@@ -3212,7 +3357,7 @@ export default function CallImportEvaluationDetail() {
                 </button>
               </div>
 
-              <div className="px-6 py-5 space-y-4">
+              <div className="px-6 py-5 space-y-4 overflow-y-auto">
                 <div>
                   <label
                     htmlFor="pdf-vendor-name"
@@ -3238,6 +3383,24 @@ export default function CallImportEvaluationDetail() {
                     placeholder="Spinny"
                     className="block w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 disabled:bg-gray-50 disabled:text-gray-500"
                     autoFocus
+                  />
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="pdf-use-case"
+                    className="block text-sm font-medium text-gray-700 mb-1"
+                  >
+                    Use case / audit window label
+                  </label>
+                  <input
+                    id="pdf-use-case"
+                    type="text"
+                    value={pdfUseCase}
+                    onChange={(e) => setPdfUseCase(e.target.value)}
+                    disabled={pdfReportLoading}
+                    placeholder="Inbound · Service"
+                    className="block w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 disabled:bg-gray-50 disabled:text-gray-500"
                   />
                 </div>
 
@@ -3282,6 +3445,69 @@ export default function CallImportEvaluationDetail() {
                       </div>
                     </div>
 
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="rounded border border-gray-200 p-3 space-y-2">
+                        <label className="block text-xs font-semibold text-gray-700">
+                          Internal brand
+                        </label>
+                        <select
+                          value={internalBrandImageId}
+                          onChange={(e) => setInternalBrandImageId(e.target.value)}
+                          disabled={pdfReportLoading}
+                          className="block w-full rounded-md border border-gray-300 px-2 py-2 text-xs shadow-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
+                        >
+                          <option value="">No internal logo</option>
+                          {internalBrandImages.map((image) => (
+                            <option key={image.id} value={image.id}>
+                              {image.filename}
+                            </option>
+                          ))}
+                        </select>
+                        <label className="inline-flex items-center justify-center rounded-md border border-gray-300 px-2 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 cursor-pointer">
+                          Upload internal
+                          <input
+                            type="file"
+                            accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                            className="sr-only"
+                            disabled={reportLogoUploading || pdfReportLoading}
+                            onChange={(event) =>
+                              handleReportLogoUpload(event, 'internal')
+                            }
+                          />
+                        </label>
+                      </div>
+                      <div className="rounded border border-gray-200 p-3 space-y-2">
+                        <label className="block text-xs font-semibold text-gray-700">
+                          Vendor brand
+                        </label>
+                        <select
+                          value={externalBrandImageId}
+                          onChange={(e) => setExternalBrandImageId(e.target.value)}
+                          disabled={pdfReportLoading}
+                          className="block w-full rounded-md border border-gray-300 px-2 py-2 text-xs shadow-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
+                        >
+                          <option value="">No vendor logo</option>
+                          {externalBrandImages.map((image) => (
+                            <option key={image.id} value={image.id}>
+                              {image.filename}
+                            </option>
+                          ))}
+                        </select>
+                        <label className="inline-flex items-center justify-center rounded-md border border-gray-300 px-2 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 cursor-pointer">
+                          Upload vendor
+                          <input
+                            type="file"
+                            accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                            className="sr-only"
+                            disabled={reportLogoUploading || pdfReportLoading}
+                            onChange={(event) =>
+                              handleReportLogoUpload(event, 'external')
+                            }
+                          />
+                        </label>
+                      </div>
+                    </div>
+
                     {reportBranding?.images?.length ? (
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                         {reportBranding.images.map((image) => (
@@ -3302,7 +3528,7 @@ export default function CallImportEvaluationDetail() {
                                   {image.filename}
                                 </p>
                                 <p className="text-[11px] text-gray-500">
-                                  {Math.ceil(image.size_bytes / 1024)} KB
+                                  {image.role} · {Math.ceil(image.size_bytes / 1024)} KB
                                 </p>
                               </div>
                             </div>
@@ -3326,23 +3552,98 @@ export default function CallImportEvaluationDetail() {
                         No custom images saved for this workspace.
                       </p>
                     )}
-                    <div className="mt-3 flex items-center gap-3">
-                      <label className="inline-flex items-center justify-center rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 cursor-pointer">
-                        {reportLogoUploading ? 'Uploading…' : 'Upload images'}
-                        <input
-                          type="file"
-                          accept="image/png,image/jpeg,image/webp,image/svg+xml"
-                          multiple
-                          className="sr-only"
-                          disabled={reportLogoUploading || pdfReportLoading}
-                          onChange={handleReportLogoUpload}
-                        />
-                      </label>
-                      <span className="text-xs text-gray-500">
-                        PNG, JPG, WEBP, or SVG up to 5 MB each. Saved per workspace.
-                      </span>
-                    </div>
+                    <p className="text-xs text-gray-500">
+                      PNG, JPG, WEBP, or SVG up to 5 MB each. Saved per workspace.
+                    </p>
                   </div>
+                </div>
+
+                <div className="rounded-md border border-gray-200 p-3 space-y-3">
+                  <div>
+                    <h3 className="text-sm font-medium text-gray-900">
+                      Report customization
+                    </h3>
+                    <p className="text-xs text-gray-500">
+                      Choose sections and the metrics/insights that should appear in
+                      this PDF.
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
+                    {[
+                      ['Audit Summary', pdfIncludeAuditSummary, setPdfIncludeAuditSummary],
+                      ['Quality Metric Panel', pdfIncludeQualityPanel, setPdfIncludeQualityPanel],
+                      ['User Insights', pdfIncludeUserInsights, setPdfIncludeUserInsights],
+                      ['Design Notes', pdfIncludeDesignNotes, setPdfIncludeDesignNotes],
+                      ['Methodology', pdfIncludeMethodology, setPdfIncludeMethodology],
+                    ].map(([label, checked, setter]) => (
+                      <label key={label as string} className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={checked as boolean}
+                          disabled={pdfReportLoading}
+                          onChange={(e) =>
+                            (setter as (value: boolean) => void)(e.target.checked)
+                          }
+                          className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                        />
+                        <span>{label as string}</span>
+                      </label>
+                    ))}
+                  </div>
+                  {reportQualityMetrics.length ? (
+                    <div>
+                      <p className="text-xs font-semibold text-gray-600 mb-1">
+                        Quality metrics
+                      </p>
+                      <div className="max-h-24 overflow-auto rounded border border-gray-100 p-2 space-y-1">
+                        {reportQualityMetrics.map((metric) => (
+                          <label key={metric.id} className="flex items-center gap-2 text-xs">
+                            <input
+                              type="checkbox"
+                              checked={selectedReportMetricIds.has(metric.id)}
+                              onChange={(e) => {
+                                setSelectedReportMetricIds((prev) => {
+                                  const next = new Set(prev)
+                                  if (e.target.checked) next.add(metric.id)
+                                  else next.delete(metric.id)
+                                  return next
+                                })
+                              }}
+                              className="h-3.5 w-3.5 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                            />
+                            <span>{metric.name}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                  {reportInsightMetrics.length ? (
+                    <div>
+                      <p className="text-xs font-semibold text-gray-600 mb-1">
+                        User insights
+                      </p>
+                      <div className="max-h-24 overflow-auto rounded border border-gray-100 p-2 space-y-1">
+                        {reportInsightMetrics.map((metric) => (
+                          <label key={metric.id} className="flex items-center gap-2 text-xs">
+                            <input
+                              type="checkbox"
+                              checked={selectedReportInsightIds.has(metric.id)}
+                              onChange={(e) => {
+                                setSelectedReportInsightIds((prev) => {
+                                  const next = new Set(prev)
+                                  if (e.target.checked) next.add(metric.id)
+                                  else next.delete(metric.id)
+                                  return next
+                                })
+                              }}
+                              className="h-3.5 w-3.5 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                            />
+                            <span>{metric.name}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
 
                 <div>
@@ -3433,7 +3734,7 @@ export default function CallImportEvaluationDetail() {
                 )}
               </div>
 
-              <div className="px-6 py-4 border-t border-gray-200 flex items-center justify-end gap-3">
+              <div className="px-6 py-4 border-t border-gray-200 flex items-center justify-end gap-3 flex-shrink-0">
                 <Button
                   variant="outline"
                   onClick={() => {

@@ -1253,6 +1253,7 @@ export interface CallImportMetricAggregate {
   metric_id: string
   metric_name: string
   metric_type: string | null
+  metric_category?: 'quality' | 'user_insight' | string
   /**
    * True when the metric is a multi-label classifier parent.
    * ``value_counts`` then lists per-child label tallies and one row
@@ -1325,6 +1326,7 @@ export interface MetricSummary {
   name: string
   description: string | null
   metric_type: string
+  metric_category?: 'quality' | 'user_insight' | string
   trigger: string
   enabled: boolean
   is_default: boolean

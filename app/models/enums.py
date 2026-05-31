@@ -157,6 +157,14 @@ class MetricType(str, enum.Enum):
     RATING = "rating"
     TEXT = "text"
 
+
+class MetricCategory(str, enum.Enum):
+    """High-level grouping for report rendering and call-import insights."""
+
+    QUALITY = "quality"
+    USER_INSIGHT = "user_insight"
+
+
 class MetricTrigger(str, enum.Enum):
     """Metric trigger enumeration."""
     ALWAYS = "always"

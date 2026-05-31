@@ -8,7 +8,7 @@ from app.models.enums import (
     EvaluationType, EvaluationStatus, EvaluatorResultStatus, RoleEnum, InvitationStatus,
     LanguageEnum, CallTypeEnum, CallMediumEnum, GenderEnum, AccentEnum, BackgroundNoiseEnum,
     IntegrationPlatform, ModelProvider, VoiceBundleType, TestAgentConversationStatus,
-    MetricType, MetricTrigger, CallRecordingStatus, AlertMetricType, AlertAggregation,
+    MetricType, MetricCategory, MetricTrigger, CallRecordingStatus, AlertMetricType, AlertAggregation,
     AlertOperator, AlertNotifyFrequency, AlertStatus, AlertHistoryStatus, CronJobStatus,
     CallImportStatus, CallImportRowStatus, CallImportParameterType,
 )
@@ -1123,6 +1123,7 @@ class MetricCreate(BaseModel):
     # standalone metrics may carry it too without a schema change.
     example: Optional[str] = Field(default=None, max_length=4000)
     metric_type: MetricType = MetricType.RATING
+    metric_category: MetricCategory = MetricCategory.QUALITY
     trigger: MetricTrigger = MetricTrigger.ALWAYS
     enabled: bool = True
     metric_origin: str = "custom"
@@ -1222,6 +1223,7 @@ class MetricCreateWithChildren(BaseModel):
     name: str = Field(..., max_length=120)
     description: Optional[str] = Field(default=None, max_length=4000)
     selection_mode: SelectionMode
+    metric_category: MetricCategory = MetricCategory.QUALITY
     enabled: bool = True
     supported_surfaces: List[str] = Field(default_factory=lambda: ["agent"])
     enabled_surfaces: Optional[List[str]] = None
@@ -1262,6 +1264,7 @@ class MetricUpdate(BaseModel):
     custom_data_type: Optional[str] = None
     custom_config: Optional[Dict[str, Any]] = None
     tags: Optional[List[str]] = None
+    metric_category: Optional[MetricCategory] = None
     capture_rationale: Optional[bool] = None
     selection_mode: Optional[SelectionMode] = None
     allow_discovery: Optional[bool] = None
@@ -1316,6 +1319,7 @@ class MetricResponse(BaseModel):
     # it uniformly without branching on parent/child shape.
     example: Optional[str] = None
     metric_type: MetricType
+    metric_category: MetricCategory = MetricCategory.QUALITY
     trigger: MetricTrigger
     enabled: bool
     is_default: bool
@@ -3383,6 +3387,7 @@ class CallImportMetricAggregate(BaseModel):
     metric_id: str
     metric_name: str
     metric_type: Optional[str] = None
+    metric_category: str = "quality"
     # True when this aggregate represents a multi-label parent metric
     # (selection_mode == "multi_label" with no parent_metric_id). For
     # those, ``value_counts`` lists per-child label tallies and the

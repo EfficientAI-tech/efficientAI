@@ -35,6 +35,7 @@ class MetricReportSummary:
     is_business_metric: bool = False
     weekly_delta_label: str | None = None
     weekly_delta_detail: str | None = None
+    group_name: str = "Quality Metrics"
 
 
 class CallImportEvaluationPdfReportService:
@@ -55,15 +56,24 @@ class CallImportEvaluationPdfReportService:
         rows: list[tuple[CallImportEvaluationRow, CallImportRow]],
         generated_at: datetime | None = None,
         internal: bool = False,
-        logo_data_uris: list[str] | None = None,
+        logo_data_uris: list[str] | dict[str, str] | None = None,
         custom_heading: str | None = None,
         include_weekly_delta: bool = False,
+        period_delta_by_metric: dict[str, dict[str, str]] | None = None,
+        use_case: str | None = None,
+        period_display: str | None = None,
+        total_metric_count: int | None = None,
+        report_config: dict[str, Any] | None = None,
+        narrative: dict[str, Any] | None = None,
     ) -> bytes:
         generated_at = generated_at or datetime.now(timezone.utc)
         summaries = self._summarize_metrics(metrics, rows)
         weekly_delta_meta = None
         if include_weekly_delta:
-            weekly_delta_meta = self._attach_weekly_deltas(metrics, rows, summaries)
+            if period_delta_by_metric:
+                self._attach_period_deltas(period_delta_by_metric, summaries)
+            else:
+                weekly_delta_meta = self._attach_weekly_deltas(metrics, rows, summaries)
         title = "Internal Quality Metric Audit" if internal else "Quality Metric Audit"
         payload = {
             "title": title,
@@ -71,7 +81,7 @@ class CallImportEvaluationPdfReportService:
             "vendor_name": vendor_name,
             "generated_at": generated_at.strftime("%b %d, %Y %H:%M UTC"),
             "generated_at_iso": generated_at.strftime("%Y-%m-%d %H:%M UTC"),
-            "logo_data_uris": list(logo_data_uris or []),
+            "logo_data_uris": logo_data_uris or {},
             "custom_heading": (custom_heading or "").strip() or None,
             "call_import": call_import,
             "evaluation": evaluation,
@@ -83,6 +93,11 @@ class CallImportEvaluationPdfReportService:
             ),
             "include_weekly_delta": include_weekly_delta,
             "weekly_delta_meta": weekly_delta_meta,
+            "use_case": (use_case or "").strip() or None,
+            "period_display": (period_display or "").strip() or "Not specified",
+            "total_metric_count": total_metric_count or len(metrics),
+            "report_config": report_config or {},
+            "narrative": narrative or {},
         }
         html_content = self._render_html(payload)
         pdf_bytes = self._render_weasyprint(html_content)
@@ -101,7 +116,8 @@ class CallImportEvaluationPdfReportService:
                 name=metric.name,
                 metric_type=metric.metric_type,
                 description=metric.description or "",
-                is_business_metric=self._is_business_metric(metric),
+                is_business_metric=self._is_user_insight_metric(metric),
+                group_name=self._metric_group_name(metric),
             )
             for metric in metrics
         ]
@@ -134,7 +150,19 @@ class CallImportEvaluationPdfReportService:
 
         return summaries
 
-    def _is_business_metric(self, metric: Metric) -> bool:
+    def _attach_period_deltas(
+        self,
+        period_delta_by_metric: dict[str, dict[str, str]],
+        summaries: list[MetricReportSummary],
+    ) -> None:
+        for summary in summaries:
+            delta = period_delta_by_metric.get(summary.id) or {}
+            summary.weekly_delta_label = delta.get("label") or "No previous-week baseline"
+            summary.weekly_delta_detail = delta.get("detail") or ""
+
+    def _is_user_insight_metric(self, metric: Metric) -> bool:
+        if (getattr(metric, "metric_category", "quality") or "quality") == "user_insight":
+            return True
         text = " ".join(
             str(part or "").lower()
             for part in (
@@ -143,15 +171,27 @@ class CallImportEvaluationPdfReportService:
             )
         )
         normalized = text.replace("-", " ").replace("_", " ")
-        phrases = (
+        legacy_phrases = (
             "call context",
+            "caller context",
             "product identification",
             "out of scope",
             "identity match",
             "user identity",
+            "caller identity",
             "frustration trigger",
+            "video call offer",
+            "video call reception",
         )
-        return any(phrase in normalized for phrase in phrases)
+        return any(phrase in normalized for phrase in legacy_phrases)
+
+    def _metric_group_name(self, metric: Metric) -> str:
+        tags = getattr(metric, "tags", None)
+        if isinstance(tags, list) and tags:
+            first = str(tags[0]).replace("_", " ").replace("-", " ").strip()
+            if first:
+                return first.title()
+        return "Quality Metrics"
 
     def _attach_weekly_deltas(
         self,
@@ -341,26 +381,80 @@ class CallImportEvaluationPdfReportService:
             )
         return "".join(bars)
 
+    def _insight_distribution_table_html(self, summary: MetricReportSummary) -> str:
+        if not summary.value_counts or summary.evaluated_count <= 0:
+            return "<p class='empty-bars'>No completed insight classifications.</p>"
+        rows = []
+        for label, count in sorted(
+            summary.value_counts.items(), key=lambda item: (-item[1], item[0])
+        )[:8]:
+            pct = (count / summary.evaluated_count) * 100
+            rows.append(
+                f"""
+                <tr>
+                  <td>{html.escape(label)}</td>
+                  <td>{pct:.1f}%</td>
+                  <td><div class="insight-track"><div class="insight-fill" style="width: {pct:.1f}%"></div></div></td>
+                  <td>{count}</td>
+                </tr>
+                """
+            )
+        return (
+            "<table class='insight-table'>"
+            "<thead><tr><th>Category</th><th>Share</th><th>Distribution</th><th>Calls</th></tr></thead>"
+            f"<tbody>{''.join(rows)}</tbody></table>"
+        )
+
     def _render_html(self, payload: dict[str, Any]) -> str:
         metrics: list[MetricReportSummary] = payload["metrics"]
+        report_config = payload.get("report_config") if isinstance(payload.get("report_config"), dict) else {}
+        sections = report_config.get("sections") if isinstance(report_config.get("sections"), dict) else {}
+        show_audit_summary = sections.get("audit_summary", True)
+        show_quality_panel = sections.get("quality_panel", True)
+        show_user_insights = sections.get("user_insights", True)
+        show_design_notes = sections.get("design_notes", True)
+        show_methodology = sections.get("methodology", True)
+        narrative = payload.get("narrative") if isinstance(payload.get("narrative"), dict) else {}
+        observations = narrative.get("observations") if isinstance(narrative.get("observations"), dict) else {}
+        evidence = narrative.get("evidence") if isinstance(narrative.get("evidence"), dict) else {}
+        design_notes = narrative.get("design_notes") if isinstance(narrative.get("design_notes"), list) else []
+        insight_config = {}
+        for item in report_config.get("insights", []) if isinstance(report_config.get("insights"), list) else []:
+            if isinstance(item, dict) and item.get("metric_id"):
+                insight_config[str(item["metric_id"])] = item
         quality_metrics = [m for m in metrics if not m.is_business_metric]
         business_metrics = [m for m in metrics if m.is_business_metric]
         if not quality_metrics:
             quality_metrics = metrics
-        logo_uris = payload.get("logo_data_uris") or []
-        valid_logo_uris = [uri for uri in logo_uris if isinstance(uri, str) and uri]
-        if len(valid_logo_uris) == 1:
-            logo_markup = (
-                f'<div class="brand-logo-slot brand-logo-slot-single">'
-                f'<img src="{valid_logo_uris[0]}" alt="Report branding" class="brand-logo" />'
-                f"</div>"
+        logo_uris = payload.get("logo_data_uris") or {}
+        internal_logo_uri = ""
+        external_logo_uri = ""
+        if isinstance(logo_uris, dict):
+            internal_logo_uri = str(logo_uris.get("internal") or "")
+            external_logo_uri = str(logo_uris.get("external") or "")
+        elif isinstance(logo_uris, list):
+            valid_logo_uris = [uri for uri in logo_uris if isinstance(uri, str) and uri]
+            internal_logo_uri = valid_logo_uris[0] if valid_logo_uris else ""
+            external_logo_uri = valid_logo_uris[1] if len(valid_logo_uris) > 1 else ""
+        logo_markup = ""
+        if internal_logo_uri or external_logo_uri:
+            internal_img = (
+                f'<img src="{internal_logo_uri}" alt="Internal brand" class="brand-logo" />'
+                if internal_logo_uri
+                else '<span class="brand-placeholder">Internal brand</span>'
             )
-        else:
-            logo_markup = "".join(
-                f'<div class="brand-logo-slot">'
-                f'<img src="{uri}" alt="Report branding" class="brand-logo" />'
-                f"</div>"
-                for uri in valid_logo_uris[:4]
+            external_img = (
+                f'<img src="{external_logo_uri}" alt="External vendor brand" class="brand-logo" />'
+                if external_logo_uri
+                else '<span class="brand-placeholder">Vendor brand</span>'
+            )
+            logo_markup = (
+                '<div class="brand-logo-slot brand-logo-slot-internal">'
+                '<div class="brand-role">Internal brand</div>'
+                f"{internal_img}</div>"
+                '<div class="brand-logo-slot brand-logo-slot-external">'
+                '<div class="brand-role">Vendor brand</div>'
+                f"{external_img}</div>"
             )
         heading_markup = (
             f'<div class="brand-text">{html.escape(payload["custom_heading"])}</div>'
@@ -389,7 +483,7 @@ class CallImportEvaluationPdfReportService:
                 "<tr><td colspan='3'>No flagged-call rationales were captured for this run.</td></tr>"
             )
 
-        metric_cards = []
+        metric_cards_by_group: dict[str, list[str]] = {}
         for summary in quality_metrics:
             clear_count = max(summary.evaluated_count - summary.flagged_count, 0)
             primary_pct = self._primary_metric_percent(summary)
@@ -403,7 +497,7 @@ class CallImportEvaluationPdfReportService:
                 if payload.get("include_weekly_delta")
                 else ""
             )
-            metric_cards.append(
+            card = (
                 f"""
                 <article class="metric">
                   <div class="metric-head">
@@ -438,29 +532,73 @@ class CallImportEvaluationPdfReportService:
                 </article>
                 """
             )
+            metric_cards_by_group.setdefault(summary.group_name, []).append(card)
 
-        business_rows = []
-        for summary in business_metrics:
-            business_rows.append(
+        quality_panel_markup = ""
+        if show_quality_panel:
+            quality_groups_markup = []
+            for group_name, cards in metric_cards_by_group.items():
+                quality_groups_markup.append(
+                    f"""
+                    <div class="metric-group">
+                      <h3 class="metric-group-title">{html.escape(group_name)}</h3>
+                      {''.join(cards)}
+                    </div>
+                    """
+                )
+            quality_panel_markup = f"""
+            <section>
+              <h2>02 Quality Metric Panel</h2>
+              {''.join(quality_groups_markup)}
+            </section>
+            """
+
+        insight_blocks = []
+        for index, summary in enumerate(business_metrics, start=1):
+            accuracy = self._percent(summary.evaluated_count, payload["evaluation"].total_rows)
+            cfg = insight_config.get(summary.id, {})
+            show_observation = bool(cfg.get("show_observation", True))
+            show_evidence = bool(cfg.get("show_evidence", True))
+            observation_text = observations.get(summary.id)
+            evidence_item = evidence.get(summary.id)
+            if not evidence_item and summary.rationales:
+                evidence_item = {
+                    "conversation_id": summary.rationales[0][0],
+                    "quote": summary.rationales[0][1],
+                }
+            evidence_markup = ""
+            if show_evidence and isinstance(evidence_item, dict):
+                evidence_markup = (
+                    '<p class="insight-evidence"><strong>Evidence:</strong> '
+                    f'{html.escape(str(evidence_item.get("quote") or ""))}'
+                    f' <span>{html.escape(str(evidence_item.get("conversation_id") or ""))}</span></p>'
+                )
+            observation_markup = (
+                f'<p class="insight-observation"><strong>Observation:</strong> {html.escape(str(observation_text))}</p>'
+                if show_observation and observation_text
+                else ""
+            )
+            insight_blocks.append(
                 f"""
-                <tr>
-                  <td>{html.escape(summary.name)}</td>
-                  <td>{summary.evaluated_count}</td>
-                  <td>{html.escape(self._top_distribution_with_percentages(summary))}</td>
-                  <td>{html.escape(summary.rationales[0][1][:280] if summary.rationales else "No rationale captured.")}</td>
-                </tr>
+                <div class="insight-block">
+                  <div class="insight-heading">
+                    <h3>3.{index} {html.escape(summary.name)}</h3>
+                    <span>{html.escape(summary.name.lower().replace(" ", "-"))}-classifier · acc {html.escape(accuracy)}</span>
+                  </div>
+                  {self._insight_distribution_table_html(summary)}
+                  {observation_markup}
+                  {evidence_markup}
+                </div>
                 """
             )
         business_section = ""
-        if business_rows:
+        if insight_blocks and show_user_insights:
             business_section = f"""
             <section>
-              <h2>03 Business Insights</h2>
-              <p class="method">Business metrics are configured evaluation dimensions with captured LLM rationale, separated from quality audit metrics for easier operational review.</p>
-              <table>
-                <thead><tr><th>Business metric</th><th>Evaluated</th><th>Distribution</th><th>Representative rationale</th></tr></thead>
-                <tbody>{''.join(business_rows)}</tbody>
-              </table>
+              <!-- 03 Business Insights -->
+              <h2>03 User Insights</h2>
+              <p class="method">User-insight classifiers emit distributions across operational categories. These are separate from the quality metric panel and are scored during the same per-call evaluation pass.</p>
+              {''.join(insight_blocks)}
             </section>
             """
 
@@ -480,6 +618,21 @@ class CallImportEvaluationPdfReportService:
                 )
             )
 
+        design_notes_section = ""
+        if show_design_notes and design_notes:
+            notes = "".join(
+                f"<li>{html.escape(str(note))}</li>"
+                for note in design_notes[:8]
+                if str(note).strip()
+            )
+            if notes:
+                design_notes_section = f"""
+                <section>
+                  <h2>04 User Experience Design Notes</h2>
+                  <ol class="design-notes">{notes}</ol>
+                </section>
+                """
+
         return f"""
         <!doctype html>
         <html>
@@ -491,10 +644,11 @@ class CallImportEvaluationPdfReportService:
             header {{ border-bottom: 0; padding-bottom: 18px; margin-bottom: 24px; }}
             .brand-header {{ margin-bottom: 22px; }}
             .brand-logo-row {{ display: flex; align-items: center; justify-content: space-between; gap: 42px; min-height: 104px; margin-bottom: 18px; }}
-            .brand-logo-slot {{ flex: 1; min-width: 0; display: flex; align-items: center; }}
-            .brand-logo-slot:nth-child(even) {{ justify-content: flex-end; }}
-            .brand-logo-slot:nth-child(odd) {{ justify-content: flex-start; }}
-            .brand-logo-slot-single {{ justify-content: flex-start; }}
+            .brand-logo-slot {{ flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }}
+            .brand-logo-slot-internal {{ align-items: flex-start; }}
+            .brand-logo-slot-external {{ align-items: flex-end; text-align: right; }}
+            .brand-role {{ color: #7a756d; font-size: 9px; text-transform: uppercase; font-weight: 800; letter-spacing: .12em; }}
+            .brand-placeholder {{ color: #9ca3af; border: 1px dashed #d1d5db; border-radius: 8px; padding: 18px 24px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }}
             .brand-logo {{ max-width: 285px; max-height: 98px; object-fit: contain; }}
             .brand-text {{ margin-top: 4px; font-size: 18px; font-weight: 800; line-height: 1.15; color: #111827; letter-spacing: .18em; text-transform: uppercase; }}
             .title-rule {{ height: 3px; background: #b85f4b; margin: 18px 0 18px; }}
@@ -505,7 +659,9 @@ class CallImportEvaluationPdfReportService:
             .subtitle {{ font-size: 18px; color: #666; margin-bottom: 16px; }}
             h2 {{ font-size: 18px; margin: 26px 0 10px; color: #0b1220; border-bottom: 2px solid #0b1220; padding-bottom: 2px; }}
             h3 {{ font-size: 13px; margin: 0; }}
-            .meta, .summary {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }}
+            .meta {{ display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }}
+            .summary {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }}
+            .metric-group-title {{ font-size: 13px; margin: 12px 0 8px; color: #374151; text-transform: uppercase; letter-spacing: .08em; }}
             .box {{ border: 1px solid #d9dee8; padding: 10px; border-radius: 6px; background: #f7f9fc; }}
             .box strong {{ display: block; font-size: 15px; color: #111827; }}
             .box span {{ color: #667085; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }}
@@ -540,6 +696,16 @@ class CallImportEvaluationPdfReportService:
             .dist-fill {{ height: 100%; background: #c7725e; }}
             .dist-value {{ text-align: right; font-size: 10px; font-weight: 800; color: #111827; }}
             .empty-bars {{ color: #667085; font-size: 10px; font-style: italic; }}
+            .insight-block {{ break-inside: avoid; margin: 14px 0 18px; }}
+            .insight-heading {{ display: flex; justify-content: space-between; gap: 12px; align-items: baseline; margin-bottom: 6px; }}
+            .insight-heading span {{ color: #7a756d; font-size: 10px; font-weight: 700; }}
+            .insight-table td:nth-child(2), .insight-table td:nth-child(4) {{ white-space: nowrap; font-weight: 800; }}
+            .insight-track {{ height: 9px; background: #e7ddd1; border: 1px solid #d7cfc2; min-width: 120px; }}
+            .insight-fill {{ height: 100%; background: #c7725e; }}
+            .insight-observation, .insight-evidence {{ margin: 8px 0 0; color: #374151; }}
+            .insight-evidence span {{ color: #7a756d; font-size: 9px; margin-left: 6px; }}
+            .design-notes {{ margin: 8px 0 0; padding-left: 18px; }}
+            .design-notes li {{ margin-bottom: 8px; line-height: 1.5; }}
             table {{ width: 100%; border-collapse: collapse; margin-top: 8px; }}
             th, td {{ text-align: left; border-bottom: 1px solid #e5e7eb; padding: 7px; vertical-align: top; }}
             th {{ background: #111827; color: #fff; font-size: 10px; text-transform: uppercase; }}
@@ -560,13 +726,16 @@ class CallImportEvaluationPdfReportService:
             <div class="subtitle">{html.escape(payload["subtitle"])}</div>
             <div class="meta">
               <div class="box"><span>Client</span><strong>{html.escape(payload["vendor_name"])}</strong></div>
-              <div class="box"><span>Generated</span><strong>{html.escape(payload["generated_at"])}</strong></div>
+              <div class="box"><span>Use Case</span><strong>{html.escape(payload.get("use_case") or "Not specified")}</strong></div>
+              <div class="box"><span>Window</span><strong>{html.escape(payload.get("period_display") or "Not specified")}</strong></div>
               <div class="box"><span>Calls</span><strong>{payload["evaluation"].total_rows}</strong></div>
-              <div class="box"><span>Audit Set</span><strong>{len(metrics)} metrics</strong></div>
+              <div class="box"><span>Audit Set</span><strong>{len(metrics)} of {payload.get("total_metric_count") or len(metrics)} metrics</strong></div>
             </div>
           </header>
+          {f'''
           <section>
             <h2>01 Audit Summary</h2>
+            <p class="method">Quality audit generated from {payload["evaluation"].completed_rows} completed calls across {len(quality_metrics)} quality metrics and {len(business_metrics)} user-insight classifiers.</p>
             <div class="summary">
               <div class="box"><span>Status</span><strong>{html.escape(str(payload["evaluation"].status))}</strong></div>
               <div class="box"><span>Completed</span><strong>{payload["evaluation"].completed_rows}</strong></div>
@@ -574,22 +743,16 @@ class CallImportEvaluationPdfReportService:
               <div class="box"><span>Completion</span><strong>{html.escape(payload["completion_rate"])}</strong></div>
             </div>
           </section>
-          <section>
-            <h2>02 Quality Metric Panel</h2>
-            {''.join(metric_cards)}
-          </section>
+          ''' if show_audit_summary else ''}
+          {quality_panel_markup}
           {business_section}
-          <section>
-            <h2>{'04' if business_section else '03'} User Insights / RCA</h2>
-            <table>
-              <thead><tr><th>Metric</th><th>Example call</th><th>Evidence / rationale</th></tr></thead>
-              <tbody>{''.join(evidence_rows)}</tbody>
-            </table>
-          </section>
+          {design_notes_section}
+          {f'''
           <section>
             <h2>Methodology</h2>
             <p class="method">This report is generated from completed Call Import evaluation results. Metrics are derived from the saved evaluation outputs and the transcript source configured for the run.{html.escape(weekly_methodology)}</p>
           </section>
+          ''' if show_methodology else ''}
           <div class="report-footer">
             <div class="footer-left">
               <div class="brand-title">Powered by EfficientAI</div>

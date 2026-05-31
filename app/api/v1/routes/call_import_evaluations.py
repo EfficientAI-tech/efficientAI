@@ -12,7 +12,7 @@ import statistics
 from typing import Any, Dict, Iterator, List, Literal, Optional, Set, Tuple
 from uuid import UUID
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
@@ -28,6 +28,7 @@ from app.models.database import (
     AIProvider,
     CallImport,
     CallImportEvaluation,
+    CallImportEvaluationReportSnapshot,
     CallImportEvaluationRow,
     CallImportRow,
     Metric,
@@ -80,6 +81,12 @@ class CallImportEvaluationPdfReportRequest(BaseModel):
     vendor_name: str = Field(..., min_length=1, max_length=120)
     report_type: Literal["external", "internal"] = "external"
     include_weekly_delta: bool = False
+    include_period_delta: bool = False
+    period_label: Optional[str] = Field(default=None, max_length=64)
+    use_case: Optional[str] = Field(default=None, max_length=120)
+    internal_brand_image_id: Optional[str] = None
+    external_brand_image_id: Optional[str] = None
+    report_config: Dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("vendor_name")
     @classmethod
@@ -1865,7 +1872,10 @@ def _report_branding_for_import_workspace(
     db: Session,
     organization_id: UUID,
     workspace_id: UUID,
-) -> tuple[list[str], Optional[str]]:
+    *,
+    internal_brand_image_id: Optional[str] = None,
+    external_brand_image_id: Optional[str] = None,
+) -> tuple[dict[str, str] | list[str], Optional[str]]:
     workspace = (
         db.query(Workspace)
         .filter(
@@ -1876,7 +1886,7 @@ def _report_branding_for_import_workspace(
     )
     raw = workspace.report_branding if workspace and isinstance(workspace.report_branding, dict) else {}
     images = raw.get("images") if isinstance(raw.get("images"), list) else []
-    data_uris: list[str] = []
+    loaded_images: list[dict[str, str]] = []
     for item in images:
         if not isinstance(item, dict) or not item.get("s3_key"):
             continue
@@ -1893,9 +1903,51 @@ def _report_branding_for_import_workspace(
             )
             continue
         encoded = base64.b64encode(image_bytes).decode("ascii")
-        data_uris.append(f"data:{content_type};base64,{encoded}")
+        role = str(item.get("role") or "generic")
+        if role not in {"internal", "external", "generic"}:
+            role = "generic"
+        loaded_images.append(
+            {
+                "id": str(item.get("id") or ""),
+                "role": role,
+                "data_uri": f"data:{content_type};base64,{encoded}",
+            }
+        )
+
+    def _pick(role: str, selected_id: Optional[str]) -> Optional[str]:
+        if selected_id:
+            for loaded in loaded_images:
+                if loaded["id"] == selected_id:
+                    return loaded["data_uri"]
+        for loaded in loaded_images:
+            if loaded["role"] == role:
+                return loaded["data_uri"]
+        return None
+
+    logo_data_uris: dict[str, str] = {}
+    internal_uri = _pick("internal", internal_brand_image_id)
+    external_uri = _pick("external", external_brand_image_id)
+    if internal_uri:
+        logo_data_uris["internal"] = internal_uri
+    if external_uri:
+        logo_data_uris["external"] = external_uri
+    if (
+        not logo_data_uris
+        and not internal_brand_image_id
+        and not external_brand_image_id
+    ):
+        # Backward compatibility for workspaces that only had a generic logo
+        # library before the two-slot report header existed.
+        generic_uris = [
+            loaded["data_uri"]
+            for loaded in loaded_images
+            if loaded.get("data_uri")
+        ]
+        if generic_uris:
+            heading = raw.get("heading") if isinstance(raw.get("heading"), str) else None
+            return generic_uris[:4], heading
     heading = raw.get("heading") if isinstance(raw.get("heading"), str) else None
-    return data_uris, heading
+    return logo_data_uris, heading
 
 
 def _display_metrics_for_pdf_report(
@@ -1947,6 +1999,202 @@ def _display_metrics_for_pdf_report(
     return display
 
 
+def _report_period_from_rows(
+    rows: list[tuple[CallImportEvaluationRow, CallImportRow]],
+) -> tuple[Optional[date], Optional[date], Optional[str], str]:
+    dates = [
+        source_row.recording_date
+        for eval_row, source_row in rows
+        if eval_row.status == "completed" and source_row.recording_date
+    ]
+    if not dates:
+        return None, None, None, "Not specified"
+    start = min(dates)
+    end = max(dates)
+    label = f"{start.isocalendar().year}-W{start.isocalendar().week:02d}"
+    if start != end:
+        display = f"{start.strftime('%b %d')}–{end.strftime('%b %d, %Y')}"
+    else:
+        display = start.strftime("%b %d, %Y")
+    return start, end, label, display
+
+
+def _aggregate_to_dict(aggregate: CallImportMetricAggregate) -> dict[str, Any]:
+    if hasattr(aggregate, "model_dump"):
+        return aggregate.model_dump(mode="json")
+    return aggregate.dict()
+
+
+def _aggregate_primary_percent(raw: dict[str, Any]) -> Optional[float]:
+    mean = raw.get("mean")
+    if isinstance(mean, (int, float)) and math.isfinite(float(mean)):
+        value = float(mean)
+        return value * 100 if 0 <= value <= 1 else max(0.0, min(value, 100.0))
+    count = int(raw.get("count") or 0)
+    value_counts = raw.get("value_counts")
+    if count <= 0 or not isinstance(value_counts, list):
+        return None
+    flagged = 0
+    for item in value_counts:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label") or "").strip().lower()
+        if label in {"true", "yes", "fail", "failed", "bad"}:
+            flagged += int(item.get("count") or 0)
+    return (flagged / count) * 100 if count else None
+
+
+def _period_deltas_from_snapshot(
+    previous: Optional[CallImportEvaluationReportSnapshot],
+    current_metric_aggregates: list[dict[str, Any]],
+) -> dict[str, dict[str, str]]:
+    current_by_id = {str(item.get("metric_id")): item for item in current_metric_aggregates}
+    previous_items = (
+        previous.metric_aggregates
+        if previous and isinstance(previous.metric_aggregates, list)
+        else []
+    )
+    previous_by_id = {str(item.get("metric_id")): item for item in previous_items if isinstance(item, dict)}
+    deltas: dict[str, dict[str, str]] = {}
+    for metric_id, current in current_by_id.items():
+        previous_raw = previous_by_id.get(metric_id)
+        current_pct = _aggregate_primary_percent(current)
+        previous_pct = _aggregate_primary_percent(previous_raw) if previous_raw else None
+        if current_pct is None or previous_pct is None:
+            deltas[metric_id] = {
+                "label": "No previous-week baseline",
+                "detail": "No comparable prior report snapshot was found.",
+            }
+            continue
+        delta = current_pct - previous_pct
+        sign = "+" if delta >= 0 else ""
+        deltas[metric_id] = {
+            "label": f"{sign}{delta:.1f} pp",
+            "detail": f"Current report {current_pct:.1f}% vs previous report {previous_pct:.1f}%",
+        }
+    return deltas
+
+
+def _sample_evidence_for_metrics(
+    rows: list[tuple[CallImportEvaluationRow, CallImportRow]],
+    metric_ids: set[str],
+) -> dict[str, list[dict[str, str]]]:
+    samples: dict[str, list[dict[str, str]]] = {metric_id: [] for metric_id in metric_ids}
+    for eval_row, source_row in rows:
+        scores = eval_row.metric_scores if isinstance(eval_row.metric_scores, dict) else {}
+        for metric_id in metric_ids:
+            if len(samples.get(metric_id, [])) >= 4:
+                continue
+            score = scores.get(metric_id)
+            if not isinstance(score, dict):
+                continue
+            rationale = score.get("rationale")
+            transcript = source_row.diarised_transcript or source_row.transcript or ""
+            quote = rationale if isinstance(rationale, str) and rationale.strip() else transcript[:350]
+            if quote:
+                samples.setdefault(metric_id, []).append(
+                    {
+                        "conversation_id": source_row.conversation_id,
+                        "quote": str(quote).strip()[:500],
+                    }
+                )
+    return samples
+
+
+def _fallback_report_narrative(
+    insight_aggregates: list[dict[str, Any]],
+    evidence_samples: dict[str, list[dict[str, str]]],
+) -> dict[str, Any]:
+    observations: dict[str, str] = {}
+    evidence: dict[str, dict[str, str]] = {}
+    design_notes: list[str] = []
+    for aggregate in insight_aggregates:
+        metric_id = str(aggregate.get("metric_id") or "")
+        name = str(aggregate.get("metric_name") or "Insight")
+        counts = aggregate.get("value_counts") if isinstance(aggregate.get("value_counts"), list) else []
+        if counts:
+            top = counts[0]
+            total = int(aggregate.get("count") or 0) or sum(
+                int(item.get("count") or 0) for item in counts if isinstance(item, dict)
+            )
+            pct = (int(top.get("count") or 0) / total) * 100 if total else 0
+            observations[metric_id] = (
+                f"{top.get('label')} is the dominant {name.lower()} category at {pct:.1f}% of classified calls."
+            )
+            design_notes.append(
+                f"{name}: {top.get('label')} is the largest segment and should be reviewed for workflow or prompt improvements."
+            )
+        sample = (evidence_samples.get(metric_id) or [{}])[0]
+        if sample:
+            evidence[metric_id] = sample
+    return {
+        "observations": observations,
+        "evidence": evidence,
+        "design_notes": design_notes[:7],
+        "audit_summary": None,
+    }
+
+
+def _generate_report_narrative(
+    db: Session,
+    organization_id: UUID,
+    *,
+    metric_aggregates: list[dict[str, Any]],
+    insight_aggregates: list[dict[str, Any]],
+    period_delta_by_metric: dict[str, dict[str, str]],
+    evidence_samples: dict[str, list[dict[str, str]]],
+    report_config: dict[str, Any],
+) -> dict[str, Any]:
+    if not insight_aggregates:
+        return {"observations": {}, "evidence": {}, "design_notes": [], "audit_summary": None}
+    try:
+        from app.services.ai.llm_resolver import get_llm_provider_and_model
+        from app.services.ai.llm_service import llm_service
+
+        provider_enum, model_str = get_llm_provider_and_model(organization_id, db, None, None)
+        prompt = (
+            "You are writing a vendor-safe external call quality audit report. "
+            "Return strict JSON with keys observations (object keyed by metric_id), "
+            "evidence (object keyed by metric_id with conversation_id and quote), "
+            "design_notes (array of concise numbered-note strings), and audit_summary (string). "
+            "Use only the supplied aggregates and evidence samples.\n\n"
+            + json.dumps(
+                {
+                    "metric_aggregates": metric_aggregates[:30],
+                    "insight_aggregates": insight_aggregates,
+                    "period_deltas": period_delta_by_metric,
+                    "evidence_samples": evidence_samples,
+                    "report_config": report_config,
+                },
+                default=str,
+            )
+        )
+        llm_result = llm_service.generate_response(
+            messages=[
+                {"role": "system", "content": "Return JSON only. No markdown."},
+                {"role": "user", "content": prompt},
+            ],
+            llm_provider=provider_enum,
+            llm_model=model_str,
+            organization_id=organization_id,
+            db=db,
+            temperature=0.2,
+            max_tokens=1200,
+        )
+        parsed = json.loads(str(llm_result.content or "{}"))
+        if isinstance(parsed, dict):
+            fallback = _fallback_report_narrative(insight_aggregates, evidence_samples)
+            return {
+                "observations": parsed.get("observations") or fallback["observations"],
+                "evidence": parsed.get("evidence") or fallback["evidence"],
+                "design_notes": parsed.get("design_notes") or fallback["design_notes"],
+                "audit_summary": parsed.get("audit_summary") or fallback["audit_summary"],
+            }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Report narrative LLM generation fell back to deterministic text: {}", exc)
+    return _fallback_report_narrative(insight_aggregates, evidence_samples)
+
+
 @router.post(
     "/{eval_id}/pdf-report",
     operation_id="generateCallImportEvaluationPdfReport",
@@ -1974,7 +2222,7 @@ async def generate_call_import_evaluation_pdf_report(
     if not evaluation:
         raise HTTPException(status_code=404, detail="Call import evaluation not found")
 
-    metrics = _display_metrics_for_pdf_report(db, organization_id, evaluation)
+    is_internal = payload.report_type == "internal"
     rows = (
         db.query(CallImportEvaluationRow, CallImportRow)
         .join(CallImportRow, CallImportRow.id == CallImportEvaluationRow.call_import_row_id)
@@ -1982,11 +2230,85 @@ async def generate_call_import_evaluation_pdf_report(
         .order_by(CallImportRow.row_index.asc())
         .all()
     )
+    report_config = payload.report_config if isinstance(payload.report_config, dict) else {}
+    metrics = _display_metrics_for_pdf_report(db, organization_id, evaluation)
+    configured_quality_ids = {
+        str(item)
+        for item in report_config.get("quality_metric_ids", [])
+        if item
+    }
+    configured_insight_ids = {
+        str(item.get("metric_id") or item)
+        for item in report_config.get("insights", [])
+        if item
+    }
+    if configured_quality_ids or configured_insight_ids:
+        allowed_ids = configured_quality_ids | configured_insight_ids
+        metrics = [metric for metric in metrics if str(metric.id) in allowed_ids]
+
+    eval_rows = [eval_row for eval_row, _source_row in rows]
+    aggregate_models = _compute_metric_aggregates(db, evaluation, eval_rows)
+    selected_report_metric_ids = {str(metric.id) for metric in metrics}
+    aggregate_dicts = [
+        _aggregate_to_dict(aggregate)
+        for aggregate in aggregate_models
+        if aggregate.metric_id in selected_report_metric_ids
+    ]
+    insight_metric_ids = {
+        str(metric.id)
+        for metric in metrics
+        if (getattr(metric, "metric_category", "quality") or "quality") == "user_insight"
+    }
+    metric_aggregates = [
+        item for item in aggregate_dicts if str(item.get("metric_id")) not in insight_metric_ids
+    ]
+    insight_aggregates = [
+        item for item in aggregate_dicts if str(item.get("metric_id")) in insight_metric_ids
+    ]
+    period_start, period_end, derived_period_label, period_display = _report_period_from_rows(rows)
+    period_label = (payload.period_label or derived_period_label or "").strip() or None
+    include_period_delta = (
+        (payload.include_period_delta or payload.include_weekly_delta)
+        and not is_internal
+    )
+    previous_snapshot = None
+    period_delta_by_metric: dict[str, dict[str, str]] = {}
+    if include_period_delta and period_start:
+        previous_snapshot = (
+            db.query(CallImportEvaluationReportSnapshot)
+            .filter(
+                CallImportEvaluationReportSnapshot.organization_id == organization_id,
+                CallImportEvaluationReportSnapshot.workspace_id == call_import.workspace_id,
+                CallImportEvaluationReportSnapshot.period_start < period_start,
+            )
+            .order_by(
+                desc(CallImportEvaluationReportSnapshot.period_start),
+                desc(CallImportEvaluationReportSnapshot.created_at),
+            )
+            .first()
+        )
+        period_delta_by_metric = _period_deltas_from_snapshot(
+            previous_snapshot,
+            metric_aggregates,
+        )
+    evidence_samples = _sample_evidence_for_metrics(rows, insight_metric_ids)
+    narrative = _generate_report_narrative(
+        db,
+        organization_id,
+        metric_aggregates=metric_aggregates,
+        insight_aggregates=insight_aggregates,
+        period_delta_by_metric=period_delta_by_metric,
+        evidence_samples=evidence_samples,
+        report_config=report_config,
+    )
 
     generated_at = datetime.now(timezone.utc)
-    is_internal = payload.report_type == "internal"
     branding_images, custom_heading = _report_branding_for_import_workspace(
-        db, organization_id, call_import.workspace_id
+        db,
+        organization_id,
+        call_import.workspace_id,
+        internal_brand_image_id=payload.internal_brand_image_id,
+        external_brand_image_id=payload.external_brand_image_id,
     )
     try:
         pdf_bytes = call_import_evaluation_pdf_report_service.render_pdf(
@@ -1999,9 +2321,15 @@ async def generate_call_import_evaluation_pdf_report(
             internal=is_internal,
             logo_data_uris=branding_images,
             custom_heading=custom_heading,
-            include_weekly_delta=(
-                payload.include_weekly_delta and not is_internal
-            ),
+            include_weekly_delta=include_period_delta,
+            period_delta_by_metric=period_delta_by_metric,
+            use_case=payload.use_case,
+            period_display=period_display,
+            total_metric_count=db.query(Metric)
+            .filter(Metric.organization_id == organization_id, Metric.enabled.is_(True))
+            .count(),
+            report_config=report_config,
+            narrative=narrative,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception(
@@ -2013,6 +2341,28 @@ async def generate_call_import_evaluation_pdf_report(
             status_code=500,
             detail=f"Failed to generate PDF report: {exc}",
         ) from exc
+
+    snapshot = CallImportEvaluationReportSnapshot(
+        evaluation_id=evaluation.id,
+        call_import_id=call_import.id,
+        organization_id=organization_id,
+        workspace_id=call_import.workspace_id,
+        period_label=period_label,
+        period_start=period_start,
+        period_end=period_end,
+        report_config=report_config,
+        selected_metric_ids=[str(metric.id) for metric in metrics],
+        metric_aggregates=metric_aggregates,
+        insight_aggregates=insight_aggregates,
+        narrative=narrative,
+        total_calls=evaluation.total_rows,
+        selected_metric_count=len(metrics),
+        total_metric_count=db.query(Metric)
+        .filter(Metric.organization_id == organization_id, Metric.enabled.is_(True))
+        .count(),
+    )
+    db.add(snapshot)
+    db.commit()
 
     filename = (
         f"{_report_filename_slug(payload.vendor_name)}-"
@@ -2715,6 +3065,10 @@ def _compute_metric_aggregates(
             metric_type=(
                 meta.metric_type if meta else observed_metric_type
             ),
+            metric_category=(
+                getattr(meta, "metric_category", "quality") if meta else "quality"
+            )
+            or "quality",
             is_multi_label_parent=is_multi_label_parent,
             count=rows_scored,
             skipped_count=skipped,
