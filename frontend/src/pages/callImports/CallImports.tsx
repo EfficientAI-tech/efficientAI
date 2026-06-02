@@ -4,8 +4,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ChevronLeft,
   ChevronRight,
-  FileAudio,
-  FileSpreadsheet,
   Layers,
   Phone,
   RefreshCw,
@@ -20,7 +18,6 @@ import Button from '../../components/Button'
 import ConfirmModal from '../../components/ConfirmModal'
 import StatusBadge from '../../components/shared/StatusBadge'
 import CallImportProgressBar from './components/CallImportProgressBar'
-import UploadAudioModal from './components/UploadAudioModal'
 import UploadCsvModal from './components/UploadCsvModal'
 
 const PAGE_SIZE = 20
@@ -36,8 +33,6 @@ const STATUS_OPTIONS: Array<{ label: string; value: '' | CallImportStatus }> = [
   { label: 'Failed', value: 'failed' },
 ]
 
-type UploadTab = 'datasets' | 'audio'
-
 export default function CallImports() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -49,9 +44,7 @@ export default function CallImports() {
   const [statusFilter, setStatusFilter] = useState<'' | CallImportStatus>('')
   const [datasetFilter, setDatasetFilter] = useState<string>('')
   const [tagFilter, setTagFilter] = useState<string[]>([])
-  const [activeTab, setActiveTab] = useState<UploadTab>('datasets')
   const [showUpload, setShowUpload] = useState(false)
-  const [showAudioUpload, setShowAudioUpload] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<CallImport | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
 
@@ -86,9 +79,8 @@ export default function CallImports() {
       ...(statusFilter ? { status: statusFilter } : {}),
       ...(datasetFilter ? { dataset: datasetFilter } : {}),
       ...(tagFilter.length > 0 ? { tag_id: tagFilter } : {}),
-      source_format: activeTab === 'audio' ? 'audio' : '__non_audio__',
     }),
-    [page, statusFilter, datasetFilter, tagFilter, activeTab],
+    [page, statusFilter, datasetFilter, tagFilter],
   )
 
   const { data, isLoading, isFetching, refetch } = useQuery({
@@ -113,8 +105,9 @@ export default function CallImports() {
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Call Imports</h1>
           <p className="mt-2 text-sm text-gray-600">
-            Upload datasets from CSV / Excel, or add manual call recordings
-            directly and use the same diarisation and evaluation tools.
+            Pick a reusable Input Parameter schema, map its parameters to the
+            columns of your CSV / Excel sheet, and we'll fetch each recording
+            from the selected telephony provider into S3.
           </p>
         </div>
         <div className="flex gap-3">
@@ -136,12 +129,10 @@ export default function CallImports() {
           </Link>
           <Button
             variant="primary"
-            onClick={() =>
-              activeTab === 'audio' ? setShowAudioUpload(true) : setShowUpload(true)
-            }
+            onClick={() => setShowUpload(true)}
             leftIcon={<Upload className="h-5 w-5" />}
           >
-            {activeTab === 'audio' ? 'Upload Audio' : 'Upload CSV'}
+            Upload CSV
           </Button>
           <Button
             variant="secondary"
@@ -152,39 +143,6 @@ export default function CallImports() {
             Refresh
           </Button>
         </div>
-      </div>
-
-      <div className="bg-white shadow rounded-lg p-1 inline-flex gap-1">
-        <button
-          type="button"
-          onClick={() => {
-            setActiveTab('datasets')
-            setPage(1)
-          }}
-          className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-            activeTab === 'datasets'
-              ? 'bg-primary-50 text-primary-700'
-              : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
-          }`}
-        >
-          <FileSpreadsheet className="h-4 w-4" />
-          CSV / Dataset Uploads
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            setActiveTab('audio')
-            setPage(1)
-          }}
-          className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-            activeTab === 'audio'
-              ? 'bg-primary-50 text-primary-700'
-              : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
-          }`}
-        >
-          <FileAudio className="h-4 w-4" />
-          Call Imports / Uploads
-        </button>
       </div>
 
       {/*
@@ -291,8 +249,7 @@ export default function CallImports() {
             )}
           </div>
           <p className="text-sm text-gray-500">
-            {total} {activeTab === 'audio' ? 'manual upload' : 'dataset import'}
-            {total === 1 ? '' : 's'}
+            {total} import{total === 1 ? '' : 's'}
           </p>
         </div>
 
@@ -305,26 +262,16 @@ export default function CallImports() {
           <div className="text-center py-12">
             <Phone className="h-12 w-12 mx-auto mb-3 text-gray-300" />
             <p className="text-gray-500 mb-3">
-              {statusFilter
-                ? 'No imports match this filter.'
-                : activeTab === 'audio'
-                  ? 'No manual audio uploads yet.'
-                  : 'No dataset uploads yet.'}
+              {statusFilter ? 'No imports match this filter.' : 'No imports yet.'}
             </p>
             {!statusFilter && (
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() =>
-                  activeTab === 'audio'
-                    ? setShowAudioUpload(true)
-                    : setShowUpload(true)
-                }
+                onClick={() => setShowUpload(true)}
                 leftIcon={<Upload className="h-4 w-4" />}
               >
-                {activeTab === 'audio'
-                  ? 'Upload your first recording'
-                  : 'Upload your first CSV'}
+                Upload your first CSV
               </Button>
             )}
           </div>
@@ -372,12 +319,7 @@ export default function CallImports() {
                       </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700 capitalize">
-                      {item.source_format === 'audio' ? (
-                        <span className="inline-flex items-center gap-1 normal-case text-gray-700">
-                          <FileAudio className="h-3.5 w-3.5" />
-                          Manual upload
-                        </span>
-                      ) : item.provider || (
+                      {item.provider || (
                         <span className="text-gray-400 italic normal-case">
                           —
                         </span>
@@ -490,10 +432,6 @@ export default function CallImports() {
       </div>
 
       <UploadCsvModal open={showUpload} onClose={() => setShowUpload(false)} />
-      <UploadAudioModal
-        open={showAudioUpload}
-        onClose={() => setShowAudioUpload(false)}
-      />
 
       <ConfirmModal
         isOpen={pendingDelete !== null}

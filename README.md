@@ -73,7 +73,17 @@ There are two ways to run the application:
 
    **Version note:** `EFFICIENTAI_VERSION` must match a published Docker image tag (for example `1.0.0`). If a tag is not available yet, use `latest`.
 
-3. **Create an account**
+3. **Optional: enable observability**
+
+   Observability is disabled by default. To start Loki, Prometheus, Grafana, and exporters, run Docker Compose with the observability override:
+
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d
+   ```
+
+   To expose app metrics at `/metrics` and enable in-app Loki/org logging, also set `observability.enabled: true` in `config.docker.yml`. Set `observability.loki.enabled: true` when Loki logging should be active.
+
+4. **Create an account**
 
    Option A — sign up in the browser (recommended):
 

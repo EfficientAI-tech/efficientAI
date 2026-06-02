@@ -1,7 +1,8 @@
-"""Reporting service package.
+"""Reporting service package exports."""
 
-Keep optional report backends importable by their concrete modules instead of
-eagerly importing every PDF dependency when the package is touched.
-"""
+from app.services.reporting.voice_playground_report_service import (
+    VoicePlaygroundReportService,
+    voice_playground_report_service,
+)
 
-__all__: list[str] = []
+__all__ = ["VoicePlaygroundReportService", "voice_playground_report_service"]

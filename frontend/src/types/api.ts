@@ -683,7 +683,6 @@ export interface CallImportRow {
   /** Mandatory identifier per row. Renamed from ``external_call_id``. */
   conversation_id: string
   recording_url: string | null
-  recording_date: string | null
   /** Production transcript — the value supplied via the CSV upload. */
   transcript: string | null
   /** Provenance of the stored production transcript (csv = CSV upload, edited = manual edit). */
@@ -743,9 +742,8 @@ export interface CallImportRow {
   /**
    * Per-row preservation of the mapped source cells. Values land here
    * as whatever type the schema parameter coerced them to —
-   * strings (text / url / conversation_id / recording_url /
-   * recording_date / transcript / datetime), numbers, booleans, or
-   * ``null`` for blanks. Always
+   * strings (text / url / conversation_id / recording_url / transcript /
+   * datetime), numbers, booleans, or ``null`` for blanks. Always
    * coerce with ``String(value)`` before string operations.
    */
   raw_columns: Record<string, string | number | boolean | null> | null
@@ -772,7 +770,6 @@ export interface CallImportTag {
  *
  *  - ``conversation_id``: mandatory identifier (one per schema).
  *  - ``recording_url``: feeds ``CallImportRow.recording_url``.
- *  - ``recording_date``: date-only call recording date used for reports.
  *  - ``transcript``: feeds ``CallImportRow.transcript``.
  *  - ``text`` / ``number`` / ``boolean`` / ``datetime`` / ``url``:
  *    generic typed fields preserved per row in ``raw_columns`` and
@@ -781,7 +778,6 @@ export interface CallImportTag {
 export type CallImportSchemaParameterType =
   | 'conversation_id'
   | 'recording_url'
-  | 'recording_date'
   | 'transcript'
   | 'text'
   | 'number'
@@ -892,7 +888,7 @@ export interface CallImport {
   skipped_columns: string[]
   /** S3 key for the staged source file. ``null`` on legacy batches. */
   source_s3_key: string | null
-  /** ``'csv'`` / ``'xlsx'`` for staged files, or ``'audio'`` for manual uploads. */
+  /** ``'csv'`` or ``'xlsx'`` of the staged source file. */
   source_format: string | null
   source_size_bytes: number | null
   source_content_type: string | null
@@ -1049,7 +1045,6 @@ export interface CallImportEvaluation {
    * runs the user has not summarised yet.
    */
   tldr_summary?: EvaluationTldrSummary | null
-  user_insights?: EvaluationUserInsightsState | null
   /**
    * True when the user opted into top-level metric discovery on the
    * Run Evaluation modal. Gates the Discovered metrics panel on the
@@ -1068,7 +1063,6 @@ export interface CallImportEvaluation {
 export interface EvaluationTldrSummary {
   narrative: string
   patterns: string[]
-  metric_insights?: Record<string, string>
   generated_at: string
   generated_at_completed_rows: number
   provider?: string | null
@@ -1076,66 +1070,9 @@ export interface EvaluationTldrSummary {
   is_stale: boolean
 }
 
-export interface UserInsightCategory {
-  label: string
-  count: number
-  share_pct: number
-}
-
-export interface UserInsightEvidenceTurn {
-  speaker: string
-  text: string
-}
-
-export interface UserInsightEvidence {
-  conversation_id?: string | null
-  quote: string
-  turns?: UserInsightEvidenceTurn[]
-}
-
-export interface EvaluationUserInsightItem {
-  id: string
-  title: string
-  categories: UserInsightCategory[]
-  observation: string
-  evidence: UserInsightEvidence
-}
-
-export interface EvaluationUserInsightsState {
-  status: 'idle' | 'running' | 'completed' | 'failed'
-  insights: EvaluationUserInsightItem[]
-  generated_at?: string | null
-  generated_at_completed_rows: number
-  progress?: { completed_llm_calls: number; total_llm_calls: number } | null
-  provider?: string | null
-  model?: string | null
-  llm_calls_used: number
-  max_llm_calls?: number | null
-  error_message?: string | null
-  is_stale: boolean
-}
-
 export interface CallImportEvaluationListResponse {
   items: CallImportEvaluation[]
   total: number
-}
-
-export interface CallImportEvaluationBaselineCandidate {
-  evaluation_id: string
-  name: string
-  dataset: string
-  period_label: string | null
-  period_start: string | null
-  period_end: string | null
-  period_display: string
-  completed_rows: number
-  created_at: string
-  is_default: boolean
-}
-
-export interface CallImportEvaluationBaselineCandidatesResponse {
-  items: CallImportEvaluationBaselineCandidate[]
-  default_evaluation_id: string | null
 }
 
 export interface CallImportEvaluationRow {
@@ -1148,7 +1085,6 @@ export interface CallImportEvaluationRow {
   transcript: string | null
   raw_columns: Record<string, any> | null
   recording_url: string | null
-  recording_date: string | null
   /**
    * S3 object key for the downloaded recording. Prefer this over
    * ``recording_url`` for playback — we resolve it to a presigned URL
@@ -1312,7 +1248,6 @@ export interface CallImportMetricAggregate {
   metric_id: string
   metric_name: string
   metric_type: string | null
-  metric_category?: 'quality' | 'user_insight' | string
   /**
    * True when the metric is a multi-label classifier parent.
    * ``value_counts`` then lists per-child label tallies and one row
@@ -1385,7 +1320,6 @@ export interface MetricSummary {
   name: string
   description: string | null
   metric_type: string
-  metric_category?: 'quality' | 'user_insight' | string
   trigger: string
   enabled: boolean
   is_default: boolean

@@ -75,18 +75,6 @@ export function suggestHeaderForParameter(
     })
     if (candidates.length === 1) return candidates[0]
   }
-  if (param.type === 'recording_date') {
-    const candidates = availableHeaders.filter((h) => {
-      const norm = normalizeHeader(h)
-      return (
-        norm === 'recordingdate' ||
-        norm === 'calldate' ||
-        norm === 'dateofrecording' ||
-        norm === 'date'
-      )
-    })
-    if (candidates.length === 1) return candidates[0]
-  }
   if (param.type === 'transcript') {
     const candidates = availableHeaders.filter((h) => {
       const norm = normalizeHeader(h)

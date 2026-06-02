@@ -34,7 +34,6 @@ import type {
   CallImportUploadResponse,
   CallImportPreviewResponse,
   CallImportEvaluation,
-  CallImportEvaluationBaselineCandidatesResponse,
   CallImportEvaluationLLMOverride,
   CallImportEvaluationListResponse,
   CallImportEvaluationRow,
@@ -89,20 +88,6 @@ export interface LicenseInfoResponse {
   all_enterprise_features: string[]
   feature_catalog?: EnterpriseFeatureCatalog
   organization?: string
-}
-
-export interface ReportBranding {
-  heading?: string | null
-  has_logo: boolean
-  images: Array<{
-    id: string
-    filename: string
-    content_type: string
-    size_bytes: number
-    role: 'internal' | 'external' | 'generic'
-    updated_at?: string | null
-    data_uri?: string | null
-  }>
 }
 
 export interface AuthProviderConfig {
@@ -1154,29 +1139,6 @@ class ApiClient {
     return response.data
   }
 
-  async uploadCallImportAudio(
-    files: File[],
-    options: {
-      dataset: string
-      tagIds?: string[]
-    },
-  ): Promise<CallImportUploadResponse> {
-    const formData = new FormData()
-    for (const file of files) {
-      formData.append('files', file)
-    }
-    formData.append('dataset', options.dataset)
-    if (options.tagIds && options.tagIds.length > 0) {
-      for (const tagId of options.tagIds) {
-        formData.append('tag_ids', tagId)
-      }
-    }
-    const response = await this.client.post('/api/v1/call-imports/audio-upload', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    })
-    return response.data
-  }
-
   /**
    * MAP stage of the staged call-import flow.
    *
@@ -1279,7 +1241,6 @@ class ApiClient {
       status?: CallImportStatus
       dataset?: string
       tag_id?: string[]
-      source_format?: string
     } = {}
   ): Promise<CallImportListResponse> {
     // Send tag_id repeated rather than as a JSON array.
@@ -1288,7 +1249,6 @@ class ApiClient {
     if (params.page_size !== undefined) search.set('page_size', String(params.page_size))
     if (params.status) search.set('status', params.status)
     if (params.dataset !== undefined) search.set('dataset', params.dataset)
-    if (params.source_format) search.set('source_format', params.source_format)
     for (const tag of params.tag_id || []) search.append('tag_id', tag)
     const response = await this.client.get('/api/v1/call-imports', { params: search })
     return response.data
@@ -1468,7 +1428,6 @@ class ApiClient {
       regenerate?: boolean
       provider?: string | null
       model?: string | null
-      max_llm_calls?: number | null
     },
   ): Promise<import('../types/api').EvaluationTldrSummary> {
     const body: Record<string, unknown> = {
@@ -1476,44 +1435,8 @@ class ApiClient {
     }
     if (options?.provider) body.provider = options.provider
     if (options?.model) body.model = options.model
-    if (options?.max_llm_calls != null) body.max_llm_calls = options.max_llm_calls
     const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/insights`,
-      body,
-    )
-    return response.data
-  }
-
-  async getCallImportEvaluationUserInsights(
-    callImportId: string,
-    evaluationId: string,
-  ): Promise<import('../types/api').EvaluationUserInsightsState | null> {
-    const response = await this.client.get(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/user-insights`,
-    )
-    return response.data
-  }
-
-  async generateCallImportEvaluationUserInsights(
-    callImportId: string,
-    evaluationId: string,
-    options?: {
-      regenerate?: boolean
-      force?: boolean
-      provider?: string | null
-      model?: string | null
-      max_llm_calls?: number | null
-    },
-  ): Promise<import('../types/api').EvaluationUserInsightsState> {
-    const body: Record<string, unknown> = {
-      regenerate: Boolean(options?.regenerate),
-      force: Boolean(options?.force),
-    }
-    if (options?.provider) body.provider = options.provider
-    if (options?.model) body.model = options.model
-    if (options?.max_llm_calls != null) body.max_llm_calls = options.max_llm_calls
-    const response = await this.client.post(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/user-insights`,
       body,
     )
     return response.data
@@ -2068,48 +1991,6 @@ class ApiClient {
     const response = await this.client.get(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/export`,
       { params: { format }, responseType: 'blob' },
-    )
-    return response.data
-  }
-
-  async generateCallImportEvaluationPdfReport(
-    callImportId: string,
-    evaluationId: string,
-    vendorName: string,
-    reportType: 'external' | 'internal',
-    includeWeeklyDelta = false,
-    options?: {
-      internalBrandImageId?: string | null
-      externalBrandImageId?: string | null
-      useCase?: string | null
-      baselineEvaluationId?: string | null
-      reportConfig?: Record<string, any>
-    },
-  ): Promise<Blob> {
-    const response = await this.client.post(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/pdf-report`,
-      {
-        vendor_name: vendorName,
-        report_type: reportType,
-        include_weekly_delta: includeWeeklyDelta,
-        include_period_delta: includeWeeklyDelta,
-        baseline_evaluation_id: options?.baselineEvaluationId || null,
-        use_case: options?.useCase || null,
-        internal_brand_image_id: options?.internalBrandImageId || null,
-        external_brand_image_id: options?.externalBrandImageId || null,
-        report_config: options?.reportConfig || {},
-      },
-      { responseType: 'blob' },
-    )
-    return response.data
-  }
-
-  async listCallImportEvaluationBaselineCandidates(
-    callImportId: string,
-    evaluationId: string,
-  ): Promise<CallImportEvaluationBaselineCandidatesResponse> {
-    const response = await this.client.get(
-      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/baseline-candidates`,
     )
     return response.data
   }
@@ -3370,36 +3251,6 @@ class ApiClient {
     return response.data
   }
 
-  async getReportBranding(): Promise<ReportBranding> {
-    const response = await this.client.get('/api/v1/settings/report-branding')
-    return response.data
-  }
-
-  async updateReportBranding(data: { heading?: string | null }): Promise<ReportBranding> {
-    const response = await this.client.patch('/api/v1/settings/report-branding', data)
-    return response.data
-  }
-
-  async uploadReportBrandingImages(
-    files: File[],
-    role: 'internal' | 'external' | 'generic' = 'generic',
-  ): Promise<ReportBranding> {
-    const formData = new FormData()
-    for (const file of files) {
-      formData.append('files', file)
-    }
-    formData.append('role', role)
-    const response = await this.client.post('/api/v1/settings/report-branding/images', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    })
-    return response.data
-  }
-
-  async deleteReportBrandingImage(imageId: string): Promise<ReportBranding> {
-    const response = await this.client.delete(`/api/v1/settings/report-branding/images/${imageId}`)
-    return response.data
-  }
-
   // GEPA Prompt Optimization (Enterprise)
   async createOptimizationRun(data: {
     agent_id: string
@@ -3741,3 +3592,4 @@ export const publicBlindTestApi = {
     return res.data
   },
 }
+

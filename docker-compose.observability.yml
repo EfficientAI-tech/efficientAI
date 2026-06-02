@@ -1,0 +1,151 @@
+# EfficientAI optional observability stack.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d
+#
+# Also set observability.enabled: true in config.docker.yml to expose app metrics
+# and enable in-app Loki/org logging.
+
+services:
+  db:
+    depends_on:
+      - loki
+    logging:
+      driver: loki
+      options:
+        loki-url: "http://localhost:3100/loki/api/v1/push"
+        loki-retries: "5"
+        loki-max-backoff: "800ms"
+        loki-external-labels: "service=postgres,environment=docker"
+
+  redis:
+    depends_on:
+      - loki
+    logging:
+      driver: loki
+      options:
+        loki-url: "http://localhost:3100/loki/api/v1/push"
+        loki-retries: "5"
+        loki-max-backoff: "800ms"
+        loki-external-labels: "service=redis,environment=docker"
+
+  api:
+    depends_on:
+      - loki
+    logging:
+      driver: loki
+      options:
+        loki-url: "http://localhost:3100/loki/api/v1/push"
+        loki-retries: "5"
+        loki-max-backoff: "800ms"
+        loki-external-labels: "service=api,environment=docker"
+
+  worker:
+    depends_on:
+      - loki
+    logging:
+      driver: loki
+      options:
+        loki-url: "http://localhost:3100/loki/api/v1/push"
+        loki-retries: "5"
+        loki-max-backoff: "800ms"
+        loki-external-labels: "service=worker,environment=docker"
+
+  worker-imports:
+    depends_on:
+      - loki
+    logging:
+      driver: loki
+      options:
+        loki-url: "http://localhost:3100/loki/api/v1/push"
+        loki-retries: "5"
+        loki-max-backoff: "800ms"
+        loki-external-labels: "service=worker-imports,environment=docker"
+
+  loki:
+    image: grafana/loki:latest
+    container_name: efficientai_loki
+    environment:
+      # Set LOKI_CONFIG_FILE to switch between filesystem and S3 backends:
+      #   filesystem (default): loki-config.yml
+      #   S3:                   loki-config.s3.yml
+      LOKI_AUTH_ENABLED: ${LOKI_AUTH_ENABLED:-false}
+      LOKI_S3_BUCKET_NAME: ${LOKI_S3_BUCKET_NAME:-}
+      LOKI_S3_REGION: ${LOKI_S3_REGION:-us-east-1}
+      LOKI_S3_ACCESS_KEY_ID: ${LOKI_S3_ACCESS_KEY_ID:-}
+      LOKI_S3_SECRET_ACCESS_KEY: ${LOKI_S3_SECRET_ACCESS_KEY:-}
+      LOKI_S3_PREFIX: ${LOKI_S3_PREFIX:-logs/}
+    volumes:
+      - ./observability/loki:/etc/loki:ro
+      - loki_data:/loki
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/${LOKI_CONFIG_FILE:-loki-config.yml} -config.expand-env=true
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: efficientai_prometheus
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=15d"
+    depends_on:
+      - api
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: efficientai_grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+      - loki
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    container_name: efficientai_postgres_exporter
+    environment:
+      DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-efficientai}?sslmode=disable"
+    ports:
+      - "9187:9187"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: efficientai_redis_exporter
+    environment:
+      REDIS_ADDR: "redis://redis:6379"
+    ports:
+      - "9121:9121"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  celery-exporter:
+    image: danihodovic/celery-exporter:latest
+    container_name: efficientai_celery_exporter
+    environment:
+      CE_BROKER_URL: "redis://redis:6379/0"
+    ports:
+      - "9808:9808"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  prometheus_data:
+  grafana_data:
+  loki_data:

@@ -204,24 +204,6 @@ class S3Service:
         except Exception as e:
             raise StorageError(f"Unexpected error downloading file from S3: {str(e)}")
 
-    def download_file_by_key(self, key: str) -> bytes:
-        """Download file content from S3 using an explicit key path."""
-        self._ensure_initialized()
-        if not self.is_enabled():
-            error_msg = self._initialization_error or "S3 is not enabled or not configured"
-            raise StorageError(error_msg)
-
-        try:
-            response = self.s3_client.get_object(Bucket=self.bucket_name, Key=key)
-            return response["Body"].read()
-        except ClientError as e:
-            error_code = e.response.get("Error", {}).get("Code", "")
-            if error_code in {"NoSuchKey", "404"}:
-                raise StorageError(f"File not found in S3: {key}")
-            raise StorageError(f"Failed to download file from S3: {str(e)}")
-        except Exception as e:
-            raise StorageError(f"Unexpected error downloading file from S3: {str(e)}")
-
     def delete_file(self, file_id: uuid.UUID, file_format: str) -> bool:
         """Delete file from S3."""
         self._ensure_initialized()

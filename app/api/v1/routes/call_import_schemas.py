@@ -6,9 +6,9 @@ drives the upload-time mapping UI. The user defines the schema once
 ``transcript`` + ``agent_name``) and on every CSV/Excel upload the
 parameters are mapped to source columns.
 
-Every schema MUST contain exactly one parameter each with
-``type='conversation_id'`` and ``type='recording_date'``; both are
-forced to ``is_required=True`` for each row in the imported batch. The
+Every schema MUST contain exactly one parameter with
+``type='conversation_id'`` and ``is_required=True``; this is the
+mandatory identity column for each row in the imported batch. The
 invariant is enforced here on create + update because it spans the
 parent (`call_import_schemas`) and the children
 (`call_import_schema_parameters`) which are written in the same
@@ -69,16 +69,17 @@ def _materialize_parameters(
 
     ``ordering`` is stamped from the request order so the UI can rely
     on the parameter list coming back in the order the schema author
-    laid it out. Mandatory system parameters are forced to
-    ``is_required=True`` even if the client omits the flag, to keep the
-    invariant safe against partial UI updates.
+    laid it out. The mandatory ``conversation_id`` parameter is forced
+    to ``is_required=True`` even if the client omits the flag, to keep
+    the invariant safe against partial UI updates.
     """
     rows: List[CallImportSchemaParameter] = []
     for idx, param in enumerate(payload_params):
-        is_required = param.type in {
-            CallImportParameterType.CONVERSATION_ID,
-            CallImportParameterType.RECORDING_DATE,
-        } or bool(param.is_required)
+        is_required = (
+            True
+            if param.type == CallImportParameterType.CONVERSATION_ID
+            else bool(param.is_required)
+        )
         rows.append(
             CallImportSchemaParameter(
                 schema_id=schema_id,
