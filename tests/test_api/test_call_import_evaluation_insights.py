@@ -75,7 +75,33 @@ def stub_workers():
         s=lambda *_a, **_kw: types.SimpleNamespace(args=_a, kwargs=_kw),
     )
 
+    fake_user_insights_module = types.ModuleType(
+        "app.workers.tasks.generate_evaluation_user_insights"
+    )
+    user_insights_calls: List[Dict[str, Any]] = []
+
+    class _UserInsightsTask:
+        @staticmethod
+        def delay(evaluation_id, *, provider=None, model=None, max_llm_calls=None):
+            user_insights_calls.append(
+                {
+                    "evaluation_id": evaluation_id,
+                    "provider": provider,
+                    "model": model,
+                    "max_llm_calls": max_llm_calls,
+                }
+            )
+            return types.SimpleNamespace(id="user-insights-task-id")
+
+    fake_user_insights_module.generate_evaluation_user_insights_task = _UserInsightsTask()
+
     fake_celery = types.ModuleType("celery")
+
+    class _FakeCelery:
+        def __init__(self, *args, **kwargs):
+            self.conf = types.SimpleNamespace(update=lambda *a, **k: None)
+
+    fake_celery.Celery = _FakeCelery
     fake_celery.group = lambda sigs: types.SimpleNamespace(
         apply_async=lambda: types.SimpleNamespace(id="celery-group-id"),
     )
@@ -87,13 +113,19 @@ def stub_workers():
         "app.workers.tasks.evaluate_call_import_row": sys.modules.get(
             "app.workers.tasks.evaluate_call_import_row"
         ),
+        "app.workers.tasks.generate_evaluation_user_insights": sys.modules.get(
+            "app.workers.tasks.generate_evaluation_user_insights"
+        ),
         "celery": sys.modules.get("celery"),
     }
     sys.modules["app.workers.tasks.process_call_import_row"] = fake_import_module
     sys.modules["app.workers.tasks.evaluate_call_import_row"] = fake_eval_module
+    sys.modules["app.workers.tasks.generate_evaluation_user_insights"] = (
+        fake_user_insights_module
+    )
     sys.modules["celery"] = fake_celery
     try:
-        yield
+        yield user_insights_calls
     finally:
         for key, value in previous.items():
             if value is None:
@@ -288,6 +320,27 @@ def test_generate_persists_summary_and_returns_provider_model(
     )
     assert isinstance(refreshed.tldr_summary, dict)
     assert refreshed.tldr_summary["provider"] == "openai"
+
+
+def test_generate_insights_enqueues_user_insights_job(
+    authenticated_client,
+    db_session,
+    org_id,
+    seed_org,
+    make_ai_provider,
+    llm_stub,
+    stub_workers,
+):
+    make_ai_provider(provider="openai", is_active=True)
+    call_import, evaluation, _ = _seed_eval_with_data(db_session, org_id)
+
+    response = authenticated_client.post(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/insights",
+        json={},
+    )
+    assert response.status_code == 200
+    assert len(stub_workers) == 1
+    assert stub_workers[0]["evaluation_id"] == str(evaluation.id)
 
 
 def test_repeated_generate_returns_cached_summary_without_llm_call(

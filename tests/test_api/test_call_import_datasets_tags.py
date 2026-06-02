@@ -95,6 +95,7 @@ def upload_schema(db_session, org_id, seed_org):
     for idx, (name, ptype) in enumerate(
         [
             ("conversation_id", CallImportParameterType.CONVERSATION_ID),
+            ("recording_date", CallImportParameterType.RECORDING_DATE),
             ("recording_url", CallImportParameterType.RECORDING_URL),
             ("transcript", CallImportParameterType.TRANSCRIPT),
         ]
@@ -104,7 +105,7 @@ def upload_schema(db_session, org_id, seed_org):
                 schema_id=schema.id,
                 name=name,
                 type=ptype.value,
-                is_required=(name == "conversation_id"),
+                is_required=name in {"conversation_id", "recording_date"},
                 ordering=idx,
             )
         )
@@ -115,11 +116,11 @@ def upload_schema(db_session, org_id, seed_org):
 
 def _csv_bytes(rows=None):
     if rows is None:
-        rows = [("call-1", "https://example.com/r.mp3", "hello")]
+        rows = [("call-1", "18/05/2026", "https://example.com/r.mp3", "hello")]
     buf = io.StringIO()
-    buf.write("CallID,Recording URL,Transcript\n")
-    for call_id, url, transcript in rows:
-        buf.write(f"{call_id},{url},{transcript}\n")
+    buf.write("CallID,Recording Date,Recording URL,Transcript\n")
+    for call_id, recording_date, url, transcript in rows:
+        buf.write(f"{call_id},{recording_date},{url},{transcript}\n")
     return buf.getvalue().encode("utf-8")
 
 
@@ -135,7 +136,8 @@ def _upload(client, *, schema_id, dataset=None, tag_ids=None, rows=None):
         "telephony_integration_id": first_cfg["id"],
         "schema_id": str(schema_id),
         "parameter_mapping": (
-            '{"conversation_id":"CallID","transcript":"Transcript",'
+            '{"conversation_id":"CallID","recording_date":"Recording Date",'
+            '"transcript":"Transcript",'
             '"recording_url":"Recording URL"}'
         ),
         "skipped_columns": "[]",

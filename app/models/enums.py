@@ -157,6 +157,14 @@ class MetricType(str, enum.Enum):
     RATING = "rating"
     TEXT = "text"
 
+
+class MetricCategory(str, enum.Enum):
+    """High-level grouping for report rendering and call-import insights."""
+
+    QUALITY = "quality"
+    USER_INSIGHT = "user_insight"
+
+
 class MetricTrigger(str, enum.Enum):
     """Metric trigger enumeration."""
     ALWAYS = "always"
@@ -270,15 +278,16 @@ class CallImportRowStatus(str, enum.Enum):
 class CallImportParameterType(str, enum.Enum):
     """Allowed types for a :class:`CallImportSchemaParameter`.
 
-    The first three values feed dedicated columns on
+    The first four values feed dedicated columns on
     :class:`CallImportRow` (``conversation_id``, ``recording_url``,
-    ``transcript``); the rest are generic typed text fields whose values
+    ``recording_date``, ``transcript``); the rest are generic typed text fields whose values
     are preserved per row in ``raw_columns`` and surfaced under the
     parameter name in the evaluation export.
     """
 
     CONVERSATION_ID = "conversation_id"
     RECORDING_URL = "recording_url"
+    RECORDING_DATE = "recording_date"
     TRANSCRIPT = "transcript"
     TEXT = "text"
     NUMBER = "number"

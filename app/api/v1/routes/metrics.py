@@ -12,7 +12,7 @@ from loguru import logger
 
 from app.database import get_db
 from app.dependencies import get_organization_id, get_api_key, get_workspace_id
-from app.models.database import Metric, MetricType, MetricTrigger, ModelProvider
+from app.models.database import Metric, MetricCategory, MetricType, MetricTrigger, ModelProvider
 from app.models.schemas import (
     MetricCreate,
     MetricCreateWithChildren,
@@ -161,6 +161,7 @@ def _serialize_metric_tree(metric: Metric) -> Dict[str, Any]:
         "description": metric.description,
         "example": getattr(metric, "example", None),
         "metric_type": metric.metric_type,
+        "metric_category": getattr(metric, "metric_category", "quality") or "quality",
         "trigger": metric.trigger,
         "enabled": metric.enabled,
         "is_default": metric.is_default,
@@ -293,6 +294,7 @@ def create_metric(
         description=metric_data.description,
         example=metric_data.example,
         metric_type=effective_metric_type,
+        metric_category=metric_data.metric_category,
         trigger=metric_data.trigger,
         enabled=len(enabled_surfaces) > 0,
         is_default=False,
@@ -420,6 +422,7 @@ def create_metric_with_children(
         # stack (aggregation, CSV export, etc.) renders the chosen child
         # name as the parent's "value".
         metric_type=MetricType.TEXT,
+        metric_category=payload.metric_category,
         trigger=MetricTrigger.ALWAYS,
         enabled=len(enabled_surfaces) > 0,
         is_default=False,
@@ -449,6 +452,7 @@ def create_metric_with_children(
             description=child_draft.description,
             example=child_draft.example,
             metric_type=MetricType.BOOLEAN,
+            metric_category=payload.metric_category,
             trigger=MetricTrigger.ALWAYS,
             enabled=bool(child_draft.enabled) and len(enabled_surfaces) > 0,
             is_default=False,
@@ -1015,6 +1019,9 @@ def update_metric(
     if metric_data.tags is not None:
         metric.tags = metric_data.tags
 
+    if metric_data.metric_category is not None:
+        metric.metric_category = metric_data.metric_category
+
     if metric_data.capture_rationale is not None:
         # Child sub-metrics never carry their own rationale — the parent
         # owns the single rationale string for the whole categorization
@@ -1311,6 +1318,82 @@ def seed_default_metrics(
         },
     ]
 
+    user_insight_groups = [
+        {
+            "name": "Caller Context Distribution",
+            "description": "Classifies the caller's context at the start of the call, including whether this is a new issue, a status check, or a repeat/follow-up context.",
+            "selection_mode": "single_choice",
+            "children": [
+                "First-time, new issue",
+                "Status check on prior unresolved ticket",
+                "Repeat caller, ticket not on this number",
+                "Follow-up after delayed callback",
+                "Unable to classify",
+            ],
+        },
+        {
+            "name": "Product Identification Mode",
+            "description": "Classifies how the user identifies the product or service they are calling about.",
+            "selection_mode": "single_choice",
+            "children": [
+                "Names product directly",
+                "Describes by function or symptom",
+                "Bot misheard product name",
+                "Names variant or model number",
+                "Unable to identify",
+            ],
+        },
+        {
+            "name": "Out-of-Scope Query Distribution",
+            "description": "Classifies whether the user's query belongs to the supported scope or a neighboring/unrelated business area.",
+            "selection_mode": "single_choice",
+            "children": [
+                "In-scope",
+                "Related external division",
+                "Completely unrelated",
+                "Other out-of-scope",
+                "Unable to classify",
+            ],
+        },
+        {
+            "name": "Caller-User Identity Match",
+            "description": "Classifies whether the caller is the actual end user/customer or a proxy such as a dealer, shopkeeper, or family member.",
+            "selection_mode": "single_choice",
+            "children": [
+                "Caller is customer at product location",
+                "Caller is dealer or shopkeeper",
+                "Caller is family or proxy",
+                "Caller is customer not at product location",
+                "Unable to classify",
+            ],
+        },
+        {
+            "name": "Frustration Trigger Distribution",
+            "description": "Classifies the reason behind user frustration when frustration appears in the transcript.",
+            "selection_mode": "multi_label",
+            "children": [
+                "Repeated complaint, no resolution",
+                "Technician did not visit",
+                "OTP or verification not received",
+                "Service area not covered",
+                "Pincode or area mismatch",
+                "Other",
+            ],
+        },
+        {
+            "name": "Video Call Offer Reception",
+            "description": "Classifies how the user responds when a video-call or remote-support option is offered.",
+            "selection_mode": "single_choice",
+            "children": [
+                "Declined - prefers physical visit",
+                "Accepted",
+                "Confused by the offer",
+                "Declined - cost concern",
+                "Declined - no phone capability",
+            ],
+        },
+    ]
+
     # Names of default voice metrics that must always be enabled on the
     # voice_playground surface for existing organizations. These are the
     # qualitative audio metrics computed by qualitative_voice_service that
@@ -1342,6 +1425,9 @@ def seed_default_metrics(
                 name=metric_data["name"],
                 description=metric_data["description"],
                 metric_type=metric_data["metric_type"],
+                metric_category=metric_data.get(
+                    "metric_category", MetricCategory.QUALITY.value
+                ),
                 trigger=metric_data["trigger"],
                 enabled=metric_data["enabled"],
                 is_default=True,
@@ -1367,6 +1453,69 @@ def seed_default_metrics(
                     enabled_surfaces.append("voice_playground")
                     existing.enabled_surfaces = enabled_surfaces
                     existing.enabled = True
+
+    for group in user_insight_groups:
+        existing_parent = (
+            db.query(Metric)
+            .filter(
+                and_(
+                    Metric.name == group["name"],
+                    Metric.organization_id == organization_id,
+                    Metric.workspace_id == workspace_id,
+                    Metric.parent_metric_id.is_(None),
+                )
+            )
+            .first()
+        )
+        if existing_parent:
+            existing_parent.metric_category = MetricCategory.USER_INSIGHT.value
+            existing_parent.allow_discovery = True
+            existing_parent.supported_surfaces = ["call_import"]
+            existing_parent.enabled_surfaces = ["call_import"]
+            continue
+
+        parent = Metric(
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            name=group["name"],
+            description=group["description"],
+            metric_type=MetricType.TEXT,
+            metric_category=MetricCategory.USER_INSIGHT.value,
+            trigger=MetricTrigger.ALWAYS,
+            enabled=True,
+            is_default=True,
+            metric_origin="default",
+            supported_surfaces=["call_import"],
+            enabled_surfaces=["call_import"],
+            custom_data_type="enum",
+            custom_config={},
+            capture_rationale=True,
+            selection_mode=group["selection_mode"],
+            allow_discovery=True,
+        )
+        db.add(parent)
+        db.flush()
+        created_metrics.append(parent)
+        for child_name in group["children"]:
+            child = Metric(
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                name=child_name,
+                description=f"User-insight label under {group['name']}.",
+                metric_type=MetricType.BOOLEAN,
+                metric_category=MetricCategory.USER_INSIGHT.value,
+                trigger=MetricTrigger.ALWAYS,
+                enabled=True,
+                is_default=True,
+                metric_origin="default",
+                supported_surfaces=["call_import"],
+                enabled_surfaces=["call_import"],
+                custom_data_type="boolean",
+                custom_config={},
+                capture_rationale=False,
+                parent_metric_id=parent.id,
+            )
+            db.add(child)
 
     # Ensure removed defaults are disabled in the active workspace
     # (a sibling workspace's data is left alone; users who want the

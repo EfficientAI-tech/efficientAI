@@ -14,15 +14,17 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 from datetime import date, datetime, time, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from loguru import logger
-from sqlalchemy import desc, func
+from sqlalchemy import desc, func, or_
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.database import get_db
 from app.dependencies import (
     get_api_key,
@@ -120,6 +122,13 @@ CSV_EXTENSIONS = (".csv",)
 XLSX_EXTENSIONS = (".xlsx", ".xlsm")
 ALLOWED_EXTENSIONS = CSV_EXTENSIONS + XLSX_EXTENSIONS
 
+AUDIO_CONTENT_TYPES = {
+    "wav": "audio/wav",
+    "mp3": "audio/mpeg",
+    "flac": "audio/flac",
+    "m4a": "audio/mp4",
+}
+
 
 def _file_format(filename: Optional[str]) -> Optional[str]:
     """Classify ``filename`` as ``'csv'`` / ``'xlsx'`` or ``None`` if unsupported."""
@@ -131,6 +140,63 @@ def _file_format(filename: Optional[str]) -> Optional[str]:
     if name.endswith(XLSX_EXTENSIONS):
         return "xlsx"
     return None
+
+
+def _audio_extension(filename: Optional[str]) -> Optional[str]:
+    """Return the validated lower-case extension for a manual recording."""
+    if not filename or "." not in filename:
+        return None
+    ext = filename.rsplit(".", 1)[-1].lower().strip()
+    allowed = {fmt.lower().lstrip(".") for fmt in settings.ALLOWED_AUDIO_FORMATS}
+    return ext if ext in allowed else None
+
+
+def _audio_content_type(ext: str, upload_content_type: Optional[str]) -> str:
+    """Prefer the browser-supplied audio content type, with a safe fallback."""
+    supplied = (upload_content_type or "").strip()
+    if supplied and supplied != "application/octet-stream":
+        return supplied
+    return AUDIO_CONTENT_TYPES.get(ext.lower(), "application/octet-stream")
+
+
+def _audio_s3_key(
+    organization_id: UUID, call_import_id: UUID, row_id: UUID, ext: str
+) -> str:
+    """Build the canonical S3 key for a manually uploaded recording."""
+    from app.services.storage.s3_service import s3_service
+
+    return (
+        f"{s3_service.prefix}organizations/{organization_id}/call_imports/"
+        f"{call_import_id}/{row_id}.{ext}"
+    )
+
+
+def _filename_stem(filename: Optional[str]) -> str:
+    """Extract a cross-platform filename stem from an UploadFile name."""
+    raw = (filename or "").strip()
+    basename = re.split(r"[\\/]", raw)[-1] if raw else ""
+    if "." in basename:
+        basename = basename.rsplit(".", 1)[0]
+    return basename.strip()
+
+
+def _sanitize_conversation_id(raw: str) -> str:
+    """Turn a filename stem into a stable conversation_id."""
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", raw.strip())
+    cleaned = re.sub(r"_+", "_", cleaned).strip("._-")
+    return (cleaned or "recording")[:255]
+
+
+def _dedupe_conversation_id(
+    base: str, counts: Dict[str, int]
+) -> str:
+    """Make conversation ids unique within one manual upload batch."""
+    count = counts.get(base, 0) + 1
+    counts[base] = count
+    if count == 1:
+        return base
+    suffix = f"-{count}"
+    return f"{base[: 255 - len(suffix)]}{suffix}"
 
 
 def _normalize_header(name: str) -> str:
@@ -187,6 +253,22 @@ def _xlsx_cell_to_str(value: Any) -> str:
     return str(value)
 
 
+def _parse_recording_date_cell(cell: str) -> date:
+    """Parse day-first dates with one/two digit day-month parts."""
+    match = re.fullmatch(r"\s*(\d{1,2})[/-](\d{1,2})[/-](\d{4})\s*", cell)
+    if match:
+        day, month, year = (int(part) for part in match.groups())
+        return date(year, month, day)
+
+    # Native Excel date cells arrive from ``_xlsx_cell_to_str`` as ISO
+    # datetimes (e.g. ``2026-01-04T00:00:00``). Accept that resolved date,
+    # while keeping plain ISO dates rejected for hand-entered text/CSV cells.
+    if "T" in cell:
+        return datetime.fromisoformat(cell.replace("Z", "+00:00")).date()
+
+    raise ValueError("expected D/M/YYYY or D-M-YYYY")
+
+
 def _coerce_parameter_value(
     raw: str,
     param_type: CallImportParameterType,
@@ -221,6 +303,19 @@ def _coerce_parameter_value(
                 ),
             )
         return cell
+    if param_type == CallImportParameterType.RECORDING_DATE:
+        try:
+            parsed_date = _parse_recording_date_cell(cell)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Row {row_idx + 1}: value for '{param_name}' is not a "
+                    f"valid recording date ({cell!r}); expected day-first "
+                    "D/M/YYYY or D-M-YYYY."
+                ),
+            )
+        return parsed_date.strftime("%d/%m/%Y")
     if param_type == CallImportParameterType.TRANSCRIPT:
         return cell
     if param_type == CallImportParameterType.TEXT:
@@ -299,6 +394,7 @@ def _apply_schema_mapping(
     ``skipped_columns``. Returns one dict per non-empty data row with:
 
       * ``conversation_id`` (str, mandatory)
+      * ``recording_date`` (Optional[str], DD/MM/YYYY date)
       * ``recording_url`` (Optional[str])
       * ``transcript`` (Optional[str])
       * ``parameter_values`` (Dict[str, Any]) of typed values keyed by
@@ -327,11 +423,21 @@ def _apply_schema_mapping(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Selected schema is missing the mandatory conversation_id parameter.",
         )
+    recording_date_param = next(
+        (p for p in parameters if p.type == CallImportParameterType.RECORDING_DATE),
+        None,
+    )
+    if recording_date_param is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Selected schema is missing the mandatory recording_date parameter.",
+        )
 
     # 2. Resolve every mapped parameter to a canonical fieldname.
     #    Required parameters MUST resolve; optional ones may resolve to
     #    None if the user left them blank (no mapping).
     canonical_by_param: Dict[str, Optional[str]] = {}
+    recording_date_param_name: Optional[str] = None
     rec_url_param_name: Optional[str] = None
     transcript_param_name: Optional[str] = None
     for param in parameters:
@@ -351,7 +457,9 @@ def _apply_schema_mapping(
                 ),
             )
         canonical_by_param[param.name] = canonical
-        if param.type == CallImportParameterType.RECORDING_URL:
+        if param.type == CallImportParameterType.RECORDING_DATE:
+            recording_date_param_name = param.name
+        elif param.type == CallImportParameterType.RECORDING_URL:
             rec_url_param_name = param.name
         elif param.type == CallImportParameterType.TRANSCRIPT:
             transcript_param_name = param.name
@@ -383,6 +491,11 @@ def _apply_schema_mapping(
     rec_canonical = (
         canonical_by_param.get(rec_url_param_name)
         if rec_url_param_name
+        else None
+    )
+    recording_date_canonical = (
+        canonical_by_param.get(recording_date_param_name)
+        if recording_date_param_name
         else None
     )
     transcript_canonical = (
@@ -432,12 +545,21 @@ def _apply_schema_mapping(
                 param_type = CallImportParameterType(param.type)
             except ValueError:
                 param_type = CallImportParameterType.TEXT
-            parameter_values[param.name] = _coerce_parameter_value(
+            coerced = _coerce_parameter_value(
                 row.get(canonical) or "",
                 param_type,
                 row_idx=idx,
                 param_name=param.name,
             )
+            if param.is_required and coerced is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        f"Row {idx + 1} is missing the required "
+                        f"'{param.name}' value."
+                    ),
+                )
+            parameter_values[param.name] = coerced
 
         rec_value = (
             (row.get(rec_canonical) or "").strip() if rec_canonical else ""
@@ -447,10 +569,16 @@ def _apply_schema_mapping(
             if transcript_canonical
             else ""
         )
+        recording_date_value = (
+            parameter_values.get(recording_date_param_name)
+            if recording_date_param_name
+            else None
+        )
 
         parsed.append(
             {
                 "conversation_id": conv_value,
+                "recording_date": recording_date_value,
                 "recording_url": rec_value or None,
                 "transcript": transcript_value or None,
                 "parameter_values": parameter_values,
@@ -941,6 +1069,11 @@ def _materialize_rows(
             organization_id=organization_id,
             row_index=idx,
             conversation_id=row["conversation_id"],
+            recording_date=(
+                _parse_recording_date_cell(row["recording_date"])
+                if row.get("recording_date")
+                else None
+            ),
             recording_url=row["recording_url"],
             transcript=csv_transcript,
             transcript_source=(
@@ -1714,6 +1847,194 @@ async def upload_call_import_csv(
     )
 
 
+@router.post(
+    "/audio-upload",
+    response_model=CallImportUploadResponse,
+    status_code=status.HTTP_201_CREATED,
+    operation_id="uploadCallImportAudio",
+)
+async def upload_call_import_audio(
+    files: List[UploadFile] = File(
+        ...,
+        description="One or more manual call recording audio files.",
+    ),
+    dataset: str = Form(
+        ...,
+        description="Required free-text dataset label for the manual upload batch.",
+    ),
+    tag_ids: Optional[List[UUID]] = Form(
+        None,
+        description="Optional list of CallImportTag ids to attach to the new batch.",
+    ),
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+) -> CallImportUploadResponse:
+    """Persist manually uploaded recordings as completed CallImport rows.
+
+    The rows skip the provider-download worker entirely because the audio
+    bytes are already in hand. From this point onward they behave exactly
+    like completed CSV-import rows: playback reads ``recording_s3_key`` and
+    the existing diarisation/evaluation endpoints can operate on them.
+    """
+
+    normalized_dataset = _normalize_dataset(dataset)
+    if not normalized_dataset:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="dataset is required and must be a non-empty string.",
+        )
+    if not files:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least one audio file is required.",
+        )
+
+    _ensure_s3_enabled()
+    tag_rows = _resolve_tags(db, organization_id, tag_ids)
+
+    max_bytes = int(settings.MAX_FILE_SIZE_MB) * 1024 * 1024
+    prepared: List[Dict[str, Any]] = []
+    conversation_counts: Dict[str, int] = {}
+
+    for idx, upload in enumerate(files):
+        filename = upload.filename or f"recording-{idx + 1}"
+        ext = _audio_extension(filename)
+        if not ext:
+            allowed = ", ".join(settings.ALLOWED_AUDIO_FORMATS)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported audio file '{filename}'. Allowed formats: {allowed}.",
+            )
+
+        contents = await upload.read()
+        if not contents:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Audio file '{filename}' is empty.",
+            )
+        if len(contents) > max_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=(
+                    f"Audio file '{filename}' exceeds "
+                    f"{settings.MAX_FILE_SIZE_MB} MB."
+                ),
+            )
+
+        base_conversation_id = _sanitize_conversation_id(_filename_stem(filename))
+        conversation_id = _dedupe_conversation_id(
+            base_conversation_id,
+            conversation_counts,
+        )
+        prepared.append(
+            {
+                "filename": filename,
+                "extension": ext,
+                "content_type": _audio_content_type(ext, upload.content_type),
+                "contents": contents,
+                "conversation_id": conversation_id,
+            }
+        )
+
+    original_filename = (
+        prepared[0]["filename"]
+        if len(prepared) == 1
+        else f"{len(prepared)} manual recordings"
+    )
+    total_size = sum(len(item["contents"]) for item in prepared)
+    uploaded_keys: List[str] = []
+
+    from app.services.storage.s3_service import s3_service
+
+    call_import = CallImport(
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        provider=None,
+        telephony_integration_id=None,
+        original_filename=original_filename,
+        source_format="audio",
+        source_size_bytes=total_size,
+        source_content_type="audio/*",
+        dataset=normalized_dataset,
+        total_rows=len(prepared),
+        completed_rows=len(prepared),
+        failed_rows=0,
+        status=CallImportStatus.COMPLETED,
+    )
+    if tag_rows:
+        call_import.tags = tag_rows
+
+    try:
+        db.add(call_import)
+        db.flush()
+        # The model's historical Python default is "exotel"; manual uploads
+        # intentionally have no telephony provider.
+        call_import.provider = None
+
+        for idx, item in enumerate(prepared):
+            row = CallImportRow(
+                call_import_id=call_import.id,
+                organization_id=organization_id,
+                row_index=idx,
+                conversation_id=item["conversation_id"],
+                recording_url=None,
+                transcript=None,
+                transcript_source=None,
+                raw_columns={"conversation_id": item["conversation_id"]},
+                status=CallImportRowStatus.COMPLETED,
+            )
+            db.add(row)
+            db.flush()
+
+            key = _audio_s3_key(
+                organization_id,
+                call_import.id,
+                row.id,
+                item["extension"],
+            )
+            s3_service.upload_file_by_key(
+                item["contents"],
+                key,
+                content_type=item["content_type"],
+            )
+            uploaded_keys.append(key)
+
+            row.recording_s3_key = key
+            row.recording_content_type = item["content_type"]
+            row.recording_size_bytes = len(item["contents"])
+
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        if uploaded_keys and s3_service.is_enabled():
+            try:
+                s3_service.delete_keys(uploaded_keys)
+            except Exception:
+                logger.exception(
+                    "Failed to clean up manual audio upload keys after error"
+                )
+        logger.exception("Failed to persist manual call recording upload")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to upload manual recordings: {exc}",
+        ) from exc
+
+    db.refresh(call_import)
+    return CallImportUploadResponse(
+        id=call_import.id,
+        total_rows=call_import.total_rows,
+        status=call_import.status,
+        dataset=call_import.dataset,
+        tags=_tag_response_payload(call_import.tags),
+        message=(
+            f"Uploaded {call_import.total_rows} manual recording"
+            f"{'' if call_import.total_rows == 1 else 's'}."
+        ),
+    )
+
+
 @router.get(
     "",
     response_model=CallImportListResponse,
@@ -1733,6 +2054,13 @@ async def list_call_imports(
     tag_id: Optional[List[UUID]] = Query(
         None,
         description="Filter to imports tagged with ALL of the given tag ids.",
+    ),
+    source_format: Optional[str] = Query(
+        None,
+        description=(
+            "Filter by source format. Use 'audio' for manual recordings or "
+            "'__non_audio__' for CSV/Excel/legacy imports."
+        ),
     ),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
@@ -1757,6 +2085,14 @@ async def list_call_imports(
     )
     if status_filter is not None:
         query = query.filter(CallImport.status == status_filter)
+
+    source_filter = (source_format or "").strip().lower()
+    if source_filter == "__non_audio__":
+        query = query.filter(
+            or_(CallImport.source_format.is_(None), CallImport.source_format != "audio")
+        )
+    elif source_filter:
+        query = query.filter(func.lower(CallImport.source_format) == source_filter)
 
     if dataset is not None:
         if dataset == "__none__":

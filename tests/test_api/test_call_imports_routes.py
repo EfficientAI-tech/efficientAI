@@ -10,6 +10,8 @@ new mapping flow stays exercised in lockstep with the route code.
 import io
 import sys
 import types
+from contextlib import contextmanager
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from uuid import UUID, uuid4
@@ -23,11 +25,13 @@ from app.api.v1.routes.call_imports import (
     _parse_xlsx,
     _revoke_pending_tasks,
 )
+from app.config import settings
 from app.models.database import (
     CallImport,
     CallImportRow,
     CallImportSchema,
     CallImportSchemaParameter,
+    CallImportTag,
     TelephonyIntegration,
     Workspace,
 )
@@ -65,7 +69,7 @@ def _param(
 
 
 def _standard_params() -> list[CallImportSchemaParameter]:
-    """The "classic" three-column schema (conv id + recording + transcript)."""
+    """The standard schema (conv id + recording date/url + transcript)."""
     return [
         _param(
             name="conversation_id",
@@ -74,14 +78,20 @@ def _standard_params() -> list[CallImportSchemaParameter]:
             ordering=0,
         ),
         _param(
+            name="recording_date",
+            type_=CallImportParameterType.RECORDING_DATE,
+            is_required=True,
+            ordering=1,
+        ),
+        _param(
             name="recording_url",
             type_=CallImportParameterType.RECORDING_URL,
-            ordering=1,
+            ordering=2,
         ),
         _param(
             name="transcript",
             type_=CallImportParameterType.TRANSCRIPT,
-            ordering=2,
+            ordering=3,
         ),
     ]
 
@@ -89,6 +99,7 @@ def _standard_params() -> list[CallImportSchemaParameter]:
 def _standard_mapping() -> dict[str, str]:
     return {
         "conversation_id": "CallID",
+        "recording_date": "Recording Date",
         "recording_url": "Recording URL",
         "transcript": "Transcript",
     }
@@ -101,9 +112,9 @@ def _standard_skipped() -> list[str]:
 
 def test_parse_csv_accepts_canonical_headers():
     csv_text = (
-        "CallID,Recording URL,Transcript\n"
-        "abc-1,https://api.exotel.com/recordings/abc-1.mp3,Hello world\n"
-        "abc-2,https://api.exotel.com/recordings/abc-2.mp3,Another call\n"
+        "CallID,Recording Date,Recording URL,Transcript\n"
+        "abc-1,18/05/2026,https://api.exotel.com/recordings/abc-1.mp3,Hello world\n"
+        "abc-2,19/05/2026,https://api.exotel.com/recordings/abc-2.mp3,Another call\n"
     )
     rows = _parse_csv(
         _csv_bytes(csv_text),
@@ -113,15 +124,40 @@ def test_parse_csv_accepts_canonical_headers():
     )
     assert len(rows) == 2
     assert rows[0]["conversation_id"] == "abc-1"
+    assert rows[0]["recording_date"] == "18/05/2026"
     assert rows[0]["recording_url"].endswith("abc-1.mp3")
     assert rows[0]["transcript"] == "Hello world"
     assert rows[1]["conversation_id"] == "abc-2"
 
 
+@pytest.mark.parametrize(
+    ("raw_date", "normalized"),
+    [
+        ("18-05-2026", "18/05/2026"),
+        ("8/4/2026", "08/04/2026"),
+        ("8-4-2026", "08/04/2026"),
+        ("8-4/2026", "08/04/2026"),
+        ("8/4-2026", "08/04/2026"),
+    ],
+)
+def test_parse_csv_accepts_flexible_day_first_recording_dates(raw_date, normalized):
+    csv_text = (
+        "CallID,Recording Date,Recording URL,Transcript\n"
+        f"abc-1,{raw_date},https://api.exotel.com/recordings/abc-1.mp3,Hello world\n"
+    )
+    rows = _parse_csv(
+        _csv_bytes(csv_text),
+        _standard_params(),
+        _standard_mapping(),
+        _standard_skipped(),
+    )
+    assert rows[0]["recording_date"] == normalized
+
+
 def test_parse_csv_is_case_insensitive_on_headers():
     csv_text = (
-        "callid,recording url,TRANSCRIPT\n"
-        "id-1,https://x/recording.mp3,Some transcript\n"
+        "callid,recording date,recording url,TRANSCRIPT\n"
+        "id-1,18/05/2026,https://x/recording.mp3,Some transcript\n"
     )
     rows = _parse_csv(
         _csv_bytes(csv_text),
@@ -143,7 +179,10 @@ def test_parse_csv_rejects_empty_input():
 
 def test_parse_csv_rejects_missing_mapped_required_header():
     # The schema requires conversation_id but the CSV has no CallID column.
-    csv_text = "Recording URL,Transcript\nhttps://x/r.mp3,Some transcript\n"
+    csv_text = (
+        "Recording Date,Recording URL,Transcript\n"
+        "18/05/2026,https://x/r.mp3,Some transcript\n"
+    )
     with pytest.raises(HTTPException) as exc:
         _parse_csv(
             _csv_bytes(csv_text),
@@ -157,11 +196,15 @@ def test_parse_csv_rejects_missing_mapped_required_header():
 
 def test_parse_csv_allows_optional_param_without_mapping():
     csv_text = (
-        "CallID,Transcript\n"
-        "abc-1,Hello world\n"
+        "CallID,Recording Date,Transcript\n"
+        "abc-1,18/05/2026,Hello world\n"
     )
     # Drop the recording_url mapping entry so it is treated as "not used".
-    mapping = {"conversation_id": "CallID", "transcript": "Transcript"}
+    mapping = {
+        "conversation_id": "CallID",
+        "recording_date": "Recording Date",
+        "transcript": "Transcript",
+    }
     rows = _parse_csv(
         _csv_bytes(csv_text),
         _standard_params(),
@@ -176,8 +219,8 @@ def test_parse_csv_allows_optional_param_without_mapping():
 
 def test_parse_csv_rejects_row_missing_conversation_id():
     csv_text = (
-        "CallID,Recording URL,Transcript\n"
-        ",https://x/recording.mp3,Some transcript\n"
+        "CallID,Recording Date,Recording URL,Transcript\n"
+        ",18/05/2026,https://x/recording.mp3,Some transcript\n"
     )
     with pytest.raises(HTTPException) as exc:
         _parse_csv(
@@ -190,12 +233,45 @@ def test_parse_csv_rejects_row_missing_conversation_id():
     assert "conversation_id" in exc.value.detail.lower()
 
 
+def test_parse_csv_rejects_missing_recording_date_value():
+    csv_text = (
+        "CallID,Recording Date,Recording URL,Transcript\n"
+        "abc-1,,https://x/recording.mp3,Some transcript\n"
+    )
+    with pytest.raises(HTTPException) as exc:
+        _parse_csv(
+            _csv_bytes(csv_text),
+            _standard_params(),
+            _standard_mapping(),
+            _standard_skipped(),
+        )
+    assert exc.value.status_code == 400
+    assert "recording_date" in exc.value.detail.lower()
+
+
+def test_parse_csv_rejects_invalid_recording_date_value():
+    csv_text = (
+        "CallID,Recording Date,Recording URL,Transcript\n"
+        "abc-1,2026-05-18,https://x/recording.mp3,Some transcript\n"
+    )
+    with pytest.raises(HTTPException) as exc:
+        _parse_csv(
+            _csv_bytes(csv_text),
+            _standard_params(),
+            _standard_mapping(),
+            _standard_skipped(),
+    )
+    assert exc.value.status_code == 400
+    assert "D/M/YYYY or D-M-YYYY" in exc.value.detail
+    assert "day-first" in exc.value.detail.lower()
+
+
 def test_parse_csv_skips_completely_blank_rows():
     csv_text = (
-        "CallID,Recording URL,Transcript\n"
-        "abc-1,https://x/recording.mp3,Some transcript\n"
-        ",,\n"
-        "abc-2,https://x/2.mp3,Other transcript\n"
+        "CallID,Recording Date,Recording URL,Transcript\n"
+        "abc-1,18/05/2026,https://x/recording.mp3,Some transcript\n"
+        ",,,\n"
+        "abc-2,19/05/2026,https://x/2.mp3,Other transcript\n"
     )
     rows = _parse_csv(
         _csv_bytes(csv_text),
@@ -209,8 +285,8 @@ def test_parse_csv_skips_completely_blank_rows():
 
 def test_parse_csv_strips_utf8_bom():
     csv_text = (
-        "\ufeffCallID,Recording URL,Transcript\n"
-        "abc-1,https://x/recording.mp3,T1\n"
+        "\ufeffCallID,Recording Date,Recording URL,Transcript\n"
+        "abc-1,18/05/2026,https://x/recording.mp3,T1\n"
     )
     rows = _parse_csv(
         _csv_bytes(csv_text),
@@ -226,8 +302,8 @@ def test_parse_csv_rejects_unhandled_columns():
     # CSV has an extra "AgentName" column that's neither mapped nor
     # marked skipped → 400 so nothing silently drops.
     csv_text = (
-        "CallID,Recording URL,Transcript,AgentName\n"
-        "abc-1,https://x/r.mp3,hi,alice\n"
+        "CallID,Recording Date,Recording URL,Transcript,AgentName\n"
+        "abc-1,18/05/2026,https://x/r.mp3,hi,alice\n"
     )
     with pytest.raises(HTTPException) as exc:
         _parse_csv(
@@ -242,8 +318,8 @@ def test_parse_csv_rejects_unhandled_columns():
 
 def test_parse_csv_accepts_explicitly_skipped_columns():
     csv_text = (
-        "CallID,Recording URL,Transcript,AgentName\n"
-        "abc-1,https://x/r.mp3,hi,alice\n"
+        "CallID,Recording Date,Recording URL,Transcript,AgentName\n"
+        "abc-1,18/05/2026,https://x/r.mp3,hi,alice\n"
     )
     rows = _parse_csv(
         _csv_bytes(csv_text),
@@ -258,15 +334,15 @@ def test_parse_csv_accepts_explicitly_skipped_columns():
 
 def test_parse_csv_with_custom_text_parameter_is_preserved_per_row():
     params = _standard_params() + [
-        _param(name="agent_name", type_=CallImportParameterType.TEXT, ordering=3)
+        _param(name="agent_name", type_=CallImportParameterType.TEXT, ordering=4)
     ]
     mapping = {
         **_standard_mapping(),
         "agent_name": "AgentName",
     }
     csv_text = (
-        "CallID,Recording URL,Transcript,AgentName\n"
-        "conv-1,https://x/r1.mp3,hello there,alice\n"
+        "CallID,Recording Date,Recording URL,Transcript,AgentName\n"
+        "conv-1,18/05/2026,https://x/r1.mp3,hello there,alice\n"
     )
     rows = _parse_csv(_csv_bytes(csv_text), params, mapping, skipped_columns=[])
     assert rows[0]["parameter_values"]["agent_name"] == "alice"
@@ -275,8 +351,8 @@ def test_parse_csv_with_custom_text_parameter_is_preserved_per_row():
 
 def test_parse_csv_coerces_typed_parameter_values():
     params = _standard_params() + [
-        _param(name="latency_ms", type_=CallImportParameterType.NUMBER, ordering=3),
-        _param(name="answered", type_=CallImportParameterType.BOOLEAN, ordering=4),
+        _param(name="latency_ms", type_=CallImportParameterType.NUMBER, ordering=4),
+        _param(name="answered", type_=CallImportParameterType.BOOLEAN, ordering=5),
     ]
     mapping = {
         **_standard_mapping(),
@@ -284,8 +360,8 @@ def test_parse_csv_coerces_typed_parameter_values():
         "answered": "Answered",
     }
     csv_text = (
-        "CallID,Recording URL,Transcript,Latency,Answered\n"
-        "conv-1,https://x/r.mp3,hi,123.5,true\n"
+        "CallID,Recording Date,Recording URL,Transcript,Latency,Answered\n"
+        "conv-1,18/05/2026,https://x/r.mp3,hi,123.5,true\n"
     )
     rows = _parse_csv(_csv_bytes(csv_text), params, mapping, skipped_columns=[])
     assert rows[0]["parameter_values"]["latency_ms"] == 123.5
@@ -294,12 +370,12 @@ def test_parse_csv_coerces_typed_parameter_values():
 
 def test_parse_csv_rejects_invalid_number_cell():
     params = _standard_params() + [
-        _param(name="latency_ms", type_=CallImportParameterType.NUMBER, ordering=3),
+        _param(name="latency_ms", type_=CallImportParameterType.NUMBER, ordering=4),
     ]
     mapping = {**_standard_mapping(), "latency_ms": "Latency"}
     csv_text = (
-        "CallID,Recording URL,Transcript,Latency\n"
-        "conv-1,https://x/r.mp3,hi,not-a-number\n"
+        "CallID,Recording Date,Recording URL,Transcript,Latency\n"
+        "conv-1,18/05/2026,https://x/r.mp3,hi,not-a-number\n"
     )
     with pytest.raises(HTTPException) as exc:
         _parse_csv(_csv_bytes(csv_text), params, mapping, skipped_columns=[])
@@ -376,9 +452,7 @@ def test_delete_s3_objects_skips_when_s3_disabled():
         delete_keys_by_prefix=MagicMock(),
     )
 
-    with patch(
-        "app.services.storage.s3_service.s3_service", fake_s3
-    ):
+    with _patched_s3(fake_s3):
         deleted, errors = _delete_s3_objects(
             organization_id=uuid4(),
             call_import_id=uuid4(),
@@ -407,9 +481,7 @@ def test_delete_s3_objects_deletes_known_keys_and_sweeps_prefix():
         SimpleNamespace(recording_s3_key=None),
     ]
 
-    with patch(
-        "app.services.storage.s3_service.s3_service", fake_s3
-    ):
+    with _patched_s3(fake_s3):
         deleted, errors = _delete_s3_objects(
             organization_id=org_id,
             call_import_id=import_id,
@@ -432,9 +504,7 @@ def test_delete_s3_objects_aggregates_errors_without_raising():
         delete_keys_by_prefix=MagicMock(return_value=(0, [])),
     )
 
-    with patch(
-        "app.services.storage.s3_service.s3_service", fake_s3
-    ):
+    with _patched_s3(fake_s3):
         deleted, errors = _delete_s3_objects(
             organization_id=uuid4(),
             call_import_id=uuid4(),
@@ -453,9 +523,7 @@ def test_delete_s3_objects_treats_bulk_exception_as_full_failure():
         delete_keys_by_prefix=MagicMock(return_value=(0, [])),
     )
 
-    with patch(
-        "app.services.storage.s3_service.s3_service", fake_s3
-    ):
+    with _patched_s3(fake_s3):
         deleted, errors = _delete_s3_objects(
             organization_id=uuid4(),
             call_import_id=uuid4(),
@@ -548,17 +616,24 @@ def _seed_schema(
         ),
         CallImportSchemaParameter(
             schema_id=schema.id,
+            name="recording_date",
+            type=CallImportParameterType.RECORDING_DATE.value,
+            is_required=True,
+            ordering=1,
+        ),
+        CallImportSchemaParameter(
+            schema_id=schema.id,
             name="recording_url",
             type=CallImportParameterType.RECORDING_URL.value,
             is_required=False,
-            ordering=1,
+            ordering=2,
         ),
         CallImportSchemaParameter(
             schema_id=schema.id,
             name="transcript",
             type=CallImportParameterType.TRANSCRIPT.value,
             is_required=False,
-            ordering=2,
+            ordering=3,
         ),
     ]
     for idx, extra in enumerate(extras or []):
@@ -568,7 +643,7 @@ def _seed_schema(
                 name=extra["name"],
                 type=extra["type"].value,
                 is_required=bool(extra.get("is_required", False)),
-                ordering=3 + idx,
+                ordering=4 + idx,
             )
         )
     for p in params:
@@ -597,6 +672,7 @@ def _upload_payload(
             if parameter_mapping is not None
             else {
                 "conversation_id": "CallID",
+                "recording_date": "Recording Date",
                 "recording_url": "Recording URL",
                 "transcript": "Transcript",
             }
@@ -605,12 +681,167 @@ def _upload_payload(
     }
 
 
-def _csv(rows=(("call-1", "https://x/recording.mp3", "hi there"),)):
+def _csv(rows=(("call-1", "18/05/2026", "https://x/recording.mp3", "hi there"),)):
     buf = io.StringIO()
-    buf.write("CallID,Recording URL,Transcript\n")
-    for call_id, url, transcript in rows:
-        buf.write(f"{call_id},{url},{transcript}\n")
+    buf.write("CallID,Recording Date,Recording URL,Transcript\n")
+    for call_id, recording_date, url, transcript in rows:
+        buf.write(f"{call_id},{recording_date},{url},{transcript}\n")
     return ("rows.csv", buf.getvalue().encode("utf-8"), "text/csv")
+
+
+def _fake_enabled_s3(prefix="myprefix/"):
+    return SimpleNamespace(
+        is_enabled=lambda: True,
+        get_status_message=lambda: None,
+        prefix=prefix,
+        upload_file_by_key=MagicMock(return_value=None),
+        delete_keys=MagicMock(return_value=(0, [])),
+    )
+
+
+@contextmanager
+def _patched_s3(fake_s3):
+    fake_module = types.ModuleType("app.services.storage.s3_service")
+    fake_module.s3_service = fake_s3
+    fake_module.StorageError = RuntimeError
+    fake_pkg = types.ModuleType("app.services.storage")
+    fake_pkg.s3_service = fake_module
+    with patch.dict(
+        sys.modules,
+        {
+            "app.services.storage": fake_pkg,
+            "app.services.storage.s3_service": fake_module,
+        },
+    ):
+        yield
+
+
+def test_audio_upload_single_file_creates_completed_import(
+    authenticated_client, db_session, org_id, seed_org
+):
+    tag = CallImportTag(
+        organization_id=org_id,
+        name="manual",
+        color="#123456",
+    )
+    db_session.add(tag)
+    db_session.commit()
+
+    fake_s3 = _fake_enabled_s3()
+    with _patched_s3(fake_s3):
+        response = authenticated_client.post(
+            "/api/v1/call-imports/audio-upload",
+            files={"files": ("sales call.wav", b"RIFFfake-wav", "audio/wav")},
+            data={"dataset": "Manual recordings", "tag_ids": str(tag.id)},
+        )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    call_import_id = UUID(body["id"])
+    assert body["total_rows"] == 1
+    assert body["status"] == "completed"
+    assert body["dataset"] == "Manual recordings"
+    assert body["tags"][0]["name"] == "manual"
+
+    call_import = db_session.query(CallImport).filter(CallImport.id == call_import_id).one()
+    assert call_import.provider is None
+    assert call_import.source_format == "audio"
+    assert call_import.completed_rows == 1
+
+    (row,) = (
+        db_session.query(CallImportRow)
+        .filter(CallImportRow.call_import_id == call_import_id)
+        .all()
+    )
+    assert row.conversation_id == "sales_call"
+    assert row.status == CallImportRowStatus.COMPLETED
+    assert row.transcript is None
+    assert row.recording_content_type == "audio/wav"
+    assert row.recording_size_bytes == len(b"RIFFfake-wav")
+    assert row.recording_s3_key.endswith(f"/{row.id}.wav")
+    fake_s3.upload_file_by_key.assert_called_once()
+
+
+def test_audio_upload_multiple_files_dedupes_filename_call_ids(
+    authenticated_client, db_session, org_id, seed_org
+):
+    fake_s3 = _fake_enabled_s3()
+    with _patched_s3(fake_s3):
+        response = authenticated_client.post(
+            "/api/v1/call-imports/audio-upload",
+            files=[
+                ("files", ("call.mp3", b"mp3-a", "audio/mpeg")),
+                ("files", ("call.mp3", b"mp3-b", "audio/mpeg")),
+                ("files", ("support flac.flac", b"flac", "audio/flac")),
+            ],
+            data={"dataset": "Manual recordings"},
+        )
+
+    assert response.status_code == 201, response.text
+    rows = (
+        db_session.query(CallImportRow)
+        .filter(CallImportRow.call_import_id == UUID(response.json()["id"]))
+        .order_by(CallImportRow.row_index)
+        .all()
+    )
+    assert [row.row_index for row in rows] == [0, 1, 2]
+    assert [row.conversation_id for row in rows] == [
+        "call",
+        "call-2",
+        "support_flac",
+    ]
+    assert fake_s3.upload_file_by_key.call_count == 3
+
+
+def test_audio_upload_rejects_invalid_inputs(
+    authenticated_client, monkeypatch, seed_org
+):
+    fake_s3 = _fake_enabled_s3()
+    with _patched_s3(fake_s3):
+        missing_dataset = authenticated_client.post(
+            "/api/v1/call-imports/audio-upload",
+            files={"files": ("call.wav", b"audio", "audio/wav")},
+            data={"dataset": "  "},
+        )
+        bad_extension = authenticated_client.post(
+            "/api/v1/call-imports/audio-upload",
+            files={"files": ("call.txt", b"audio", "text/plain")},
+            data={"dataset": "Manual recordings"},
+        )
+
+    assert missing_dataset.status_code == 400
+    assert "dataset" in missing_dataset.json()["detail"].lower()
+    assert bad_extension.status_code == 400
+    assert "unsupported" in bad_extension.json()["detail"].lower()
+
+    monkeypatch.setattr(settings, "MAX_FILE_SIZE_MB", 0)
+    with _patched_s3(fake_s3):
+        too_large = authenticated_client.post(
+            "/api/v1/call-imports/audio-upload",
+            files={"files": ("call.wav", b"audio", "audio/wav")},
+            data={"dataset": "Manual recordings"},
+        )
+
+    assert too_large.status_code == 413
+
+
+def test_audio_upload_rejects_when_s3_unavailable(
+    authenticated_client, seed_org
+):
+    fake_s3 = SimpleNamespace(
+        is_enabled=lambda: False,
+        get_status_message=lambda: "S3 disabled",
+        prefix="",
+    )
+    with _patched_s3(fake_s3):
+        response = authenticated_client.post(
+            "/api/v1/call-imports/audio-upload",
+            files={"files": ("call.wav", b"audio", "audio/wav")},
+            data={"dataset": "Manual recordings"},
+        )
+
+    assert response.status_code == 503
+    assert "s3" in response.json()["detail"].lower()
 
 
 def test_upload_rejects_when_provider_does_not_match_integration(
@@ -702,6 +933,7 @@ def test_upload_rejects_when_required_parameter_unmapped(
             integration,
             schema.id,
             parameter_mapping={
+                "recording_date": "Recording Date",
                 "transcript": "Transcript",
                 "recording_url": "Recording URL",
             },
@@ -725,6 +957,7 @@ def test_upload_rejects_when_mapped_column_absent_from_csv(
             schema.id,
             parameter_mapping={
                 "conversation_id": "MissingId",
+                "recording_date": "Recording Date",
                 "recording_url": "Recording URL",
                 "transcript": "Transcript",
             },
@@ -741,8 +974,8 @@ def test_upload_persists_parameter_mapping_and_rows(
     schema = _seed_schema(db_session, org_id, _default_workspace_id(db_session, org_id))
 
     csv_rows = (
-        ("call-a", "https://x/a.mp3", "hello a"),
-        ("call-b", "https://x/b.mp3", "hello b"),
+        ("call-a", "18/05/2026", "https://x/a.mp3", "hello a"),
+        ("call-b", "19/05/2026", "https://x/b.mp3", "hello b"),
     )
     response = authenticated_client.post(
         "/api/v1/call-imports/upload",
@@ -759,6 +992,7 @@ def test_upload_persists_parameter_mapping_and_rows(
     assert call_import.schema_id == schema.id
     assert call_import.parameter_mapping == {
         "conversation_id": "CallID",
+        "recording_date": "Recording Date",
         "recording_url": "Recording URL",
         "transcript": "Transcript",
     }
@@ -777,12 +1011,36 @@ def test_upload_persists_parameter_mapping_and_rows(
     # raw_columns is now keyed by PARAMETER NAME (not CSV header).
     assert rows[0].raw_columns == {
         "conversation_id": "call-a",
+        "recording_date": "18/05/2026",
         "transcript": "hello a",
         "recording_url": "https://x/a.mp3",
     }
+    assert rows[0].recording_date.isoformat() == "2026-05-18"
     assert rows[0].transcript == "hello a"
     assert rows[0].transcript_source == "csv"
     assert rows[0].diarised_transcript is None
+
+
+def test_upload_accepts_hyphenated_recording_dates(
+    authenticated_client, db_session, org_id, seed_org
+):
+    integration = _seed_integration(db_session, org_id)
+    schema = _seed_schema(db_session, org_id, _default_workspace_id(db_session, org_id))
+
+    response = authenticated_client.post(
+        "/api/v1/call-imports/upload",
+        files={"file": _csv(rows=(("call-a", "8-4/2026", "https://x/a.mp3", "hello a"),))},
+        data=_upload_payload(integration, schema.id),
+    )
+    assert response.status_code == 202, response.text
+    call_import_id = UUID(response.json()["id"])
+    row = (
+        db_session.query(CallImportRow)
+        .filter(CallImportRow.call_import_id == call_import_id)
+        .one()
+    )
+    assert row.recording_date.isoformat() == "2026-04-08"
+    assert row.raw_columns["recording_date"] == "08/04/2026"
 
 
 def test_upload_requires_skip_for_unmapped_csv_columns(
@@ -792,8 +1050,8 @@ def test_upload_requires_skip_for_unmapped_csv_columns(
     schema = _seed_schema(db_session, org_id, _default_workspace_id(db_session, org_id))
 
     buf = io.StringIO()
-    buf.write("CallID,Recording URL,Transcript,AgentName\n")
-    buf.write("call-a,https://x/a.mp3,hi,alice\n")
+    buf.write("CallID,Recording Date,Recording URL,Transcript,AgentName\n")
+    buf.write("call-a,18/05/2026,https://x/a.mp3,hi,alice\n")
     csv_bytes = buf.getvalue().encode("utf-8")
 
     response = authenticated_client.post(
@@ -839,8 +1097,8 @@ def test_upload_custom_typed_parameter_is_coerced_and_preserved(
         ],
     )
     buf = io.StringIO()
-    buf.write("CallID,Recording URL,Transcript,AgentName,Latency\n")
-    buf.write("conv-1,https://x/r.mp3,hi,alice,1234\n")
+    buf.write("CallID,Recording Date,Recording URL,Transcript,AgentName,Latency\n")
+    buf.write("conv-1,18/05/2026,https://x/r.mp3,hi,alice,1234\n")
     csv_bytes = buf.getvalue().encode("utf-8")
     response = authenticated_client.post(
         "/api/v1/call-imports/upload",
@@ -850,6 +1108,7 @@ def test_upload_custom_typed_parameter_is_coerced_and_preserved(
             schema.id,
             parameter_mapping={
                 "conversation_id": "CallID",
+                "recording_date": "Recording Date",
                 "recording_url": "Recording URL",
                 "transcript": "Transcript",
                 "agent_name": "AgentName",
@@ -892,9 +1151,9 @@ def test_parse_xlsx_accepts_canonical_headers():
     blob = _xlsx_bytes(
         {
             "Calls": [
-                ["CallID", "Recording URL", "Transcript"],
-                ["abc-1", "https://x/recording.mp3", "Hello world"],
-                ["abc-2", "https://x/2.mp3", "Another call"],
+                ["CallID", "Recording Date", "Recording URL", "Transcript"],
+                ["abc-1", "18/05/2026", "https://x/recording.mp3", "Hello world"],
+                ["abc-2", "19/05/2026", "https://x/2.mp3", "Another call"],
             ]
         }
     )
@@ -903,16 +1162,32 @@ def test_parse_xlsx_accepts_canonical_headers():
     )
     assert len(rows) == 2
     assert rows[0]["conversation_id"] == "abc-1"
+    assert rows[0]["recording_date"] == "18/05/2026"
     assert rows[0]["recording_url"].endswith("recording.mp3")
     assert rows[0]["transcript"] == "Hello world"
+
+
+def test_parse_xlsx_accepts_native_excel_recording_date_cells():
+    blob = _xlsx_bytes(
+        {
+            "Calls": [
+                ["CallID", "Recording Date", "Recording URL", "Transcript"],
+                ["abc-1", datetime(2026, 4, 8), "https://x/recording.mp3", "Hello world"],
+            ]
+        }
+    )
+    rows = _parse_xlsx(
+        blob, "Calls", _standard_params(), _standard_mapping(), _standard_skipped()
+    )
+    assert rows[0]["recording_date"] == "08/04/2026"
 
 
 def test_parse_xlsx_coerces_numeric_call_ids_without_decimal_suffix():
     blob = _xlsx_bytes(
         {
             "Calls": [
-                ["CallID", "Recording URL", "Transcript"],
-                [12345, "https://x/r.mp3", "hi"],
+                ["CallID", "Recording Date", "Recording URL", "Transcript"],
+                [12345, "18/05/2026", "https://x/r.mp3", "hi"],
             ]
         }
     )
@@ -926,10 +1201,10 @@ def test_parse_xlsx_skips_fully_blank_rows():
     blob = _xlsx_bytes(
         {
             "Calls": [
-                ["CallID", "Recording URL", "Transcript"],
-                ["abc-1", "https://x/r.mp3", "hi"],
-                [None, None, None],
-                ["abc-2", "https://x/r2.mp3", "hi 2"],
+                ["CallID", "Recording Date", "Recording URL", "Transcript"],
+                ["abc-1", "18/05/2026", "https://x/r.mp3", "hi"],
+                [None, None, None, None],
+                ["abc-2", "19/05/2026", "https://x/r2.mp3", "hi 2"],
             ]
         }
     )
@@ -1073,9 +1348,9 @@ def test_upload_xlsx_with_sheet_name_persists_rows(
         {
             "Sheet1": [["CallID"], ["wrong"]],
             "Calls": [
-                ["CallID", "Recording URL", "Transcript"],
-                ["xls-1", "https://x/a.mp3", "from xlsx"],
-                ["xls-2", "https://x/b.mp3", "second xlsx row"],
+                ["CallID", "Recording Date", "Recording URL", "Transcript"],
+                ["xls-1", "18/05/2026", "https://x/a.mp3", "from xlsx"],
+                ["xls-2", "19/05/2026", "https://x/b.mp3", "second xlsx row"],
             ],
         }
     )

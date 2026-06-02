@@ -2,18 +2,23 @@
 Settings API Routes
 Manage API keys for authenticated users
 """
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
-from typing import List, Optional
-from uuid import UUID
+import base64
 from datetime import datetime, timezone
+from pathlib import Path
+from uuid import UUID, uuid4
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
+from typing import List, Literal, Optional
 import secrets
 from pydantic import BaseModel
 
-from app.dependencies import get_db, get_api_key, get_organization_id
-from app.models.database import APIKey, User, Organization
+from app.dependencies import get_db, get_api_key, get_organization_id, get_workspace_id
+from app.models.database import APIKey, User, Organization, Workspace
 from app.models.schemas import MessageResponse
 from app.api.v1.routes.profile import get_current_user
+from app.core.exceptions import StorageError
 from app.core.license import (
     get_feature_catalog,
     get_license_info,
@@ -22,8 +27,40 @@ from app.core.license import (
 )
 
 
+REPORT_LOGO_CONTENT_TYPES = {
+    "image/png",
+    "image/jpeg",
+    "image/jpg",
+    "image/webp",
+    "image/svg+xml",
+}
+REPORT_LOGO_EXTENSIONS = {"png", "jpg", "jpeg", "webp", "svg"}
+MAX_REPORT_LOGO_BYTES = 5 * 1024 * 1024
+REPORT_BRANDING_IMAGE_ROLES = {"internal", "external", "generic"}
+
+
 class APIKeyCreateRequest(BaseModel):
     name: Optional[str] = None
+
+
+class ReportBrandingImageResponse(BaseModel):
+    id: str
+    filename: str
+    content_type: str
+    size_bytes: int
+    role: Literal["internal", "external", "generic"] = "generic"
+    updated_at: Optional[str] = None
+    data_uri: Optional[str] = None
+
+
+class ReportBrandingUpdateRequest(BaseModel):
+    heading: Optional[str] = None
+
+
+class ReportBrandingResponse(BaseModel):
+    heading: Optional[str] = None
+    has_logo: bool
+    images: List[ReportBrandingImageResponse] = []
 
 router = APIRouter(prefix="/settings", tags=["Settings"])
 
@@ -48,6 +85,234 @@ def license_info(organization_id: UUID = Depends(get_organization_id)):
         "feature_catalog": get_feature_catalog(),
         "organization": data.get("org_id"),
     }
+
+
+def _report_branding_response(workspace: Workspace) -> ReportBrandingResponse:
+    raw = workspace.report_branding if isinstance(workspace.report_branding, dict) else {}
+    images_raw = raw.get("images") if isinstance(raw.get("images"), list) else []
+    images: list[ReportBrandingImageResponse] = []
+    for item in images_raw:
+        if not isinstance(item, dict):
+            continue
+        key = item.get("s3_key")
+        if not key:
+            continue
+        data_uri: Optional[str] = None
+        try:
+            from app.services.storage.s3_service import s3_service
+
+            image_bytes = s3_service.download_file_by_key(str(key))
+            content_type = str(item.get("content_type") or "image/png")
+            encoded = base64.b64encode(image_bytes).decode("ascii")
+            data_uri = f"data:{content_type};base64,{encoded}"
+        except Exception:
+            data_uri = None
+        images.append(
+            ReportBrandingImageResponse(
+                id=str(item.get("id") or ""),
+                filename=str(item.get("filename") or "logo"),
+                content_type=str(item.get("content_type") or "image/png"),
+                size_bytes=int(item.get("size_bytes") or 0),
+                role=(
+                    str(item.get("role"))
+                    if str(item.get("role")) in REPORT_BRANDING_IMAGE_ROLES
+                    else "generic"
+                ),
+                updated_at=item.get("updated_at"),
+                data_uri=data_uri,
+            )
+        )
+
+    return ReportBrandingResponse(
+        heading=raw.get("heading") if isinstance(raw.get("heading"), str) else None,
+        has_logo=bool(images),
+        images=images,
+    )
+
+
+@router.get("/report-branding", response_model=ReportBrandingResponse)
+def get_report_branding(
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    del api_key
+    workspace = (
+        db.query(Workspace)
+        .filter(
+            Workspace.id == workspace_id,
+            Workspace.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return _report_branding_response(workspace)
+
+
+@router.patch("/report-branding", response_model=ReportBrandingResponse)
+def update_report_branding(
+    payload: ReportBrandingUpdateRequest,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    del api_key
+    workspace = (
+        db.query(Workspace)
+        .filter(
+            Workspace.id == workspace_id,
+            Workspace.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    raw = dict(workspace.report_branding or {})
+    heading = (payload.heading or "").strip()
+    raw["heading"] = heading or None
+    raw.setdefault("images", [])
+    workspace.report_branding = raw
+    flag_modified(workspace, "report_branding")
+    db.commit()
+    db.refresh(workspace)
+    return _report_branding_response(workspace)
+
+
+@router.post("/report-branding/images", response_model=ReportBrandingResponse)
+async def upload_report_branding_images(
+    files: List[UploadFile] = File(...),
+    role: Literal["internal", "external", "generic"] = Form("generic"),
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    del api_key
+    if not files:
+        raise HTTPException(status_code=400, detail="Upload at least one image.")
+    if role not in REPORT_BRANDING_IMAGE_ROLES:
+        raise HTTPException(
+            status_code=400,
+            detail="Branding image role must be internal, external, or generic.",
+        )
+    workspace = (
+        db.query(Workspace)
+        .filter(
+            Workspace.id == workspace_id,
+            Workspace.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    from app.services.storage.s3_service import s3_service
+
+    if not s3_service.is_enabled():
+        detail = s3_service.get_status_message() or "S3 is not enabled or configured."
+        raise HTTPException(status_code=503, detail=detail)
+
+    raw = dict(workspace.report_branding or {})
+    images = list(raw.get("images") if isinstance(raw.get("images"), list) else [])
+    for file in files:
+        filename = Path(file.filename or "logo").name
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        content_type = (file.content_type or "").split(";", 1)[0].strip().lower()
+        if ext not in REPORT_LOGO_EXTENSIONS or content_type not in REPORT_LOGO_CONTENT_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail="Upload PNG, JPG, WEBP, or SVG logo images.",
+            )
+
+        content = await file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail=f"{filename} is empty.")
+        if len(content) > MAX_REPORT_LOGO_BYTES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{filename} is too large. Maximum size is 5 MB.",
+            )
+
+        image_id = str(uuid4())
+        key = (
+            f"{s3_service.prefix}organizations/{organization_id}/workspaces/"
+            f"{workspace_id}/report_branding/{image_id}.{ext}"
+        )
+        try:
+            s3_service.upload_file_by_key(content, key, content_type=content_type)
+        except StorageError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        images.append(
+            {
+                "id": image_id,
+                "s3_key": key,
+                "content_type": content_type,
+                "filename": filename,
+                "size_bytes": len(content),
+                "role": role,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+
+    raw["images"] = images
+    workspace.report_branding = raw
+    flag_modified(workspace, "report_branding")
+    db.commit()
+    db.refresh(workspace)
+    return _report_branding_response(workspace)
+
+
+@router.delete("/report-branding/images/{image_id}", response_model=ReportBrandingResponse)
+def delete_report_branding_image(
+    image_id: str,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    del api_key
+    workspace = (
+        db.query(Workspace)
+        .filter(
+            Workspace.id == workspace_id,
+            Workspace.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    raw = dict(workspace.report_branding or {})
+    images = list(raw.get("images") if isinstance(raw.get("images"), list) else [])
+    kept = []
+    removed = None
+    for item in images:
+        if isinstance(item, dict) and str(item.get("id")) == image_id:
+            removed = item
+        else:
+            kept.append(item)
+    if removed is None:
+        raise HTTPException(status_code=404, detail="Report branding image not found")
+
+    old_key = removed.get("s3_key")
+    if old_key:
+        try:
+            from app.services.storage.s3_service import s3_service
+
+            if s3_service.is_enabled():
+                s3_service.delete_file_by_key(str(old_key))
+        except Exception:
+            pass
+
+    raw["images"] = kept
+    workspace.report_branding = raw
+    flag_modified(workspace, "report_branding")
+    db.commit()
+    db.refresh(workspace)
+    return _report_branding_response(workspace)
 
 
 def mask_api_key(key: str) -> str:
@@ -241,4 +506,3 @@ def regenerate_api_key(
         "last_used": None,
         "message": "Save this API key securely. You won't be able to see it again."
     }
-

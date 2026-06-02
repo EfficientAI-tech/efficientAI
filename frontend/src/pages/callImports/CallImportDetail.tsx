@@ -85,6 +85,12 @@ function formatBytes(bytes: number | null): string {
   return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`
 }
 
+function formatRecordingDate(value: string | null | undefined): string {
+  if (!value) return '-'
+  const [year, month, day] = value.split('-')
+  return year && month && day ? `${day}/${month}/${year}` : value
+}
+
 function isNonRetryableError(message: string | null | undefined): boolean {
   if (!message) return false
   return /(401|403|404|forbidden|unauthor|not found|exceeds|too large|invalid content)/i.test(message)
@@ -2665,6 +2671,12 @@ export default function CallImportDetail() {
                                 <dt className="text-gray-500">Type</dt>
                                 <dd className="text-gray-800 truncate text-right">
                                   {row.recording_content_type || '—'}
+                                </dd>
+                              </div>
+                              <div className="flex justify-between gap-2">
+                                <dt className="text-gray-500">Recording date</dt>
+                                <dd className="text-gray-800 text-right">
+                                  {formatRecordingDate(row.recording_date)}
                                 </dd>
                               </div>
                               {row.recording_url && (

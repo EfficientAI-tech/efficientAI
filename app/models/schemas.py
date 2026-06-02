@@ -2,13 +2,13 @@
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, validator
 from typing import Optional, List, Dict, Any, Literal
-from datetime import datetime
+from datetime import date, datetime
 from uuid import UUID
 from app.models.enums import (
     EvaluationType, EvaluationStatus, EvaluatorResultStatus, RoleEnum, InvitationStatus,
     LanguageEnum, CallTypeEnum, CallMediumEnum, GenderEnum, AccentEnum, BackgroundNoiseEnum,
     IntegrationPlatform, ModelProvider, VoiceBundleType, TestAgentConversationStatus,
-    MetricType, MetricTrigger, CallRecordingStatus, AlertMetricType, AlertAggregation,
+    MetricType, MetricCategory, MetricTrigger, CallRecordingStatus, AlertMetricType, AlertAggregation,
     AlertOperator, AlertNotifyFrequency, AlertStatus, AlertHistoryStatus, CronJobStatus,
     CallImportStatus, CallImportRowStatus, CallImportParameterType,
 )
@@ -1123,6 +1123,7 @@ class MetricCreate(BaseModel):
     # standalone metrics may carry it too without a schema change.
     example: Optional[str] = Field(default=None, max_length=4000)
     metric_type: MetricType = MetricType.RATING
+    metric_category: MetricCategory = MetricCategory.QUALITY
     trigger: MetricTrigger = MetricTrigger.ALWAYS
     enabled: bool = True
     metric_origin: str = "custom"
@@ -1222,6 +1223,7 @@ class MetricCreateWithChildren(BaseModel):
     name: str = Field(..., max_length=120)
     description: Optional[str] = Field(default=None, max_length=4000)
     selection_mode: SelectionMode
+    metric_category: MetricCategory = MetricCategory.QUALITY
     enabled: bool = True
     supported_surfaces: List[str] = Field(default_factory=lambda: ["agent"])
     enabled_surfaces: Optional[List[str]] = None
@@ -1262,6 +1264,7 @@ class MetricUpdate(BaseModel):
     custom_data_type: Optional[str] = None
     custom_config: Optional[Dict[str, Any]] = None
     tags: Optional[List[str]] = None
+    metric_category: Optional[MetricCategory] = None
     capture_rationale: Optional[bool] = None
     selection_mode: Optional[SelectionMode] = None
     allow_discovery: Optional[bool] = None
@@ -1316,6 +1319,7 @@ class MetricResponse(BaseModel):
     # it uniformly without branching on parent/child shape.
     example: Optional[str] = None
     metric_type: MetricType
+    metric_category: MetricCategory = MetricCategory.QUALITY
     trigger: MetricTrigger
     enabled: bool
     is_default: bool
@@ -2027,6 +2031,7 @@ class CallImportRowResponse(BaseModel):
     # ``034_call_import_schemas``). Same data, same uniqueness rules.
     conversation_id: str
     recording_url: Optional[str] = None
+    recording_date: Optional[date] = None
     # Production transcript: the value supplied via the CSV upload.
     transcript: Optional[str] = None
     transcript_source: Optional[str] = None
@@ -2104,8 +2109,9 @@ class CallImportSchemaParameterBase(BaseModel):
         ...,
         description=(
             "Parameter type. One of conversation_id / recording_url / "
-            "transcript / text / number / boolean / datetime / url. "
-            "Exactly one parameter of type 'conversation_id' is required."
+            "recording_date / transcript / text / number / boolean / "
+            "datetime / url. Exactly one parameter each of type "
+            "'conversation_id' and 'recording_date' is required."
         ),
     )
     description: Optional[str] = Field(
@@ -2146,6 +2152,7 @@ def _validate_schema_parameters(
 
     seen_names: set[str] = set()
     conv_count = 0
+    recording_date_count = 0
     rec_url_count = 0
     transcript_count = 0
     for param in parameters:
@@ -2160,6 +2167,8 @@ def _validate_schema_parameters(
         seen_names.add(norm)
         if param.type == CallImportParameterType.CONVERSATION_ID:
             conv_count += 1
+        elif param.type == CallImportParameterType.RECORDING_DATE:
+            recording_date_count += 1
         elif param.type == CallImportParameterType.RECORDING_URL:
             rec_url_count += 1
         elif param.type == CallImportParameterType.TRANSCRIPT:
@@ -2169,6 +2178,11 @@ def _validate_schema_parameters(
         raise ValueError(
             "Schema must contain exactly one parameter of type "
             "'conversation_id'."
+        )
+    if recording_date_count != 1:
+        raise ValueError(
+            "Schema must contain exactly one parameter of type "
+            "'recording_date'."
         )
     if rec_url_count > 1:
         raise ValueError(
@@ -2967,6 +2981,8 @@ class CallImportEvaluationResponse(BaseModel):
     # for runs the user has not summarised yet. ``is_stale`` on the
     # nested object is set by the route, not the model.
     tldr_summary: Optional["EvaluationTldrSummary"] = None
+    # Cached LLM-generated user insights for External Audit PDF section 03.
+    user_insights: Optional["EvaluationUserInsightsState"] = None
     # True when the user opted into top-level metric discovery on the
     # Run Evaluation modal. The frontend uses this to gate the
     # "Discovered metrics" panel on the Flow tab.
@@ -3003,6 +3019,7 @@ class CallImportEvaluationRowResponse(BaseModel):
     transcript: Optional[str] = None
     raw_columns: Optional[Dict[str, Any]] = None
     recording_url: Optional[str] = None
+    recording_date: Optional[date] = None
     recording_s3_key: Optional[str] = None
     status: str
     metric_scores: Dict[str, Any] = Field(default_factory=dict)
@@ -3372,6 +3389,7 @@ class CallImportMetricAggregate(BaseModel):
     metric_id: str
     metric_name: str
     metric_type: Optional[str] = None
+    metric_category: str = "quality"
     # True when this aggregate represents a multi-label parent metric
     # (selection_mode == "multi_label" with no parent_metric_id). For
     # those, ``value_counts`` lists per-child label tallies and the
@@ -3427,6 +3445,7 @@ class EvaluationTldrSummary(BaseModel):
 
     narrative: str
     patterns: List[str] = Field(default_factory=list)
+    metric_insights: Dict[str, str] = Field(default_factory=dict)
     generated_at: datetime
     generated_at_completed_rows: int = 0
     provider: Optional[str] = None
@@ -3446,6 +3465,67 @@ class EvaluationInsightsRequest(BaseModel):
     regenerate: bool = False
     provider: Optional[str] = None
     model: Optional[str] = Field(default=None, min_length=1)
+    max_llm_calls: Optional[int] = Field(
+        default=None,
+        ge=20,
+        le=500,
+        description=(
+            "Max LLM calls for user-insights sampling (extraction + synthesis). "
+            "Defaults to 200 when omitted."
+        ),
+    )
+
+
+class UserInsightCategory(BaseModel):
+    label: str
+    count: int
+    share_pct: float
+
+
+class UserInsightEvidenceTurn(BaseModel):
+    speaker: str
+    text: str
+
+
+class UserInsightEvidence(BaseModel):
+    conversation_id: Optional[str] = None
+    quote: str
+    turns: List[UserInsightEvidenceTurn] = Field(default_factory=list)
+
+
+class EvaluationUserInsightItem(BaseModel):
+    id: str
+    title: str
+    categories: List[UserInsightCategory] = Field(default_factory=list)
+    observation: str
+    evidence: UserInsightEvidence
+
+
+class EvaluationUserInsightsState(BaseModel):
+    """Cached map-reduce LLM user insights for an evaluation run."""
+
+    status: Literal["idle", "running", "completed", "failed"] = "idle"
+    insights: List[EvaluationUserInsightItem] = Field(default_factory=list)
+    overview: Optional[str] = None
+    generated_at: Optional[datetime] = None
+    generated_at_completed_rows: int = 0
+    progress: Optional[Dict[str, int]] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    llm_calls_used: int = 0
+    max_llm_calls: Optional[int] = None
+    error_message: Optional[str] = None
+    is_stale: bool = False
+
+
+class EvaluationUserInsightsRequest(BaseModel):
+    """Body for ``POST /evaluations/{eval_id}/user-insights``."""
+
+    regenerate: bool = False
+    force: bool = False
+    provider: Optional[str] = None
+    model: Optional[str] = Field(default=None, min_length=1)
+    max_llm_calls: Optional[int] = Field(default=None, ge=20, le=500)
 
 
 # Resolve the forward reference on ``CallImportEvaluationResponse``
