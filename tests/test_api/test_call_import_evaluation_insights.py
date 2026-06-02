@@ -59,7 +59,7 @@ def _ensure_default_workspace(db_session, org_id) -> Workspace:
 
 
 @pytest.fixture(autouse=True)
-def stub_workers():
+def stub_workers(db_session):
     """Stub the worker task modules transitively imported by the route."""
     fake_import_module = types.ModuleType("app.workers.tasks.process_call_import_row")
 
@@ -95,6 +95,66 @@ def stub_workers():
 
     fake_user_insights_module.generate_evaluation_user_insights_task = _UserInsightsTask()
 
+    fake_tldr_module = types.ModuleType(
+        "app.workers.tasks.generate_evaluation_tldr_insights"
+    )
+
+    class _TldrTask:
+        @staticmethod
+        def apply_async(*, kwargs=None, **_kw):
+            from app.api.v1.routes.call_import_evaluations import (
+                _generate_and_persist_tldr_summary,
+            )
+            from uuid import UUID
+
+            from app.models.database import CallImportEvaluation
+
+            payload = kwargs or {}
+
+            def _run():
+                from fastapi import HTTPException
+
+                # Use the same session as the API test client (``get_db``
+                # override). A fresh ``SessionLocal()`` cannot see rows that
+                # only exist inside the test transaction.
+                evaluation = (
+                    db_session.query(CallImportEvaluation)
+                    .filter(
+                        CallImportEvaluation.id
+                        == UUID(str(payload["evaluation_id"])),
+                        CallImportEvaluation.call_import_id
+                        == UUID(str(payload["call_import_id"])),
+                        CallImportEvaluation.organization_id
+                        == UUID(str(payload["organization_id"])),
+                    )
+                    .first()
+                )
+                if evaluation is None:
+                    return {
+                        "error": "evaluation_not_found",
+                        "status_code": 404,
+                    }
+                try:
+                    summary = _generate_and_persist_tldr_summary(
+                        db_session,
+                        evaluation,
+                        organization_id=UUID(str(payload["organization_id"])),
+                        provider=payload.get("provider"),
+                        model=payload.get("model"),
+                    )
+                except HTTPException as exc:
+                    return {
+                        "error": exc.detail,
+                        "status_code": exc.status_code,
+                    }
+                return summary.model_dump(mode="json")
+
+            return types.SimpleNamespace(
+                get=lambda *args, timeout=None, **kw: _run()
+            )
+
+    fake_tldr_module.generate_evaluation_tldr_insights_task = _TldrTask()
+
     fake_celery = types.ModuleType("celery")
 
     class _FakeCelery:
@@ -116,12 +176,18 @@ def stub_workers():
         "app.workers.tasks.generate_evaluation_user_insights": sys.modules.get(
             "app.workers.tasks.generate_evaluation_user_insights"
         ),
+        "app.workers.tasks.generate_evaluation_tldr_insights": sys.modules.get(
+            "app.workers.tasks.generate_evaluation_tldr_insights"
+        ),
         "celery": sys.modules.get("celery"),
     }
     sys.modules["app.workers.tasks.process_call_import_row"] = fake_import_module
     sys.modules["app.workers.tasks.evaluate_call_import_row"] = fake_eval_module
     sys.modules["app.workers.tasks.generate_evaluation_user_insights"] = (
         fake_user_insights_module
+    )
+    sys.modules["app.workers.tasks.generate_evaluation_tldr_insights"] = (
+        fake_tldr_module
     )
     sys.modules["celery"] = fake_celery
     try:

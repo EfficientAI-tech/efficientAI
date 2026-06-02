@@ -21,6 +21,9 @@ wheels/
 .installed.cfg
 *.egg
 MANIFEST
+secrets/
+*.json
+!package.json
 
 # Virtual environments
 venv/

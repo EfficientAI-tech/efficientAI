@@ -40,7 +40,8 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "./uploads"
     MAX_FILE_SIZE_MB: int = 500
     ALLOWED_AUDIO_FORMATS: List[str] = ["wav", "mp3", "flac", "m4a"]
-    
+    BLOB_STORAGE_PROVIDER: str = "s3"  # "s3" or "gcs"
+
     # S3 Configuration
     S3_ENABLED: bool = False
     S3_BUCKET_NAME: Optional[str] = None
@@ -49,6 +50,13 @@ class Settings(BaseSettings):
     S3_SECRET_ACCESS_KEY: Optional[str] = None
     S3_ENDPOINT_URL: Optional[str] = None  # For S3-compatible services
     S3_PREFIX: str = "audio/"  # Prefix for audio files in bucket
+
+    # GCS Configuration
+    GCS_ENABLED: bool = False
+    GCS_BUCKET_NAME: Optional[str] = None
+    GCS_PROJECT_ID: Optional[str] = None
+    GCS_CREDENTIALS_PATH: Optional[str] = None
+    GCS_PREFIX: str = "audio/"
 
     # Celery
     CELERY_BROKER_URL: Optional[str] = None
@@ -347,7 +355,9 @@ def load_config_from_file(config_path: str) -> None:
             settings.MAX_FILE_SIZE_MB = storage_config["max_file_size_mb"]
         if "allowed_audio_formats" in storage_config:
             settings.ALLOWED_AUDIO_FORMATS = storage_config["allowed_audio_formats"]
-    
+        if "blob_provider" in storage_config:
+            settings.BLOB_STORAGE_PROVIDER = str(storage_config["blob_provider"]).strip().lower()
+
     if "s3" in config_data:
         s3_config = config_data["s3"]
         if "enabled" in s3_config:
@@ -364,7 +374,27 @@ def load_config_from_file(config_path: str) -> None:
             settings.S3_ENDPOINT_URL = s3_config["endpoint_url"]
         if "prefix" in s3_config:
             settings.S3_PREFIX = s3_config["prefix"]
-    
+
+    if "gcs" in config_data:
+        gcs_config = config_data["gcs"]
+        if "enabled" in gcs_config:
+            settings.GCS_ENABLED = gcs_config["enabled"]
+        if "bucket_name" in gcs_config:
+            settings.GCS_BUCKET_NAME = gcs_config["bucket_name"]
+        if "project_id" in gcs_config:
+            settings.GCS_PROJECT_ID = gcs_config["project_id"]
+        if "credentials_path" in gcs_config:
+            settings.GCS_CREDENTIALS_PATH = gcs_config["credentials_path"]
+        if "prefix" in gcs_config:
+            settings.GCS_PREFIX = gcs_config["prefix"]
+
+    # Backward compatibility: infer s3 provider when blob_provider not set explicitly
+    if "storage" not in config_data or "blob_provider" not in (config_data.get("storage") or {}):
+        if settings.S3_ENABLED and not settings.GCS_ENABLED:
+            settings.BLOB_STORAGE_PROVIDER = "s3"
+        elif settings.GCS_ENABLED and not settings.S3_ENABLED:
+            settings.BLOB_STORAGE_PROVIDER = "gcs"
+
     if "smtp" in config_data:
         smtp_config = config_data["smtp"]
         if "host" in smtp_config:

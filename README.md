@@ -406,21 +406,30 @@ celery:
 storage:
   upload_dir: "./uploads"
   max_file_size_mb: 500
+  blob_provider: s3  # s3 | gcs — single active cloud blob backend
   allowed_audio_formats:
     - "wav"
     - "mp3"
     - "flac"
     - "m4a"
 
-# S3 Configuration (for data sources integration)
+# S3 Configuration (when storage.blob_provider is s3)
 s3:
-  enabled: false  # Set to true to enable S3 data sources
+  enabled: false  # Set to true to enable S3 blob storage
   bucket_name: "your-bucket-name"
   region: "us-east-1"
   access_key_id: "YOUR_ACCESS_KEY_ID"
   secret_access_key: "YOUR_SECRET_ACCESS_KEY"
   endpoint_url: null  # For S3-compatible services (MinIO, etc.)
   prefix: "audio/"  # Optional prefix for all objects
+
+# GCS Configuration (when storage.blob_provider is gcs)
+gcs:
+  enabled: false
+  bucket_name: "your-gcs-bucket-name"
+  project_id: "your-gcp-project-id"
+  credentials_path: null  # Optional; falls back to GOOGLE_APPLICATION_CREDENTIALS / ADC
+  prefix: "audio/"  # Same object key layout as S3
 
 # CORS Settings
 cors:
@@ -444,6 +453,12 @@ POSTGRES_USER=efficientai
 POSTGRES_PASSWORD=password
 POSTGRES_DB=efficientai
 SECRET_KEY=your-secret-key-here
+
+# Optional: GCS blob storage (also set storage.blob_provider: gcs in config.yml)
+BLOB_STORAGE_PROVIDER=gcs
+GCS_BUCKET_NAME=your-gcs-bucket
+GCS_PROJECT_ID=your-gcp-project
+GOOGLE_APPLICATION_CREDENTIALS=/app/secrets/gcp-sa.json
 ```
 
 ---

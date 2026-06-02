@@ -106,4 +106,9 @@ celery_app.conf.task_routes = {
     "process_call_import_row": {"queue": "imports"},
     "evaluate_call_import_row": {"queue": "imports"},
     "transcribe_call_import_row": {"queue": "imports"},
+    # Call-import evaluation Visualizations LLM work (TLDR + user insights)
+    # stays on the imports worker so it does not compete with the default
+    # queue (synthetic calling, playground evals, TTS, etc.).
+    "generate_evaluation_tldr_insights": {"queue": "imports"},
+    "generate_evaluation_user_insights": {"queue": "imports"},
 }

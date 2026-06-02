@@ -3901,6 +3901,89 @@ def _parse_insights_response(text: str) -> EvaluationTldrSummary:
     )
 
 
+def _generate_and_persist_tldr_summary(
+    db: Session,
+    evaluation: CallImportEvaluation,
+    *,
+    organization_id: UUID,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+) -> EvaluationTldrSummary:
+    """LLM TLDR generation used by the imports-queue Celery worker."""
+    eval_id = evaluation.id
+    eval_rows = (
+        db.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == eval_id)
+        .all()
+    )
+    aggregate = _compute_metric_aggregates(db, evaluation, eval_rows)
+    if not aggregate:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No metric data yet. Wait for at least one row to "
+                "finish scoring before generating a summary."
+            ),
+        )
+
+    metric_ids: List[UUID] = []
+    for agg in aggregate:
+        try:
+            metric_ids.append(UUID(agg.metric_id))
+        except (TypeError, ValueError):
+            continue
+    metrics = _metrics_for_ids(db, organization_id, metric_ids)
+    metric_meta: Dict[str, Metric] = {str(m.id): m for m in metrics}
+
+    rationale_samples = _sample_rationales_per_metric(eval_rows)
+    messages = _build_insights_messages(
+        evaluation, aggregate, rationale_samples, metric_meta
+    )
+
+    from app.services.ai.llm_resolver import get_llm_provider_and_model
+    from app.services.ai.llm_service import llm_service
+
+    provider_enum, model_str = get_llm_provider_and_model(
+        organization_id, db, provider, model
+    )
+
+    try:
+        llm_result = llm_service.generate_response(
+            messages=messages,
+            llm_provider=provider_enum,
+            llm_model=model_str,
+            organization_id=organization_id,
+            db=db,
+            temperature=0.4,
+            max_tokens=1400,
+        )
+    except Exception as e:
+        logger.error(f"[CallImportInsights] LLM call failed: {e}")
+        raise HTTPException(
+            status_code=502, detail=f"LLM call failed: {e}"
+        ) from e
+
+    summary = _parse_insights_response(llm_result.get("text", ""))
+    summary.generated_at_completed_rows = evaluation.completed_rows
+    summary.provider = provider_enum.value
+    summary.model = model_str
+    summary.is_stale = False
+
+    evaluation.tldr_summary = {
+        "narrative": summary.narrative,
+        "patterns": summary.patterns,
+        "metric_insights": summary.metric_insights,
+        "generated_at": summary.generated_at.isoformat(),
+        "generated_at_completed_rows": summary.generated_at_completed_rows,
+        "provider": summary.provider,
+        "model": summary.model,
+    }
+    flag_modified(evaluation, "tldr_summary")
+    db.commit()
+    db.refresh(evaluation)
+    return summary
+
+
 @router.get(
     "/{eval_id}/insights",
     response_model=Optional[EvaluationTldrSummary],
@@ -3984,91 +4067,52 @@ async def generate_call_import_evaluation_insights(
         if cached is not None:
             return cached
 
-    # Generation path. Reuse the existing aggregate computation so the
-    # prompt sees identical numbers to the charts on the same page.
-    eval_rows = (
-        db.query(CallImportEvaluationRow)
-        .filter(CallImportEvaluationRow.evaluation_id == eval_id)
-        .all()
+    # Run the TLDR LLM on the imports worker (not the default worker or API).
+    from app.workers.tasks.generate_evaluation_tldr_insights import (
+        generate_evaluation_tldr_insights_task,
     )
-    aggregate = _compute_metric_aggregates(db, evaluation, eval_rows)
-    if not aggregate:
+
+    try:
+        task_result = generate_evaluation_tldr_insights_task.apply_async(
+            kwargs={
+                "evaluation_id": str(eval_id),
+                "call_import_id": str(call_import_id),
+                "organization_id": str(organization_id),
+                "provider": body.provider,
+                "model": body.model,
+            },
+        ).get(timeout=25 * 60)
+    except Exception as exc:
+        logger.error(
+            "[CallImportInsights] TLDR task failed for evaluation {}: {}",
+            eval_id,
+            exc,
+        )
         raise HTTPException(
-            status_code=400,
-            detail=(
-                "No metric data yet. Wait for at least one row to "
-                "finish scoring before generating a summary."
-            ),
+            status_code=502,
+            detail=f"Summary generation failed: {exc}",
+        ) from exc
+
+    if isinstance(task_result, dict) and task_result.get("error"):
+        status_code = int(task_result.get("status_code") or 502)
+        raise HTTPException(
+            status_code=status_code,
+            detail=str(task_result["error"]),
         )
 
-    # Pull every metric the aggregate references so we can map
-    # parent->child relationships in the prompt.
-    metric_ids: List[UUID] = []
-    for agg in aggregate:
-        try:
-            metric_ids.append(UUID(agg.metric_id))
-        except (TypeError, ValueError):
-            continue
-    metrics = _metrics_for_ids(db, organization_id, metric_ids)
-    metric_meta: Dict[str, Metric] = {str(m.id): m for m in metrics}
+    summary = EvaluationTldrSummary.model_validate(task_result)
+    db.refresh(evaluation)
 
-    rationale_samples = _sample_rationales_per_metric(eval_rows)
-    messages = _build_insights_messages(
-        evaluation, aggregate, rationale_samples, metric_meta
-    )
-
-    # Imported lazily so the route module stays importable in tests
-    # that stub out ``app.workers.tasks`` (which transitively imports
-    # ``llm_service`` via the worker registry).
     from app.services.ai.llm_resolver import get_llm_provider_and_model
-    from app.services.ai.llm_service import llm_service
 
     provider_enum, model_str = get_llm_provider_and_model(
         organization_id, db, body.provider, body.model
     )
 
-    try:
-        llm_result = llm_service.generate_response(
-            messages=messages,
-            llm_provider=provider_enum,
-            llm_model=model_str,
-            organization_id=organization_id,
-            db=db,
-            temperature=0.4,
-            max_tokens=1400,
-        )
-    except Exception as e:
-        logger.error(f"[CallImportInsights] LLM call failed: {e}")
-        raise HTTPException(
-            status_code=502, detail=f"LLM call failed: {e}"
-        )
-
-    summary = _parse_insights_response(llm_result.get("text", ""))
-    summary.generated_at_completed_rows = evaluation.completed_rows
-    summary.provider = provider_enum.value
-    summary.model = model_str
-    summary.is_stale = False
-
-    evaluation.tldr_summary = {
-        "narrative": summary.narrative,
-        "patterns": summary.patterns,
-        "metric_insights": summary.metric_insights,
-        "generated_at": summary.generated_at.isoformat(),
-        "generated_at_completed_rows": summary.generated_at_completed_rows,
-        "provider": summary.provider,
-        "model": summary.model,
-    }
-    # ``JSON`` columns aren't auto-tracked when the same dict is mutated
-    # in place; reassigning is the safest pattern, but we also flag the
-    # attribute so SQLAlchemy schedules the UPDATE either way.
-    flag_modified(evaluation, "tldr_summary")
-    db.commit()
-    db.refresh(evaluation)
-
     _enqueue_user_insights_job(
         evaluation,
-        provider=provider_enum.value,
-        model=model_str,
+        provider=summary.provider or provider_enum.value,
+        model=summary.model or model_str,
         force=body.regenerate,
         max_llm_calls=body.max_llm_calls,
         db=db,
