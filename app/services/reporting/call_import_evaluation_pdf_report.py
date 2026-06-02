@@ -1014,7 +1014,7 @@ class CallImportEvaluationPdfReportService:
             )
             business_section = f"""
             <section>
-              <!-- 03 Business Insights -->
+              <!-- 03 User Insights -->
               <h2>03 User Insights</h2>
               <p class="method">{intro}</p>
               {''.join(insight_blocks)}
@@ -1253,7 +1253,7 @@ class CallImportEvaluationPdfReportService:
               <div>Website: <a href="https://efficientai.cloud" class="brand-link">https://efficientai.cloud</a></div>
             </div>
             <div class="footer-right">
-              <div>Evaluation ID: {html.escape(str(payload["evaluation"].id))}</div>
+              <div>Evaluation ID: {html.escape(str(getattr(payload["evaluation"], "id", "")))}</div>
               <div>Generated: {html.escape(payload["generated_at_iso"])}</div>
               <div>Call import reports by EfficientAI Cloud</div>
             </div>
@@ -1333,21 +1333,56 @@ class CallImportEvaluationPdfReportService:
             metric_lines.append("")
             lines.extend(metric_lines)
         business_metrics = [m for m in metrics if m.is_business_metric]
-        if business_metrics:
+        generated_insights = payload.get("generated_user_insights")
+        generated_list = (
+            [item for item in generated_insights if isinstance(item, dict)]
+            if isinstance(generated_insights, list)
+            else []
+        )
+        is_internal = bool(payload.get("internal"))
+        if business_metrics and is_internal:
+            lines.extend(["03 User Insights"])
+            for summary in business_metrics:
+                lines.append(
+                    f"{summary.name} | n={summary.evaluated_count} | "
+                    f"{self._top_distribution_with_percentages(summary)}"
+                )
+                for call_id, rationale in summary.rationales[:4]:
+                    lines.append(f"{summary.name} | {call_id} | {rationale}")
+        elif business_metrics:
             lines.extend(["03 Business Insights"])
             for summary in business_metrics:
                 lines.append(
                     f"{summary.name} | n={summary.evaluated_count} | "
                     f"{self._top_distribution_with_percentages(summary)}"
                 )
-        lines.extend(["04 User Insights / RCA" if business_metrics else "03 User Insights / RCA"])
-        has_rationale = False
-        for summary in metrics:
-            for call_id, rationale in summary.rationales[:4]:
-                has_rationale = True
-                lines.append(f"{summary.name} | {call_id} | {rationale}")
-        if not has_rationale:
-            lines.append("No flagged-call rationales were captured for this run.")
+        if generated_list and not is_internal:
+            lines.extend(["03 User Insights"])
+            overview = payload.get("user_insights_overview")
+            if overview:
+                lines.append(str(overview))
+            for insight in generated_list:
+                title = str(insight.get("title") or "User insight")
+                lines.append(title)
+                observation = insight.get("observation")
+                if observation:
+                    lines.append(f"Observation: {observation}")
+                evidence = insight.get("evidence")
+                if isinstance(evidence, dict):
+                    quote = evidence.get("quote")
+                    if quote:
+                        lines.append(f"Quote: {quote}")
+        if not (business_metrics and is_internal) and not (generated_list and not is_internal):
+            lines.extend(
+                ["04 User Insights / RCA" if business_metrics else "03 User Insights / RCA"]
+            )
+            has_rationale = False
+            for summary in metrics:
+                for call_id, rationale in summary.rationales[:4]:
+                    has_rationale = True
+                    lines.append(f"{summary.name} | {call_id} | {rationale}")
+            if not has_rationale:
+                lines.append("No flagged-call rationales were captured for this run.")
         lines = [line for line in lines if line]
         lines.extend(
             [

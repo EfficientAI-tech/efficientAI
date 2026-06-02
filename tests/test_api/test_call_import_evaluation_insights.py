@@ -82,12 +82,13 @@ def stub_workers():
 
     class _UserInsightsTask:
         @staticmethod
-        def delay(evaluation_id, *, provider=None, model=None):
+        def delay(evaluation_id, *, provider=None, model=None, max_llm_calls=None):
             user_insights_calls.append(
                 {
                     "evaluation_id": evaluation_id,
                     "provider": provider,
                     "model": model,
+                    "max_llm_calls": max_llm_calls,
                 }
             )
             return types.SimpleNamespace(id="user-insights-task-id")
@@ -95,6 +96,12 @@ def stub_workers():
     fake_user_insights_module.generate_evaluation_user_insights_task = _UserInsightsTask()
 
     fake_celery = types.ModuleType("celery")
+
+    class _FakeCelery:
+        def __init__(self, *args, **kwargs):
+            self.conf = types.SimpleNamespace(update=lambda *a, **k: None)
+
+    fake_celery.Celery = _FakeCelery
     fake_celery.group = lambda sigs: types.SimpleNamespace(
         apply_async=lambda: types.SimpleNamespace(id="celery-group-id"),
     )

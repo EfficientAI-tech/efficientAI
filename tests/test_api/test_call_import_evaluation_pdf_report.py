@@ -481,14 +481,16 @@ def test_pdf_report_html_separates_business_metrics(
             "evaluation": evaluation,
             "metrics": summaries,
             "rows": rows,
-            "internal": False,
+            "internal": True,
             "completion_rate": "100.0%",
             "include_weekly_delta": False,
             "weekly_delta_meta": None,
+            "report_config": {"sections": {"user_insights": True}},
         }
     )
 
-    assert "03 Business Insights" in html
+    assert "03 User Insights" in html
+    assert "03 Business Insights" not in html
     assert "Call Context Distribution" in html
     assert "User called about delivery status." in html
 
@@ -907,6 +909,7 @@ def test_render_html_generated_user_insight_block():
             "custom_heading": None,
             "call_import": SimpleNamespace(name="Batch"),
             "evaluation": SimpleNamespace(
+                id="eval-test-id",
                 completed_rows=10,
                 total_rows=10,
                 name="Run",
