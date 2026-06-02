@@ -1,0 +1,53 @@
+auth_enabled: ${LOKI_AUTH_ENABLED:-false}
+
+server:
+  http_listen_port: 3100
+
+common:
+  path_prefix: /loki
+  storage:
+    s3:
+      s3: s3://${LOKI_S3_REGION:-us-east-1}/${LOKI_S3_BUCKET_NAME}
+      bucketnames: ${LOKI_S3_BUCKET_NAME}
+      region: ${LOKI_S3_REGION:-us-east-1}
+      access_key_id: ${LOKI_S3_ACCESS_KEY_ID:-}
+      secret_access_key: ${LOKI_S3_SECRET_ACCESS_KEY:-}
+      s3forcepathstyle: true
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: "2024-01-01"
+      store: tsdb
+      object_store: s3
+      schema: v13
+      index:
+        prefix: ${LOKI_S3_PREFIX:-logs/}index_
+        period: 24h
+
+limits_config:
+  reject_old_samples: true
+  reject_old_samples_max_age: 168h
+  max_query_length: 721h
+  ingestion_rate_mb: 10
+  ingestion_burst_size_mb: 20
+
+compactor:
+  working_directory: /loki/compactor
+  compaction_interval: 10m
+  retention_enabled: true
+  retention_delete_delay: 2h
+  retention_delete_worker_count: 150
+  delete_request_store: s3
+
+storage_config:
+  tsdb_shipper:
+    active_index_directory: /loki/tsdb-index
+    cache_location: /loki/tsdb-cache
+    shared_store: s3
+
+analytics:
+  reporting_enabled: false
