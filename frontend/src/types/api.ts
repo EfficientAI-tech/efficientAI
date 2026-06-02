@@ -448,6 +448,7 @@ export interface S3BrowseResponse {
 
 export interface S3Status {
   enabled: boolean
+  provider?: 's3' | 'gcs' | string
   error?: string | null
 }
 

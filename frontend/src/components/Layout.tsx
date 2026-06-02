@@ -111,7 +111,7 @@ const navigationSections: NavSection[] = [
     title: 'Configurations',
     icon: Settings,
     items: [
-      { name: 'S3 Integration', href: '/data-sources', icon: Database },
+      { name: 'Cloud Storage', href: '/data-sources', icon: Database },
       { name: 'VoiceBundle', href: '/voicebundles', icon: Mic },
       { name: 'Integrations', href: '/integrations', icon: Plug },
       { name: 'API Keys', href: '/settings', icon: Key },

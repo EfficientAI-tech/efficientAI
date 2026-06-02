@@ -7,6 +7,12 @@ from pathlib import Path
 import uuid
 from app.config import settings
 from app.core.exceptions import StorageError
+from app.services.storage.blob_paths import (
+    build_object_key,
+    content_type_for_format,
+    get_organization_root_prefix,
+    normalize_prefix,
+)
 
 
 class S3Service:
@@ -35,7 +41,7 @@ class S3Service:
     @property
     def prefix(self) -> str:
         """Get S3 prefix from settings."""
-        return settings.S3_PREFIX.rstrip("/") + "/" if settings.S3_PREFIX else ""
+        return normalize_prefix(settings.S3_PREFIX)
 
     def _ensure_initialized(self):
         """Lazily initialize S3 client if not already initialized."""
@@ -91,6 +97,11 @@ class S3Service:
             self._initialization_error = f"Failed to initialize S3 service: {str(e)}"
             self.s3_client = None
 
+    def reset_connection(self):
+        """Reset lazy initialization state (for connection tests)."""
+        self.s3_client = None
+        self._initialization_error = None
+
     def is_enabled(self) -> bool:
         """Check if S3 is enabled and configured."""
         if not self.enabled:
@@ -113,18 +124,15 @@ class S3Service:
         evaluator_id: Optional[str] = None,
         meaningful_id: Optional[str] = None
     ) -> str:
-        """
-        Generate S3 key for a file.
-        """
-        # Use meaningful_id if provided, otherwise use file_id
-        file_identifier = meaningful_id if meaningful_id else str(file_id)
-        base_key = f"{file_identifier}.{file_format}"
-
-        if organization_id:
-            if evaluator_id:
-                return f"{self.prefix}organizations/{organization_id}/evaluators/{evaluator_id}/audio/{base_key}"
-            return f"{self.prefix}organizations/{organization_id}/audio/{base_key}"
-        return f"{self.prefix}{base_key}"
+        """Generate S3 key for a file."""
+        return build_object_key(
+            file_id,
+            file_format,
+            settings.S3_PREFIX,
+            organization_id,
+            evaluator_id,
+            meaningful_id,
+        )
 
     def upload_file(
         self,
@@ -143,15 +151,7 @@ class S3Service:
 
         try:
             key = self._get_key(file_id, file_format, organization_id, evaluator_id, meaningful_id)
-
-            # Determine content type based on file format
-            content_type_map = {
-                "wav": "audio/wav",
-                "mp3": "audio/mpeg",
-                "flac": "audio/flac",
-                "m4a": "audio/mp4",
-            }
-            content_type = content_type_map.get(file_format.lower(), "application/octet-stream")
+            content_type = content_type_for_format(file_format)
 
             self.s3_client.put_object(
                 Bucket=self.bucket_name,
@@ -393,7 +393,7 @@ class S3Service:
 
     def get_organization_root_prefix(self, organization_id: str) -> str:
         """Get the root S3 prefix for a given organization."""
-        return f"{self.prefix}organizations/{organization_id}/"
+        return get_organization_root_prefix(settings.S3_PREFIX, organization_id)
 
     def browse_folder(
         self,
@@ -458,24 +458,6 @@ class S3Service:
         except Exception as e:
             raise StorageError(f"Unexpected error browsing S3 folder: {str(e)}")
 
-    def download_file_by_key(self, key: str) -> bytes:
-        """Download file from S3 by key."""
-        self._ensure_initialized()
-        if not self.is_enabled():
-            error_msg = self._initialization_error or "S3 is not enabled or not configured"
-            raise StorageError(error_msg)
-
-        try:
-            response = self.s3_client.get_object(Bucket=self.bucket_name, Key=key)
-            return response["Body"].read()
-        except ClientError as e:
-            error_code = e.response.get("Error", {}).get("Code", "")
-            if error_code == "NoSuchKey":
-                raise StorageError(f"File not found in S3: {key}")
-            raise StorageError(f"Failed to download file from S3: {str(e)}")
-        except Exception as e:
-            raise StorageError(f"Unexpected error downloading file from S3: {str(e)}")
-
     def generate_presigned_url(self, file_id: uuid.UUID, file_format: str, expiration: int = 3600) -> str:
         """Generate a presigned URL for temporary file access."""
         self._ensure_initialized()
@@ -516,5 +498,10 @@ class S3Service:
             raise StorageError(f"Unexpected error generating presigned URL: {str(e)}")
 
 
-# Singleton instance
-s3_service = S3Service()
+def __getattr__(name: str):
+    """Lazy alias to avoid circular import with blob_storage_service."""
+    if name == "s3_service":
+        from app.services.storage.blob_storage_service import blob_storage_service
+
+        return blob_storage_service
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -54,10 +54,17 @@ services:
       DEBUG: ${DEBUG:-True}
       FRONTEND_DIR: /app/frontend/dist
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+      # Optional GCS blob storage (set storage.blob_provider: gcs in config.docker.yml):
+      # BLOB_STORAGE_PROVIDER: gcs
+      # GCS_BUCKET_NAME: your-gcs-bucket
+      # GCS_PROJECT_ID: your-gcp-project
+      # GOOGLE_APPLICATION_CREDENTIALS: /app/secrets/gcp-sa.json
     volumes:
       - ./uploads:/app/uploads
       - ./.data:/app/.data
       - ./config.docker.yml:/app/config.yml:ro
+      # Optional: mount GCP service account for GCS auth
+      # - ./secrets/gcp-sa.json:/app/secrets/gcp-sa.json:ro
     ports:
       - "8000:8000"
     depends_on:
@@ -85,6 +92,8 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+      # Optional GCS blob storage (match api service env when using gcs):
+      # GOOGLE_APPLICATION_CREDENTIALS: /app/secrets/gcp-sa.json
     depends_on:
       db:
         condition: service_healthy
@@ -94,6 +103,8 @@ services:
       - ./uploads:/app/uploads
       - ./.data:/app/.data
       - ./config.docker.yml:/app/config.yml:ro
+      # Optional: mount GCP service account for GCS auth
+      # - ./secrets/gcp-sa.json:/app/secrets/gcp-sa.json:ro
     command: eai worker --config /app/config.yml --loglevel info
 
   # Dedicated worker for the call-import fan-out so large CSV imports
@@ -113,6 +124,8 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+      # Optional GCS blob storage (match api service env when using gcs):
+      # GOOGLE_APPLICATION_CREDENTIALS: /app/secrets/gcp-sa.json
     depends_on:
       db:
         condition: service_healthy
@@ -122,6 +135,8 @@ services:
       - ./uploads:/app/uploads
       - ./.data:/app/.data
       - ./config.docker.yml:/app/config.yml:ro
+      # Optional: mount GCP service account for GCS auth
+      # - ./secrets/gcp-sa.json:/app/secrets/gcp-sa.json:ro
     command: eai worker --config /app/config.yml --loglevel info --queues imports --concurrency 4
 
 volumes:

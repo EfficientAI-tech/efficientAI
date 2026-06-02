@@ -16,37 +16,39 @@ router = APIRouter(prefix="/data-sources/s3", tags=["Data Sources"])
 
 
 class S3StatusResponse(BaseModel):
-    """Schema for S3 status response."""
+    """Schema for blob storage status response."""
     enabled: bool
+    provider: str = "s3"
     error: Optional[str] = None
 
 
 @router.get("/status", response_model=S3StatusResponse, operation_id="getS3Status")
 async def get_s3_status(api_key: str = Depends(get_api_key)):
-    """Get S3 connection status and configuration info."""
+    """Get cloud blob storage connection status and configuration info."""
     enabled = s3_service.is_enabled()
     error = s3_service.get_status_message()
     return {
         "enabled": enabled,
-        "error": error
+        "provider": s3_service.provider_name,
+        "error": error,
     }
 
 
 @router.post("/test", response_model=MessageResponse, operation_id="testS3Connection")
 async def test_s3_connection(api_key: str = Depends(get_api_key)):
-    """Test S3 connection with current credentials."""
-    s3_service.s3_client = None
-    s3_service._initialization_error = None
-    
+    """Test blob storage connection with current credentials."""
+    s3_service.reset_connection()
+
     enabled = s3_service.is_enabled()
     if not enabled:
-        error = s3_service.get_status_message() or "S3 is not enabled or not configured."
+        error = s3_service.get_status_message() or "Blob storage is not enabled or not configured."
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"S3 connection test failed: {error}",
+            detail=f"Blob storage connection test failed: {error}",
         )
-    
-    return {"message": "S3 connection successful"}
+
+    provider = s3_service.provider_name.upper()
+    return {"message": f"{provider} connection successful"}
 
 
 @router.get("/files", response_model=S3ListFilesResponse, operation_id="listS3Files")
@@ -60,7 +62,7 @@ async def list_s3_files(
     if not s3_service.is_enabled():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="S3 is not enabled or not configured.",
+            detail="Blob storage is not enabled or not configured.",
         )
     
     try:
@@ -91,7 +93,7 @@ async def list_s3_files(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to list files from S3: {str(e)}",
+            detail=f"Failed to list files from blob storage: {str(e)}",
         )
 
 
@@ -106,7 +108,7 @@ async def browse_s3(
     if not s3_service.is_enabled():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="S3 is not enabled or not configured.",
+            detail="Blob storage is not enabled or not configured.",
         )
     
     try:
@@ -137,7 +139,7 @@ async def browse_s3(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to browse S3: {str(e)}",
+            detail=f"Failed to browse blob storage: {str(e)}",
         )
 
 
@@ -152,7 +154,7 @@ async def upload_to_s3(
     if not s3_service.is_enabled():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="S3 is not enabled or not configured.",
+            detail="Blob storage is not enabled or not configured.",
         )
     
     try:
@@ -189,7 +191,7 @@ async def upload_to_s3(
             meaningful_id=meaningful_id,
         )
         
-        return {"message": f"File '{upload_filename}' uploaded successfully to S3."}
+        return {"message": f"File '{upload_filename}' uploaded successfully."}
     except StorageError as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -200,7 +202,7 @@ async def upload_to_s3(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to upload file to S3: {str(e)}",
+            detail=f"Failed to upload file to blob storage: {str(e)}",
         )
 
 @router.get("/files/{file_key:path}/download", operation_id="downloadFromS3")
@@ -209,7 +211,7 @@ async def download_from_s3(file_key: str, api_key: str = Depends(get_api_key)):
     if not s3_service.is_enabled():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="S3 is not enabled or not configured.",
+            detail="Blob storage is not enabled or not configured.",
         )
     
     try:
@@ -224,7 +226,7 @@ async def download_from_s3(file_key: str, api_key: str = Depends(get_api_key)):
         if "not found" in str(e).lower():
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="File not found in S3.",
+                detail="File not found in blob storage.",
             )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -233,7 +235,7 @@ async def download_from_s3(file_key: str, api_key: str = Depends(get_api_key)):
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to download file from S3: {str(e)}",
+            detail=f"Failed to download file from blob storage: {str(e)}",
         )
 
 
@@ -253,7 +255,7 @@ async def get_s3_presigned_url(
     if not s3_service.is_enabled():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="S3 is not enabled or not configured.",
+            detail="Blob storage is not enabled or not configured.",
         )
     
     try:
@@ -265,7 +267,7 @@ async def get_s3_presigned_url(
         if "not found" in str(e).lower():
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="File not found in S3.",
+                detail="File not found in blob storage.",
             )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -284,17 +286,17 @@ async def delete_from_s3(file_key: str, api_key: str = Depends(get_api_key)):
     if not s3_service.is_enabled():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="S3 is not enabled or not configured.",
+            detail="Blob storage is not enabled or not configured.",
         )
     
     try:
         s3_service.delete_file_by_key(file_key)
-        return {"message": "File deleted successfully from S3."}
+        return {"message": "File deleted successfully."}
     except StorageError as e:
         if "not found" in str(e).lower():
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="File not found in S3.",
+                detail="File not found in blob storage.",
             )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -303,5 +305,5 @@ async def delete_from_s3(file_key: str, api_key: str = Depends(get_api_key)):
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to delete file from S3: {str(e)}",
+            detail=f"Failed to delete file from blob storage: {str(e)}",
         )
