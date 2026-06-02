@@ -1049,6 +1049,7 @@ export interface CallImportEvaluation {
    * runs the user has not summarised yet.
    */
   tldr_summary?: EvaluationTldrSummary | null
+  user_insights?: EvaluationUserInsightsState | null
   /**
    * True when the user opted into top-level metric discovery on the
    * Run Evaluation modal. Gates the Discovered metrics panel on the
@@ -1067,6 +1068,7 @@ export interface CallImportEvaluation {
 export interface EvaluationTldrSummary {
   narrative: string
   patterns: string[]
+  metric_insights?: Record<string, string>
   generated_at: string
   generated_at_completed_rows: number
   provider?: string | null
@@ -1074,9 +1076,66 @@ export interface EvaluationTldrSummary {
   is_stale: boolean
 }
 
+export interface UserInsightCategory {
+  label: string
+  count: number
+  share_pct: number
+}
+
+export interface UserInsightEvidenceTurn {
+  speaker: string
+  text: string
+}
+
+export interface UserInsightEvidence {
+  conversation_id?: string | null
+  quote: string
+  turns?: UserInsightEvidenceTurn[]
+}
+
+export interface EvaluationUserInsightItem {
+  id: string
+  title: string
+  categories: UserInsightCategory[]
+  observation: string
+  evidence: UserInsightEvidence
+}
+
+export interface EvaluationUserInsightsState {
+  status: 'idle' | 'running' | 'completed' | 'failed'
+  insights: EvaluationUserInsightItem[]
+  generated_at?: string | null
+  generated_at_completed_rows: number
+  progress?: { completed_llm_calls: number; total_llm_calls: number } | null
+  provider?: string | null
+  model?: string | null
+  llm_calls_used: number
+  max_llm_calls?: number | null
+  error_message?: string | null
+  is_stale: boolean
+}
+
 export interface CallImportEvaluationListResponse {
   items: CallImportEvaluation[]
   total: number
+}
+
+export interface CallImportEvaluationBaselineCandidate {
+  evaluation_id: string
+  name: string
+  dataset: string
+  period_label: string | null
+  period_start: string | null
+  period_end: string | null
+  period_display: string
+  completed_rows: number
+  created_at: string
+  is_default: boolean
+}
+
+export interface CallImportEvaluationBaselineCandidatesResponse {
+  items: CallImportEvaluationBaselineCandidate[]
+  default_evaluation_id: string | null
 }
 
 export interface CallImportEvaluationRow {

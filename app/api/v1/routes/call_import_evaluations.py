@@ -12,7 +12,7 @@ import statistics
 from typing import Any, Dict, Iterator, List, Literal, Optional, Set, Tuple
 from uuid import UUID
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
@@ -62,12 +62,19 @@ from app.models.schemas import (
     DiscoveredMetricsResponse,
     EvaluationInsightsRequest,
     EvaluationTldrSummary,
+    EvaluationUserInsightsRequest,
+    EvaluationUserInsightsState,
     MetricFlowEdge,
     MetricFlowNode,
     MetricFlowResponse,
 )
 from app.services.reporting.call_import_evaluation_pdf_report import (
     call_import_evaluation_pdf_report_service,
+)
+from app.services.call_import_user_insights import (
+    normalize_max_llm_calls,
+    total_llm_calls_for_rows,
+    user_insights_state_from_raw,
 )
 
 router = APIRouter(
@@ -82,6 +89,7 @@ class CallImportEvaluationPdfReportRequest(BaseModel):
     report_type: Literal["external", "internal"] = "external"
     include_weekly_delta: bool = False
     include_period_delta: bool = False
+    baseline_evaluation_id: Optional[str] = None
     period_label: Optional[str] = Field(default=None, max_length=64)
     use_case: Optional[str] = Field(default=None, max_length=120)
     internal_brand_image_id: Optional[str] = None
@@ -95,6 +103,24 @@ class CallImportEvaluationPdfReportRequest(BaseModel):
         if not cleaned:
             raise ValueError("Vendor name is required.")
         return cleaned
+
+
+class CallImportEvaluationBaselineCandidate(BaseModel):
+    evaluation_id: str
+    name: str
+    dataset: str
+    period_label: Optional[str] = None
+    period_start: Optional[date] = None
+    period_end: Optional[date] = None
+    period_display: str
+    completed_rows: int
+    created_at: datetime
+    is_default: bool = False
+
+
+class CallImportEvaluationBaselineCandidatesResponse(BaseModel):
+    items: List[CallImportEvaluationBaselineCandidate]
+    default_evaluation_id: Optional[str] = None
 
 
 def _require_import(
@@ -376,6 +402,7 @@ def _serialize_eval(
         created_at=row.created_at,
         updated_at=row.updated_at,
         tldr_summary=_tldr_summary_payload(row),
+        user_insights=_user_insights_payload(row),
         discover_new_metrics=bool(
             getattr(row, "discover_new_metrics", False)
         ),
@@ -1999,6 +2026,278 @@ def _display_metrics_for_pdf_report(
     return display
 
 
+def _metric_is_user_insight(metric: Metric) -> bool:
+    if (getattr(metric, "metric_category", "quality") or "quality") == "user_insight":
+        return True
+    text_value = " ".join(
+        str(part or "").lower()
+        for part in (getattr(metric, "name", ""), getattr(metric, "description", ""))
+    )
+    normalized = text_value.replace("-", " ").replace("_", " ")
+    phrases = (
+        "call context",
+        "caller context",
+        "product identification",
+        "out of scope",
+        "identity match",
+        "user identity",
+        "caller identity",
+        "frustration trigger",
+        "video call offer",
+        "video call reception",
+    )
+    return any(phrase in normalized for phrase in phrases)
+
+
+def _evaluation_rows_for_period(
+    db: Session,
+    evaluation_id: UUID,
+) -> list[tuple[CallImportEvaluationRow, CallImportRow]]:
+    return (
+        db.query(CallImportEvaluationRow, CallImportRow)
+        .join(CallImportRow, CallImportRow.id == CallImportEvaluationRow.call_import_row_id)
+        .filter(CallImportEvaluationRow.evaluation_id == evaluation_id)
+        .order_by(CallImportRow.row_index.asc())
+        .all()
+    )
+
+
+def _baseline_candidate_evaluations(
+    db: Session,
+    organization_id: UUID,
+    workspace_id: UUID,
+    current_evaluation: CallImportEvaluation,
+    current_period_start: Optional[date],
+    *,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    candidates = (
+        db.query(CallImportEvaluation, CallImport)
+        .join(CallImport, CallImport.id == CallImportEvaluation.call_import_id)
+        .filter(
+            CallImportEvaluation.organization_id == organization_id,
+            CallImport.workspace_id == workspace_id,
+            CallImportEvaluation.id != current_evaluation.id,
+            CallImportEvaluation.status == "completed",
+            CallImportEvaluation.completed_rows > 0,
+        )
+        .order_by(desc(CallImportEvaluation.created_at))
+        .limit(limit * 3)
+        .all()
+    )
+    items: list[dict[str, Any]] = []
+    for candidate_eval, candidate_import in candidates:
+        rows = _evaluation_rows_for_period(db, candidate_eval.id)
+        period_start, period_end, period_label, period_display = _report_period_from_rows(rows)
+        if current_period_start and period_start and period_start >= current_period_start:
+            continue
+        dataset = (
+            (candidate_import.dataset or "").strip()
+            or (candidate_import.original_filename or candidate_import.filename or "").strip()
+            or "Unknown dataset"
+        )
+        evaluation_name = (
+            (candidate_eval.name or "").strip()
+            or str(candidate_eval.id)[:8]
+        )
+        items.append(
+            {
+                "evaluation_id": str(candidate_eval.id),
+                "name": evaluation_name,
+                "dataset": dataset,
+                "period_label": period_label,
+                "period_start": period_start,
+                "period_end": period_end,
+                "period_display": period_display,
+                "completed_rows": int(candidate_eval.completed_rows or 0),
+                "created_at": candidate_eval.created_at,
+                "is_default": False,
+            }
+        )
+        if len(items) >= limit:
+            break
+    items.sort(
+        key=lambda item: (
+            item["period_start"] or date.min,
+            item["created_at"] or datetime.min.replace(tzinfo=timezone.utc),
+        ),
+        reverse=True,
+    )
+    if items:
+        items[0]["is_default"] = True
+    return items
+
+
+def _resolve_baseline_evaluation(
+    db: Session,
+    organization_id: UUID,
+    workspace_id: UUID,
+    current_evaluation: CallImportEvaluation,
+    current_period_start: Optional[date],
+    baseline_evaluation_id: Optional[str],
+) -> Optional[CallImportEvaluation]:
+    candidates = _baseline_candidate_evaluations(
+        db,
+        organization_id,
+        workspace_id,
+        current_evaluation,
+        current_period_start,
+    )
+    allowed_ids = {item["evaluation_id"] for item in candidates}
+    if baseline_evaluation_id:
+        baseline_id = str(baseline_evaluation_id).strip()
+        if baseline_id not in allowed_ids:
+            raise HTTPException(
+                status_code=400,
+                detail="Selected baseline evaluation is not a valid prior run for this report.",
+            )
+        return (
+            db.query(CallImportEvaluation)
+            .filter(
+                CallImportEvaluation.id == UUID(baseline_id),
+                CallImportEvaluation.organization_id == organization_id,
+            )
+            .first()
+        )
+    if not candidates:
+        return None
+    default_id = candidates[0]["evaluation_id"]
+    return (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == UUID(default_id),
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+
+
+def _benchmark_context_for_evaluation(
+    db: Session,
+    baseline_evaluation: Optional[CallImportEvaluation],
+) -> Optional[dict[str, str]]:
+    if baseline_evaluation is None:
+        return None
+    baseline_import = (
+        db.query(CallImport)
+        .filter(CallImport.id == baseline_evaluation.call_import_id)
+        .first()
+    )
+    rows = _evaluation_rows_for_period(db, baseline_evaluation.id)
+    period_start, _period_end, period_label, _period_display = _report_period_from_rows(rows)
+    dataset = (
+        (baseline_import.dataset or "").strip()
+        if baseline_import and baseline_import.dataset
+        else None
+    )
+    filename = (
+        (baseline_import.original_filename or baseline_import.filename or "").strip()
+        if baseline_import
+        else None
+    )
+    evaluation_label = (
+        (baseline_evaluation.name or "").strip()
+        if baseline_evaluation.name
+        else str(baseline_evaluation.id)[:8]
+    )
+    period = period_label or (
+        period_start.isoformat() if period_start else "previous report"
+    )
+    return {
+        "dataset": dataset or filename or "Unknown dataset",
+        "evaluation": evaluation_label,
+        "evaluation_id": str(baseline_evaluation.id),
+        "period": period,
+    }
+
+
+def _period_deltas_from_evaluation(
+    db: Session,
+    baseline_evaluation: CallImportEvaluation,
+    current_metric_aggregates: list[dict[str, Any]],
+) -> dict[str, dict[str, str]]:
+    baseline_rows = _evaluation_rows_for_period(db, baseline_evaluation.id)
+    baseline_eval_rows = [eval_row for eval_row, _source_row in baseline_rows]
+    baseline_aggregate_models = _compute_metric_aggregates(
+        db,
+        baseline_evaluation,
+        baseline_eval_rows,
+    )
+    baseline_metric_aggregates = [
+        _aggregate_to_dict(aggregate) for aggregate in baseline_aggregate_models
+    ]
+    return _period_deltas_from_aggregates(
+        baseline_metric_aggregates,
+        current_metric_aggregates,
+    )
+
+
+def _benchmark_context_for_snapshot(
+    db: Session,
+    previous_snapshot: Optional[CallImportEvaluationReportSnapshot],
+) -> Optional[dict[str, str]]:
+    if previous_snapshot is None:
+        return None
+    previous_import = (
+        db.query(CallImport)
+        .filter(CallImport.id == previous_snapshot.call_import_id)
+        .first()
+    )
+    previous_eval = (
+        db.query(CallImportEvaluation)
+        .filter(CallImportEvaluation.id == previous_snapshot.evaluation_id)
+        .first()
+    )
+    dataset = (
+        (previous_import.dataset or "").strip()
+        if previous_import and previous_import.dataset
+        else None
+    )
+    filename = (
+        (previous_import.original_filename or previous_import.filename or "").strip()
+        if previous_import
+        else None
+    )
+    evaluation_label = (
+        (previous_eval.name or "").strip()
+        if previous_eval and previous_eval.name
+        else str(previous_snapshot.evaluation_id)[:8]
+    )
+    period = previous_snapshot.period_label or (
+        previous_snapshot.period_start.isoformat()
+        if previous_snapshot.period_start
+        else "previous report"
+    )
+    return {
+        "dataset": dataset or filename or "Unknown dataset",
+        "evaluation": evaluation_label,
+        "evaluation_id": str(previous_snapshot.evaluation_id),
+        "period": period,
+    }
+
+
+def _audit_summary_text_from_tldr(
+    summary: Optional[EvaluationTldrSummary],
+) -> Optional[str]:
+    if summary is None:
+        return None
+    parts = [summary.narrative.strip()]
+    parts.extend(pattern.strip() for pattern in summary.patterns if pattern.strip())
+    return "\n\n".join(part for part in parts if part)
+
+
+def _metric_insights_from_tldr(
+    summary: Optional[EvaluationTldrSummary],
+) -> dict[str, str]:
+    if summary is None:
+        return {}
+    return {
+        str(metric_id): insight.strip()
+        for metric_id, insight in summary.metric_insights.items()
+        if str(metric_id).strip() and insight.strip()
+    }
+
+
 def _report_period_from_rows(
     rows: list[tuple[CallImportEvaluationRow, CallImportRow]],
 ) -> tuple[Optional[date], Optional[date], Optional[str], str]:
@@ -2011,11 +2310,18 @@ def _report_period_from_rows(
         return None, None, None, "Not specified"
     start = min(dates)
     end = max(dates)
-    label = f"{start.isocalendar().year}-W{start.isocalendar().week:02d}"
-    if start != end:
-        display = f"{start.strftime('%b %d')}–{end.strftime('%b %d, %Y')}"
+    week_anchor = max(dates)
+    week_start = week_anchor - timedelta(days=week_anchor.weekday())
+    week_end = week_start + timedelta(days=6)
+    iso_year, iso_week, _ = week_anchor.isocalendar()
+    label = f"{iso_year}-W{iso_week:02d}"
+    if week_start.year == week_end.year:
+        week_range = f"{week_start.strftime('%b %d')}–{week_end.strftime('%b %d, %Y')}"
     else:
-        display = start.strftime("%b %d, %Y")
+        week_range = (
+            f"{week_start.strftime('%b %d, %Y')}–{week_end.strftime('%b %d, %Y')}"
+        )
+    display = f"W{iso_week:02d} · {week_range}"
     return start, end, label, display
 
 
@@ -2044,17 +2350,16 @@ def _aggregate_primary_percent(raw: dict[str, Any]) -> Optional[float]:
     return (flagged / count) * 100 if count else None
 
 
-def _period_deltas_from_snapshot(
-    previous: Optional[CallImportEvaluationReportSnapshot],
+def _period_deltas_from_aggregates(
+    previous_metric_aggregates: list[dict[str, Any]],
     current_metric_aggregates: list[dict[str, Any]],
 ) -> dict[str, dict[str, str]]:
     current_by_id = {str(item.get("metric_id")): item for item in current_metric_aggregates}
-    previous_items = (
-        previous.metric_aggregates
-        if previous and isinstance(previous.metric_aggregates, list)
-        else []
-    )
-    previous_by_id = {str(item.get("metric_id")): item for item in previous_items if isinstance(item, dict)}
+    previous_by_id = {
+        str(item.get("metric_id")): item
+        for item in previous_metric_aggregates
+        if isinstance(item, dict)
+    }
     deltas: dict[str, dict[str, str]] = {}
     for metric_id, current in current_by_id.items():
         previous_raw = previous_by_id.get(metric_id)
@@ -2073,6 +2378,18 @@ def _period_deltas_from_snapshot(
             "detail": f"Current report {current_pct:.1f}% vs previous report {previous_pct:.1f}%",
         }
     return deltas
+
+
+def _period_deltas_from_snapshot(
+    previous: Optional[CallImportEvaluationReportSnapshot],
+    current_metric_aggregates: list[dict[str, Any]],
+) -> dict[str, dict[str, str]]:
+    previous_items = (
+        previous.metric_aggregates
+        if previous and isinstance(previous.metric_aggregates, list)
+        else []
+    )
+    return _period_deltas_from_aggregates(previous_items, current_metric_aggregates)
 
 
 def _sample_evidence_for_metrics(
@@ -2195,6 +2512,53 @@ def _generate_report_narrative(
     return _fallback_report_narrative(insight_aggregates, evidence_samples)
 
 
+@router.get(
+    "/{eval_id}/baseline-candidates",
+    response_model=CallImportEvaluationBaselineCandidatesResponse,
+    operation_id="listCallImportEvaluationBaselineCandidates",
+)
+async def list_call_import_evaluation_baseline_candidates(
+    call_import_id: UUID,
+    eval_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> CallImportEvaluationBaselineCandidatesResponse:
+    del api_key
+    call_import = _require_import(db, call_import_id, organization_id)
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(status_code=404, detail="Call import evaluation not found")
+
+    rows = _evaluation_rows_for_period(db, evaluation.id)
+    period_start, _period_end, _derived_period_label, _period_display = _report_period_from_rows(
+        rows
+    )
+    candidates = _baseline_candidate_evaluations(
+        db,
+        organization_id,
+        call_import.workspace_id,
+        evaluation,
+        period_start,
+    )
+    default_evaluation_id = next(
+        (item["evaluation_id"] for item in candidates if item.get("is_default")),
+        None,
+    )
+    return CallImportEvaluationBaselineCandidatesResponse(
+        items=[CallImportEvaluationBaselineCandidate(**item) for item in candidates],
+        default_evaluation_id=default_evaluation_id,
+    )
+
+
 @router.post(
     "/{eval_id}/pdf-report",
     operation_id="generateCallImportEvaluationPdfReport",
@@ -2257,7 +2621,7 @@ async def generate_call_import_evaluation_pdf_report(
     insight_metric_ids = {
         str(metric.id)
         for metric in metrics
-        if (getattr(metric, "metric_category", "quality") or "quality") == "user_insight"
+        if _metric_is_user_insight(metric)
     }
     metric_aggregates = [
         item for item in aggregate_dicts if str(item.get("metric_id")) not in insight_metric_ids
@@ -2273,32 +2637,37 @@ async def generate_call_import_evaluation_pdf_report(
     )
     previous_snapshot = None
     period_delta_by_metric: dict[str, dict[str, str]] = {}
+    baseline_evaluation: Optional[CallImportEvaluation] = None
     if include_period_delta and period_start:
-        previous_snapshot = (
-            db.query(CallImportEvaluationReportSnapshot)
-            .filter(
-                CallImportEvaluationReportSnapshot.organization_id == organization_id,
-                CallImportEvaluationReportSnapshot.workspace_id == call_import.workspace_id,
-                CallImportEvaluationReportSnapshot.period_start < period_start,
-            )
-            .order_by(
-                desc(CallImportEvaluationReportSnapshot.period_start),
-                desc(CallImportEvaluationReportSnapshot.created_at),
-            )
-            .first()
+        baseline_evaluation = _resolve_baseline_evaluation(
+            db,
+            organization_id,
+            call_import.workspace_id,
+            evaluation,
+            period_start,
+            payload.baseline_evaluation_id,
         )
-        period_delta_by_metric = _period_deltas_from_snapshot(
-            previous_snapshot,
-            metric_aggregates,
-        )
+        if baseline_evaluation:
+            period_delta_by_metric = _period_deltas_from_evaluation(
+                db,
+                baseline_evaluation,
+                metric_aggregates,
+            )
+    benchmark_context = _benchmark_context_for_evaluation(db, baseline_evaluation)
     evidence_samples = _sample_evidence_for_metrics(rows, insight_metric_ids)
+    cached_tldr_summary = _tldr_summary_payload(evaluation)
+    cached_user_insights = _user_insights_payload(evaluation)
+    generated_insights_for_pdf = _selected_generated_user_insights(
+        cached_user_insights,
+        report_config,
+    )
     narrative = _generate_report_narrative(
         db,
         organization_id,
         metric_aggregates=metric_aggregates,
-        insight_aggregates=insight_aggregates,
+        insight_aggregates=insight_aggregates if is_internal else [],
         period_delta_by_metric=period_delta_by_metric,
-        evidence_samples=evidence_samples,
+        evidence_samples=evidence_samples if is_internal else {},
         report_config=report_config,
     )
 
@@ -2330,6 +2699,13 @@ async def generate_call_import_evaluation_pdf_report(
             .count(),
             report_config=report_config,
             narrative=narrative,
+            audit_summary=_audit_summary_text_from_tldr(cached_tldr_summary),
+            metric_insights=_metric_insights_from_tldr(cached_tldr_summary),
+            benchmark_context=benchmark_context,
+            generated_user_insights=generated_insights_for_pdf,
+            user_insights_overview=(
+                cached_user_insights.overview if cached_user_insights else None
+            ),
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception(
@@ -3066,7 +3442,9 @@ def _compute_metric_aggregates(
                 meta.metric_type if meta else observed_metric_type
             ),
             metric_category=(
-                getattr(meta, "metric_category", "quality") if meta else "quality"
+                "user_insight"
+                if meta is not None and _metric_is_user_insight(meta)
+                else "quality"
             )
             or "quality",
             is_multi_label_parent=is_multi_label_parent,
@@ -3228,10 +3606,13 @@ _INSIGHTS_SYSTEM_PROMPT = (
     "Return STRICT JSON only, with this shape and no extra keys:\n"
     "{\n"
     '  "narrative": "<2-4 sentence prose summary>",\n'
-    '  "patterns": ["<bullet 1>", "<bullet 2>", ...]\n'
+    '  "patterns": ["<bullet 1>", "<bullet 2>", ...],\n'
+    '  "metric_insights": {"<metric_id>": "<2-3 line business meaning>"}\n'
     "}\n\n"
     "Constraints:\n"
     "- 3 to 5 bullets, each <= 200 characters, no markdown.\n"
+    "- metric_insights must include one entry for each top-level metric id supplied.\n"
+    "- Each metric insight should explain what the metric means for the business and what the current distribution suggests, not restate the metric rubric.\n"
     "- Avoid restating raw counts unless they reveal a pattern.\n"
     "- Use neutral, factual language ('frustration appeared in...') "
     "rather than judgemental ('the agents failed to...')."
@@ -3260,6 +3641,18 @@ def _tldr_summary_payload(
         if isinstance(patterns_raw, list)
         else []
     )
+    metric_insights_raw = raw.get("metric_insights")
+    metric_insights = (
+        {
+            str(metric_id): str(insight).strip()
+            for metric_id, insight in metric_insights_raw.items()
+            if str(metric_id).strip()
+            and isinstance(insight, str)
+            and insight.strip()
+        }
+        if isinstance(metric_insights_raw, dict)
+        else {}
+    )
     generated_at_raw = raw.get("generated_at")
     try:
         generated_at = (
@@ -3274,6 +3667,7 @@ def _tldr_summary_payload(
     return EvaluationTldrSummary(
         narrative=narrative.strip(),
         patterns=patterns,
+        metric_insights=metric_insights,
         generated_at=generated_at,
         generated_at_completed_rows=snapshot_int,
         provider=raw.get("provider") if isinstance(raw.get("provider"), str) else None,
@@ -3366,12 +3760,16 @@ def _build_insights_messages(
 
     def _format_metric_block(agg: CallImportMetricAggregate, indent: int) -> List[str]:
         prefix = "  " * indent + "- "
-        bits: List[str] = [f"{prefix}{agg.metric_name} (n={agg.count}"]
+        bits: List[str] = [f"{prefix}{agg.metric_name} [id={agg.metric_id}] (n={agg.count}"]
         if agg.skipped_count:
             bits.append(f", skipped={agg.skipped_count}")
         if agg.error_count:
             bits.append(f", errors={agg.error_count}")
         bits.append(")")
+        meta = metric_meta.get(agg.metric_id)
+        description = (meta.description or "").strip() if meta else ""
+        if description:
+            bits.append(f" | definition={description[:500]}")
         if agg.mean is not None:
             mean_s = f"{agg.mean:.2f}"
             stddev_s = f"{agg.stddev:.2f}" if agg.stddev is not None else "-"
@@ -3399,6 +3797,13 @@ def _build_insights_messages(
             lines.extend(_format_metric_block(child, indent=1))
 
     lines.append("")
+    top_level_ids = [agg.metric_id for agg in top_level]
+    if top_level_ids:
+        lines.append(
+            "metric_insights keys must exactly use these top-level metric ids: "
+            + ", ".join(top_level_ids)
+        )
+        lines.append("")
     lines.append(
         "Write the JSON object as instructed. Do not include "
         "preamble, code fences, or trailing commentary."
@@ -3469,10 +3874,27 @@ def _parse_insights_response(text: str) -> EvaluationTldrSummary:
             status_code=502,
             detail="LLM insights JSON 'patterns' must be a list of strings",
         )
+    metric_insights_raw = parsed.get("metric_insights")
+    if metric_insights_raw is None:
+        metric_insights: Dict[str, str] = {}
+    elif isinstance(metric_insights_raw, dict):
+        metric_insights = {
+            str(metric_id): str(insight).strip()
+            for metric_id, insight in metric_insights_raw.items()
+            if str(metric_id).strip()
+            and isinstance(insight, str)
+            and insight.strip()
+        }
+    else:
+        raise HTTPException(
+            status_code=502,
+            detail="LLM insights JSON 'metric_insights' must be an object",
+        )
 
     return EvaluationTldrSummary(
         narrative=narrative.strip(),
         patterns=patterns,
+        metric_insights=metric_insights,
         generated_at=datetime.now(timezone.utc),
         generated_at_completed_rows=0,  # filled in by caller
         is_stale=False,
@@ -3613,7 +4035,7 @@ async def generate_call_import_evaluation_insights(
             organization_id=organization_id,
             db=db,
             temperature=0.4,
-            max_tokens=700,
+            max_tokens=1400,
         )
     except Exception as e:
         logger.error(f"[CallImportInsights] LLM call failed: {e}")
@@ -3630,6 +4052,7 @@ async def generate_call_import_evaluation_insights(
     evaluation.tldr_summary = {
         "narrative": summary.narrative,
         "patterns": summary.patterns,
+        "metric_insights": summary.metric_insights,
         "generated_at": summary.generated_at.isoformat(),
         "generated_at_completed_rows": summary.generated_at_completed_rows,
         "provider": summary.provider,
@@ -3642,7 +4065,222 @@ async def generate_call_import_evaluation_insights(
     db.commit()
     db.refresh(evaluation)
 
+    _enqueue_user_insights_job(
+        evaluation,
+        provider=provider_enum.value,
+        model=model_str,
+        force=body.regenerate,
+        max_llm_calls=body.max_llm_calls,
+        db=db,
+    )
+
     return summary
+
+
+def _user_insights_payload(
+    evaluation: CallImportEvaluation,
+) -> Optional[EvaluationUserInsightsState]:
+    raw = getattr(evaluation, "user_insights", None)
+    if raw is None:
+        return None
+    return user_insights_state_from_raw(
+        raw,
+        completed_rows=evaluation.completed_rows,
+    )
+
+
+def _selected_generated_user_insights(
+    state: Optional[EvaluationUserInsightsState],
+    report_config: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Filter and order generated insights for PDF section 03."""
+    if state is None or state.status != "completed" or not state.insights:
+        return []
+
+    selected_ids = report_config.get("user_insight_ids")
+    if isinstance(selected_ids, list) and selected_ids:
+        allowed = {str(item) for item in selected_ids if item}
+        items = [item for item in state.insights if item.id in allowed]
+    else:
+        items = list(state.insights)
+
+    order_raw = report_config.get("order")
+    order_ids: list[str] = []
+    if isinstance(order_raw, dict):
+        user_order = order_raw.get("user_insights")
+        if isinstance(user_order, list):
+            order_ids = [str(item) for item in user_order if item]
+
+    if order_ids:
+        by_id = {item.id: item for item in items}
+        ordered = [by_id[iid] for iid in order_ids if iid in by_id]
+        seen = set(order_ids)
+        ordered.extend(item for item in items if item.id not in seen)
+        items = ordered
+
+    return [item.model_dump(mode="json") for item in items]
+
+
+def _enqueue_user_insights_job(
+    evaluation: CallImportEvaluation,
+    *,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    force: bool = False,
+    max_llm_calls: Optional[int] = None,
+    db: Optional[Session] = None,
+) -> None:
+    """Enqueue background user-insights generation unless already running."""
+    current = _user_insights_payload(evaluation)
+    if current is not None and current.status == "running" and not force:
+        return
+
+    llm_budget = normalize_max_llm_calls(max_llm_calls)
+
+    completed_count = (
+        db.query(CallImportEvaluationRow)
+        .filter(
+            CallImportEvaluationRow.evaluation_id == evaluation.id,
+            CallImportEvaluationRow.status == "completed",
+        )
+        .count()
+        if db is not None
+        else evaluation.completed_rows
+    )
+    total_calls = total_llm_calls_for_rows(completed_count, max_llm_calls=llm_budget)
+    evaluation.user_insights = {
+        "status": "running",
+        "insights": (
+            (evaluation.user_insights or {}).get("insights", [])
+            if isinstance(evaluation.user_insights, dict)
+            else []
+        ),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at_completed_rows": evaluation.completed_rows,
+        "progress": {"completed_llm_calls": 0, "total_llm_calls": total_calls},
+        "provider": provider,
+        "model": model,
+        "max_llm_calls": llm_budget,
+        "llm_calls_used": 0,
+        "error_message": None,
+    }
+    if db is not None:
+        flag_modified(evaluation, "user_insights")
+        db.commit()
+
+    from app.workers.tasks.generate_evaluation_user_insights import (
+        generate_evaluation_user_insights_task,
+    )
+
+    generate_evaluation_user_insights_task.delay(
+        str(evaluation.id),
+        provider=provider,
+        model=model,
+        max_llm_calls=llm_budget,
+    )
+
+
+@router.get(
+    "/{eval_id}/user-insights",
+    response_model=Optional[EvaluationUserInsightsState],
+    operation_id="getCallImportEvaluationUserInsights",
+)
+async def get_call_import_evaluation_user_insights(
+    call_import_id: UUID,
+    eval_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> Optional[EvaluationUserInsightsState]:
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation not found"
+        )
+    return _user_insights_payload(evaluation)
+
+
+@router.post(
+    "/{eval_id}/user-insights",
+    response_model=EvaluationUserInsightsState,
+    operation_id="generateCallImportEvaluationUserInsights",
+)
+async def generate_call_import_evaluation_user_insights(
+    call_import_id: UUID,
+    eval_id: UUID,
+    body: EvaluationUserInsightsRequest = Body(
+        default_factory=EvaluationUserInsightsRequest
+    ),
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> EvaluationUserInsightsState:
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation not found"
+        )
+
+    if not body.regenerate and not body.force:
+        cached = _user_insights_payload(evaluation)
+        if cached is not None and cached.status in {"running", "completed"}:
+            return cached
+
+    eval_rows = (
+        db.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == eval_id)
+        .all()
+    )
+    if not any(row.status == "completed" for row in eval_rows):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No completed rows yet. Wait for at least one row to "
+                "finish scoring before generating user insights."
+            ),
+        )
+
+    from app.services.ai.llm_resolver import get_llm_provider_and_model
+
+    provider_enum, model_str = get_llm_provider_and_model(
+        organization_id, db, body.provider, body.model
+    )
+
+    _enqueue_user_insights_job(
+        evaluation,
+        provider=provider_enum.value,
+        model=model_str,
+        force=body.force or body.regenerate,
+        max_llm_calls=body.max_llm_calls,
+        db=db,
+    )
+
+    db.refresh(evaluation)
+    return _user_insights_payload(evaluation) or EvaluationUserInsightsState(
+        status="running"
+    )
 
 
 # ---------------------------------------------------------------------------

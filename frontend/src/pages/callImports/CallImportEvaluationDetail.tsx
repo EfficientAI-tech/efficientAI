@@ -60,9 +60,12 @@ import {
 import { apiClient, type ReportBranding } from '../../lib/api'
 import type {
   CallImportEvaluation,
+  CallImportEvaluationBaselineCandidate,
   CallImportEvaluationRow,
   CallImportMetricAggregate,
   EvaluationTldrSummary,
+  EvaluationUserInsightsState,
+  EvaluationUserInsightItem,
 } from '../../types/api'
 import AIProviderModelPicker from '../../components/AIProviderModelPicker'
 import Button from '../../components/Button'
@@ -209,7 +212,26 @@ function resolveCategoricalChart(
   return autoPickCategoricalChart(metric)
 }
 
+function isUserInsightMetricName(name: string): boolean {
+  const normalized = name.toLowerCase().replace(/[-_]/g, ' ')
+  return [
+    'call context',
+    'caller context',
+    'product identification',
+    'out of scope',
+    'identity match',
+    'user identity',
+    'caller identity',
+    'frustration trigger',
+    'video call offer',
+    'video call reception',
+  ].some((phrase) => normalized.includes(phrase))
+}
+
 const ROWS_PAGE_SIZE = 50
+
+const USER_INSIGHTS_SAMPLE_SIZE_OPTIONS = [50, 100, 150, 200, 300, 500] as const
+const DEFAULT_USER_INSIGHTS_SAMPLE_SIZE = 200
 
 // Mirrors the allowlist used on `CallImportDetail` when picking STT
 // providers for a new evaluation run. The retry modal exposes the same
@@ -336,6 +358,17 @@ export default function CallImportEvaluationDetail() {
     'external',
   )
   const [pdfIncludeWeeklyDelta, setPdfIncludeWeeklyDelta] = useState(false)
+  const [baselineCandidates, setBaselineCandidates] = useState<
+    CallImportEvaluationBaselineCandidate[]
+  >([])
+  const [baselineEvaluationId, setBaselineEvaluationId] = useState<string | null>(
+    null,
+  )
+  const [baselineCandidatesLoading, setBaselineCandidatesLoading] =
+    useState(false)
+  const [baselineCandidatesError, setBaselineCandidatesError] = useState<
+    string | null
+  >(null)
   const [pdfUseCase, setPdfUseCase] = useState('')
   const [pdfIncludeAuditSummary, setPdfIncludeAuditSummary] = useState(true)
   const [pdfIncludeQualityPanel, setPdfIncludeQualityPanel] = useState(true)
@@ -348,6 +381,8 @@ export default function CallImportEvaluationDetail() {
   const [selectedReportInsightIds, setSelectedReportInsightIds] = useState<Set<string>>(
     new Set(),
   )
+  const [selectedGeneratedUserInsightIds, setSelectedGeneratedUserInsightIds] =
+    useState<Set<string>>(new Set())
   const [pdfReportError, setPdfReportError] = useState<string | null>(null)
   const [pdfReportLoading, setPdfReportLoading] = useState(false)
   const [reportBranding, setReportBranding] = useState<ReportBranding | null>(
@@ -420,6 +455,7 @@ export default function CallImportEvaluationDetail() {
   const [chartPerMetric, setChartPerMetric] = useState<
     Record<string, CategoricalChartType>
   >(() => loadChartPerMetric())
+  const [qualityPanelCollapsed, setQualityPanelCollapsed] = useState(false)
   useEffect(() => {
     saveChartGlobalDefault(chartGlobalDefault)
   }, [chartGlobalDefault])
@@ -725,6 +761,29 @@ export default function CallImportEvaluationDetail() {
     refetchInterval: () => {
       const status = evaluationQuery.data?.status
       return status === 'pending' || status === 'running' ? 5000 : false
+    },
+  })
+
+  const visualizationInsightsQuery = useQuery<EvaluationTldrSummary | null>({
+    queryKey: ['call-import-evaluation-insights', id, evalId],
+    queryFn: () => apiClient.getCallImportEvaluationInsights(id!, evalId!),
+    enabled: !!id && !!evalId && resultsTab === 'visualizations',
+    refetchOnWindowFocus: false,
+    refetchInterval: false,
+  })
+
+  const userInsightsQuery = useQuery<EvaluationUserInsightsState | null>({
+    queryKey: ['call-import-evaluation-user-insights', id, evalId],
+    queryFn: () =>
+      apiClient.getCallImportEvaluationUserInsights(id!, evalId!),
+    enabled:
+      !!id &&
+      !!evalId &&
+      (resultsTab === 'visualizations' || pdfReportOpen),
+    refetchOnWindowFocus: false,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status
+      return status === 'running' ? 5000 : false
     },
   })
 
@@ -1148,7 +1207,11 @@ export default function CallImportEvaluationDetail() {
       if (m && m.id) {
         upsert(m.id, {
           name: m.name || `Metric ${m.id.slice(0, 8)}`,
-          metricCategory: (m as any).metric_category || 'quality',
+          metricCategory:
+            (m as any).metric_category === 'user_insight' ||
+            isUserInsightMetricName(m.name || '')
+              ? 'user_insight'
+              : 'quality',
         })
       }
     }
@@ -1266,7 +1329,16 @@ export default function CallImportEvaluationDetail() {
     if (!pdfReportOpen) return
     setSelectedReportMetricIds(new Set(reportQualityMetrics.map((metric) => metric.id)))
     setSelectedReportInsightIds(new Set(reportInsightMetrics.map((metric) => metric.id)))
-  }, [pdfReportOpen, reportQualityMetrics, reportInsightMetrics])
+    const generated = userInsightsQuery.data?.insights ?? []
+    if (generated.length) {
+      setSelectedGeneratedUserInsightIds(new Set(generated.map((item) => item.id)))
+    }
+  }, [
+    pdfReportOpen,
+    reportQualityMetrics,
+    reportInsightMetrics,
+    userInsightsQuery.data?.insights,
+  ])
 
   // Build the "Imported columns" panel from the parent CallImport's mapping
   // metadata, so users can see which CSV columns were used to drive this
@@ -1387,6 +1459,10 @@ export default function CallImportEvaluationDetail() {
           internalBrandImageId: internalBrandImageId || null,
           externalBrandImageId: externalBrandImageId || null,
           useCase: pdfUseCase.trim() || null,
+          baselineEvaluationId:
+            pdfReportType === 'external' && pdfIncludeWeeklyDelta
+              ? baselineEvaluationId
+              : null,
           reportConfig: {
             use_case: pdfUseCase.trim() || null,
             sections: {
@@ -1397,6 +1473,7 @@ export default function CallImportEvaluationDetail() {
               methodology: pdfIncludeMethodology,
             },
             quality_metric_ids: Array.from(selectedReportMetricIds),
+            user_insight_ids: Array.from(selectedGeneratedUserInsightIds),
             insights: Array.from(selectedReportInsightIds).map((metricId) => ({
               metric_id: metricId,
               show_observation: true,
@@ -1404,7 +1481,10 @@ export default function CallImportEvaluationDetail() {
             })),
             include_period_delta:
               pdfReportType === 'external' && pdfIncludeWeeklyDelta,
-            order: { insights: Array.from(selectedReportInsightIds) },
+            order: {
+              insights: Array.from(selectedReportInsightIds),
+              user_insights: Array.from(selectedGeneratedUserInsightIds),
+            },
           },
         },
       )
@@ -1466,6 +1546,61 @@ export default function CallImportEvaluationDetail() {
       cancelled = true
     }
   }, [pdfReportOpen])
+
+  useEffect(() => {
+    if (!pdfReportOpen || !id || !evalId) return
+    if (pdfReportType !== 'external' || !pdfIncludeWeeklyDelta) {
+      setBaselineCandidates([])
+      setBaselineEvaluationId(null)
+      setBaselineCandidatesError(null)
+      return
+    }
+    let cancelled = false
+    setBaselineCandidatesLoading(true)
+    setBaselineCandidatesError(null)
+    apiClient
+      .listCallImportEvaluationBaselineCandidates(id, evalId)
+      .then((response) => {
+        if (cancelled) return
+        setBaselineCandidates(response.items)
+        const defaultId =
+          response.default_evaluation_id ||
+          response.items.find((item) => item.is_default)?.evaluation_id ||
+          response.items[0]?.evaluation_id ||
+          null
+        setBaselineEvaluationId((current) => {
+          if (current && response.items.some((item) => item.evaluation_id === current)) {
+            return current
+          }
+          return defaultId
+        })
+      })
+      .catch((e) => {
+        console.error('Failed to load baseline candidates', e)
+        if (!cancelled) {
+          setBaselineCandidates([])
+          setBaselineEvaluationId(null)
+          setBaselineCandidatesError(
+            e?.response?.data?.detail ||
+              'Failed to load prior evaluation runs for weekly deltas.',
+          )
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setBaselineCandidatesLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [pdfReportOpen, pdfReportType, pdfIncludeWeeklyDelta, id, evalId])
+
+  const selectedBaselineCandidate = useMemo(
+    () =>
+      baselineCandidates.find(
+        (candidate) => candidate.evaluation_id === baselineEvaluationId,
+      ) || null,
+    [baselineCandidates, baselineEvaluationId],
+  )
 
   const handleReportLogoUpload = async (
     event: ChangeEvent<HTMLInputElement>,
@@ -2331,6 +2466,10 @@ export default function CallImportEvaluationDetail() {
                 evaluation={evaluation}
                 aggregate={aggregateQuery.data}
               />
+              <UserInsightsStatusBanner
+                state={userInsightsQuery.data ?? null}
+                isLoading={userInsightsQuery.isLoading}
+              />
               <div className="mt-4 mb-3 flex items-center justify-between gap-3 flex-wrap">
                 <p className="text-xs text-gray-500 inline-flex items-center gap-1.5">
                   <Sparkles className="h-3.5 w-3.5 text-primary-500" />
@@ -2411,6 +2550,11 @@ export default function CallImportEvaluationDetail() {
                         }
                         isActive={isActive}
                         activeValue={activeValue}
+                        businessInsight={
+                          visualizationInsightsQuery.data?.metric_insights?.[
+                            m.metric_id
+                          ] || null
+                        }
                         onValueClick={(value) => {
                           if (m.is_multi_label_parent) {
                             // Re-use the Flow tab's drilldown filter so
@@ -2451,14 +2595,43 @@ export default function CallImportEvaluationDetail() {
                   <div className="space-y-6">
                     {qualityAggregates.length ? (
                       <section>
-                        <h3 className="text-sm font-semibold text-gray-900 mb-3">
-                          Quality Metric Panel
-                        </h3>
-                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                          {qualityAggregates.map(renderAggregate)}
-                        </div>
+                        <header className="flex items-center justify-between gap-2 mb-3">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setQualityPanelCollapsed((collapsed) => !collapsed)
+                            }
+                            className="text-sm font-semibold text-gray-900 inline-flex items-center gap-1 hover:text-gray-700"
+                            aria-expanded={!qualityPanelCollapsed}
+                            title={
+                              qualityPanelCollapsed
+                                ? 'Expand quality metric panel'
+                                : 'Collapse quality metric panel'
+                            }
+                          >
+                            {qualityPanelCollapsed ? (
+                              <ChevronRight className="h-3.5 w-3.5" />
+                            ) : (
+                              <ChevronDown className="h-3.5 w-3.5" />
+                            )}
+                            Quality Metric Panel
+                          </button>
+                          <span className="text-[10px] text-gray-500 tabular-nums">
+                            {qualityAggregates.length}{' '}
+                            {qualityAggregates.length === 1 ? 'metric' : 'metrics'}
+                          </span>
+                        </header>
+                        {qualityPanelCollapsed ? null : (
+                          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                            {qualityAggregates.map(renderAggregate)}
+                          </div>
+                        )}
                       </section>
                     ) : null}
+                    <EvaluationUserInsightsPanel
+                      state={userInsightsQuery.data ?? null}
+                      isLoading={userInsightsQuery.isLoading}
+                    />
                     {insightAggregates.length ? (
                       <section>
                         <h3 className="text-sm font-semibold text-gray-900 mb-1">
@@ -3617,10 +3790,10 @@ export default function CallImportEvaluationDetail() {
                       </div>
                     </div>
                   ) : null}
-                  {reportInsightMetrics.length ? (
+                  {reportInsightMetrics.length && pdfReportType === 'internal' ? (
                     <div>
                       <p className="text-xs font-semibold text-gray-600 mb-1">
-                        User insights
+                        User insight metrics (internal)
                       </p>
                       <div className="max-h-24 overflow-auto rounded border border-gray-100 p-2 space-y-1">
                         {reportInsightMetrics.map((metric) => (
@@ -3642,6 +3815,52 @@ export default function CallImportEvaluationDetail() {
                           </label>
                         ))}
                       </div>
+                    </div>
+                  ) : null}
+                  {pdfReportType === 'external' ? (
+                    <div>
+                      <p className="text-xs font-semibold text-gray-600 mb-1">
+                        AI user insights (external report)
+                      </p>
+                      {userInsightsQuery.data?.status === 'running' ? (
+                        <p className="text-xs text-amber-700">
+                          User insights are still generating. You can wait or
+                          generate the report without section 03 content.
+                        </p>
+                      ) : userInsightsQuery.data?.status === 'completed' &&
+                        userInsightsQuery.data.insights.length ? (
+                        <div className="max-h-32 overflow-auto rounded border border-gray-100 p-2 space-y-1">
+                          {userInsightsQuery.data.insights.map((insight) => (
+                            <label
+                              key={insight.id}
+                              className="flex items-center gap-2 text-xs"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={selectedGeneratedUserInsightIds.has(
+                                  insight.id,
+                                )}
+                                disabled={pdfReportLoading}
+                                onChange={(e) => {
+                                  setSelectedGeneratedUserInsightIds((prev) => {
+                                    const next = new Set(prev)
+                                    if (e.target.checked) next.add(insight.id)
+                                    else next.delete(insight.id)
+                                    return next
+                                  })
+                                }}
+                                className="h-3.5 w-3.5 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                              />
+                              <span>{insight.title}</span>
+                            </label>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-gray-500">
+                          Generate a summary from the Visualizations tab first
+                          to produce AI user insights for the external report.
+                        </p>
+                      )}
                     </div>
                   ) : null}
                 </div>
@@ -3709,10 +3928,66 @@ export default function CallImportEvaluationDetail() {
                         Include previous-week metric deltas
                       </span>
                       <span className="block text-xs text-gray-500">
-                        Uses recording dates from this evaluation's completed rows.
+                        Compares this report against a prior completed evaluation
+                        run in the same workspace.
                       </span>
                     </span>
                   </label>
+                  {pdfReportType === 'external' && pdfIncludeWeeklyDelta && (
+                    <div className="mt-3 space-y-2 rounded-md border border-gray-200 bg-white p-3">
+                      <div className="text-xs font-medium text-gray-800">
+                        Previous-week comparison run
+                      </div>
+                      {baselineCandidatesLoading ? (
+                        <div className="flex items-center gap-2 text-xs text-gray-500">
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          Loading prior evaluation runs...
+                        </div>
+                      ) : baselineCandidatesError ? (
+                        <p className="text-xs text-red-600">{baselineCandidatesError}</p>
+                      ) : baselineCandidates.length === 0 ? (
+                        <p className="text-xs text-gray-500">
+                          No prior completed evaluation run was found in this
+                          workspace. Deltas will show as unavailable.
+                        </p>
+                      ) : (
+                        <>
+                          {selectedBaselineCandidate && (
+                            <p className="text-xs text-gray-600">
+                              Using{' '}
+                              <span className="font-medium text-gray-900">
+                                {selectedBaselineCandidate.name}
+                              </span>{' '}
+                              from {selectedBaselineCandidate.dataset} (
+                              {selectedBaselineCandidate.period_display})
+                            </p>
+                          )}
+                          <label className="block text-xs text-gray-600">
+                            Override comparison run
+                            <select
+                              value={baselineEvaluationId || ''}
+                              disabled={pdfReportLoading}
+                              onChange={(e) =>
+                                setBaselineEvaluationId(e.target.value || null)
+                              }
+                              className="mt-1 block w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 disabled:opacity-50"
+                            >
+                              {baselineCandidates.map((candidate) => (
+                                <option
+                                  key={candidate.evaluation_id}
+                                  value={candidate.evaluation_id}
+                                >
+                                  {candidate.name} · {candidate.dataset} ·{' '}
+                                  {candidate.period_display}
+                                  {candidate.is_default ? ' (default)' : ''}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        </>
+                      )}
+                    </div>
+                  )}
                   <p>
                     The selected report downloads as a single PDF. Metric
                     panels include evaluated counts, flagged rate, passing rate,
@@ -4459,6 +4734,7 @@ function MetricVisualization({
   onChangeChartType,
   isActive,
   activeValue,
+  businessInsight,
   onValueClick,
 }: {
   metric: CallImportMetricAggregate
@@ -4467,6 +4743,7 @@ function MetricVisualization({
   onChangeChartType: (type: CategoricalChartType | null) => void
   isActive: boolean
   activeValue: string | null
+  businessInsight?: string | null
   onValueClick: (value: string) => void
 }) {
   const histogram = metric.histogram_buckets
@@ -4661,6 +4938,17 @@ function MetricVisualization({
         <p className="text-xs text-gray-400 italic py-8 text-center">
           No values recorded yet.
         </p>
+      )}
+
+      {businessInsight && (
+        <div className="mt-3 rounded-lg border border-primary-100 bg-primary-50/60 px-3 py-2">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-primary-700">
+            Business insight
+          </p>
+          <p className="mt-1 text-xs leading-relaxed text-gray-700">
+            {businessInsight}
+          </p>
+        </div>
       )}
 
       {hasCategorical && totalCategorical > 0 && (
@@ -5733,6 +6021,9 @@ function EvaluationTLDRInsights({
   const queryClient = useQueryClient()
   const [pickerProvider, setPickerProvider] = useState<string>('')
   const [pickerModel, setPickerModel] = useState<string>('')
+  const [userInsightsSampleSize, setUserInsightsSampleSize] = useState<number>(
+    DEFAULT_USER_INSIGHTS_SAMPLE_SIZE,
+  )
   const [showPicker, setShowPicker] = useState<boolean>(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -5749,6 +6040,13 @@ function EvaluationTLDRInsights({
 
   const cached = insightsQuery.data ?? null
 
+  const userInsightsStateQuery = useQuery<EvaluationUserInsightsState | null>({
+    queryKey: ['call-import-evaluation-user-insights', callImportId, evaluationId],
+    queryFn: () =>
+      apiClient.getCallImportEvaluationUserInsights(callImportId, evaluationId),
+    refetchOnWindowFocus: false,
+  })
+
   // Re-seed the picker with the previously-used provider/model so a
   // single click on Regenerate gives the user the same model again.
   useEffect(() => {
@@ -5760,6 +6058,18 @@ function EvaluationTLDRInsights({
     }
   }, [cached?.provider, cached?.model, pickerProvider, pickerModel])
 
+  useEffect(() => {
+    const sampleSize = userInsightsStateQuery.data?.max_llm_calls
+    if (
+      sampleSize != null &&
+      USER_INSIGHTS_SAMPLE_SIZE_OPTIONS.includes(
+        sampleSize as (typeof USER_INSIGHTS_SAMPLE_SIZE_OPTIONS)[number],
+      )
+    ) {
+      setUserInsightsSampleSize(sampleSize)
+    }
+  }, [userInsightsStateQuery.data?.max_llm_calls])
+
   const generateMutation = useMutation({
     mutationFn: (regenerate: boolean) =>
       apiClient.generateCallImportEvaluationInsights(
@@ -5769,6 +6079,7 @@ function EvaluationTLDRInsights({
           regenerate,
           provider: pickerProvider || undefined,
           model: pickerModel || undefined,
+          max_llm_calls: userInsightsSampleSize,
         },
       ),
     onSuccess: (summary) => {
@@ -5776,6 +6087,9 @@ function EvaluationTLDRInsights({
         ['call-import-evaluation-insights', callImportId, evaluationId],
         summary,
       )
+      queryClient.invalidateQueries({
+        queryKey: ['call-import-evaluation-user-insights', callImportId, evaluationId],
+      })
       setShowPicker(false)
       setError(null)
     },
@@ -5805,15 +6119,17 @@ function EvaluationTLDRInsights({
           <Sparkles className="h-4 w-4 text-primary-600 mt-0.5 shrink-0" />
           <div className="min-w-0">
             <p className="text-xs font-semibold text-gray-900">
-              Get an AI-written summary of patterns across these calls
+              Get an AI-written summary and user insights
             </p>
             <p className="text-[11px] text-gray-500 leading-snug">
-              We feed the per-metric numbers + a sample of rationales
-              to an LLM and surface the cross-call patterns it finds.
+              We feed per-metric numbers + rationales to an LLM for a
+              cross-call summary, and start a background job that
+              analyzes rationales and diarized transcripts for External
+              Audit user insights.
             </p>
           </div>
         </div>
-        <div className="mt-2 mb-3">
+        <div className="mt-2 mb-3 space-y-2">
           <AIProviderModelPicker
             provider={pickerProvider}
             model={pickerModel}
@@ -5821,6 +6137,11 @@ function EvaluationTLDRInsights({
             onModelChange={setPickerModel}
             disabled={isPending}
             size="sm"
+          />
+          <UserInsightsSampleSizeSelect
+            value={userInsightsSampleSize}
+            onChange={setUserInsightsSampleSize}
+            disabled={isPending}
           />
         </div>
         <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -5924,7 +6245,7 @@ function EvaluationTLDRInsights({
       </div>
 
       {showPicker && (
-        <div className="mt-3 rounded-md border border-gray-200 bg-gray-50 p-2.5">
+        <div className="mt-3 rounded-md border border-gray-200 bg-gray-50 p-2.5 space-y-2">
           <AIProviderModelPicker
             provider={pickerProvider}
             model={pickerModel}
@@ -5933,7 +6254,12 @@ function EvaluationTLDRInsights({
             disabled={isPending}
             size="sm"
           />
-          <div className="mt-2 flex items-center justify-end gap-2">
+          <UserInsightsSampleSizeSelect
+            value={userInsightsSampleSize}
+            onChange={setUserInsightsSampleSize}
+            disabled={isPending}
+          />
+          <div className="flex items-center justify-end gap-2">
             <button
               type="button"
               onClick={() => generateMutation.mutate(true)}
@@ -6720,3 +7046,244 @@ function DiscoveredMetricsTopPanel({
 }
 
 export type { CallImportEvaluation as _ }
+
+function UserInsightsSampleSizeSelect({
+  value,
+  onChange,
+  disabled = false,
+}: {
+  value: number
+  onChange: (value: number) => void
+  disabled?: boolean
+}) {
+  return (
+    <label className="flex items-center justify-between gap-3 text-[11px] text-gray-600">
+      <span className="font-medium text-gray-700">
+        User insights sample size
+      </span>
+      <select
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="text-[11px] border border-gray-200 rounded-md bg-white px-2 py-1 text-gray-700 focus:outline-none focus:ring-1 focus:ring-primary-300"
+        title="Maximum LLM calls used to sample calls for user insights"
+      >
+        {USER_INSIGHTS_SAMPLE_SIZE_OPTIONS.map((size) => (
+          <option key={size} value={size}>
+            {size} LLM calls
+          </option>
+        ))}
+      </select>
+    </label>
+  )
+}
+
+function UserInsightsStatusBanner({
+  state,
+  isLoading,
+}: {
+  state: EvaluationUserInsightsState | null
+  isLoading: boolean
+}) {
+  if (isLoading) {
+    return (
+      <section className="mt-4 rounded-lg border border-gray-200 bg-white px-4 py-3">
+        <p className="text-xs text-gray-500 inline-flex items-center gap-1.5">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          Loading user insights…
+        </p>
+      </section>
+    )
+  }
+
+  if (!state || state.status === 'idle' || state.status === 'completed') {
+    return null
+  }
+
+  if (state.status === 'running') {
+    const completed = state.progress?.completed_llm_calls ?? 0
+    const total = state.progress?.total_llm_calls ?? 0
+    const pct = total > 0 ? Math.round((completed / total) * 100) : 0
+    return (
+      <section className="mt-4 rounded-lg border border-primary-200 bg-primary-50/40 px-4 py-3">
+        <div className="flex items-center justify-between gap-3 flex-wrap mb-2">
+          <p className="text-xs font-semibold text-gray-900 inline-flex items-center gap-1.5">
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-primary-600" />
+            AI User Insights — identifying patterns from rationales and transcripts…
+          </p>
+          {total > 0 ? (
+            <p className="text-[10px] text-gray-500 tabular-nums">
+              {completed} / {total} LLM calls ({pct}%)
+            </p>
+          ) : null}
+        </div>
+        {total > 0 ? (
+          <div>
+            <div className="h-2 rounded-full bg-primary-100 overflow-hidden">
+              <div
+                className="h-full bg-primary-600 transition-all duration-300"
+                style={{ width: `${pct}%` }}
+              />
+            </div>
+            {state.max_llm_calls ? (
+              <p className="text-[10px] text-gray-500 mt-1">
+                Sample budget: {state.max_llm_calls} LLM calls
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+      </section>
+    )
+  }
+
+  return (
+    <section className="mt-4 rounded-lg border border-red-200 bg-red-50/50 px-4 py-3">
+      <p className="text-xs font-semibold text-gray-900 mb-1">
+        AI User Insights generation failed
+      </p>
+      <p className="text-xs text-red-700">
+        {state.error_message || 'User insights generation failed.'}
+      </p>
+      <p className="text-[11px] text-gray-500 mt-1">
+        Click Regenerate on the summary card to retry.
+      </p>
+    </section>
+  )
+}
+
+function EvaluationUserInsightsPanel({
+  state,
+  isLoading,
+}: {
+  state: EvaluationUserInsightsState | null
+  isLoading: boolean
+}) {
+  if (isLoading || !state || state.status === 'running' || state.status === 'failed') {
+    return null
+  }
+
+  if (state.status === 'idle') {
+    return (
+      <section className="rounded-lg border border-dashed border-gray-200 bg-gray-50/60 p-4">
+        <h3 className="text-sm font-semibold text-gray-900 mb-1">
+          AI User Insights (External Audit)
+        </h3>
+        <p className="text-xs text-gray-500">
+          User insights generate automatically in the background when you
+          click Generate summary above.
+        </p>
+      </section>
+    )
+  }
+
+  return (
+    <section className="space-y-4">
+      <div>
+        <h3 className="text-sm font-semibold text-gray-900">
+          AI User Insights (External Audit)
+        </h3>
+        <p className="text-xs text-gray-500">
+          LLM-identified patterns for section 03 of the external audit report.
+          {state.max_llm_calls ? (
+            <span className="block mt-0.5">
+              Sample size: up to {state.max_llm_calls} LLM calls.
+            </span>
+          ) : null}
+        </p>
+        {state.is_stale ? (
+          <p className="text-[11px] text-amber-700 mt-1">
+            More rows completed since these insights were generated. Regenerate
+            the summary to refresh.
+          </p>
+        ) : null}
+      </div>
+      {state.insights.map((insight, index) => (
+        <GeneratedUserInsightCard key={insight.id} insight={insight} index={index + 1} />
+      ))}
+    </section>
+  )
+}
+
+function GeneratedUserInsightCard({
+  insight,
+  index,
+}: {
+  insight: EvaluationUserInsightItem
+  index: number
+}) {
+  const maxCount = Math.max(
+    ...insight.categories.map((c) => c.count),
+    1,
+  )
+  return (
+    <article className="rounded-lg border border-gray-200 bg-white overflow-hidden">
+      <div className="px-4 py-3 border-b border-gray-100 bg-gray-50/80">
+        <h4 className="text-sm font-semibold text-gray-900">
+          3.{index} {insight.title}
+        </h4>
+        <p className="text-[10px] text-gray-500">pattern-analysis · LLM-identified</p>
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-0 lg:divide-x divide-gray-100">
+        <div className="p-4 overflow-x-auto">
+          <table className="min-w-full text-xs">
+            <thead>
+              <tr className="text-left text-gray-500 border-b border-gray-100">
+                <th className="pb-2 pr-3 font-medium">Category</th>
+                <th className="pb-2 pr-3 font-medium">Share</th>
+                <th className="pb-2 pr-3 font-medium">Distribution</th>
+                <th className="pb-2 font-medium">Calls</th>
+              </tr>
+            </thead>
+            <tbody>
+              {insight.categories.map((cat) => (
+                <tr key={cat.label} className="border-b border-gray-50">
+                  <td className="py-2 pr-3 text-gray-800">{cat.label}</td>
+                  <td className="py-2 pr-3 text-gray-600">{cat.share_pct.toFixed(1)}%</td>
+                  <td className="py-2 pr-3">
+                    <div className="h-2 w-24 rounded bg-gray-100 overflow-hidden">
+                      <div
+                        className="h-full bg-gray-800 rounded"
+                        style={{
+                          width: `${Math.min(100, (cat.count / maxCount) * 100)}%`,
+                        }}
+                      />
+                    </div>
+                  </td>
+                  <td className="py-2 text-gray-600">{cat.count}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="p-4 space-y-3">
+          <div className="rounded-md bg-rose-50/80 border border-rose-100 p-3">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-rose-800 mb-1">
+              Observation
+            </p>
+            <p className="text-xs text-gray-800 leading-relaxed">{insight.observation}</p>
+          </div>
+          <div className="rounded-md bg-amber-50/60 border border-amber-100 p-3 space-y-2">
+            {insight.evidence.turns?.length ? (
+              insight.evidence.turns.map((turn, i) => (
+                <p key={i} className="text-xs text-gray-800">
+                  <span className="font-semibold text-rose-700">{turn.speaker}:</span>{' '}
+                  {turn.text}
+                </p>
+              ))
+            ) : insight.evidence.quote ? (
+              <p className="text-xs text-gray-800">
+                <span className="font-semibold text-rose-700">User:</span>{' '}
+                {insight.evidence.quote}
+              </p>
+            ) : null}
+            {insight.evidence.conversation_id ? (
+              <p className="text-[10px] text-gray-500">
+                {insight.evidence.conversation_id}
+              </p>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    </article>
+  )
+}

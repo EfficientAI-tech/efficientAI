@@ -2981,6 +2981,8 @@ class CallImportEvaluationResponse(BaseModel):
     # for runs the user has not summarised yet. ``is_stale`` on the
     # nested object is set by the route, not the model.
     tldr_summary: Optional["EvaluationTldrSummary"] = None
+    # Cached LLM-generated user insights for External Audit PDF section 03.
+    user_insights: Optional["EvaluationUserInsightsState"] = None
     # True when the user opted into top-level metric discovery on the
     # Run Evaluation modal. The frontend uses this to gate the
     # "Discovered metrics" panel on the Flow tab.
@@ -3443,6 +3445,7 @@ class EvaluationTldrSummary(BaseModel):
 
     narrative: str
     patterns: List[str] = Field(default_factory=list)
+    metric_insights: Dict[str, str] = Field(default_factory=dict)
     generated_at: datetime
     generated_at_completed_rows: int = 0
     provider: Optional[str] = None
@@ -3462,6 +3465,67 @@ class EvaluationInsightsRequest(BaseModel):
     regenerate: bool = False
     provider: Optional[str] = None
     model: Optional[str] = Field(default=None, min_length=1)
+    max_llm_calls: Optional[int] = Field(
+        default=None,
+        ge=20,
+        le=500,
+        description=(
+            "Max LLM calls for user-insights sampling (extraction + synthesis). "
+            "Defaults to 200 when omitted."
+        ),
+    )
+
+
+class UserInsightCategory(BaseModel):
+    label: str
+    count: int
+    share_pct: float
+
+
+class UserInsightEvidenceTurn(BaseModel):
+    speaker: str
+    text: str
+
+
+class UserInsightEvidence(BaseModel):
+    conversation_id: Optional[str] = None
+    quote: str
+    turns: List[UserInsightEvidenceTurn] = Field(default_factory=list)
+
+
+class EvaluationUserInsightItem(BaseModel):
+    id: str
+    title: str
+    categories: List[UserInsightCategory] = Field(default_factory=list)
+    observation: str
+    evidence: UserInsightEvidence
+
+
+class EvaluationUserInsightsState(BaseModel):
+    """Cached map-reduce LLM user insights for an evaluation run."""
+
+    status: Literal["idle", "running", "completed", "failed"] = "idle"
+    insights: List[EvaluationUserInsightItem] = Field(default_factory=list)
+    overview: Optional[str] = None
+    generated_at: Optional[datetime] = None
+    generated_at_completed_rows: int = 0
+    progress: Optional[Dict[str, int]] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    llm_calls_used: int = 0
+    max_llm_calls: Optional[int] = None
+    error_message: Optional[str] = None
+    is_stale: bool = False
+
+
+class EvaluationUserInsightsRequest(BaseModel):
+    """Body for ``POST /evaluations/{eval_id}/user-insights``."""
+
+    regenerate: bool = False
+    force: bool = False
+    provider: Optional[str] = None
+    model: Optional[str] = Field(default=None, min_length=1)
+    max_llm_calls: Optional[int] = Field(default=None, ge=20, le=500)
 
 
 # Resolve the forward reference on ``CallImportEvaluationResponse``

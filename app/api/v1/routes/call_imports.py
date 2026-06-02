@@ -253,6 +253,22 @@ def _xlsx_cell_to_str(value: Any) -> str:
     return str(value)
 
 
+def _parse_recording_date_cell(cell: str) -> date:
+    """Parse day-first dates with one/two digit day-month parts."""
+    match = re.fullmatch(r"\s*(\d{1,2})[/-](\d{1,2})[/-](\d{4})\s*", cell)
+    if match:
+        day, month, year = (int(part) for part in match.groups())
+        return date(year, month, day)
+
+    # Native Excel date cells arrive from ``_xlsx_cell_to_str`` as ISO
+    # datetimes (e.g. ``2026-01-04T00:00:00``). Accept that resolved date,
+    # while keeping plain ISO dates rejected for hand-entered text/CSV cells.
+    if "T" in cell:
+        return datetime.fromisoformat(cell.replace("Z", "+00:00")).date()
+
+    raise ValueError("expected D/M/YYYY or D-M-YYYY")
+
+
 def _coerce_parameter_value(
     raw: str,
     param_type: CallImportParameterType,
@@ -289,13 +305,14 @@ def _coerce_parameter_value(
         return cell
     if param_type == CallImportParameterType.RECORDING_DATE:
         try:
-            parsed_date = datetime.strptime(cell, "%d/%m/%Y").date()
+            parsed_date = _parse_recording_date_cell(cell)
         except ValueError:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
                     f"Row {row_idx + 1}: value for '{param_name}' is not a "
-                    f"valid recording date ({cell!r}); expected DD/MM/YYYY."
+                    f"valid recording date ({cell!r}); expected day-first "
+                    "D/M/YYYY or D-M-YYYY."
                 ),
             )
         return parsed_date.strftime("%d/%m/%Y")
@@ -1053,7 +1070,7 @@ def _materialize_rows(
             row_index=idx,
             conversation_id=row["conversation_id"],
             recording_date=(
-                datetime.strptime(row["recording_date"], "%d/%m/%Y").date()
+                _parse_recording_date_cell(row["recording_date"])
                 if row.get("recording_date")
                 else None
             ),

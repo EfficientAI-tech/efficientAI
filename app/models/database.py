@@ -2110,6 +2110,11 @@ class CallImportEvaluation(Base):
     # NULL on rows that have never been summarised.
     tldr_summary = Column(JSON, nullable=True)
 
+    # Cached LLM-generated user insights for External Audit PDF section 03.
+    # Populated by a background Celery job triggered alongside TLDR generation.
+    # Shape: EvaluationUserInsightsState JSON (status, insights[], progress, …).
+    user_insights = Column(JSON, nullable=True)
+
     status = Column(String(20), nullable=False, default="pending", index=True)
 
     total_rows = Column(Integer, nullable=False, default=0)

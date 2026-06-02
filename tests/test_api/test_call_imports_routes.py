@@ -11,6 +11,7 @@ import io
 import sys
 import types
 from contextlib import contextmanager
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from uuid import UUID, uuid4
@@ -129,6 +130,30 @@ def test_parse_csv_accepts_canonical_headers():
     assert rows[1]["conversation_id"] == "abc-2"
 
 
+@pytest.mark.parametrize(
+    ("raw_date", "normalized"),
+    [
+        ("18-05-2026", "18/05/2026"),
+        ("8/4/2026", "08/04/2026"),
+        ("8-4-2026", "08/04/2026"),
+        ("8-4/2026", "08/04/2026"),
+        ("8/4-2026", "08/04/2026"),
+    ],
+)
+def test_parse_csv_accepts_flexible_day_first_recording_dates(raw_date, normalized):
+    csv_text = (
+        "CallID,Recording Date,Recording URL,Transcript\n"
+        f"abc-1,{raw_date},https://api.exotel.com/recordings/abc-1.mp3,Hello world\n"
+    )
+    rows = _parse_csv(
+        _csv_bytes(csv_text),
+        _standard_params(),
+        _standard_mapping(),
+        _standard_skipped(),
+    )
+    assert rows[0]["recording_date"] == normalized
+
+
 def test_parse_csv_is_case_insensitive_on_headers():
     csv_text = (
         "callid,recording date,recording url,TRANSCRIPT\n"
@@ -237,7 +262,8 @@ def test_parse_csv_rejects_invalid_recording_date_value():
             _standard_skipped(),
     )
     assert exc.value.status_code == 400
-    assert "dd/mm/yyyy" in exc.value.detail.lower()
+    assert "D/M/YYYY or D-M-YYYY" in exc.value.detail
+    assert "day-first" in exc.value.detail.lower()
 
 
 def test_parse_csv_skips_completely_blank_rows():
@@ -995,6 +1021,28 @@ def test_upload_persists_parameter_mapping_and_rows(
     assert rows[0].diarised_transcript is None
 
 
+def test_upload_accepts_hyphenated_recording_dates(
+    authenticated_client, db_session, org_id, seed_org
+):
+    integration = _seed_integration(db_session, org_id)
+    schema = _seed_schema(db_session, org_id, _default_workspace_id(db_session, org_id))
+
+    response = authenticated_client.post(
+        "/api/v1/call-imports/upload",
+        files={"file": _csv(rows=(("call-a", "8-4/2026", "https://x/a.mp3", "hello a"),))},
+        data=_upload_payload(integration, schema.id),
+    )
+    assert response.status_code == 202, response.text
+    call_import_id = UUID(response.json()["id"])
+    row = (
+        db_session.query(CallImportRow)
+        .filter(CallImportRow.call_import_id == call_import_id)
+        .one()
+    )
+    assert row.recording_date.isoformat() == "2026-04-08"
+    assert row.raw_columns["recording_date"] == "08/04/2026"
+
+
 def test_upload_requires_skip_for_unmapped_csv_columns(
     authenticated_client, db_session, org_id, seed_org
 ):
@@ -1117,6 +1165,21 @@ def test_parse_xlsx_accepts_canonical_headers():
     assert rows[0]["recording_date"] == "18/05/2026"
     assert rows[0]["recording_url"].endswith("recording.mp3")
     assert rows[0]["transcript"] == "Hello world"
+
+
+def test_parse_xlsx_accepts_native_excel_recording_date_cells():
+    blob = _xlsx_bytes(
+        {
+            "Calls": [
+                ["CallID", "Recording Date", "Recording URL", "Transcript"],
+                ["abc-1", datetime(2026, 4, 8), "https://x/recording.mp3", "Hello world"],
+            ]
+        }
+    )
+    rows = _parse_xlsx(
+        blob, "Calls", _standard_params(), _standard_mapping(), _standard_skipped()
+    )
+    assert rows[0]["recording_date"] == "08/04/2026"
 
 
 def test_parse_xlsx_coerces_numeric_call_ids_without_decimal_suffix():

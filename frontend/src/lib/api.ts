@@ -34,6 +34,7 @@ import type {
   CallImportUploadResponse,
   CallImportPreviewResponse,
   CallImportEvaluation,
+  CallImportEvaluationBaselineCandidatesResponse,
   CallImportEvaluationLLMOverride,
   CallImportEvaluationListResponse,
   CallImportEvaluationRow,
@@ -1467,6 +1468,7 @@ class ApiClient {
       regenerate?: boolean
       provider?: string | null
       model?: string | null
+      max_llm_calls?: number | null
     },
   ): Promise<import('../types/api').EvaluationTldrSummary> {
     const body: Record<string, unknown> = {
@@ -1474,8 +1476,44 @@ class ApiClient {
     }
     if (options?.provider) body.provider = options.provider
     if (options?.model) body.model = options.model
+    if (options?.max_llm_calls != null) body.max_llm_calls = options.max_llm_calls
     const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/insights`,
+      body,
+    )
+    return response.data
+  }
+
+  async getCallImportEvaluationUserInsights(
+    callImportId: string,
+    evaluationId: string,
+  ): Promise<import('../types/api').EvaluationUserInsightsState | null> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/user-insights`,
+    )
+    return response.data
+  }
+
+  async generateCallImportEvaluationUserInsights(
+    callImportId: string,
+    evaluationId: string,
+    options?: {
+      regenerate?: boolean
+      force?: boolean
+      provider?: string | null
+      model?: string | null
+      max_llm_calls?: number | null
+    },
+  ): Promise<import('../types/api').EvaluationUserInsightsState> {
+    const body: Record<string, unknown> = {
+      regenerate: Boolean(options?.regenerate),
+      force: Boolean(options?.force),
+    }
+    if (options?.provider) body.provider = options.provider
+    if (options?.model) body.model = options.model
+    if (options?.max_llm_calls != null) body.max_llm_calls = options.max_llm_calls
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/user-insights`,
       body,
     )
     return response.data
@@ -2044,6 +2082,7 @@ class ApiClient {
       internalBrandImageId?: string | null
       externalBrandImageId?: string | null
       useCase?: string | null
+      baselineEvaluationId?: string | null
       reportConfig?: Record<string, any>
     },
   ): Promise<Blob> {
@@ -2054,12 +2093,23 @@ class ApiClient {
         report_type: reportType,
         include_weekly_delta: includeWeeklyDelta,
         include_period_delta: includeWeeklyDelta,
+        baseline_evaluation_id: options?.baselineEvaluationId || null,
         use_case: options?.useCase || null,
         internal_brand_image_id: options?.internalBrandImageId || null,
         external_brand_image_id: options?.externalBrandImageId || null,
         report_config: options?.reportConfig || {},
       },
       { responseType: 'blob' },
+    )
+    return response.data
+  }
+
+  async listCallImportEvaluationBaselineCandidates(
+    callImportId: string,
+    evaluationId: string,
+  ): Promise<CallImportEvaluationBaselineCandidatesResponse> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/baseline-candidates`,
     )
     return response.data
   }
