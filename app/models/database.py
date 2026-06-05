@@ -2115,6 +2115,14 @@ class CallImportEvaluation(Base):
     # Shape: EvaluationUserInsightsState JSON (status, insights[], progress, …).
     user_insights = Column(JSON, nullable=True)
 
+    # Cached per-metric failure clustering for internal diagnostics PDF/UI.
+    # Shape: EvaluationMetricClustersState JSON (status, groups[], …).
+    metric_clusters = Column(JSON, nullable=True)
+
+    # Cached LLM explanations for week-over-week metric deltas keyed by
+    # baseline evaluation id + completed row counts.
+    period_delta_explanations = Column(JSON, nullable=True)
+
     status = Column(String(20), nullable=False, default="pending", index=True)
 
     total_rows = Column(Integer, nullable=False, default=0)

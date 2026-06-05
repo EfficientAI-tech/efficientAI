@@ -1,6 +1,6 @@
 import { type ChangeEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
@@ -64,8 +64,15 @@ import type {
   CallImportEvaluationRow,
   CallImportMetricAggregate,
   EvaluationTldrSummary,
+  EvaluationMetricClustersState,
+  MetricClusterEvidence,
+  MetricClustersRcaSummary,
+  MetricFailurePolicy,
+  MetricFailurePolicyMetricPreview,
+  MetricClusterEligibleRow,
   EvaluationUserInsightsState,
   EvaluationUserInsightItem,
+  MetricPeriodDelta,
 } from '../../types/api'
 import AIProviderModelPicker from '../../components/AIProviderModelPicker'
 import Button from '../../components/Button'
@@ -341,6 +348,10 @@ export default function CallImportEvaluationDetail() {
   const { id, evalId } = useParams<{ id: string; evalId: string }>()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const [searchParams] = useSearchParams()
+  const deepLinkConversationId =
+    searchParams.get('conversation_id')?.trim() || ''
+  const deepLinkRowId = searchParams.get('row_id')?.trim() || ''
 
   const [page, setPage] = useState(1)
   const [editingName, setEditingName] = useState(false)
@@ -353,6 +364,13 @@ export default function CallImportEvaluationDetail() {
   const [downloadMenuOpen, setDownloadMenuOpen] = useState(false)
   const downloadMenuRef = useRef<HTMLDivElement>(null)
   const [pdfReportOpen, setPdfReportOpen] = useState(false)
+  const [pdfWizardStep, setPdfWizardStep] = useState(1)
+  const [pdfUserInsightsTriggering, setPdfUserInsightsTriggering] =
+    useState(false)
+  const [pdfClusterModalOpen, setPdfClusterModalOpen] = useState(false)
+  const [pdfGenerationError, setPdfGenerationError] = useState<string | null>(
+    null,
+  )
   const [pdfVendorName, setPdfVendorName] = useState('')
   const [pdfReportType, setPdfReportType] = useState<'external' | 'internal'>(
     'external',
@@ -375,6 +393,14 @@ export default function CallImportEvaluationDetail() {
   const [pdfIncludeUserInsights, setPdfIncludeUserInsights] = useState(true)
   const [pdfIncludeDesignNotes, setPdfIncludeDesignNotes] = useState(true)
   const [pdfIncludeMethodology, setPdfIncludeMethodology] = useState(true)
+  const [pdfIncludeFailureDiagnostics, setPdfIncludeFailureDiagnostics] =
+    useState(true)
+  const [pdfPreviewOpen, setPdfPreviewOpen] = useState(false)
+  const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null)
+  const [pdfPreviewFilename, setPdfPreviewFilename] = useState('')
+  const [vizBaselineEvaluationId, setVizBaselineEvaluationId] = useState<
+    string | null
+  >(null)
   const [selectedReportMetricIds, setSelectedReportMetricIds] = useState<Set<string>>(
     new Set(),
   )
@@ -384,7 +410,10 @@ export default function CallImportEvaluationDetail() {
   const [selectedGeneratedUserInsightIds, setSelectedGeneratedUserInsightIds] =
     useState<Set<string>>(new Set())
   const [pdfReportError, setPdfReportError] = useState<string | null>(null)
-  const [pdfReportLoading, setPdfReportLoading] = useState(false)
+  const [pdfReportLoadingAction, setPdfReportLoadingAction] = useState<
+    null | 'preview' | 'download'
+  >(null)
+  const pdfReportLoading = pdfReportLoadingAction !== null
   const [reportBranding, setReportBranding] = useState<ReportBranding | null>(
     null,
   )
@@ -455,7 +484,12 @@ export default function CallImportEvaluationDetail() {
   const [chartPerMetric, setChartPerMetric] = useState<
     Record<string, CategoricalChartType>
   >(() => loadChartPerMetric())
+  const [visualizationSubtab, setVisualizationSubtab] = useState<
+    'quality' | 'aiInsights' | 'clusters'
+  >('quality')
   const [qualityPanelCollapsed, setQualityPanelCollapsed] = useState(false)
+  const [userInsightsPanelCollapsed, setUserInsightsPanelCollapsed] =
+    useState(false)
   useEffect(() => {
     saveChartGlobalDefault(chartGlobalDefault)
   }, [chartGlobalDefault])
@@ -487,6 +521,8 @@ export default function CallImportEvaluationDetail() {
     metricName: string
     value: string
   } | null>(null)
+  const [tableFilterMetricId, setTableFilterMetricId] = useState('')
+  const [tableFilterMetricValue, setTableFilterMetricValue] = useState('')
   // ``flowFilter`` is set by clicking a node / edge in the Flow tab.
   // ``targetNodeId`` (and label) are populated only for edge clicks —
   // the backend then restricts to rows whose sequence has the
@@ -734,6 +770,29 @@ export default function CallImportEvaluationDetail() {
     },
   })
 
+  useEffect(() => {
+    if (!deepLinkConversationId && !deepLinkRowId) return
+    if (deepLinkConversationId && searchQuery !== deepLinkConversationId) {
+      setSearchQuery(deepLinkConversationId)
+      setPage(1)
+    }
+  }, [deepLinkConversationId, deepLinkRowId, searchQuery])
+
+  useEffect(() => {
+    if (!deepLinkConversationId && !deepLinkRowId) return
+    const items = rowsQuery.data?.items ?? []
+    const match = items.find((row) =>
+      deepLinkRowId
+        ? row.id === deepLinkRowId
+        : (row.conversation_id || '').trim() === deepLinkConversationId,
+    )
+    if (match) setDetailRow(match)
+  }, [
+    rowsQuery.data?.items,
+    deepLinkConversationId,
+    deepLinkRowId,
+  ])
+
   const pendingRowsQuery = useQuery({
     queryKey: ['call-import-evaluation-pending-rows-count', id, evalId],
     queryFn: () =>
@@ -753,11 +812,22 @@ export default function CallImportEvaluationDetail() {
   // visualizations tab. Refetches while the run is still in flight so
   // the chart fills in as workers complete rows.
   const aggregateQuery = useQuery({
-    queryKey: ['call-import-evaluation-aggregate', id, evalId],
+    queryKey: [
+      'call-import-evaluation-aggregate',
+      id,
+      evalId,
+      vizBaselineEvaluationId,
+    ],
     queryFn: () =>
-      apiClient.getCallImportEvaluationAggregate(id!, evalId!),
+      apiClient.getCallImportEvaluationAggregate(
+        id!,
+        evalId!,
+        vizBaselineEvaluationId,
+      ),
     enabled:
-      !!id && !!evalId && resultsTab === 'visualizations',
+      !!id &&
+      !!evalId &&
+      (resultsTab === 'visualizations' || resultsTab === 'table'),
     refetchInterval: () => {
       const status = evaluationQuery.data?.status
       return status === 'pending' || status === 'running' ? 5000 : false
@@ -776,6 +846,21 @@ export default function CallImportEvaluationDetail() {
     queryKey: ['call-import-evaluation-user-insights', id, evalId],
     queryFn: () =>
       apiClient.getCallImportEvaluationUserInsights(id!, evalId!),
+    enabled:
+      !!id &&
+      !!evalId &&
+      (resultsTab === 'visualizations' || pdfReportOpen),
+    refetchOnWindowFocus: false,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status
+      return status === 'running' ? 5000 : false
+    },
+  })
+
+  const metricClustersQuery = useQuery<EvaluationMetricClustersState | null>({
+    queryKey: ['call-import-evaluation-metric-clusters', id, evalId],
+    queryFn: () =>
+      apiClient.getCallImportEvaluationMetricClusters(id!, evalId!),
     enabled:
       !!id &&
       !!evalId &&
@@ -1262,6 +1347,82 @@ export default function CallImportEvaluationDetail() {
     childrenInGroups,
   ])
 
+  const tableMetricFilterValueOptions = useMemo(() => {
+    if (!tableFilterMetricId || !aggregateQuery.data) return []
+    const agg = aggregateQuery.data.metrics.find(
+      (m) => m.metric_id === tableFilterMetricId,
+    )
+    if (!agg?.value_counts?.length) return []
+    return [...agg.value_counts]
+      .sort((a, b) => b.count - a.count)
+      .map((vc) => ({
+        value: String(vc.label),
+        count: vc.count,
+      }))
+  }, [aggregateQuery.data, tableFilterMetricId])
+
+  const filteredRowsSummary = useMemo(() => {
+    const shown = rowsQuery.data?.total ?? 0
+    const evalTotal = evaluation?.total_rows
+    if (hasActiveFilters) {
+      if (evalTotal != null) {
+        return `Showing ${shown} matching row${shown === 1 ? '' : 's'} (of ${evalTotal} in this evaluation)`
+      }
+      return `Showing ${shown} matching row${shown === 1 ? '' : 's'}`
+    }
+    return `${shown} row${shown === 1 ? '' : 's'} in this evaluation`
+  }, [rowsQuery.data?.total, evaluation?.total_rows, hasActiveFilters])
+
+  const applyTableMetricFilter = (metricId: string, value: string) => {
+    const trimmed = value.trim()
+    if (!metricId || !trimmed) {
+      setMetricFilter(null)
+      setFlowFilter(null)
+      return
+    }
+    const metricName =
+      displayMetrics.find((m) => m.id === metricId)?.name ??
+      `Metric ${metricId.slice(0, 8)}`
+    const agg = aggregateQuery.data?.metrics.find(
+      (m) => m.metric_id === metricId,
+    )
+    if (agg?.is_multi_label_parent) {
+      setFlowFilter({
+        parentId: metricId,
+        parentName: metricName,
+        nodeId: trimmed,
+        nodeLabel: trimmed,
+        targetNodeId: null,
+        targetNodeLabel: null,
+      })
+      setMetricFilter(null)
+    } else {
+      setMetricFilter({
+        metricId,
+        metricName,
+        value: trimmed,
+      })
+      setFlowFilter(null)
+    }
+  }
+
+  useEffect(() => {
+    if (metricFilter) {
+      setTableFilterMetricId(metricFilter.metricId)
+      setTableFilterMetricValue(metricFilter.value)
+      return
+    }
+    if (flowFilter && !flowFilter.targetNodeId) {
+      setTableFilterMetricId(flowFilter.parentId)
+      setTableFilterMetricValue(flowFilter.nodeLabel)
+      return
+    }
+    if (!metricFilter && !flowFilter) {
+      setTableFilterMetricId('')
+      setTableFilterMetricValue('')
+    }
+  }, [metricFilter, flowFilter])
+
   // Parent metrics (selection_mode != null) and their enabled children
   // pulled straight from the run's metric summaries. The Flow tab uses
   // these to render one diagram per parent and to translate per-row
@@ -1432,6 +1593,54 @@ export default function CallImportEvaluationDetail() {
     }
   }
 
+  const generatePdfReportBlob = async (vendorName: string) => {
+    if ((reportBranding?.heading || '') !== reportHeadingDraft.trim()) {
+      const branding = await apiClient.updateReportBranding({
+        heading: reportHeadingDraft.trim() || null,
+      })
+      setReportBranding(branding)
+      setReportHeadingDraft(branding.heading || '')
+    }
+    return apiClient.generateCallImportEvaluationPdfReport(
+      id!,
+      evalId!,
+      vendorName,
+      pdfReportType,
+      pdfIncludeWeeklyDelta,
+      {
+        internalBrandImageId: internalBrandImageId || null,
+        externalBrandImageId: externalBrandImageId || null,
+        useCase: pdfUseCase.trim() || null,
+        baselineEvaluationId: pdfIncludeWeeklyDelta ? baselineEvaluationId : null,
+        platformBaseUrl:
+          typeof window !== 'undefined' ? window.location.origin : null,
+        reportConfig: {
+          use_case: pdfUseCase.trim() || null,
+          sections: {
+            audit_summary: pdfIncludeAuditSummary,
+            quality_panel: pdfIncludeQualityPanel,
+            user_insights: pdfIncludeUserInsights,
+            failure_diagnostics: pdfIncludeFailureDiagnostics,
+            design_notes: pdfIncludeDesignNotes,
+            methodology: pdfIncludeMethodology,
+          },
+          quality_metric_ids: Array.from(selectedReportMetricIds),
+          user_insight_ids: Array.from(selectedGeneratedUserInsightIds),
+          insights: Array.from(selectedReportInsightIds).map((metricId) => ({
+            metric_id: metricId,
+            show_observation: true,
+            show_evidence: true,
+          })),
+          include_period_delta: pdfIncludeWeeklyDelta,
+          order: {
+            insights: Array.from(selectedReportInsightIds),
+            user_insights: Array.from(selectedGeneratedUserInsightIds),
+          },
+        },
+      },
+    )
+  }
+
   const handlePdfReportSubmit = async () => {
     if (!id || !evalId || pdfReportLoading) return
     const vendorName = pdfVendorName.trim()
@@ -1439,55 +1648,10 @@ export default function CallImportEvaluationDetail() {
       setPdfReportError('Vendor name is required.')
       return
     }
-    setPdfReportLoading(true)
+    setPdfReportLoadingAction('download')
     setPdfReportError(null)
     try {
-      if ((reportBranding?.heading || '') !== reportHeadingDraft.trim()) {
-        const branding = await apiClient.updateReportBranding({
-          heading: reportHeadingDraft.trim() || null,
-        })
-        setReportBranding(branding)
-        setReportHeadingDraft(branding.heading || '')
-      }
-      const blob = await apiClient.generateCallImportEvaluationPdfReport(
-        id,
-        evalId,
-        vendorName,
-        pdfReportType,
-        pdfReportType === 'external' && pdfIncludeWeeklyDelta,
-        {
-          internalBrandImageId: internalBrandImageId || null,
-          externalBrandImageId: externalBrandImageId || null,
-          useCase: pdfUseCase.trim() || null,
-          baselineEvaluationId:
-            pdfReportType === 'external' && pdfIncludeWeeklyDelta
-              ? baselineEvaluationId
-              : null,
-          reportConfig: {
-            use_case: pdfUseCase.trim() || null,
-            sections: {
-              audit_summary: pdfIncludeAuditSummary,
-              quality_panel: pdfIncludeQualityPanel,
-              user_insights: pdfIncludeUserInsights,
-              design_notes: pdfIncludeDesignNotes,
-              methodology: pdfIncludeMethodology,
-            },
-            quality_metric_ids: Array.from(selectedReportMetricIds),
-            user_insight_ids: Array.from(selectedGeneratedUserInsightIds),
-            insights: Array.from(selectedReportInsightIds).map((metricId) => ({
-              metric_id: metricId,
-              show_observation: true,
-              show_evidence: true,
-            })),
-            include_period_delta:
-              pdfReportType === 'external' && pdfIncludeWeeklyDelta,
-            order: {
-              insights: Array.from(selectedReportInsightIds),
-              user_insights: Array.from(selectedGeneratedUserInsightIds),
-            },
-          },
-        },
-      )
+      const blob = await generatePdfReportBlob(vendorName)
       const vendorSlug =
         vendorName
           .toLowerCase()
@@ -1502,6 +1666,7 @@ export default function CallImportEvaluationDetail() {
       link.remove()
       window.URL.revokeObjectURL(url)
       setPdfReportOpen(false)
+      setPdfWizardStep(1)
       setPdfVendorName('')
       setPdfReportType('external')
       setPdfIncludeWeeklyDelta(false)
@@ -1513,9 +1678,117 @@ export default function CallImportEvaluationDetail() {
           'Failed to generate PDF report. Please try again.',
       )
     } finally {
-      setPdfReportLoading(false)
+      setPdfReportLoadingAction(null)
     }
   }
+
+  const handlePdfPreview = async () => {
+    if (!id || !evalId || pdfReportLoading) return
+    const vendorName = pdfVendorName.trim()
+    if (!vendorName) {
+      setPdfReportError('Vendor name is required.')
+      return
+    }
+    setPdfReportLoadingAction('preview')
+    setPdfReportError(null)
+    try {
+      const blob = await generatePdfReportBlob(vendorName)
+      const vendorSlug =
+        vendorName
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-+|-+$/g, '') || 'client'
+      if (pdfPreviewUrl) window.URL.revokeObjectURL(pdfPreviewUrl)
+      const url = window.URL.createObjectURL(blob)
+      setPdfPreviewUrl(url)
+      setPdfPreviewFilename(
+        `${vendorSlug}-${pdfReportType}-quality-metric-audit-${evalId}.pdf`,
+      )
+      setPdfPreviewOpen(true)
+    } catch (e: any) {
+      console.error('Failed to preview PDF report', e)
+      setPdfReportError(
+        e?.response?.data?.detail ||
+          'Failed to generate PDF preview. Please try again.',
+      )
+    } finally {
+      setPdfReportLoadingAction(null)
+    }
+  }
+
+  const PDF_WIZARD_STEPS = [
+    { id: 1, label: 'Type & comparison' },
+    { id: 2, label: 'Details & branding' },
+    { id: 3, label: 'Content & metrics' },
+    { id: 4, label: 'Preview & generate' },
+  ] as const
+
+  const pdfWizardVendorValid = pdfVendorName.trim().length > 0
+
+  const pdfWizardMaxReachableStep = pdfWizardVendorValid ? 4 : 2
+
+  const closePdfReportWizard = () => {
+    if (pdfReportLoading) return
+    setPdfReportOpen(false)
+    setPdfWizardStep(1)
+    setPdfReportError(null)
+    setPdfGenerationError(null)
+  }
+
+  const pdfWizardCanReachStep = (step: number) =>
+    step >= 1 && step <= pdfWizardMaxReachableStep
+
+  const handlePdfWizardStepClick = (step: number) => {
+    if (!pdfWizardCanReachStep(step) || pdfReportLoading) return
+    setPdfReportError(null)
+    setPdfWizardStep(step)
+  }
+
+  const handlePdfWizardNext = () => {
+    if (pdfReportLoading) return
+    if (pdfWizardStep === 2 && !pdfWizardVendorValid) {
+      setPdfReportError('Vendor name is required.')
+      return
+    }
+    setPdfReportError(null)
+    if (pdfWizardStep < 4) setPdfWizardStep((s) => s + 1)
+  }
+
+  const handlePdfWizardBack = () => {
+    if (pdfReportLoading || pdfWizardStep <= 1) return
+    setPdfReportError(null)
+    setPdfWizardStep((s) => s - 1)
+  }
+
+  const handlePdfWizardGenerateUserInsights = async () => {
+    if (!id || !evalId || pdfUserInsightsTriggering) return
+    const status = userInsightsQuery.data?.status
+    if (status === 'running') return
+    setPdfUserInsightsTriggering(true)
+    setPdfGenerationError(null)
+    try {
+      await apiClient.generateCallImportEvaluationUserInsights(id, evalId, {})
+      await userInsightsQuery.refetch()
+    } catch (e: any) {
+      setPdfGenerationError(
+        e?.response?.data?.detail ||
+          'Failed to start user insights generation.',
+      )
+    } finally {
+      setPdfUserInsightsTriggering(false)
+    }
+  }
+
+  const userInsightsNeedsGeneration =
+    !userInsightsQuery.data ||
+    userInsightsQuery.data.status === 'idle' ||
+    userInsightsQuery.data.status === 'failed'
+
+  const metricClustersNeedsGeneration =
+    !metricClustersQuery.data ||
+    metricClustersQuery.data.status === 'idle' ||
+    metricClustersQuery.data.status === 'failed' ||
+    metricClustersQuery.data.status === 'cancelled'
 
   useEffect(() => {
     if (!pdfReportOpen) return
@@ -1548,8 +1821,40 @@ export default function CallImportEvaluationDetail() {
   }, [pdfReportOpen])
 
   useEffect(() => {
+    if (!pdfReportOpen) setPdfClusterModalOpen(false)
+  }, [pdfReportOpen])
+
+  useEffect(() => {
+    if (resultsTab !== 'visualizations' || !id || !evalId) return
+    let cancelled = false
+    apiClient
+      .listCallImportEvaluationBaselineCandidates(id, evalId)
+      .then((response) => {
+        if (cancelled) return
+        const defaultId =
+          response.default_evaluation_id ||
+          response.items.find((item) => item.is_default)?.evaluation_id ||
+          response.items[0]?.evaluation_id ||
+          null
+        setVizBaselineEvaluationId(defaultId)
+      })
+      .catch(() => {
+        if (!cancelled) setVizBaselineEvaluationId(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [resultsTab, id, evalId])
+
+  useEffect(() => {
+    return () => {
+      if (pdfPreviewUrl) window.URL.revokeObjectURL(pdfPreviewUrl)
+    }
+  }, [pdfPreviewUrl])
+
+  useEffect(() => {
     if (!pdfReportOpen || !id || !evalId) return
-    if (pdfReportType !== 'external' || !pdfIncludeWeeklyDelta) {
+    if (!pdfIncludeWeeklyDelta) {
       setBaselineCandidates([])
       setBaselineEvaluationId(null)
       setBaselineCandidatesError(null)
@@ -1592,7 +1897,7 @@ export default function CallImportEvaluationDetail() {
     return () => {
       cancelled = true
     }
-  }, [pdfReportOpen, pdfReportType, pdfIncludeWeeklyDelta, id, evalId])
+  }, [pdfReportOpen, pdfIncludeWeeklyDelta, id, evalId])
 
   const selectedBaselineCandidate = useMemo(
     () =>
@@ -1837,6 +2142,8 @@ export default function CallImportEvaluationDetail() {
             leftIcon={<FileText className="h-4 w-4" />}
             onClick={() => {
               setPdfReportError(null)
+              setPdfGenerationError(null)
+              setPdfWizardStep(1)
               setPdfReportOpen(true)
             }}
             disabled={!rowsQuery.data?.items?.length}
@@ -2186,11 +2493,8 @@ export default function CallImportEvaluationDetail() {
           <div>
             <h2 className="text-lg font-semibold text-gray-900">Row results</h2>
             <p className="text-xs text-gray-500 mt-0.5">
-              {rowsQuery.data?.total ?? 0} row
-              {(rowsQuery.data?.total ?? 0) === 1 ? '' : 's'}
-              {hasActiveFilters ? ' (filtered)' : ''} scored against{' '}
-              {displayMetrics.length} metric
-              {displayMetrics.length === 1 ? '' : 's'}.
+              {filteredRowsSummary}. Scored against {displayMetrics.length}{' '}
+              metric{displayMetrics.length === 1 ? '' : 's'}.
             </p>
           </div>
           <div className="inline-flex border border-gray-200 rounded-lg p-1 bg-gray-50">
@@ -2268,6 +2572,76 @@ export default function CallImportEvaluationDetail() {
                 <option value="running">Running</option>
                 <option value="skipped">Skipped</option>
               </select>
+              <select
+                value={tableFilterMetricId}
+                onChange={(e) => {
+                  const nextId = e.target.value
+                  setTableFilterMetricId(nextId)
+                  setTableFilterMetricValue('')
+                  setMetricFilter(null)
+                  if (!nextId || !flowFilter?.targetNodeId) {
+                    setFlowFilter(null)
+                  }
+                }}
+                className="min-w-[160px] max-w-[220px] px-3 py-2 text-sm border border-gray-300 rounded-md shadow-sm bg-white focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-500"
+                title="Filter rows by a metric value"
+              >
+                <option value="">All metrics</option>
+                {displayMetrics.map((metric) => (
+                  <option key={metric.id} value={metric.id}>
+                    {metric.name}
+                  </option>
+                ))}
+              </select>
+              {tableFilterMetricId ? (
+                tableMetricFilterValueOptions.length > 0 ? (
+                  <select
+                    value={tableFilterMetricValue}
+                    onChange={(e) => {
+                      const nextValue = e.target.value
+                      setTableFilterMetricValue(nextValue)
+                      if (nextValue) {
+                        applyTableMetricFilter(tableFilterMetricId, nextValue)
+                      }
+                    }}
+                    disabled={aggregateQuery.isLoading}
+                    className="min-w-[140px] max-w-[240px] px-3 py-2 text-sm border border-gray-300 rounded-md shadow-sm bg-white focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-500 disabled:bg-gray-50"
+                    title="Metric value to match"
+                  >
+                    <option value="">
+                      {aggregateQuery.isLoading
+                        ? 'Loading values…'
+                        : 'Select value…'}
+                    </option>
+                    {tableMetricFilterValueOptions.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.value} ({opt.count})
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    type="text"
+                    value={tableFilterMetricValue}
+                    onChange={(e) => setTableFilterMetricValue(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        applyTableMetricFilter(
+                          tableFilterMetricId,
+                          tableFilterMetricValue,
+                        )
+                      }
+                    }}
+                    placeholder={
+                      aggregateQuery.isLoading
+                        ? 'Loading…'
+                        : 'Metric value (Enter to apply)'
+                    }
+                    className="min-w-[160px] px-3 py-2 text-sm border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-500"
+                  />
+                )
+              ) : null}
             </div>
 
             {hasActiveFilters && (
@@ -2329,6 +2703,8 @@ export default function CallImportEvaluationDetail() {
                     setMetricFilter(null)
                     setFlowFilter(null)
                     setDiscoveredFilter(null)
+                    setTableFilterMetricId('')
+                    setTableFilterMetricValue('')
                   }}
                   className="ml-1 text-gray-500 underline underline-offset-2 hover:text-gray-700"
                 >
@@ -2466,10 +2842,6 @@ export default function CallImportEvaluationDetail() {
                 evaluation={evaluation}
                 aggregate={aggregateQuery.data}
               />
-              <UserInsightsStatusBanner
-                state={userInsightsQuery.data ?? null}
-                isLoading={userInsightsQuery.isLoading}
-              />
               <div className="mt-4 mb-3 flex items-center justify-between gap-3 flex-wrap">
                 <p className="text-xs text-gray-500 inline-flex items-center gap-1.5">
                   <Sparkles className="h-3.5 w-3.5 text-primary-500" />
@@ -2555,6 +2927,13 @@ export default function CallImportEvaluationDetail() {
                             m.metric_id
                           ] || null
                         }
+                        periodDelta={
+                          aggregateQuery.data?.period_deltas?.[m.metric_id] ??
+                          null
+                        }
+                        failurePoliciesSource={
+                          aggregateQuery.data?.failure_policies_source ?? null
+                        }
                         onValueClick={(value) => {
                           if (m.is_multi_label_parent) {
                             // Re-use the Flow tab's drilldown filter so
@@ -2593,59 +2972,158 @@ export default function CallImportEvaluationDetail() {
                 }
                 return (
                   <div className="space-y-6">
-                    {qualityAggregates.length ? (
-                      <section>
-                        <header className="flex items-center justify-between gap-2 mb-3">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setQualityPanelCollapsed((collapsed) => !collapsed)
-                            }
-                            className="text-sm font-semibold text-gray-900 inline-flex items-center gap-1 hover:text-gray-700"
-                            aria-expanded={!qualityPanelCollapsed}
-                            title={
-                              qualityPanelCollapsed
-                                ? 'Expand quality metric panel'
-                                : 'Collapse quality metric panel'
-                            }
-                          >
-                            {qualityPanelCollapsed ? (
-                              <ChevronRight className="h-3.5 w-3.5" />
-                            ) : (
-                              <ChevronDown className="h-3.5 w-3.5" />
-                            )}
-                            Quality Metric Panel
-                          </button>
-                          <span className="text-[10px] text-gray-500 tabular-nums">
-                            {qualityAggregates.length}{' '}
-                            {qualityAggregates.length === 1 ? 'metric' : 'metrics'}
-                          </span>
-                        </header>
-                        {qualityPanelCollapsed ? null : (
-                          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                            {qualityAggregates.map(renderAggregate)}
-                          </div>
-                        )}
-                      </section>
-                    ) : null}
-                    <EvaluationUserInsightsPanel
-                      state={userInsightsQuery.data ?? null}
-                      isLoading={userInsightsQuery.isLoading}
-                    />
-                    {insightAggregates.length ? (
-                      <section>
-                        <h3 className="text-sm font-semibold text-gray-900 mb-1">
-                          User Insights
-                        </h3>
-                        <p className="text-xs text-gray-500 mb-3">
-                          Distribution classifiers derived from the same per-call
-                          evaluation pass.
+                    <div className="inline-flex border border-gray-200 rounded-lg p-1 bg-gray-50 w-fit">
+                      <button
+                        type="button"
+                        onClick={() => setVisualizationSubtab('quality')}
+                        className={`px-3 py-1.5 text-xs font-medium rounded transition ${
+                          visualizationSubtab === 'quality'
+                            ? 'bg-white text-primary-700 shadow-sm'
+                            : 'text-gray-600 hover:text-gray-900'
+                        }`}
+                      >
+                        Quality Metrics
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setVisualizationSubtab('aiInsights')}
+                        className={`px-3 py-1.5 text-xs font-medium rounded transition ${
+                          visualizationSubtab === 'aiInsights'
+                            ? 'bg-white text-primary-700 shadow-sm'
+                            : 'text-gray-600 hover:text-gray-900'
+                        }`}
+                      >
+                        AI User Insights
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setVisualizationSubtab('clusters')}
+                        className={`px-3 py-1.5 text-xs font-medium rounded transition ${
+                          visualizationSubtab === 'clusters'
+                            ? 'bg-white text-primary-700 shadow-sm'
+                            : 'text-gray-600 hover:text-gray-900'
+                        }`}
+                      >
+                        Clusters
+                      </button>
+                    </div>
+
+                    {visualizationSubtab === 'quality' ? (
+                      qualityAggregates.length ? (
+                        <section>
+                          <header className="flex items-center justify-between gap-2 mb-3">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setQualityPanelCollapsed((collapsed) => !collapsed)
+                              }
+                              className="text-sm font-semibold text-gray-900 inline-flex items-center gap-1 hover:text-gray-700"
+                              aria-expanded={!qualityPanelCollapsed}
+                              title={
+                                qualityPanelCollapsed
+                                  ? 'Expand quality metric panel'
+                                  : 'Collapse quality metric panel'
+                              }
+                            >
+                              {qualityPanelCollapsed ? (
+                                <ChevronRight className="h-3.5 w-3.5" />
+                              ) : (
+                                <ChevronDown className="h-3.5 w-3.5" />
+                              )}
+                              Quality Metric Panel
+                            </button>
+                            <span className="text-[10px] text-gray-500 tabular-nums">
+                              {qualityAggregates.length}{' '}
+                              {qualityAggregates.length === 1
+                                ? 'metric'
+                                : 'metrics'}
+                            </span>
+                          </header>
+                          {qualityPanelCollapsed ? null : (
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                              {qualityAggregates.map(renderAggregate)}
+                            </div>
+                          )}
+                        </section>
+                      ) : (
+                        <p className="text-sm text-gray-500">
+                          No quality metrics available yet.
                         </p>
-                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                          {insightAggregates.map(renderAggregate)}
-                        </div>
-                      </section>
-                    ) : null}
+                      )
+                    ) : visualizationSubtab === 'aiInsights' ? (
+                      <div className="space-y-6">
+                        <section>
+                          <UserInsightsStatusBanner
+                            state={userInsightsQuery.data ?? null}
+                            isLoading={userInsightsQuery.isLoading}
+                          />
+                          <header className="flex items-center justify-between gap-2 mb-3 mt-4">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setUserInsightsPanelCollapsed((collapsed) => !collapsed)
+                              }
+                              className="text-sm font-semibold text-gray-900 inline-flex items-center gap-1 hover:text-gray-700"
+                              aria-expanded={!userInsightsPanelCollapsed}
+                              title={
+                                userInsightsPanelCollapsed
+                                  ? 'Expand AI user insights panel'
+                                  : 'Collapse AI user insights panel'
+                              }
+                            >
+                              {userInsightsPanelCollapsed ? (
+                                <ChevronRight className="h-3.5 w-3.5" />
+                              ) : (
+                                <ChevronDown className="h-3.5 w-3.5" />
+                              )}
+                              AI User Insights (External Audit)
+                            </button>
+                          </header>
+                          {userInsightsPanelCollapsed ? null : (
+                            <EvaluationUserInsightsPanel
+                              state={userInsightsQuery.data ?? null}
+                              isLoading={userInsightsQuery.isLoading}
+                            />
+                          )}
+                        </section>
+                        {insightAggregates.length ? (
+                          <section>
+                            <h3 className="text-sm font-semibold text-gray-900 mb-1">
+                              User Insights
+                            </h3>
+                            <p className="text-xs text-gray-500 mb-3">
+                              Distribution classifiers derived from the same
+                              per-call evaluation pass.
+                            </p>
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                              {insightAggregates.map(renderAggregate)}
+                            </div>
+                          </section>
+                        ) : (
+                          <p className="text-sm text-gray-500">
+                            No user insight metrics available yet.
+                          </p>
+                        )}
+                      </div>
+                    ) : (
+                      <MetricClustersPanel
+                        callImportId={id!}
+                        evaluationId={evalId!}
+                        defaultProvider={evaluation?.llm_provider ?? ''}
+                        defaultModel={evaluation?.llm_model ?? ''}
+                        state={metricClustersQuery.data ?? null}
+                        isLoading={metricClustersQuery.isLoading}
+                        onGenerated={() => {
+                          queryClient.invalidateQueries({
+                            queryKey: [
+                              'call-import-evaluation-metric-clusters',
+                              id,
+                              evalId,
+                            ],
+                          })
+                        }}
+                      />
+                    )}
                   </div>
                 )
               })()}
@@ -2687,6 +3165,14 @@ export default function CallImportEvaluationDetail() {
             )}
             {/* Top pagination mirrors the bottom controls so the user
                 doesn't have to scroll past every row to flip pages. */}
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-gray-600">
+              <span>{filteredRowsSummary}</span>
+              {hasActiveFilters && rowsQuery.data ? (
+                <span className="text-gray-500">
+                  Page {rowsQuery.data.page} of {totalPages}
+                </span>
+              ) : null}
+            </div>
             <Pagination
               page={rowsQuery.data.page}
               pageCount={totalPages}
@@ -3505,32 +3991,204 @@ export default function CallImportEvaluationDetail() {
         createPortal(
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
-              <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between flex-shrink-0">
-                <div>
-                  <h2 className="text-lg font-semibold text-gray-900">
-                    Generate PDF report
-                  </h2>
-                  <p className="text-xs text-gray-500 mt-0.5">
-                    Choose one Quality Metric Audit PDF to generate from this
-                    evaluation run.
-                  </p>
+              <div className="px-6 py-4 border-b border-gray-200 flex-shrink-0">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h2 className="text-lg font-semibold text-gray-900">
+                      Generate PDF report
+                    </h2>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      Step {pdfWizardStep} of {PDF_WIZARD_STEPS.length}:{' '}
+                      {PDF_WIZARD_STEPS[pdfWizardStep - 1]?.label}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={closePdfReportWizard}
+                    disabled={pdfReportLoading}
+                    className="text-gray-400 hover:text-gray-600 disabled:opacity-50 shrink-0"
+                    aria-label="Close PDF report modal"
+                  >
+                    <X className="h-5 w-5" />
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (pdfReportLoading) return
-                    setPdfReportOpen(false)
-                    setPdfReportError(null)
-                  }}
-                  disabled={pdfReportLoading}
-                  className="text-gray-400 hover:text-gray-600 disabled:opacity-50"
-                  aria-label="Close PDF report modal"
-                >
-                  <X className="h-5 w-5" />
-                </button>
+                <ol className="mt-4 flex items-stretch gap-1.5">
+                  {PDF_WIZARD_STEPS.map((step) => {
+                    const reachable = pdfWizardCanReachStep(step.id)
+                    const active = pdfWizardStep === step.id
+                    const done = pdfWizardStep > step.id
+                    return (
+                      <li key={step.id} className="flex-1 min-w-0">
+                        <button
+                          type="button"
+                          onClick={() => handlePdfWizardStepClick(step.id)}
+                          disabled={!reachable || pdfReportLoading}
+                          className={`w-full rounded-md px-2 py-2 text-left transition-colors disabled:cursor-not-allowed ${
+                            active
+                              ? 'bg-primary-50 text-primary-800 ring-1 ring-primary-200'
+                              : done
+                                ? 'text-green-800 hover:bg-green-50'
+                                : reachable
+                                  ? 'text-gray-700 hover:bg-gray-50'
+                                  : 'text-gray-400'
+                          }`}
+                        >
+                          <span className="flex items-center gap-1.5">
+                            <span
+                              className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold ${
+                                done
+                                  ? 'bg-green-100 text-green-700'
+                                  : active
+                                    ? 'bg-primary-100 text-primary-700'
+                                    : 'bg-gray-100 text-gray-500'
+                              }`}
+                            >
+                              {done ? (
+                                <Check className="h-3 w-3" aria-hidden />
+                              ) : (
+                                step.id
+                              )}
+                            </span>
+                            <span className="truncate text-[10px] font-medium leading-tight sm:text-[11px]">
+                              {step.label}
+                            </span>
+                          </span>
+                        </button>
+                      </li>
+                    )
+                  })}
+                </ol>
               </div>
 
-              <div className="px-6 py-5 space-y-4 overflow-y-auto">
+              <div className="px-6 py-5 space-y-4 overflow-y-auto flex-1 min-h-0">
+                {pdfWizardStep === 1 && (
+                  <>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Report type
+                  </label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <label className="flex items-start gap-2 rounded-md border border-gray-200 p-3 hover:bg-gray-50 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="pdf-report-type"
+                        value="external"
+                        checked={pdfReportType === 'external'}
+                        disabled={pdfReportLoading}
+                        onChange={() => setPdfReportType('external')}
+                        className="mt-0.5 h-4 w-4 border-gray-300 text-primary-600 focus:ring-primary-500"
+                      />
+                      <span>
+                        <span className="block text-sm font-medium text-gray-900">
+                          External vendor
+                        </span>
+                        <span className="block text-xs text-gray-500">
+                          Vendor-safe report without internal diagnostic IDs.
+                        </span>
+                      </span>
+                    </label>
+                    <label className="flex items-start gap-2 rounded-md border border-gray-200 p-3 hover:bg-gray-50 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="pdf-report-type"
+                        value="internal"
+                        checked={pdfReportType === 'internal'}
+                        disabled={pdfReportLoading}
+                        onChange={() => setPdfReportType('internal')}
+                        className="mt-0.5 h-4 w-4 border-gray-300 text-primary-600 focus:ring-primary-500"
+                      />
+                      <span>
+                        <span className="block text-sm font-medium text-gray-900">
+                          Internal team
+                        </span>
+                        <span className="block text-xs text-gray-500">
+                          Includes diagnostic context for QA review.
+                        </span>
+                      </span>
+                    </label>
+                  </div>
+                </div>
+
+                <div className="rounded-md border border-gray-200 bg-gray-50 p-3 text-xs text-gray-700 space-y-1">
+                  <label className="mb-2 flex items-start gap-2 text-sm text-gray-800">
+                    <input
+                      type="checkbox"
+                      checked={pdfIncludeWeeklyDelta}
+                      disabled={pdfReportLoading}
+                      onChange={(e) => setPdfIncludeWeeklyDelta(e.target.checked)}
+                      className="mt-0.5 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500 disabled:opacity-50"
+                    />
+                    <span>
+                      <span className="block font-medium">
+                        Include previous-week metric deltas
+                      </span>
+                      <span className="block text-xs text-gray-500">
+                        Compares this report against a prior completed evaluation
+                        run in the same workspace.
+                      </span>
+                    </span>
+                  </label>
+                  {pdfIncludeWeeklyDelta && (
+                    <div className="mt-3 space-y-2 rounded-md border border-gray-200 bg-white p-3">
+                      <div className="text-xs font-medium text-gray-800">
+                        Previous-week comparison run
+                      </div>
+                      {baselineCandidatesLoading ? (
+                        <div className="flex items-center gap-2 text-xs text-gray-500">
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          Loading prior evaluation runs...
+                        </div>
+                      ) : baselineCandidatesError ? (
+                        <p className="text-xs text-red-600">{baselineCandidatesError}</p>
+                      ) : baselineCandidates.length === 0 ? (
+                        <p className="text-xs text-gray-500">
+                          No prior completed evaluation run was found in this
+                          workspace. Deltas will show as unavailable.
+                        </p>
+                      ) : (
+                        <>
+                          {selectedBaselineCandidate && (
+                            <p className="text-xs text-gray-600">
+                              Using{' '}
+                              <span className="font-medium text-gray-900">
+                                {selectedBaselineCandidate.name}
+                              </span>{' '}
+                              from {selectedBaselineCandidate.dataset} (
+                              {selectedBaselineCandidate.period_display})
+                            </p>
+                          )}
+                          <label className="block text-xs text-gray-600">
+                            Override comparison run
+                            <select
+                              value={baselineEvaluationId || ''}
+                              disabled={pdfReportLoading}
+                              onChange={(e) =>
+                                setBaselineEvaluationId(e.target.value || null)
+                              }
+                              className="mt-1 block w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 disabled:opacity-50"
+                            >
+                              {baselineCandidates.map((candidate) => (
+                                <option
+                                  key={candidate.evaluation_id}
+                                  value={candidate.evaluation_id}
+                                >
+                                  {candidate.name} · {candidate.dataset} ·{' '}
+                                  {candidate.period_display}
+                                  {candidate.is_default ? ' (default)' : ''}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+                  </>
+                )}
+
+                {pdfWizardStep === 2 && (
+                  <>
                 <div>
                   <label
                     htmlFor="pdf-vendor-name"
@@ -3545,12 +4203,6 @@ export default function CallImportEvaluationDetail() {
                     onChange={(e) => {
                       setPdfVendorName(e.target.value)
                       if (pdfReportError) setPdfReportError(null)
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault()
-                        handlePdfReportSubmit()
-                      }
                     }}
                     disabled={pdfReportLoading}
                     placeholder="Spinny"
@@ -3730,7 +4382,19 @@ export default function CallImportEvaluationDetail() {
                     </p>
                   </div>
                 </div>
+                {pdfReportError && pdfWizardStep === 2 && (
+                  <div className="rounded-md bg-red-50 border border-red-200 p-3">
+                    <div className="flex items-start gap-2">
+                      <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
+                      <p className="text-sm text-red-800">{pdfReportError}</p>
+                    </div>
+                  </div>
+                )}
+                  </>
+                )}
 
+                {pdfWizardStep === 3 && (
+                  <>
                 <div className="rounded-md border border-gray-200 p-3 space-y-3">
                   <div>
                     <h3 className="text-sm font-medium text-gray-900">
@@ -3746,6 +4410,15 @@ export default function CallImportEvaluationDetail() {
                       ['Audit Summary', pdfIncludeAuditSummary, setPdfIncludeAuditSummary],
                       ['Quality Metric Panel', pdfIncludeQualityPanel, setPdfIncludeQualityPanel],
                       ['User Insights', pdfIncludeUserInsights, setPdfIncludeUserInsights],
+                      ...(pdfReportType === 'internal'
+                        ? [
+                            [
+                              'Failure Diagnostics',
+                              pdfIncludeFailureDiagnostics,
+                              setPdfIncludeFailureDiagnostics,
+                            ] as const,
+                          ]
+                        : []),
                       ['Design Notes', pdfIncludeDesignNotes, setPdfIncludeDesignNotes],
                       ['Methodology', pdfIncludeMethodology, setPdfIncludeMethodology],
                     ].map(([label, checked, setter]) => (
@@ -3824,8 +4497,8 @@ export default function CallImportEvaluationDetail() {
                       </p>
                       {userInsightsQuery.data?.status === 'running' ? (
                         <p className="text-xs text-amber-700">
-                          User insights are still generating. You can wait or
-                          generate the report without section 03 content.
+                          User insights are still generating. You can continue;
+                          the PDF includes them when ready.
                         </p>
                       ) : userInsightsQuery.data?.status === 'completed' &&
                         userInsightsQuery.data.insights.length ? (
@@ -3855,147 +4528,186 @@ export default function CallImportEvaluationDetail() {
                             </label>
                           ))}
                         </div>
+                      ) : userInsightsNeedsGeneration ? (
+                        <div className="space-y-2">
+                          <p className="text-xs text-gray-500">
+                            User insights are not available yet. Start generation
+                            here (runs in the background) or continue without
+                            section 03 content.
+                          </p>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            leftIcon={<Sparkles className="h-3.5 w-3.5" />}
+                            onClick={handlePdfWizardGenerateUserInsights}
+                            isLoading={pdfUserInsightsTriggering}
+                            disabled={
+                              pdfUserInsightsTriggering || pdfReportLoading
+                            }
+                          >
+                            Generate user insights
+                          </Button>
+                        </div>
                       ) : (
                         <p className="text-xs text-gray-500">
-                          Generate a summary from the Visualizations tab first
-                          to produce AI user insights for the external report.
+                          No user insights are available for this evaluation yet.
                         </p>
                       )}
                     </div>
                   ) : null}
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Report type
-                  </label>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <label className="flex items-start gap-2 rounded-md border border-gray-200 p-3 hover:bg-gray-50 cursor-pointer">
-                      <input
-                        type="radio"
-                        name="pdf-report-type"
-                        value="external"
-                        checked={pdfReportType === 'external'}
-                        disabled={pdfReportLoading}
-                        onChange={() => setPdfReportType('external')}
-                        className="mt-0.5 h-4 w-4 border-gray-300 text-primary-600 focus:ring-primary-500"
-                      />
-                      <span>
-                        <span className="block text-sm font-medium text-gray-900">
-                          External vendor
-                        </span>
-                        <span className="block text-xs text-gray-500">
-                          Vendor-safe report without internal diagnostic IDs.
-                        </span>
-                      </span>
-                    </label>
-                    <label className="flex items-start gap-2 rounded-md border border-gray-200 p-3 hover:bg-gray-50 cursor-pointer">
-                      <input
-                        type="radio"
-                        name="pdf-report-type"
-                        value="internal"
-                        checked={pdfReportType === 'internal'}
-                        disabled={pdfReportLoading}
-                        onChange={() => {
-                          setPdfReportType('internal')
-                          setPdfIncludeWeeklyDelta(false)
-                        }}
-                        className="mt-0.5 h-4 w-4 border-gray-300 text-primary-600 focus:ring-primary-500"
-                      />
-                      <span>
-                        <span className="block text-sm font-medium text-gray-900">
-                          Internal team
-                        </span>
-                        <span className="block text-xs text-gray-500">
-                          Includes diagnostic context for QA review.
-                        </span>
-                      </span>
-                    </label>
-                  </div>
-                </div>
-
-                <div className="rounded-md border border-gray-200 bg-gray-50 p-3 text-xs text-gray-700 space-y-1">
-                  <label className="mb-2 flex items-start gap-2 text-sm text-gray-800">
-                    <input
-                      type="checkbox"
-                      checked={pdfIncludeWeeklyDelta}
-                      disabled={pdfReportLoading || pdfReportType !== 'external'}
-                      onChange={(e) => setPdfIncludeWeeklyDelta(e.target.checked)}
-                      className="mt-0.5 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500 disabled:opacity-50"
-                    />
-                    <span>
-                      <span className="block font-medium">
-                        Include previous-week metric deltas
-                      </span>
-                      <span className="block text-xs text-gray-500">
-                        Compares this report against a prior completed evaluation
-                        run in the same workspace.
-                      </span>
-                    </span>
-                  </label>
-                  {pdfReportType === 'external' && pdfIncludeWeeklyDelta && (
-                    <div className="mt-3 space-y-2 rounded-md border border-gray-200 bg-white p-3">
-                      <div className="text-xs font-medium text-gray-800">
-                        Previous-week comparison run
-                      </div>
-                      {baselineCandidatesLoading ? (
-                        <div className="flex items-center gap-2 text-xs text-gray-500">
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          Loading prior evaluation runs...
-                        </div>
-                      ) : baselineCandidatesError ? (
-                        <p className="text-xs text-red-600">{baselineCandidatesError}</p>
-                      ) : baselineCandidates.length === 0 ? (
-                        <p className="text-xs text-gray-500">
-                          No prior completed evaluation run was found in this
-                          workspace. Deltas will show as unavailable.
-                        </p>
-                      ) : (
-                        <>
-                          {selectedBaselineCandidate && (
-                            <p className="text-xs text-gray-600">
-                              Using{' '}
-                              <span className="font-medium text-gray-900">
-                                {selectedBaselineCandidate.name}
-                              </span>{' '}
-                              from {selectedBaselineCandidate.dataset} (
-                              {selectedBaselineCandidate.period_display})
+                  {pdfReportType === 'internal' && pdfIncludeFailureDiagnostics ? (
+                    (() => {
+                      const clusterStatus = metricClustersQuery.data?.status
+                      const clusterGroups = metricClustersQuery.data?.groups
+                      const clusterProgress = metricClustersQuery.data?.progress
+                      const clusterCompleted =
+                        clusterProgress?.completed_llm_calls ?? 0
+                      const clusterTotal = clusterProgress?.total_llm_calls ?? 0
+                      const clusterPct =
+                        clusterTotal > 0
+                          ? Math.min(
+                              100,
+                              Math.round((clusterCompleted / clusterTotal) * 100),
+                            )
+                          : 0
+                      return (
+                        <div className="rounded-md border border-gray-100 bg-gray-50/80 p-3 space-y-2">
+                          <p className="text-xs font-semibold text-gray-700">
+                            Failure diagnostics (clusters)
+                          </p>
+                          {clusterStatus === 'running' ? (
+                            <div className="space-y-2">
+                              <p className="text-xs text-amber-700">
+                                Clusters are generating in the background. You can
+                                continue; the PDF includes them when ready.
+                              </p>
+                              {clusterTotal > 0 ? (
+                                <>
+                                  <p className="text-[10px] text-gray-600 tabular-nums">
+                                    {clusterCompleted} / {clusterTotal} LLM calls
+                                    ({clusterPct}%)
+                                  </p>
+                                  <div className="h-2 rounded-full bg-amber-100 overflow-hidden">
+                                    <div
+                                      className="h-full bg-amber-600 transition-all duration-300"
+                                      style={{ width: `${clusterPct}%` }}
+                                      role="progressbar"
+                                      aria-valuenow={clusterCompleted}
+                                      aria-valuemin={0}
+                                      aria-valuemax={clusterTotal}
+                                    />
+                                  </div>
+                                </>
+                              ) : (
+                                <div className="h-2 rounded-full bg-amber-100 overflow-hidden">
+                                  <div className="h-full w-1/3 bg-amber-400 animate-pulse rounded-full" />
+                                </div>
+                              )}
+                            </div>
+                          ) : clusterStatus === 'completed' && clusterGroups?.length ? (
+                            <p className="text-xs text-green-700">
+                              {clusterGroups.length} cluster group(s) ready for
+                              failure diagnostics.
+                            </p>
+                          ) : metricClustersNeedsGeneration ? (
+                            <div className="space-y-2">
+                              <p className="text-xs text-gray-500">
+                                Clusters are not available yet. Start generation
+                                here (runs in the background) or continue without
+                                cluster content in the PDF.
+                              </p>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                leftIcon={<Grid3x3 className="h-3.5 w-3.5" />}
+                                onClick={() => {
+                                  setPdfGenerationError(null)
+                                  setPdfClusterModalOpen(true)
+                                }}
+                                disabled={pdfReportLoading}
+                              >
+                                Generate clusters
+                              </Button>
+                            </div>
+                          ) : (
+                            <p className="text-xs text-gray-500">
+                              No cluster groups are available for this evaluation
+                              yet.
                             </p>
                           )}
-                          <label className="block text-xs text-gray-600">
-                            Override comparison run
-                            <select
-                              value={baselineEvaluationId || ''}
-                              disabled={pdfReportLoading}
-                              onChange={(e) =>
-                                setBaselineEvaluationId(e.target.value || null)
-                              }
-                              className="mt-1 block w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 disabled:opacity-50"
-                            >
-                              {baselineCandidates.map((candidate) => (
-                                <option
-                                  key={candidate.evaluation_id}
-                                  value={candidate.evaluation_id}
-                                >
-                                  {candidate.name} · {candidate.dataset} ·{' '}
-                                  {candidate.period_display}
-                                  {candidate.is_default ? ' (default)' : ''}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                        </>
-                      )}
+                        </div>
+                      )
+                    })()
+                  ) : null}
+                </div>
+
+                {(pdfGenerationError || pdfReportError) && pdfWizardStep === 3 && (
+                  <div className="rounded-md bg-red-50 border border-red-200 p-3">
+                    <div className="flex items-start gap-2">
+                      <AlertCircle className="h-4 w-4 text-red-500 mt-0.5 flex-shrink-0" />
+                      <p className="text-sm text-red-800">
+                        {pdfGenerationError || pdfReportError}
+                      </p>
                     </div>
-                  )}
-                  <p>
-                    The selected report downloads as a single PDF. Metric
-                    panels include evaluated counts, flagged rate, passing rate,
-                    and value distributions.
-                  </p>
-                  <p>
-                    CSV and Excel downloads remain available from the existing
-                    Download menu.
+                  </div>
+                )}
+                  </>
+                )}
+
+                {pdfWizardStep === 4 && (
+                  <>
+                <div className="rounded-md border border-gray-200 bg-gray-50 p-4 space-y-3 text-sm text-gray-800">
+                  <h3 className="font-medium text-gray-900">Review your report</h3>
+                  <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                    <div>
+                      <dt className="text-gray-500">Report type</dt>
+                      <dd className="font-medium capitalize">{pdfReportType}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-gray-500">Vendor</dt>
+                      <dd className="font-medium">{pdfVendorName.trim() || '—'}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-gray-500">Use case</dt>
+                      <dd className="font-medium">
+                        {pdfUseCase.trim() || '—'}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-gray-500">Previous-week deltas</dt>
+                      <dd className="font-medium">
+                        {pdfIncludeWeeklyDelta ? 'Yes' : 'No'}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-gray-500">Quality metrics</dt>
+                      <dd className="font-medium">
+                        {selectedReportMetricIds.size} selected
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-gray-500">Sections</dt>
+                      <dd className="font-medium">
+                        {[
+                          pdfIncludeAuditSummary && 'Audit',
+                          pdfIncludeQualityPanel && 'Quality',
+                          pdfIncludeUserInsights && 'Insights',
+                          pdfReportType === 'internal' &&
+                            pdfIncludeFailureDiagnostics &&
+                            'Diagnostics',
+                          pdfIncludeDesignNotes && 'Design',
+                          pdfIncludeMethodology && 'Methodology',
+                        ]
+                          .filter(Boolean)
+                          .join(', ') || 'None'}
+                      </dd>
+                    </div>
+                  </dl>
+                  <p className="text-xs text-gray-600">
+                    Preview the PDF before downloading. Metric panels include
+                    evaluated counts, flagged rate, passing rate, and value
+                    distributions. CSV and Excel exports remain in the Download
+                    menu.
                   </p>
                 </div>
 
@@ -4007,31 +4719,134 @@ export default function CallImportEvaluationDetail() {
                     </div>
                   </div>
                 )}
+                  </>
+                )}
               </div>
 
-              <div className="px-6 py-4 border-t border-gray-200 flex items-center justify-end gap-3 flex-shrink-0">
+              <div className="px-6 py-4 border-t border-gray-200 flex items-center justify-between gap-3 flex-shrink-0">
                 <Button
                   variant="outline"
-                  onClick={() => {
-                    if (pdfReportLoading) return
-                    setPdfReportOpen(false)
-                    setPdfReportError(null)
-                  }}
+                  onClick={closePdfReportWizard}
                   disabled={pdfReportLoading}
                 >
                   Cancel
                 </Button>
+                <div className="flex items-center gap-3">
+                  {pdfWizardStep > 1 && (
+                    <Button
+                      variant="outline"
+                      onClick={handlePdfWizardBack}
+                      disabled={pdfReportLoading}
+                    >
+                      Back
+                    </Button>
+                  )}
+                  {pdfWizardStep < 4 ? (
+                    <Button
+                      variant="primary"
+                      onClick={handlePdfWizardNext}
+                      disabled={pdfReportLoading}
+                    >
+                      Next
+                    </Button>
+                  ) : (
+                    <>
+                      <Button
+                        variant="outline"
+                        onClick={handlePdfPreview}
+                        isLoading={pdfReportLoadingAction === 'preview'}
+                        disabled={pdfReportLoading || !pdfWizardVendorValid}
+                      >
+                        Preview
+                      </Button>
+                      <Button
+                        variant="primary"
+                        leftIcon={<FileText className="h-4 w-4" />}
+                        onClick={handlePdfReportSubmit}
+                        isLoading={pdfReportLoadingAction === 'download'}
+                        disabled={pdfReportLoading || !pdfWizardVendorValid}
+                      >
+                        Download PDF
+                      </Button>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
+
+      {id && evalId ? (
+        <MetricClusterGenerationModal
+          open={pdfClusterModalOpen}
+          onClose={() => setPdfClusterModalOpen(false)}
+          callImportId={id}
+          evaluationId={evalId}
+          defaultProvider={evaluation?.llm_provider ?? ''}
+          defaultModel={evaluation?.llm_model ?? ''}
+          state={metricClustersQuery.data ?? null}
+          overlayZIndexClass="z-[70]"
+          onGenerated={() => {
+            queryClient.invalidateQueries({
+              queryKey: [
+                'call-import-evaluation-metric-clusters',
+                id,
+                evalId,
+              ],
+            })
+            setPdfClusterModalOpen(false)
+          }}
+          onError={setPdfGenerationError}
+        />
+      ) : null}
+
+      {pdfPreviewOpen &&
+        pdfPreviewUrl &&
+        createPortal(
+          <div className="fixed inset-0 z-[60] flex flex-col bg-black/50">
+            <div className="flex items-center justify-between gap-3 px-4 py-3 bg-white border-b border-gray-200 shadow-sm">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-gray-900 truncate">
+                  PDF preview — {pdfPreviewFilename}
+                </p>
+                <p className="text-xs text-gray-500">
+                  Review the report before downloading. Close to return to
+                  configuration.
+                </p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    if (!pdfPreviewUrl) return
+                    const link = document.createElement('a')
+                    link.href = pdfPreviewUrl
+                    link.download = pdfPreviewFilename
+                    document.body.appendChild(link)
+                    link.click()
+                    link.remove()
+                  }}
+                >
+                  Download
+                </Button>
                 <Button
                   variant="primary"
-                  leftIcon={<FileText className="h-4 w-4" />}
-                  onClick={handlePdfReportSubmit}
-                  isLoading={pdfReportLoading}
-                  disabled={pdfReportLoading || !pdfVendorName.trim()}
+                  onClick={() => {
+                    if (pdfPreviewUrl) window.URL.revokeObjectURL(pdfPreviewUrl)
+                    setPdfPreviewUrl(null)
+                    setPdfPreviewOpen(false)
+                  }}
                 >
-                  Generate PDF
+                  Close
                 </Button>
               </div>
             </div>
+            <iframe
+              title="PDF report preview"
+              src={pdfPreviewUrl}
+              className="flex-1 w-full bg-gray-100 border-0"
+            />
           </div>,
           document.body,
         )}
@@ -4735,6 +5550,8 @@ function MetricVisualization({
   isActive,
   activeValue,
   businessInsight,
+  periodDelta,
+  failurePoliciesSource,
   onValueClick,
 }: {
   metric: CallImportMetricAggregate
@@ -4744,6 +5561,8 @@ function MetricVisualization({
   isActive: boolean
   activeValue: string | null
   businessInsight?: string | null
+  periodDelta?: MetricPeriodDelta | null
+  failurePoliciesSource?: 'inferred' | 'user' | null
   onValueClick: (value: string) => void
 }) {
   const histogram = metric.histogram_buckets
@@ -4861,6 +5680,22 @@ function MetricVisualization({
                 </span>
               )
             )}
+            {periodDelta?.label ? (
+              <span
+                className="inline-flex items-center text-[10px] font-medium px-2 py-0.5 rounded-full bg-slate-100 text-slate-700"
+                title={periodDelta.detail || 'vs prior evaluation run'}
+              >
+                {periodDelta.label} vs prior
+              </span>
+            ) : null}
+            {failurePoliciesSource === 'inferred' ? (
+              <span
+                className="inline-flex items-center text-[10px] font-medium px-2 py-0.5 rounded-full bg-amber-50 text-amber-800"
+                title="Confirm failure values in Failure diagnostics → Generate clusters"
+              >
+                Suggested failure rate
+              </span>
+            ) : null}
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -4880,6 +5715,12 @@ function MetricVisualization({
           )}
         </div>
       </div>
+
+      {periodDelta?.why ? (
+        <p className="mb-3 text-[11px] text-slate-600 leading-snug">
+          {clampProseToSentences(periodDelta.why, 2)}
+        </p>
+      ) : null}
 
       {hasNumeric && (
         <div className="mb-3 grid grid-cols-4 gap-2">
@@ -5804,6 +6645,24 @@ function formatPct(ratio: number): string {
   return `${Math.round(ratio * 100)}%`
 }
 
+function clampProseToSentences(
+  text: string,
+  maxSentences = 3,
+  maxChars = 300,
+): string {
+  const trimmed = text.trim().replace(/\s*\n+\s*/g, ' ')
+  if (!trimmed) return trimmed
+  const sentences = trimmed.split(/(?<=[.!?])\s+/).filter(Boolean)
+  let result = (sentences.length ? sentences.slice(0, maxSentences) : [trimmed])
+    .join(' ')
+    .trim()
+  if (result.length > maxChars) {
+    const cut = result.slice(0, maxChars - 3).replace(/\s+\S*$/, '')
+    result = `${cut || result.slice(0, maxChars)}...`
+  }
+  return result
+}
+
 const PROVIDER_DISPLAY: Record<string, string> = {
   openai: 'OpenAI',
   anthropic: 'Anthropic',
@@ -6204,25 +7063,8 @@ function EvaluationTLDRInsights({
       )}
 
       <p className="text-xs text-gray-700 leading-relaxed whitespace-pre-line">
-        {cached.narrative}
+        {clampProseToSentences(cached.narrative)}
       </p>
-
-      {cached.patterns.length > 0 && (
-        <ul className="mt-2 space-y-1">
-          {cached.patterns.map((pattern, i) => (
-            <li
-              key={`${i}-${pattern.slice(0, 24)}`}
-              className="flex items-start gap-2 text-[11px] text-gray-700 leading-snug"
-            >
-              <span
-                className="mt-1 h-1.5 w-1.5 rounded-full bg-primary-400 shrink-0"
-                aria-hidden="true"
-              />
-              <span className="min-w-0">{pattern}</span>
-            </li>
-          ))}
-        </ul>
-      )}
 
       <div className="mt-3 flex items-center justify-between gap-2 flex-wrap">
         <p className="text-[10px] text-gray-400 truncate">
@@ -7151,6 +7993,1409 @@ function UserInsightsStatusBanner({
   )
 }
 
+const METRIC_CLUSTER_ROW_PRESETS = [25, 50, 100, 200] as const
+
+function MetricClusterRowPicker({
+  rows,
+  selectedIds,
+  onChangeSelectedIds,
+  disabled,
+}: {
+  rows: MetricClusterEligibleRow[]
+  selectedIds: Set<string>
+  onChangeSelectedIds: (next: Set<string>) => void
+  disabled?: boolean
+}) {
+  const selectFirstN = (n: number) => {
+    onChangeSelectedIds(
+      new Set(rows.slice(0, n).map((r) => r.evaluation_row_id)),
+    )
+  }
+
+  const selectAll = () => {
+    onChangeSelectedIds(new Set(rows.map((r) => r.evaluation_row_id)))
+  }
+
+  const presetActive = (n: number) => {
+    const limit = Math.min(n, rows.length)
+    if (limit === 0 || selectedIds.size !== limit) return false
+    const firstIds = rows.slice(0, limit).map((r) => r.evaluation_row_id)
+    return firstIds.every((id) => selectedIds.has(id))
+  }
+
+  const allActive =
+    rows.length > 0 &&
+    selectedIds.size === rows.length &&
+    rows.every((r) => selectedIds.has(r.evaluation_row_id))
+
+  const toggleRow = (id: string) => {
+    const next = new Set(selectedIds)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    onChangeSelectedIds(next)
+  }
+
+  const presetButtonClass = (active: boolean) =>
+    'rounded-full px-2 py-0.5 border text-[10px] font-medium transition-colors disabled:opacity-40 ' +
+    (active
+      ? 'border-primary-300 bg-primary-50 text-primary-800'
+      : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300 hover:bg-gray-50')
+
+  return (
+    <div className="rounded-md border border-gray-200 bg-white">
+      <div className="px-3 py-2 border-b border-gray-100 bg-gray-50/80 space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-xs font-medium text-gray-700">
+            Calls to include ({selectedIds.size} / {rows.length})
+          </p>
+          <div className="flex items-center gap-2 text-[11px] shrink-0">
+            <button
+              type="button"
+              className="text-primary-600 hover:underline disabled:opacity-50"
+              disabled={disabled || rows.length === 0}
+              onClick={selectAll}
+            >
+              All
+            </button>
+            <span className="text-gray-300">|</span>
+            <button
+              type="button"
+              className="text-gray-600 hover:underline disabled:opacity-50"
+              disabled={disabled || selectedIds.size === 0}
+              onClick={() => onChangeSelectedIds(new Set())}
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+        {rows.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-[10px] text-gray-500 mr-0.5">Quick:</span>
+            {METRIC_CLUSTER_ROW_PRESETS.filter((n) => n <= rows.length).map(
+              (n) => (
+                <button
+                  key={n}
+                  type="button"
+                  disabled={disabled}
+                  className={presetButtonClass(presetActive(n))}
+                  onClick={() => selectFirstN(n)}
+                >
+                  First {n}
+                </button>
+              ),
+            )}
+            {rows.length > METRIC_CLUSTER_ROW_PRESETS[METRIC_CLUSTER_ROW_PRESETS.length - 1] ? (
+              <button
+                type="button"
+                disabled={disabled}
+                className={presetButtonClass(allActive)}
+                onClick={selectAll}
+              >
+                All {rows.length}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+      {rows.length === 0 ? (
+        <p className="px-3 py-3 text-xs text-gray-500">
+          No completed calls with a flagged quality metric yet.
+        </p>
+      ) : (
+        <ul className="max-h-48 overflow-y-auto divide-y divide-gray-100">
+          {rows.map((row) => {
+            const id = row.evaluation_row_id
+            const label =
+              row.conversation_id?.trim() ||
+              (row.row_index != null ? `Row ${row.row_index}` : id.slice(0, 8))
+            const metrics = row.flagged_metric_names.join(', ')
+            return (
+              <li key={id}>
+                <label className="flex items-start gap-2 px-3 py-2 cursor-pointer hover:bg-gray-50/80">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5 rounded border-gray-300"
+                    checked={selectedIds.has(id)}
+                    disabled={disabled}
+                    onChange={() => toggleRow(id)}
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-xs font-medium text-gray-900 truncate">
+                      {label}
+                    </span>
+                    {metrics ? (
+                      <span className="block text-[10px] text-gray-500 truncate">
+                        Flagged: {metrics}
+                      </span>
+                    ) : null}
+                  </span>
+                </label>
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+function normalizeFailureLabel(label: string): string {
+  return label.trim().toLowerCase()
+}
+
+function failureRowCountForPreview(
+  preview: MetricFailurePolicyMetricPreview,
+  policy: MetricFailurePolicy,
+): number {
+  if (preview.is_multi_label_parent) {
+    let total = 0
+    for (const name of policy.failure_child_names || []) {
+      total += preview.row_count_by_value[name] ?? 0
+    }
+    return total
+  }
+  let total = 0
+  const targets = new Set(
+    (policy.failure_values || []).map((v) => normalizeFailureLabel(v)),
+  )
+  for (const [label, count] of Object.entries(preview.row_count_by_value)) {
+    if (targets.has(normalizeFailureLabel(label))) {
+      total += count
+    }
+  }
+  return total
+}
+
+function policyHasFailureCriteria(
+  preview: MetricFailurePolicyMetricPreview,
+  policy: MetricFailurePolicy,
+): boolean {
+  if (preview.is_multi_label_parent) {
+    return (policy.failure_child_names?.length ?? 0) > 0
+  }
+  if (policy.numeric_rule) return true
+  return (policy.failure_values?.length ?? 0) > 0
+}
+
+function MetricFailurePolicyEditor({
+  previews,
+  policies,
+  policiesSource,
+  onChangePolicies,
+  disabled,
+}: {
+  previews: MetricFailurePolicyMetricPreview[]
+  policies: Record<string, MetricFailurePolicy>
+  policiesSource: 'inferred' | 'user'
+  onChangePolicies: (next: Record<string, MetricFailurePolicy>) => void
+  disabled?: boolean
+}) {
+  if (!previews.length) {
+    return (
+      <p className="text-xs text-gray-500">
+        No quality metrics available for failure policy configuration.
+      </p>
+    )
+  }
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <p className="text-xs font-medium text-gray-800">
+          Failure values per metric
+        </p>
+        <p className="text-[10px] text-gray-500 mt-0.5">
+          Select which answers count as failures for metrics you want to cluster.
+          Metrics with none selected, or with no matching calls, are skipped.{' '}
+          {policiesSource === 'inferred' ? (
+            <span className="text-amber-700">
+              Suggested defaults only where matching rows exist.
+            </span>
+          ) : (
+            <span className="text-green-700">Saved for this evaluation.</span>
+          )}
+        </p>
+      </div>
+      {previews.map((preview) => {
+        const policy =
+          policies[preview.metric_id] ?? preview.effective_policy
+        const failureCount = failureRowCountForPreview(preview, policy)
+        const hasCriteria = policyHasFailureCriteria(preview, policy)
+        const isSkipped = !hasCriteria || failureCount === 0
+
+        const toggleValue = (label: string, checked: boolean) => {
+          const norm = normalizeFailureLabel(label)
+          const current = new Set(
+            (policy.failure_values || []).map(normalizeFailureLabel),
+          )
+          if (checked) current.add(norm)
+          else current.delete(norm)
+          const nextValues = preview.value_counts
+            .map((vc) => vc.label)
+            .filter((l) => current.has(normalizeFailureLabel(l)))
+          onChangePolicies({
+            ...policies,
+            [preview.metric_id]: {
+              ...policy,
+              metric_id: preview.metric_id,
+              failure_values: nextValues.map(normalizeFailureLabel),
+            },
+          })
+        }
+
+        const toggleChild = (name: string, checked: boolean) => {
+          const current = new Set(policy.failure_child_names || [])
+          if (checked) current.add(name)
+          else current.delete(name)
+          onChangePolicies({
+            ...policies,
+            [preview.metric_id]: {
+              ...policy,
+              metric_id: preview.metric_id,
+              failure_child_names: Array.from(current),
+            },
+          })
+        }
+
+        return (
+          <div
+            key={preview.metric_id}
+            className="rounded-md border border-gray-200 bg-gray-50/50 p-3"
+          >
+            <div className="flex items-start justify-between gap-2 mb-2">
+              <p className="text-sm font-semibold text-gray-900">
+                {preview.metric_name}
+              </p>
+              <span
+                className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${
+                  isSkipped
+                    ? 'bg-gray-100 text-gray-600'
+                    : 'bg-primary-50 text-primary-800'
+                }`}
+              >
+                {isSkipped
+                  ? 'Skipped — no matching calls'
+                  : `${failureCount} call${failureCount === 1 ? '' : 's'} to cluster`}
+              </span>
+            </div>
+            {preview.is_multi_label_parent ? (
+              <div className="flex flex-wrap gap-2">
+                {preview.child_names.map((name) => {
+                  const checked = (policy.failure_child_names || []).includes(
+                    name,
+                  )
+                  const count = preview.row_count_by_value[name] ?? 0
+                  return (
+                    <label
+                      key={name}
+                      className="inline-flex items-center gap-1.5 text-xs text-gray-700"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        disabled={disabled}
+                        onChange={(e) =>
+                          toggleChild(name, e.target.checked)
+                        }
+                      />
+                      {name}
+                      <span className="text-gray-400">({count})</span>
+                    </label>
+                  )
+                })}
+              </div>
+            ) : preview.value_counts.length ? (
+              <div className="flex flex-wrap gap-2">
+                {preview.value_counts.map((vc) => {
+                  const checked = (policy.failure_values || []).some(
+                    (v) =>
+                      normalizeFailureLabel(v) ===
+                      normalizeFailureLabel(vc.label),
+                  )
+                  return (
+                    <label
+                      key={vc.label}
+                      className="inline-flex items-center gap-1.5 text-xs text-gray-700"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        disabled={disabled}
+                        onChange={(e) => toggleValue(vc.label, e.target.checked)}
+                      />
+                      {vc.label}
+                      <span className="text-gray-400">({vc.count})</span>
+                    </label>
+                  )
+                })}
+              </div>
+            ) : policy.numeric_rule ? (
+              <p className="text-xs text-gray-600">
+                Numeric failures: score {policy.numeric_rule.op}{' '}
+                {policy.numeric_rule.threshold}
+                {preview.metric_type ? ` (${preview.metric_type})` : ''}
+              </p>
+            ) : (
+              <p className="text-xs text-gray-500">No observed values yet.</p>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function MetricClusterGenerationModal({
+  open,
+  onClose,
+  callImportId,
+  evaluationId,
+  defaultProvider = '',
+  defaultModel = '',
+  state,
+  onGenerated,
+  onError,
+  overlayZIndexClass = 'z-50',
+}: {
+  open: boolean
+  onClose: () => void
+  callImportId: string
+  evaluationId: string
+  defaultProvider?: string
+  defaultModel?: string
+  state: EvaluationMetricClustersState | null
+  onGenerated: () => void
+  onError?: (message: string | null) => void
+  overlayZIndexClass?: string
+}) {
+  const [generating, setGenerating] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [pickerProvider, setPickerProvider] = useState('')
+  const [pickerModel, setPickerModel] = useState('')
+  const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set())
+  const [selectionTouched, setSelectionTouched] = useState(false)
+  const [llmPickerTouched, setLlmPickerTouched] = useState(false)
+  const [policies, setPolicies] = useState<Record<string, MetricFailurePolicy>>(
+    {},
+  )
+  const [policiesSource, setPoliciesSource] = useState<'inferred' | 'user'>(
+    'inferred',
+  )
+  const [policiesTouched, setPoliciesTouched] = useState(false)
+
+  const failurePoliciesQuery = useQuery({
+    queryKey: [
+      'call-import-evaluation-metric-cluster-failure-policies',
+      callImportId,
+      evaluationId,
+    ],
+    queryFn: () =>
+      apiClient.getCallImportEvaluationMetricClusterFailurePolicies(
+        callImportId,
+        evaluationId,
+      ),
+    enabled: open && !!callImportId && !!evaluationId,
+    staleTime: 30_000,
+  })
+
+  const eligibleRowsQuery = useQuery({
+    queryKey: [
+      'call-import-evaluation-metric-cluster-eligible-rows',
+      callImportId,
+      evaluationId,
+      policiesSource,
+      JSON.stringify(policies),
+    ],
+    queryFn: () =>
+      apiClient.listCallImportEvaluationMetricClusterEligibleRows(
+        callImportId,
+        evaluationId,
+      ),
+    enabled: open && !!callImportId && !!evaluationId,
+    staleTime: 30_000,
+  })
+
+  const eligibleRows = eligibleRowsQuery.data?.items ?? []
+  const hasExistingClusters = !!state?.groups?.length
+
+  useEffect(() => {
+    if (!open) return
+    setError(null)
+    onError?.(null)
+  }, [open])
+
+  useEffect(() => {
+    const data = failurePoliciesQuery.data
+    if (!open || !data || policiesTouched) return
+    setPolicies(data.policies)
+    setPoliciesSource(data.source)
+  }, [open, failurePoliciesQuery.data, policiesTouched])
+
+  useEffect(() => {
+    if (!open || !policiesTouched || generating) return
+    const timer = window.setTimeout(() => {
+      apiClient
+        .saveCallImportEvaluationMetricClusterFailurePolicies(
+          callImportId,
+          evaluationId,
+          policies,
+        )
+        .then((saved) => {
+          setPoliciesSource(saved.source)
+          eligibleRowsQuery.refetch()
+        })
+        .catch(() => {
+          /* keep local edits; generate will persist */
+        })
+    }, 600)
+    return () => window.clearTimeout(timer)
+  }, [
+    open,
+    policies,
+    policiesTouched,
+    generating,
+    callImportId,
+    evaluationId,
+  ])
+
+  useEffect(() => {
+    if (state?.provider) {
+      setPickerProvider(state.provider)
+      if (state.model) setPickerModel(state.model)
+      return
+    }
+    if (llmPickerTouched) return
+    if (defaultProvider) setPickerProvider(defaultProvider)
+    if (defaultModel) setPickerModel(defaultModel)
+  }, [
+    state?.provider,
+    state?.model,
+    defaultProvider,
+    defaultModel,
+    llmPickerTouched,
+  ])
+
+  useEffect(() => {
+    if (!open || selectionTouched || eligibleRows.length === 0) return
+    const fromState = state?.selected_evaluation_row_ids
+    if (fromState?.length) {
+      const valid = fromState.filter((id) =>
+        eligibleRows.some((r) => r.evaluation_row_id === id),
+      )
+      if (valid.length) {
+        setSelectedRowIds(new Set(valid))
+        return
+      }
+    }
+    setSelectedRowIds(new Set(eligibleRows.map((r) => r.evaluation_row_id)))
+  }, [
+    open,
+    eligibleRows,
+    selectionTouched,
+    state?.selected_evaluation_row_ids,
+  ])
+
+  const reportError = (message: string | null) => {
+    setError(message)
+    onError?.(message)
+  }
+
+  const handleGenerate = async () => {
+    if (selectedRowIds.size === 0) {
+      reportError('Select at least one call to cluster.')
+      return
+    }
+    const previews = failurePoliciesQuery.data?.previews ?? []
+    const hasClusterableMetric = previews.some((p) => {
+      const policy = policies[p.metric_id] ?? p.effective_policy
+      return (
+        policyHasFailureCriteria(p, policy) &&
+        failureRowCountForPreview(p, policy) > 0
+      )
+    })
+    if (!hasClusterableMetric) {
+      reportError(
+        'No calls match any failure policy. Select failure values on at least one metric that has matching rows.',
+      )
+      return
+    }
+    setGenerating(true)
+    reportError(null)
+    try {
+      const force = hasExistingClusters
+      const allSelected =
+        eligibleRows.length > 0 &&
+        selectedRowIds.size === eligibleRows.length
+      await apiClient.generateCallImportEvaluationMetricClusters(
+        callImportId,
+        evaluationId,
+        {
+          force,
+          regenerate: force,
+          provider: pickerProvider || undefined,
+          model: pickerModel || undefined,
+          evaluation_row_ids: allSelected
+            ? undefined
+            : Array.from(selectedRowIds),
+          failure_policies: policies,
+        },
+      )
+      onGenerated()
+      onClose()
+    } catch (e: any) {
+      reportError(
+        e?.response?.data?.detail ||
+          'Failed to start metric cluster generation.',
+      )
+    } finally {
+      setGenerating(false)
+    }
+  }
+
+  const handleClose = () => {
+    if (generating) return
+    reportError(null)
+    onClose()
+  }
+
+  if (!open || typeof document === 'undefined') return null
+
+  return createPortal(
+    <div
+      className={`fixed inset-0 ${overlayZIndexClass} flex items-center justify-center p-4 bg-black/40`}
+    >
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[92vh] overflow-hidden flex flex-col">
+        <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-gray-900">
+              Generate clusters
+            </h2>
+            <p className="text-sm text-gray-600 mt-0.5">
+              Configure failure values per metric, choose calls, then generate
+              clusters from LLM rationales.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleClose}
+            disabled={generating}
+            className="text-gray-400 hover:text-gray-600 disabled:opacity-50"
+            aria-label="Close cluster generation modal"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="px-6 py-5 overflow-y-auto flex-1">
+          <div className="mb-4">
+            {failurePoliciesQuery.isLoading ? (
+              <p className="text-xs text-gray-500">Loading failure policies…</p>
+            ) : failurePoliciesQuery.data ? (
+              <MetricFailurePolicyEditor
+                previews={failurePoliciesQuery.data.previews}
+                policies={policies}
+                policiesSource={policiesSource}
+                onChangePolicies={(next) => {
+                  setPoliciesTouched(true)
+                  setPolicies(next)
+                }}
+                disabled={generating}
+              />
+            ) : null}
+          </div>
+          <div className="mb-3">
+            {eligibleRowsQuery.isLoading ? (
+              <p className="text-xs text-gray-500">Loading eligible calls…</p>
+            ) : (
+              <MetricClusterRowPicker
+                rows={eligibleRows}
+                selectedIds={selectedRowIds}
+                onChangeSelectedIds={(next) => {
+                  setSelectionTouched(true)
+                  setSelectedRowIds(next)
+                }}
+                disabled={generating}
+              />
+            )}
+          </div>
+          <div className="mb-3 rounded-md border border-gray-100 bg-white/80 p-3">
+            <p className="text-xs font-medium text-gray-800 mb-0.5">
+              LLM for clustering
+            </p>
+            <p className="text-[10px] text-gray-500 mb-2">
+              Provider and model used for failure signatures and cluster
+              synthesis. Defaults to this evaluation&apos;s scoring LLM when
+              unset.
+            </p>
+            <AIProviderModelPicker
+              provider={pickerProvider}
+              model={pickerModel}
+              onProviderChange={(next) => {
+                setLlmPickerTouched(true)
+                setPickerProvider(next)
+              }}
+              onModelChange={(next) => {
+                setLlmPickerTouched(true)
+                setPickerModel(next)
+              }}
+              disabled={generating}
+              size="sm"
+            />
+          </div>
+          {error ? <p className="text-sm text-red-600">{error}</p> : null}
+        </div>
+        <div className="px-6 py-4 border-t border-gray-200 flex items-center justify-end gap-2">
+          <Button variant="outline" onClick={handleClose} disabled={generating}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            onClick={handleGenerate}
+            isLoading={generating}
+            disabled={generating || selectedRowIds.size === 0}
+          >
+            Generate clusters
+          </Button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
+function buildEvaluationCallDeepLink(
+  callImportId: string,
+  evaluationId: string,
+  evidence: MetricClusterEvidence,
+): string | null {
+  const conv = evidence.conversation_id?.trim()
+  const rowId = evidence.evaluation_row_id?.trim()
+  if (!conv && !rowId) return null
+  const base = `/call-imports/${callImportId}/evaluations/${evaluationId}`
+  if (conv) {
+    return `${base}?conversation_id=${encodeURIComponent(conv)}`
+  }
+  return `${base}?row_id=${encodeURIComponent(rowId!)}`
+}
+
+function RcaExecutiveBar({ pct, scaleMax }: { pct: number; scaleMax: number }) {
+  const width =
+    scaleMax > 0 ? Math.min(100, Math.round((pct / scaleMax) * 100)) : 0
+  return (
+    <div className="h-2.5 rounded-sm bg-[#e7ddd1] border border-[#d7cfc2] overflow-hidden min-w-[80px]">
+      <div
+        className="h-full bg-[#c7725e] rounded-sm transition-all"
+        style={{ width: `${width}%` }}
+      />
+    </div>
+  )
+}
+
+function RcaExecutiveInterpretation({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="rounded-md border border-rose-100 bg-rose-50/70 px-3 py-2.5 mt-3">
+      <p className="text-[10px] font-bold uppercase tracking-wide text-rose-800 mb-1">
+        Executive interpretation
+      </p>
+      <p className="text-xs text-gray-800 leading-relaxed">{children}</p>
+    </div>
+  )
+}
+
+function MetricClustersRcaSummaryPanel({
+  summary,
+}: {
+  summary: MetricClustersRcaSummary
+}) {
+  const topPattern = summary.repeated_patterns[0]
+  const topHotspot = summary.metric_hotspots[0]
+  const maxPatternShare = Math.max(
+    ...summary.repeated_patterns.map((r) => r.evidence_share_pct),
+    1,
+  )
+  const maxHotspotRate = Math.max(
+    ...summary.metric_hotspots.map((r) => r.metric_rate_pct),
+    1,
+  )
+  const totalFlagged =
+    summary.total_flagged_instances ??
+    summary.metric_hotspots.reduce((sum, r) => sum + r.flagged_calls, 0)
+
+  return (
+    <article className="rounded-lg border border-gray-200 bg-[#faf7f2]/80 p-4 space-y-6">
+      <div>
+        <h4 className="text-base font-semibold text-gray-900">
+          Executive summary — evaluation set
+        </h4>
+        <p className="text-xs text-gray-600 mt-1">
+          Top metrics by clustered failure patterns and overall flagged rate across{' '}
+          {summary.analysed_calls.toLocaleString()} analysed calls.
+        </p>
+      </div>
+
+      {summary.repeated_patterns.length ? (
+        <section className="space-y-2">
+          <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-gray-200 pb-2">
+            <h5 className="text-sm font-semibold text-gray-900">
+              Repeated failure patterns
+            </h5>
+            <p className="text-[10px] text-gray-500 uppercase tracking-wide text-right max-w-md">
+              Base: {summary.total_clusters} RCA clusters from{' '}
+              {summary.total_clustered_instances.toLocaleString()} clustered instances ·{' '}
+              {totalFlagged.toLocaleString()} flagged metric-call instances
+            </p>
+          </div>
+          <div className="overflow-x-auto rounded-md border border-gray-100 bg-white">
+            <table className="w-full min-w-[520px] text-xs">
+              <thead>
+                <tr className="text-left text-[10px] uppercase tracking-wide text-gray-500 border-b border-gray-100">
+                  <th className="px-3 py-2 font-semibold w-[42%]">Finding</th>
+                  <th className="px-3 py-2 font-semibold text-right w-[14%]">
+                    Evidence share
+                  </th>
+                  <th className="px-3 py-2 font-semibold w-[26%]">Distribution</th>
+                  <th className="px-3 py-2 font-semibold text-right w-[18%]">
+                    Evidence calls
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {summary.repeated_patterns.map((row) => (
+                  <tr
+                    key={row.metric_id}
+                    className="border-b border-gray-50 align-top last:border-0"
+                  >
+                    <td className="px-3 py-2.5">
+                      <p className="font-bold text-gray-900 uppercase tracking-tight text-[11px]">
+                        {row.metric_name}
+                      </p>
+                      <p className="text-[10px] text-gray-500 mt-1 leading-snug">
+                        Top RCA patterns: {row.top_rca_patterns}
+                      </p>
+                    </td>
+                    <td className="px-3 py-2.5 text-right tabular-nums font-semibold text-gray-900">
+                      {row.evidence_share_pct.toFixed(1)}%
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <RcaExecutiveBar
+                        pct={row.evidence_share_pct}
+                        scaleMax={maxPatternShare}
+                      />
+                    </td>
+                    <td className="px-3 py-2.5 text-right tabular-nums font-semibold text-gray-900">
+                      {row.evidence_calls.toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {topPattern ? (
+            <RcaExecutiveInterpretation>
+              These rows group repeated RCA failure patterns by metric so the same
+              metric is not repeated across multiple rows. The largest group is{' '}
+              <span className="font-semibold">{topPattern.metric_name}</span>; focus
+              remediation there first using the example calls in each cluster below.
+            </RcaExecutiveInterpretation>
+          ) : null}
+        </section>
+      ) : null}
+
+      {summary.metric_hotspots.length ? (
+        <section className="space-y-2">
+          <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-gray-200 pb-2">
+            <h5 className="text-sm font-semibold text-gray-900">Metric hotspots</h5>
+            <p className="text-[10px] text-gray-500 uppercase tracking-wide">
+              Base: selected metric flags across{' '}
+              {summary.analysed_calls.toLocaleString()} analysed calls
+            </p>
+          </div>
+          <div className="overflow-x-auto rounded-md border border-gray-100 bg-white">
+            <table className="w-full min-w-[520px] text-xs">
+              <thead>
+                <tr className="text-left text-[10px] uppercase tracking-wide text-gray-500 border-b border-gray-100">
+                  <th className="px-3 py-2 font-semibold w-[42%]">Finding</th>
+                  <th className="px-3 py-2 font-semibold text-right w-[14%]">
+                    Metric rate
+                  </th>
+                  <th className="px-3 py-2 font-semibold w-[26%]">Distribution</th>
+                  <th className="px-3 py-2 font-semibold text-right w-[18%]">
+                    Flagged calls
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {summary.metric_hotspots.map((row) => (
+                  <tr
+                    key={row.metric_id}
+                    className="border-b border-gray-50 align-top last:border-0"
+                  >
+                    <td className="px-3 py-2.5">
+                      <p className="font-bold text-gray-900 uppercase tracking-tight text-[11px]">
+                        {row.metric_name}
+                      </p>
+                    </td>
+                    <td className="px-3 py-2.5 text-right tabular-nums font-semibold text-gray-900">
+                      {row.metric_rate_pct.toFixed(2)}%
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <RcaExecutiveBar
+                        pct={row.metric_rate_pct}
+                        scaleMax={maxHotspotRate}
+                      />
+                    </td>
+                    <td className="px-3 py-2.5 text-right tabular-nums font-semibold text-gray-900">
+                      {row.flagged_calls.toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {topHotspot ? (
+            <RcaExecutiveInterpretation>
+              Across {summary.analysed_calls.toLocaleString()} analysed calls,{' '}
+              <span className="font-semibold">{topHotspot.metric_name}</span> has the
+              highest metric rate at {topHotspot.metric_rate_pct.toFixed(2)}%.
+            </RcaExecutiveInterpretation>
+          ) : null}
+        </section>
+      ) : null}
+
+      {summary.prompt_areas.length ? (
+        <section className="space-y-2 pt-2 border-t border-gray-200">
+          <h5 className="text-sm font-semibold text-gray-900">RCA data summary</h5>
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-600">
+            Prompt areas to inspect
+          </p>
+          <table className="w-full text-xs border border-gray-100 rounded-md overflow-hidden bg-white">
+            <thead className="bg-gray-50 text-gray-500">
+              <tr>
+                <th className="text-left px-3 py-2 font-medium">Area</th>
+                <th className="text-right px-3 py-2 font-medium">%</th>
+              </tr>
+            </thead>
+            <tbody>
+              {summary.prompt_areas.map((row) => (
+                <tr key={row.label} className="border-t border-gray-100">
+                  <td className="px-3 py-2 text-gray-800">{row.label}</td>
+                  <td className="px-3 py-2 text-right tabular-nums text-gray-700">
+                    {row.share_pct.toFixed(1)}%
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      ) : null}
+    </article>
+  )
+}
+
+function MetricClustersPanel({
+  callImportId,
+  evaluationId,
+  defaultProvider = '',
+  defaultModel = '',
+  state,
+  isLoading,
+  onGenerated,
+}: {
+  callImportId: string
+  evaluationId: string
+  defaultProvider?: string
+  defaultModel?: string
+  state: EvaluationMetricClustersState | null
+  isLoading: boolean
+  onGenerated: () => void
+}) {
+  const [cancelling, setCancelling] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [pickerProvider, setPickerProvider] = useState('')
+  const [pickerModel, setPickerModel] = useState('')
+  const [llmPickerTouched, setLlmPickerTouched] = useState(false)
+  const [clusterActionModalOpen, setClusterActionModalOpen] = useState(false)
+
+  useEffect(() => {
+    if (state?.provider) {
+      setPickerProvider(state.provider)
+      if (state.model) setPickerModel(state.model)
+      return
+    }
+    if (llmPickerTouched) return
+    if (defaultProvider) setPickerProvider(defaultProvider)
+    if (defaultModel) setPickerModel(defaultModel)
+  }, [
+    state?.provider,
+    state?.model,
+    defaultProvider,
+    defaultModel,
+    llmPickerTouched,
+  ])
+
+  const llmPickerDisabled = cancelling || state?.status === 'running'
+
+  const llmPickerBlock = (
+    <div className="mb-3 rounded-md border border-gray-100 bg-white/80 p-3">
+      <p className="text-xs font-medium text-gray-800 mb-0.5">
+        LLM for clustering
+      </p>
+      <p className="text-[10px] text-gray-500 mb-2">
+        Provider and model used for failure signatures and cluster synthesis.
+        Defaults to this evaluation&apos;s scoring LLM when unset.
+      </p>
+      <AIProviderModelPicker
+        provider={pickerProvider}
+        model={pickerModel}
+        onProviderChange={(next) => {
+          setLlmPickerTouched(true)
+          setPickerProvider(next)
+        }}
+        onModelChange={(next) => {
+          setLlmPickerTouched(true)
+          setPickerModel(next)
+        }}
+        disabled={llmPickerDisabled}
+        size="sm"
+      />
+    </div>
+  )
+
+  const selectedCountLabel = state?.selected_evaluation_row_ids?.length
+
+  const clusterGenerationModal = (
+    <MetricClusterGenerationModal
+      open={clusterActionModalOpen}
+      onClose={() => {
+        setClusterActionModalOpen(false)
+        setError(null)
+      }}
+      callImportId={callImportId}
+      evaluationId={evaluationId}
+      defaultProvider={defaultProvider}
+      defaultModel={defaultModel}
+      state={state}
+      onGenerated={onGenerated}
+      onError={setError}
+    />
+  )
+
+  const handleCancel = async () => {
+    setCancelling(true)
+    setError(null)
+    try {
+      await apiClient.cancelCallImportEvaluationMetricClusters(
+        callImportId,
+        evaluationId,
+      )
+      onGenerated()
+    } catch (e: any) {
+      setError(
+        e?.response?.data?.detail || 'Failed to stop cluster generation.',
+      )
+    } finally {
+      setCancelling(false)
+    }
+  }
+
+  if (isLoading && !state) {
+    return (
+      <>
+        <section className="rounded-lg border border-dashed border-gray-200 bg-gray-50/60 p-4">
+          <h3 className="text-sm font-semibold text-gray-900 mb-1">
+            Failure diagnostics (internal)
+          </h3>
+          <p className="text-xs text-gray-500 mb-3">Loading…</p>
+          {llmPickerBlock}
+        </section>
+        {clusterGenerationModal}
+      </>
+    )
+  }
+
+  if (state?.status === 'running') {
+    const progress = state.progress
+    const completed = progress?.completed_llm_calls ?? 0
+    const total = progress?.total_llm_calls ?? 0
+    const pct = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0
+    const providerLabel = state.provider
+      ? PROVIDER_DISPLAY[state.provider] || state.provider
+      : null
+    const callsLabel = selectedCountLabel
+      ? `${selectedCountLabel} selected call${selectedCountLabel === 1 ? '' : 's'}`
+      : 'flagged calls'
+    return (
+      <>
+        <section className="rounded-lg border border-amber-200 bg-amber-50/60 px-4 py-3">
+          <div className="flex items-center justify-between gap-3 flex-wrap mb-2">
+            <p className="text-xs font-semibold text-gray-900 inline-flex items-center gap-1.5">
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-600" />
+              Failure diagnostics — generating clusters
+            </p>
+            {total > 0 ? (
+              <p className="text-[10px] text-gray-600 tabular-nums">
+                {completed} / {total} LLM calls ({pct}%)
+              </p>
+            ) : null}
+          </div>
+          <p className="text-xs text-amber-800 mb-2">
+            Clustering {callsLabel} for each enabled quality metric.
+          </p>
+          {total > 0 ? (
+            <div className="mb-2">
+              <div className="h-2.5 rounded-full bg-amber-100 overflow-hidden">
+                <div
+                  className="h-full bg-amber-600 transition-all duration-300"
+                  style={{ width: `${pct}%` }}
+                  role="progressbar"
+                  aria-valuenow={completed}
+                  aria-valuemin={0}
+                  aria-valuemax={total}
+                  aria-label="Cluster generation progress"
+                />
+              </div>
+            </div>
+          ) : (
+            <div className="mb-2 h-2.5 rounded-full bg-amber-100 overflow-hidden">
+              <div className="h-full w-1/3 bg-amber-400 animate-pulse rounded-full" />
+            </div>
+          )}
+          {providerLabel || state.model ? (
+            <p className="text-[10px] text-gray-500">
+              Using {providerLabel || 'LLM'}
+              {state.model ? ` · ${state.model}` : ''}
+            </p>
+          ) : null}
+          <div className="mt-3 flex items-center gap-2">
+            <Button
+              variant="outline"
+              onClick={handleCancel}
+              isLoading={cancelling}
+              disabled={cancelling}
+            >
+              Stop
+            </Button>
+          </div>
+          {error ? <p className="text-xs text-red-600 mt-2">{error}</p> : null}
+        </section>
+        {clusterGenerationModal}
+      </>
+    )
+  }
+
+  if (state?.status === 'cancelled') {
+    return (
+      <section className="rounded-lg border border-gray-200 bg-gray-50/80 px-4 py-3">
+        <p className="text-sm font-semibold text-gray-900 mb-1">
+          Failure diagnostics stopped
+        </p>
+        <p className="text-sm text-gray-600">
+          {state.error_message ||
+            'Cluster generation was cancelled. Partial results were not saved.'}
+        </p>
+        {state.progress ? (
+          <p className="text-xs text-gray-500 mt-1">
+            Stopped at {state.progress.completed_llm_calls} /{' '}
+            {state.progress.total_llm_calls} LLM calls
+          </p>
+        ) : null}
+        <div className="mt-3">
+          <Button
+            variant="primary"
+            onClick={() => setClusterActionModalOpen(true)}
+            disabled={cancelling}
+          >
+            Generate clusters
+          </Button>
+        </div>
+        {clusterGenerationModal}
+      </section>
+    )
+  }
+
+  if (state?.status === 'failed') {
+    return (
+      <section className="rounded-lg border border-red-200 bg-red-50/50 px-4 py-3">
+        <p className="text-sm font-semibold text-gray-900 mb-1">
+          Failure diagnostics failed
+        </p>
+        <p className="text-sm text-red-700">
+          {state.error_message || 'Cluster generation failed.'}
+        </p>
+        <div className="mt-3">
+          <Button
+            variant="outline"
+            onClick={() => setClusterActionModalOpen(true)}
+          >
+            Retry
+          </Button>
+        </div>
+        {clusterGenerationModal}
+      </section>
+    )
+  }
+
+  if (!state || state.status === 'idle' || !state.groups.length) {
+    return (
+      <section className="rounded-lg border border-dashed border-gray-200 bg-gray-50/60 p-4">
+        <div className="mb-3">
+          <h3 className="text-base font-semibold text-gray-900 mb-1">
+            Failure diagnostics (internal)
+          </h3>
+          <p className="text-sm text-gray-600">
+            Choose which flagged calls to include, then cluster per enabled
+            quality metric (gap labels: LOGIC_GAP, UNDERSPEC, EXISTS_NO_TRIGGER,
+            MISSING).
+          </p>
+        </div>
+        <div className="flex items-center justify-end gap-2">
+          <Button
+            variant="primary"
+            onClick={() => setClusterActionModalOpen(true)}
+            disabled={cancelling}
+          >
+            Generate clusters
+          </Button>
+        </div>
+        {clusterGenerationModal}
+      </section>
+    )
+  }
+
+  return (
+    <section className="space-y-4">
+      <article className="rounded-lg border border-gray-200 bg-gray-50/40 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h3 className="text-base font-semibold text-gray-900">Generation</h3>
+          <Button
+            variant="primary"
+            className="shrink-0"
+            onClick={() => setClusterActionModalOpen(true)}
+          >
+            Generate clusters
+          </Button>
+        </div>
+        <div className="mt-2 space-y-1 min-w-0">
+          <p className="text-sm text-gray-600">
+            Select the calls and model in a modal, then generate clusters.
+            Run again after more rows complete or when you change the model.
+          </p>
+          {state.overview ? (
+            <p className="text-sm text-gray-600 break-words">
+              {clampProseToSentences(state.overview)}
+            </p>
+          ) : null}
+          {state.is_stale ? (
+            <p className="text-sm text-amber-700">
+              More rows completed since clusters were generated. Generate again
+              to refresh.
+            </p>
+          ) : null}
+          {state.selected_evaluation_row_ids?.length ? (
+            <p className="text-[10px] text-gray-500">
+              Based on {state.selected_evaluation_row_ids.length} selected call
+              {state.selected_evaluation_row_ids.length === 1 ? '' : 's'}.
+            </p>
+          ) : null}
+        </div>
+        {error ? <p className="text-sm text-red-600 mt-2">{error}</p> : null}
+      </article>
+
+      {clusterGenerationModal}
+
+      <article className="rounded-lg border border-gray-200 bg-white p-4 space-y-4">
+        <div>
+          <h3 className="text-base font-semibold text-gray-900">Results</h3>
+          <p className="text-sm text-gray-600 mt-1">
+            Per-metric clusters of flagged calls with gap labels and Level-2
+            sub-categories.
+          </p>
+        </div>
+        {state.rca_summary ? (
+          <MetricClustersRcaSummaryPanel summary={state.rca_summary} />
+        ) : null}
+        {state.groups.map((group) => {
+          const topClusters = [...group.clusters]
+            .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
+            .slice(0, 5)
+          return (
+          <article
+            key={group.metric_id}
+            className="rounded-lg border border-gray-200 bg-white overflow-hidden"
+          >
+            <div className="px-4 py-3 border-b border-gray-100 bg-gray-50/80">
+              <h4 className="text-base font-semibold text-gray-900">
+                {group.metric_name}
+              </h4>
+              <p className="text-xs text-gray-500">
+                {group.flagged_count} flagged calls · {topClusters.length}
+                {group.clusters.length > 5
+                  ? ` of ${group.clusters.length}`
+                  : ''}{' '}
+                cluster(s) shown
+                {state.failure_policies?.[group.metric_id] ? (
+                  <>
+                    {' '}
+                    · failure:{' '}
+                    {[
+                      ...(state.failure_policies[group.metric_id]
+                        .failure_values || []),
+                      ...(state.failure_policies[group.metric_id]
+                        .failure_child_names || []),
+                    ].join(', ') || 'numeric rule'}
+                  </>
+                ) : null}
+              </p>
+              {group.failure_reason ? (
+                <p className="text-xs text-gray-600 mt-1">
+                  <span className="font-semibold text-gray-700">Why flagged:</span>{' '}
+                  {group.failure_reason}
+                </p>
+              ) : null}
+            </div>
+            <div className="p-4 space-y-3">
+              {(() => {
+                const categorizedCalls = topClusters.reduce(
+                  (sum, cluster) => sum + Math.max(0, cluster.count || 0),
+                  0,
+                )
+                const totalFlagged = Math.max(0, group.flagged_count || 0)
+                return (
+                  <div className="rounded-md border border-gray-100 bg-gray-50/60 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide">
+                        Cluster breakdown
+                      </p>
+                      <span className="text-xs font-semibold text-gray-700">
+                        {categorizedCalls} / {totalFlagged}
+                      </span>
+                    </div>
+                  </div>
+                )
+              })()}
+              {topClusters.map((cluster) => {
+                const exampleHref = buildEvaluationCallDeepLink(
+                  callImportId,
+                  evaluationId,
+                  cluster.evidence,
+                )
+                return (
+                <div
+                  key={cluster.id}
+                  className="rounded-md border border-gray-100 p-3"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="text-sm font-semibold text-gray-900">
+                      {cluster.label}
+                    </p>
+                    <span className="text-xs font-bold uppercase text-primary-700">
+                      {cluster.gap_label.replace(/_/g, ' ')}
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-600 mt-0.5">
+                    {cluster.count} calls · {cluster.share_pct.toFixed(1)}% share
+                  </p>
+                  {cluster.failure_reason ? (
+                    <p className="text-xs text-gray-600 mt-1">
+                      <span className="font-semibold">Why flagged:</span>{' '}
+                      {cluster.failure_reason}
+                    </p>
+                  ) : null}
+                  {group.flagged_count > 0 ? (
+                    <div className="mt-2">
+                      <div className="h-2.5 w-full rounded bg-primary-100 overflow-hidden">
+                        <div
+                          className="h-full rounded bg-primary-500"
+                          style={{
+                            width: `${Math.min(
+                              100,
+                              (cluster.count / group.flagged_count) * 100,
+                            ).toFixed(1)}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ) : null}
+                  {cluster.observation ? (
+                    <p className="text-sm text-gray-700 mt-2">
+                      {cluster.observation}
+                    </p>
+                  ) : null}
+                  {cluster.sub_clusters.length ? (
+                    <ul className="mt-2 text-xs text-gray-600 list-disc pl-4">
+                      {cluster.sub_clusters.map((sub) => (
+                        <li key={sub.label}>
+                          {sub.label} — {sub.count} ({sub.share_pct.toFixed(1)}%)
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                  {(cluster.evidence.quote ||
+                    cluster.evidence.turns?.length ||
+                    cluster.evidence.conversation_id) ? (
+                    <div className="mt-2 rounded-md bg-gray-50 border border-gray-100 p-2 space-y-1">
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-600">
+                        Example call
+                      </p>
+                      {cluster.evidence.turns?.length ? (
+                        cluster.evidence.turns.map((turn, i) => (
+                          <p key={i} className="text-xs text-gray-800">
+                            <span className="font-semibold text-primary-700">
+                              {turn.speaker}:
+                            </span>{' '}
+                            {turn.text}
+                          </p>
+                        ))
+                      ) : cluster.evidence.quote ? (
+                        <p className="text-xs text-gray-800">{cluster.evidence.quote}</p>
+                      ) : null}
+                      {exampleHref && cluster.evidence.conversation_id ? (
+                        <Link
+                          to={exampleHref}
+                          className="inline-flex items-center gap-1 text-xs font-medium text-primary-700 hover:text-primary-800"
+                        >
+                          <ExternalLink className="h-3 w-3" />
+                          {cluster.evidence.conversation_id}
+                        </Link>
+                      ) : cluster.evidence.conversation_id ? (
+                        <p className="text-[10px] text-gray-500 font-mono">
+                          {cluster.evidence.conversation_id}
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              )})}
+            </div>
+          </article>
+        )})}
+        {state.discovered_problems.length ? (
+          <article className="rounded-lg border border-dashed border-primary-200 bg-primary-50/30 p-4">
+            <h4 className="text-base font-semibold text-gray-900 mb-2">
+              Proactive problem discovery
+            </h4>
+            <div className="space-y-2">
+              {state.discovered_problems.map((item) => (
+                <div key={item.id} className="text-sm text-gray-800">
+                  <span className="font-semibold">{item.label}</span>
+                  <span className="text-primary-700 ml-2 uppercase text-xs font-semibold">
+                    {item.gap_label.replace(/_/g, ' ')}
+                  </span>
+                  <span className="text-gray-500 ml-2">
+                    {item.count} · {item.share_pct.toFixed(1)}%
+                  </span>
+                  {item.observation ? (
+                    <p className="mt-1 text-gray-600">{item.observation}</p>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          </article>
+        ) : null}
+      </article>
+    </section>
+  )
+}
+
 function EvaluationUserInsightsPanel({
   state,
   isLoading,
@@ -7164,24 +9409,18 @@ function EvaluationUserInsightsPanel({
 
   if (state.status === 'idle') {
     return (
-      <section className="rounded-lg border border-dashed border-gray-200 bg-gray-50/60 p-4">
-        <h3 className="text-sm font-semibold text-gray-900 mb-1">
-          AI User Insights (External Audit)
-        </h3>
+      <div className="rounded-lg border border-dashed border-gray-200 bg-gray-50/60 p-4">
         <p className="text-xs text-gray-500">
           User insights generate automatically in the background when you
           click Generate summary above.
         </p>
-      </section>
+      </div>
     )
   }
 
   return (
-    <section className="space-y-4">
+    <div className="space-y-4">
       <div>
-        <h3 className="text-sm font-semibold text-gray-900">
-          AI User Insights (External Audit)
-        </h3>
         <p className="text-xs text-gray-500">
           LLM-identified patterns for section 03 of the external audit report.
           {state.max_llm_calls ? (
@@ -7197,10 +9436,15 @@ function EvaluationUserInsightsPanel({
           </p>
         ) : null}
       </div>
+      {state.overview ? (
+        <p className="text-xs text-gray-600 break-words leading-relaxed">
+          {clampProseToSentences(state.overview)}
+        </p>
+      ) : null}
       {state.insights.map((insight, index) => (
         <GeneratedUserInsightCard key={insight.id} insight={insight} index={index + 1} />
       ))}
-    </section>
+    </div>
   )
 }
 

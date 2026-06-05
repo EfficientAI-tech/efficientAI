@@ -2983,6 +2983,8 @@ class CallImportEvaluationResponse(BaseModel):
     tldr_summary: Optional["EvaluationTldrSummary"] = None
     # Cached LLM-generated user insights for External Audit PDF section 03.
     user_insights: Optional["EvaluationUserInsightsState"] = None
+    # Cached per-metric failure clustering for internal diagnostics.
+    metric_clusters: Optional["EvaluationMetricClustersState"] = None
     # True when the user opted into top-level metric discovery on the
     # Run Evaluation modal. The frontend uses this to gate the
     # "Discovered metrics" panel on the Flow tab.
@@ -3420,6 +3422,14 @@ class CallImportMetricAggregate(BaseModel):
     co_occurrence: List[CallImportMetricLabelPair] = Field(default_factory=list)
 
 
+class MetricPeriodDelta(BaseModel):
+    """Week-over-week (or baseline-run) delta for one metric."""
+
+    label: str
+    detail: str
+    why: Optional[str] = None
+
+
 class CallImportEvaluationAggregateResponse(BaseModel):
     """Aggregated metric distributions for a single evaluation run."""
 
@@ -3428,6 +3438,15 @@ class CallImportEvaluationAggregateResponse(BaseModel):
     completed_rows: int
     failed_rows: int
     metrics: List[CallImportMetricAggregate] = Field(default_factory=list)
+    period_deltas: Dict[str, MetricPeriodDelta] = Field(default_factory=dict)
+    baseline_evaluation_id: Optional[UUID] = None
+    failure_policies_source: Optional[Literal["inferred", "user"]] = Field(
+        default=None,
+        description=(
+            "Whether flagged-rate semantics use user-confirmed failure policies "
+            "or inferred defaults from the Failure diagnostics flow."
+        ),
+    )
 
 
 # --- LLM-generated TLDR for the Visualizations tab ---
@@ -3526,6 +3545,211 @@ class EvaluationUserInsightsRequest(BaseModel):
     provider: Optional[str] = None
     model: Optional[str] = Field(default=None, min_length=1)
     max_llm_calls: Optional[int] = Field(default=None, ge=20, le=500)
+
+
+MetricClusterGapLabel = Literal[
+    "LOGIC_GAP",
+    "UNDERSPEC",
+    "EXISTS_NO_TRIGGER",
+    "MISSING",
+]
+
+FailurePolicyNumericOp = Literal["lt", "lte", "gt", "gte"]
+
+
+class MetricFailurePolicy(BaseModel):
+    """Per-metric definition of which scores count as failures for this evaluation."""
+
+    metric_id: str
+    failure_values: List[str] = Field(
+        default_factory=list,
+        description="Normalized lowercase labels that count as failure (single-choice, enum, boolean-as-category).",
+    )
+    failure_child_names: List[str] = Field(
+        default_factory=list,
+        description="Child label names that count as failure for multi_label parents.",
+    )
+    numeric_rule: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description='Numeric failure rule, e.g. {"op": "lt", "threshold": 0.5}.',
+    )
+
+
+class MetricFailurePolicyValueCount(BaseModel):
+    label: str
+    count: int = 0
+
+
+class MetricFailurePolicyMetricPreview(BaseModel):
+    metric_id: str
+    metric_name: str
+    metric_type: Optional[str] = None
+    selection_mode: Optional[str] = None
+    is_multi_label_parent: bool = False
+    value_counts: List[MetricFailurePolicyValueCount] = Field(default_factory=list)
+    child_names: List[str] = Field(default_factory=list)
+    row_count_by_value: Dict[str, int] = Field(default_factory=dict)
+    suggested_policy: MetricFailurePolicy
+    effective_policy: MetricFailurePolicy
+
+
+class MetricFailurePoliciesResponse(BaseModel):
+    previews: List[MetricFailurePolicyMetricPreview] = Field(default_factory=list)
+    policies: Dict[str, MetricFailurePolicy] = Field(default_factory=dict)
+    source: Literal["inferred", "user"] = "inferred"
+    updated_at: Optional[datetime] = None
+
+
+class MetricFailurePoliciesSaveRequest(BaseModel):
+    policies: Dict[str, MetricFailurePolicy] = Field(default_factory=dict)
+    source: Literal["user"] = "user"
+
+
+class MetricClusterEvidenceTurn(BaseModel):
+    speaker: str
+    text: str
+
+
+class MetricClusterEvidence(BaseModel):
+    conversation_id: Optional[str] = None
+    evaluation_row_id: Optional[UUID] = None
+    quote: str = ""
+    turns: List[MetricClusterEvidenceTurn] = Field(default_factory=list)
+
+
+class MetricSubCluster(BaseModel):
+    label: str
+    count: int = 0
+    share_pct: float = 0.0
+
+
+class MetricCluster(BaseModel):
+    id: str
+    label: str
+    gap_label: MetricClusterGapLabel
+    level: int = 1
+    count: int = 0
+    share_pct: float = 0.0
+    sub_clusters: List[MetricSubCluster] = Field(default_factory=list)
+    observation: str = ""
+    failure_reason: str = ""
+    evidence: MetricClusterEvidence = Field(default_factory=MetricClusterEvidence)
+    is_discovered: bool = False
+
+
+class MetricClusterGroup(BaseModel):
+    metric_id: str
+    metric_name: str
+    flagged_count: int = 0
+    failure_reason: str = ""
+    clusters: List[MetricCluster] = Field(default_factory=list)
+
+
+class DiscoveredProblemCluster(BaseModel):
+    id: str
+    label: str
+    gap_label: MetricClusterGapLabel
+    count: int = 0
+    share_pct: float = 0.0
+    observation: str = ""
+    failure_reason: str = ""
+    evidence: MetricClusterEvidence = Field(default_factory=MetricClusterEvidence)
+
+
+class RcaRepeatedPatternRow(BaseModel):
+    metric_id: str
+    metric_name: str
+    top_rca_patterns: str = ""
+    evidence_share_pct: float = 0.0
+    evidence_calls: int = 0
+    failure_reason: str = ""
+
+
+class RcaMetricHotspotRow(BaseModel):
+    metric_id: str
+    metric_name: str
+    description: str = ""
+    metric_rate_pct: float = 0.0
+    flagged_calls: int = 0
+
+
+class RcaPromptAreaRow(BaseModel):
+    label: str
+    share_pct: float = 0.0
+    gap_label: MetricClusterGapLabel
+
+
+class MetricClustersRcaSummary(BaseModel):
+    total_clusters: int = 0
+    total_clustered_instances: int = 0
+    total_flagged_instances: int = 0
+    analysed_calls: int = 0
+    repeated_patterns: List[RcaRepeatedPatternRow] = Field(default_factory=list)
+    metric_hotspots: List[RcaMetricHotspotRow] = Field(default_factory=list)
+    prompt_areas: List[RcaPromptAreaRow] = Field(default_factory=list)
+
+
+class EvaluationMetricClustersState(BaseModel):
+    """Cached per-metric failure clustering for internal diagnostics."""
+
+    status: Literal["idle", "running", "completed", "failed", "cancelled"] = "idle"
+    groups: List[MetricClusterGroup] = Field(default_factory=list)
+    discovered_problems: List[DiscoveredProblemCluster] = Field(
+        default_factory=list
+    )
+    overview: Optional[str] = None
+    generated_at: Optional[datetime] = None
+    generated_at_completed_rows: int = 0
+    progress: Optional[Dict[str, int]] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    llm_calls_used: int = 0
+    max_llm_calls: Optional[int] = None
+    error_message: Optional[str] = None
+    is_stale: bool = False
+    selected_evaluation_row_ids: List[str] = Field(
+        default_factory=list,
+        description="Evaluation row IDs included in the last clustering run.",
+    )
+    failure_policies: Dict[str, MetricFailurePolicy] = Field(default_factory=dict)
+    failure_policies_source: Literal["inferred", "user"] = "inferred"
+    failure_policies_updated_at: Optional[datetime] = None
+    rca_summary: Optional[MetricClustersRcaSummary] = None
+
+
+class MetricClusterEligibleRow(BaseModel):
+    """Completed evaluation row with at least one flagged quality metric."""
+
+    evaluation_row_id: UUID
+    conversation_id: Optional[str] = None
+    row_index: Optional[int] = None
+    flagged_metric_names: List[str] = Field(default_factory=list)
+
+
+class MetricClusterEligibleRowsResponse(BaseModel):
+    items: List[MetricClusterEligibleRow] = Field(default_factory=list)
+    total: int = 0
+
+
+class EvaluationMetricClustersRequest(BaseModel):
+    """Body for ``POST /evaluations/{eval_id}/metric-clusters``."""
+
+    regenerate: bool = False
+    force: bool = False
+    provider: Optional[str] = None
+    model: Optional[str] = Field(default=None, min_length=1)
+    max_llm_calls: Optional[int] = Field(default=None, ge=20, le=500)
+    evaluation_row_ids: Optional[List[UUID]] = Field(
+        default=None,
+        description=(
+            "Subset of completed evaluation row IDs to cluster. When omitted, "
+            "all completed rows with at least one flagged quality metric are used."
+        ),
+    )
+    failure_policies: Optional[Dict[str, MetricFailurePolicy]] = Field(
+        default=None,
+        description="Per-metric failure policies confirmed in the cluster modal.",
+    )
 
 
 # Resolve the forward reference on ``CallImportEvaluationResponse``

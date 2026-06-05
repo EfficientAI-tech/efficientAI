@@ -15,6 +15,7 @@ from . import transcribe_call_import_row
 from . import run_judge_alignment
 from . import generate_evaluation_user_insights
 from . import generate_evaluation_tldr_insights
+from . import generate_evaluation_metric_clusters
 
 __all__ = [
     "celery_app",
@@ -31,6 +32,7 @@ __all__ = [
     "run_judge_alignment_task",
     "generate_evaluation_user_insights_task",
     "generate_evaluation_tldr_insights_task",
+    "generate_evaluation_metric_clusters_task",
 ]
 
 process_evaluation_task = process_evaluation.process_evaluation_task
@@ -51,4 +53,7 @@ generate_evaluation_user_insights_task = (
 )
 generate_evaluation_tldr_insights_task = (
     generate_evaluation_tldr_insights.generate_evaluation_tldr_insights_task
+)
+generate_evaluation_metric_clusters_task = (
+    generate_evaluation_metric_clusters.generate_evaluation_metric_clusters_task
 )

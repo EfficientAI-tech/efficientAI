@@ -111,7 +111,7 @@ _SYNTHESIS_SYSTEM_PROMPT = (
     "sampled calls plus metric aggregate statistics.\n\n"
     "Return STRICT JSON only:\n"
     "{\n"
-    '  "overview": "<2-4 sentence high-level analysis synthesizing all insight blocks>",\n'
+    '  "overview": "<max 3 short sentences synthesizing all insight blocks, <=300 chars>",\n'
     '  "insights": [\n'
     "    {\n"
     '      "title": "<insight title, e.g. Caller Context Distribution>",\n'
@@ -127,6 +127,7 @@ _SYNTHESIS_SYSTEM_PROMPT = (
     "}\n\n"
     "Constraints:\n"
     "- Produce 3 to 8 insight blocks.\n"
+    "- overview must be at most 3 short sentences (~300 characters total).\n"
     "- overview must synthesize cross-cutting patterns across ALL insight blocks.\n"
     "- Each block groups related themes into categorical distributions.\n"
     "- category share_pct values must sum to ~100 within each insight.\n"

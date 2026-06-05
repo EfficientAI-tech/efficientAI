@@ -1430,9 +1430,15 @@ class ApiClient {
   async getCallImportEvaluationAggregate(
     callImportId: string,
     evaluationId: string,
+    baselineEvaluationId?: string | null,
   ): Promise<CallImportEvaluationAggregateResponse> {
     const response = await this.client.get(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/aggregate`,
+      {
+        params: baselineEvaluationId
+          ? { baseline_evaluation_id: baselineEvaluationId }
+          : undefined,
+      },
     )
     return response.data
   }
@@ -1490,6 +1496,94 @@ class ApiClient {
   ): Promise<import('../types/api').EvaluationUserInsightsState | null> {
     const response = await this.client.get(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/user-insights`,
+    )
+    return response.data
+  }
+
+  async getCallImportEvaluationMetricClusters(
+    callImportId: string,
+    evaluationId: string,
+  ): Promise<import('../types/api').EvaluationMetricClustersState | null> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/metric-clusters`,
+    )
+    return response.data
+  }
+
+  async listCallImportEvaluationMetricClusterEligibleRows(
+    callImportId: string,
+    evaluationId: string,
+  ): Promise<import('../types/api').MetricClusterEligibleRowsResponse> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/metric-clusters/eligible-rows`,
+    )
+    return response.data
+  }
+
+  async getCallImportEvaluationMetricClusterFailurePolicies(
+    callImportId: string,
+    evaluationId: string,
+  ): Promise<import('../types/api').MetricFailurePoliciesResponse> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/metric-clusters/failure-policies`,
+    )
+    return response.data
+  }
+
+  async saveCallImportEvaluationMetricClusterFailurePolicies(
+    callImportId: string,
+    evaluationId: string,
+    policies: Record<string, import('../types/api').MetricFailurePolicy>,
+  ): Promise<import('../types/api').MetricFailurePoliciesResponse> {
+    const response = await this.client.put(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/metric-clusters/failure-policies`,
+      { policies, source: 'user' },
+    )
+    return response.data
+  }
+
+  async generateCallImportEvaluationMetricClusters(
+    callImportId: string,
+    evaluationId: string,
+    options?: {
+      regenerate?: boolean
+      force?: boolean
+      provider?: string | null
+      model?: string | null
+      max_llm_calls?: number | null
+      evaluation_row_ids?: string[] | null
+      failure_policies?: Record<
+        string,
+        import('../types/api').MetricFailurePolicy
+      > | null
+    },
+  ): Promise<import('../types/api').EvaluationMetricClustersState> {
+    const body: Record<string, unknown> = {
+      regenerate: Boolean(options?.regenerate),
+      force: Boolean(options?.force),
+    }
+    if (options?.provider) body.provider = options.provider
+    if (options?.model) body.model = options.model
+    if (options?.max_llm_calls != null) body.max_llm_calls = options.max_llm_calls
+    if (options?.evaluation_row_ids?.length) {
+      body.evaluation_row_ids = options.evaluation_row_ids
+    }
+    if (options?.failure_policies) {
+      body.failure_policies = options.failure_policies
+    }
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/metric-clusters`,
+      body,
+    )
+    return response.data
+  }
+
+  async cancelCallImportEvaluationMetricClusters(
+    callImportId: string,
+    evaluationId: string,
+  ): Promise<import('../types/api').EvaluationMetricClustersState> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/metric-clusters/cancel`,
     )
     return response.data
   }
@@ -2084,6 +2178,7 @@ class ApiClient {
       useCase?: string | null
       baselineEvaluationId?: string | null
       reportConfig?: Record<string, any>
+      platformBaseUrl?: string | null
     },
   ): Promise<Blob> {
     const response = await this.client.post(
@@ -2098,6 +2193,7 @@ class ApiClient {
         internal_brand_image_id: options?.internalBrandImageId || null,
         external_brand_image_id: options?.externalBrandImageId || null,
         report_config: options?.reportConfig || {},
+        platform_base_url: options?.platformBaseUrl || null,
       },
       { responseType: 'blob' },
     )
