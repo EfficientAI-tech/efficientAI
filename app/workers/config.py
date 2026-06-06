@@ -112,4 +112,5 @@ celery_app.conf.task_routes = {
     "generate_evaluation_tldr_insights": {"queue": "imports"},
     "generate_evaluation_user_insights": {"queue": "imports"},
     "generate_evaluation_metric_clusters": {"queue": "imports"},
+    "generate_evaluation_prompt_improvements": {"queue": "imports"},
 }

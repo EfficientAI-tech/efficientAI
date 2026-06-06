@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router-dom'
 import { useAuthStore } from './store/authStore'
 import { useLicenseStore } from './store/licenseStore'
 import Layout from './components/Layout'
@@ -167,6 +167,15 @@ function App() {
           <Route path="voice-playground" element={<EnterpriseGate feature="voice_playground"><VoicePlayground /></EnterpriseGate>} />
           <Route path="cron-jobs" element={<CronJobs />} />
           <Route path="prompt-partials" element={<PromptPartials />} />
+          <Route path="prompt-partials/:id" element={<PromptPartials />} />
+          <Route
+            path="imported-agents"
+            element={<Navigate to="/prompt-partials?kind=imported_agent" replace />}
+          />
+          <Route
+            path="imported-agents/:id"
+            element={<ImportedAgentRedirect />}
+          />
           <Route path="call-imports" element={<EnterpriseGate feature="call_imports"><CallImports /></EnterpriseGate>} />
           <Route path="call-imports/tags" element={<EnterpriseGate feature="call_imports"><CallImportTagsPage /></EnterpriseGate>} />
           <Route path="call-imports/schemas" element={<EnterpriseGate feature="call_imports"><CallImportSchemasPage /></EnterpriseGate>} />
@@ -181,6 +190,13 @@ function App() {
         </Route>
       </Routes>
     </BrowserRouter>
+  )
+}
+
+function ImportedAgentRedirect() {
+  const { id } = useParams<{ id: string }>()
+  return (
+    <Navigate to={`/prompt-partials/${id}?kind=imported_agent`} replace />
   )
 }
 

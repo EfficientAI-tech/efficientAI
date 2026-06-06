@@ -16,6 +16,7 @@ from . import run_judge_alignment
 from . import generate_evaluation_user_insights
 from . import generate_evaluation_tldr_insights
 from . import generate_evaluation_metric_clusters
+from . import generate_evaluation_prompt_improvements
 
 __all__ = [
     "celery_app",
@@ -33,6 +34,7 @@ __all__ = [
     "generate_evaluation_user_insights_task",
     "generate_evaluation_tldr_insights_task",
     "generate_evaluation_metric_clusters_task",
+    "generate_evaluation_prompt_improvements_task",
 ]
 
 process_evaluation_task = process_evaluation.process_evaluation_task
@@ -56,4 +58,7 @@ generate_evaluation_tldr_insights_task = (
 )
 generate_evaluation_metric_clusters_task = (
     generate_evaluation_metric_clusters.generate_evaluation_metric_clusters_task
+)
+generate_evaluation_prompt_improvements_task = (
+    generate_evaluation_prompt_improvements.generate_evaluation_prompt_improvements_task
 )

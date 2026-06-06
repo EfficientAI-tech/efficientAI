@@ -1273,6 +1273,87 @@ export interface EvaluationMetricClustersState {
   rca_summary?: MetricClustersRcaSummary | null
 }
 
+export interface AgentFlowNode {
+  id: string
+  label: string
+  node_type: 'start' | 'decision' | 'action' | 'terminal'
+  position_x?: number | null
+  position_y?: number | null
+}
+
+export interface AgentFlowEdge {
+  source: string
+  target: string
+  condition?: string | null
+}
+
+export interface AgentFlowGraph {
+  nodes: AgentFlowNode[]
+  edges: AgentFlowEdge[]
+  generated_at?: string | null
+  provider?: string | null
+  model?: string | null
+  layout_saved_at?: string | null
+}
+
+export interface ImportedAgent {
+  id: string
+  organization_id: string
+  name: string
+  description: string | null
+  content: string
+  tags: string[] | null
+  current_version: number
+  agent_flowchart?: AgentFlowGraph | null
+  agent_flowchart_status?: string | null
+  created_at: string
+  updated_at: string
+  created_by: string | null
+}
+
+export interface ImportedAgentDetail extends ImportedAgent {
+  versions: PromptPartialVersion[]
+}
+
+export interface PromptPartialVersion {
+  id: string
+  prompt_partial_id: string
+  version: number
+  content: string
+  change_summary: string | null
+  created_at: string
+  created_by: string | null
+}
+
+export interface PromptImprovementSuggestion {
+  id: string
+  metric_id: string
+  metric_name: string
+  cluster_id: string
+  cluster_label: string
+  gap_label: MetricClusterGapLabel
+  share_pct: number
+  priority: 'high' | 'medium' | 'low'
+  target_section: string
+  current_gap: string
+  suggested_text: string
+  rationale: string
+}
+
+export interface EvaluationPromptImprovementsState {
+  status: 'idle' | 'running' | 'completed' | 'failed'
+  imported_agent_id?: string | null
+  imported_agent_name?: string | null
+  suggestions: PromptImprovementSuggestion[]
+  overview?: string | null
+  generated_at?: string | null
+  generated_at_completed_rows: number
+  provider?: string | null
+  model?: string | null
+  error_message?: string | null
+  is_stale: boolean
+}
+
 export interface MetricPeriodDelta {
   label: string
   detail: string

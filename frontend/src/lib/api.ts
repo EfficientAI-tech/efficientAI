@@ -1510,6 +1510,34 @@ class ApiClient {
     return response.data
   }
 
+  async getCallImportEvaluationPromptImprovements(
+    callImportId: string,
+    evaluationId: string,
+  ): Promise<import('../types/api').EvaluationPromptImprovementsState | null> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/prompt-improvements`,
+    )
+    return response.data
+  }
+
+  async generateCallImportEvaluationPromptImprovements(
+    callImportId: string,
+    evaluationId: string,
+    data: {
+      imported_agent_id: string
+      regenerate?: boolean
+      force?: boolean
+      provider?: string
+      model?: string
+    },
+  ): Promise<import('../types/api').EvaluationPromptImprovementsState> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/prompt-improvements`,
+      data,
+    )
+    return response.data
+  }
+
   async listCallImportEvaluationMetricClusterEligibleRows(
     callImportId: string,
     evaluationId: string,
@@ -3382,9 +3410,77 @@ class ApiClient {
   }
 
   // Prompt Partials
-  async listPromptPartials(skip = 0, limit = 100, search?: string): Promise<any[]> {
+  async listPromptPartials(
+    skip = 0,
+    limit = 100,
+    search?: string,
+    kind: 'all' | 'partial' | 'imported_agent' = 'all',
+  ): Promise<any[]> {
     const response = await this.client.get('/api/v1/prompt-partials', {
-      params: { skip, limit, ...(search ? { search } : {}) },
+      params: {
+        skip,
+        limit,
+        kind,
+        ...(search ? { search } : {}),
+      },
+    })
+    return response.data
+  }
+
+  async listImportedAgents(skip = 0, limit = 100, search?: string): Promise<import('../types/api').ImportedAgent[]> {
+    return this.listPromptPartials(skip, limit, search, 'imported_agent')
+  }
+
+  async createImportedAgent(data: {
+    name: string
+    description?: string | null
+    content: string
+  }): Promise<import('../types/api').ImportedAgent> {
+    const response = await this.client.post('/api/v1/prompt-partials', {
+      ...data,
+      tags: ['__imported_agent__'],
+    })
+    return response.data
+  }
+
+  async generateAgentFlowchart(
+    partialId: string,
+    options?: { provider?: string; model?: string; regenerate?: boolean },
+  ): Promise<import('../types/api').AgentFlowGraph> {
+    const response = await this.client.post(
+      `/api/v1/prompt-partials/${partialId}/flowchart`,
+      {
+        provider: options?.provider,
+        model: options?.model,
+        regenerate: options?.regenerate ?? false,
+      },
+    )
+    return response.data
+  }
+
+  async saveAgentFlowchartLayout(
+    partialId: string,
+    nodes: Array<{ id: string; position_x: number; position_y: number }>,
+  ): Promise<import('../types/api').AgentFlowGraph> {
+    const response = await this.client.put(
+      `/api/v1/prompt-partials/${partialId}/flowchart/layout`,
+      { nodes },
+    )
+    return response.data
+  }
+
+  async updateImportedAgent(
+    partialId: string,
+    data: {
+      name?: string
+      description?: string | null
+      content?: string
+      change_summary?: string
+    },
+  ): Promise<import('../types/api').ImportedAgent> {
+    const response = await this.client.put(`/api/v1/prompt-partials/${partialId}`, {
+      ...data,
+      tags: ['__imported_agent__'],
     })
     return response.data
   }

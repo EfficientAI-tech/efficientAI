@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { apiClient } from '../../lib/api'
 import ReactMarkdown from 'react-markdown'
 import {
@@ -22,8 +23,19 @@ import {
   Loader2,
   Wand2,
   Bot,
+  RefreshCw,
 } from 'lucide-react'
 import { format } from 'date-fns'
+import AIProviderModelPicker from '../../components/AIProviderModelPicker'
+import MarkdownEditor from '../../components/shared/MarkdownEditor'
+import AgentFlowChart from './components/AgentFlowChart'
+import {
+  displayTags,
+  ensureImportedAgentTag,
+  isImportedAgent,
+  type PartialKind,
+} from './constants'
+import type { AgentFlowGraph } from '../../types/api'
 
 interface AIProvider {
   id: string
@@ -40,9 +52,25 @@ interface PromptPartial {
   content: string
   tags: string[] | null
   current_version: number
+  agent_flowchart?: AgentFlowGraph | null
+  agent_flowchart_status?: string | null
   created_at: string
   updated_at: string
   created_by: string | null
+}
+
+const KIND_TABS: { id: PartialKind; label: string }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'partial', label: 'Partials' },
+  { id: 'imported_agent', label: 'Agents' },
+]
+
+const toolBtn =
+  'inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors'
+
+function parseKindParam(value: string | null): PartialKind {
+  if (value === 'partial' || value === 'imported_agent' || value === 'all') return value
+  return 'all'
 }
 
 interface PromptPartialVersion {
@@ -154,20 +182,35 @@ function LLMProviderSelector({
 }
 
 export default function PromptPartials() {
+  const { id: routePartialId } = useParams<{ id?: string }>()
+  const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const queryClient = useQueryClient()
+  const kindFilter = parseKindParam(searchParams.get('kind'))
+
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedPartial, setSelectedPartial] = useState<PromptPartialDetail | null>(null)
   const [showCreateModal, setShowCreateModal] = useState(false)
+  const [showImportAgentModal, setShowImportAgentModal] = useState(false)
   const [showEditModal, setShowEditModal] = useState(false)
   const [showVersionHistory, setShowVersionHistory] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null)
   const [previewMode, setPreviewMode] = useState<'preview' | 'raw'>('preview')
   const [compareVersion, setCompareVersion] = useState<PromptPartialVersion | null>(null)
   const [showAIGenerateModal, setShowAIGenerateModal] = useState(false)
+  const [pickerProvider, setPickerProvider] = useState('')
+  const [pickerModel, setPickerModel] = useState('')
+  const [llmPickerTouched, setLlmPickerTouched] = useState(false)
+  const [flowchartError, setFlowchartError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!routePartialId) return
+    setSelectedPartial((prev) => (prev?.id === routePartialId ? prev : { id: routePartialId } as PromptPartialDetail))
+  }, [routePartialId])
 
   const { data: partials = [], isLoading } = useQuery({
-    queryKey: ['prompt-partials', searchQuery],
-    queryFn: () => apiClient.listPromptPartials(0, 100, searchQuery || undefined),
+    queryKey: ['prompt-partials', searchQuery, kindFilter],
+    queryFn: () => apiClient.listPromptPartials(0, 100, searchQuery || undefined, kindFilter),
   })
 
   const { data: partialDetail, isLoading: isDetailLoading } = useQuery({
@@ -182,6 +225,9 @@ export default function PromptPartials() {
       queryClient.invalidateQueries({ queryKey: ['prompt-partials'] })
       if (selectedPartial && showDeleteConfirm === selectedPartial.id) {
         setSelectedPartial(null)
+        navigate(
+          kindFilter === 'all' ? '/prompt-partials' : `/prompt-partials?kind=${kindFilter}`,
+        )
       }
       setShowDeleteConfirm(null)
     },
@@ -189,8 +235,9 @@ export default function PromptPartials() {
 
   const cloneMutation = useMutation({
     mutationFn: (id: string) => apiClient.clonePromptPartial(id),
-    onSuccess: () => {
+    onSuccess: (cloned) => {
       queryClient.invalidateQueries({ queryKey: ['prompt-partials'] })
+      handleSelectPartial(cloned as PromptPartial)
     },
   })
 
@@ -204,11 +251,60 @@ export default function PromptPartials() {
     },
   })
 
+  const flowchartMutation = useMutation({
+    mutationFn: (regenerate: boolean) =>
+      apiClient.generateAgentFlowchart(selectedPartial!.id, {
+        regenerate,
+        provider: pickerProvider || undefined,
+        model: pickerModel || undefined,
+      }),
+    onSuccess: () => {
+      setFlowchartError(null)
+      queryClient.invalidateQueries({ queryKey: ['prompt-partial', selectedPartial?.id] })
+    },
+    onError: (e: any) => {
+      setFlowchartError(e?.response?.data?.detail || 'Failed to generate flowchart.')
+    },
+  })
+
+  const saveLayoutMutation = useMutation({
+    mutationFn: (nodes: Array<{ id: string; position_x: number; position_y: number }>) =>
+      apiClient.saveAgentFlowchartLayout(selectedPartial!.id, nodes),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['prompt-partial', selectedPartial?.id] })
+    },
+  })
+
+  useEffect(() => {
+    const flowchart = partialDetail?.agent_flowchart
+    if (flowchart?.provider) {
+      setPickerProvider(flowchart.provider)
+      if (flowchart.model) setPickerModel(flowchart.model)
+      return
+    }
+    if (llmPickerTouched) return
+    setPickerProvider('')
+    setPickerModel('')
+  }, [partialDetail?.agent_flowchart, llmPickerTouched])
+
+  const setKindFilter = (kind: PartialKind) => {
+    const next = new URLSearchParams(searchParams)
+    if (kind === 'all') next.delete('kind')
+    else next.set('kind', kind)
+    setSearchParams(next, { replace: true })
+  }
+
   const handleSelectPartial = (partial: PromptPartial) => {
     setSelectedPartial(partial as PromptPartialDetail)
     setShowVersionHistory(false)
     setCompareVersion(null)
+    navigate(`/prompt-partials/${partial.id}${kindFilter === 'all' ? '' : `?kind=${kindFilter}`}`)
   }
+
+  const selectedIsAgent = selectedPartial
+    ? isImportedAgent(partialDetail || selectedPartial)
+    : false
+  const flowchart = partialDetail?.agent_flowchart
 
   return (
     <div className="h-[calc(100vh-7rem)] flex flex-col">
@@ -217,7 +313,7 @@ export default function PromptPartials() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Prompt Partials</h1>
           <p className="mt-1 text-sm text-gray-500">
-            Create, manage, and version reusable prompt templates
+            Create, manage, and version reusable prompts — including imported production agents
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -227,6 +323,13 @@ export default function PromptPartials() {
           >
             <Sparkles className="h-4 w-4" />
             AI Generate
+          </button>
+          <button
+            onClick={() => setShowImportAgentModal(true)}
+            className="inline-flex items-center gap-2 px-4 py-2 bg-white text-gray-700 text-sm font-medium rounded-lg border border-gray-300 hover:bg-gray-50 transition-colors"
+          >
+            <Bot className="h-4 w-4" />
+            Import Agent
           </button>
           <button
             onClick={() => setShowCreateModal(true)}
@@ -242,8 +345,8 @@ export default function PromptPartials() {
       <div className="flex-1 flex gap-4 min-h-0">
         {/* Left Panel - List */}
         <div className="w-80 flex-shrink-0 flex flex-col bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-          {/* Search */}
-          <div className="p-3 border-b border-gray-200">
+          {/* Search + kind filter */}
+          <div className="p-3 border-b border-gray-200 space-y-2">
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
               <input
@@ -253,6 +356,22 @@ export default function PromptPartials() {
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full pl-9 pr-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
               />
+            </div>
+            <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
+              {KIND_TABS.map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setKindFilter(tab.id)}
+                  className={`flex-1 px-2 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    kindFilter === tab.id
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
             </div>
           </div>
 
@@ -264,16 +383,32 @@ export default function PromptPartials() {
               </div>
             ) : partials.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-48 px-4 text-center">
-                <FileText className="h-10 w-10 text-gray-300 mb-3" />
+                {kindFilter === 'imported_agent' ? (
+                  <Bot className="h-10 w-10 text-gray-300 mb-3" />
+                ) : (
+                  <FileText className="h-10 w-10 text-gray-300 mb-3" />
+                )}
                 <p className="text-sm text-gray-500">
-                  {searchQuery ? 'No prompts match your search' : 'No prompt partials yet'}
+                  {searchQuery
+                    ? 'No prompts match your search'
+                    : kindFilter === 'imported_agent'
+                      ? 'No imported agents yet'
+                      : kindFilter === 'partial'
+                        ? 'No prompt partials yet'
+                        : 'No prompts yet'}
                 </p>
                 {!searchQuery && (
                   <button
-                    onClick={() => setShowCreateModal(true)}
+                    onClick={() =>
+                      kindFilter === 'imported_agent'
+                        ? setShowImportAgentModal(true)
+                        : setShowCreateModal(true)
+                    }
                     className="mt-3 text-sm text-gray-700 font-medium hover:text-gray-900"
                   >
-                    Create your first prompt
+                    {kindFilter === 'imported_agent'
+                      ? 'Import your first agent'
+                      : 'Create your first prompt'}
                   </button>
                 )}
               </div>
@@ -292,21 +427,33 @@ export default function PromptPartials() {
                       {partial.description && (
                         <p className="text-xs text-gray-500 mt-0.5 truncate">{partial.description}</p>
                       )}
-                      <div className="flex items-center gap-2 mt-1.5">
+                      <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                        {isImportedAgent(partial) ? (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-sky-50 text-sky-700 border border-sky-200">
+                            <Bot className="h-3 w-3" />
+                            Agent
+                          </span>
+                        ) : null}
                         <span className="inline-flex items-center gap-1 text-xs text-gray-400">
                           <History className="h-3 w-3" />
                           v{partial.current_version}
                         </span>
-                        <span className="text-xs text-gray-400">
-                          {format(new Date(partial.updated_at), 'MMM d, yyyy')}
-                        </span>
+                        {isImportedAgent(partial) ? (
+                          <span className="text-xs text-gray-400 capitalize">
+                            {partial.agent_flowchart_status || 'no chart'}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-gray-400">
+                            {format(new Date(partial.updated_at), 'MMM d, yyyy')}
+                          </span>
+                        )}
                       </div>
                     </div>
                     <ChevronRight className="h-4 w-4 text-gray-400 flex-shrink-0 mt-0.5" />
                   </div>
-                  {partial.tags && partial.tags.length > 0 && (
+                  {displayTags(partial.tags).length > 0 && (
                     <div className="flex flex-wrap gap-1 mt-2">
-                      {partial.tags.slice(0, 3).map((tag) => (
+                      {displayTags(partial.tags).slice(0, 3).map((tag) => (
                         <span
                           key={tag}
                           className="inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-gray-100 text-gray-600"
@@ -314,8 +461,10 @@ export default function PromptPartials() {
                           {tag}
                         </span>
                       ))}
-                      {partial.tags.length > 3 && (
-                        <span className="text-xs text-gray-400">+{partial.tags.length - 3}</span>
+                      {displayTags(partial.tags).length > 3 && (
+                        <span className="text-xs text-gray-400">
+                          +{displayTags(partial.tags).length - 3}
+                        </span>
                       )}
                     </div>
                   )}
@@ -326,7 +475,7 @@ export default function PromptPartials() {
         </div>
 
         {/* Right Panel - Detail / Preview */}
-        <div className="flex-1 flex flex-col bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+        <div className="flex-1 flex flex-col bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden min-w-0">
           {selectedPartial ? (
             <>
               {/* Detail Header */}
@@ -404,11 +553,17 @@ export default function PromptPartials() {
               </div>
 
               {/* Tags */}
-              {(partialDetail?.tags || selectedPartial.tags) && (
+              {(selectedIsAgent || displayTags(partialDetail?.tags || selectedPartial.tags).length > 0) && (
                 <div className="flex items-center gap-2 px-6 py-2 border-b border-gray-100 bg-gray-50/50">
                   <Tag className="h-3.5 w-3.5 text-gray-400" />
                   <div className="flex flex-wrap gap-1">
-                    {(partialDetail?.tags || selectedPartial.tags || []).map((tag: string) => (
+                    {selectedIsAgent ? (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-sky-100 text-sky-800">
+                        <Bot className="h-3 w-3" />
+                        Imported agent
+                      </span>
+                    ) : null}
+                    {displayTags(partialDetail?.tags || selectedPartial.tags).map((tag: string) => (
                       <span
                         key={tag}
                         className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-200 text-gray-700"
@@ -422,67 +577,168 @@ export default function PromptPartials() {
 
               {/* Content Area */}
               <div className="flex-1 flex min-h-0">
-                {/* Main content */}
-                <div className={`flex-1 overflow-y-auto ${showVersionHistory ? 'border-r border-gray-200' : ''}`}>
-                  {compareVersion ? (
-                    <div className="p-6">
-                      <div className="flex items-center justify-between mb-4">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-medium text-gray-900">
-                            Comparing: Current (v{partialDetail?.current_version || selectedPartial.current_version})
-                            vs v{compareVersion.version}
-                          </span>
+                {selectedIsAgent ? (
+                  <div className="flex-1 flex flex-row min-h-0 min-w-0">
+                    <div className="flex-1 min-w-0 overflow-y-auto border-r border-gray-200">
+                      {compareVersion ? (
+                        <div className="p-6 space-y-4">
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm font-medium text-gray-900">
+                              v{partialDetail?.current_version || selectedPartial.current_version} vs v
+                              {compareVersion.version}
+                            </span>
+                            <button
+                              onClick={() => setCompareVersion(null)}
+                              className="text-xs text-gray-500 hover:text-gray-700"
+                            >
+                              Close comparison
+                            </button>
+                          </div>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div className="bg-green-50 border border-green-200 rounded-lg p-4 prose prose-sm max-w-none">
+                              <ReactMarkdown>{partialDetail?.content || selectedPartial.content}</ReactMarkdown>
+                            </div>
+                            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 prose prose-sm max-w-none">
+                              <ReactMarkdown>{compareVersion.content}</ReactMarkdown>
+                            </div>
+                          </div>
                         </div>
-                        <button
-                          onClick={() => setCompareVersion(null)}
-                          className="text-xs text-gray-500 hover:text-gray-700"
-                        >
-                          Close comparison
-                        </button>
+                      ) : isDetailLoading ? (
+                        <div className="flex items-center justify-center h-32">
+                          <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-gray-900" />
+                        </div>
+                      ) : previewMode === 'preview' ? (
+                        <div className="p-6 prose prose-sm max-w-none prose-headings:text-gray-900 prose-p:text-gray-700">
+                          <ReactMarkdown>{partialDetail?.content || selectedPartial.content}</ReactMarkdown>
+                        </div>
+                      ) : (
+                        <div className="p-6">
+                          <pre className="whitespace-pre-wrap text-sm text-gray-800 font-mono bg-gray-50 rounded-lg p-4 border border-gray-200">
+                            {partialDetail?.content || selectedPartial.content}
+                          </pre>
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0 flex flex-col min-h-0 bg-gray-50/30">
+                      <div className="px-4 py-3 border-b border-gray-200 bg-white space-y-2 flex-shrink-0">
+                        <div className="flex items-center justify-between gap-2">
+                          <h3 className="text-sm font-semibold text-gray-900">Agent logic</h3>
+                          <button
+                            type="button"
+                            onClick={() => flowchartMutation.mutate(Boolean(flowchart))}
+                            disabled={flowchartMutation.isPending}
+                            className={`${toolBtn} disabled:opacity-50`}
+                          >
+                            {flowchartMutation.isPending ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <RefreshCw className="h-3.5 w-3.5" />
+                            )}
+                            {flowchart ? 'Regenerate' : 'Generate'}
+                          </button>
+                        </div>
+                        <AIProviderModelPicker
+                          provider={pickerProvider}
+                          model={pickerModel}
+                          onProviderChange={(next) => {
+                            setLlmPickerTouched(true)
+                            setPickerProvider(next)
+                          }}
+                          onModelChange={(next) => {
+                            setLlmPickerTouched(true)
+                            setPickerModel(next)
+                          }}
+                          disabled={flowchartMutation.isPending}
+                          size="sm"
+                        />
+                        {flowchartError ? (
+                          <p className="text-xs text-red-600">{flowchartError}</p>
+                        ) : null}
                       </div>
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <div className="text-xs font-medium text-gray-500 mb-2 flex items-center gap-1">
-                            <span className="inline-block w-2 h-2 rounded-full bg-green-500" />
-                            Current (v{partialDetail?.current_version || selectedPartial.current_version})
+                      <div className="flex-1 min-h-0">
+                        {flowchart && flowchart.nodes?.length ? (
+                          <AgentFlowChart
+                            data={flowchart}
+                            title={partialDetail?.name || selectedPartial.name}
+                            onSaveLayout={(nodes) => saveLayoutMutation.mutate(nodes)}
+                            savingLayout={saveLayoutMutation.isPending}
+                          />
+                        ) : (
+                          <div className="h-full flex items-center justify-center text-sm text-gray-500 px-6 text-center">
+                            {flowchartMutation.isPending
+                              ? 'Generating flowchart...'
+                              : 'Generate a flowchart to visualize agent logic.'}
                           </div>
-                          <div className="bg-green-50 border border-green-200 rounded-lg p-4 prose prose-sm max-w-none">
-                            <ReactMarkdown>{partialDetail?.content || selectedPartial.content}</ReactMarkdown>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className={`flex-1 overflow-y-auto ${showVersionHistory ? 'border-r border-gray-200' : ''}`}>
+                    {compareVersion ? (
+                      <div className="p-6">
+                        <div className="flex items-center justify-between mb-4">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium text-gray-900">
+                              Comparing: Current (v{partialDetail?.current_version || selectedPartial.current_version})
+                              vs v{compareVersion.version}
+                            </span>
                           </div>
+                          <button
+                            onClick={() => setCompareVersion(null)}
+                            className="text-xs text-gray-500 hover:text-gray-700"
+                          >
+                            Close comparison
+                          </button>
                         </div>
-                        <div>
-                          <div className="text-xs font-medium text-gray-500 mb-2 flex items-center gap-1">
-                            <span className="inline-block w-2 h-2 rounded-full bg-blue-500" />
-                            Version {compareVersion.version}
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <div className="text-xs font-medium text-gray-500 mb-2 flex items-center gap-1">
+                              <span className="inline-block w-2 h-2 rounded-full bg-green-500" />
+                              Current (v{partialDetail?.current_version || selectedPartial.current_version})
+                            </div>
+                            <div className="bg-green-50 border border-green-200 rounded-lg p-4 prose prose-sm max-w-none">
+                              <ReactMarkdown>{partialDetail?.content || selectedPartial.content}</ReactMarkdown>
+                            </div>
                           </div>
-                          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 prose prose-sm max-w-none">
-                            <ReactMarkdown>{compareVersion.content}</ReactMarkdown>
+                          <div>
+                            <div className="text-xs font-medium text-gray-500 mb-2 flex items-center gap-1">
+                              <span className="inline-block w-2 h-2 rounded-full bg-blue-500" />
+                              Version {compareVersion.version}
+                            </div>
+                            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 prose prose-sm max-w-none">
+                              <ReactMarkdown>{compareVersion.content}</ReactMarkdown>
+                            </div>
                           </div>
                         </div>
                       </div>
-                    </div>
-                  ) : isDetailLoading ? (
-                    <div className="flex items-center justify-center h-32">
-                      <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-gray-900" />
-                    </div>
-                  ) : previewMode === 'preview' ? (
-                    <div className="p-6 prose prose-sm max-w-none prose-headings:text-gray-900 prose-p:text-gray-700 prose-code:text-gray-800 prose-code:bg-gray-100 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-pre:bg-gray-900 prose-pre:text-gray-100">
-                      <ReactMarkdown>
-                        {partialDetail?.content || selectedPartial.content}
-                      </ReactMarkdown>
-                    </div>
-                  ) : (
-                    <div className="p-6">
-                      <pre className="whitespace-pre-wrap text-sm text-gray-800 font-mono bg-gray-50 rounded-lg p-4 border border-gray-200">
-                        {partialDetail?.content || selectedPartial.content}
-                      </pre>
-                    </div>
-                  )}
-                </div>
+                    ) : isDetailLoading ? (
+                      <div className="flex items-center justify-center h-32">
+                        <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-gray-900" />
+                      </div>
+                    ) : previewMode === 'preview' ? (
+                      <div className="p-6 prose prose-sm max-w-none prose-headings:text-gray-900 prose-p:text-gray-700 prose-code:text-gray-800 prose-code:bg-gray-100 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-pre:bg-gray-900 prose-pre:text-gray-100">
+                        <ReactMarkdown>
+                          {partialDetail?.content || selectedPartial.content}
+                        </ReactMarkdown>
+                      </div>
+                    ) : (
+                      <div className="p-6">
+                        <pre className="whitespace-pre-wrap text-sm text-gray-800 font-mono bg-gray-50 rounded-lg p-4 border border-gray-200">
+                          {partialDetail?.content || selectedPartial.content}
+                        </pre>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Version History Sidebar */}
                 {showVersionHistory && (
-                  <div className="w-72 flex-shrink-0 flex flex-col overflow-hidden">
+                  <div
+                    className={`w-72 flex-shrink-0 flex flex-col overflow-hidden ${
+                      selectedIsAgent ? 'border-l border-gray-200' : ''
+                    }`}
+                  >
                     <div className="px-4 py-3 border-b border-gray-200 bg-gray-50">
                       <h3 className="text-sm font-semibold text-gray-900">Version History</h3>
                     </div>
@@ -567,6 +823,18 @@ export default function PromptPartials() {
         />
       )}
 
+      {showImportAgentModal && (
+        <ImportAgentModal
+          onClose={() => setShowImportAgentModal(false)}
+          onSaved={(created) => {
+            setShowImportAgentModal(false)
+            queryClient.invalidateQueries({ queryKey: ['prompt-partials'] })
+            setKindFilter('imported_agent')
+            handleSelectPartial(created as PromptPartial)
+          }}
+        />
+      )}
+
       {/* Edit Modal */}
       {showEditModal && selectedPartial && (
         <PromptPartialModal
@@ -595,9 +863,13 @@ export default function PromptPartials() {
       {showDeleteConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-500 bg-opacity-75">
           <div className="bg-white rounded-xl shadow-xl p-6 max-w-sm w-full mx-4">
-            <h3 className="text-lg font-semibold text-gray-900 mb-2">Delete Prompt Partial</h3>
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">
+              Delete {selectedIsAgent ? 'Imported Agent' : 'Prompt Partial'}
+            </h3>
             <p className="text-sm text-gray-500 mb-6">
-              This will permanently delete this prompt partial and all its version history. This action cannot be undone.
+              This will permanently delete this prompt
+              {selectedIsAgent ? ', its cached flowchart,' : ''} and all version history. This action
+              cannot be undone.
             </p>
             <div className="flex items-center gap-3 justify-end">
               <button
@@ -622,6 +894,82 @@ export default function PromptPartials() {
 }
 
 
+function ImportAgentModal({
+  onClose,
+  onSaved,
+}: {
+  onClose: () => void
+  onSaved: (created: PromptPartial) => void
+}) {
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const [content, setContent] = useState('')
+  const [error, setError] = useState('')
+
+  const createMutation = useMutation({
+    mutationFn: () =>
+      apiClient.createImportedAgent({
+        name: name.trim(),
+        description: description.trim() || null,
+        content: content.trim(),
+      }),
+    onSuccess: (created) => onSaved(created as PromptPartial),
+    onError: (err: any) => {
+      setError(err?.response?.data?.detail || 'Failed to import agent')
+    },
+  })
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-3xl rounded-xl bg-white shadow-xl border border-gray-200">
+        <div className="border-b border-gray-200 px-6 py-4">
+          <h2 className="text-lg font-semibold text-gray-900">Import production agent</h2>
+          <p className="text-sm text-gray-500 mt-1">
+            Paste the live system prompt — it will be saved as a prompt partial tagged as an agent.
+          </p>
+        </div>
+        <div className="px-6 py-4 space-y-4 max-h-[70vh] overflow-y-auto">
+          {error ? (
+            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">
+              {error}
+            </div>
+          ) : null}
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Agent name"
+            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
+          />
+          <input
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="Description (optional)"
+            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
+          />
+          <MarkdownEditor value={content} onChange={setContent} rows={12} />
+        </div>
+        <div className="flex justify-end gap-2 border-t border-gray-200 px-6 py-4">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={!name.trim() || !content.trim() || createMutation.isPending}
+            onClick={() => createMutation.mutate()}
+            className="px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800 disabled:opacity-50"
+          >
+            {createMutation.isPending ? 'Saving...' : 'Save imported agent'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function PromptPartialModal({
   partial,
   onClose,
@@ -632,10 +980,11 @@ function PromptPartialModal({
   onSaved: () => void
 }) {
   const isEditing = !!partial
+  const agentMode = partial ? isImportedAgent(partial) : false
   const [name, setName] = useState(partial?.name || '')
   const [description, setDescription] = useState(partial?.description || '')
   const [content, setContent] = useState(partial?.content || '')
-  const [tagsInput, setTagsInput] = useState((partial?.tags || []).join(', '))
+  const [tagsInput, setTagsInput] = useState(displayTags(partial?.tags).join(', '))
   const [changeSummary, setChangeSummary] = useState('')
   const [editorMode, setEditorMode] = useState<'write' | 'preview'>('write')
   const [error, setError] = useState('')
@@ -674,7 +1023,10 @@ function PromptPartialModal({
       content?: string
       tags?: string[]
       change_summary?: string
-    }) => apiClient.updatePromptPartial(partial!.id, data),
+    }) =>
+      agentMode
+        ? apiClient.updateImportedAgent(partial!.id, data)
+        : apiClient.updatePromptPartial(partial!.id, data),
     onSuccess: () => onSaved(),
     onError: (err: any) => {
       setError(err?.response?.data?.detail || 'Failed to update prompt partial')
@@ -692,10 +1044,11 @@ function PromptPartialModal({
       return
     }
 
-    const tags = tagsInput
+    const userTags = tagsInput
       .split(',')
       .map((t) => t.trim())
       .filter(Boolean)
+    const tags = agentMode ? ensureImportedAgentTag(userTags) : userTags
 
     if (isEditing) {
       updateMutation.mutate({
@@ -723,7 +1076,11 @@ function PromptPartialModal({
         {/* Modal Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
           <h2 className="text-lg font-semibold text-gray-900">
-            {isEditing ? 'Edit Prompt Partial' : 'Create Prompt Partial'}
+            {isEditing
+              ? agentMode
+                ? 'Edit Imported Agent'
+                : 'Edit Prompt Partial'
+              : 'Create Prompt Partial'}
           </h2>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-500">
             <X className="h-5 w-5" />
@@ -765,18 +1122,30 @@ function PromptPartialModal({
           </div>
 
           {/* Tags */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Tags <span className="text-gray-400">(comma-separated, optional)</span>
-            </label>
-            <input
-              type="text"
-              value={tagsInput}
-              onChange={(e) => setTagsInput(e.target.value)}
-              placeholder="e.g., system, support, v2"
-              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
-            />
-          </div>
+          {agentMode ? (
+            <div className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-800">
+              <span className="inline-flex items-center gap-1 font-medium">
+                <Bot className="h-4 w-4" />
+                Imported agent
+              </span>
+              <p className="text-xs text-sky-700 mt-1">
+                This prompt is tagged as a production agent and includes flowchart visualization.
+              </p>
+            </div>
+          ) : (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Tags <span className="text-gray-400">(comma-separated, optional)</span>
+              </label>
+              <input
+                type="text"
+                value={tagsInput}
+                onChange={(e) => setTagsInput(e.target.value)}
+                placeholder="e.g., system, support, v2"
+                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
+              />
+            </div>
+          )}
 
           {/* Content */}
           <div className="flex-1">

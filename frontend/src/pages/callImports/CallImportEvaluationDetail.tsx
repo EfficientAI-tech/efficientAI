@@ -65,6 +65,7 @@ import type {
   CallImportMetricAggregate,
   EvaluationTldrSummary,
   EvaluationMetricClustersState,
+  EvaluationPromptImprovementsState,
   MetricClusterEvidence,
   MetricClustersRcaSummary,
   MetricFailurePolicy,
@@ -83,6 +84,7 @@ import ProviderModelPicker, {
 } from '../../components/providers/ProviderModelPicker'
 import StatusBadge from '../../components/shared/StatusBadge'
 import CallImportProgressBar from './components/CallImportProgressBar'
+import MetricPromptImprovementsPanel from './components/MetricPromptImprovementsPanel'
 import MetricFlowChart, {
   flowFromSequence,
 } from './components/MetricFlowChart'
@@ -395,6 +397,8 @@ export default function CallImportEvaluationDetail() {
   const [pdfIncludeMethodology, setPdfIncludeMethodology] = useState(true)
   const [pdfIncludeFailureDiagnostics, setPdfIncludeFailureDiagnostics] =
     useState(true)
+  const [pdfIncludePromptImprovements, setPdfIncludePromptImprovements] =
+    useState(true)
   const [pdfPreviewOpen, setPdfPreviewOpen] = useState(false)
   const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null)
   const [pdfPreviewFilename, setPdfPreviewFilename] = useState('')
@@ -485,7 +489,7 @@ export default function CallImportEvaluationDetail() {
     Record<string, CategoricalChartType>
   >(() => loadChartPerMetric())
   const [visualizationSubtab, setVisualizationSubtab] = useState<
-    'quality' | 'aiInsights' | 'clusters'
+    'quality' | 'aiInsights' | 'clusters' | 'improvements'
   >('quality')
   const [qualityPanelCollapsed, setQualityPanelCollapsed] = useState(false)
   const [userInsightsPanelCollapsed, setUserInsightsPanelCollapsed] =
@@ -861,6 +865,21 @@ export default function CallImportEvaluationDetail() {
     queryKey: ['call-import-evaluation-metric-clusters', id, evalId],
     queryFn: () =>
       apiClient.getCallImportEvaluationMetricClusters(id!, evalId!),
+    enabled:
+      !!id &&
+      !!evalId &&
+      (resultsTab === 'visualizations' || pdfReportOpen),
+    refetchOnWindowFocus: false,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status
+      return status === 'running' ? 5000 : false
+    },
+  })
+
+  const promptImprovementsQuery = useQuery<EvaluationPromptImprovementsState | null>({
+    queryKey: ['call-import-evaluation-prompt-improvements', id, evalId],
+    queryFn: () =>
+      apiClient.getCallImportEvaluationPromptImprovements(id!, evalId!),
     enabled:
       !!id &&
       !!evalId &&
@@ -1621,6 +1640,7 @@ export default function CallImportEvaluationDetail() {
             quality_panel: pdfIncludeQualityPanel,
             user_insights: pdfIncludeUserInsights,
             failure_diagnostics: pdfIncludeFailureDiagnostics,
+            prompt_improvements: pdfIncludePromptImprovements,
             design_notes: pdfIncludeDesignNotes,
             methodology: pdfIncludeMethodology,
           },
@@ -3006,6 +3026,17 @@ export default function CallImportEvaluationDetail() {
                       >
                         Clusters
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => setVisualizationSubtab('improvements')}
+                        className={`px-3 py-1.5 text-xs font-medium rounded transition ${
+                          visualizationSubtab === 'improvements'
+                            ? 'bg-white text-primary-700 shadow-sm'
+                            : 'text-gray-600 hover:text-gray-900'
+                        }`}
+                      >
+                        Prompt / Agent Improvements
+                      </button>
                     </div>
 
                     {visualizationSubtab === 'quality' ? (
@@ -3105,7 +3136,7 @@ export default function CallImportEvaluationDetail() {
                           </p>
                         )}
                       </div>
-                    ) : (
+                    ) : visualizationSubtab === 'clusters' ? (
                       <MetricClustersPanel
                         callImportId={id!}
                         evaluationId={evalId!}
@@ -3117,6 +3148,23 @@ export default function CallImportEvaluationDetail() {
                           queryClient.invalidateQueries({
                             queryKey: [
                               'call-import-evaluation-metric-clusters',
+                              id,
+                              evalId,
+                            ],
+                          })
+                        }}
+                      />
+                    ) : (
+                      <MetricPromptImprovementsPanel
+                        callImportId={id!}
+                        evaluationId={evalId!}
+                        clustersState={metricClustersQuery.data ?? null}
+                        improvementsState={promptImprovementsQuery.data ?? null}
+                        isLoading={promptImprovementsQuery.isLoading}
+                        onGenerated={() => {
+                          queryClient.invalidateQueries({
+                            queryKey: [
+                              'call-import-evaluation-prompt-improvements',
                               id,
                               evalId,
                             ],
@@ -4417,6 +4465,11 @@ export default function CallImportEvaluationDetail() {
                               pdfIncludeFailureDiagnostics,
                               setPdfIncludeFailureDiagnostics,
                             ] as const,
+                            [
+                              'Prompt Improvements',
+                              pdfIncludePromptImprovements,
+                              setPdfIncludePromptImprovements,
+                            ] as const,
                           ]
                         : []),
                       ['Design Notes', pdfIncludeDesignNotes, setPdfIncludeDesignNotes],
@@ -4638,6 +4691,33 @@ export default function CallImportEvaluationDetail() {
                         </div>
                       )
                     })()
+                  ) : null}
+                  {pdfReportType === 'internal' && pdfIncludePromptImprovements ? (
+                    <div className="rounded-md border border-gray-100 bg-gray-50/80 p-3 space-y-2">
+                      <p className="text-xs font-semibold text-gray-700">
+                        Prompt improvement recommendations
+                      </p>
+                      {promptImprovementsQuery.data?.status === 'running' ? (
+                        <p className="text-xs text-amber-700">
+                          Suggestions are generating in the background.
+                        </p>
+                      ) : promptImprovementsQuery.data?.status === 'completed' &&
+                        promptImprovementsQuery.data.suggestions.length ? (
+                        <p className="text-xs text-gray-600">
+                          {promptImprovementsQuery.data.suggestions.length} suggestion
+                          {promptImprovementsQuery.data.suggestions.length === 1 ? '' : 's'}{' '}
+                          for{' '}
+                          {promptImprovementsQuery.data.imported_agent_name ||
+                            'the mapped imported agent'}{' '}
+                          will be included.
+                        </p>
+                      ) : (
+                        <p className="text-xs text-gray-500">
+                          Generate suggestions in Visualizations → Prompt / Agent
+                          Improvements before including this section.
+                        </p>
+                      )}
+                    </div>
                   ) : null}
                 </div>
 

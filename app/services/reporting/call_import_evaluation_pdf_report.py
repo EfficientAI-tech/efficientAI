@@ -107,6 +107,7 @@ class CallImportEvaluationPdfReportService:
         user_insights_overview: str | None = None,
         metric_clusters: dict[str, Any] | None = None,
         metric_clusters_overview: str | None = None,
+        prompt_improvements: dict[str, Any] | None = None,
         failure_policies: dict[str, Any] | None = None,
         platform_base_url: str | None = None,
     ) -> bytes:
@@ -151,6 +152,7 @@ class CallImportEvaluationPdfReportService:
             "user_insights_overview": (user_insights_overview or "").strip() or None,
             "metric_clusters": metric_clusters or {},
             "metric_clusters_overview": (metric_clusters_overview or "").strip() or None,
+            "prompt_improvements": prompt_improvements or {},
             "platform_base_url": (platform_base_url or "").strip().rstrip("/") or None,
             "call_import_id": str(call_import.id),
             "evaluation_id": str(evaluation.id),
@@ -1336,6 +1338,64 @@ class CallImportEvaluationPdfReportService:
             </section>
             """
 
+    def _prompt_improvements_section_html(
+        self,
+        prompt_improvements: dict[str, Any],
+    ) -> str:
+        suggestions_raw = prompt_improvements.get("suggestions")
+        suggestions = (
+            [s for s in suggestions_raw if isinstance(s, dict)]
+            if isinstance(suggestions_raw, list)
+            else []
+        )
+        if not suggestions:
+            return ""
+        agent_name = str(prompt_improvements.get("imported_agent_name") or "Imported agent")
+        overview = str(prompt_improvements.get("overview") or "").strip()
+        overview_markup = ""
+        if overview:
+            overview_markup = f"""
+              <div class="insight-overview-box fd-summary-box">
+                <div class="insight-overview-label">Overview</div>
+                <p>{html.escape(overview)}</p>
+              </div>
+            """
+        blocks: list[str] = []
+        for idx, item in enumerate(suggestions[:12], start=1):
+            metric_name = html.escape(str(item.get("metric_name") or "Metric"))
+            cluster_label = html.escape(str(item.get("cluster_label") or "Cluster"))
+            gap_label = html.escape(str(item.get("gap_label") or ""))
+            priority = html.escape(str(item.get("priority") or "medium"))
+            share_pct = float(item.get("share_pct") or 0)
+            target_section = html.escape(str(item.get("target_section") or ""))
+            current_gap = html.escape(str(item.get("current_gap") or ""))
+            suggested_text = html.escape(str(item.get("suggested_text") or ""))
+            rationale = html.escape(str(item.get("rationale") or ""))
+            blocks.append(
+                f"""
+                <article class="metric-cluster-group prompt-improvement-card">
+                  <div class="metric-cluster-metric-head">
+                    <h3>{idx}. {metric_name} · {cluster_label}</h3>
+                    <span>{gap_label} · {priority} priority · {share_pct:.1f}% share</span>
+                  </div>
+                  {f'<p class="method"><strong>Target section:</strong> {target_section}</p>' if target_section else ''}
+                  {f'<p class="method"><strong>Current gap:</strong> {current_gap}</p>' if current_gap else ''}
+                  {f'<div class="prompt-suggestion-block">{suggested_text}</div>' if suggested_text else ''}
+                  {f'<p class="method"><strong>Rationale:</strong> {rationale}</p>' if rationale else ''}
+                </article>
+                """
+            )
+        return f"""
+            <section class="prompt-improvements">
+              <div class="failure-diagnostics-intro">
+                <h2>05 Prompt Improvement Recommendations</h2>
+                <p class="method">Suggested prompt edits mapped to failure clusters for <strong>{html.escape(agent_name)}</strong>.</p>
+                {overview_markup}
+              </div>
+              {''.join(blocks)}
+            </section>
+            """
+
     def _generated_user_insight_block_html(
         self, insight: dict[str, Any], index: int
     ) -> str:
@@ -1647,6 +1707,7 @@ class CallImportEvaluationPdfReportService:
         show_user_insights = sections.get("user_insights", True)
         show_design_notes = sections.get("design_notes", True)
         show_failure_diagnostics = sections.get("failure_diagnostics", True)
+        show_prompt_improvements = sections.get("prompt_improvements", True)
         show_methodology = sections.get("methodology", True)
         narrative = payload.get("narrative") if isinstance(payload.get("narrative"), dict) else {}
         observations = narrative.get("observations") if isinstance(narrative.get("observations"), dict) else {}
@@ -1836,6 +1897,14 @@ class CallImportEvaluationPdfReportService:
                     platform_base_url=payload.get("platform_base_url"),
                     call_import_id=str(payload.get("call_import_id") or ""),
                     evaluation_id=str(payload.get("evaluation_id") or ""),
+                )
+
+        prompt_improvements_section = ""
+        if is_internal and show_prompt_improvements:
+            improvements_payload = payload.get("prompt_improvements")
+            if isinstance(improvements_payload, dict) and improvements_payload:
+                prompt_improvements_section = self._prompt_improvements_section_html(
+                    improvements_payload
                 )
 
         business_section = ""
@@ -2215,6 +2284,46 @@ class CallImportEvaluationPdfReportService:
             .footer-right {{ text-align: right; }}
             .brand-title {{ color: #111827; font-weight: 800; font-size: 11px; letter-spacing: .2px; }}
             .brand-link {{ color: #d16532; font-weight: 700; text-decoration: none; }}
+            .prompt-improvements {{ margin-top: 4px; max-width: 100%; }}
+            .prompt-improvement-card {{
+              margin: 0 0 10px;
+              padding: 8px 10px;
+              border: 1px solid #e5e7eb;
+              border-radius: 6px;
+              background: #fafafa;
+              max-width: 100%;
+              box-sizing: border-box;
+              break-inside: auto;
+              page-break-inside: auto;
+            }}
+            .prompt-improvements .metric-cluster-metric-head h3 {{
+              flex: 1;
+              min-width: 0;
+              overflow-wrap: anywhere;
+              word-break: break-word;
+            }}
+            .prompt-improvements .method {{
+              overflow-wrap: anywhere;
+              word-break: break-word;
+              max-width: 100%;
+            }}
+            .prompt-suggestion-block {{
+              margin: 6px 0;
+              padding: 8px 10px;
+              border: 1px solid #e5e7eb;
+              border-radius: 6px;
+              background: #fff;
+              font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+              font-size: 9px;
+              line-height: 1.45;
+              color: #111827;
+              white-space: pre-wrap;
+              overflow-wrap: anywhere;
+              word-break: break-word;
+              max-width: 100%;
+              width: 100%;
+              box-sizing: border-box;
+            }}
           </style>
         </head>
         <body>
@@ -2243,6 +2352,7 @@ class CallImportEvaluationPdfReportService:
           {quality_panel_markup}
           {business_section}
           {failure_diagnostics_section}
+          {prompt_improvements_section}
           {design_notes_section}
           {f'''
           <section>

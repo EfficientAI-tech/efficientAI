@@ -24,7 +24,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.database import get_db
-from app.dependencies import get_api_key, get_organization_id, require_enterprise_feature
+from app.dependencies import (
+    get_api_key,
+    get_organization_id,
+    get_workspace_id,
+    require_enterprise_feature,
+)
 from app.models.database import (
     AIProvider,
     CallImport,
@@ -33,6 +38,7 @@ from app.models.database import (
     CallImportEvaluationRow,
     CallImportRow,
     Metric,
+    PromptPartial,
     Workspace,
 )
 from app.models.enums import CallImportRowStatus, ModelProvider
@@ -65,6 +71,8 @@ from app.models.schemas import (
     EvaluationTldrSummary,
     EvaluationMetricClustersRequest,
     EvaluationMetricClustersState,
+    EvaluationPromptImprovementsRequest,
+    EvaluationPromptImprovementsState,
     MetricFailurePoliciesResponse,
     MetricFailurePoliciesSaveRequest,
     MetricFailurePolicy,
@@ -3320,12 +3328,17 @@ async def generate_call_import_evaluation_pdf_report(
     cached_tldr_summary = _tldr_summary_payload(evaluation)
     cached_user_insights = _user_insights_payload(evaluation)
     cached_metric_clusters = _metric_clusters_payload(evaluation)
+    cached_prompt_improvements = _prompt_improvements_payload(evaluation)
     generated_insights_for_pdf = _selected_generated_user_insights(
         cached_user_insights,
         report_config,
     )
     metric_clusters_for_pdf = _selected_metric_clusters_for_pdf(
         cached_metric_clusters,
+        report_config,
+    )
+    prompt_improvements_for_pdf = _selected_prompt_improvements_for_pdf(
+        cached_prompt_improvements,
         report_config,
     )
     narrative = _generate_report_narrative(
@@ -3397,6 +3410,7 @@ async def generate_call_import_evaluation_pdf_report(
             metric_clusters_overview=(
                 cached_metric_clusters.overview if cached_metric_clusters else None
             ),
+            prompt_improvements=prompt_improvements_for_pdf,
             platform_base_url=payload.platform_base_url,
         )
         logger.info(
@@ -5116,6 +5130,87 @@ def _selected_metric_clusters_for_pdf(
     return payload
 
 
+def _prompt_improvements_payload(
+    evaluation: CallImportEvaluation,
+) -> Optional[EvaluationPromptImprovementsState]:
+    from app.services.call_import_prompt_improvements import (
+        prompt_improvements_state_from_raw,
+    )
+
+    raw = getattr(evaluation, "prompt_improvements", None)
+    if raw is None:
+        return None
+    return prompt_improvements_state_from_raw(
+        raw,
+        completed_rows=evaluation.completed_rows,
+    )
+
+
+def _selected_prompt_improvements_for_pdf(
+    state: Optional[EvaluationPromptImprovementsState],
+    report_config: dict[str, Any],
+) -> dict[str, Any]:
+    if state is None or state.status != "completed":
+        return {}
+    sections = report_config.get("sections")
+    if isinstance(sections, dict) and sections.get("prompt_improvements") is False:
+        return {}
+    return {
+        "imported_agent_id": state.imported_agent_id,
+        "imported_agent_name": state.imported_agent_name,
+        "overview": state.overview,
+        "suggestions": [s.model_dump(mode="json") for s in state.suggestions],
+    }
+
+
+def _enqueue_prompt_improvements_job(
+    evaluation: CallImportEvaluation,
+    *,
+    imported_agent_id: UUID,
+    imported_agent_name: str,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    force: bool = False,
+    db: Optional[Session] = None,
+) -> None:
+    current = _prompt_improvements_payload(evaluation)
+    if current is not None and current.status == "running" and not force:
+        return
+
+    evaluation.prompt_improvements = {
+        "status": "running",
+        "imported_agent_id": str(imported_agent_id),
+        "imported_agent_name": imported_agent_name,
+        "suggestions": [],
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at_completed_rows": evaluation.completed_rows,
+        "provider": provider,
+        "model": model,
+        "error_message": None,
+    }
+    if db is not None:
+        flag_modified(evaluation, "prompt_improvements")
+        db.commit()
+
+    from app.workers.tasks.generate_evaluation_prompt_improvements import (
+        generate_evaluation_prompt_improvements_task,
+    )
+
+    async_result = generate_evaluation_prompt_improvements_task.apply_async(
+        kwargs={
+            "evaluation_id": str(evaluation.id),
+            "imported_agent_id": str(imported_agent_id),
+            "provider": provider,
+            "model": model,
+        },
+        queue="imports",
+    )
+    if db is not None and isinstance(evaluation.prompt_improvements, dict):
+        evaluation.prompt_improvements["celery_task_id"] = async_result.id
+        flag_modified(evaluation, "prompt_improvements")
+        db.commit()
+
+
 def _completed_row_pairs_for_evaluation(
     db: Session,
     evaluation_id: UUID,
@@ -5753,6 +5848,127 @@ async def cancel_call_import_evaluation_metric_clusters(
 
     return _metric_clusters_payload(evaluation) or EvaluationMetricClustersState(
         status="idle"
+    )
+
+
+@router.get(
+    "/{eval_id}/prompt-improvements",
+    response_model=Optional[EvaluationPromptImprovementsState],
+    operation_id="getCallImportEvaluationPromptImprovements",
+)
+async def get_call_import_evaluation_prompt_improvements(
+    call_import_id: UUID,
+    eval_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> Optional[EvaluationPromptImprovementsState]:
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation not found"
+        )
+    return _prompt_improvements_payload(evaluation)
+
+
+@router.post(
+    "/{eval_id}/prompt-improvements",
+    response_model=EvaluationPromptImprovementsState,
+    operation_id="generateCallImportEvaluationPromptImprovements",
+)
+async def generate_call_import_evaluation_prompt_improvements(
+    call_import_id: UUID,
+    eval_id: UUID,
+    body: EvaluationPromptImprovementsRequest,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+) -> EvaluationPromptImprovementsState:
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation not found"
+        )
+
+    clusters = _metric_clusters_payload(evaluation)
+    if clusters is None or clusters.status != "completed":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Metric clusters must be completed before generating prompt "
+                "improvements. Run failure diagnostics first."
+            ),
+        )
+
+    from app.services.call_import_prompt_improvements import is_imported_agent
+    from app.services.ai.llm_resolver import get_llm_provider_and_model
+
+    imported_agent = (
+        db.query(PromptPartial)
+        .filter(
+            PromptPartial.id == body.imported_agent_id,
+            PromptPartial.organization_id == organization_id,
+            PromptPartial.workspace_id == workspace_id,
+        )
+        .first()
+    )
+    if imported_agent is None or not is_imported_agent(imported_agent):
+        raise HTTPException(
+            status_code=404,
+            detail="Imported agent not found in the active workspace",
+        )
+
+    if not body.regenerate and not body.force:
+        cached = _prompt_improvements_payload(evaluation)
+        if (
+            cached is not None
+            and cached.status in {"running", "completed"}
+            and cached.imported_agent_id == str(body.imported_agent_id)
+        ):
+            return cached
+
+    provider_enum, model_str = get_llm_provider_and_model(
+        organization_id, db, body.provider, body.model
+    )
+
+    _enqueue_prompt_improvements_job(
+        evaluation,
+        imported_agent_id=body.imported_agent_id,
+        imported_agent_name=imported_agent.name,
+        provider=provider_enum.value,
+        model=model_str,
+        force=body.force or body.regenerate,
+        db=db,
+    )
+
+    db.refresh(evaluation)
+    return _prompt_improvements_payload(evaluation) or EvaluationPromptImprovementsState(
+        status="running",
+        imported_agent_id=str(body.imported_agent_id),
+        imported_agent_name=imported_agent.name,
     )
 
 

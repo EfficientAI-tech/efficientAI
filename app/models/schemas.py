@@ -1841,6 +1841,45 @@ class PromptPartialVersionResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class AgentFlowNode(BaseModel):
+    """One step in an LLM-inferred agent logic flowchart."""
+
+    id: str
+    label: str
+    node_type: Literal["start", "decision", "action", "terminal"] = "action"
+    position_x: Optional[float] = None
+    position_y: Optional[float] = None
+
+
+class AgentFlowEdge(BaseModel):
+    """Directed transition between two agent flow nodes."""
+
+    source: str
+    target: str
+    condition: Optional[str] = None
+
+
+class AgentFlowNodeLayout(BaseModel):
+    id: str
+    position_x: float
+    position_y: float
+
+
+class AgentFlowLayoutSaveRequest(BaseModel):
+    nodes: List[AgentFlowNodeLayout] = Field(default_factory=list)
+
+
+class AgentFlowGraph(BaseModel):
+    """Aggregate flow diagram for an imported production agent prompt."""
+
+    nodes: List[AgentFlowNode] = Field(default_factory=list)
+    edges: List[AgentFlowEdge] = Field(default_factory=list)
+    generated_at: Optional[datetime] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    layout_saved_at: Optional[datetime] = None
+
+
 class PromptPartialResponse(BaseModel):
     """Schema for prompt partial response."""
     id: UUID
@@ -1850,6 +1889,8 @@ class PromptPartialResponse(BaseModel):
     content: str
     tags: Optional[List[str]]
     current_version: int
+    agent_flowchart: Optional[AgentFlowGraph] = None
+    agent_flowchart_status: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     created_by: Optional[str]
@@ -3729,6 +3770,49 @@ class MetricClusterEligibleRow(BaseModel):
 class MetricClusterEligibleRowsResponse(BaseModel):
     items: List[MetricClusterEligibleRow] = Field(default_factory=list)
     total: int = 0
+
+
+class PromptImprovementSuggestion(BaseModel):
+    """One LLM-generated prompt edit to address a failure cluster."""
+
+    id: str
+    metric_id: str
+    metric_name: str
+    cluster_id: str
+    cluster_label: str
+    gap_label: MetricClusterGapLabel
+    share_pct: float = 0.0
+    priority: Literal["high", "medium", "low"] = "medium"
+    target_section: str = ""
+    current_gap: str = ""
+    suggested_text: str = ""
+    rationale: str = ""
+
+
+class EvaluationPromptImprovementsState(BaseModel):
+    """Cached prompt improvement suggestions for an evaluation run."""
+
+    status: Literal["idle", "running", "completed", "failed"] = "idle"
+    imported_agent_id: Optional[str] = None
+    imported_agent_name: Optional[str] = None
+    suggestions: List[PromptImprovementSuggestion] = Field(default_factory=list)
+    overview: Optional[str] = None
+    generated_at: Optional[datetime] = None
+    generated_at_completed_rows: int = 0
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    error_message: Optional[str] = None
+    is_stale: bool = False
+
+
+class EvaluationPromptImprovementsRequest(BaseModel):
+    """Body for ``POST /evaluations/{eval_id}/prompt-improvements``."""
+
+    imported_agent_id: UUID
+    regenerate: bool = False
+    force: bool = False
+    provider: Optional[str] = None
+    model: Optional[str] = None
 
 
 class EvaluationMetricClustersRequest(BaseModel):
