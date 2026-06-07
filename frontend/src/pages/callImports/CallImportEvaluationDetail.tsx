@@ -2893,10 +2893,15 @@ export default function CallImportEvaluationDetail() {
                 </div>
               </div>
               {(() => {
-                const qualityAggregates = aggregateQuery.data.metrics.filter(
+                // Suppress category sub-label children so each logical
+                // metric gets one chart card — same rule as the table.
+                const visibleAggregates = aggregateQuery.data.metrics.filter(
+                  (m) => !childrenInGroups.has(m.metric_id),
+                )
+                const qualityAggregates = visibleAggregates.filter(
                   (m) => (m.metric_category || 'quality') !== 'user_insight',
                 )
-                const insightAggregates = aggregateQuery.data.metrics.filter(
+                const insightAggregates = visibleAggregates.filter(
                   (m) => m.metric_category === 'user_insight',
                 )
                 const renderAggregate = (m: CallImportMetricAggregate) => {

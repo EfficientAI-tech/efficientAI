@@ -2682,7 +2682,6 @@ class CallImportEvaluationPdfReportService:
                     f"Evaluated calls: {summary.evaluated_count}",
                     f"Flagged rate: {self._percent(summary.flagged_count, summary.evaluated_count)}",
                     f"Clear / passing rate: {self._percent(clear_count, summary.evaluated_count)}",
-                    f"Metric distribution: {self._top_distribution_with_percentages(summary)}",
                     f"Business meaning: {business_meaning}",
                 ]
             else:

@@ -131,7 +131,7 @@ def test_format_failure_policy_reason_includes_values_and_gap():
     )
     text = format_failure_policy_reason(policy, None, gap_label="MISSING")
     assert "Flagged when: no, false" in text
-    assert "Escalation" in text or "Missing" in text.lower()
+    assert "Escalation" in text or "missing" in text.lower()
 
 
 def test_format_failure_policy_reason_omits_metric_rubric_description():

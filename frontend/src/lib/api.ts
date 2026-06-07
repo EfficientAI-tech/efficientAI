@@ -3414,7 +3414,7 @@ class ApiClient {
     skip = 0,
     limit = 100,
     search?: string,
-    kind: 'all' | 'partial' | 'imported_agent' = 'all',
+    kind: 'all' | 'partial' | 'imported_agent' | 'metric' = 'all',
   ): Promise<any[]> {
     const response = await this.client.get('/api/v1/prompt-partials', {
       params: {
@@ -3431,6 +3431,10 @@ class ApiClient {
     return this.listPromptPartials(skip, limit, search, 'imported_agent')
   }
 
+  async listMetricPartials(skip = 0, limit = 100, search?: string): Promise<import('../types/api').MetricPartial[]> {
+    return this.listPromptPartials(skip, limit, search, 'metric')
+  }
+
   async createImportedAgent(data: {
     name: string
     description?: string | null
@@ -3439,6 +3443,34 @@ class ApiClient {
     const response = await this.client.post('/api/v1/prompt-partials', {
       ...data,
       tags: ['__imported_agent__'],
+    })
+    return response.data
+  }
+
+  async createMetricPartial(data: {
+    name: string
+    description?: string | null
+    content: string
+  }): Promise<import('../types/api').MetricPartial> {
+    const response = await this.client.post('/api/v1/prompt-partials', {
+      ...data,
+      tags: ['__metric_partial__'],
+    })
+    return response.data
+  }
+
+  async updateMetricPartial(
+    partialId: string,
+    data: {
+      name?: string
+      description?: string | null
+      content?: string
+      change_summary?: string
+    },
+  ): Promise<import('../types/api').MetricPartial> {
+    const response = await this.client.put(`/api/v1/prompt-partials/${partialId}`, {
+      ...data,
+      tags: ['__metric_partial__'],
     })
     return response.data
   }

@@ -24,11 +24,13 @@ import {
   Wand2,
   Bot,
   RefreshCw,
+  Tags,
 } from 'lucide-react'
 import { format } from 'date-fns'
 import AIProviderModelPicker from '../../components/AIProviderModelPicker'
 import MarkdownEditor from '../../components/shared/MarkdownEditor'
 import AgentFlowChart from './components/AgentFlowChart'
+import MetricPartialEditor from './components/MetricPartialEditor'
 import AgentPromptSectionView, {
   type PromptHighlightRange,
 } from './components/AgentPromptSectionView'
@@ -36,8 +38,16 @@ import {
   displayTags,
   ensureImportedAgentTag,
   isImportedAgent,
+  isMetricPartial,
   type PartialKind,
 } from './constants'
+import {
+  emptyMetricPartialContent,
+  metricPartialHasSaveableContent,
+  parseMetricPartialContent,
+  serializeMetricPartialContent,
+  type MetricPartialContent,
+} from './metricPartialUtils'
 import type { AgentFlowGraph, AgentFlowNode } from '../../types/api'
 import {
   countMappedNodes,
@@ -71,14 +81,26 @@ const KIND_TABS: { id: PartialKind; label: string }[] = [
   { id: 'all', label: 'All' },
   { id: 'partial', label: 'Partials' },
   { id: 'imported_agent', label: 'Agents' },
+  { id: 'metric', label: 'Metrics' },
 ]
 
 const toolBtn =
   'inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors'
 
 function parseKindParam(value: string | null): PartialKind {
-  if (value === 'partial' || value === 'imported_agent' || value === 'all') return value
+  if (
+    value === 'partial' ||
+    value === 'imported_agent' ||
+    value === 'metric' ||
+    value === 'all'
+  ) {
+    return value
+  }
   return 'all'
+}
+
+function metricContentFromPartial(content: string): MetricPartialContent {
+  return parseMetricPartialContent(content).content
 }
 
 interface PromptPartialVersion {
@@ -199,6 +221,7 @@ export default function PromptPartials() {
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedPartial, setSelectedPartial] = useState<PromptPartialDetail | null>(null)
   const [showCreateModal, setShowCreateModal] = useState(false)
+  const [showCreateMetricModal, setShowCreateMetricModal] = useState(false)
   const [showImportAgentModal, setShowImportAgentModal] = useState(false)
   const [showEditModal, setShowEditModal] = useState(false)
   const [showVersionHistory, setShowVersionHistory] = useState(false)
@@ -403,6 +426,9 @@ export default function PromptPartials() {
   const selectedIsAgent = selectedPartial
     ? isImportedAgent(partialDetail || selectedPartial)
     : false
+  const selectedIsMetric = selectedPartial
+    ? isMetricPartial(partialDetail || selectedPartial)
+    : false
   const flowchart: AgentFlowGraph | null | undefined = partialDetail?.agent_flowchart
   const flowchartStatus = partialDetail?.agent_flowchart_status
   const agentPromptContent = partialDetail?.content || selectedPartial?.content || ''
@@ -457,13 +483,23 @@ export default function PromptPartials() {
             <Bot className="h-4 w-4" />
             Import Agent
           </button>
-          <button
-            onClick={() => setShowCreateModal(true)}
-            className="inline-flex items-center gap-2 px-4 py-2 bg-gray-900 text-white text-sm font-medium rounded-lg hover:bg-gray-800 transition-colors"
-          >
-            <Plus className="h-4 w-4" />
-            New Prompt
-          </button>
+          {kindFilter === 'metric' ? (
+            <button
+              onClick={() => setShowCreateMetricModal(true)}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-gray-900 text-white text-sm font-medium rounded-lg hover:bg-gray-800 transition-colors"
+            >
+              <Plus className="h-4 w-4" />
+              New Metric Partial
+            </button>
+          ) : (
+            <button
+              onClick={() => setShowCreateModal(true)}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-gray-900 text-white text-sm font-medium rounded-lg hover:bg-gray-800 transition-colors"
+            >
+              <Plus className="h-4 w-4" />
+              New Prompt
+            </button>
+          )}
         </div>
       </div>
 
@@ -511,6 +547,8 @@ export default function PromptPartials() {
               <div className="flex flex-col items-center justify-center h-48 px-4 text-center">
                 {kindFilter === 'imported_agent' ? (
                   <Bot className="h-10 w-10 text-gray-300 mb-3" />
+                ) : kindFilter === 'metric' ? (
+                  <Tags className="h-10 w-10 text-gray-300 mb-3" />
                 ) : (
                   <FileText className="h-10 w-10 text-gray-300 mb-3" />
                 )}
@@ -519,6 +557,8 @@ export default function PromptPartials() {
                     ? 'No prompts match your search'
                     : kindFilter === 'imported_agent'
                       ? 'No imported agents yet'
+                      : kindFilter === 'metric'
+                        ? 'No metric partials yet'
                       : kindFilter === 'partial'
                         ? 'No prompt partials yet'
                         : 'No prompts yet'}
@@ -528,12 +568,16 @@ export default function PromptPartials() {
                     onClick={() =>
                       kindFilter === 'imported_agent'
                         ? setShowImportAgentModal(true)
-                        : setShowCreateModal(true)
+                        : kindFilter === 'metric'
+                          ? setShowCreateMetricModal(true)
+                          : setShowCreateModal(true)
                     }
                     className="mt-3 text-sm text-gray-700 font-medium hover:text-gray-900"
                   >
                     {kindFilter === 'imported_agent'
                       ? 'Import your first agent'
+                      : kindFilter === 'metric'
+                        ? 'Create your first metric partial'
                       : 'Create your first prompt'}
                   </button>
                 )}
@@ -558,6 +602,11 @@ export default function PromptPartials() {
                           <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-sky-50 text-sky-700 border border-sky-200">
                             <Bot className="h-3 w-3" />
                             Agent
+                          </span>
+                        ) : isMetricPartial(partial) ? (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-violet-50 text-violet-700 border border-violet-200">
+                            <Tags className="h-3 w-3" />
+                            Metric
                           </span>
                         ) : null}
                         <span className="inline-flex items-center gap-1 text-xs text-gray-400">
@@ -679,7 +728,7 @@ export default function PromptPartials() {
               </div>
 
               {/* Tags */}
-              {(selectedIsAgent || displayTags(partialDetail?.tags || selectedPartial.tags).length > 0) && (
+              {(selectedIsAgent || selectedIsMetric || displayTags(partialDetail?.tags || selectedPartial.tags).length > 0) && (
                 <div className="flex items-center gap-2 px-6 py-2 border-b border-gray-100 bg-gray-50/50">
                   <Tag className="h-3.5 w-3.5 text-gray-400" />
                   <div className="flex flex-wrap gap-1">
@@ -687,6 +736,12 @@ export default function PromptPartials() {
                       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-sky-100 text-sky-800">
                         <Bot className="h-3 w-3" />
                         Imported agent
+                      </span>
+                    ) : null}
+                    {selectedIsMetric ? (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-violet-100 text-violet-800">
+                        <Tags className="h-3 w-3" />
+                        Metric partial
                       </span>
                     ) : null}
                     {displayTags(partialDetail?.tags || selectedPartial.tags).map((tag: string) => (
@@ -883,6 +938,60 @@ export default function PromptPartials() {
                       </div>
                     </div>
                   </div>
+                ) : selectedIsMetric ? (
+                  <div className={`flex-1 overflow-y-auto ${showVersionHistory ? 'border-r border-gray-200' : ''}`}>
+                    {compareVersion ? (
+                      <div className="p-6 space-y-4">
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm font-medium text-gray-900">
+                            v{partialDetail?.current_version || selectedPartial.current_version} vs v
+                            {compareVersion.version}
+                          </span>
+                          <button
+                            onClick={() => setCompareVersion(null)}
+                            className="text-xs text-gray-500 hover:text-gray-700"
+                          >
+                            Close comparison
+                          </button>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div className="rounded-lg border border-green-200 bg-green-50 p-4">
+                            <MetricPartialEditor
+                              readOnly
+                              value={metricContentFromPartial(
+                                partialDetail?.content || selectedPartial.content,
+                              )}
+                            />
+                          </div>
+                          <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
+                            <MetricPartialEditor
+                              readOnly
+                              value={metricContentFromPartial(compareVersion.content)}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    ) : isDetailLoading ? (
+                      <div className="flex items-center justify-center h-32">
+                        <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-gray-900" />
+                      </div>
+                    ) : previewMode === 'raw' ? (
+                      <div className="p-6">
+                        <pre className="whitespace-pre-wrap text-sm text-gray-800 font-mono bg-gray-50 rounded-lg p-4 border border-gray-200">
+                          {partialDetail?.content || selectedPartial.content}
+                        </pre>
+                      </div>
+                    ) : (
+                      <div className="p-6">
+                        <MetricPartialEditor
+                          readOnly
+                          value={metricContentFromPartial(
+                            partialDetail?.content || selectedPartial.content,
+                          )}
+                        />
+                      </div>
+                    )}
+                  </div>
                 ) : (
                   <div className={`flex-1 overflow-y-auto ${showVersionHistory ? 'border-r border-gray-200' : ''}`}>
                     {compareVersion ? (
@@ -946,7 +1055,7 @@ export default function PromptPartials() {
                 {showVersionHistory && (
                   <div
                     className={`w-72 flex-shrink-0 flex flex-col overflow-hidden ${
-                      selectedIsAgent ? 'border-l border-gray-200' : ''
+                      selectedIsAgent || selectedIsMetric ? 'border-l border-gray-200' : ''
                     }`}
                   >
                     <div className="px-4 py-3 border-b border-gray-200 bg-gray-50">
@@ -1045,17 +1154,41 @@ export default function PromptPartials() {
         />
       )}
 
-      {/* Edit Modal */}
-      {showEditModal && selectedPartial && (
-        <PromptPartialModal
-          partial={partialDetail || selectedPartial}
-          onClose={() => setShowEditModal(false)}
-          onSaved={() => {
-            setShowEditModal(false)
+      {showCreateMetricModal && (
+        <MetricPartialModal
+          onClose={() => setShowCreateMetricModal(false)}
+          onSaved={(created) => {
+            setShowCreateMetricModal(false)
             queryClient.invalidateQueries({ queryKey: ['prompt-partials'] })
-            queryClient.invalidateQueries({ queryKey: ['prompt-partial'] })
+            setKindFilter('metric')
+            handleSelectPartial(created as PromptPartial)
           }}
         />
+      )}
+
+      {/* Edit Modal */}
+      {showEditModal && selectedPartial && (
+        selectedIsMetric ? (
+          <MetricPartialModal
+            partial={partialDetail || selectedPartial}
+            onClose={() => setShowEditModal(false)}
+            onSaved={() => {
+              setShowEditModal(false)
+              queryClient.invalidateQueries({ queryKey: ['prompt-partials'] })
+              queryClient.invalidateQueries({ queryKey: ['prompt-partial'] })
+            }}
+          />
+        ) : (
+          <PromptPartialModal
+            partial={partialDetail || selectedPartial}
+            onClose={() => setShowEditModal(false)}
+            onSaved={() => {
+              setShowEditModal(false)
+              queryClient.invalidateQueries({ queryKey: ['prompt-partials'] })
+              queryClient.invalidateQueries({ queryKey: ['prompt-partial'] })
+            }}
+          />
+        )
       )}
 
       {/* AI Generate Modal */}
@@ -1074,7 +1207,12 @@ export default function PromptPartials() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-500 bg-opacity-75">
           <div className="bg-white rounded-xl shadow-xl p-6 max-w-sm w-full mx-4">
             <h3 className="text-lg font-semibold text-gray-900 mb-2">
-              Delete {selectedIsAgent ? 'Imported Agent' : 'Prompt Partial'}
+              Delete{' '}
+              {selectedIsAgent
+                ? 'Imported Agent'
+                : selectedIsMetric
+                  ? 'Metric Partial'
+                  : 'Prompt Partial'}
             </h3>
             <p className="text-sm text-gray-500 mb-6">
               This will permanently delete this prompt
@@ -1819,6 +1957,209 @@ function AIGenerateModal({
               </>
             )}
           </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function MetricPartialModal({
+  partial,
+  onClose,
+  onSaved,
+}: {
+  partial?: PromptPartial
+  onClose: () => void
+  onSaved: (created?: PromptPartial) => void
+}) {
+  const isEditing = !!partial
+  const initialParsed = partial
+    ? parseMetricPartialContent(partial.content).content
+    : emptyMetricPartialContent('single')
+
+  const [name, setName] = useState(partial?.name || '')
+  const [description, setDescription] = useState(partial?.description || '')
+  const [metricKind, setMetricKind] = useState<'single' | 'category'>(
+    initialParsed.metric_kind,
+  )
+  const [metricContent, setMetricContent] = useState<MetricPartialContent>(initialParsed)
+  const [changeSummary, setChangeSummary] = useState('')
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    setMetricContent((prev) => ({
+      ...prev,
+      metric_kind: metricKind,
+      ...(metricKind === 'single'
+        ? { children: undefined }
+        : {
+            children:
+              prev.children && prev.children.length > 0
+                ? prev.children
+                : [{ name: '', description: '', example: '' }],
+          }),
+    }))
+  }, [metricKind])
+
+  const createMutation = useMutation({
+    mutationFn: () =>
+      apiClient.createMetricPartial({
+        name: name.trim(),
+        description: description.trim() || null,
+        content: serializeMetricPartialContent(metricContent),
+      }),
+    onSuccess: (created) => onSaved(created as PromptPartial),
+    onError: (err: any) => {
+      setError(err?.response?.data?.detail || 'Failed to create metric partial')
+    },
+  })
+
+  const updateMutation = useMutation({
+    mutationFn: () =>
+      apiClient.updateMetricPartial(partial!.id, {
+        name: name.trim(),
+        description: description.trim() || null,
+        content: serializeMetricPartialContent(metricContent),
+        change_summary: changeSummary.trim() || undefined,
+      }),
+    onSuccess: () => onSaved(),
+    onError: (err: any) => {
+      setError(err?.response?.data?.detail || 'Failed to update metric partial')
+    },
+  })
+
+  const handleSubmit = () => {
+    setError('')
+    if (!name.trim()) {
+      setError('Name is required')
+      return
+    }
+    if (!metricPartialHasSaveableContent(metricContent)) {
+      setError('Add a description or at least one named label before saving')
+      return
+    }
+
+    if (isEditing) {
+      updateMutation.mutate()
+    } else {
+      createMutation.mutate()
+    }
+  }
+
+  const isPending = createMutation.isPending || updateMutation.isPending
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-500 bg-opacity-75">
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl mx-4 max-h-[90vh] flex flex-col">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+          <h2 className="text-lg font-semibold text-gray-900">
+            {isEditing ? 'Edit Metric Partial' : 'Create Metric Partial'}
+          </h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-500">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-6 space-y-4">
+          {error ? (
+            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">
+              {error}
+            </div>
+          ) : null}
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Name</label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Call Outcome Labels"
+              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Description <span className="text-gray-400">(optional)</span>
+            </label>
+            <input
+              type="text"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Short note for teammates browsing the library"
+              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
+            />
+          </div>
+
+          {!isEditing ? (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Metric type</label>
+              <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5">
+                <button
+                  type="button"
+                  onClick={() => setMetricKind('single')}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition ${
+                    metricKind === 'single'
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  Single metric
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMetricKind('category')}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition ${
+                    metricKind === 'category'
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  Categorization labels
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-sm text-violet-800">
+              {metricContent.metric_kind === 'category'
+                ? 'Categorization labels partial'
+                : 'Single metric partial'}
+            </div>
+          )}
+
+          <MetricPartialEditor value={metricContent} onChange={setMetricContent} />
+
+          {isEditing ? (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Change summary <span className="text-gray-400">(optional)</span>
+              </label>
+              <input
+                type="text"
+                value={changeSummary}
+                onChange={(e) => setChangeSummary(e.target.value)}
+                placeholder="What changed in this version?"
+                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
+              />
+            </div>
+          ) : null}
+        </div>
+
+        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-gray-200">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSubmit}
+            disabled={isPending}
+            className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800 disabled:opacity-50"
+          >
+            <Save className="h-4 w-4" />
+            {isPending ? 'Saving...' : isEditing ? 'Save Changes' : 'Create Metric Partial'}
+          </button>
         </div>
       </div>
     </div>

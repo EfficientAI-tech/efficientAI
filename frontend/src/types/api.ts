@@ -1321,6 +1321,36 @@ export interface ImportedAgentDetail extends ImportedAgent {
   versions: PromptPartialVersion[]
 }
 
+export interface MetricPartialChild {
+  name: string
+  description: string
+  example: string
+}
+
+export interface MetricPartialContent {
+  schema_version: 1
+  metric_kind: 'single' | 'category'
+  description: string
+  children?: MetricPartialChild[]
+}
+
+export interface MetricPartial {
+  id: string
+  organization_id: string
+  name: string
+  description: string | null
+  content: string
+  tags: string[] | null
+  current_version: number
+  created_at: string
+  updated_at: string
+  created_by: string | null
+}
+
+export interface MetricPartialDetail extends MetricPartial {
+  versions: PromptPartialVersion[]
+}
+
 export interface PromptPartialVersion {
   id: string
   prompt_partial_id: string

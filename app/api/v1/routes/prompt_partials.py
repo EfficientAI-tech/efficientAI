@@ -24,6 +24,8 @@ from app.models.schemas import (
     PromptPartialVersionResponse,
 )
 from app.services.imported_agent_constants import IMPORTED_AGENT_TAG
+from app.services.metric_partial_constants import METRIC_PARTIAL_TAG
+from app.services.metric_partial_validation import validate_metric_partial_content
 
 router = APIRouter(prefix="/prompt-partials", tags=["prompt-partials"])
 
@@ -80,19 +82,62 @@ def _agent_flowchart_response(partial: PromptPartial) -> AgentFlowGraph:
     return AgentFlowGraph()
 
 
-def _apply_prompt_partial_kind_filter(query, kind: Optional[str]):
-    """Filter list results by imported-agent vs regular partial."""
-    from sqlalchemy import cast, or_
+def _prompt_partial_tags_dialect(db: Session) -> str:
+    if db.bind is not None:
+        return db.bind.dialect.name
+    return "postgresql"
+
+
+def _apply_prompt_partial_kind_filter(
+    query,
+    kind: Optional[str],
+    *,
+    db: Session,
+):
+    """Filter list results by imported-agent, metric, or regular partial."""
+    from sqlalchemy import String, and_, cast, or_
     from sqlalchemy.dialects.postgresql import JSONB
 
     normalized = (kind or "all").strip().lower()
-    tag_json = cast([IMPORTED_AGENT_TAG], JSONB)
+    if normalized == "all":
+        return query
+
+    if _prompt_partial_tags_dialect(db) == "sqlite":
+        agent_needle = f'"{IMPORTED_AGENT_TAG}"'
+        metric_needle = f'"{METRIC_PARTIAL_TAG}"'
+        tags_text = cast(PromptPartial.tags, String)
+        if normalized == "imported_agent":
+            return query.filter(tags_text.like(f"%{agent_needle}%"))
+        if normalized == "metric":
+            return query.filter(tags_text.like(f"%{metric_needle}%"))
+        if normalized == "partial":
+            return query.filter(
+                or_(
+                    PromptPartial.tags.is_(None),
+                    and_(
+                        ~tags_text.like(f"%{agent_needle}%"),
+                        ~tags_text.like(f"%{metric_needle}%"),
+                    ),
+                )
+            )
+        return query
+
+    agent_tag_json = cast([IMPORTED_AGENT_TAG], JSONB)
+    metric_tag_json = cast([METRIC_PARTIAL_TAG], JSONB)
     tags_col = cast(PromptPartial.tags, JSONB)
     if normalized == "imported_agent":
-        return query.filter(tags_col.contains(tag_json))
+        return query.filter(tags_col.contains(agent_tag_json))
+    if normalized == "metric":
+        return query.filter(tags_col.contains(metric_tag_json))
     if normalized == "partial":
         return query.filter(
-            or_(PromptPartial.tags.is_(None), ~tags_col.contains(tag_json))
+            or_(
+                PromptPartial.tags.is_(None),
+                and_(
+                    ~tags_col.contains(agent_tag_json),
+                    ~tags_col.contains(metric_tag_json),
+                ),
+            )
         )
     return query
 
@@ -228,6 +273,11 @@ async def create_prompt_partial(
 ):
     """Create a prompt partial in the active workspace with its initial version."""
     try:
+        try:
+            validate_metric_partial_content(data.content, data.tags)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
         partial = PromptPartial(
             organization_id=organization_id,
             workspace_id=workspace_id,
@@ -271,7 +321,7 @@ async def list_prompt_partials(
     search: str = Query(None, description="Search by name or description"),
     kind: str = Query(
         "all",
-        description="Filter by kind: all, partial (exclude imported agents), imported_agent",
+        description="Filter by kind: all, partial, imported_agent, metric",
     ),
     organization_id: UUID = Depends(get_organization_id),
     workspace_id: UUID = Depends(get_workspace_id),
@@ -283,7 +333,7 @@ async def list_prompt_partials(
             PromptPartial.organization_id == organization_id,
             PromptPartial.workspace_id == workspace_id,
         )
-        query = _apply_prompt_partial_kind_filter(query, kind)
+        query = _apply_prompt_partial_kind_filter(query, kind, db=db)
         if search:
             query = query.filter(
                 PromptPartial.name.ilike(f"%{search}%") | PromptPartial.description.ilike(f"%{search}%")
@@ -346,6 +396,13 @@ async def update_prompt_partial(
             raise HTTPException(status_code=404, detail=f"Prompt partial {partial_id} not found")
 
         update_data = data.model_dump(exclude_unset=True)
+        effective_tags = update_data.get("tags", partial.tags)
+        effective_content = update_data.get("content", partial.content)
+        try:
+            validate_metric_partial_content(effective_content, effective_tags)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
         content_changed = "content" in update_data and update_data["content"] != partial.content
         change_summary = update_data.pop("change_summary", None)
 

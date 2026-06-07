@@ -24,20 +24,10 @@ def test_list_eligible_metric_cluster_rows_empty_scores(
 
 
 def test_generate_metric_clusters_rejects_unknown_row_id(
-    authenticated_client, db_session, org_id, seed_org, make_ai_provider, monkeypatch
+    authenticated_client, db_session, org_id, seed_org, make_ai_provider
 ):
     make_ai_provider(provider="openai", is_active=True)
     call_import, evaluation, _ = _seed_eval_with_data(db_session, org_id)
-
-    class _Task:
-        @staticmethod
-        def apply_async(*, kwargs=None, queue=None):
-            return type("R", (), {"id": "cluster-task"})()
-
-    monkeypatch.setattr(
-        "app.workers.tasks.generate_evaluation_metric_clusters.generate_evaluation_metric_clusters_task",
-        _Task(),
-    )
 
     response = authenticated_client.post(
         f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/metric-clusters",

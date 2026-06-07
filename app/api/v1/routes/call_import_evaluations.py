@@ -5735,6 +5735,21 @@ async def generate_call_import_evaluation_metric_clusters(
             ),
         )
 
+    if body.evaluation_row_ids:
+        completed_pairs = _completed_row_pairs_for_evaluation(db, evaluation.id)
+        completed_id_set = {str(eval_row.id) for eval_row, _ in completed_pairs}
+        requested = {str(rid) for rid in body.evaluation_row_ids}
+        unknown = sorted(requested - completed_id_set)
+        if unknown:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "One or more evaluation_row_ids are missing or not completed: "
+                    + ", ".join(unknown[:5])
+                    + ("…" if len(unknown) > 5 else "")
+                ),
+            )
+
     from app.services.ai.llm_resolver import get_llm_provider_and_model
 
     provider_enum, model_str = get_llm_provider_and_model(

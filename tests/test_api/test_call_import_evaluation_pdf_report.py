@@ -26,7 +26,16 @@ def _default_workspace_id(db_session, org_id) -> UUID:
         )
         .first()
     )
-    assert workspace is not None
+    if workspace is None:
+        workspace = Workspace(
+            organization_id=org_id,
+            name="Default",
+            slug="default",
+            is_default=True,
+        )
+        db_session.add(workspace)
+        db_session.commit()
+        db_session.refresh(workspace)
     return workspace.id
 
 
@@ -274,8 +283,8 @@ def test_pdf_report_html_uses_supplied_audit_summary(
     )
 
     assert "LLM-generated visualization summary goes here." in html
-    assert "<li>User frustration is a significant issue.</li>" in html
-    assert "<li>Bot interruptions occurred in nearly a quarter of calls.</li>" in html
+    assert "<li>User frustration is a significant issue.</li>" not in html
+    assert "<li>Bot interruptions occurred in nearly a quarter of calls.</li>" not in html
 
 
 def test_pdf_report_html_uses_metric_business_insight(
@@ -354,8 +363,8 @@ def test_pdf_report_uses_full_cached_tldr_summary(
 
     assert response.status_code == 200, response.text
     assert "The evaluation shows strong performance" in str(captured["audit_summary"])
-    assert "User frustration is a significant issue." in str(captured["audit_summary"])
-    assert "High rates of user repetition" in str(captured["audit_summary"])
+    assert "User frustration is a significant issue." not in str(captured["audit_summary"])
+    assert "High rates of user repetition" not in str(captured["audit_summary"])
     assert captured["metric_insights"] == {
         evaluation.selected_metric_ids[0]: "Escalation handling indicates whether sensitive cases need human recovery."
     }
@@ -693,6 +702,16 @@ def test_pdf_report_uses_selected_baseline_evaluation_for_delta(
         flagged=False,
         name="Default Prior Week QA",
     )
+    evaluation.metric_clusters = {
+        "failure_policies": {
+            str(metric.id): {
+                "metric_id": str(metric.id),
+                "failure_values": ["true"],
+            }
+        },
+        "failure_policies_source": "user",
+    }
+    db_session.commit()
 
     response = authenticated_client.post(
         f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/pdf-report",

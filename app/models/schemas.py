@@ -1811,6 +1811,23 @@ class CronJobResponse(BaseModel):
 # PROMPT PARTIAL SCHEMAS
 # ============================================
 
+class MetricPartialChild(BaseModel):
+    """One categorization label inside a metric partial."""
+
+    name: str = Field(..., min_length=1)
+    description: str = ""
+    example: str = ""
+
+
+class MetricPartialContent(BaseModel):
+    """Structured JSON payload stored in metric partial ``content``."""
+
+    schema_version: int = 1
+    metric_kind: Literal["single", "category"]
+    description: str = ""
+    children: Optional[List[MetricPartialChild]] = None
+
+
 class PromptPartialCreate(BaseModel):
     """Schema for creating a prompt partial."""
     name: str = Field(..., min_length=1, max_length=255)
