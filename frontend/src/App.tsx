@@ -5,6 +5,8 @@ import Layout from './components/Layout'
 
 // Auth
 import Login from './pages/auth/Login'
+import LoginCallback from './pages/auth/LoginCallback'
+import SelectOrganization from './pages/auth/SelectOrganization'
 
 // Dashboard
 import Dashboard from './pages/dashboard/Dashboard'
@@ -124,6 +126,8 @@ function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<Login />} />
+        <Route path="/login/callback" element={<LoginCallback />} />
+        <Route path="/select-organization" element={<SelectOrganization />} />
         {/* Public blind test form - intentionally outside PrivateRoute and EnterpriseGate.
             Auth comes from the unguessable share token in the URL. */}
         <Route path="/blind-test/:token" element={<BlindTestForm />} />

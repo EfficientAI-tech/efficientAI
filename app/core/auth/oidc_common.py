@@ -24,6 +24,7 @@ from app.core.auth.principal import Principal
 from app.core.auth.providers import AuthError
 from app.models.database import Organization, OrganizationMember, User
 from app.models.enums import RoleEnum
+from app.services.organization_provisioning import provision_default_workspace
 
 
 # -- JWKS cache ---------------------------------------------------------------
@@ -173,6 +174,7 @@ def upsert_user_and_membership(
     existing_member = (
         db.query(OrganizationMember)
         .filter(OrganizationMember.user_id == user.id)
+        .order_by(OrganizationMember.joined_at.asc())
         .first()
     )
     if existing_member:
@@ -190,6 +192,11 @@ def upsert_user_and_membership(
         organization = Organization(name=organization_name)
         db.add(organization)
         db.flush()
+        provision_default_workspace(
+            db,
+            organization_id=organization.id,
+            created_by_user_id=user.id,
+        )
         logger.info(f"Provisioned new organization '{organization_name}' for {email}")
 
     member = OrganizationMember(

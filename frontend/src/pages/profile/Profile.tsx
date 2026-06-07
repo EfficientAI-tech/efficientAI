@@ -123,10 +123,11 @@ export default function Profile() {
   })
 
   // After a successful accept we remember what org the user just joined so
-  // we can offer a one-click "Switch to <Org>" button. They can also reach
-  // it later via the OrgSwitcher in the header - this is just the happy-path
-  // shortcut right when they've joined.
-  const { accessToken, switchOrg } = useAuthStore()
+  // we can offer a one-click "Switch to <Org>" button. They can also switch
+  // from the Organizations section below.
+  const { accessToken, user, switchOrg } = useAuthStore()
+  const [switchingOrgId, setSwitchingOrgId] = useState<string | null>(null)
+  const [orgSwitchError, setOrgSwitchError] = useState('')
   const [justJoined, setJustJoined] = useState<
     | { organizationId: string; organizationName: string; role: string }
     | null
@@ -146,6 +147,20 @@ export default function Profile() {
       })
     },
   })
+
+  const handleSwitchOrganization = async (orgId: string) => {
+    if (orgId === user?.organization_id) return
+    setOrgSwitchError('')
+    setSwitchingOrgId(orgId)
+    try {
+      await switchOrg(orgId)
+      await queryClient.invalidateQueries()
+    } catch (err: any) {
+      setOrgSwitchError(err?.response?.data?.detail || 'Could not switch organization')
+    } finally {
+      setSwitchingOrgId(null)
+    }
+  }
 
   const handleJumpToJoinedOrg = async () => {
     if (!justJoined) return
@@ -491,24 +506,68 @@ export default function Profile() {
             <Building2 className="h-5 w-5" />
             Organizations
           </h2>
+          {accessToken && (profile?.organizations?.length ?? 0) > 1 && (
+            <p className="mt-1 text-sm text-gray-500">
+              Switch between organizations you belong to.
+            </p>
+          )}
         </div>
         <div className="p-6">
           {profile?.organizations && profile.organizations.length > 0 ? (
             <div className="space-y-3">
-              {profile.organizations.map((org) => (
-                <div
-                  key={org.id}
-                  className="flex items-center justify-between p-4 border border-gray-200 rounded-lg"
-                >
-                  <div>
-                    <div className="font-medium text-gray-900">{org.name}</div>
-                    <div className="text-sm text-gray-500">
-                      Joined {new Date(org.joined_at).toLocaleDateString()}
+              {orgSwitchError && (
+                <div className="text-sm text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2">
+                  {orgSwitchError}
+                </div>
+              )}
+              {profile.organizations.map((org) => {
+                const isCurrent = org.id === user?.organization_id
+                const isSwitching = switchingOrgId === org.id
+                const canSwitch = !!accessToken && profile.organizations.length > 1
+
+                return (
+                  <div
+                    key={org.id}
+                    className={`flex items-center justify-between p-4 border rounded-lg ${
+                      isCurrent ? 'border-primary-200 bg-primary-50/50' : 'border-gray-200'
+                    }`}
+                  >
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium text-gray-900">{org.name}</span>
+                        {isCurrent && (
+                          <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-primary-100 text-primary-800">
+                            Current
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-sm text-gray-500">
+                        Joined {new Date(org.joined_at).toLocaleDateString()}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      {getRoleBadge(org.role)}
+                      {canSwitch && !isCurrent && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleSwitchOrganization(org.id)}
+                          disabled={!!switchingOrgId}
+                          leftIcon={
+                            isSwitching ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <ArrowRightLeft className="h-4 w-4" />
+                            )
+                          }
+                        >
+                          {isSwitching ? 'Switching…' : 'Switch'}
+                        </Button>
+                      )}
                     </div>
                   </div>
-                  {getRoleBadge(org.role)}
-                </div>
-              ))}
+                )
+              })}
             </div>
           ) : (
             <div className="text-center py-8 text-gray-500">No organizations</div>

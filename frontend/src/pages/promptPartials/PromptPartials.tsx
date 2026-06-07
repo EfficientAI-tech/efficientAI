@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { apiClient } from '../../lib/api'
+import { getApiErrorMessage } from '../../lib/apiErrors'
+import { useToast } from '../../hooks/useToast'
 import ReactMarkdown from 'react-markdown'
 import {
   Plus,
@@ -216,6 +218,7 @@ export default function PromptPartials() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const queryClient = useQueryClient()
+  const { showToast, ToastContainer } = useToast()
   const kindFilter = parseKindParam(searchParams.get('kind'))
 
   const [searchQuery, setSearchQuery] = useState('')
@@ -269,6 +272,9 @@ export default function PromptPartials() {
         )
       }
       setShowDeleteConfirm(null)
+    },
+    onError: (err: unknown) => {
+      showToast(getApiErrorMessage(err, 'Failed to delete prompt partial'), 'error')
     },
   })
 
@@ -460,6 +466,7 @@ export default function PromptPartials() {
 
   return (
     <div className="h-[calc(100vh-7rem)] flex flex-col">
+      <ToastContainer />
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>

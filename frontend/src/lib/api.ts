@@ -141,6 +141,30 @@ export interface TokenResponse {
   user: AuthUserSummary
 }
 
+export interface LoginOrgOption {
+  id: string
+  name: string
+  role: string
+}
+
+export interface LoginOrgSelectionResponse {
+  requires_org_selection: true
+  organizations: LoginOrgOption[]
+}
+
+export type LoginResponse = TokenResponse | LoginOrgSelectionResponse
+
+export function isLoginOrgSelectionResponse(
+  response: LoginResponse
+): response is LoginOrgSelectionResponse {
+  return 'requires_org_selection' in response && response.requires_org_selection === true
+}
+
+export interface OrganizationSummary {
+  id: string
+  name: string
+}
+
 export interface TelephonyIntegrationResponse {
   id: string
   organization_id: string
@@ -346,8 +370,16 @@ class ApiClient {
     return response.data
   }
 
-  async loginWithPassword(email: string, password: string): Promise<TokenResponse> {
-    const response = await this.client.post('/api/v1/auth/login', { email, password })
+  async loginWithPassword(
+    email: string,
+    password: string,
+    organizationId?: string
+  ): Promise<LoginResponse> {
+    const response = await this.client.post('/api/v1/auth/login', {
+      email,
+      password,
+      ...(organizationId ? { organization_id: organizationId } : {}),
+    })
     return response.data
   }
 
@@ -810,6 +842,16 @@ class ApiClient {
   }
 
   // IAM endpoints
+  async getOrganization(): Promise<OrganizationSummary> {
+    const response = await this.client.get('/api/v1/iam/organization')
+    return response.data
+  }
+
+  async updateOrganization(data: { name: string }): Promise<OrganizationSummary> {
+    const response = await this.client.patch('/api/v1/iam/organization', data)
+    return response.data
+  }
+
   async listOrganizationUsers(): Promise<OrganizationMember[]> {
     const response = await this.client.get('/api/v1/iam/users')
     return response.data

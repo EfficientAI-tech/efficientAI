@@ -1,6 +1,7 @@
 import { Fragment, useState, useEffect, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../lib/api'
+import { getApiErrorMessage } from '../../lib/apiErrors'
 import Button from '../../components/Button'
 import { useToast } from '../../hooks/useToast'
 import { useWorkspaceStore } from '../../store/workspaceStore'
@@ -636,6 +637,9 @@ export default function MetricsManagement() {
     mutationFn: (id: string) => apiClient.deleteMetric(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['metrics'] })
+    },
+    onError: (err: unknown) => {
+      showToast(getApiErrorMessage(err, 'Failed to delete metric'), 'error')
     },
   })
 

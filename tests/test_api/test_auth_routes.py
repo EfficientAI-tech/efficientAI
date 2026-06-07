@@ -24,7 +24,9 @@ from app.models.database import (
     OrganizationMember,
     RoleEnum,
     User,
+    Workspace,
 )
+from app.services.organization_provisioning import provision_default_workspace
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +189,17 @@ def test_signup_creates_user_org_and_admin_membership(
     )
     assert membership.role == RoleEnum.ADMIN.value
 
+    workspace = (
+        db_session.query(Workspace)
+        .filter(
+            Workspace.organization_id == org.id,
+            Workspace.is_default.is_(True),
+        )
+        .one()
+    )
+    assert workspace.name == "Default"
+    assert workspace.slug == "default"
+
 
 def test_signup_rejects_duplicate_email(client, db_session, enable_local_password):
     db_session.add(
@@ -316,6 +329,105 @@ def test_login_rejects_user_without_membership_with_403(
 
     assert response.status_code == 403
     assert "not a member of any organization" in response.json()["detail"].lower()
+
+
+def _seed_user_with_multiple_orgs(db_session, email, password):
+    user = User(
+        id=uuid4(),
+        email=email,
+        password_hash=hash_password(password),
+        is_active=True,
+        auth_provider="local",
+    )
+    org_a = Organization(id=uuid4(), name="Org Alpha")
+    org_b = Organization(id=uuid4(), name="Org Beta")
+    db_session.add_all([user, org_a, org_b])
+    db_session.flush()
+    db_session.add_all(
+        [
+            OrganizationMember(organization_id=org_a.id, user_id=user.id, role=RoleEnum.ADMIN.value),
+            OrganizationMember(organization_id=org_b.id, user_id=user.id, role=RoleEnum.READER.value),
+        ]
+    )
+    db_session.commit()
+    return user, org_a, org_b
+
+
+def test_login_with_multiple_orgs_requires_selection(
+    client, db_session, enable_local_password
+):
+    _seed_user_with_multiple_orgs(db_session, "multi@example.com", "correct-password")
+
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"email": "multi@example.com", "password": "correct-password"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["requires_org_selection"] is True
+    assert "access_token" not in body
+    assert len(body["organizations"]) == 2
+    names = {org["name"] for org in body["organizations"]}
+    assert names == {"Org Alpha", "Org Beta"}
+
+
+def test_login_with_organization_id_returns_scoped_token(
+    client, db_session, enable_local_password
+):
+    _user, org_a, org_b = _seed_user_with_multiple_orgs(
+        db_session, "multi@example.com", "correct-password"
+    )
+
+    response = client.post(
+        "/api/v1/auth/login",
+        json={
+            "email": "multi@example.com",
+            "password": "correct-password",
+            "organization_id": str(org_b.id),
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["access_token"]
+    assert body["user"]["organization_id"] == str(org_b.id)
+    assert body["user"]["role"] == RoleEnum.READER.value
+
+
+def test_login_rejects_invalid_organization_id_with_403(
+    client, db_session, enable_local_password
+):
+    _seed_user_with_multiple_orgs(db_session, "multi@example.com", "correct-password")
+
+    response = client.post(
+        "/api/v1/auth/login",
+        json={
+            "email": "multi@example.com",
+            "password": "correct-password",
+            "organization_id": str(uuid4()),
+        },
+    )
+
+    assert response.status_code == 403
+    assert "not a member" in response.json()["detail"].lower()
+
+
+def test_provision_default_workspace_is_idempotent(db_session, org_id, seed_org):
+    first = provision_default_workspace(db_session, organization_id=org_id)
+    second = provision_default_workspace(db_session, organization_id=org_id)
+    db_session.commit()
+
+    assert first.id == second.id
+    count = (
+        db_session.query(Workspace)
+        .filter(
+            Workspace.organization_id == org_id,
+            Workspace.is_default.is_(True),
+        )
+        .count()
+    )
+    assert count == 1
 
 
 # ---------------------------------------------------------------------------
