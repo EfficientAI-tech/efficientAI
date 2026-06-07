@@ -28,6 +28,31 @@ from app.services.metric_failure_policy import is_metric_failure
 _PDF_FD_MAX_METRIC_GROUPS = 12
 _PDF_FD_MAX_CLUSTER_DETAIL = 2
 _PDF_FD_OBSERVATION_MAX_CHARS = 280
+_PDF_PROMPT_IMPROVEMENTS_MAX = 5
+_PROMPT_IMPROVEMENT_PRIORITY_RANK = {"high": 0, "medium": 1, "low": 2}
+
+
+def _sort_prompt_improvement_suggestions(
+    suggestions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return sorted(
+        suggestions,
+        key=lambda item: (
+            _PROMPT_IMPROVEMENT_PRIORITY_RANK.get(
+                str(item.get("priority") or "medium").strip().lower(),
+                1,
+            ),
+            -float(item.get("share_pct") or 0),
+        ),
+    )
+
+
+def _prompt_improvement_change_type(item: dict[str, Any]) -> str:
+    change_type = str(item.get("change_type") or "").strip().lower()
+    anchor_excerpt = str(item.get("anchor_excerpt") or "").strip()
+    if change_type not in {"edit", "add"}:
+        change_type = "edit" if anchor_excerpt else "add"
+    return change_type
 
 
 def _clamp_prose_to_sentences(
@@ -1338,6 +1363,39 @@ class CallImportEvaluationPdfReportService:
             </section>
             """
 
+    def _prompt_improvement_text_block_html(self, text: str) -> str:
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            return ""
+        return f'<div class="prompt-change-text">{html.escape(cleaned)}</div>'
+
+    def _prompt_improvement_change_markup_html(self, item: dict[str, Any]) -> str:
+        change_type = _prompt_improvement_change_type(item)
+        anchor_excerpt = str(item.get("anchor_excerpt") or "").strip()
+        suggested_text = str(item.get("suggested_text") or "").strip()
+
+        if change_type == "edit" and anchor_excerpt:
+            return f"""
+              <div class="prompt-change-grid">
+                <div class="prompt-change-box prompt-change-before">
+                  <div class="prompt-change-label">Current prompt (being changed)</div>
+                  {self._prompt_improvement_text_block_html(anchor_excerpt)}
+                </div>
+                <div class="prompt-change-box prompt-change-after">
+                  <div class="prompt-change-label">Suggested replacement</div>
+                  {self._prompt_improvement_text_block_html(suggested_text)}
+                </div>
+              </div>
+            """
+        if suggested_text:
+            return f"""
+              <div class="prompt-change-box prompt-change-add">
+                <div class="prompt-change-label">Suggested prompt addition</div>
+                {self._prompt_improvement_text_block_html(suggested_text)}
+              </div>
+            """
+        return ""
+
     def _prompt_improvements_section_html(
         self,
         prompt_improvements: dict[str, Any],
@@ -1348,6 +1406,9 @@ class CallImportEvaluationPdfReportService:
             if isinstance(suggestions_raw, list)
             else []
         )
+        suggestions = _sort_prompt_improvement_suggestions(suggestions)[
+            :_PDF_PROMPT_IMPROVEMENTS_MAX
+        ]
         if not suggestions:
             return ""
         agent_name = str(prompt_improvements.get("imported_agent_name") or "Imported agent")
@@ -1361,27 +1422,39 @@ class CallImportEvaluationPdfReportService:
               </div>
             """
         blocks: list[str] = []
-        for idx, item in enumerate(suggestions[:12], start=1):
+        for idx, item in enumerate(suggestions, start=1):
             metric_name = html.escape(str(item.get("metric_name") or "Metric"))
             cluster_label = html.escape(str(item.get("cluster_label") or "Cluster"))
             gap_label = html.escape(str(item.get("gap_label") or ""))
             priority = html.escape(str(item.get("priority") or "medium"))
             share_pct = float(item.get("share_pct") or 0)
             target_section = html.escape(str(item.get("target_section") or ""))
+            flow_node_label = html.escape(str(item.get("flow_node_label") or ""))
             current_gap = html.escape(str(item.get("current_gap") or ""))
-            suggested_text = html.escape(str(item.get("suggested_text") or ""))
             rationale = html.escape(str(item.get("rationale") or ""))
+            change_type = _prompt_improvement_change_type(item)
+            change_label = "Edit existing" if change_type == "edit" else "New addition"
+            change_badge_class = (
+                "prompt-change-badge-edit"
+                if change_type == "edit"
+                else "prompt-change-badge-add"
+            )
+            change_markup = self._prompt_improvement_change_markup_html(item)
             blocks.append(
                 f"""
                 <article class="metric-cluster-group prompt-improvement-card">
                   <div class="metric-cluster-metric-head">
                     <h3>{idx}. {metric_name} · {cluster_label}</h3>
-                    <span>{gap_label} · {priority} priority · {share_pct:.1f}% share</span>
+                    <span class="prompt-improvement-meta">
+                      <span class="prompt-change-badge {change_badge_class}">{change_label}</span>
+                      {gap_label} · {priority} priority · {share_pct:.1f}% share
+                    </span>
                   </div>
                   {f'<p class="method"><strong>Target section:</strong> {target_section}</p>' if target_section else ''}
+                  {f'<p class="method"><strong>Agent logic node:</strong> {flow_node_label}</p>' if flow_node_label else ''}
                   {f'<p class="method"><strong>Current gap:</strong> {current_gap}</p>' if current_gap else ''}
-                  {f'<div class="prompt-suggestion-block">{suggested_text}</div>' if suggested_text else ''}
-                  {f'<p class="method"><strong>Rationale:</strong> {rationale}</p>' if rationale else ''}
+                  {change_markup}
+                  {f'<p class="method prompt-improvement-rationale"><strong>Rationale:</strong> {rationale}</p>' if rationale else ''}
                 </article>
                 """
             )
@@ -1389,7 +1462,7 @@ class CallImportEvaluationPdfReportService:
             <section class="prompt-improvements">
               <div class="failure-diagnostics-intro">
                 <h2>05 Prompt Improvement Recommendations</h2>
-                <p class="method">Suggested prompt edits mapped to failure clusters for <strong>{html.escape(agent_name)}</strong>.</p>
+                <p class="method">Top {_PDF_PROMPT_IMPROVEMENTS_MAX} recommended prompt changes for <strong>{html.escape(agent_name)}</strong>, aligned with the Visualizations → Prompt / Agent Improvements view.</p>
                 {overview_markup}
               </div>
               {''.join(blocks)}
@@ -1454,11 +1527,7 @@ class CallImportEvaluationPdfReportService:
         *,
         limit: int = 5,
     ) -> str:
-        ranked = sorted(
-            quality_metrics,
-            key=lambda summary: self._primary_metric_percent(summary),
-            reverse=True,
-        )[:limit]
+        ranked = self._top_quality_metric_summaries(quality_metrics, limit=limit)
         if not ranked:
             return ""
         cards = []
@@ -1475,6 +1544,80 @@ class CallImportEvaluationPdfReportService:
                 """
             )
         return f'<div class="audit-stat-strip">{"".join(cards)}</div>'
+
+    def _top_quality_metric_summaries(
+        self,
+        quality_metrics: list[MetricReportSummary],
+        *,
+        limit: int = 5,
+    ) -> list[MetricReportSummary]:
+        return sorted(
+            quality_metrics,
+            key=lambda summary: self._primary_metric_percent(summary),
+            reverse=True,
+        )[:limit]
+
+    def _period_delta_values(self, detail: str) -> tuple[float, float] | None:
+        values = [float(match) for match in re.findall(r"(\d+(?:\.\d+)?)%", detail)]
+        if len(values) < 2:
+            return None
+        current_pct, previous_pct = values[0], values[1]
+        return current_pct, previous_pct
+
+    def _top_metric_delta_line_graphs_html(
+        self,
+        quality_metrics: list[MetricReportSummary],
+        *,
+        limit: int = 5,
+    ) -> str:
+        ranked = self._top_quality_metric_summaries(quality_metrics, limit=limit)
+        if not ranked:
+            return ""
+        cards = []
+        for summary in ranked:
+            label = summary.weekly_delta_label or "No previous-week baseline"
+            detail = summary.weekly_delta_detail or ""
+            why = (summary.weekly_delta_why or "").strip()
+            reason = (
+                _clamp_prose_to_sentences(why, max_sentences=2)
+                if why
+                else "Reason not available for this comparison."
+            )
+            current_previous = self._period_delta_values(detail)
+            tone = "flat"
+            arrow = ""
+            if current_previous is not None:
+                current_pct, previous_pct = current_previous
+                delta = current_pct - previous_pct
+                tone = "bad" if delta > 0 else "good" if delta < 0 else "flat"
+                arrow = " ▲" if delta > 0 else " ▼" if delta < 0 else " ━"
+                chart_markup = self._delta_sparkline_svg(
+                    previous_pct,
+                    current_pct,
+                    tone=tone,
+                    previous_label="Last",
+                    current_label="Current",
+                )
+            else:
+                chart_markup = '<div class="audit-delta-empty">No comparable line data</div>'
+            cards.append(
+                f"""
+                <article class="audit-delta-card delta-{tone}">
+                  <div class="audit-delta-head">
+                    <span>{html.escape(summary.name.upper())}</span>
+                    <strong>{html.escape(label)}{arrow}</strong>
+                  </div>
+                  <div class="audit-delta-chart">{chart_markup}</div>
+                  <p class="audit-delta-reason">{html.escape(reason)}</p>
+                </article>
+                """
+            )
+        return f"""
+          <div class="audit-delta-panel">
+            <div class="audit-delta-title">Top metric delta vs last week</div>
+            <div class="audit-delta-grid">{"".join(cards)}</div>
+          </div>
+        """
 
     def _audit_summary_html(self, text: str) -> str:
         compact = _clamp_prose_to_sentences(text)
@@ -1568,13 +1711,6 @@ class CallImportEvaluationPdfReportService:
     def _compact_weekly_delta_html(self, summary: MetricReportSummary) -> tuple[str, str]:
         label = summary.weekly_delta_label or "No previous-week baseline"
         detail = summary.weekly_delta_detail or ""
-        why = (summary.weekly_delta_why or "").strip()
-        why_markup = ""
-        if why:
-            why_text = _clamp_prose_to_sentences(why, max_sentences=2)
-            why_markup = (
-                f'<small class="metric-compact-delta-why">{html.escape(why_text)}</small>'
-            )
         values = [float(match) for match in re.findall(r"(\d+(?:\.\d+)?)%", detail)]
         sparkline = ""
         if len(values) >= 2:
@@ -1594,7 +1730,6 @@ class CallImportEvaluationPdfReportService:
                   <strong>{html.escape(label)} {arrow}</strong>
                   <small>{previous_pct:.2f}%</small>
                 </div>
-                {why_markup}
               </div>
             """
             return delta_markup, sparkline
@@ -1605,7 +1740,6 @@ class CallImportEvaluationPdfReportService:
               <strong>{html.escape(label)}</strong>
             </div>
             <small class="metric-compact-delta-detail">{html.escape(detail)}</small>
-            {why_markup}
           </div>
         """
         return delta_markup, sparkline
@@ -1618,6 +1752,7 @@ class CallImportEvaluationPdfReportService:
         include_weekly_delta: bool,
         accuracy: str,
         include_sparkline: bool = True,
+        show_accuracy: bool = True,
     ) -> str:
         delta_markup = ""
         sparkline_markup = ""
@@ -1625,6 +1760,9 @@ class CallImportEvaluationPdfReportService:
             delta_markup, sparkline_markup = self._compact_weekly_delta_html(summary)
             if not include_sparkline:
                 sparkline_markup = ""
+        meta_text = f"{summary.flagged_count} of {summary.evaluated_count}"
+        if show_accuracy:
+            meta_text = f"{meta_text} · acc {accuracy}"
         return f"""
           <article class="metric metric-compact">
             <div class="metric-compact-head">
@@ -1640,7 +1778,7 @@ class CallImportEvaluationPdfReportService:
             </div>
             <p class="meaning metric-compact-meaning">{html.escape(business_meaning)}</p>
             <div class="metric-compact-meta">
-              {summary.flagged_count} of {summary.evaluated_count} · acc {accuracy}
+              {html.escape(meta_text)}
             </div>
           </article>
         """
@@ -1759,9 +1897,16 @@ class CallImportEvaluationPdfReportService:
             if payload.get("custom_heading")
             else ""
         )
+        brand_header_parts: list[str] = []
+        if logo_markup:
+            brand_header_parts.append(
+                f'<div class="brand-logo-row">{logo_markup}</div>'
+            )
+        if heading_markup:
+            brand_header_parts.append(heading_markup)
         brand_header_markup = (
-            f'<div class="brand-header"><div class="brand-logo-row">{logo_markup}</div>{heading_markup}</div>'
-            if logo_markup or heading_markup
+            f'<div class="brand-header">{"".join(brand_header_parts)}</div>'
+            if brand_header_parts
             else ""
         )
         evidence_rows = []
@@ -1798,6 +1943,7 @@ class CallImportEvaluationPdfReportService:
                 include_weekly_delta=include_weekly_delta,
                 accuracy=accuracy,
                 include_sparkline=not is_internal,
+                show_accuracy=not is_internal,
             )
             metric_cards_by_group.setdefault(summary.group_name, []).append(card)
 
@@ -1965,11 +2111,17 @@ class CallImportEvaluationPdfReportService:
         )
         audit_summary_markup = self._audit_summary_html(str(audit_summary_text))
         top_metric_strip_markup = ""
+        top_metric_delta_markup = ""
         if show_audit_summary and quality_metrics:
             top_metric_strip_markup = self._top_metric_percentages_html(
                 quality_metrics,
                 limit=5,
             )
+            if is_internal and include_weekly_delta:
+                top_metric_delta_markup = self._top_metric_delta_line_graphs_html(
+                    quality_metrics,
+                    limit=5,
+                )
         repeat_header_markup = (
             f'<div class="repeat-page-header"><img src="{internal_logo_uri}" alt="Internal brand" class="repeat-page-logo" /></div>'
             if internal_logo_uri
@@ -1987,6 +2139,9 @@ class CallImportEvaluationPdfReportService:
               margin: 18mm 14mm 17mm 14mm;
               @top-left {{ content: element(repeatHeader); }}
               @bottom-center {{ content: "Page " counter(page) " of " counter(pages); color: #667085; font-size: 9px; }}
+            }}
+            @page:first {{
+              @top-left {{ content: none; }}
             }}
             body {{ font-family: Helvetica, Arial, sans-serif; color: #111827; font-size: 11px; line-height: 1.4; }}
             header {{ border-bottom: 0; padding-bottom: 8px; margin-bottom: 12px; }}
@@ -2272,13 +2427,29 @@ class CallImportEvaluationPdfReportService:
             .audit-summary p {{ margin: 0 0 7px; }}
             .audit-summary ul {{ margin: 7px 0 10px; padding-left: 16px; }}
             .audit-summary li {{ margin-bottom: 5px; }}
-            .audit-stat-strip {{ display: flex; gap: 0; margin: 14px 0 18px; border-top: 1px solid #111827; }}
+            .audit-summary-section {{ margin-bottom: 0; break-after: avoid; page-break-after: avoid; }}
+            .audit-summary-section + section {{ margin-top: 0; }}
+            .audit-summary-section + section h2 {{ margin-top: 0; }}
+            .audit-stat-strip {{ display: flex; gap: 0; margin: 14px 0 0; border-top: 1px solid #111827; break-after: avoid; page-break-after: avoid; }}
             .audit-stat-card {{ flex: 1; min-width: 0; padding: 10px 12px 0 0; }}
             .audit-stat-card + .audit-stat-card {{ border-left: 1px solid #d1d5db; padding-left: 12px; }}
             .audit-stat-rule {{ display: none; }}
             .audit-stat-label {{ font-size: 8px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: #d16532; margin-bottom: 6px; line-height: 1.3; }}
             .audit-stat-value {{ font-family: Georgia, 'Times New Roman', serif; font-size: 28px; font-weight: 700; color: #111827; line-height: 1; }}
-            .metric-compact-delta-why {{ display: block; margin-top: 4px; color: #475467; font-size: 8px; line-height: 1.35; }}
+            .audit-delta-panel {{ break-inside: auto; page-break-inside: auto; margin: 8px 0 12px; padding-top: 8px; border-top: 1px solid #e5e7eb; }}
+            .audit-delta-title {{ font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: #475467; margin-bottom: 8px; }}
+            .audit-delta-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }}
+            .audit-delta-card {{ break-inside: auto; page-break-inside: auto; border: 1px solid #d9dee8; border-radius: 6px; padding: 8px 9px; background: #f8fafc; min-height: 96px; }}
+            .audit-delta-head {{ display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin-bottom: 4px; }}
+            .audit-delta-head span {{ color: #667085; font-size: 8px; font-weight: 800; letter-spacing: .07em; line-height: 1.25; text-transform: uppercase; overflow-wrap: anywhere; }}
+            .audit-delta-head strong {{ flex-shrink: 0; font-size: 10px; line-height: 1.2; text-align: right; white-space: nowrap; }}
+            .audit-delta-card.delta-good .audit-delta-head strong {{ color: #047857; }}
+            .audit-delta-card.delta-bad .audit-delta-head strong {{ color: #b42318; }}
+            .audit-delta-card.delta-flat .audit-delta-head strong {{ color: #475569; }}
+            .audit-delta-chart {{ min-height: 44px; }}
+            .audit-delta-chart .metric-sparkline {{ width: 100%; max-width: 100%; }}
+            .audit-delta-empty {{ height: 44px; display: flex; align-items: center; justify-content: center; border: 1px dashed #cbd5e1; background: #fff; color: #667085; font-size: 9px; }}
+            .audit-delta-reason {{ margin: 5px 0 0; color: #475467; font-size: 8.5px; line-height: 1.35; }}
             .report-footer {{ margin-top: 24px; border-top: 1px solid #1f2937; padding-top: 10px; display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; color: #4b5563; font-size: 10px; }}
             .footer-left, .footer-right {{ display: flex; flex-direction: column; gap: 3px; }}
             .footer-right {{ text-align: right; }}
@@ -2324,6 +2495,77 @@ class CallImportEvaluationPdfReportService:
               width: 100%;
               box-sizing: border-box;
             }}
+            .prompt-improvement-meta {{
+              display: inline-flex;
+              flex-wrap: wrap;
+              align-items: center;
+              gap: 6px;
+            }}
+            .prompt-change-badge {{
+              display: inline-block;
+              font-size: 8px;
+              font-weight: 800;
+              text-transform: uppercase;
+              letter-spacing: .06em;
+              border-radius: 4px;
+              padding: 2px 5px;
+              border: 1px solid transparent;
+            }}
+            .prompt-change-badge-edit {{
+              color: #9f1239;
+              background: #fff1f2;
+              border-color: #fecdd3;
+            }}
+            .prompt-change-badge-add {{
+              color: #065f46;
+              background: #ecfdf5;
+              border-color: #a7f3d0;
+            }}
+            .prompt-change-grid {{
+              display: grid;
+              grid-template-columns: repeat(2, minmax(0, 1fr));
+              gap: 8px;
+              margin: 8px 0;
+            }}
+            .prompt-change-box {{
+              border-radius: 6px;
+              padding: 8px 10px;
+              min-width: 0;
+            }}
+            .prompt-change-before {{
+              border: 1px solid #fecdd3;
+              background: #fff1f2;
+            }}
+            .prompt-change-after {{
+              border: 1px solid #a7f3d0;
+              background: #ecfdf5;
+            }}
+            .prompt-change-add {{
+              border: 1px solid #e5e7eb;
+              background: #fff;
+              margin: 8px 0;
+            }}
+            .prompt-change-label {{
+              font-size: 8px;
+              font-weight: 800;
+              text-transform: uppercase;
+              letter-spacing: .08em;
+              margin-bottom: 6px;
+            }}
+            .prompt-change-before .prompt-change-label {{ color: #be123c; }}
+            .prompt-change-after .prompt-change-label {{ color: #047857; }}
+            .prompt-change-add .prompt-change-label {{ color: #6b7280; }}
+            .prompt-change-text {{
+              font-size: 9px;
+              line-height: 1.45;
+              color: #111827;
+              white-space: pre-wrap;
+              overflow-wrap: anywhere;
+              word-break: break-word;
+            }}
+            .prompt-improvement-rationale {{
+              margin-top: 6px;
+            }}
           </style>
         </head>
         <body>
@@ -2343,10 +2585,11 @@ class CallImportEvaluationPdfReportService:
             </div>
           </header>
           {f'''
-          <section>
+          <section class="audit-summary-section">
             <h2>01 Audit Summary</h2>
             <div class="audit-summary method">{audit_summary_markup}</div>
             {top_metric_strip_markup}
+            {top_metric_delta_markup}
           </section>
           ''' if show_audit_summary else ''}
           {quality_panel_markup}

@@ -118,7 +118,7 @@ def test_pdf_report_generates_selected_external_pdf(
     monkeypatch.setattr(
         call_import_evaluation_pdf_report_service,
         "_render_weasyprint",
-        lambda _html: None,
+        lambda _html, **_kwargs: None,
     )
     call_import, evaluation = _seed_completed_evaluation(db_session, org_id)
 
@@ -153,7 +153,7 @@ def test_pdf_report_generates_selected_internal_pdf(
     monkeypatch.setattr(
         call_import_evaluation_pdf_report_service,
         "_render_weasyprint",
-        lambda _html: None,
+        lambda _html, **_kwargs: None,
     )
     call_import, evaluation = _seed_completed_evaluation(db_session, org_id)
 
@@ -220,7 +220,7 @@ def test_pdf_report_html_includes_metric_graph_elements(
     assert 'class="metric metric-compact"' in html
     assert '<div class="metric-bar"><div class="metric-bar-fill"' not in html
     assert '<div class="subhead">Metric distribution</div>' not in html
-    assert "brand-logo-row" in html
+    assert '<div class="brand-logo-row">' not in html
     assert "max-width: 230px" in html
     assert "max-height: 58px" in html
     assert "title-rule" in html
@@ -230,6 +230,8 @@ def test_pdf_report_html_includes_metric_graph_elements(
     assert "Lower rate is better" not in html
     assert '<div class="delta-card"' not in html
     assert 'class="meaning metric-compact-meaning"' in html
+    assert "· acc 100.0%" in html
+    assert '<div class="audit-delta-panel"' not in html
     assert "Internal brand" not in html
     assert "Vendor brand" not in html
 
@@ -365,7 +367,7 @@ def test_pdf_report_html_includes_weekly_delta_when_enabled(
     monkeypatch.setattr(
         call_import_evaluation_pdf_report_service,
         "_render_weasyprint",
-        lambda _html: None,
+        lambda _html, **_kwargs: None,
     )
     call_import, evaluation = _seed_completed_evaluation(db_session, org_id)
     metric = (
@@ -810,6 +812,9 @@ def test_pdf_report_internal_html_uses_compact_metric_layout(
     summaries = call_import_evaluation_pdf_report_service._summarize_metrics(
         [metric], rows
     )
+    summaries[0].weekly_delta_label = "+10.0 pp"
+    summaries[0].weekly_delta_detail = "Current report 50.0% vs previous report 40.0%"
+    summaries[0].weekly_delta_why = "Increase driven by more repeated-handoff cluster cases."
     html = call_import_evaluation_pdf_report_service._render_html(
         {
             "title": "Internal Quality Metric Audit",
@@ -826,12 +831,6 @@ def test_pdf_report_internal_html_uses_compact_metric_layout(
             "internal": True,
             "completion_rate": "100.0%",
             "include_weekly_delta": True,
-            "period_delta_by_metric": {
-                summaries[0].id: {
-                    "label": "+10.0 pp",
-                    "detail": "This week 50.0% vs last week 40.0%.",
-                }
-            },
         }
     )
 
@@ -839,6 +838,16 @@ def test_pdf_report_internal_html_uses_compact_metric_layout(
     assert 'class="metric metric-compact"' in html
     assert 'class="meaning metric-compact-meaning"' in html
     assert 'class="metric-sparkline"' in html
+    assert 'class="audit-summary-section"' in html
+    assert 'margin: 14px 0 0' in html
+    assert 'audit-summary-section + section h2 { margin-top: 0; }' in html
+    assert "audit-delta-panel" in html
+    assert "Top metric delta vs last week" in html
+    assert "+10.0 pp" in html
+    assert "repeated-handoff cluster cases" in html
+    assert "metric-compact-delta-why" not in html
+    assert "1 of 1" in html
+    assert "· acc" not in html
     assert '<div class="metric-bar"><div class="metric-bar-fill"' not in html
     assert '<div class="subhead">Metric distribution</div>' not in html
 
@@ -849,7 +858,7 @@ def test_external_pdf_renders_generated_user_insights(
     monkeypatch.setattr(
         call_import_evaluation_pdf_report_service,
         "_render_weasyprint",
-        lambda _html: None,
+        lambda _html, **_kwargs: None,
     )
     call_import, evaluation = _seed_completed_evaluation(db_session, org_id)
     evaluation.user_insights = {
@@ -996,7 +1005,60 @@ def test_top_metric_percentages_html_renders_audit_stat_strip():
     assert "12.0%" in html
 
 
-def test_compact_weekly_delta_html_includes_why():
+def test_top_metric_delta_line_graphs_html_renders_reasons_and_fallback():
+    from app.services.reporting.call_import_evaluation_pdf_report import MetricReportSummary
+
+    summaries = [
+        MetricReportSummary(
+            id="metric-a",
+            name="Asks For Human",
+            metric_type="boolean",
+            description="",
+            flagged_count=17,
+            evaluated_count=100,
+            weekly_delta_label="+7.0 pp",
+            weekly_delta_detail="Current report 17.0% vs previous report 10.0%",
+            weekly_delta_why="More calls requested a human handoff after failed resolution.",
+        ),
+        MetricReportSummary(
+            id="metric-b",
+            name="Connect+",
+            metric_type="boolean",
+            description="",
+            flagged_count=12,
+            evaluated_count=100,
+            weekly_delta_label="No previous-week baseline",
+            weekly_delta_detail="No comparable prior report snapshot was found.",
+        ),
+        MetricReportSummary(
+            id="metric-c",
+            name="Cancellation Flow",
+            metric_type="boolean",
+            description="",
+            flagged_count=22,
+            evaluated_count=100,
+            weekly_delta_label="-3.0 pp",
+            weekly_delta_detail="Current report 22.0% vs previous report 25.0%",
+            weekly_delta_why="Fewer cancellation calls stalled at verification.",
+        ),
+    ]
+
+    html = call_import_evaluation_pdf_report_service._top_metric_delta_line_graphs_html(
+        summaries,
+        limit=5,
+    )
+
+    assert "audit-delta-panel" in html
+    assert html.index("CANCELLATION FLOW") < html.index("ASKS FOR HUMAN")
+    assert html.index("ASKS FOR HUMAN") < html.index("CONNECT+")
+    assert "metric-sparkline" in html
+    assert "+7.0 pp" in html
+    assert "More calls requested a human handoff" in html
+    assert "No comparable line data" in html
+    assert "Reason not available for this comparison." in html
+
+
+def test_compact_weekly_delta_html_omits_why_from_metric_cards():
     from app.services.reporting.call_import_evaluation_pdf_report import MetricReportSummary
 
     summary = MetricReportSummary(
@@ -1013,8 +1075,8 @@ def test_compact_weekly_delta_html_includes_why():
     delta_markup, _ = call_import_evaluation_pdf_report_service._compact_weekly_delta_html(
         summary
     )
-    assert "metric-compact-delta-why" in delta_markup
-    assert "repeated-handoff cluster cases" in delta_markup
+    assert "metric-compact-delta-why" not in delta_markup
+    assert "repeated-handoff cluster cases" not in delta_markup
 
 
 def test_explain_period_deltas_returns_cached_why(db_session, org_id, seed_org):
@@ -1176,3 +1238,145 @@ def test_render_html_includes_top_metric_strip_below_audit_summary(
     assert "audit-stat-strip" in html
     assert "ESCALATION HANDLING" in html
     assert "100.0%" in html
+
+
+def test_prompt_improvements_section_renders_top_five_with_edit_and_add_blocks():
+    service = call_import_evaluation_pdf_report_service
+    suggestions = [
+        {
+            "id": "s-low",
+            "metric_name": "Overlap",
+            "cluster_label": "Minor overlap",
+            "gap_label": "UNDERSPEC",
+            "priority": "low",
+            "share_pct": 5.0,
+            "change_type": "add",
+            "suggested_text": "Add overlap guardrail text.",
+            "rationale": "Low priority filler.",
+        },
+        {
+            "id": "s-edit",
+            "metric_name": "Escalation Handling",
+            "cluster_label": "Missed handoff",
+            "gap_label": "LOGIC_GAP",
+            "priority": "high",
+            "share_pct": 42.0,
+            "change_type": "edit",
+            "target_section": "Escalation policy",
+            "flow_node_label": "Escalate to human",
+            "current_gap": "Agent skips escalation step.",
+            "anchor_excerpt": "If the user asks for a manager, continue troubleshooting.",
+            "suggested_text": "If the user asks for a manager, transfer immediately.",
+            "rationale": "Highest-impact cluster.",
+        },
+        {
+            "id": "s-mid",
+            "metric_name": "Digit Collection",
+            "cluster_label": "Premature prompts",
+            "gap_label": "EXISTS_NO_TRIGGER",
+            "priority": "medium",
+            "share_pct": 18.0,
+            "change_type": "add",
+            "suggested_text": "Wait until the user finishes entering digits.",
+            "rationale": "Medium priority addition.",
+        },
+    ]
+    for idx in range(6):
+        suggestions.append(
+            {
+                "id": f"s-extra-{idx}",
+                "metric_name": f"Metric {idx}",
+                "cluster_label": f"Cluster {idx}",
+                "gap_label": "MISSING",
+                "priority": "low",
+                "share_pct": float(idx),
+                "change_type": "add",
+                "suggested_text": f"Extra suggestion {idx}",
+            }
+        )
+
+    section_html = service._prompt_improvements_section_html(
+        {
+            "imported_agent_name": "Billing Agent",
+            "overview": "Focus on escalation and digit-entry flows.",
+            "suggestions": suggestions,
+        }
+    )
+
+    assert "05 Prompt Improvement Recommendations" in section_html
+    assert "Top 5 recommended prompt changes" in section_html
+    assert "Billing Agent" in section_html
+    assert "Focus on escalation and digit-entry flows." in section_html
+    assert section_html.count("prompt-improvement-card") == 5
+    assert "Current prompt (being changed)" in section_html
+    assert "Suggested replacement" in section_html
+    assert "If the user asks for a manager, continue troubleshooting." in section_html
+    assert "If the user asks for a manager, transfer immediately." in section_html
+    assert "Suggested prompt addition" in section_html
+    assert "Agent logic node:" in section_html
+    assert "Escalate to human" in section_html
+    assert "Edit existing" in section_html
+    assert "New addition" in section_html
+    assert "1. Escalation Handling" in section_html
+    assert "Extra suggestion 0" not in section_html
+
+
+def test_pdf_report_html_includes_brand_logos_on_first_page_header(
+    db_session, org_id, seed_org
+):
+    call_import, evaluation = _seed_completed_evaluation(db_session, org_id)
+    metric = (
+        db_session.query(Metric)
+        .filter(
+            Metric.organization_id == org_id,
+            Metric.name == "Escalation Handling",
+        )
+        .one()
+    )
+    rows = (
+        db_session.query(CallImportEvaluationRow, CallImportRow)
+        .filter(CallImportEvaluationRow.evaluation_id == evaluation.id)
+        .join(CallImportRow, CallImportRow.id == CallImportEvaluationRow.call_import_row_id)
+        .all()
+    )
+    summaries = call_import_evaluation_pdf_report_service._summarize_metrics(
+        [metric], rows
+    )
+    internal_logo = "data:image/png;base64,internal-logo"
+    external_logo = "data:image/png;base64,vendor-logo"
+
+    html = call_import_evaluation_pdf_report_service._render_html(
+        {
+            "title": "Internal Quality Metric Audit",
+            "subtitle": "Call Import Evaluation Report",
+            "vendor_name": "Acme Vendor",
+            "generated_at": "May 28, 2026 00:00 UTC",
+            "generated_at_iso": "2026-05-28 00:00 UTC",
+            "logo_data_uris": {
+                "internal": internal_logo,
+                "external": external_logo,
+            },
+            "custom_heading": "Acme Branch",
+            "call_import": call_import,
+            "evaluation": evaluation,
+            "metrics": summaries,
+            "rows": rows,
+            "internal": True,
+            "completion_rate": "100.0%",
+            "report_config": {"sections": {"audit_summary": True}},
+            "audit_summary": "Concise audit summary.",
+        }
+    )
+
+    header_start = html.index("<header>")
+    header_end = html.index("</header>")
+    first_page_header = html[header_start:header_end]
+
+    assert '<div class="brand-logo-row">' in first_page_header
+    assert 'class="brand-logo-slot brand-logo-slot-internal"' in first_page_header
+    assert 'class="brand-logo-slot brand-logo-slot-external"' in first_page_header
+    assert f'src="{internal_logo}"' in first_page_header
+    assert f'src="{external_logo}"' in first_page_header
+    assert "Internal brand" in first_page_header
+    assert "External vendor brand" in first_page_header
+    assert "Acme Branch" in first_page_header

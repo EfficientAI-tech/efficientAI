@@ -29,13 +29,21 @@ import { format } from 'date-fns'
 import AIProviderModelPicker from '../../components/AIProviderModelPicker'
 import MarkdownEditor from '../../components/shared/MarkdownEditor'
 import AgentFlowChart from './components/AgentFlowChart'
+import AgentPromptSectionView, {
+  type PromptHighlightRange,
+} from './components/AgentPromptSectionView'
 import {
   displayTags,
   ensureImportedAgentTag,
   isImportedAgent,
   type PartialKind,
 } from './constants'
-import type { AgentFlowGraph } from '../../types/api'
+import type { AgentFlowGraph, AgentFlowNode } from '../../types/api'
+import {
+  countMappedNodes,
+  flowchartNeedsPromptMapping,
+  nodeHasValidMapping,
+} from './flowchartUtils'
 
 interface AIProvider {
   id: string
@@ -202,6 +210,9 @@ export default function PromptPartials() {
   const [pickerModel, setPickerModel] = useState('')
   const [llmPickerTouched, setLlmPickerTouched] = useState(false)
   const [flowchartError, setFlowchartError] = useState<string | null>(null)
+  const [selectedFlowNodeId, setSelectedFlowNodeId] = useState<string | null>(null)
+  const [promptHighlight, setPromptHighlight] = useState<PromptHighlightRange | null>(null)
+  const [nodeMapError, setNodeMapError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!routePartialId) return
@@ -213,10 +224,15 @@ export default function PromptPartials() {
     queryFn: () => apiClient.listPromptPartials(0, 100, searchQuery || undefined, kindFilter),
   })
 
-  const { data: partialDetail, isLoading: isDetailLoading } = useQuery({
+  const { data: partialDetail, isLoading: isDetailLoading } = useQuery<PromptPartialDetail>({
     queryKey: ['prompt-partial', selectedPartial?.id],
     queryFn: () => apiClient.getPromptPartial(selectedPartial!.id),
     enabled: !!selectedPartial?.id,
+    refetchOnWindowFocus: false,
+    refetchInterval: (query) => {
+      const status = query.state.data?.agent_flowchart_status
+      return status === 'generating' || status === 'mapping' ? 3000 : false
+    },
   })
 
   const deleteMutation = useMutation({
@@ -260,6 +276,9 @@ export default function PromptPartials() {
       }),
     onSuccess: () => {
       setFlowchartError(null)
+      setSelectedFlowNodeId(null)
+      setPromptHighlight(null)
+      setNodeMapError(null)
       queryClient.invalidateQueries({ queryKey: ['prompt-partial', selectedPartial?.id] })
     },
     onError: (e: any) => {
@@ -298,13 +317,120 @@ export default function PromptPartials() {
     setSelectedPartial(partial as PromptPartialDetail)
     setShowVersionHistory(false)
     setCompareVersion(null)
+    setSelectedFlowNodeId(null)
+    setPromptHighlight(null)
+    setNodeMapError(null)
     navigate(`/prompt-partials/${partial.id}${kindFilter === 'all' ? '' : `?kind=${kindFilter}`}`)
+  }
+
+  const mapPromptSectionsMutation = useMutation({
+    mutationFn: () =>
+      apiClient.mapAgentFlowchartPromptSections(selectedPartial!.id, {
+        provider: pickerProvider || undefined,
+        model: pickerModel || undefined,
+      }),
+    onSuccess: () => {
+      setNodeMapError(null)
+      queryClient.invalidateQueries({ queryKey: ['prompt-partial', selectedPartial?.id] })
+    },
+    onError: (e: any) => {
+      setNodeMapError(
+        e?.response?.data?.detail || 'Failed to map prompt sections for flowchart nodes.',
+      )
+    },
+  })
+
+  const applyNodeHighlight = (node: AgentFlowNode) => {
+    const content = partialDetail?.content || selectedPartial?.content || ''
+    if (!nodeHasValidMapping(node, content)) {
+      setPromptHighlight(null)
+      return
+    }
+    if (
+      node.start_offset != null &&
+      node.end_offset != null &&
+      node.end_offset > node.start_offset &&
+      node.end_offset <= content.length
+    ) {
+      setPromptHighlight({
+        start: node.start_offset,
+        end: node.end_offset,
+        excerpt: content.slice(node.start_offset, node.end_offset),
+      })
+      setPreviewMode('raw')
+      return
+    }
+    if (node.prompt_excerpt) {
+      const idx = content.indexOf(node.prompt_excerpt)
+      if (idx >= 0) {
+        setPromptHighlight({
+          start: idx,
+          end: idx + node.prompt_excerpt.length,
+          excerpt: node.prompt_excerpt,
+        })
+        setPreviewMode('raw')
+        return
+      }
+      setPromptHighlight({
+        start: 0,
+        end: 0,
+        excerpt: node.prompt_excerpt,
+      })
+      setPreviewMode('preview')
+    }
+  }
+
+  const handleFlowNodeClick = (nodeId: string) => {
+    setSelectedFlowNodeId(nodeId)
+    setNodeMapError(null)
+    const node = partialDetail?.agent_flowchart?.nodes?.find(
+      (item: AgentFlowNode) => item.id === nodeId,
+    )
+    if (!node) return
+
+    const content = partialDetail?.content || selectedPartial?.content || ''
+    if (nodeHasValidMapping(node, content)) {
+      applyNodeHighlight(node)
+      return
+    }
+
+    setPromptHighlight(null)
+    setNodeMapError(
+      'Prompt section not mapped for this node. Click "Map prompt sections" to map all nodes in one batch.',
+    )
   }
 
   const selectedIsAgent = selectedPartial
     ? isImportedAgent(partialDetail || selectedPartial)
     : false
-  const flowchart = partialDetail?.agent_flowchart
+  const flowchart: AgentFlowGraph | null | undefined = partialDetail?.agent_flowchart
+  const flowchartStatus = partialDetail?.agent_flowchart_status
+  const agentPromptContent = partialDetail?.content || selectedPartial?.content || ''
+  const needsPromptMapping = flowchartNeedsPromptMapping(flowchart, agentPromptContent)
+  const mappedNodeCount = countMappedNodes(flowchart, agentPromptContent)
+  const totalNodeCount = flowchart?.nodes?.length ?? 0
+  const isFlowchartJobRunning =
+    flowchartStatus === 'generating' || flowchartStatus === 'mapping'
+
+  useEffect(() => {
+    if (flowchartStatus === 'mapping') return
+    const mappingError = flowchart?.mapping_error
+    if (mappingError) {
+      setNodeMapError(mappingError)
+      return
+    }
+    if (!selectedFlowNodeId || !flowchart?.nodes?.length) return
+    const node = flowchart.nodes.find((item) => item.id === selectedFlowNodeId)
+    if (node && nodeHasValidMapping(node, agentPromptContent)) {
+      applyNodeHighlight(node)
+    }
+  }, [
+    flowchartStatus,
+    flowchart?.mapping_error,
+    flowchart?.nodes,
+    selectedFlowNodeId,
+    agentPromptContent,
+  ])
 
   return (
     <div className="h-[calc(100vh-7rem)] flex flex-col">
@@ -607,26 +733,66 @@ export default function PromptPartials() {
                         <div className="flex items-center justify-center h-32">
                           <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-gray-900" />
                         </div>
-                      ) : previewMode === 'preview' ? (
-                        <div className="p-6 prose prose-sm max-w-none prose-headings:text-gray-900 prose-p:text-gray-700">
-                          <ReactMarkdown>{partialDetail?.content || selectedPartial.content}</ReactMarkdown>
-                        </div>
                       ) : (
-                        <div className="p-6">
-                          <pre className="whitespace-pre-wrap text-sm text-gray-800 font-mono bg-gray-50 rounded-lg p-4 border border-gray-200">
-                            {partialDetail?.content || selectedPartial.content}
-                          </pre>
-                        </div>
+                        <>
+                          {selectedFlowNodeId ? (
+                            <div className="sticky top-0 z-10 border-b border-amber-200 bg-amber-50 px-4 py-2.5 space-y-2">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <p className="text-xs text-amber-900">
+                                  <span className="font-semibold">Prompt for node:</span>{' '}
+                                  {flowchart?.nodes?.find(
+                                    (n: AgentFlowNode) => n.id === selectedFlowNodeId,
+                                  )?.label ||
+                                    selectedFlowNodeId}
+                                </p>
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedFlowNodeId(null)
+                                      setPromptHighlight(null)
+                                      setNodeMapError(null)
+                                    }}
+                                    className="text-[11px] text-amber-800 hover:text-amber-950"
+                                  >
+                                    Clear
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setShowEditModal(true)}
+                                    className="inline-flex items-center gap-1 rounded-md border border-amber-300 bg-white px-2 py-1 text-[11px] font-medium text-amber-900 hover:bg-amber-100"
+                                  >
+                                    <Edit3 className="h-3 w-3" />
+                                    Edit prompt
+                                  </button>
+                                </div>
+                              </div>
+                              {nodeMapError ? (
+                                <p className="text-xs text-red-600">{nodeMapError}</p>
+                              ) : null}
+                            </div>
+                          ) : null}
+                          <AgentPromptSectionView
+                            content={partialDetail?.content || selectedPartial.content}
+                            highlight={promptHighlight}
+                            previewMode={previewMode}
+                          />
+                        </>
                       )}
                     </div>
                     <div className="flex-1 min-w-0 flex flex-col min-h-0 bg-gray-50/30">
                       <div className="px-4 py-3 border-b border-gray-200 bg-white space-y-2 flex-shrink-0">
                         <div className="flex items-center justify-between gap-2">
-                          <h3 className="text-sm font-semibold text-gray-900">Agent logic</h3>
+                          <div>
+                            <h3 className="text-sm font-semibold text-gray-900">Agent logic</h3>
+                            <p className="text-[11px] text-gray-500 mt-0.5">
+                              Click a node to jump to its prompt section
+                            </p>
+                          </div>
                           <button
                             type="button"
                             onClick={() => flowchartMutation.mutate(Boolean(flowchart))}
-                            disabled={flowchartMutation.isPending}
+                            disabled={flowchartMutation.isPending || isFlowchartJobRunning}
                             className={`${toolBtn} disabled:opacity-50`}
                           >
                             {flowchartMutation.isPending ? (
@@ -648,11 +814,46 @@ export default function PromptPartials() {
                             setLlmPickerTouched(true)
                             setPickerModel(next)
                           }}
-                          disabled={flowchartMutation.isPending}
+                          disabled={
+                            flowchartMutation.isPending || mapPromptSectionsMutation.isPending
+                          }
                           size="sm"
                         />
+                        {flowchart && totalNodeCount > 0 ? (
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="text-[11px] text-gray-500">
+                              {mappedNodeCount}/{totalNodeCount} nodes mapped to prompt
+                            </p>
+                            {needsPromptMapping && flowchartStatus !== 'mapping' ? (
+                              <button
+                                type="button"
+                                onClick={() => mapPromptSectionsMutation.mutate()}
+                                disabled={
+                                  mapPromptSectionsMutation.isPending || isFlowchartJobRunning
+                                }
+                                className={`${toolBtn} disabled:opacity-50`}
+                              >
+                                {mapPromptSectionsMutation.isPending ? (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                ) : (
+                                  <Sparkles className="h-3.5 w-3.5" />
+                                )}
+                                Map prompt sections
+                              </button>
+                            ) : null}
+                            {flowchartStatus === 'mapping' ? (
+                              <span className="text-[11px] text-amber-700 inline-flex items-center gap-1">
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                                Mapping prompt sections…
+                              </span>
+                            ) : null}
+                          </div>
+                        ) : null}
                         {flowchartError ? (
                           <p className="text-xs text-red-600">{flowchartError}</p>
+                        ) : null}
+                        {nodeMapError ? (
+                          <p className="text-xs text-red-600">{nodeMapError}</p>
                         ) : null}
                       </div>
                       <div className="flex-1 min-h-0">
@@ -662,12 +863,21 @@ export default function PromptPartials() {
                             title={partialDetail?.name || selectedPartial.name}
                             onSaveLayout={(nodes) => saveLayoutMutation.mutate(nodes)}
                             savingLayout={saveLayoutMutation.isPending}
+                            highlightNodeId={selectedFlowNodeId}
+                            onNodeClick={handleFlowNodeClick}
                           />
                         ) : (
                           <div className="h-full flex items-center justify-center text-sm text-gray-500 px-6 text-center">
-                            {flowchartMutation.isPending
-                              ? 'Generating flowchart...'
-                              : 'Generate a flowchart to visualize agent logic.'}
+                            {flowchartStatus === 'generating' || flowchartMutation.isPending ? (
+                              <span className="inline-flex items-center gap-2">
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                                Generating flowchart…
+                              </span>
+                            ) : flowchart?.generation_error ? (
+                              flowchart.generation_error
+                            ) : (
+                              'Generate a flowchart to visualize agent logic.'
+                            )}
                           </div>
                         )}
                       </div>

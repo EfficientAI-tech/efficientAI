@@ -3469,6 +3469,20 @@ class ApiClient {
     return response.data
   }
 
+  async mapAgentFlowchartPromptSections(
+    partialId: string,
+    options?: { provider?: string; model?: string },
+  ): Promise<import('../types/api').AgentFlowGraph> {
+    const response = await this.client.post(
+      `/api/v1/prompt-partials/${partialId}/flowchart/prompt-map`,
+      {
+        provider: options?.provider,
+        model: options?.model,
+      },
+    )
+    return response.data
+  }
+
   async updateImportedAgent(
     partialId: string,
     data: {

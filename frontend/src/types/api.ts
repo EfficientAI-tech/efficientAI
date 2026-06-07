@@ -1279,6 +1279,9 @@ export interface AgentFlowNode {
   node_type: 'start' | 'decision' | 'action' | 'terminal'
   position_x?: number | null
   position_y?: number | null
+  prompt_excerpt?: string | null
+  start_offset?: number | null
+  end_offset?: number | null
 }
 
 export interface AgentFlowEdge {
@@ -1294,6 +1297,9 @@ export interface AgentFlowGraph {
   provider?: string | null
   model?: string | null
   layout_saved_at?: string | null
+  prompt_content_hash?: string | null
+  mapping_error?: string | null
+  generation_error?: string | null
 }
 
 export interface ImportedAgent {
@@ -1334,10 +1340,14 @@ export interface PromptImprovementSuggestion {
   gap_label: MetricClusterGapLabel
   share_pct: number
   priority: 'high' | 'medium' | 'low'
+  change_type?: 'edit' | 'add'
   target_section: string
+  anchor_excerpt?: string
   current_gap: string
   suggested_text: string
   rationale: string
+  flow_node_id?: string
+  flow_node_label?: string
 }
 
 export interface EvaluationPromptImprovementsState {

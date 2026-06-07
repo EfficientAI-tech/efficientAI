@@ -414,12 +414,6 @@ export default function CallImportDetail() {
     credential_id: null,
   })
   const [evalDiarisationPrompt, setEvalDiarisationPrompt] = useState('')
-  // Opt into LLM-driven discovery of brand-new top-level metrics for
-  // this run. Defaults to off so existing users get the same behaviour
-  // as before; flipping it on adds a single instruction block to the
-  // first LLM call per row asking the model to surface candidate
-  // metrics that aren't already in the selected list.
-  const [discoverNewMetrics, setDiscoverNewMetrics] = useState(false)
   const [activeTab, setActiveTab] = useState<
     'rows' | 'evaluations' | 'insights'
   >('rows')
@@ -903,7 +897,6 @@ export default function CallImportDetail() {
         credential_id: null,
       })
       setEvalDiarisationPrompt('')
-      setDiscoverNewMetrics(false)
       setActiveTab('evaluations')
       // When the user picked both Production and Diarised the backend
       // creates two runs and returns the primary one; the second eval
@@ -4405,41 +4398,6 @@ export default function CallImportDetail() {
                             </div>
                           )
                         })()}
-
-                        {/* Metric discovery (opt-in per run). When
-                            enabled, the LLM is asked once per row to
-                            surface candidate top-level metrics
-                            beyond the ones selected above; the
-                            results show up in the Discovered metrics
-                            panel on the evaluation detail Flow tab
-                            where they can be promoted into real
-                            Metric rows. */}
-                        <div className="rounded-md border border-amber-200 bg-amber-50/40 p-3 space-y-2">
-                          <label className="flex items-start gap-2 text-sm">
-                            <input
-                              type="checkbox"
-                              checked={discoverNewMetrics}
-                              onChange={(e) =>
-                                setDiscoverNewMetrics(e.target.checked)
-                              }
-                              className="mt-0.5 h-4 w-4 text-amber-600 focus:ring-amber-500 border-gray-300 rounded"
-                            />
-                            <span>
-                              <span className="font-medium text-gray-900">
-                                Discover new metrics
-                              </span>
-                              <span className="block text-[11px] text-gray-600 mt-0.5">
-                                Asks the LLM to propose brand-new
-                                top-level metrics it noticed in each
-                                transcript (boolean / rating /
-                                category). Candidates appear in the
-                                Discovered metrics panel on the Flow
-                                tab and can be promoted into real
-                                Metric rows.
-                              </span>
-                            </span>
-                          </label>
-                        </div>
                         </div>
                         </div>
                       </>
@@ -4610,7 +4568,7 @@ export default function CallImportDetail() {
                               evalDiariserLLM.credential_id || null,
                             diarization_prompt:
                               evalDiarisationPrompt.trim() || null,
-                            discover_new_metrics: discoverNewMetrics,
+                            discover_new_metrics: false,
                           })
                         }}
                               className="flex-1"

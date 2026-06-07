@@ -4253,7 +4253,7 @@ export default function CallImportEvaluationDetail() {
                       if (pdfReportError) setPdfReportError(null)
                     }}
                     disabled={pdfReportLoading}
-                    placeholder="Spinny"
+                    placeholder="Vendor or client name"
                     className="block w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 disabled:bg-gray-50 disabled:text-gray-500"
                     autoFocus
                   />
@@ -4626,7 +4626,7 @@ export default function CallImportEvaluationDetail() {
                       return (
                         <div className="rounded-md border border-gray-100 bg-gray-50/80 p-3 space-y-2">
                           <p className="text-xs font-semibold text-gray-700">
-                            Failure diagnostics (clusters)
+                            Failure diagnostics
                           </p>
                           {clusterStatus === 'running' ? (
                             <div className="space-y-2">
@@ -4659,8 +4659,10 @@ export default function CallImportEvaluationDetail() {
                             </div>
                           ) : clusterStatus === 'completed' && clusterGroups?.length ? (
                             <p className="text-xs text-green-700">
-                              {clusterGroups.length} cluster group(s) ready for
-                              failure diagnostics.
+                              Includes {clusterGroups.length} cluster group
+                              {clusterGroups.length === 1 ? '' : 's'} in the PDF:
+                              metric-level failure clusters, counts, examples, and
+                              RCA summaries where available.
                             </p>
                           ) : metricClustersNeedsGeneration ? (
                             <div className="space-y-2">
@@ -4704,12 +4706,17 @@ export default function CallImportEvaluationDetail() {
                       ) : promptImprovementsQuery.data?.status === 'completed' &&
                         promptImprovementsQuery.data.suggestions.length ? (
                         <p className="text-xs text-gray-600">
-                          {promptImprovementsQuery.data.suggestions.length} suggestion
-                          {promptImprovementsQuery.data.suggestions.length === 1 ? '' : 's'}{' '}
+                          Top{' '}
+                          {Math.min(5, promptImprovementsQuery.data.suggestions.length)}{' '}
+                          recommended change
+                          {Math.min(5, promptImprovementsQuery.data.suggestions.length) === 1
+                            ? ''
+                            : 's'}{' '}
                           for{' '}
                           {promptImprovementsQuery.data.imported_agent_name ||
                             'the mapped imported agent'}{' '}
-                          will be included.
+                          will be included, with before/after prompt text for edits and
+                          addition blocks for new content.
                         </p>
                       ) : (
                         <p className="text-xs text-gray-500">

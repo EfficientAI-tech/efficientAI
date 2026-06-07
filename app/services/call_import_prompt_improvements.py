@@ -41,10 +41,15 @@ _IMPROVEMENTS_SYSTEM_PROMPT = (
     '      "gap_label": "LOGIC_GAP|UNDERSPEC|EXISTS_NO_TRIGGER|MISSING",\n'
     '      "share_pct": 12.5,\n'
     '      "priority": "high|medium|low",\n'
-    '      "target_section": "<prompt section to edit or add>",\n'
+    '      "change_type": "edit|add",\n'
+    '      "target_section": "<prompt section heading or area to edit or add>",\n'
+    '      "anchor_excerpt": "<verbatim excerpt from agent_prompt being replaced; '
+    'empty string when change_type is add>",\n'
     '      "current_gap": "<what is wrong today>",\n'
     '      "suggested_text": "<exact markdown text to add or replace>",\n'
-    '      "rationale": "<why this reduces the cluster>"\n'
+    '      "rationale": "<why this reduces the cluster>",\n'
+    '      "flow_node_id": "<id of best-matching agent_flow_nodes entry; empty if none>",\n'
+    '      "flow_node_label": "<label of that node; empty if none>"\n'
     "    }\n"
     "  ]\n"
     "}\n\n"
@@ -53,9 +58,21 @@ _IMPROVEMENTS_SYSTEM_PROMPT = (
     "- UNDERSPEC: clarify vague or ambiguous instructions.\n"
     "- EXISTS_NO_TRIGGER: add explicit trigger conditions.\n"
     "- LOGIC_GAP: fix routing, loops, or state-machine errors.\n\n"
+    "Change type guidance:\n"
+    "- edit: an existing prompt section needs modification. Set anchor_excerpt to "
+    "the exact verbatim text from agent_prompt that should be replaced.\n"
+    "- add: a new section or rule should be appended or inserted. Leave "
+    "anchor_excerpt empty.\n\n"
+    "Flow node guidance (when agent_flow_nodes is provided):\n"
+    "- Set flow_node_id to the id of the agent logic node most closely related "
+    "to this suggestion.\n"
+    "- Set flow_node_label to that node's label.\n"
+    "- Leave both empty if no node is a reasonable match.\n\n"
     "Constraints:\n"
     "- Prioritize clusters with high share_pct and high metric failure deltas.\n"
     "- suggested_text must be copy-paste ready markdown.\n"
+    "- anchor_excerpt must be copied verbatim from agent_prompt when change_type "
+    "is edit.\n"
     "- Do not invent capabilities not implied by the prompt or clusters.\n"
     "- 3-12 suggestions; no markdown wrapper, no preamble."
 )
@@ -175,9 +192,49 @@ def _priority_from_share(share_pct: float, delta_label: Optional[str]) -> str:
     return "low"
 
 
+def _extract_flow_nodes(agent_flowchart: Any) -> Dict[str, str]:
+    """Return {node_id: node_label} from a cached agent flowchart payload."""
+    if not isinstance(agent_flowchart, dict):
+        return {}
+    nodes = agent_flowchart.get("nodes")
+    if not isinstance(nodes, list):
+        return {}
+    lookup: Dict[str, str] = {}
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        node_id = str(node.get("id") or "").strip()
+        if not node_id:
+            continue
+        lookup[node_id] = str(node.get("label") or node_id).strip()
+    return lookup
+
+
+def _normalize_change_type(
+    raw_change_type: Any,
+    anchor_excerpt: str,
+    agent_prompt: str,
+) -> Tuple[str, str]:
+    change_type = str(raw_change_type or "").strip().lower()
+    excerpt = str(anchor_excerpt or "").strip()
+
+    if change_type not in {"edit", "add"}:
+        change_type = "edit" if excerpt else "add"
+
+    if change_type == "edit":
+        if not excerpt or excerpt not in agent_prompt:
+            return "add", ""
+        return "edit", excerpt
+
+    return "add", ""
+
+
 def _parse_suggestions(
     raw: Dict[str, Any],
     cluster_context: List[Dict[str, Any]],
+    *,
+    agent_prompt: str = "",
+    flow_nodes: Optional[Dict[str, str]] = None,
 ) -> Tuple[str, List[PromptImprovementSuggestion]]:
     overview = str(raw.get("overview") or "").strip()
     suggestions_raw = raw.get("suggestions")
@@ -215,6 +272,22 @@ def _parse_suggestions(
             "MISSING",
         }:
             raw_gap = "UNDERSPEC"
+
+        change_type, anchor_excerpt = _normalize_change_type(
+            item.get("change_type"),
+            str(item.get("anchor_excerpt") or ""),
+            agent_prompt,
+        )
+
+        flow_node_id = str(item.get("flow_node_id") or "").strip()
+        flow_node_label = str(item.get("flow_node_label") or "").strip()
+        node_lookup = flow_nodes or {}
+        if flow_node_id and flow_node_id in node_lookup:
+            flow_node_label = node_lookup[flow_node_id]
+        else:
+            flow_node_id = ""
+            flow_node_label = ""
+
         suggestions.append(
             PromptImprovementSuggestion(
                 id=str(item.get("id") or uuid.uuid4()),
@@ -227,10 +300,14 @@ def _parse_suggestions(
                 gap_label=raw_gap,
                 share_pct=share_pct,
                 priority=priority,
+                change_type=change_type,
                 target_section=str(item.get("target_section") or "").strip(),
+                anchor_excerpt=anchor_excerpt,
                 current_gap=str(item.get("current_gap") or "").strip(),
                 suggested_text=str(item.get("suggested_text") or "").strip(),
                 rationale=str(item.get("rationale") or "").strip(),
+                flow_node_id=flow_node_id,
+                flow_node_label=flow_node_label,
             )
         )
     return overview, suggestions
@@ -268,7 +345,13 @@ def generate_prompt_improvements(
             for area in clusters_state.rca_summary.prompt_areas
         ]
 
-    user_payload = {
+    flow_nodes = _extract_flow_nodes(imported_agent.agent_flowchart)
+    flow_node_context = [
+        {"id": node_id, "label": label}
+        for node_id, label in flow_nodes.items()
+    ]
+
+    user_payload: Dict[str, Any] = {
         "agent_name": imported_agent.name,
         "agent_prompt": imported_agent.content,
         "failure_clusters": cluster_context,
@@ -279,6 +362,8 @@ def generate_prompt_improvements(
             else None
         ),
     }
+    if flow_node_context:
+        user_payload["agent_flow_nodes"] = flow_node_context
 
     messages = [
         {"role": "system", "content": _IMPROVEMENTS_SYSTEM_PROMPT},
@@ -298,7 +383,12 @@ def generate_prompt_improvements(
         max_tokens=6000,
     )
     raw = _extract_json_object(result["text"])
-    overview, suggestions = _parse_suggestions(raw, cluster_context)
+    overview, suggestions = _parse_suggestions(
+        raw,
+        cluster_context,
+        agent_prompt=imported_agent.content or "",
+        flow_nodes=flow_nodes,
+    )
 
     return EvaluationPromptImprovementsState(
         status="completed",

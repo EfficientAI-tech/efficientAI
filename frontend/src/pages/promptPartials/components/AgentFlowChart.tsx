@@ -24,6 +24,7 @@ import type { AgentFlowGraph } from '../../../types/api'
 interface AgentFlowNodeData extends Record<string, unknown> {
   label: string
   nodeType: 'start' | 'decision' | 'action' | 'terminal'
+  highlighted?: boolean
 }
 
 const NODE_WIDTH = 190
@@ -35,6 +36,10 @@ function AgentFlowNode({ data }: NodeProps<Node<AgentFlowNodeData>>) {
   else if (data.nodeType === 'decision') accent = 'border-amber-500 bg-amber-50/40'
   else if (data.nodeType === 'terminal') accent = 'border-blue-500'
   else accent = 'border-slate-300'
+
+  if (data.highlighted) {
+    accent = 'border-primary-500 bg-primary-50 ring-2 ring-primary-300 shadow-md'
+  }
 
   const shape =
     data.nodeType === 'decision'
@@ -88,7 +93,10 @@ function layoutWithDagre(
   return { nodes: positioned, edges }
 }
 
-function buildFlowNodes(data: AgentFlowGraph): Node<AgentFlowNodeData>[] {
+function buildFlowNodes(
+  data: AgentFlowGraph,
+  highlightNodeId?: string | null,
+): Node<AgentFlowNodeData>[] {
   const hasSavedPositions = data.nodes.some(
     (n) => n.position_x != null && n.position_y != null,
   )
@@ -102,6 +110,7 @@ function buildFlowNodes(data: AgentFlowGraph): Node<AgentFlowNodeData>[] {
     data: {
       label: n.label,
       nodeType: n.node_type,
+      highlighted: !!highlightNodeId && n.id === highlightNodeId,
     },
   }))
   if (hasSavedPositions) return baseNodes
@@ -138,6 +147,8 @@ function AgentFlowChartInner({
   savingLayout,
   layoutDirty,
   onLayoutDirtyChange,
+  highlightNodeId,
+  onNodeClick,
 }: {
   data: AgentFlowGraph
   height?: number
@@ -148,11 +159,13 @@ function AgentFlowChartInner({
   savingLayout?: boolean
   layoutDirty?: boolean
   onLayoutDirtyChange?: (dirty: boolean) => void
+  highlightNodeId?: string | null
+  onNodeClick?: (nodeId: string) => void
 }) {
   const { fitView } = useReactFlow()
 
   const initialLayout = useMemo(() => {
-    const initialNodes = buildFlowNodes(data)
+    const initialNodes = buildFlowNodes(data, highlightNodeId)
     const initialEdges = buildFlowEdges(data)
     const hasSavedPositions = data.nodes.some(
       (n) => n.position_x != null && n.position_y != null,
@@ -161,7 +174,7 @@ function AgentFlowChartInner({
       return { nodes: initialNodes, edges: initialEdges }
     }
     return layoutWithDagre(initialNodes, initialEdges)
-  }, [data])
+  }, [data, highlightNodeId])
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<AgentFlowNodeData>>(
     initialLayout.nodes,
@@ -177,9 +190,20 @@ function AgentFlowChartInner({
   }, [initialLayout, setNodes, setEdges, onLayoutDirtyChange])
 
   useEffect(() => {
-    const handle = setTimeout(() => fitView({ padding: 0.2, duration: 200 }), 50)
+    const handle = setTimeout(() => {
+      if (highlightNodeId && data.nodes.some((n) => n.id === highlightNodeId)) {
+        fitView({
+          nodes: [{ id: highlightNodeId }],
+          padding: 0.5,
+          duration: 250,
+          maxZoom: 1.2,
+        })
+      } else {
+        fitView({ padding: 0.2, duration: 200 })
+      }
+    }, 50)
     return () => clearTimeout(handle)
-  }, [initialLayout, isFullscreen, fitView])
+  }, [initialLayout, isFullscreen, fitView, highlightNodeId, data.nodes])
 
   const resetLayout = useCallback(() => {
     const laidOut = layoutWithDagre(
@@ -270,6 +294,7 @@ function AgentFlowChartInner({
           edges={edges}
           onNodesChange={handleNodesChange}
           onEdgesChange={onEdgesChange}
+          onNodeClick={(_event, node) => onNodeClick?.(node.id)}
           nodeTypes={nodeTypes}
           nodesDraggable
           nodesConnectable={false}
@@ -296,12 +321,16 @@ export default function AgentFlowChart({
   title,
   onSaveLayout,
   savingLayout,
+  highlightNodeId,
+  onNodeClick,
 }: {
   data: AgentFlowGraph
   height?: number
   title?: string
   onSaveLayout?: (nodes: Array<{ id: string; position_x: number; position_y: number }>) => void
   savingLayout?: boolean
+  highlightNodeId?: string | null
+  onNodeClick?: (nodeId: string) => void
 }) {
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [layoutDirty, setLayoutDirty] = useState(false)
@@ -346,6 +375,8 @@ export default function AgentFlowChart({
       savingLayout={savingLayout}
       layoutDirty={layoutDirty}
       onLayoutDirtyChange={setLayoutDirty}
+      highlightNodeId={highlightNodeId}
+      onNodeClick={onNodeClick}
     />
   )
 

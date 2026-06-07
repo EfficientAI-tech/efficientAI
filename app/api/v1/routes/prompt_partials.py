@@ -15,6 +15,7 @@ from app.dependencies import get_db, get_organization_id, get_workspace_id, get_
 from app.models.database import PromptPartial, PromptPartialVersion
 from app.models.schemas import (
     AgentFlowGraph,
+    AgentFlowNode,
     AgentFlowLayoutSaveRequest,
     PromptPartialCreate,
     PromptPartialUpdate,
@@ -52,8 +53,31 @@ class GenerateFlowchartRequest(BaseModel):
     regenerate: bool = False
 
 
+class NodePromptMapRequest(BaseModel):
+    provider: Optional[str] = None
+    model: Optional[str] = None
+
+
 def _partial_has_imported_agent_tag(tags: Optional[list]) -> bool:
     return isinstance(tags, list) and IMPORTED_AGENT_TAG in tags
+
+
+def _flowchart_for_response(partial: PromptPartial) -> Optional[dict]:
+    """Return agent_flowchart with stale prompt mappings stripped for display."""
+    if not isinstance(partial.agent_flowchart, dict) or not partial.agent_flowchart.get("nodes"):
+        return partial.agent_flowchart
+    from app.services.agent_flowchart import apply_prompt_hash_staleness
+
+    graph = AgentFlowGraph.model_validate(partial.agent_flowchart)
+    return apply_prompt_hash_staleness(graph, partial.content).model_dump(mode="json")
+
+
+def _agent_flowchart_response(partial: PromptPartial) -> AgentFlowGraph:
+    """Build API flowchart payload from the current partial row."""
+    raw = _flowchart_for_response(partial)
+    if isinstance(raw, dict) and raw.get("nodes"):
+        return AgentFlowGraph.model_validate(raw)
+    return AgentFlowGraph()
 
 
 def _apply_prompt_partial_kind_filter(query, kind: Optional[str]):
@@ -290,6 +314,8 @@ async def get_prompt_partial(
         )
         if not partial:
             raise HTTPException(status_code=404, detail=f"Prompt partial {partial_id} not found")
+        if isinstance(partial.agent_flowchart, dict):
+            partial.agent_flowchart = _flowchart_for_response(partial)
         return partial
     except HTTPException:
         raise
@@ -337,6 +363,15 @@ async def update_prompt_partial(
             )
             db.add(version)
             partial.current_version = new_version_num
+            if isinstance(partial.agent_flowchart, dict) and partial.agent_flowchart.get("nodes"):
+                from app.services.agent_flowchart import strip_node_prompt_mappings
+                from sqlalchemy.orm.attributes import flag_modified
+
+                graph = AgentFlowGraph.model_validate(partial.agent_flowchart)
+                partial.agent_flowchart = strip_node_prompt_mappings(graph).model_dump(
+                    mode="json"
+                )
+                flag_modified(partial, "agent_flowchart")
 
         db.commit()
         db.refresh(partial)
@@ -562,7 +597,7 @@ async def generate_prompt_partial_flowchart(
     db: Session = Depends(get_db),
 ):
     """Generate (or return cached) agent logic flowchart for an imported agent."""
-    from app.services.agent_flowchart import generate_agent_flowchart
+    from app.workers.tasks.agent_flowchart_jobs import generate_agent_flowchart_task
 
     partial = (
         db.query(PromptPartial)
@@ -587,35 +622,34 @@ async def generate_prompt_partial_flowchart(
         and isinstance(partial.agent_flowchart, dict)
         and partial.agent_flowchart.get("nodes")
     ):
-        return AgentFlowGraph.model_validate(partial.agent_flowchart)
+        from app.services.agent_flowchart import apply_prompt_hash_staleness
+
+        return _agent_flowchart_response(partial)
+
+    if partial.agent_flowchart_status in {"generating", "mapping"}:
+        return _agent_flowchart_response(partial)
+
+    from sqlalchemy.orm.attributes import flag_modified
 
     partial.agent_flowchart_status = "generating"
+    if isinstance(partial.agent_flowchart, dict):
+        partial.agent_flowchart = {
+            **partial.agent_flowchart,
+            "generation_error": None,
+        }
+        flag_modified(partial, "agent_flowchart")
     db.commit()
 
-    try:
-        graph, provider_enum, model_str = generate_agent_flowchart(
-            prompt_text=partial.content,
-            organization_id=organization_id,
-            db=db,
-            provider=data.provider,
-            model=data.model,
-        )
-        partial.agent_flowchart = graph.model_dump(mode="json")
-        if isinstance(partial.agent_flowchart, dict):
-            generated_at = graph.generated_at
-            if generated_at is not None:
-                partial.agent_flowchart["generated_at"] = generated_at.isoformat()
-            partial.agent_flowchart["provider"] = provider_enum.value
-            partial.agent_flowchart["model"] = model_str
-        partial.agent_flowchart_status = "completed"
-        db.commit()
-        db.refresh(partial)
-        return graph
-    except Exception as exc:
-        partial.agent_flowchart_status = "failed"
-        db.commit()
-        logger.error("[PromptPartials] Flowchart generation failed: {}", repr(exc))
-        raise HTTPException(500, f"Flowchart generation failed: {exc}") from exc
+    generate_agent_flowchart_task.apply_async(
+        kwargs={
+            "partial_id": str(partial.id),
+            "provider": data.provider,
+            "model": data.model,
+        },
+        queue="imports",
+    )
+    db.refresh(partial)
+    return _agent_flowchart_response(partial)
 
 
 @router.put("/{partial_id}/flowchart/layout", response_model=AgentFlowGraph)
@@ -628,6 +662,8 @@ async def save_prompt_partial_flowchart_layout(
 ):
     """Persist user-adjusted node positions for an imported agent flowchart."""
     from datetime import datetime, timezone
+
+    from app.services.agent_flowchart import apply_prompt_hash_staleness
 
     partial = (
         db.query(PromptPartial)
@@ -679,4 +715,69 @@ async def save_prompt_partial_flowchart_layout(
     flag_modified(partial, "agent_flowchart")
     db.commit()
     db.refresh(partial)
-    return AgentFlowGraph.model_validate(partial.agent_flowchart)
+    return apply_prompt_hash_staleness(
+        AgentFlowGraph.model_validate(partial.agent_flowchart),
+        partial.content,
+    )
+
+
+@router.post("/{partial_id}/flowchart/prompt-map", response_model=AgentFlowGraph)
+async def map_prompt_partial_flowchart_nodes(
+    partial_id: UUID,
+    data: NodePromptMapRequest,
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+):
+    """Enqueue batch mapping of prompt excerpts for all flowchart nodes."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.workers.tasks.agent_flowchart_jobs import (
+        map_agent_flowchart_prompt_sections_task,
+    )
+
+    partial = (
+        db.query(PromptPartial)
+        .filter(
+            PromptPartial.id == partial_id,
+            PromptPartial.organization_id == organization_id,
+            PromptPartial.workspace_id == workspace_id,
+        )
+        .first()
+    )
+    if not partial:
+        raise HTTPException(status_code=404, detail=f"Prompt partial {partial_id} not found")
+    if not _partial_has_imported_agent_tag(partial.tags):
+        raise HTTPException(
+            status_code=400,
+            detail="Node prompt mapping is only available for imported agents",
+        )
+    if not isinstance(partial.agent_flowchart, dict) or not partial.agent_flowchart.get("nodes"):
+        raise HTTPException(status_code=400, detail="Generate a flowchart before mapping nodes")
+    if partial.agent_flowchart_status == "generating":
+        raise HTTPException(
+            status_code=409,
+            detail="Flowchart is still generating. Try again once generation completes.",
+        )
+    if partial.agent_flowchart_status == "mapping":
+        return _agent_flowchart_response(partial)
+
+    partial.agent_flowchart_status = "mapping"
+    if isinstance(partial.agent_flowchart, dict):
+        partial.agent_flowchart = {
+            **partial.agent_flowchart,
+            "mapping_error": None,
+        }
+        flag_modified(partial, "agent_flowchart")
+    db.commit()
+
+    map_agent_flowchart_prompt_sections_task.apply_async(
+        kwargs={
+            "partial_id": str(partial.id),
+            "provider": data.provider,
+            "model": data.model,
+        },
+        queue="imports",
+    )
+    db.refresh(partial)
+    return _agent_flowchart_response(partial)

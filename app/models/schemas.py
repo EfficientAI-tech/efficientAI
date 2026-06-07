@@ -1849,6 +1849,9 @@ class AgentFlowNode(BaseModel):
     node_type: Literal["start", "decision", "action", "terminal"] = "action"
     position_x: Optional[float] = None
     position_y: Optional[float] = None
+    prompt_excerpt: Optional[str] = None
+    start_offset: Optional[int] = None
+    end_offset: Optional[int] = None
 
 
 class AgentFlowEdge(BaseModel):
@@ -1878,6 +1881,9 @@ class AgentFlowGraph(BaseModel):
     provider: Optional[str] = None
     model: Optional[str] = None
     layout_saved_at: Optional[datetime] = None
+    prompt_content_hash: Optional[str] = None
+    mapping_error: Optional[str] = None
+    generation_error: Optional[str] = None
 
 
 class PromptPartialResponse(BaseModel):
@@ -3783,10 +3789,14 @@ class PromptImprovementSuggestion(BaseModel):
     gap_label: MetricClusterGapLabel
     share_pct: float = 0.0
     priority: Literal["high", "medium", "low"] = "medium"
+    change_type: Literal["edit", "add"] = "add"
     target_section: str = ""
+    anchor_excerpt: str = ""
     current_gap: str = ""
     suggested_text: str = ""
     rationale: str = ""
+    flow_node_id: str = ""
+    flow_node_label: str = ""
 
 
 class EvaluationPromptImprovementsState(BaseModel):

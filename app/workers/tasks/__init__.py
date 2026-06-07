@@ -17,6 +17,7 @@ from . import generate_evaluation_user_insights
 from . import generate_evaluation_tldr_insights
 from . import generate_evaluation_metric_clusters
 from . import generate_evaluation_prompt_improvements
+from . import agent_flowchart_jobs
 
 __all__ = [
     "celery_app",
@@ -35,6 +36,8 @@ __all__ = [
     "generate_evaluation_tldr_insights_task",
     "generate_evaluation_metric_clusters_task",
     "generate_evaluation_prompt_improvements_task",
+    "generate_agent_flowchart_task",
+    "map_agent_flowchart_prompt_sections_task",
 ]
 
 process_evaluation_task = process_evaluation.process_evaluation_task
@@ -61,4 +64,8 @@ generate_evaluation_metric_clusters_task = (
 )
 generate_evaluation_prompt_improvements_task = (
     generate_evaluation_prompt_improvements.generate_evaluation_prompt_improvements_task
+)
+generate_agent_flowchart_task = agent_flowchart_jobs.generate_agent_flowchart_task
+map_agent_flowchart_prompt_sections_task = (
+    agent_flowchart_jobs.map_agent_flowchart_prompt_sections_task
 )

@@ -910,14 +910,6 @@ export default function MetricsManagement() {
     // clean (no stale enum/number_range hints attached to text metrics).
     const useCustomConfig =
       formData.metric_origin === 'custom' && formData.metric_type !== 'text'
-    // ``allow_discovery`` is valid on any parent (single_choice or
-    // multi_label) but is meaningless on standalone or child metrics.
-    // We only forward the field when editing an actual parent metric
-    // so the server-side value on non-parents stays untouched.
-    const isParentBeingEdited =
-      !!editingMetric &&
-      !!editingMetric.selection_mode &&
-      !editingMetric.parent_metric_id
     return {
       name: formData.name,
       description: formData.description,
@@ -935,9 +927,6 @@ export default function MetricsManagement() {
       // exporter and worker both no-op when the flag is false.
       capture_rationale:
         formData.metric_type !== 'text' ? formData.capture_rationale : false,
-      ...(isParentBeingEdited
-        ? { allow_discovery: !!formData.allow_discovery }
-        : {}),
       // Transcript-compare judge metrics live alongside standalone
       // transcript metrics. The server rejects the flag on child
       // sub-metrics and parents (selection_mode set), so we only
@@ -1476,14 +1465,6 @@ export default function MetricsManagement() {
                                 <span className="ml-0.5 px-1 py-0.5 bg-purple-200 text-purple-900 rounded text-[10px]">
                                   {enabledChildren.length}
                                 </span>
-                              </span>
-                            )}
-                            {isParent && metric.allow_discovery && (
-                              <span
-                                className="px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-amber-50 text-amber-700 border border-amber-200 rounded"
-                                title="LLM may discover and propose additional sub-labels for this category during call-import evaluations."
-                              >
-                                Auto-discover
                               </span>
                             )}
                           </div>
@@ -2224,48 +2205,6 @@ export default function MetricsManagement() {
                       <option value="always">Always</option>
                     </select>
                   </div>
-
-                  {/* Discovery toggle: surfaces in the edit form so a
-                      user who forgot to tick the box during Create
-                      Category can flip it on later without having to
-                      delete + recreate the category. The backend now
-                      accepts allow_discovery on both single_choice and
-                      multi_label parents. */}
-                  {editingMetric &&
-                    !editingMetric.parent_metric_id &&
-                    !!editingMetric.selection_mode && (
-                      <div className="lg:col-span-2 border border-amber-200 bg-amber-50/40 rounded-xl p-3.5">
-                        <label className="flex items-start gap-2.5 text-sm text-gray-800">
-                          <input
-                            type="checkbox"
-                            checked={formData.allow_discovery}
-                            onChange={(e) =>
-                              setFormData({
-                                ...formData,
-                                allow_discovery: e.target.checked,
-                              })
-                            }
-                            className="mt-0.5 h-4 w-4 text-amber-600 focus:ring-amber-500 border-gray-300 rounded"
-                          />
-                          <span>
-                            <span className="font-medium">
-                              Allow LLM-discovered metrics
-                            </span>
-                            <span className="block text-xs text-gray-600 mt-0.5">
-                              Lets the LLM emit candidate sub-metrics beyond
-                              the children below during call-import
-                              evaluation. Promote useful candidates from
-                              the Discovered Metrics panel on each
-                              evaluation.
-                              {editingMetric.selection_mode === 'single_choice'
-                                ? ' For single-choice categories the discovered metrics are supplemental — the existing children still control the picked outcome.'
-                                : ''}
-                            </span>
-                          </span>
-                        </label>
-                      </div>
-                    )}
-
                   {/* Visibility scope picker. Only meaningful at
                       CREATE time — the metrics API does not support
                       flipping a row between workspace and org scope
@@ -3070,11 +3009,6 @@ export default function MetricsManagement() {
                     {m.is_default && (
                       <span className="px-2 py-0.5 bg-blue-100 text-blue-800 rounded">
                         Default
-                      </span>
-                    )}
-                    {isParent && m.allow_discovery && (
-                      <span className="px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-amber-50 text-amber-700 border border-amber-200 rounded">
-                        Auto-discover
                       </span>
                     )}
                   </div>
