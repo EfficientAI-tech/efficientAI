@@ -7,6 +7,7 @@ import io
 import math
 import re
 import textwrap
+from urllib.parse import quote
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
@@ -20,6 +21,63 @@ from app.models.database import (
     CallImportRow,
     Metric,
 )
+from app.models.schemas import MetricFailurePolicy
+from app.services.metric_failure_policy import is_metric_failure
+
+# WeasyPrint layout is expensive with many page-break-avoid blocks; keep PDF FD bounded.
+_PDF_FD_MAX_METRIC_GROUPS = 12
+_PDF_FD_MAX_CLUSTER_DETAIL = 2
+_PDF_FD_OBSERVATION_MAX_CHARS = 280
+_PDF_PROMPT_IMPROVEMENTS_MAX = 5
+_PROMPT_IMPROVEMENT_PRIORITY_RANK = {"high": 0, "medium": 1, "low": 2}
+
+
+def _sort_prompt_improvement_suggestions(
+    suggestions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return sorted(
+        suggestions,
+        key=lambda item: (
+            _PROMPT_IMPROVEMENT_PRIORITY_RANK.get(
+                str(item.get("priority") or "medium").strip().lower(),
+                1,
+            ),
+            -float(item.get("share_pct") or 0),
+        ),
+    )
+
+
+def _prompt_improvement_change_type(item: dict[str, Any]) -> str:
+    change_type = str(item.get("change_type") or "").strip().lower()
+    anchor_excerpt = str(item.get("anchor_excerpt") or "").strip()
+    if change_type not in {"edit", "add"}:
+        change_type = "edit" if anchor_excerpt else "add"
+    return change_type
+
+
+def _clamp_prose_to_sentences(
+    text: str,
+    *,
+    max_sentences: int = 3,
+    max_chars: int = 300,
+) -> str:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return cleaned
+    cleaned = re.sub(r"\s*\n+\s*", " ", cleaned).strip()
+    sentences = [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+", cleaned)
+        if sentence.strip()
+    ]
+    if sentences:
+        result = " ".join(sentences[:max_sentences]).strip()
+    else:
+        result = cleaned
+    if len(result) > max_chars:
+        trimmed = result[: max_chars - 3].rsplit(" ", 1)[0].rstrip(".,;:")
+        result = f"{trimmed}..." if trimmed else result[:max_chars]
+    return result
 
 
 @dataclass
@@ -36,6 +94,7 @@ class MetricReportSummary:
     is_business_metric: bool = False
     weekly_delta_label: str | None = None
     weekly_delta_detail: str | None = None
+    weekly_delta_why: str | None = None
     group_name: str = "Quality Metrics"
 
 
@@ -71,9 +130,16 @@ class CallImportEvaluationPdfReportService:
         benchmark_context: dict[str, str] | None = None,
         generated_user_insights: list[dict[str, Any]] | None = None,
         user_insights_overview: str | None = None,
+        metric_clusters: dict[str, Any] | None = None,
+        metric_clusters_overview: str | None = None,
+        prompt_improvements: dict[str, Any] | None = None,
+        failure_policies: dict[str, Any] | None = None,
+        platform_base_url: str | None = None,
     ) -> bytes:
         generated_at = generated_at or datetime.now(timezone.utc)
-        summaries = self._summarize_metrics(metrics, rows)
+        summaries = self._summarize_metrics(
+            metrics, rows, failure_policies=failure_policies
+        )
         weekly_delta_meta = None
         if include_weekly_delta:
             if period_delta_by_metric:
@@ -109,9 +175,18 @@ class CallImportEvaluationPdfReportService:
             "benchmark_context": benchmark_context or None,
             "generated_user_insights": generated_user_insights or [],
             "user_insights_overview": (user_insights_overview or "").strip() or None,
+            "metric_clusters": metric_clusters or {},
+            "metric_clusters_overview": (metric_clusters_overview or "").strip() or None,
+            "prompt_improvements": prompt_improvements or {},
+            "platform_base_url": (platform_base_url or "").strip().rstrip("/") or None,
+            "call_import_id": str(call_import.id),
+            "evaluation_id": str(evaluation.id),
         }
         html_content = self._render_html(payload)
-        pdf_bytes = self._render_weasyprint(html_content)
+        pdf_bytes = self._render_weasyprint(
+            html_content,
+            label=f"evaluation={getattr(evaluation, 'id', '')}",
+        )
         if pdf_bytes:
             return pdf_bytes
         return self._render_basic_pdf(self._plain_text_lines(payload))
@@ -120,6 +195,7 @@ class CallImportEvaluationPdfReportService:
         self,
         metrics: list[Metric],
         rows: list[tuple[CallImportEvaluationRow, CallImportRow]],
+        failure_policies: dict[str, Any] | None = None,
     ) -> list[MetricReportSummary]:
         summaries = [
             MetricReportSummary(
@@ -136,6 +212,8 @@ class CallImportEvaluationPdfReportService:
         metrics_by_id = {str(metric.id): metric for metric in metrics}
 
         for eval_row, source_row in rows:
+            if getattr(eval_row, "status", None) != "completed":
+                continue
             scores = eval_row.metric_scores if isinstance(eval_row.metric_scores, dict) else {}
             for metric_id, summary in by_id.items():
                 metric = metrics_by_id.get(metric_id)
@@ -151,7 +229,22 @@ class CallImportEvaluationPdfReportService:
                 number = self._coerce_number(value)
                 if number is not None and not isinstance(value, bool):
                     summary.numeric_values.append(number)
-                if self._is_flagged(value):
+                policy_raw = (failure_policies or {}).get(metric_id)
+                policy = (
+                    policy_raw
+                    if isinstance(policy_raw, MetricFailurePolicy)
+                    else (
+                        MetricFailurePolicy.model_validate(policy_raw)
+                        if isinstance(policy_raw, dict)
+                        else None
+                    )
+                )
+                is_failure = (
+                    is_metric_failure(eval_row, metric, policy)
+                    if metric is not None and policy is not None
+                    else self._is_flagged(value)
+                )
+                if is_failure:
                     summary.flagged_count += 1
                     rationale = score.get("rationale")
                     if isinstance(rationale, str) and rationale.strip():
@@ -170,6 +263,7 @@ class CallImportEvaluationPdfReportService:
             delta = period_delta_by_metric.get(summary.id) or {}
             summary.weekly_delta_label = delta.get("label") or "No previous-week baseline"
             summary.weekly_delta_detail = delta.get("detail") or ""
+            summary.weekly_delta_why = (delta.get("why") or "").strip() or None
 
     def _is_user_insight_metric(self, metric: Metric) -> bool:
         if (getattr(metric, "metric_category", "quality") or "quality") == "user_insight":
@@ -350,6 +444,11 @@ class CallImportEvaluationPdfReportService:
             return "Boolean metric measured as flagged-call percentage"
         return "Categorical metric measured as response distribution"
 
+    def _metric_direction_label(self, summary: MetricReportSummary) -> str:
+        if summary.numeric_values:
+            return "Higher score is better"
+        return "Lower rate is better"
+
     def _metric_result(self, summary: MetricReportSummary) -> str:
         if summary.numeric_values:
             avg = sum(summary.numeric_values) / len(summary.numeric_values)
@@ -448,6 +547,330 @@ class CallImportEvaluationPdfReportService:
             f"<tbody>{''.join(rows)}</tbody></table>"
         )
 
+    def _evaluation_call_deep_link(
+        self,
+        *,
+        platform_base_url: str | None,
+        call_import_id: str,
+        evaluation_id: str,
+        conversation_id: str | None,
+        evaluation_row_id: str | None = None,
+    ) -> str | None:
+        base = (platform_base_url or "").strip().rstrip("/")
+        if not base:
+            return None
+        conv = str(conversation_id or "").strip()
+        if not conv and not evaluation_row_id:
+            return None
+        path = (
+            f"{base}/call-imports/{call_import_id}/evaluations/{evaluation_id}"
+        )
+        if conv:
+            return f"{path}?conversation_id={quote(conv, safe='')}"
+        return f"{path}?row_id={quote(str(evaluation_row_id), safe='')}"
+
+    def _metric_cluster_evidence_html(
+        self,
+        evidence: dict[str, Any],
+        *,
+        platform_base_url: str | None,
+        call_import_id: str,
+        evaluation_id: str,
+    ) -> str:
+        parts: list[str] = []
+        turns = evidence.get("turns")
+        if isinstance(turns, list) and turns:
+            for turn in turns[:4]:
+                if not isinstance(turn, dict):
+                    continue
+                speaker = html.escape(str(turn.get("speaker") or "User"))
+                text = html.escape(str(turn.get("text") or ""))
+                if text:
+                    parts.append(f"<p><strong>{speaker}:</strong> {text}</p>")
+        quote = str(evidence.get("quote") or "").strip()
+        if quote and not parts:
+            parts.append(f"<p>{html.escape(quote)}</p>")
+        conv_id = str(evidence.get("conversation_id") or "").strip()
+        row_id = str(evidence.get("evaluation_row_id") or "").strip()
+        href = self._evaluation_call_deep_link(
+            platform_base_url=platform_base_url,
+            call_import_id=call_import_id,
+            evaluation_id=evaluation_id,
+            conversation_id=conv_id or None,
+            evaluation_row_id=row_id or None,
+        )
+        if href and conv_id:
+            parts.append(
+                f'<p class="insight-evidence-id"><a href="{html.escape(href)}">'
+                f"{html.escape(conv_id)}</a></p>"
+            )
+        elif conv_id:
+            parts.append(
+                f'<p class="insight-evidence-id">{html.escape(conv_id)}</p>'
+            )
+        if not parts:
+            return "<p class='empty-bars'>No example call recorded.</p>"
+        return "".join(parts)
+
+    def _failure_diagnostics_rca_executive_html(
+        self,
+        rca_summary: dict[str, Any],
+    ) -> str:
+        if not isinstance(rca_summary, dict) or not rca_summary:
+            return ""
+        total_clusters = int(rca_summary.get("total_clusters") or 0)
+        total_instances = int(rca_summary.get("total_clustered_instances") or 0)
+        total_flagged = int(rca_summary.get("total_flagged_instances") or 0)
+        analysed = int(rca_summary.get("analysed_calls") or 0)
+
+        def _pattern_rows() -> str:
+            rows_raw = rca_summary.get("repeated_patterns")
+            if not isinstance(rows_raw, list):
+                return ""
+            body: list[str] = []
+            max_share = 0.0
+            parsed: list[tuple[dict[str, Any], float]] = []
+            for row in rows_raw:
+                if not isinstance(row, dict):
+                    continue
+                share = float(row.get("evidence_share_pct") or 0.0)
+                parsed.append((row, share))
+                max_share = max(max_share, share)
+            scale = max(max_share, 1.0)
+            for row, share in parsed:
+                name = str(row.get("metric_name") or "").strip().upper()
+                patterns = str(row.get("top_rca_patterns") or "—").strip()
+                calls = int(row.get("evidence_calls") or 0)
+                width = min(100.0, (share / scale) * 100.0)
+                body.append(
+                    f"""
+                    <tr>
+                      <td class="fd-rca-col-finding">
+                        <strong>{html.escape(name)}</strong>
+                        <div class="fd-finding-sub">Top RCA patterns: {html.escape(patterns)}</div>
+                      </td>
+                      <td class="fd-rca-col-pct">{share:.1f}%</td>
+                      <td class="fd-rca-col-bar"><div class="fd-rca-track"><div class="fd-rca-fill" style="width: {width:.1f}%"></div></div></td>
+                      <td class="fd-rca-col-count">
+                        <div class="fd-evidence-primary">{calls:,}</div>
+                        <div class="fd-evidence-line">{share:.1f}%</div>
+                      </td>
+                    </tr>
+                    """
+                )
+            return "".join(body)
+
+        def _hotspot_rows() -> str:
+            rows_raw = rca_summary.get("metric_hotspots")
+            if not isinstance(rows_raw, list):
+                return ""
+            body: list[str] = []
+            max_rate = 0.0
+            parsed: list[tuple[dict[str, Any], float]] = []
+            for row in rows_raw:
+                if not isinstance(row, dict):
+                    continue
+                rate = float(row.get("metric_rate_pct") or 0.0)
+                parsed.append((row, rate))
+                max_rate = max(max_rate, rate)
+            scale = max(max_rate, 1.0)
+            for row, rate in parsed:
+                name = str(row.get("metric_name") or "").strip().upper()
+                flagged = int(row.get("flagged_calls") or 0)
+                width = min(100.0, (rate / scale) * 100.0)
+                body.append(
+                    f"""
+                    <tr>
+                      <td><strong>{html.escape(name)}</strong></td>
+                      <td class="fd-rca-col-pct">{rate:.2f}%</td>
+                      <td class="fd-rca-col-bar"><div class="fd-rca-track"><div class="fd-rca-fill" style="width: {width:.1f}%"></div></div></td>
+                      <td class="fd-rca-col-count">{flagged}</td>
+                    </tr>
+                    """
+                )
+            return "".join(body)
+
+        def _prompt_area_rows() -> str:
+            rows_raw = rca_summary.get("prompt_areas")
+            if not isinstance(rows_raw, list):
+                return ""
+            return "".join(
+                f"""
+                <tr>
+                  <td>{html.escape(str(row.get('label') or ''))}</td>
+                  <td class="fd-col-num">{float(row.get('share_pct') or 0):.1f}%</td>
+                </tr>
+                """
+                for row in rows_raw[:5]
+                if isinstance(row, dict)
+            )
+
+        def _mini_table(
+            title: str,
+            headers: tuple[str, ...],
+            body_html: str,
+        ) -> str:
+            if not body_html:
+                return ""
+            head_cells = "".join(f"<th>{html.escape(h)}</th>" for h in headers)
+            return f"""
+              <div class="fd-rca-mini">
+                <div class="subhead">{html.escape(title)}</div>
+                <table class="insight-table fd-rca-mini-table">
+                  <thead><tr>{head_cells}</tr></thead>
+                  <tbody>{body_html}</tbody>
+                </table>
+              </div>
+            """
+
+        patterns_body = _pattern_rows()
+        hotspots_body = _hotspot_rows()
+        prompt_body = _prompt_area_rows()
+        top_pattern = ""
+        patterns_raw = rca_summary.get("repeated_patterns")
+        if isinstance(patterns_raw, list) and patterns_raw:
+            first = patterns_raw[0]
+            if isinstance(first, dict):
+                top_pattern = str(first.get("metric_name") or "").strip()
+
+        top_hotspot = ""
+        top_hotspot_rate = 0.0
+        hotspots_raw = rca_summary.get("metric_hotspots")
+        if isinstance(hotspots_raw, list) and hotspots_raw:
+            first_h = hotspots_raw[0]
+            if isinstance(first_h, dict):
+                top_hotspot = str(first_h.get("metric_name") or "").strip()
+                top_hotspot_rate = float(first_h.get("metric_rate_pct") or 0.0)
+
+        pattern_interpretation = ""
+        if top_pattern and patterns_body:
+            pattern_interpretation = f"""
+              <div class="insight-callout insight-observation-box fd-rca-interpretation">
+                <div class="insight-callout-label">Executive interpretation</div>
+                <p>These rows group repeated RCA failure patterns by metric so the same
+                metric is not repeated across multiple rows. The largest group is
+                <strong>{html.escape(top_pattern)}</strong>; reproduce that pattern first using
+                the linked sample calls in the cluster detail below.</p>
+              </div>
+            """
+
+        hotspot_interpretation = ""
+        if top_hotspot and hotspots_body:
+            hotspot_interpretation = f"""
+              <div class="insight-callout insight-observation-box fd-rca-interpretation">
+                <div class="insight-callout-label">Executive interpretation</div>
+                <p>Across {analysed:,} analysed calls, <strong>{html.escape(top_hotspot)}</strong>
+                has the highest metric rate at {top_hotspot_rate:.2f}%.</p>
+              </div>
+            """
+
+        repeated_section = ""
+        if patterns_body:
+            repeated_section = f"""
+              <div class="fd-rca-block">
+                <h3>4.2 Repeated failure patterns</h3>
+                <p class="method fd-rca-base">
+                  Base: {total_clusters} RCA clusters generated from {total_instances:,}
+                  clustered rationale-backed metric-call instances. Selected metrics contain
+                  {total_flagged:,} total flagged metric-call instances across {analysed:,}
+                  analysed calls.
+                </p>
+                <div class="fd-rca-patterns-wrap">
+                <table class="insight-table fd-rca-table fd-rca-patterns-table">
+                  <thead>
+                    <tr>
+                      <th class="fd-rca-col-finding">Finding</th>
+                      <th class="fd-rca-col-pct">Evidence share</th>
+                      <th class="fd-rca-col-bar">Distribution</th>
+                      <th class="fd-rca-col-count">Evidence calls</th>
+                    </tr>
+                  </thead>
+                  <tbody>{patterns_body}</tbody>
+                </table>
+                </div>
+                {pattern_interpretation}
+              </div>
+            """
+
+        hotspot_section = ""
+        if hotspots_body:
+            hotspot_section = f"""
+              <div class="fd-rca-block">
+                <h3>4.3 Metric hotspots</h3>
+                <p class="method fd-rca-base">
+                  Base: selected metric flags across {analysed:,} analysed calls.
+                </p>
+                <table class="insight-table fd-rca-table fd-rca-hotspots-table">
+                  <thead>
+                    <tr>
+                      <th>Finding</th>
+                      <th>Metric rate</th>
+                      <th>Distribution</th>
+                      <th>Flagged calls</th>
+                    </tr>
+                  </thead>
+                  <tbody>{hotspots_body}</tbody>
+                </table>
+                {hotspot_interpretation}
+              </div>
+            """
+
+        summary_section = ""
+        if prompt_body or patterns_body or hotspots_body:
+            mini_patterns = _mini_table(
+                "Repeated patterns",
+                ("Pattern", "%"),
+                "".join(
+                    f"""
+                    <tr>
+                      <td>{html.escape(str(r.get('metric_name') or ''))}</td>
+                      <td class="fd-col-num">{float(r.get('evidence_share_pct') or 0):.1f}%</td>
+                    </tr>
+                    """
+                    for r in (patterns_raw or [])[:5]
+                    if isinstance(r, dict)
+                )
+                if isinstance(patterns_raw, list)
+                else "",
+            )
+            hotspots_raw = rca_summary.get("metric_hotspots")
+            mini_hotspots = _mini_table(
+                "Metric hotspots",
+                ("Metric", "%"),
+                "".join(
+                    f"""
+                    <tr>
+                      <td>{html.escape(str(r.get('metric_name') or ''))}</td>
+                      <td class="fd-col-num">{float(r.get('metric_rate_pct') or 0):.2f}%</td>
+                    </tr>
+                    """
+                    for r in (hotspots_raw or [])[:5]
+                    if isinstance(r, dict)
+                )
+                if isinstance(hotspots_raw, list)
+                else "",
+            )
+            summary_section = f"""
+              <div class="fd-rca-block">
+                <h3>4.4 RCA data summary</h3>
+                <div class="fd-rca-summary-grid">
+                  <div class="fd-rca-prompt-col">
+                    <div class="subhead">Prompt areas to inspect</div>
+                    <table class="insight-table fd-rca-mini-table">
+                      <thead><tr><th>Area</th><th>%</th></tr></thead>
+                      <tbody>{prompt_body}</tbody>
+                    </table>
+                  </div>
+                  <div class="fd-rca-twocol">
+                    {mini_patterns}
+                    {mini_hotspots}
+                  </div>
+                </div>
+              </div>
+            """
+
+        return repeated_section + hotspot_section + summary_section
+
     def _generated_user_insight_evidence_html(self, evidence: dict[str, Any]) -> str:
         parts: list[str] = []
         turns = evidence.get("turns")
@@ -489,8 +912,587 @@ class CallImportEvaluationPdfReportService:
         return f"""
             <div class="insight-overview-box">
               <div class="insight-overview-label">Overview</div>
-              <p>{html.escape(text)}</p>
+              <p>{html.escape(_clamp_prose_to_sentences(text))}</p>
             </div>
+            """
+
+    def _metric_cluster_table_html(self, clusters: list[dict[str, Any]]) -> str:
+        if not clusters:
+            return "<p class='empty-bars'>No clusters identified.</p>"
+        rows = []
+        for cluster in clusters[:12]:
+            if not isinstance(cluster, dict):
+                continue
+            label = str(cluster.get("label") or "").strip()
+            if not label:
+                continue
+            gap = str(cluster.get("gap_label") or "").strip()
+            count = int(cluster.get("count") or 0)
+            pct = float(cluster.get("share_pct") or 0.0)
+            rows.append(
+                f"""
+                <tr>
+                  <td>{html.escape(label)}</td>
+                  <td><span class="gap-badge">{html.escape(gap)}</span></td>
+                  <td>{pct:.1f}%</td>
+                  <td><div class="insight-track"><div class="insight-fill" style="width: {pct:.1f}%"></div></div></td>
+                  <td>{count}</td>
+                </tr>
+                """
+            )
+        if not rows:
+            return "<p class='empty-bars'>No clusters identified.</p>"
+        return (
+            "<table class='insight-table'>"
+            "<thead><tr><th>Cluster</th><th>Gap label</th><th>Share</th>"
+            "<th>Distribution</th><th>Calls</th></tr></thead>"
+            f"<tbody>{''.join(rows)}</tbody></table>"
+        )
+
+    def _top_metric_clusters(
+        self, clusters: list[dict[str, Any]], *, limit: int = 5
+    ) -> list[dict[str, Any]]:
+        ordered = sorted(
+            [c for c in clusters if isinstance(c, dict)],
+            key=lambda c: (-max(0, int(c.get("count") or 0)), str(c.get("label") or "")),
+        )
+        return ordered[:limit]
+
+    def _metric_cluster_level1_table_html(
+        self,
+        clusters: list[dict[str, Any]],
+        flagged_count: int,
+        *,
+        limit: int = 5,
+    ) -> str:
+        """Segregated Level-1 cluster table for one metric (replaces running bar stack)."""
+        clusters = self._top_metric_clusters(clusters, limit=limit)
+        if not clusters:
+            return "<p class='empty-bars'>No clusters identified.</p>"
+        total_flagged = max(0, int(flagged_count or 0))
+        categorized_calls = sum(
+            max(0, int(cluster.get("count") or 0)) for cluster in clusters
+        )
+        body_rows: list[str] = []
+        for index, cluster in enumerate(clusters, start=1):
+            if not isinstance(cluster, dict):
+                continue
+            label = str(cluster.get("label") or "").strip()
+            if not label:
+                continue
+            gap = str(cluster.get("gap_label") or "").strip()
+            count = max(0, int(cluster.get("count") or 0))
+            pct = (
+                min(100.0, (count / total_flagged) * 100.0)
+                if total_flagged > 0
+                else float(cluster.get("share_pct") or 0.0)
+            )
+            body_rows.append(
+                f"""
+                <tr>
+                  <td class="fd-num">{index}</td>
+                  <td>{html.escape(label)}</td>
+                  <td><span class="gap-badge">{html.escape(gap)}</span></td>
+                  <td>{count}</td>
+                  <td>{pct:.1f}%</td>
+                  <td><div class="insight-track"><div class="insight-fill" style="width: {pct:.1f}%"></div></div></td>
+                </tr>
+                """
+            )
+        if not body_rows:
+            return "<p class='empty-bars'>No clusters identified.</p>"
+        return f"""
+            <p class="fd-breakdown-caption">
+              {categorized_calls} categorized / {total_flagged} flagged calls for this metric
+            </p>
+            <table class="insight-table fd-level1-table">
+              <colgroup>
+                <col class="fd-col-index" />
+                <col class="fd-col-cluster" />
+                <col class="fd-col-gap" />
+                <col class="fd-col-num" />
+                <col class="fd-col-share" />
+                <col class="fd-col-bar" />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Cluster</th>
+                  <th>Gap</th>
+                  <th>Calls</th>
+                  <th>Share</th>
+                  <th>Distribution</th>
+                </tr>
+              </thead>
+              <tbody>{''.join(body_rows)}</tbody>
+            </table>
+        """
+
+    @staticmethod
+    def _fd_cluster_preview_cell_html(
+        labels: list[str],
+        *,
+        max_items: int = 3,
+    ) -> str:
+        """Bulleted preview cell that wraps inside fixed-width PDF tables."""
+        cleaned = [label.strip() for label in labels if label and label.strip()]
+        if not cleaned:
+            return "—"
+        items = cleaned[:max_items]
+        extra = ""
+        if len(cleaned) > max_items:
+            extra = (
+                f'<li class="fd-preview-more">+{len(cleaned) - max_items} more</li>'
+            )
+        list_items = "".join(
+            f"<li>{html.escape(label)}</li>" for label in items
+        )
+        return f'<ul class="fd-preview-list">{list_items}{extra}</ul>'
+
+    def _failure_diagnostics_summary_table_html(
+        self,
+        groups: list[dict[str, Any]],
+        discovered: list[dict[str, Any]],
+    ) -> str:
+        """Structured cross-metric summary (replaces semicolon-separated overview prose)."""
+        rows: list[str] = []
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            metric_name = str(group.get("metric_name") or "Metric").strip()
+            flagged = max(0, int(group.get("flagged_count") or 0))
+            clusters_raw = group.get("clusters")
+            clusters = (
+                [c for c in clusters_raw if isinstance(c, dict)]
+                if isinstance(clusters_raw, list)
+                else []
+            )
+            top_labels = [
+                str(c.get("label") or "").strip()
+                for c in clusters
+                if isinstance(c, dict) and str(c.get("label") or "").strip()
+            ]
+            preview_cell = self._fd_cluster_preview_cell_html(top_labels)
+            rows.append(
+                f"""
+                <tr>
+                  <td class="fd-col-metric">{html.escape(metric_name)}</td>
+                  <td class="fd-col-num">{len(clusters)}</td>
+                  <td class="fd-col-num">{flagged}</td>
+                  <td class="fd-col-preview">{preview_cell}</td>
+                </tr>
+                """
+            )
+        if discovered:
+            discovered_labels = [
+                str(d.get("label") or "").strip()
+                for d in discovered
+                if isinstance(d, dict) and str(d.get("label") or "").strip()
+            ]
+            preview_cell = self._fd_cluster_preview_cell_html(discovered_labels)
+            rows.append(
+                f"""
+                <tr class="fd-summary-discovered-row">
+                  <td class="fd-col-metric"><strong>Proactive discovery</strong></td>
+                  <td class="fd-col-num">{len(discovered)}</td>
+                  <td class="fd-col-num">—</td>
+                  <td class="fd-col-preview">{preview_cell}</td>
+                </tr>
+                """
+            )
+        if not rows:
+            return ""
+        return f"""
+            <div class="insight-overview-box fd-summary-box">
+              <div class="insight-overview-label">Overview — metrics at a glance</div>
+              <table class="insight-table fd-summary-table">
+                <colgroup>
+                  <col class="fd-col-metric" />
+                  <col class="fd-col-num" />
+                  <col class="fd-col-num" />
+                  <col class="fd-col-preview" />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th>Metric</th>
+                    <th>Clusters</th>
+                    <th>Flagged calls</th>
+                    <th>Top clusters (preview)</th>
+                  </tr>
+                </thead>
+                <tbody>{''.join(rows)}</tbody>
+              </table>
+            </div>
+        """
+
+    def _metric_cluster_sub_bars_html(
+        self,
+        sub_clusters: list[dict[str, Any]],
+        *,
+        parent_count: int = 0,
+    ) -> str:
+        """Horizontal bar chart for Level-2 sub-clusters within a cluster."""
+        if not sub_clusters:
+            return "<p class='empty-bars'>No Level-2 sub-categories.</p>"
+        rows: list[str] = []
+        max_pct = 0.0
+        parsed: list[tuple[str, int, float]] = []
+        for sub in sub_clusters[:10]:
+            if not isinstance(sub, dict):
+                continue
+            label = str(sub.get("label") or "").strip()
+            if not label:
+                continue
+            count = max(0, int(sub.get("count") or 0))
+            pct = float(sub.get("share_pct") or 0.0)
+            if pct <= 0 and parent_count > 0 and count > 0:
+                pct = min(100.0, (count / parent_count) * 100.0)
+            parsed.append((label, count, pct))
+            max_pct = max(max_pct, pct)
+        if not parsed:
+            return "<p class='empty-bars'>No Level-2 sub-categories.</p>"
+        scale = max(max_pct, 1.0)
+        for label, count, pct in parsed:
+            width = min(100.0, (pct / scale) * 100.0)
+            rows.append(
+                f"""
+                <div class="dist-row metric-cluster-sub-row">
+                  <div class="dist-label">{html.escape(label)}</div>
+                  <div class="dist-track">
+                    <div class="dist-fill metric-cluster-sub-fill" style="width: {width:.1f}%"></div>
+                  </div>
+                  <div class="dist-value">{count} · {pct:.1f}%</div>
+                </div>
+                """
+            )
+        return f"<div class='metric-cluster-sub-bars'>{''.join(rows)}</div>"
+
+    def _metric_cluster_compact_detail_html(
+        self,
+        cluster: dict[str, Any],
+        *,
+        index: int,
+        cidx: int,
+        failure_reason: str,
+        platform_base_url: str | None,
+        call_import_id: str,
+        evaluation_id: str,
+    ) -> str:
+        """Lightweight cluster card for PDF (avoids heavy grids that stall WeasyPrint)."""
+        label = str(cluster.get("label") or "Cluster").strip()
+        gap = str(cluster.get("gap_label") or "").strip().replace("_", " ")
+        cluster_count = max(0, int(cluster.get("count") or 0))
+        cluster_pct = float(cluster.get("share_pct") or 0.0)
+        observation = str(cluster.get("observation") or "").strip()
+        if len(observation) > _PDF_FD_OBSERVATION_MAX_CHARS:
+            observation = observation[: _PDF_FD_OBSERVATION_MAX_CHARS].rstrip() + "…"
+        cluster_failure_reason = str(
+            cluster.get("failure_reason") or failure_reason
+        ).strip()
+        evidence_raw = cluster.get("evidence")
+        evidence = evidence_raw if isinstance(evidence_raw, dict) else {}
+        example_html = self._metric_cluster_evidence_html(
+            evidence,
+            platform_base_url=platform_base_url,
+            call_import_id=call_import_id,
+            evaluation_id=evaluation_id,
+        )
+        why_flagged = ""
+        if cluster_failure_reason:
+            why_flagged = f"""
+              <p class="fd-why-flagged"><strong>Why flagged:</strong>
+              {html.escape(cluster_failure_reason)}</p>
+            """
+        observation_html = ""
+        if observation:
+            observation_html = f"""
+              <p class="fd-cluster-observation"><strong>Observation:</strong>
+              {html.escape(observation)}</p>
+            """
+        return f"""
+            <div class="metric-cluster-detail metric-cluster-detail-compact">
+              <div class="metric-cluster-detail-head">
+                <h4>4.{index}.{cidx} {html.escape(label)}</h4>
+                <span>{html.escape(gap)} · {cluster_count} calls · {cluster_pct:.1f}%</span>
+              </div>
+              {why_flagged}
+              {observation_html}
+              <div class="insight-callout insight-evidence-box fd-cluster-example">
+                <div class="insight-callout-label">Example call</div>
+                {example_html}
+              </div>
+            </div>
+            """
+
+    def _metric_cluster_group_html(
+        self,
+        group: dict[str, Any],
+        index: int,
+        *,
+        platform_base_url: str | None = None,
+        call_import_id: str = "",
+        evaluation_id: str = "",
+        detail_limit: int = _PDF_FD_MAX_CLUSTER_DETAIL,
+    ) -> str:
+        metric_name = str(group.get("metric_name") or "Metric").strip()
+        flagged = int(group.get("flagged_count") or 0)
+        failure_reason = str(group.get("failure_reason") or "").strip()
+        clusters_raw = group.get("clusters")
+        clusters = self._top_metric_clusters(
+            clusters_raw if isinstance(clusters_raw, list) else [],
+            limit=5,
+        )
+        detail_clusters = clusters[: max(0, detail_limit)]
+        cluster_blocks = [
+            self._metric_cluster_compact_detail_html(
+                cluster,
+                index=index,
+                cidx=cidx,
+                failure_reason=failure_reason,
+                platform_base_url=platform_base_url,
+                call_import_id=call_import_id,
+                evaluation_id=evaluation_id,
+            )
+            for cidx, cluster in enumerate(detail_clusters, start=1)
+        ]
+        level1_table = self._metric_cluster_level1_table_html(clusters, flagged)
+        reason_line = ""
+        if failure_reason:
+            reason_line = f'<p class="fd-why-flagged"><strong>Why flagged:</strong> {html.escape(failure_reason)}</p>'
+        detail_section = ""
+        if cluster_blocks:
+            detail_section = f"""
+              <div class="subhead metric-cluster-detail-section-title">Example clusters (top {len(detail_clusters)})</div>
+              <div class="metric-cluster-details">
+                {''.join(cluster_blocks)}
+              </div>
+            """
+        return f"""
+            <div class="metric-cluster-metric-group">
+              <div class="metric-cluster-metric-head">
+                <h3>4.{index} {html.escape(metric_name)}</h3>
+                <span>{flagged} flagged calls · {len(clusters)} cluster(s)</span>
+              </div>
+              {reason_line}
+              <div class="subhead">Level-1 clusters</div>
+              {level1_table}
+              {detail_section}
+            </div>
+            """
+
+    def _cluster_appendix_html(self) -> str:
+        return """
+              <div class="fd-cluster-appendix">
+                <h3>Appendix: What is a cluster?</h3>
+                <p class="method">
+                  A cluster groups flagged calls that share the same underlying failure
+                  theme within a quality metric. Each cluster is labeled with an RCA
+                  pattern name and an engineering gap type (such as MISSING, LOGIC_GAP,
+                  UNDERSPEC, or EXISTS_NO_TRIGGER). Evidence share is the percentage of
+                  all clustered failure instances attributed to that metric&apos;s patterns;
+                  evidence calls is the raw count of those instances.
+                </p>
+              </div>
+            """
+
+    def _failure_diagnostics_section_html(
+        self,
+        metric_clusters: dict[str, Any],
+        overview: str | None,
+        *,
+        platform_base_url: str | None = None,
+        call_import_id: str = "",
+        evaluation_id: str = "",
+    ) -> str:
+        groups_raw = metric_clusters.get("groups")
+        groups = (
+            [g for g in groups_raw if isinstance(g, dict)]
+            if isinstance(groups_raw, list)
+            else []
+        )
+        discovered_raw = metric_clusters.get("discovered_problems")
+        discovered = (
+            [d for d in discovered_raw if isinstance(d, dict)]
+            if isinstance(discovered_raw, list)
+            else []
+        )
+        if not groups and not discovered:
+            return ""
+        overview_markup = self._failure_diagnostics_summary_table_html(
+            groups, discovered
+        )
+        if not overview_markup and (overview or "").strip():
+            overview_markup = f"""
+              <div class="insight-overview-box fd-summary-box">
+                <div class="insight-overview-label">Overview</div>
+                <p>{html.escape((overview or "").strip())}</p>
+              </div>
+            """
+        rca_executive = self._failure_diagnostics_rca_executive_html(
+            metric_clusters.get("rca_summary")
+            if isinstance(metric_clusters.get("rca_summary"), dict)
+            else {}
+        )
+        ordered_groups = sorted(
+            groups,
+            key=lambda g: -int(g.get("flagged_count") or 0),
+        )
+        rendered_groups = ordered_groups[:_PDF_FD_MAX_METRIC_GROUPS]
+        omitted = len(ordered_groups) - len(rendered_groups)
+        group_blocks = [
+            self._metric_cluster_group_html(
+                group,
+                idx,
+                platform_base_url=platform_base_url,
+                call_import_id=call_import_id,
+                evaluation_id=evaluation_id,
+            )
+            for idx, group in enumerate(rendered_groups, start=1)
+        ]
+        omitted_note = ""
+        if omitted > 0:
+            omitted_note = (
+                f'<p class="method fd-omitted-metrics">'
+                f"{omitted} additional metric(s) with clusters are summarized in "
+                f"sections 4.2–4.4 and the overview table; open the evaluation "
+                f"Clusters tab for full per-metric detail.</p>"
+            )
+        discovered_table = self._metric_cluster_table_html(discovered)
+        discovered_section = ""
+        if discovered:
+            discovered_section = f"""
+              <div class="fd-discovered-block">
+                <div class="metric-cluster-metric-head">
+                  <h3>Proactive problem discovery</h3>
+                  <span>{len(discovered)} theme(s) · not mapped to standard metrics</span>
+                </div>
+                {discovered_table}
+              </div>
+            """
+        metrics_body = "".join(group_blocks)
+        if not metrics_body and not discovered_section:
+            metrics_body = "<p class='empty-bars'>No cluster groups in this run.</p>"
+        return f"""
+            <section class="failure-diagnostics">
+              <div class="failure-diagnostics-intro">
+                <h2>04 Failure Diagnostics</h2>
+                <p class="method">Per-metric clustering of flagged calls with engineering gap labels (LOGIC_GAP, UNDERSPEC, EXISTS_NO_TRIGGER, MISSING) and Level-2 sub-categories.</p>
+                {overview_markup}
+              </div>
+              {rca_executive}
+              {omitted_note}
+              <div class="failure-diagnostics-metrics">
+                {metrics_body}
+                {discovered_section}
+              </div>
+              {self._cluster_appendix_html()}
+            </section>
+            """
+
+    def _prompt_improvement_text_block_html(self, text: str) -> str:
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            return ""
+        return f'<div class="prompt-change-text">{html.escape(cleaned)}</div>'
+
+    def _prompt_improvement_change_markup_html(self, item: dict[str, Any]) -> str:
+        change_type = _prompt_improvement_change_type(item)
+        anchor_excerpt = str(item.get("anchor_excerpt") or "").strip()
+        suggested_text = str(item.get("suggested_text") or "").strip()
+
+        if change_type == "edit" and anchor_excerpt:
+            return f"""
+              <div class="prompt-change-grid">
+                <div class="prompt-change-box prompt-change-before">
+                  <div class="prompt-change-label">Current prompt (being changed)</div>
+                  {self._prompt_improvement_text_block_html(anchor_excerpt)}
+                </div>
+                <div class="prompt-change-box prompt-change-after">
+                  <div class="prompt-change-label">Suggested replacement</div>
+                  {self._prompt_improvement_text_block_html(suggested_text)}
+                </div>
+              </div>
+            """
+        if suggested_text:
+            return f"""
+              <div class="prompt-change-box prompt-change-add">
+                <div class="prompt-change-label">Suggested prompt addition</div>
+                {self._prompt_improvement_text_block_html(suggested_text)}
+              </div>
+            """
+        return ""
+
+    def _prompt_improvements_section_html(
+        self,
+        prompt_improvements: dict[str, Any],
+    ) -> str:
+        suggestions_raw = prompt_improvements.get("suggestions")
+        suggestions = (
+            [s for s in suggestions_raw if isinstance(s, dict)]
+            if isinstance(suggestions_raw, list)
+            else []
+        )
+        suggestions = _sort_prompt_improvement_suggestions(suggestions)[
+            :_PDF_PROMPT_IMPROVEMENTS_MAX
+        ]
+        if not suggestions:
+            return ""
+        agent_name = str(prompt_improvements.get("imported_agent_name") or "Imported agent")
+        overview = str(prompt_improvements.get("overview") or "").strip()
+        overview_markup = ""
+        if overview:
+            overview_markup = f"""
+              <div class="insight-overview-box fd-summary-box">
+                <div class="insight-overview-label">Overview</div>
+                <p>{html.escape(overview)}</p>
+              </div>
+            """
+        blocks: list[str] = []
+        for idx, item in enumerate(suggestions, start=1):
+            metric_name = html.escape(str(item.get("metric_name") or "Metric"))
+            cluster_label = html.escape(str(item.get("cluster_label") or "Cluster"))
+            gap_label = html.escape(str(item.get("gap_label") or ""))
+            priority = html.escape(str(item.get("priority") or "medium"))
+            share_pct = float(item.get("share_pct") or 0)
+            target_section = html.escape(str(item.get("target_section") or ""))
+            flow_node_label = html.escape(str(item.get("flow_node_label") or ""))
+            current_gap = html.escape(str(item.get("current_gap") or ""))
+            rationale = html.escape(str(item.get("rationale") or ""))
+            change_type = _prompt_improvement_change_type(item)
+            change_label = "Edit existing" if change_type == "edit" else "New addition"
+            change_badge_class = (
+                "prompt-change-badge-edit"
+                if change_type == "edit"
+                else "prompt-change-badge-add"
+            )
+            change_markup = self._prompt_improvement_change_markup_html(item)
+            blocks.append(
+                f"""
+                <article class="metric-cluster-group prompt-improvement-card">
+                  <div class="metric-cluster-metric-head">
+                    <h3>{idx}. {metric_name} · {cluster_label}</h3>
+                    <span class="prompt-improvement-meta">
+                      <span class="prompt-change-badge {change_badge_class}">{change_label}</span>
+                      {gap_label} · {priority} priority · {share_pct:.1f}% share
+                    </span>
+                  </div>
+                  {f'<p class="method"><strong>Target section:</strong> {target_section}</p>' if target_section else ''}
+                  {f'<p class="method"><strong>Agent logic node:</strong> {flow_node_label}</p>' if flow_node_label else ''}
+                  {f'<p class="method"><strong>Current gap:</strong> {current_gap}</p>' if current_gap else ''}
+                  {change_markup}
+                  {f'<p class="method prompt-improvement-rationale"><strong>Rationale:</strong> {rationale}</p>' if rationale else ''}
+                </article>
+                """
+            )
+        return f"""
+            <section class="prompt-improvements">
+              <div class="failure-diagnostics-intro">
+                <h2>05 Prompt Improvement Recommendations</h2>
+                <p class="method">Top {_PDF_PROMPT_IMPROVEMENTS_MAX} recommended prompt changes for <strong>{html.escape(agent_name)}</strong>, aligned with the Visualizations → Prompt / Agent Improvements view.</p>
+                {overview_markup}
+              </div>
+              {''.join(blocks)}
+            </section>
             """
 
     def _generated_user_insight_block_html(
@@ -545,23 +1547,114 @@ class CallImportEvaluationPdfReportService:
                 </div>
                 """
 
-    def _audit_summary_html(self, text: str) -> str:
-        blocks = [
-            block.strip()
-            for block in re.split(r"\n\s*\n", text)
-            if block.strip()
-        ]
-        if not blocks:
+    def _top_metric_percentages_html(
+        self,
+        quality_metrics: list[MetricReportSummary],
+        *,
+        limit: int = 5,
+    ) -> str:
+        ranked = self._top_quality_metric_summaries(quality_metrics, limit=limit)
+        if not ranked:
             return ""
-        first = f"<p>{html.escape(blocks[0])}</p>"
-        bullets = []
-        for block in blocks[1:]:
-            lines = [line.strip(" \t-*•") for line in block.splitlines() if line.strip()]
-            bullets.extend(line for line in lines if line)
-        if not bullets:
-            return first
-        items = "".join(f"<li>{html.escape(item)}</li>" for item in bullets)
-        return f"{first}<ul>{items}</ul>"
+        cards = []
+        for summary in ranked:
+            label = html.escape(summary.name.upper())
+            value = html.escape(self._primary_metric_label(summary))
+            cards.append(
+                f"""
+                <div class="audit-stat-card">
+                  <div class="audit-stat-rule"></div>
+                  <div class="audit-stat-label">{label}</div>
+                  <div class="audit-stat-value">{value}</div>
+                </div>
+                """
+            )
+        return f'<div class="audit-stat-strip">{"".join(cards)}</div>'
+
+    def _top_quality_metric_summaries(
+        self,
+        quality_metrics: list[MetricReportSummary],
+        *,
+        limit: int = 5,
+    ) -> list[MetricReportSummary]:
+        return sorted(
+            quality_metrics,
+            key=lambda summary: self._primary_metric_percent(summary),
+            reverse=True,
+        )[:limit]
+
+    def _period_delta_values(self, detail: str) -> tuple[float, float] | None:
+        values = [float(match) for match in re.findall(r"(\d+(?:\.\d+)?)%", detail)]
+        if len(values) < 2:
+            return None
+        current_pct, previous_pct = values[0], values[1]
+        return current_pct, previous_pct
+
+    def _top_metric_delta_line_graphs_html(
+        self,
+        quality_metrics: list[MetricReportSummary],
+        *,
+        limit: int = 5,
+    ) -> str:
+        ranked = self._top_quality_metric_summaries(quality_metrics, limit=limit)
+        if not ranked:
+            return ""
+        cards = []
+        for summary in ranked:
+            label = summary.weekly_delta_label or "No previous-week baseline"
+            detail = summary.weekly_delta_detail or ""
+            why = (summary.weekly_delta_why or "").strip()
+            reason = (
+                _clamp_prose_to_sentences(why, max_sentences=2)
+                if why
+                else "Reason not available for this comparison."
+            )
+            current_previous = self._period_delta_values(detail)
+            tone = "flat"
+            arrow = ""
+            direction_label = self._metric_direction_label(summary)
+            if current_previous is not None:
+                current_pct, previous_pct = current_previous
+                delta = current_pct - previous_pct
+                tone = "bad" if delta > 0 else "good" if delta < 0 else "flat"
+                arrow = " ▲" if delta > 0 else " ▼" if delta < 0 else " ━"
+                chart_markup = self._delta_sparkline_svg(
+                    previous_pct,
+                    current_pct,
+                    tone=tone,
+                    previous_label="Last",
+                    current_label="Current",
+                    show_pct_labels=True,
+                )
+            else:
+                chart_markup = '<div class="audit-delta-empty">No comparable line data</div>'
+            cards.append(
+                f"""
+                <article class="audit-delta-card delta-{tone}">
+                  <div class="audit-delta-head">
+                    <div class="audit-delta-head-main">
+                      <span>{html.escape(summary.name.upper())}</span>
+                      <small class="audit-delta-direction">{html.escape(direction_label)}</small>
+                    </div>
+                    <strong>{html.escape(label)}{arrow}</strong>
+                  </div>
+                  <div class="audit-delta-chart">{chart_markup}</div>
+                  <p class="audit-delta-reason">{html.escape(reason)}</p>
+                </article>
+                """
+            )
+        return f"""
+          <div class="audit-delta-panel">
+            <div class="audit-delta-title">Top metric delta vs last week</div>
+            <div class="audit-delta-grid">{"".join(cards)}</div>
+          </div>
+        """
+
+    def _audit_summary_html(self, text: str) -> str:
+        compact = _clamp_prose_to_sentences(text)
+        if not compact:
+            return ""
+        return f"<p>{html.escape(compact)}</p>"
 
     def _short_business_meaning(self, summary: MetricReportSummary) -> str:
         description = (summary.description or "").strip()
@@ -606,14 +1699,16 @@ class CallImportEvaluationPdfReportService:
         tone: str = "flat",
         previous_label: str = "Prev",
         current_label: str = "Current",
+        show_pct_labels: bool = False,
     ) -> str:
         colors = self._sparkline_palette(tone)
         width = 118
-        height = 44
+        height = 50 if show_pct_labels else 44
         padding_x = 8
         padding_y = 8
         chart_width = width - (padding_x * 2)
-        chart_height = height - 18
+        label_block_height = 14 if show_pct_labels else 10
+        chart_height = height - label_block_height - 6
         max_value = max(previous_pct, current_pct, 1.0)
         min_value = min(previous_pct, current_pct, 0.0)
         span = max(max_value - min_value, 1.0)
@@ -635,14 +1730,23 @@ class CallImportEvaluationPdfReportService:
             f"{x2},{y2} "
             f"{x2},{padding_y + chart_height}"
         )
+        axis_y = height - (10 if show_pct_labels else 3)
+        pct_y = height - 2
+        pct_markup = ""
+        if show_pct_labels:
+            pct_markup = f"""
+            <text x="{padding_x}" y="{pct_y}" fill="{colors['label']}" font-size="5" font-family="Helvetica, Arial, sans-serif">{previous_pct:.1f}%</text>
+            <text x="{width - padding_x}" y="{pct_y}" text-anchor="end" fill="{colors['label']}" font-size="5" font-family="Helvetica, Arial, sans-serif">{current_pct:.1f}%</text>
+            """
         return f"""
           <svg class="metric-sparkline" viewBox="0 0 {width} {height}" width="{width}" height="{height}" aria-hidden="true">
             <polygon points="{area_points}" fill="{colors['area']}" stroke="none" />
             <polyline points="{x1:.1f},{y1:.1f} {x2:.1f},{y2:.1f}" fill="none" stroke="{colors['line']}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
             <circle cx="{x1:.1f}" cy="{y1:.1f}" r="2.2" fill="{colors['dot']}" />
             <circle cx="{x2:.1f}" cy="{y2:.1f}" r="2.2" fill="{colors['dot']}" />
-            <text x="{padding_x}" y="{height - 3}" fill="{colors['label']}" font-size="7" font-family="Helvetica, Arial, sans-serif">{html.escape(previous_label)}</text>
-            <text x="{width - padding_x}" y="{height - 3}" text-anchor="end" fill="{colors['label']}" font-size="7" font-family="Helvetica, Arial, sans-serif">{html.escape(current_label)}</text>
+            <text x="{padding_x}" y="{axis_y}" fill="{colors['label']}" font-size="4" font-family="Helvetica, Arial, sans-serif">{html.escape(previous_label)}</text>
+            <text x="{width - padding_x}" y="{axis_y}" text-anchor="end" fill="{colors['label']}" font-size="4" font-family="Helvetica, Arial, sans-serif">{html.escape(current_label)}</text>
+            {pct_markup}
           </svg>
         """
 
@@ -689,11 +1793,18 @@ class CallImportEvaluationPdfReportService:
         business_meaning: str,
         include_weekly_delta: bool,
         accuracy: str,
+        include_sparkline: bool = True,
+        show_accuracy: bool = True,
     ) -> str:
         delta_markup = ""
         sparkline_markup = ""
         if include_weekly_delta:
             delta_markup, sparkline_markup = self._compact_weekly_delta_html(summary)
+            if not include_sparkline:
+                sparkline_markup = ""
+        meta_text = f"{summary.flagged_count} of {summary.evaluated_count}"
+        if show_accuracy:
+            meta_text = f"{meta_text} · acc {accuracy}"
         return f"""
           <article class="metric metric-compact">
             <div class="metric-compact-head">
@@ -709,7 +1820,7 @@ class CallImportEvaluationPdfReportService:
             </div>
             <p class="meaning metric-compact-meaning">{html.escape(business_meaning)}</p>
             <div class="metric-compact-meta">
-              {summary.flagged_count} of {summary.evaluated_count} · acc {accuracy}
+              {html.escape(meta_text)}
             </div>
           </article>
         """
@@ -775,6 +1886,8 @@ class CallImportEvaluationPdfReportService:
         show_quality_panel = sections.get("quality_panel", True)
         show_user_insights = sections.get("user_insights", True)
         show_design_notes = sections.get("design_notes", True)
+        show_failure_diagnostics = sections.get("failure_diagnostics", True)
+        show_prompt_improvements = sections.get("prompt_improvements", True)
         show_methodology = sections.get("methodology", True)
         narrative = payload.get("narrative") if isinstance(payload.get("narrative"), dict) else {}
         observations = narrative.get("observations") if isinstance(narrative.get("observations"), dict) else {}
@@ -826,9 +1939,16 @@ class CallImportEvaluationPdfReportService:
             if payload.get("custom_heading")
             else ""
         )
+        brand_header_parts: list[str] = []
+        if logo_markup:
+            brand_header_parts.append(
+                f'<div class="brand-logo-row">{logo_markup}</div>'
+            )
+        if heading_markup:
+            brand_header_parts.append(heading_markup)
         brand_header_markup = (
-            f'<div class="brand-header"><div class="brand-logo-row">{logo_markup}</div>{heading_markup}</div>'
-            if logo_markup or heading_markup
+            f'<div class="brand-header">{"".join(brand_header_parts)}</div>'
+            if brand_header_parts
             else ""
         )
         evidence_rows = []
@@ -852,68 +1972,21 @@ class CallImportEvaluationPdfReportService:
         is_internal = bool(payload.get("internal"))
         include_weekly_delta = bool(payload.get("include_weekly_delta"))
         for summary in quality_metrics:
-            clear_count = max(summary.evaluated_count - summary.flagged_count, 0)
-            primary_pct = self._primary_metric_percent(summary)
             business_meaning = (
                 str(metric_insights.get(summary.id) or "").strip()
                 or self._short_business_meaning(summary)
             )
-            if is_internal:
-                delta_markup = (
-                    f"""
-                      {self._delta_chart_html(summary, payload.get("benchmark_context"))}
-                    """
-                    if include_weekly_delta
-                    else ""
-                )
-                card = (
-                    f"""
-                    <article class="metric">
-                      <div class="metric-head">
-                        <div>
-                          <div class="metric-title"><span class="dot"></span>{html.escape(summary.name)}</div>
-                          <div class="metric-type">{html.escape(summary.metric_type)}</div>
-                        </div>
-                        <div class="direction-badge">
-                          <span>Lower rate is better</span>
-                          <strong>↓ target</strong>
-                        </div>
-                      </div>
-                      <div class="metric-hero">
-                        <div class="metric-percent">{html.escape(self._primary_metric_label(summary))}</div>
-                        <div class="metric-count">FLAGGED CALLS <strong>{summary.flagged_count} of {summary.evaluated_count}</strong></div>
-                      </div>
-                      <div class="metric-bar"><div class="metric-bar-fill" style="width: {primary_pct:.1f}%"></div></div>
-                      <div class="metric-grid">
-                        <div><strong>{html.escape(self._metric_result(summary))}</strong><small>Current result</small></div>
-                        <div><strong>{summary.flagged_count}</strong><small>Flagged / positive calls</small></div>
-                        <div><strong>{summary.evaluated_count}</strong><small>Evaluated calls</small></div>
-                        <div><strong>{html.escape(self._percent(summary.flagged_count, summary.evaluated_count))}</strong><small>Flagged rate</small></div>
-                      </div>
-                      {delta_markup}
-                      <div class="measurement-grid">
-                        <div><strong>{html.escape(self._measurement_label(summary))}</strong><small>Measurement standpoint</small></div>
-                        <div><strong>{html.escape(self._percent(clear_count, summary.evaluated_count))}</strong><small>Clear / passing rate</small></div>
-                      </div>
-                      <div class="distribution-bars">
-                        <div class="subhead">Metric distribution</div>
-                        {self._distribution_bars_html(summary)}
-                      </div>
-                      <p class="distribution"><strong>Distribution:</strong> {html.escape(self._top_distribution_with_percentages(summary))}</p>
-                      <p class="meaning"><strong>Business meaning:</strong> {html.escape(business_meaning)}</p>
-                    </article>
-                    """
-                )
-            else:
-                accuracy = self._percent(
-                    summary.evaluated_count, payload["evaluation"].total_rows
-                )
-                card = self._compact_metric_card_html(
-                    summary,
-                    business_meaning=business_meaning,
-                    include_weekly_delta=include_weekly_delta,
-                    accuracy=accuracy,
-                )
+            accuracy = self._percent(
+                summary.evaluated_count, payload["evaluation"].total_rows
+            )
+            card = self._compact_metric_card_html(
+                summary,
+                business_meaning=business_meaning,
+                include_weekly_delta=include_weekly_delta,
+                accuracy=accuracy,
+                include_sparkline=not is_internal,
+                show_accuracy=not is_internal,
+            )
             metric_cards_by_group.setdefault(summary.group_name, []).append(card)
 
         quality_panel_markup = ""
@@ -922,8 +1995,6 @@ class CallImportEvaluationPdfReportService:
             for group_name, cards in metric_cards_by_group.items():
                 cards_markup = (
                     f'<div class="metric-compact-grid">{"".join(cards)}</div>'
-                    if not is_internal
-                    else "".join(cards)
                 )
                 quality_groups_markup.append(
                     f"""
@@ -1004,6 +2075,26 @@ class CallImportEvaluationPdfReportService:
                 )
             elif overview_markup:
                 insight_blocks.insert(0, overview_markup)
+        failure_diagnostics_section = ""
+        if is_internal and show_failure_diagnostics:
+            clusters_payload = payload.get("metric_clusters")
+            if isinstance(clusters_payload, dict) and clusters_payload:
+                failure_diagnostics_section = self._failure_diagnostics_section_html(
+                    clusters_payload,
+                    payload.get("metric_clusters_overview"),
+                    platform_base_url=payload.get("platform_base_url"),
+                    call_import_id=str(payload.get("call_import_id") or ""),
+                    evaluation_id=str(payload.get("evaluation_id") or ""),
+                )
+
+        prompt_improvements_section = ""
+        if is_internal and show_prompt_improvements:
+            improvements_payload = payload.get("prompt_improvements")
+            if isinstance(improvements_payload, dict) and improvements_payload:
+                prompt_improvements_section = self._prompt_improvements_section_html(
+                    improvements_payload
+                )
+
         business_section = ""
         if insight_blocks and show_user_insights:
             intro = (
@@ -1047,14 +2138,13 @@ class CallImportEvaluationPdfReportService:
             if notes:
                 design_notes_section = f"""
                 <section>
-                  <h2>04 User Experience Design Notes</h2>
+                  <h2>05 User Experience Design Notes</h2>
                   <ol class="design-notes">{notes}</ol>
                 </section>
                 """
-        default_audit_summary = (
-            f'Quality audit generated from {payload["evaluation"].completed_rows} '
-            f'completed calls across {len(quality_metrics)} quality metrics and '
-            f'{len(business_metrics)} user-insight classifiers.'
+        default_audit_summary = _clamp_prose_to_sentences(
+            f'Quality audit from {payload["evaluation"].completed_rows} completed '
+            f'calls across {len(quality_metrics)} quality metrics.'
         )
         audit_summary_text = (
             payload.get("audit_summary")
@@ -1062,6 +2152,18 @@ class CallImportEvaluationPdfReportService:
             or default_audit_summary
         )
         audit_summary_markup = self._audit_summary_html(str(audit_summary_text))
+        top_metric_strip_markup = ""
+        top_metric_delta_markup = ""
+        if show_audit_summary and quality_metrics:
+            top_metric_strip_markup = self._top_metric_percentages_html(
+                quality_metrics,
+                limit=5,
+            )
+            if is_internal and include_weekly_delta:
+                top_metric_delta_markup = self._top_metric_delta_line_graphs_html(
+                    quality_metrics,
+                    limit=5,
+                )
         repeat_header_markup = (
             f'<div class="repeat-page-header"><img src="{internal_logo_uri}" alt="Internal brand" class="repeat-page-logo" /></div>'
             if internal_logo_uri
@@ -1079,6 +2181,9 @@ class CallImportEvaluationPdfReportService:
               margin: 18mm 14mm 17mm 14mm;
               @top-left {{ content: element(repeatHeader); }}
               @bottom-center {{ content: "Page " counter(page) " of " counter(pages); color: #667085; font-size: 9px; }}
+            }}
+            @page:first {{
+              @top-left {{ content: none; }}
             }}
             body {{ font-family: Helvetica, Arial, sans-serif; color: #111827; font-size: 11px; line-height: 1.4; }}
             header {{ border-bottom: 0; padding-bottom: 8px; margin-bottom: 12px; }}
@@ -1195,12 +2300,182 @@ class CallImportEvaluationPdfReportService:
             .insight-callout p:last-child {{ margin-bottom: 0; }}
             .insight-evidence-id {{ color: #7a756d; font-size: 9px; margin-top: 4px; }}
             .insight-table td:nth-child(2), .insight-table td:nth-child(4) {{ white-space: nowrap; font-weight: 800; }}
-            .insight-track {{ height: 9px; background: #e7ddd1; border: 1px solid #d7cfc2; min-width: 120px; }}
-            .insight-fill {{ height: 100%; background: #c7725e; }}
-            .insight-observation, .insight-evidence {{ margin: 8px 0 0; color: #374151; }}
+            .insight-track {{ height: 9px; background: #e8edff; border: 1px solid #cfd8ff; min-width: 120px; }}
+            .insight-fill {{ height: 100%; background: #4f46e5; }}
+            .failure-diagnostics {{ margin-top: 4px; max-width: 100%; }}
+            .failure-diagnostics-intro {{ break-inside: auto; margin-bottom: 6px; max-width: 100%; }}
+            .failure-diagnostics-intro h2 {{ margin-bottom: 4px; }}
+            .failure-diagnostics .method {{ margin: 0 0 6px; }}
+            .failure-diagnostics .insight-block {{ margin: 6px 0 8px; break-inside: auto; }}
+            .failure-diagnostics-metrics {{ display: grid; gap: 8px; max-width: 100%; }}
+            .fd-summary-box {{
+              break-inside: auto;
+              margin: 0 0 8px;
+              padding: 8px 10px;
+              max-width: 100%;
+              overflow: hidden;
+              box-sizing: border-box;
+            }}
+            .fd-summary-box .insight-table {{
+              margin-top: 4px;
+              width: 100%;
+              max-width: 100%;
+              table-layout: fixed;
+            }}
+            .fd-summary-table th, .fd-level1-table th {{ font-size: 9px; }}
+            .fd-summary-table td, .fd-level1-table td {{
+              font-size: 10px;
+              padding: 5px 6px;
+              overflow-wrap: anywhere;
+              white-space: normal;
+            }}
+            .fd-summary-table .fd-col-metric {{ width: 24%; }}
+            .fd-summary-table .fd-col-num {{ width: 11%; }}
+            .fd-summary-table .fd-col-preview {{ width: 54%; }}
+            .failure-diagnostics .fd-summary-table td.fd-col-num {{
+              white-space: nowrap;
+              font-weight: 800;
+              text-align: right;
+            }}
+            .failure-diagnostics .fd-summary-table td.fd-col-preview {{
+              white-space: normal;
+              font-weight: 400;
+            }}
+            .failure-diagnostics .fd-level1-table td:nth-child(2),
+            .failure-diagnostics .fd-level1-table td:nth-child(3) {{
+              white-space: normal;
+              font-weight: 400;
+            }}
+            .fd-preview-list {{
+              margin: 0;
+              padding-left: 14px;
+              list-style: disc;
+              color: #374151;
+              line-height: 1.35;
+            }}
+            .fd-preview-list li {{ margin: 0 0 3px; }}
+            .fd-preview-list li:last-child {{ margin-bottom: 0; }}
+            .fd-preview-more {{ color: #6b7280; font-style: italic; list-style: none; margin-left: -14px; }}
+            .fd-level1-table {{
+              width: 100%;
+              max-width: 100%;
+              table-layout: fixed;
+              margin: 0 0 8px;
+            }}
+            .fd-level1-table .fd-col-index {{ width: 6%; }}
+            .fd-level1-table .fd-col-cluster {{ width: 34%; }}
+            .fd-level1-table .fd-col-gap {{ width: 14%; }}
+            .fd-level1-table .fd-col-num {{ width: 9%; }}
+            .fd-level1-table .fd-col-share {{ width: 9%; }}
+            .fd-level1-table .fd-col-bar {{ width: 28%; }}
+            .failure-diagnostics .fd-level1-table td.fd-col-num,
+            .failure-diagnostics .fd-level1-table td:nth-child(5) {{
+              white-space: nowrap;
+              font-weight: 800;
+            }}
+            .failure-diagnostics .insight-track {{
+              min-width: 0;
+              max-width: 100%;
+              width: 100%;
+            }}
+            .fd-summary-discovered-row td {{ background: #f8fafc; }}
+            .fd-num {{ color: #6b7280; font-weight: 800; width: 24px; }}
+            .fd-breakdown-caption {{ margin: 0 0 4px; font-size: 9px; color: #6b7280; text-transform: uppercase; letter-spacing: .04em; font-weight: 700; }}
+            .fd-discovered-block {{ margin-top: 4px; padding-top: 6px; border-top: 1px solid #e5e7eb; max-width: 100%; }}
+            .fd-rca-block {{ margin: 10px 0 12px; max-width: 100%; overflow: hidden; box-sizing: border-box; }}
+            .fd-rca-block h3 {{ margin: 0 0 4px; font-size: 12px; }}
+            .fd-rca-base {{ margin: 0 0 6px; font-size: 9px; }}
+            .fd-rca-patterns-wrap {{ width: 100%; max-width: 100%; margin: 0 auto; overflow: hidden; box-sizing: border-box; }}
+            .fd-rca-table {{ table-layout: fixed; width: 100%; max-width: 100%; box-sizing: border-box; }}
+            .fd-rca-table td, .fd-rca-table th {{ font-size: 10px; padding: 5px 4px; overflow-wrap: anywhere; word-break: break-word; box-sizing: border-box; }}
+            .fd-rca-patterns-table {{ margin-left: auto; margin-right: auto; }}
+            .fd-rca-patterns-table .fd-rca-col-finding {{ width: 41%; text-align: left; }}
+            .fd-rca-patterns-table th.fd-rca-col-finding {{ text-align: left; }}
+            .fd-rca-patterns-table .fd-rca-col-pct {{ width: 12%; white-space: nowrap; text-align: center; font-weight: 800; vertical-align: top; }}
+            .fd-rca-patterns-table th.fd-rca-col-pct {{ text-align: center; }}
+            .fd-rca-patterns-table .fd-rca-col-bar {{ width: 29%; vertical-align: middle; padding-left: 6px; padding-right: 6px; }}
+            .fd-rca-patterns-table th.fd-rca-col-bar {{ text-align: center; }}
+            .fd-rca-patterns-table .fd-rca-col-count {{ width: 18%; white-space: nowrap; text-align: center; font-weight: 800; vertical-align: top; }}
+            .fd-rca-patterns-table th.fd-rca-col-count {{ text-align: center; }}
+            .fd-rca-track {{ height: 9px; background: #e7ddd1; border: 1px solid #d7cfc2; min-width: 0; max-width: 100%; width: 100%; box-sizing: border-box; }}
+            .fd-rca-fill {{ height: 100%; background: #c7725e; max-width: 100%; }}
+            .fd-rca-hotspots-table .fd-rca-col-pct {{ white-space: nowrap; text-align: center; font-weight: 800; width: 14%; }}
+            .fd-rca-hotspots-table .fd-rca-col-bar {{ width: 28%; }}
+            .fd-rca-hotspots-table .fd-rca-col-count {{ white-space: nowrap; text-align: center; font-weight: 800; width: 14%; vertical-align: top; }}
+            .fd-finding-sub {{ margin-top: 3px; font-size: 9px; color: #6b7280; font-weight: 400; line-height: 1.35; }}
+            .fd-evidence-line {{ font-size: 8px; color: #6b7280; font-weight: 600; line-height: 1.3; }}
+            .fd-evidence-primary {{ font-size: 10px; font-weight: 800; color: #111827; line-height: 1.3; }}
+            .fd-cluster-appendix {{ margin-top: 14px; padding-top: 10px; border-top: 1px solid #e5e7eb; break-inside: avoid; }}
+            .fd-cluster-appendix h3 {{ margin: 0 0 4px; font-size: 11px; }}
+            .fd-rca-interpretation {{ margin-top: 6px; }}
+            .fd-rca-summary-grid {{ display: grid; grid-template-columns: 1.2fr 1fr; gap: 10px; align-items: start; }}
+            .fd-rca-twocol {{ display: grid; gap: 8px; }}
+            .fd-rca-mini-table {{ table-layout: fixed; width: 100%; }}
+            .fd-why-flagged {{ margin: 0 0 6px; font-size: 10px; color: #374151; line-height: 1.4; }}
+            .insight-evidence-id a {{ color: #b85f4b; font-weight: 700; text-decoration: none; }}
+            .metric-cluster-metric-group {{
+              margin: 0;
+              padding: 8px 0;
+              border-top: 1px solid #e5e7eb;
+              break-inside: auto;
+            }}
+            .metric-cluster-metric-group:first-child {{ border-top: none; padding-top: 4px; }}
+            .metric-cluster-metric-head {{
+              display: flex;
+              justify-content: space-between;
+              align-items: baseline;
+              gap: 8px;
+              margin-bottom: 4px;
+            }}
+            .metric-cluster-metric-head h3 {{ margin: 0; font-size: 13px; }}
+            .metric-cluster-metric-head span {{
+              color: #6b7280;
+              font-size: 9px;
+              font-weight: 700;
+              text-transform: uppercase;
+              letter-spacing: .03em;
+              white-space: normal;
+              text-align: right;
+              flex-shrink: 1;
+              min-width: 0;
+            }}
+            .metric-cluster-detail-section-title {{ margin-top: 6px; }}
+            .metric-cluster-details {{ display: grid; gap: 6px; }}
+            .metric-cluster-detail {{
+              border: 1px solid #e5e7eb;
+              border-radius: 6px;
+              background: #fff;
+              padding: 6px 8px;
+              break-inside: auto;
+              page-break-inside: auto;
+            }}
+            .metric-cluster-detail-compact .insight-callout {{ margin-top: 4px; }}
+            .fd-cluster-observation {{ margin: 0 0 4px; font-size: 10px; color: #374151; line-height: 1.35; }}
+            .fd-omitted-metrics {{ margin: 6px 0 8px; font-size: 9px; }}
+            .metric-cluster-detail-head {{ display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 4px; }}
+            .metric-cluster-detail-head h4 {{ margin: 0; font-size: 11px; font-weight: 800; color: #111827; line-height: 1.3; }}
+            .metric-cluster-detail-head span {{
+              color: #6b7280;
+              font-size: 9px;
+              font-weight: 700;
+              text-transform: uppercase;
+              letter-spacing: .03em;
+              white-space: normal;
+              text-align: right;
+              flex-shrink: 1;
+              min-width: 0;
+            }}
+            .metric-cluster-detail-body {{ grid-template-columns: 1.1fr 0.9fr; gap: 10px; }}
+            .metric-cluster-detail-body .subhead {{ margin-bottom: 3px; }}
+            .metric-cluster-sub-bars {{ margin: 0; }}
+            .metric-cluster-sub-row {{ margin: 2px 0; grid-template-columns: 96px 1fr 62px; gap: 6px; }}
+            .metric-cluster-sub-fill {{ background: #6366f1; }}
+            .insight-callout-empty p {{ margin: 0; }}
+            .insight-observation, .insight-evidence {{ margin: 0; color: #374151; }}
             .insight-evidence span {{ color: #7a756d; font-size: 9px; margin-left: 6px; }}
             .design-notes {{ margin: 8px 0 0; padding-left: 18px; }}
             .design-notes li {{ margin-bottom: 8px; line-height: 1.5; }}
+            .gap-badge {{ display: inline-block; font-size: 9px; font-weight: 800; letter-spacing: .04em; color: #b42318; text-transform: uppercase; }}
             table {{ width: 100%; border-collapse: collapse; margin-top: 8px; }}
             th, td {{ text-align: left; border-bottom: 1px solid #e5e7eb; padding: 7px; vertical-align: top; }}
             th {{ background: #111827; color: #fff; font-size: 10px; text-transform: uppercase; }}
@@ -1208,11 +2483,147 @@ class CallImportEvaluationPdfReportService:
             .audit-summary p {{ margin: 0 0 7px; }}
             .audit-summary ul {{ margin: 7px 0 10px; padding-left: 16px; }}
             .audit-summary li {{ margin-bottom: 5px; }}
+            .audit-summary-section {{ margin-bottom: 0; break-after: avoid; page-break-after: avoid; }}
+            .audit-summary-section + section {{ margin-top: 0; }}
+            .audit-summary-section + section h2 {{ margin-top: 0; }}
+            .audit-stat-strip {{ display: flex; gap: 0; margin: 14px 0 0; border-top: 1px solid #111827; break-after: avoid; page-break-after: avoid; }}
+            .audit-stat-card {{ flex: 1; min-width: 0; padding: 10px 12px 0 0; }}
+            .audit-stat-card + .audit-stat-card {{ border-left: 1px solid #d1d5db; padding-left: 12px; }}
+            .audit-stat-rule {{ display: none; }}
+            .audit-stat-label {{ font-size: 8px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: #d16532; margin-bottom: 6px; line-height: 1.3; }}
+            .audit-stat-value {{ font-family: Georgia, 'Times New Roman', serif; font-size: 28px; font-weight: 700; color: #111827; line-height: 1; }}
+            .audit-delta-panel {{ break-inside: auto; page-break-inside: auto; margin: 8px 0 12px; padding-top: 8px; border-top: 1px solid #e5e7eb; }}
+            .audit-delta-title {{ font-size: 13px; font-weight: 900; letter-spacing: .04em; text-transform: uppercase; color: #111827; margin-bottom: 8px; }}
+            .audit-delta-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }}
+            .audit-delta-card {{ break-inside: auto; page-break-inside: auto; border: 1px solid #d9dee8; border-radius: 6px; padding: 8px 9px; background: #f8fafc; min-height: 96px; }}
+            .audit-delta-head {{ display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin-bottom: 4px; }}
+            .audit-delta-head-main {{ min-width: 0; }}
+            .audit-delta-head span {{ display: block; color: #111827; font-size: 9px; font-weight: 900; letter-spacing: .06em; line-height: 1.25; text-transform: uppercase; overflow-wrap: anywhere; }}
+            .audit-delta-direction {{ display: block; margin-top: 2px; color: #94a3b8; font-size: 7px; font-weight: 600; letter-spacing: .03em; text-transform: none; }}
+            .audit-delta-head strong {{ flex-shrink: 0; font-size: 10px; line-height: 1.2; text-align: right; white-space: nowrap; }}
+            .audit-delta-card.delta-good .audit-delta-head strong {{ color: #047857; }}
+            .audit-delta-card.delta-bad .audit-delta-head strong {{ color: #b42318; }}
+            .audit-delta-card.delta-flat .audit-delta-head strong {{ color: #475569; }}
+            .audit-delta-chart {{ min-height: 50px; }}
+            .audit-delta-chart .metric-sparkline {{ width: 100%; max-width: 100%; }}
+            .audit-delta-empty {{ height: 50px; display: flex; align-items: center; justify-content: center; border: 1px dashed #cbd5e1; background: #fff; color: #667085; font-size: 9px; }}
+            .audit-delta-reason {{ margin: 6px 0 0; padding-top: 5px; border-top: 1px solid #e5e7eb; color: #374151; font-size: 10px; font-weight: 600; line-height: 1.45; }}
             .report-footer {{ margin-top: 24px; border-top: 1px solid #1f2937; padding-top: 10px; display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; color: #4b5563; font-size: 10px; }}
             .footer-left, .footer-right {{ display: flex; flex-direction: column; gap: 3px; }}
             .footer-right {{ text-align: right; }}
             .brand-title {{ color: #111827; font-weight: 800; font-size: 11px; letter-spacing: .2px; }}
             .brand-link {{ color: #d16532; font-weight: 700; text-decoration: none; }}
+            .prompt-improvements {{ margin-top: 4px; max-width: 100%; }}
+            .prompt-improvement-card {{
+              margin: 0 0 10px;
+              padding: 8px 10px;
+              border: 1px solid #e5e7eb;
+              border-radius: 6px;
+              background: #fafafa;
+              max-width: 100%;
+              box-sizing: border-box;
+              break-inside: auto;
+              page-break-inside: auto;
+            }}
+            .prompt-improvements .metric-cluster-metric-head h3 {{
+              flex: 1;
+              min-width: 0;
+              overflow-wrap: anywhere;
+              word-break: break-word;
+            }}
+            .prompt-improvements .method {{
+              overflow-wrap: anywhere;
+              word-break: break-word;
+              max-width: 100%;
+            }}
+            .prompt-suggestion-block {{
+              margin: 6px 0;
+              padding: 8px 10px;
+              border: 1px solid #e5e7eb;
+              border-radius: 6px;
+              background: #fff;
+              font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+              font-size: 9px;
+              line-height: 1.45;
+              color: #111827;
+              white-space: pre-wrap;
+              overflow-wrap: anywhere;
+              word-break: break-word;
+              max-width: 100%;
+              width: 100%;
+              box-sizing: border-box;
+            }}
+            .prompt-improvement-meta {{
+              display: inline-flex;
+              flex-wrap: wrap;
+              align-items: center;
+              gap: 6px;
+            }}
+            .prompt-change-badge {{
+              display: inline-block;
+              font-size: 8px;
+              font-weight: 800;
+              text-transform: uppercase;
+              letter-spacing: .06em;
+              border-radius: 4px;
+              padding: 2px 5px;
+              border: 1px solid transparent;
+            }}
+            .prompt-change-badge-edit {{
+              color: #9f1239;
+              background: #fff1f2;
+              border-color: #fecdd3;
+            }}
+            .prompt-change-badge-add {{
+              color: #065f46;
+              background: #ecfdf5;
+              border-color: #a7f3d0;
+            }}
+            .prompt-change-grid {{
+              display: grid;
+              grid-template-columns: repeat(2, minmax(0, 1fr));
+              gap: 8px;
+              margin: 8px 0;
+            }}
+            .prompt-change-box {{
+              border-radius: 6px;
+              padding: 8px 10px;
+              min-width: 0;
+            }}
+            .prompt-change-before {{
+              border: 1px solid #fecdd3;
+              background: #fff1f2;
+            }}
+            .prompt-change-after {{
+              border: 1px solid #a7f3d0;
+              background: #ecfdf5;
+            }}
+            .prompt-change-add {{
+              border: 1px solid #e5e7eb;
+              background: #fff;
+              margin: 8px 0;
+            }}
+            .prompt-change-label {{
+              font-size: 8px;
+              font-weight: 800;
+              text-transform: uppercase;
+              letter-spacing: .08em;
+              margin-bottom: 6px;
+            }}
+            .prompt-change-before .prompt-change-label {{ color: #be123c; }}
+            .prompt-change-after .prompt-change-label {{ color: #047857; }}
+            .prompt-change-add .prompt-change-label {{ color: #6b7280; }}
+            .prompt-change-text {{
+              font-size: 9px;
+              line-height: 1.45;
+              color: #111827;
+              white-space: pre-wrap;
+              overflow-wrap: anywhere;
+              word-break: break-word;
+            }}
+            .prompt-improvement-rationale {{
+              margin-top: 6px;
+            }}
           </style>
         </head>
         <body>
@@ -1232,13 +2643,17 @@ class CallImportEvaluationPdfReportService:
             </div>
           </header>
           {f'''
-          <section>
+          <section class="audit-summary-section">
             <h2>01 Audit Summary</h2>
             <div class="audit-summary method">{audit_summary_markup}</div>
+            {top_metric_strip_markup}
+            {top_metric_delta_markup}
           </section>
           ''' if show_audit_summary else ''}
           {quality_panel_markup}
           {business_section}
+          {failure_diagnostics_section}
+          {prompt_improvements_section}
           {design_notes_section}
           {f'''
           <section>
@@ -1262,13 +2677,29 @@ class CallImportEvaluationPdfReportService:
         </html>
         """
 
-    def _render_weasyprint(self, html_content: str) -> bytes | None:
+    def _render_weasyprint(
+        self,
+        html_content: str,
+        *,
+        label: str = "",
+    ) -> bytes | None:
         try:
             from weasyprint import HTML  # type: ignore
         except Exception:
             return None
         try:
-            return HTML(string=html_content).write_pdf()
+            import time
+
+            started = time.perf_counter()
+            pdf_bytes = HTML(string=html_content).write_pdf()
+            elapsed = time.perf_counter() - started
+            logger.info(
+                "WeasyPrint PDF rendered in {:.1f}s (html_chars={}, {})",
+                elapsed,
+                len(html_content),
+                label or "report",
+            )
+            return pdf_bytes
         except Exception as exc:  # pragma: no cover - depends on native libs
             logger.warning("Falling back to basic PDF renderer: {}", exc)
             return None
@@ -1309,7 +2740,6 @@ class CallImportEvaluationPdfReportService:
                     f"Evaluated calls: {summary.evaluated_count}",
                     f"Flagged rate: {self._percent(summary.flagged_count, summary.evaluated_count)}",
                     f"Clear / passing rate: {self._percent(clear_count, summary.evaluated_count)}",
-                    f"Metric distribution: {self._top_distribution_with_percentages(summary)}",
                     f"Business meaning: {business_meaning}",
                 ]
             else:

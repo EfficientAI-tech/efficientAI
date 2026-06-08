@@ -1,9 +1,8 @@
-"""Celery task: generate LLM user insights for a call import evaluation."""
+"""Celery task: generate map-reduce user insights for a call-import evaluation."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Optional
 from uuid import UUID
 
 from loguru import logger
@@ -17,112 +16,66 @@ from app.models.database import (
 )
 from app.services.call_import_user_insights import (
     generate_user_insights,
-    normalize_max_llm_calls,
-    total_llm_calls_for_rows,
     user_insights_state_to_db,
 )
 from app.workers.config import celery_app
 
 
-def _now():
-    return datetime.now(timezone.utc)
-
-
-@celery_app.task(
-    name="generate_evaluation_user_insights",
-    bind=True,
-    max_retries=1,
-    time_limit=60 * 60,
-    soft_time_limit=55 * 60,
-)
+@celery_app.task(name="generate_evaluation_user_insights", bind=True, max_retries=0)
 def generate_evaluation_user_insights_task(
     self,
     evaluation_id: str,
     *,
-    provider: Optional[str] = None,
-    model: Optional[str] = None,
-    max_llm_calls: Optional[int] = None,
+    provider: str | None = None,
+    model: str | None = None,
+    max_llm_calls: int | None = None,
 ):
-    """Map-reduce user insights generation for one evaluation run."""
+    from app.api.v1.routes.call_import_evaluations import (
+        _compute_metric_aggregates,
+        _metrics_for_ids,
+        _serialize_selected_metric_ids,
+    )
+    from app.services.ai.llm_resolver import get_llm_provider_and_model
+
     db = SessionLocal()
     try:
-        llm_budget = normalize_max_llm_calls(max_llm_calls)
-        eval_uuid = UUID(evaluation_id)
         evaluation = (
             db.query(CallImportEvaluation)
-            .filter(CallImportEvaluation.id == eval_uuid)
+            .filter(CallImportEvaluation.id == UUID(evaluation_id))
             .first()
         )
-        if not evaluation:
-            logger.warning("CallImportEvaluation {} not found for user insights", evaluation_id)
-            return {"status": "skipped", "reason": "evaluation_not_found"}
-
-        row_pairs = (
-            db.query(CallImportEvaluationRow, CallImportRow)
-            .join(CallImportRow, CallImportRow.id == CallImportEvaluationRow.call_import_row_id)
-            .filter(
-                CallImportEvaluationRow.evaluation_id == eval_uuid,
-                CallImportEvaluationRow.status == "completed",
-            )
-            .order_by(CallImportRow.row_index.asc())
-            .all()
-        )
-
-        n_rows = len(row_pairs)
-        total_calls = total_llm_calls_for_rows(n_rows, max_llm_calls=llm_budget)
-        evaluation.user_insights = {
-            "status": "running",
-            "insights": [],
-            "generated_at": _now().isoformat(),
-            "generated_at_completed_rows": evaluation.completed_rows,
-            "progress": {"completed_llm_calls": 0, "total_llm_calls": total_calls},
-            "provider": provider,
-            "model": model,
-            "max_llm_calls": llm_budget,
-            "llm_calls_used": 0,
-            "error_message": None,
-        }
-        flag_modified(evaluation, "user_insights")
-        db.commit()
-
-        if n_rows == 0:
-            evaluation.user_insights = {
-                "status": "failed",
-                "insights": [],
-                "generated_at": _now().isoformat(),
-                "generated_at_completed_rows": evaluation.completed_rows,
-                "error_message": "No completed rows to analyze.",
-                "llm_calls_used": 0,
-            }
-            flag_modified(evaluation, "user_insights")
-            db.commit()
-            return {"status": "failed", "reason": "no_completed_rows"}
-
-        from app.api.v1.routes.call_import_evaluations import (
-            _compute_metric_aggregates,
-            _metrics_for_ids,
-        )
-        from app.services.ai.llm_resolver import get_llm_provider_and_model
-
-        eval_rows = [pair[0] for pair in row_pairs]
-        aggregate = _compute_metric_aggregates(db, evaluation, eval_rows)
-
-        metric_ids: list[UUID] = []
-        for mid in evaluation.selected_metric_ids or []:
-            try:
-                metric_ids.append(UUID(str(mid)))
-            except (TypeError, ValueError):
-                continue
-        metrics = _metrics_for_ids(db, evaluation.organization_id, metric_ids)
+        if evaluation is None:
+            logger.error("User insights: evaluation {} not found", evaluation_id)
+            return
 
         provider_enum, model_str = get_llm_provider_and_model(
-            evaluation.organization_id, db, provider, model
+            evaluation.organization_id,
+            db,
+            provider,
+            model,
         )
 
-        eval_id_str = str(evaluation.id)
+        rows = (
+            db.query(CallImportEvaluationRow, CallImportRow)
+            .join(
+                CallImportRow,
+                CallImportRow.id == CallImportEvaluationRow.call_import_row_id,
+            )
+            .filter(CallImportEvaluationRow.evaluation_id == evaluation.id)
+            .all()
+        )
+        completed_pairs = [
+            (eval_row, source_row)
+            for eval_row, source_row in rows
+            if eval_row.status == "completed"
+        ]
+        selected_ids = _serialize_selected_metric_ids(evaluation.selected_metric_ids)
+        metrics = _metrics_for_ids(db, evaluation.organization_id, selected_ids)
+        aggregate = _compute_metric_aggregates(
+            db, evaluation, [er for er, _ in rows]
+        )
 
         def on_progress(completed: int, total: int) -> None:
-            db.refresh(evaluation)
             evaluation.user_insights = {
                 **(evaluation.user_insights or {}),
                 "status": "running",
@@ -134,38 +87,24 @@ def generate_evaluation_user_insights_task(
             flag_modified(evaluation, "user_insights")
             db.commit()
 
-        result = generate_user_insights(
+        state = generate_user_insights(
             db,
             evaluation,
             evaluation.organization_id,
             provider_enum,
             model_str,
-            completed_row_pairs=row_pairs,
+            completed_row_pairs=completed_pairs,
             metrics=metrics,
             aggregate=aggregate,
             on_progress=on_progress,
-            max_llm_calls=llm_budget,
+            max_llm_calls=max_llm_calls,
         )
-
-        evaluation.user_insights = user_insights_state_to_db(result)
+        evaluation.user_insights = user_insights_state_to_db(state)
         flag_modified(evaluation, "user_insights")
         db.commit()
-
-        logger.info(
-            "User insights {} for evaluation {} ({} LLM calls, {} insights)",
-            result.status,
-            eval_id_str,
-            result.llm_calls_used,
-            len(result.insights),
-        )
-        return {
-            "status": result.status,
-            "insight_count": len(result.insights),
-            "llm_calls_used": result.llm_calls_used,
-        }
     except Exception as exc:  # noqa: BLE001
         logger.exception(
-            "User insights task failed for evaluation {}: {}",
+            "User insights generation failed for evaluation {}: {}",
             evaluation_id,
             exc,
         )
@@ -175,27 +114,15 @@ def generate_evaluation_user_insights_task(
                 .filter(CallImportEvaluation.id == UUID(evaluation_id))
                 .first()
             )
-            if evaluation:
+            if evaluation is not None:
                 evaluation.user_insights = {
                     "status": "failed",
-                    "insights": (
-                        (evaluation.user_insights or {}).get("insights", [])
-                        if isinstance(evaluation.user_insights, dict)
-                        else []
-                    ),
-                    "generated_at": _now().isoformat(),
-                    "generated_at_completed_rows": evaluation.completed_rows,
                     "error_message": str(exc),
-                    "llm_calls_used": (
-                        (evaluation.user_insights or {}).get("llm_calls_used", 0)
-                        if isinstance(evaluation.user_insights, dict)
-                        else 0
-                    ),
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
                 }
                 flag_modified(evaluation, "user_insights")
                 db.commit()
         except Exception:  # noqa: BLE001
-            pass
-        raise
+            db.rollback()
     finally:
         db.close()

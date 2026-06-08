@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../../store/authStore'
-import { apiClient } from '../../lib/api'
-import type { AuthConfigResponse, AuthProviderConfig } from '../../lib/api'
-import { AlertCircle } from 'lucide-react'
+import { apiClient, isLoginOrgSelectionResponse } from '../../lib/api'
+import type { AuthConfigResponse, AuthProviderConfig, LoginOrgOption } from '../../lib/api'
+import { buildAuthorizeUrl } from '../../lib/oidc'
+import { AlertCircle, Building2, Eye, EyeOff, Loader2 } from 'lucide-react'
 import Logo from '../../components/Logo'
 import { Card, CardBody, Button, Divider, Chip, Tabs, Tab } from '@heroui/react'
 
@@ -20,6 +21,7 @@ import { Card, CardBody, Button, Divider, Chip, Tabs, Tab } from '@heroui/react'
  */
 
 type Mode = 'password' | 'signup' | 'sso'
+type LoginStep = 'credentials' | 'org-select'
 
 export default function Login() {
   const navigate = useNavigate()
@@ -37,6 +39,10 @@ export default function Login() {
   const [lastName, setLastName] = useState('')
   const [error, setError] = useState('')
   const [isLoading, setIsLoading] = useState(false)
+  const [loginStep, setLoginStep] = useState<LoginStep>('credentials')
+  const [orgOptions, setOrgOptions] = useState<LoginOrgOption[]>([])
+  const [selectingOrgId, setSelectingOrgId] = useState<string | null>(null)
+  const [showPassword, setShowPassword] = useState(false)
 
   useEffect(() => {
     let active = true
@@ -74,12 +80,35 @@ export default function Login() {
     setIsLoading(true)
     try {
       const res = await apiClient.loginWithPassword(email, password)
+      if (isLoginOrgSelectionResponse(res)) {
+        setOrgOptions(res.organizations)
+        setLoginStep('org-select')
+        return
+      }
       setSession(res.access_token, res.user)
       navigate('/')
     } catch (err: any) {
       setError(err?.response?.data?.detail || 'Invalid email or password')
     } finally {
       setIsLoading(false)
+    }
+  }
+
+  const handleOrgSelect = async (organizationId: string) => {
+    setError('')
+    setSelectingOrgId(organizationId)
+    try {
+      const res = await apiClient.loginWithPassword(email, password, organizationId)
+      if (isLoginOrgSelectionResponse(res)) {
+        setError('Organization selection failed — try again')
+        return
+      }
+      setSession(res.access_token, res.user)
+      navigate('/')
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || 'Could not sign in to the selected organization')
+    } finally {
+      setSelectingOrgId(null)
     }
   }
 
@@ -105,11 +134,6 @@ export default function Login() {
   }
 
   const handleSsoRedirect = async (provider: AuthProviderConfig) => {
-    // We kick off the standard OIDC authorization-code flow with the SPA as
-    // the redirect target. Every OIDC-compliant IdP advertises its authorize
-    // endpoint at /.well-known/openid-configuration, which means we don't
-    // need to hardcode IdP-specific paths: Okta, Azure AD, Google Workspace,
-    // Cognito, Auth0 all work with the same discovery lookup.
     if (!provider.oidc_client_id) {
       setError(
         `${provider.display_name} is enabled but not fully configured. Ask your admin to set the issuer and client_id.`
@@ -117,36 +141,16 @@ export default function Login() {
       return
     }
 
-    let authorizeUrl = provider.oidc_authorize_url ?? null
-    if (!authorizeUrl && provider.oidc_issuer) {
-      try {
-        const discoveryUrl = `${provider.oidc_issuer.replace(/\/$/, '')}/.well-known/openid-configuration`
-        const res = await fetch(discoveryUrl)
-        if (res.ok) {
-          const doc = (await res.json()) as { authorization_endpoint?: string }
-          authorizeUrl = doc.authorization_endpoint ?? null
-        }
-      } catch {
-        // ignore; handled below
-      }
-    }
-
-    if (!authorizeUrl) {
+    try {
+      const redirect = `${window.location.origin}/login/callback`
+      const authorizeUrl = await buildAuthorizeUrl(provider, redirect)
+      window.location.href = authorizeUrl
+    } catch (err: any) {
       setError(
-        `Could not discover the authorize endpoint for ${provider.display_name}. Verify the issuer URL is reachable from your browser.`
+        err?.message ||
+          `Could not start sign-in with ${provider.display_name}. Verify the issuer URL is reachable from your browser.`
       )
-      return
     }
-
-    const redirect = `${window.location.origin}/login/callback`
-    const params = new URLSearchParams({
-      client_id: provider.oidc_client_id,
-      redirect_uri: redirect,
-      response_type: 'code',
-      scope: 'openid profile email',
-      state: crypto.randomUUID(),
-    })
-    window.location.href = `${authorizeUrl}?${params.toString()}`
   }
 
   if (loadingConfig) {
@@ -191,6 +195,7 @@ export default function Login() {
                 onSelectionChange={(k) => {
                   setMode(k as Mode)
                   setError('')
+                  setShowPassword(false)
                 }}
                 variant="solid"
                 radius="full"
@@ -211,7 +216,7 @@ export default function Login() {
               </Tabs>
             )}
 
-            {mode === 'password' && localPwd && (
+            {mode === 'password' && localPwd && loginStep === 'credentials' && (
               <form onSubmit={handlePasswordLogin} className="space-y-4">
                 <input
                   type="email"
@@ -222,15 +227,26 @@ export default function Login() {
                   required
                   className="w-full px-4 py-3 text-base text-gray-900 bg-gray-50 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-[#ca8a04] focus:bg-white"
                 />
-                <input
-                  type="password"
-                  placeholder="Password"
-                  autoComplete="current-password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                  className="w-full px-4 py-3 text-base text-gray-900 bg-gray-50 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-[#ca8a04] focus:bg-white"
-                />
+                <div className="relative">
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    placeholder="Password"
+                    autoComplete="current-password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    required
+                    className="w-full px-4 py-3 pr-12 text-base text-gray-900 bg-gray-50 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-[#ca8a04] focus:bg-white"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((v) => !v)}
+                    className="absolute inset-y-0 right-0 px-4 flex items-center text-gray-400 hover:text-gray-600"
+                    title={showPassword ? 'Hide password' : 'Show password'}
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  >
+                    {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+                  </button>
+                </div>
                 {error && (
                   <Chip color="danger" variant="flat" startContent={<AlertCircle className="w-4 h-4" />} className="w-full max-w-full h-auto py-2">
                     {error}
@@ -242,6 +258,53 @@ export default function Login() {
               </form>
             )}
 
+            {mode === 'password' && localPwd && loginStep === 'org-select' && (
+              <div className="space-y-4">
+                <p className="text-sm text-gray-600 text-center">
+                  Your account belongs to multiple organizations. Choose one to continue.
+                </p>
+                <div className="space-y-2">
+                  {orgOptions.map((org) => {
+                    const isSelecting = selectingOrgId === org.id
+                    return (
+                      <button
+                        key={org.id}
+                        type="button"
+                        disabled={!!selectingOrgId}
+                        onClick={() => handleOrgSelect(org.id)}
+                        className="w-full px-4 py-3 text-left border border-gray-200 rounded-xl hover:bg-gray-50 transition-colors flex items-center gap-3 disabled:opacity-60"
+                      >
+                        <Building2 className="h-5 w-5 text-gray-500 flex-shrink-0" />
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-medium text-gray-900 truncate">{org.name}</div>
+                          <div className="text-xs text-gray-500 capitalize">{org.role}</div>
+                        </div>
+                        {isSelecting && (
+                          <Loader2 className="h-4 w-4 text-gray-400 animate-spin flex-shrink-0" />
+                        )}
+                      </button>
+                    )
+                  })}
+                </div>
+                {error && (
+                  <Chip color="danger" variant="flat" startContent={<AlertCircle className="w-4 h-4" />} className="w-full max-w-full h-auto py-2">
+                    {error}
+                  </Chip>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLoginStep('credentials')
+                    setOrgOptions([])
+                    setError('')
+                  }}
+                  className="w-full text-sm text-gray-600 hover:text-gray-800"
+                >
+                  Back to sign in
+                </button>
+              </div>
+            )}
+
             {mode === 'signup' && localPwd?.supports_signup && (
               <form onSubmit={handleSignup} className="space-y-3">
                 <div className="grid grid-cols-2 gap-2">
@@ -249,7 +312,27 @@ export default function Login() {
                   <input type="text" placeholder="Last name" value={lastName} onChange={(e) => setLastName(e.target.value)} className="px-4 py-3 bg-gray-50 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-[#ca8a04] focus:bg-white" />
                 </div>
                 <input type="email" placeholder="you@example.com" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} required className="w-full px-4 py-3 bg-gray-50 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-[#ca8a04] focus:bg-white" />
-                <input type="password" placeholder="Password (min 8 chars)" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={8} className="w-full px-4 py-3 bg-gray-50 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-[#ca8a04] focus:bg-white" />
+                <div className="relative">
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    placeholder="Password (min 8 chars)"
+                    autoComplete="new-password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    required
+                    minLength={8}
+                    className="w-full px-4 py-3 pr-12 bg-gray-50 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-[#ca8a04] focus:bg-white"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((v) => !v)}
+                    className="absolute inset-y-0 right-0 px-4 flex items-center text-gray-400 hover:text-gray-600"
+                    title={showPassword ? 'Hide password' : 'Show password'}
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  >
+                    {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+                  </button>
+                </div>
                 <input type="text" placeholder="Organization name (optional)" value={orgName} onChange={(e) => setOrgName(e.target.value)} className="w-full px-4 py-3 bg-gray-50 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-[#ca8a04] focus:bg-white" />
                 {error && (
                   <Chip color="danger" variant="flat" startContent={<AlertCircle className="w-4 h-4" />} className="w-full max-w-full h-auto py-2">

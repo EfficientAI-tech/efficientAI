@@ -1290,6 +1290,10 @@ class PromptPartial(Base):
     content = Column(Text, nullable=False)
     tags = Column(JSON, nullable=True)
     current_version = Column(Integer, nullable=False, default=1)
+    # Cached LLM-generated flowchart for imported production agent prompts.
+    # Shape: AgentFlowGraph JSON (nodes[], edges[]).
+    agent_flowchart = Column(JSON, nullable=True)
+    agent_flowchart_status = Column(String(20), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -2114,6 +2118,19 @@ class CallImportEvaluation(Base):
     # Populated by a background Celery job triggered alongside TLDR generation.
     # Shape: EvaluationUserInsightsState JSON (status, insights[], progress, …).
     user_insights = Column(JSON, nullable=True)
+
+    # Cached per-metric failure clustering for internal diagnostics PDF/UI.
+    # Shape: EvaluationMetricClustersState JSON (status, groups[], …).
+    metric_clusters = Column(JSON, nullable=True)
+
+    # Cached LLM-generated prompt improvement suggestions keyed to an
+    # imported agent (PromptPartial tagged __imported_agent__).
+    # Shape: EvaluationPromptImprovementsState JSON.
+    prompt_improvements = Column(JSON, nullable=True)
+
+    # Cached LLM explanations for week-over-week metric deltas keyed by
+    # baseline evaluation id + completed row counts.
+    period_delta_explanations = Column(JSON, nullable=True)
 
     status = Column(String(20), nullable=False, default="pending", index=True)
 

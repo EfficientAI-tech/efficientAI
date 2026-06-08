@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import base64
 import io
@@ -23,7 +24,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.database import get_db
-from app.dependencies import get_api_key, get_organization_id, require_enterprise_feature
+from app.dependencies import (
+    get_api_key,
+    get_organization_id,
+    get_workspace_id,
+    require_enterprise_feature,
+)
 from app.models.database import (
     AIProvider,
     CallImport,
@@ -32,6 +38,7 @@ from app.models.database import (
     CallImportEvaluationRow,
     CallImportRow,
     Metric,
+    PromptPartial,
     Workspace,
 )
 from app.models.enums import CallImportRowStatus, ModelProvider
@@ -62,14 +69,45 @@ from app.models.schemas import (
     DiscoveredMetricsResponse,
     EvaluationInsightsRequest,
     EvaluationTldrSummary,
+    EvaluationMetricClustersRequest,
+    EvaluationMetricClustersState,
+    EvaluationPromptImprovementsRequest,
+    EvaluationPromptImprovementsState,
+    MetricFailurePoliciesResponse,
+    MetricFailurePoliciesSaveRequest,
+    MetricFailurePolicy,
+    MetricClusterEligibleRow,
+    MetricClusterEligibleRowsResponse,
     EvaluationUserInsightsRequest,
     EvaluationUserInsightsState,
     MetricFlowEdge,
+    MetricPeriodDelta,
     MetricFlowNode,
     MetricFlowResponse,
 )
 from app.services.reporting.call_import_evaluation_pdf_report import (
     call_import_evaluation_pdf_report_service,
+)
+from app.services.call_import_metric_clusters import (
+    METRIC_CLUSTERS_CANCELLED_BY_USER_ERROR,
+    estimate_metric_clusters_llm_calls,
+    filter_completed_row_pairs,
+    list_eligible_cluster_rows,
+    metric_clusters_raw_is_cancelled,
+    metric_clusters_state_from_raw,
+    metric_clusters_state_to_db,
+)
+from app.services.metric_failure_policy import (
+    aggregate_primary_percent,
+    build_failure_policy_previews,
+    effective_policies,
+    failure_rate_percent_from_rows,
+    failure_policies_to_db,
+    has_clusterable_metrics,
+    merge_clustering_policies,
+    merge_failure_policies_into_raw,
+    policies_from_evaluation_raw,
+    validate_failure_policies_for_metrics,
 )
 from app.services.call_import_user_insights import (
     normalize_max_llm_calls,
@@ -95,6 +133,11 @@ class CallImportEvaluationPdfReportRequest(BaseModel):
     internal_brand_image_id: Optional[str] = None
     external_brand_image_id: Optional[str] = None
     report_config: Dict[str, Any] = Field(default_factory=dict)
+    platform_base_url: Optional[str] = Field(
+        default=None,
+        max_length=512,
+        description="Frontend origin for deep links to example calls in internal PDFs.",
+    )
 
     @field_validator("vendor_name")
     @classmethod
@@ -403,6 +446,7 @@ def _serialize_eval(
         updated_at=row.updated_at,
         tldr_summary=_tldr_summary_payload(row),
         user_insights=_user_insights_payload(row),
+        metric_clusters=_metric_clusters_payload(row),
         discover_new_metrics=bool(
             getattr(row, "discover_new_metrics", False)
         ),
@@ -2026,6 +2070,56 @@ def _display_metrics_for_pdf_report(
     return display
 
 
+def _metrics_for_clustering(
+    db: Session,
+    evaluation: CallImportEvaluation,
+    eval_rows: List[CallImportEvaluationRow],
+) -> List[Metric]:
+    """All enabled quality metrics scored in this run, normalized for clustering.
+
+    Hierarchical children are collapsed to their parent metric so cluster
+    groups render at the category level (e.g. ``AI reveal``) instead of the
+    child label level (e.g. ``Yes`` / ``No``).
+    """
+    aggregates = _compute_metric_aggregates(db, evaluation, eval_rows)
+    aggregate_metric_ids: List[UUID] = []
+    for agg in aggregates:
+        if (agg.metric_category or "quality") == "user_insight":
+            continue
+        try:
+            aggregate_metric_ids.append(UUID(agg.metric_id))
+        except (TypeError, ValueError):
+            continue
+    if not aggregate_metric_ids:
+        return []
+
+    aggregate_metrics = _metrics_for_ids(
+        db, evaluation.organization_id, aggregate_metric_ids
+    )
+    by_id = {metric.id: metric for metric in aggregate_metrics}
+
+    normalized_ids: List[UUID] = []
+    seen: set[UUID] = set()
+    for metric_id in aggregate_metric_ids:
+        metric = by_id.get(metric_id)
+        target_id = (
+            metric.parent_metric_id
+            if metric is not None and metric.parent_metric_id
+            else metric_id
+        )
+        if target_id in seen:
+            continue
+        seen.add(target_id)
+        normalized_ids.append(target_id)
+
+    metrics = _metrics_for_ids(db, evaluation.organization_id, normalized_ids)
+    return [
+        metric
+        for metric in metrics
+        if getattr(metric, "enabled", True) and not _metric_is_user_insight(metric)
+    ]
+
+
 def _metric_is_user_insight(metric: Metric) -> bool:
     if (getattr(metric, "metric_category", "quality") or "quality") == "user_insight":
         return True
@@ -2215,6 +2309,8 @@ def _period_deltas_from_evaluation(
     db: Session,
     baseline_evaluation: CallImportEvaluation,
     current_metric_aggregates: list[dict[str, Any]],
+    current_evaluation: CallImportEvaluation,
+    current_eval_rows: List[CallImportEvaluationRow],
 ) -> dict[str, dict[str, str]]:
     baseline_rows = _evaluation_rows_for_period(db, baseline_evaluation.id)
     baseline_eval_rows = [eval_row for eval_row, _source_row in baseline_rows]
@@ -2226,9 +2322,504 @@ def _period_deltas_from_evaluation(
     baseline_metric_aggregates = [
         _aggregate_to_dict(aggregate) for aggregate in baseline_aggregate_models
     ]
-    return _period_deltas_from_aggregates(
-        baseline_metric_aggregates,
-        current_metric_aggregates,
+    _metrics, _aggs, policies, _source, _child_map = _clustering_context(
+        db, current_evaluation, current_eval_rows
+    )
+    metric_by_id = {str(m.id): m for m in _metrics}
+    current_by_id = {
+        str(item.get("metric_id")): item for item in current_metric_aggregates
+    }
+    previous_by_id = {
+        str(item.get("metric_id")): item
+        for item in baseline_metric_aggregates
+        if isinstance(item, dict)
+    }
+    deltas: dict[str, dict[str, str]] = {}
+    for metric_id, current in current_by_id.items():
+        metric = metric_by_id.get(metric_id)
+        policy = policies.get(metric_id)
+        previous_raw = previous_by_id.get(metric_id)
+        if metric is None or policy is None:
+            deltas[metric_id] = {
+                "label": "No previous-week baseline",
+                "detail": "No comparable prior report snapshot was found.",
+            }
+            continue
+        current_pct = failure_rate_percent_from_rows(
+            current_eval_rows, metric, policy
+        )
+        previous_pct = failure_rate_percent_from_rows(
+            baseline_eval_rows, metric, policy
+        )
+        if current_pct is None or previous_pct is None:
+            current_pct = current_pct or _aggregate_primary_percent(current, policy)
+            previous_pct = (
+                previous_pct or _aggregate_primary_percent(previous_raw, policy)
+                if previous_raw
+                else None
+            )
+        if current_pct is None or previous_pct is None:
+            deltas[metric_id] = {
+                "label": "No previous-week baseline",
+                "detail": "No comparable prior report snapshot was found.",
+            }
+            continue
+        delta = current_pct - previous_pct
+        sign = "+" if delta >= 0 else ""
+        deltas[metric_id] = {
+            "label": f"{sign}{delta:.1f} pp",
+            "detail": (
+                f"Current report {current_pct:.1f}% vs previous report "
+                f"{previous_pct:.1f}%"
+            ),
+        }
+    return deltas
+
+
+_DELTA_EXPLANATION_SYSTEM_PROMPT = (
+    "You are a senior conversation-analytics reviewer. You will receive "
+    "week-over-week metric failure-rate deltas plus reconciled failure "
+    "cluster context per metric.\n\n"
+    "Return STRICT JSON only:\n"
+    "{\n"
+    '  "explanations": {"<metric_id>": "<1-2 sentence explanation of why the delta likely occurred>"}\n'
+    "}\n\n"
+    "Constraints:\n"
+    "- Only include metrics supplied in the prompt.\n"
+    "- Cluster labels are generated independently each run and are NOT stable "
+    "IDs. Never compare an unmatched current label to 0% baseline.\n"
+    "- Use matched_theme_shifts for label-aligned comparisons, "
+    "gap_label_shifts for structural shifts, and new_themes_current_period "
+    "for themes that emerged without a baseline match.\n"
+    "- If reconciliation is uncertain, explain using the numeric delta and "
+    "gap_label_shifts only.\n"
+    "- Keep each explanation to 1-2 short sentences (~220 chars).\n"
+    "- Vendor-safe, factual language; no markdown."
+)
+
+
+def _period_delta_explanation_cache_key(
+    baseline_evaluation_id: UUID,
+    *,
+    completed_rows: int,
+    baseline_completed_rows: int,
+) -> str:
+    return (
+        f"{baseline_evaluation_id}:{completed_rows}:"
+        f"{baseline_completed_rows}:reconciled-v2"
+    )
+
+
+def _normalize_cluster_label(label: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (label or "").lower()).strip()
+
+
+_CLUSTER_LABEL_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "and",
+        "or",
+        "during",
+        "while",
+        "with",
+        "for",
+        "from",
+        "into",
+        "general",
+        "user",
+        "bot",
+        "agent",
+    }
+)
+
+
+def _cluster_label_tokens(label: str) -> set[str]:
+    return {
+        token
+        for token in _normalize_cluster_label(label).split()
+        if token and token not in _CLUSTER_LABEL_STOPWORDS and len(token) > 2
+    }
+
+
+def _cluster_label_similarity(left: str, right: str) -> float:
+    tokens_left = _cluster_label_tokens(left)
+    tokens_right = _cluster_label_tokens(right)
+    if not tokens_left or not tokens_right:
+        return 0.0
+    intersection = tokens_left & tokens_right
+    if not intersection:
+        return 0.0
+    union = tokens_left | tokens_right
+    jaccard = len(intersection) / len(union)
+    smaller = tokens_left if len(tokens_left) <= len(tokens_right) else tokens_right
+    overlap_ratio = len(intersection) / len(smaller)
+    return max(jaccard, overlap_ratio * 0.85)
+
+
+def _group_clusters_by_gap_label(
+    clusters: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for cluster in clusters:
+        gap_label = str(cluster.get("gap_label") or "UNKNOWN")
+        grouped.setdefault(gap_label, []).append(cluster)
+    return grouped
+
+
+def _append_matched_cluster_pair(
+    matched: list[dict[str, Any]],
+    current: dict[str, Any],
+    baseline: dict[str, Any],
+    *,
+    match_confidence: float,
+    match_method: str,
+) -> None:
+    matched.append(
+        {
+            "current_label": current.get("label"),
+            "baseline_label": baseline.get("label"),
+            "gap_label": current.get("gap_label") or baseline.get("gap_label"),
+            "current_share_pct": current.get("share_pct"),
+            "baseline_share_pct": baseline.get("share_pct"),
+            "share_delta_pp": round(
+                float(current.get("share_pct") or 0.0)
+                - float(baseline.get("share_pct") or 0.0),
+                1,
+            ),
+            "match_confidence": round(match_confidence, 2),
+            "match_method": match_method,
+        }
+    )
+
+
+def _aggregate_share_by_gap_label(
+    clusters: list[dict[str, Any]],
+) -> dict[str, float]:
+    totals: dict[str, float] = {}
+    for cluster in clusters:
+        gap_label = str(cluster.get("gap_label") or "UNKNOWN")
+        totals[gap_label] = totals.get(gap_label, 0.0) + float(
+            cluster.get("share_pct") or 0.0
+        )
+    return {gap: round(share, 1) for gap, share in totals.items()}
+
+
+def _reconcile_cluster_periods(
+    current_clusters: list[dict[str, Any]],
+    baseline_clusters: list[dict[str, Any]],
+    *,
+    similarity_threshold: float = 0.35,
+) -> dict[str, Any]:
+    """Align independently-generated cluster labels before delta explanation."""
+    matched: list[dict[str, Any]] = []
+    current_unmatched = list(current_clusters)
+    remaining_baseline = list(baseline_clusters)
+
+    current_by_gap = _group_clusters_by_gap_label(current_unmatched)
+    baseline_by_gap = _group_clusters_by_gap_label(remaining_baseline)
+    for gap_label in list(current_by_gap):
+        current_group = current_by_gap.get(gap_label) or []
+        baseline_group = baseline_by_gap.get(gap_label) or []
+        if len(current_group) != 1 or len(baseline_group) != 1:
+            continue
+        current = current_group[0]
+        baseline = baseline_group[0]
+        _append_matched_cluster_pair(
+            matched,
+            current,
+            baseline,
+            match_confidence=0.75,
+            match_method="single_cluster_per_gap_label",
+        )
+        current_unmatched.remove(current)
+        remaining_baseline.remove(baseline)
+        current_by_gap[gap_label] = []
+        baseline_by_gap[gap_label] = []
+
+    for current in list(current_unmatched):
+        best_idx: Optional[int] = None
+        best_score = 0.0
+        for idx, baseline in enumerate(remaining_baseline):
+            score = _cluster_label_similarity(
+                str(current.get("label") or ""),
+                str(baseline.get("label") or ""),
+            )
+            if current.get("gap_label") == baseline.get("gap_label"):
+                score += 0.1
+            if score > best_score:
+                best_score = score
+                best_idx = idx
+
+        if best_idx is not None and best_score >= similarity_threshold:
+            baseline = remaining_baseline.pop(best_idx)
+            _append_matched_cluster_pair(
+                matched,
+                current,
+                baseline,
+                match_confidence=best_score,
+                match_method="label_similarity",
+            )
+
+    matched_current_labels = {
+        str(item.get("current_label") or "") for item in matched
+    }
+    matched_baseline_labels = {
+        str(item.get("baseline_label") or "") for item in matched
+    }
+    current_unmatched = [
+        cluster
+        for cluster in current_clusters
+        if str(cluster.get("label") or "") not in matched_current_labels
+    ]
+    remaining_baseline = [
+        cluster
+        for cluster in baseline_clusters
+        if str(cluster.get("label") or "") not in matched_baseline_labels
+    ]
+
+    new_themes = [
+        {
+            "label": cluster.get("label"),
+            "gap_label": cluster.get("gap_label"),
+            "share_pct": cluster.get("share_pct"),
+            "note": "New theme in current period (no close baseline match).",
+        }
+        for cluster in current_unmatched
+    ]
+
+    retired_themes = [
+        {
+            "label": baseline.get("label"),
+            "gap_label": baseline.get("gap_label"),
+            "share_pct": baseline.get("share_pct"),
+            "note": "Theme present in baseline only (retired or renamed).",
+        }
+        for baseline in remaining_baseline
+    ]
+
+    current_gap = _aggregate_share_by_gap_label(current_clusters)
+    baseline_gap = _aggregate_share_by_gap_label(baseline_clusters)
+    gap_label_shifts: dict[str, dict[str, float]] = {}
+    for gap_label in set(current_gap) | set(baseline_gap):
+        current_share = current_gap.get(gap_label, 0.0)
+        baseline_share = baseline_gap.get(gap_label, 0.0)
+        if abs(current_share - baseline_share) >= 0.5:
+            gap_label_shifts[gap_label] = {
+                "current_share_pct": current_share,
+                "baseline_share_pct": baseline_share,
+                "share_delta_pp": round(current_share - baseline_share, 1),
+            }
+
+    return {
+        "matched_theme_shifts": matched,
+        "new_themes_current_period": new_themes,
+        "retired_themes_baseline_period": retired_themes,
+        "gap_label_shifts": gap_label_shifts,
+        "reconciliation_note": (
+            "Cluster labels are generated independently each run and may "
+            "rename the same failure mode. Do not treat unmatched current "
+            "labels as 0% in the baseline period."
+        ),
+    }
+
+
+def _load_period_delta_explanations_cache(
+    evaluation: CallImportEvaluation,
+    cache_key: str,
+) -> Optional[dict[str, str]]:
+    raw = getattr(evaluation, "period_delta_explanations", None)
+    if not isinstance(raw, dict):
+        return None
+    entry = raw.get(cache_key)
+    if not isinstance(entry, dict):
+        return None
+    explanations_raw = entry.get("explanations")
+    if not isinstance(explanations_raw, dict):
+        return None
+    return {
+        str(metric_id): str(why).strip()
+        for metric_id, why in explanations_raw.items()
+        if str(metric_id).strip() and isinstance(why, str) and why.strip()
+    }
+
+
+def _save_period_delta_explanations_cache(
+    db: Session,
+    evaluation: CallImportEvaluation,
+    cache_key: str,
+    explanations: dict[str, str],
+) -> None:
+    raw = evaluation.period_delta_explanations
+    if not isinstance(raw, dict):
+        raw = {}
+    updated = dict(raw)
+    updated[cache_key] = {
+        "explanations": explanations,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    evaluation.period_delta_explanations = updated
+    flag_modified(evaluation, "period_delta_explanations")
+    db.commit()
+
+
+def _cluster_summary_for_metric(
+    state: Optional[EvaluationMetricClustersState],
+    metric_id: str,
+) -> list[dict[str, Any]]:
+    if state is None or state.status != "completed":
+        return []
+    for group in state.groups:
+        if str(group.metric_id) != metric_id:
+            continue
+        return [
+            {
+                "label": cluster.label,
+                "gap_label": cluster.gap_label,
+                "share_pct": round(cluster.share_pct, 1),
+                "count": cluster.count,
+            }
+            for cluster in group.clusters[:5]
+        ]
+    return []
+
+
+def _merge_delta_why(
+    raw_deltas: dict[str, dict[str, str]],
+    explanations: dict[str, str],
+) -> dict[str, dict[str, str]]:
+    if not explanations:
+        return raw_deltas
+    merged: dict[str, dict[str, str]] = {}
+    for metric_id, delta in raw_deltas.items():
+        updated = dict(delta)
+        why = explanations.get(metric_id)
+        if why:
+            updated["why"] = why
+        merged[metric_id] = updated
+    return merged
+
+
+def _explain_period_deltas(
+    db: Session,
+    organization_id: UUID,
+    evaluation: CallImportEvaluation,
+    baseline_evaluation: CallImportEvaluation,
+    raw_deltas: dict[str, dict[str, str]],
+    *,
+    min_delta_pp: float = 0.5,
+) -> dict[str, dict[str, str]]:
+    """Attach ``why`` explanations to period deltas using cached LLM output."""
+    if not raw_deltas:
+        return raw_deltas
+
+    cache_key = _period_delta_explanation_cache_key(
+        baseline_evaluation.id,
+        completed_rows=evaluation.completed_rows,
+        baseline_completed_rows=baseline_evaluation.completed_rows,
+    )
+    cached = _load_period_delta_explanations_cache(evaluation, cache_key)
+    if cached is not None:
+        return _merge_delta_why(raw_deltas, cached)
+
+    current_clusters = _metric_clusters_payload(evaluation)
+    baseline_clusters = _metric_clusters_payload(baseline_evaluation)
+    metrics_for_prompt: list[dict[str, Any]] = []
+    for metric_id, delta in raw_deltas.items():
+        label = delta.get("label") or ""
+        if "No previous-week baseline" in label:
+            continue
+        match = re.search(r"([+-]?\d+(?:\.\d+)?)\s*pp", label)
+        if match and abs(float(match.group(1))) < min_delta_pp:
+            continue
+        current_summary = _cluster_summary_for_metric(current_clusters, metric_id)
+        baseline_summary = _cluster_summary_for_metric(baseline_clusters, metric_id)
+        if not current_summary and not baseline_summary:
+            continue
+        cluster_reconciliation = _reconcile_cluster_periods(
+            current_summary,
+            baseline_summary,
+        )
+        metrics_for_prompt.append(
+            {
+                "metric_id": metric_id,
+                "delta_label": label,
+                "delta_detail": delta.get("detail") or "",
+                "cluster_reconciliation": cluster_reconciliation,
+            }
+        )
+
+    if not metrics_for_prompt:
+        return raw_deltas
+
+    provider_hint: Optional[str] = None
+    model_hint: Optional[str] = None
+    tldr_raw = evaluation.tldr_summary
+    if isinstance(tldr_raw, dict):
+        if isinstance(tldr_raw.get("provider"), str):
+            provider_hint = tldr_raw["provider"]
+        if isinstance(tldr_raw.get("model"), str):
+            model_hint = tldr_raw["model"]
+
+    from app.services.ai.llm_resolver import get_llm_provider_and_model
+    from app.services.call_import_user_insights import _call_llm, _parse_json_object
+
+    provider_enum, model_str = get_llm_provider_and_model(
+        organization_id, db, provider_hint, model_hint
+    )
+    try:
+        text = _call_llm(
+            db,
+            organization_id,
+            provider_enum,
+            model_str,
+            [
+                {"role": "system", "content": _DELTA_EXPLANATION_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {"metrics": metrics_for_prompt},
+                        ensure_ascii=False,
+                        default=str,
+                    ),
+                },
+            ],
+            temperature=0.3,
+            max_tokens=900,
+        )
+    except Exception as exc:
+        logger.warning("[PeriodDeltaExplain] LLM call failed: {}", exc)
+        return raw_deltas
+
+    parsed = _parse_json_object(text)
+    explanations_raw = parsed.get("explanations")
+    explanations: dict[str, str] = {}
+    if isinstance(explanations_raw, dict):
+        for metric_id, why in explanations_raw.items():
+            if isinstance(why, str) and why.strip():
+                explanations[str(metric_id)] = why.strip()
+
+    if explanations:
+        _save_period_delta_explanations_cache(
+            db, evaluation, cache_key, explanations
+        )
+    return _merge_delta_why(raw_deltas, explanations)
+
+
+def _period_deltas_with_explanations(
+    db: Session,
+    organization_id: UUID,
+    evaluation: CallImportEvaluation,
+    baseline_evaluation: CallImportEvaluation,
+    raw_deltas: dict[str, dict[str, str]],
+) -> dict[str, dict[str, str]]:
+    return _explain_period_deltas(
+        db,
+        organization_id,
+        evaluation,
+        baseline_evaluation,
+        raw_deltas,
     )
 
 
@@ -2276,14 +2867,39 @@ def _benchmark_context_for_snapshot(
     }
 
 
+def _clamp_prose_to_sentences(
+    text: str,
+    *,
+    max_sentences: int = 3,
+    max_chars: int = 300,
+) -> str:
+    """Keep concise audit/TLDR prose within sentence and character limits."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return cleaned
+    cleaned = re.sub(r"\s*\n+\s*", " ", cleaned).strip()
+    sentences = [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+", cleaned)
+        if sentence.strip()
+    ]
+    if sentences:
+        result = " ".join(sentences[:max_sentences]).strip()
+    else:
+        result = cleaned
+    if len(result) > max_chars:
+        trimmed = result[: max_chars - 3].rsplit(" ", 1)[0].rstrip(".,;:")
+        result = f"{trimmed}..." if trimmed else result[:max_chars]
+    return result
+
+
 def _audit_summary_text_from_tldr(
     summary: Optional[EvaluationTldrSummary],
 ) -> Optional[str]:
     if summary is None:
         return None
-    parts = [summary.narrative.strip()]
-    parts.extend(pattern.strip() for pattern in summary.patterns if pattern.strip())
-    return "\n\n".join(part for part in parts if part)
+    narrative = _clamp_prose_to_sentences(summary.narrative.strip())
+    return narrative or None
 
 
 def _metric_insights_from_tldr(
@@ -2331,28 +2947,69 @@ def _aggregate_to_dict(aggregate: CallImportMetricAggregate) -> dict[str, Any]:
     return aggregate.dict()
 
 
-def _aggregate_primary_percent(raw: dict[str, Any]) -> Optional[float]:
-    mean = raw.get("mean")
-    if isinstance(mean, (int, float)) and math.isfinite(float(mean)):
-        value = float(mean)
-        return value * 100 if 0 <= value <= 1 else max(0.0, min(value, 100.0))
-    count = int(raw.get("count") or 0)
-    value_counts = raw.get("value_counts")
-    if count <= 0 or not isinstance(value_counts, list):
-        return None
-    flagged = 0
-    for item in value_counts:
-        if not isinstance(item, dict):
-            continue
-        label = str(item.get("label") or "").strip().lower()
-        if label in {"true", "yes", "fail", "failed", "bad"}:
-            flagged += int(item.get("count") or 0)
-    return (flagged / count) * 100 if count else None
+def _aggregate_primary_percent(
+    raw: dict[str, Any],
+    policy: Optional[MetricFailurePolicy] = None,
+) -> Optional[float]:
+    return aggregate_primary_percent(raw, policy)
+
+
+def _child_names_by_parent(
+    db: Session,
+    organization_id: UUID,
+    parent_metric_ids: Sequence[UUID],
+) -> Dict[str, List[str]]:
+    if not parent_metric_ids:
+        return {}
+    children = (
+        db.query(Metric)
+        .filter(
+            Metric.organization_id == organization_id,
+            Metric.parent_metric_id.in_(list(parent_metric_ids)),
+        )
+        .all()
+    )
+    out: Dict[str, List[str]] = {}
+    for child in children:
+        pid = str(child.parent_metric_id)
+        out.setdefault(pid, []).append(child.name)
+    return out
+
+
+def _clustering_context(
+    db: Session,
+    evaluation: CallImportEvaluation,
+    eval_rows: List[CallImportEvaluationRow],
+) -> Tuple[
+    List[Metric],
+    List[CallImportMetricAggregate],
+    Dict[str, MetricFailurePolicy],
+    Literal["inferred", "user"],
+    Dict[str, List[str]],
+]:
+    metrics = _metrics_for_clustering(db, evaluation, eval_rows)
+    aggregates = _compute_metric_aggregates(db, evaluation, eval_rows)
+    parent_ids = [
+        m.id
+        for m in metrics
+        if getattr(m, "selection_mode", None) and not getattr(m, "parent_metric_id", None)
+    ]
+    child_names_by_parent = _child_names_by_parent(
+        db, evaluation.organization_id, parent_ids
+    )
+    policies, source = effective_policies(
+        evaluation,
+        metrics,
+        aggregates,
+        child_names_by_parent=child_names_by_parent,
+    )
+    return metrics, aggregates, policies, source, child_names_by_parent
 
 
 def _period_deltas_from_aggregates(
     previous_metric_aggregates: list[dict[str, Any]],
     current_metric_aggregates: list[dict[str, Any]],
+    policies: Optional[Dict[str, MetricFailurePolicy]] = None,
 ) -> dict[str, dict[str, str]]:
     current_by_id = {str(item.get("metric_id")): item for item in current_metric_aggregates}
     previous_by_id = {
@@ -2363,8 +3020,13 @@ def _period_deltas_from_aggregates(
     deltas: dict[str, dict[str, str]] = {}
     for metric_id, current in current_by_id.items():
         previous_raw = previous_by_id.get(metric_id)
-        current_pct = _aggregate_primary_percent(current)
-        previous_pct = _aggregate_primary_percent(previous_raw) if previous_raw else None
+        policy = (policies or {}).get(metric_id)
+        current_pct = _aggregate_primary_percent(current, policy)
+        previous_pct = (
+            _aggregate_primary_percent(previous_raw, policy)
+            if previous_raw
+            else None
+        )
         if current_pct is None or previous_pct is None:
             deltas[metric_id] = {
                 "label": "No previous-week baseline",
@@ -2632,8 +3294,7 @@ async def generate_call_import_evaluation_pdf_report(
     period_start, period_end, derived_period_label, period_display = _report_period_from_rows(rows)
     period_label = (payload.period_label or derived_period_label or "").strip() or None
     include_period_delta = (
-        (payload.include_period_delta or payload.include_weekly_delta)
-        and not is_internal
+        payload.include_period_delta or payload.include_weekly_delta
     )
     previous_snapshot = None
     period_delta_by_metric: dict[str, dict[str, str]] = {}
@@ -2652,13 +3313,32 @@ async def generate_call_import_evaluation_pdf_report(
                 db,
                 baseline_evaluation,
                 metric_aggregates,
+                evaluation,
+                [eval_row for eval_row, _ in rows],
+            )
+            period_delta_by_metric = _period_deltas_with_explanations(
+                db,
+                organization_id,
+                evaluation,
+                baseline_evaluation,
+                period_delta_by_metric,
             )
     benchmark_context = _benchmark_context_for_evaluation(db, baseline_evaluation)
     evidence_samples = _sample_evidence_for_metrics(rows, insight_metric_ids)
     cached_tldr_summary = _tldr_summary_payload(evaluation)
     cached_user_insights = _user_insights_payload(evaluation)
+    cached_metric_clusters = _metric_clusters_payload(evaluation)
+    cached_prompt_improvements = _prompt_improvements_payload(evaluation)
     generated_insights_for_pdf = _selected_generated_user_insights(
         cached_user_insights,
+        report_config,
+    )
+    metric_clusters_for_pdf = _selected_metric_clusters_for_pdf(
+        cached_metric_clusters,
+        report_config,
+    )
+    prompt_improvements_for_pdf = _selected_prompt_improvements_for_pdf(
+        cached_prompt_improvements,
         report_config,
     )
     narrative = _generate_report_narrative(
@@ -2679,13 +3359,33 @@ async def generate_call_import_evaluation_pdf_report(
         internal_brand_image_id=payload.internal_brand_image_id,
         external_brand_image_id=payload.external_brand_image_id,
     )
+    eval_row_list = [eval_row for eval_row, _ in rows]
+    pdf_aggregates = _compute_metric_aggregates(db, evaluation, eval_row_list)
+    pdf_parent_ids = [
+        m.id
+        for m in metrics
+        if getattr(m, "selection_mode", None)
+        and not getattr(m, "parent_metric_id", None)
+    ]
+    pdf_child_map = _child_names_by_parent(
+        db, evaluation.organization_id, pdf_parent_ids
+    )
+    failure_policies_for_pdf, _fp_source = effective_policies(
+        evaluation,
+        metrics,
+        pdf_aggregates,
+        child_names_by_parent=pdf_child_map,
+    )
     try:
-        pdf_bytes = call_import_evaluation_pdf_report_service.render_pdf(
+        pdf_started = datetime.now(timezone.utc)
+        pdf_bytes = await asyncio.to_thread(
+            call_import_evaluation_pdf_report_service.render_pdf,
             vendor_name=payload.vendor_name,
             call_import=call_import,
             evaluation=evaluation,
             metrics=metrics,
             rows=rows,
+            failure_policies=failure_policies_for_pdf,
             generated_at=generated_at,
             internal=is_internal,
             logo_data_uris=branding_images,
@@ -2706,6 +3406,17 @@ async def generate_call_import_evaluation_pdf_report(
             user_insights_overview=(
                 cached_user_insights.overview if cached_user_insights else None
             ),
+            metric_clusters=metric_clusters_for_pdf,
+            metric_clusters_overview=(
+                cached_metric_clusters.overview if cached_metric_clusters else None
+            ),
+            prompt_improvements=prompt_improvements_for_pdf,
+            platform_base_url=payload.platform_base_url,
+        )
+        logger.info(
+            "PDF report render finished in {:.1f}s for evaluation {}",
+            (datetime.now(timezone.utc) - pdf_started).total_seconds(),
+            eval_id,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception(
@@ -3541,6 +4252,7 @@ def _compute_metric_aggregates(
 async def get_call_import_evaluation_aggregate(
     call_import_id: UUID,
     eval_id: UUID,
+    baseline_evaluation_id: Optional[UUID] = Query(None),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
@@ -3578,12 +4290,68 @@ async def get_call_import_evaluation_aggregate(
 
     metrics = _compute_metric_aggregates(db, evaluation, eval_rows)
 
+    period_deltas: dict[str, MetricPeriodDelta] = {}
+    resolved_baseline_id: Optional[UUID] = None
+    if baseline_evaluation_id is not None:
+        call_import = _require_import(db, call_import_id, organization_id)
+        rows = (
+            db.query(CallImportEvaluationRow, CallImportRow)
+            .join(
+                CallImportRow,
+                CallImportRow.id == CallImportEvaluationRow.call_import_row_id,
+            )
+            .filter(CallImportEvaluationRow.evaluation_id == eval_id)
+            .all()
+        )
+        period_start, _, _, _ = _report_period_from_rows(rows)
+        baseline_evaluation = _resolve_baseline_evaluation(
+            db,
+            organization_id,
+            call_import.workspace_id,
+            evaluation,
+            period_start,
+            str(baseline_evaluation_id),
+        )
+        if baseline_evaluation:
+            resolved_baseline_id = baseline_evaluation.id
+            metric_aggregates_dicts = [
+                _aggregate_to_dict(agg) for agg in metrics
+            ]
+            raw_deltas = _period_deltas_from_evaluation(
+                db,
+                baseline_evaluation,
+                metric_aggregates_dicts,
+                evaluation,
+                eval_rows,
+            )
+            raw_deltas = _period_deltas_with_explanations(
+                db,
+                organization_id,
+                evaluation,
+                baseline_evaluation,
+                raw_deltas,
+            )
+            period_deltas = {
+                metric_id: MetricPeriodDelta(
+                    label=delta.get("label") or "",
+                    detail=delta.get("detail") or "",
+                    why=(delta.get("why") or "").strip() or None,
+                )
+                for metric_id, delta in raw_deltas.items()
+            }
+
+    _fp_stored, failure_policies_source = policies_from_evaluation_raw(
+        evaluation.metric_clusters
+    )
     return CallImportEvaluationAggregateResponse(
         evaluation_id=eval_id,
         total_rows=evaluation.total_rows,
         completed_rows=evaluation.completed_rows,
         failed_rows=evaluation.failed_rows,
         metrics=metrics,
+        period_deltas=period_deltas,
+        baseline_evaluation_id=resolved_baseline_id,
+        failure_policies_source=failure_policies_source,
     )
 
 
@@ -3605,12 +4373,15 @@ _INSIGHTS_SYSTEM_PROMPT = (
     "any signal that would change how a reviewer triages the run.\n\n"
     "Return STRICT JSON only, with this shape and no extra keys:\n"
     "{\n"
-    '  "narrative": "<2-4 sentence prose summary>",\n'
+    '  "narrative": "<max 3 short sentences, <=300 chars total>",\n'
     '  "patterns": ["<bullet 1>", "<bullet 2>", ...],\n'
     '  "metric_insights": {"<metric_id>": "<2-3 line business meaning>"}\n'
     "}\n\n"
     "Constraints:\n"
-    "- 3 to 5 bullets, each <= 200 characters, no markdown.\n"
+    "- narrative is the ONLY text shown in the external audit summary and "
+    "Visualizations TLDR; keep it to at most 3 short sentences (~300 chars).\n"
+    "- patterns are optional supporting notes and are NOT rendered in the "
+    "audit summary; keep 0 to 3 bullets if supplied, each <= 120 characters.\n"
     "- metric_insights must include one entry for each top-level metric id supplied.\n"
     "- Each metric insight should explain what the metric means for the business and what the current distribution suggests, not restate the metric rubric.\n"
     "- Avoid restating raw counts unless they reveal a pattern.\n"
@@ -3665,7 +4436,7 @@ def _tldr_summary_payload(
     snapshot = raw.get("generated_at_completed_rows")
     snapshot_int = int(snapshot) if isinstance(snapshot, (int, float)) else 0
     return EvaluationTldrSummary(
-        narrative=narrative.strip(),
+        narrative=_clamp_prose_to_sentences(narrative.strip()),
         patterns=patterns,
         metric_insights=metric_insights,
         generated_at=generated_at,
@@ -3892,7 +4663,7 @@ def _parse_insights_response(text: str) -> EvaluationTldrSummary:
         )
 
     return EvaluationTldrSummary(
-        narrative=narrative.strip(),
+        narrative=_clamp_prose_to_sentences(narrative.strip()),
         patterns=patterns,
         metric_insights=metric_insights,
         generated_at=datetime.now(timezone.utc),
@@ -4324,6 +5095,895 @@ async def generate_call_import_evaluation_user_insights(
     db.refresh(evaluation)
     return _user_insights_payload(evaluation) or EvaluationUserInsightsState(
         status="running"
+    )
+
+
+def _metric_clusters_payload(
+    evaluation: CallImportEvaluation,
+) -> Optional[EvaluationMetricClustersState]:
+    raw = getattr(evaluation, "metric_clusters", None)
+    if raw is None:
+        return None
+    return metric_clusters_state_from_raw(
+        raw,
+        completed_rows=evaluation.completed_rows,
+    )
+
+
+def _selected_metric_clusters_for_pdf(
+    state: Optional[EvaluationMetricClustersState],
+    report_config: dict[str, Any],
+) -> dict[str, Any]:
+    if state is None or state.status != "completed":
+        return {}
+    sections = report_config.get("sections")
+    if isinstance(sections, dict) and sections.get("failure_diagnostics") is False:
+        return {}
+    payload: dict[str, Any] = {
+        "groups": [g.model_dump(mode="json") for g in state.groups],
+        "discovered_problems": [
+            d.model_dump(mode="json") for d in state.discovered_problems
+        ],
+    }
+    if state.rca_summary is not None:
+        payload["rca_summary"] = state.rca_summary.model_dump(mode="json")
+    return payload
+
+
+def _prompt_improvements_payload(
+    evaluation: CallImportEvaluation,
+) -> Optional[EvaluationPromptImprovementsState]:
+    from app.services.call_import_prompt_improvements import (
+        prompt_improvements_state_from_raw,
+    )
+
+    raw = getattr(evaluation, "prompt_improvements", None)
+    if raw is None:
+        return None
+    return prompt_improvements_state_from_raw(
+        raw,
+        completed_rows=evaluation.completed_rows,
+    )
+
+
+def _selected_prompt_improvements_for_pdf(
+    state: Optional[EvaluationPromptImprovementsState],
+    report_config: dict[str, Any],
+) -> dict[str, Any]:
+    if state is None or state.status != "completed":
+        return {}
+    sections = report_config.get("sections")
+    if isinstance(sections, dict) and sections.get("prompt_improvements") is False:
+        return {}
+    return {
+        "imported_agent_id": state.imported_agent_id,
+        "imported_agent_name": state.imported_agent_name,
+        "overview": state.overview,
+        "suggestions": [s.model_dump(mode="json") for s in state.suggestions],
+    }
+
+
+def _enqueue_prompt_improvements_job(
+    evaluation: CallImportEvaluation,
+    *,
+    imported_agent_id: UUID,
+    imported_agent_name: str,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    force: bool = False,
+    db: Optional[Session] = None,
+) -> None:
+    current = _prompt_improvements_payload(evaluation)
+    if current is not None and current.status == "running" and not force:
+        return
+
+    evaluation.prompt_improvements = {
+        "status": "running",
+        "imported_agent_id": str(imported_agent_id),
+        "imported_agent_name": imported_agent_name,
+        "suggestions": [],
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at_completed_rows": evaluation.completed_rows,
+        "provider": provider,
+        "model": model,
+        "error_message": None,
+    }
+    if db is not None:
+        flag_modified(evaluation, "prompt_improvements")
+        db.commit()
+
+    from app.workers.tasks.generate_evaluation_prompt_improvements import (
+        generate_evaluation_prompt_improvements_task,
+    )
+
+    async_result = generate_evaluation_prompt_improvements_task.apply_async(
+        kwargs={
+            "evaluation_id": str(evaluation.id),
+            "imported_agent_id": str(imported_agent_id),
+            "provider": provider,
+            "model": model,
+        },
+        queue="imports",
+    )
+    if db is not None and isinstance(evaluation.prompt_improvements, dict):
+        evaluation.prompt_improvements["celery_task_id"] = async_result.id
+        flag_modified(evaluation, "prompt_improvements")
+        db.commit()
+
+
+def _completed_row_pairs_for_evaluation(
+    db: Session,
+    evaluation_id: UUID,
+) -> List[Tuple[CallImportEvaluationRow, CallImportRow]]:
+    row_pairs = (
+        db.query(CallImportEvaluationRow, CallImportRow)
+        .join(
+            CallImportRow,
+            CallImportRow.id == CallImportEvaluationRow.call_import_row_id,
+        )
+        .filter(CallImportEvaluationRow.evaluation_id == evaluation_id)
+        .all()
+    )
+    return [
+        (eval_row, source_row)
+        for eval_row, source_row in row_pairs
+        if eval_row.status == "completed"
+    ]
+
+
+def _resolve_metric_cluster_row_selection(
+    db: Session,
+    evaluation: CallImportEvaluation,
+    eval_rows: List[CallImportEvaluationRow],
+    evaluation_row_ids: Optional[List[UUID]],
+    policies: Optional[Dict[str, MetricFailurePolicy]] = None,
+) -> Tuple[List[Tuple[CallImportEvaluationRow, CallImportRow]], List[str]]:
+    """Return filtered completed row pairs and the selected row id strings."""
+    completed_pairs = _completed_row_pairs_for_evaluation(db, evaluation.id)
+    metrics = _metrics_for_clustering(db, evaluation, eval_rows)
+    if policies is None:
+        aggregates = _compute_metric_aggregates(db, evaluation, eval_rows)
+        parent_ids = [
+            m.id
+            for m in metrics
+            if getattr(m, "selection_mode", None)
+            and not getattr(m, "parent_metric_id", None)
+        ]
+        child_names_by_parent = _child_names_by_parent(
+            db, evaluation.organization_id, parent_ids
+        )
+        policies, _ = effective_policies(
+            evaluation,
+            metrics,
+            aggregates,
+            child_names_by_parent=child_names_by_parent,
+        )
+    eligible = list_eligible_cluster_rows(
+        evaluation, completed_pairs, metrics, policies
+    )
+    eligible_id_set = {str(item["evaluation_row_id"]) for item in eligible}
+
+    if evaluation_row_ids is None:
+        selected_ids = sorted(eligible_id_set)
+        filtered = filter_completed_row_pairs(
+            completed_pairs,
+            [UUID(rid) for rid in selected_ids],
+        )
+        return filtered, selected_ids
+
+    requested = {str(rid) for rid in evaluation_row_ids}
+    completed_id_set = {str(eval_row.id) for eval_row, _ in completed_pairs}
+    unknown = sorted(requested - completed_id_set)
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "One or more evaluation_row_ids are missing or not completed: "
+                + ", ".join(unknown[:5])
+                + ("…" if len(unknown) > 5 else "")
+            ),
+        )
+    not_eligible = sorted(requested - eligible_id_set)
+    if not_eligible:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Each selected row must have at least one flagged quality metric. "
+                "Ineligible row(s): "
+                + ", ".join(not_eligible[:5])
+                + ("…" if len(not_eligible) > 5 else "")
+            ),
+        )
+    selected_ids = sorted(requested)
+    filtered = filter_completed_row_pairs(completed_pairs, evaluation_row_ids)
+    return filtered, selected_ids
+
+
+def _enqueue_metric_clusters_job(
+    evaluation: CallImportEvaluation,
+    *,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    force: bool = False,
+    max_llm_calls: Optional[int] = None,
+    evaluation_row_ids: Optional[List[UUID]] = None,
+    selected_evaluation_row_ids: Optional[List[str]] = None,
+    failure_policies: Optional[Dict[str, MetricFailurePolicy]] = None,
+    db: Optional[Session] = None,
+) -> None:
+    current = _metric_clusters_payload(evaluation)
+    if current is not None and current.status == "running" and not force:
+        return
+
+    llm_budget = normalize_max_llm_calls(max_llm_calls)
+    total_calls = 1
+    row_ids_for_task: Optional[List[str]] = None
+    if db is not None:
+        eval_rows = (
+            db.query(CallImportEvaluationRow)
+            .filter(CallImportEvaluationRow.evaluation_id == evaluation.id)
+            .all()
+        )
+        if selected_evaluation_row_ids is None:
+            _, selected_evaluation_row_ids = _resolve_metric_cluster_row_selection(
+                db,
+                evaluation,
+                eval_rows,
+                evaluation_row_ids,
+            )
+        completed_pairs = filter_completed_row_pairs(
+            _completed_row_pairs_for_evaluation(db, evaluation.id),
+            [UUID(rid) for rid in selected_evaluation_row_ids],
+        )
+        metrics = _metrics_for_clustering(db, evaluation, eval_rows)
+        policies_for_estimate = failure_policies
+        if policies_for_estimate is None:
+            aggregates = _compute_metric_aggregates(db, evaluation, eval_rows)
+            parent_ids = [
+                m.id
+                for m in metrics
+                if getattr(m, "selection_mode", None)
+                and not getattr(m, "parent_metric_id", None)
+            ]
+            child_names_by_parent = _child_names_by_parent(
+                db, evaluation.organization_id, parent_ids
+            )
+            policies_for_estimate, _ = effective_policies(
+                evaluation,
+                metrics,
+                aggregates,
+                child_names_by_parent=child_names_by_parent,
+            )
+        _, total_calls = estimate_metric_clusters_llm_calls(
+            evaluation,
+            metrics,
+            completed_pairs,
+            policies_for_estimate,
+            max_llm_calls=llm_budget,
+        )
+        row_ids_for_task = list(selected_evaluation_row_ids)
+
+    prior_raw = (
+        evaluation.metric_clusters
+        if isinstance(evaluation.metric_clusters, dict)
+        else {}
+    )
+    policy_blob: Dict[str, Any] = {}
+    if failure_policies:
+        policy_blob = failure_policies_to_db(failure_policies, source="user")
+
+    evaluation.metric_clusters = {
+        "status": "running",
+        "groups": prior_raw.get("groups", []) if isinstance(prior_raw, dict) else [],
+        "discovered_problems": (
+            prior_raw.get("discovered_problems", [])
+            if isinstance(prior_raw, dict)
+            else []
+        ),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at_completed_rows": evaluation.completed_rows,
+        "progress": {"completed_llm_calls": 0, "total_llm_calls": total_calls},
+        "provider": provider,
+        "model": model,
+        "max_llm_calls": llm_budget,
+        "llm_calls_used": 0,
+        "error_message": None,
+        "selected_evaluation_row_ids": selected_evaluation_row_ids or [],
+        **policy_blob,
+    }
+    if db is not None:
+        flag_modified(evaluation, "metric_clusters")
+        db.commit()
+
+    from app.workers.tasks.generate_evaluation_metric_clusters import (
+        generate_evaluation_metric_clusters_task,
+    )
+
+    async_result = generate_evaluation_metric_clusters_task.apply_async(
+        kwargs={
+            "evaluation_id": str(evaluation.id),
+            "provider": provider,
+            "model": model,
+            "max_llm_calls": llm_budget,
+            "evaluation_row_ids": row_ids_for_task,
+        },
+        queue="imports",
+    )
+    if db is not None and isinstance(evaluation.metric_clusters, dict):
+        evaluation.metric_clusters["celery_task_id"] = async_result.id
+        flag_modified(evaluation, "metric_clusters")
+        db.commit()
+
+
+def _revoke_metric_clusters_task(evaluation: CallImportEvaluation) -> None:
+    """Best-effort SIGTERM revoke of the in-flight clustering Celery task."""
+    raw = evaluation.metric_clusters
+    if not isinstance(raw, dict):
+        return
+    task_id = str(raw.get("celery_task_id") or "").strip()
+    if not task_id:
+        return
+    try:
+        from app.workers.celery_app import celery_app
+
+        celery_app.control.revoke(task_id, terminate=True, signal="SIGTERM")
+        logger.info(
+            "Revoked metric-clusters task {} for evaluation {}",
+            task_id,
+            evaluation.id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Failed to revoke metric-clusters task {} for evaluation {}: {}",
+            task_id,
+            evaluation.id,
+            exc,
+        )
+
+
+def _apply_metric_clusters_cancel(evaluation: CallImportEvaluation) -> bool:
+    """Mark clustering as cancelled and revoke the worker task.
+
+    Returns True if a running job was cancelled, False if already terminal.
+    """
+    raw = evaluation.metric_clusters
+    if not isinstance(raw, dict):
+        return False
+    if (raw.get("status") or "").lower() != "running":
+        return False
+
+    _revoke_metric_clusters_task(evaluation)
+    progress = raw.get("progress") if isinstance(raw.get("progress"), dict) else {}
+    evaluation.metric_clusters = {
+        **raw,
+        "status": "cancelled",
+        "error_message": METRIC_CLUSTERS_CANCELLED_BY_USER_ERROR,
+        "progress": progress,
+        "celery_task_id": None,
+    }
+    return True
+
+
+@router.get(
+    "/{eval_id}/metric-clusters/failure-policies",
+    response_model=MetricFailurePoliciesResponse,
+    operation_id="getCallImportEvaluationMetricClusterFailurePolicies",
+)
+async def get_call_import_evaluation_metric_cluster_failure_policies(
+    call_import_id: UUID,
+    eval_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> MetricFailurePoliciesResponse:
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation not found"
+        )
+
+    eval_rows = (
+        db.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == eval_id)
+        .all()
+    )
+    metrics, aggregates, policies, source, child_names_by_parent = _clustering_context(
+        db, evaluation, eval_rows
+    )
+    previews = build_failure_policy_previews(
+        metrics,
+        aggregates,
+        child_names_by_parent=child_names_by_parent,
+        effective=policies,
+    )
+    updated_at = None
+    raw_mc = evaluation.metric_clusters
+    if isinstance(raw_mc, dict) and raw_mc.get("failure_policies_updated_at"):
+        try:
+            updated_at = datetime.fromisoformat(
+                str(raw_mc["failure_policies_updated_at"])
+            )
+        except ValueError:
+            updated_at = None
+    return MetricFailurePoliciesResponse(
+        previews=previews,
+        policies=policies,
+        source=source,
+        updated_at=updated_at,
+    )
+
+
+@router.put(
+    "/{eval_id}/metric-clusters/failure-policies",
+    response_model=MetricFailurePoliciesResponse,
+    operation_id="saveCallImportEvaluationMetricClusterFailurePolicies",
+)
+async def save_call_import_evaluation_metric_cluster_failure_policies(
+    call_import_id: UUID,
+    eval_id: UUID,
+    body: MetricFailurePoliciesSaveRequest,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> MetricFailurePoliciesResponse:
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation not found"
+        )
+
+    eval_rows = (
+        db.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == eval_id)
+        .all()
+    )
+    metrics, aggregates, _existing, _source, child_names_by_parent = _clustering_context(
+        db, evaluation, eval_rows
+    )
+    try:
+        validate_failure_policies_for_metrics(body.policies, metrics)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    prior = (
+        evaluation.metric_clusters
+        if isinstance(evaluation.metric_clusters, dict)
+        else {}
+    )
+    evaluation.metric_clusters = merge_failure_policies_into_raw(
+        prior,
+        body.policies,
+        source="user",
+    )
+    flag_modified(evaluation, "metric_clusters")
+    db.commit()
+    db.refresh(evaluation)
+
+    policies, source = policies_from_evaluation_raw(evaluation.metric_clusters)
+    if source != "user":
+        source = "user"
+    previews = build_failure_policy_previews(
+        metrics,
+        aggregates,
+        child_names_by_parent=child_names_by_parent,
+        effective=policies,
+    )
+    updated_at = None
+    raw_mc = evaluation.metric_clusters
+    if isinstance(raw_mc, dict) and raw_mc.get("failure_policies_updated_at"):
+        try:
+            updated_at = datetime.fromisoformat(
+                str(raw_mc["failure_policies_updated_at"])
+            )
+        except ValueError:
+            updated_at = None
+    return MetricFailurePoliciesResponse(
+        previews=previews,
+        policies=policies,
+        source="user",
+        updated_at=updated_at,
+    )
+
+
+@router.get(
+    "/{eval_id}/metric-clusters/eligible-rows",
+    response_model=MetricClusterEligibleRowsResponse,
+    operation_id="listCallImportEvaluationMetricClusterEligibleRows",
+)
+async def list_call_import_evaluation_metric_cluster_eligible_rows(
+    call_import_id: UUID,
+    eval_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> MetricClusterEligibleRowsResponse:
+    """Completed rows that have at least one flagged quality metric."""
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation not found"
+        )
+
+    eval_rows = (
+        db.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == eval_id)
+        .all()
+    )
+    completed_pairs = _completed_row_pairs_for_evaluation(db, eval_id)
+    metrics, _aggregates, policies, _source, _child_map = _clustering_context(
+        db, evaluation, eval_rows
+    )
+    raw_items = list_eligible_cluster_rows(
+        evaluation, completed_pairs, metrics, policies
+    )
+    items = [MetricClusterEligibleRow.model_validate(item) for item in raw_items]
+    return MetricClusterEligibleRowsResponse(items=items, total=len(items))
+
+
+@router.get(
+    "/{eval_id}/metric-clusters",
+    response_model=Optional[EvaluationMetricClustersState],
+    operation_id="getCallImportEvaluationMetricClusters",
+)
+async def get_call_import_evaluation_metric_clusters(
+    call_import_id: UUID,
+    eval_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> Optional[EvaluationMetricClustersState]:
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation not found"
+        )
+    return _metric_clusters_payload(evaluation)
+
+
+@router.post(
+    "/{eval_id}/metric-clusters",
+    response_model=EvaluationMetricClustersState,
+    operation_id="generateCallImportEvaluationMetricClusters",
+)
+async def generate_call_import_evaluation_metric_clusters(
+    call_import_id: UUID,
+    eval_id: UUID,
+    body: EvaluationMetricClustersRequest = Body(
+        default_factory=EvaluationMetricClustersRequest
+    ),
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> EvaluationMetricClustersState:
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation not found"
+        )
+
+    if not body.regenerate and not body.force:
+        cached = _metric_clusters_payload(evaluation)
+        if cached is not None and cached.status in {"running", "completed"}:
+            return cached
+
+    eval_rows = (
+        db.query(CallImportEvaluationRow)
+        .filter(CallImportEvaluationRow.evaluation_id == eval_id)
+        .all()
+    )
+    if not any(row.status == "completed" for row in eval_rows):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No completed rows yet. Wait for at least one row to "
+                "finish scoring before generating metric clusters."
+            ),
+        )
+
+    if body.evaluation_row_ids:
+        completed_pairs = _completed_row_pairs_for_evaluation(db, evaluation.id)
+        completed_id_set = {str(eval_row.id) for eval_row, _ in completed_pairs}
+        requested = {str(rid) for rid in body.evaluation_row_ids}
+        unknown = sorted(requested - completed_id_set)
+        if unknown:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "One or more evaluation_row_ids are missing or not completed: "
+                    + ", ".join(unknown[:5])
+                    + ("…" if len(unknown) > 5 else "")
+                ),
+            )
+
+    from app.services.ai.llm_resolver import get_llm_provider_and_model
+
+    provider_enum, model_str = get_llm_provider_and_model(
+        organization_id, db, body.provider, body.model
+    )
+
+    metrics, aggregates, _inferred, _source, child_names_by_parent = _clustering_context(
+        db, evaluation, eval_rows
+    )
+    merged_policies = merge_clustering_policies(
+        body.failure_policies,
+        evaluation,
+        metrics,
+        aggregates,
+        child_names_by_parent=child_names_by_parent,
+    )
+    try:
+        validate_failure_policies_for_metrics(
+            body.failure_policies or merged_policies, metrics
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not has_clusterable_metrics(metrics, merged_policies, eval_rows):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No calls match any failure policy. Select failure values on "
+                "metrics that have matching rows, or leave metrics with no "
+                "failures unchecked — they are skipped automatically."
+            ),
+        )
+
+    filtered_pairs, selected_row_ids = _resolve_metric_cluster_row_selection(
+        db,
+        evaluation,
+        eval_rows,
+        body.evaluation_row_ids,
+        policies=merged_policies,
+    )
+    if not selected_row_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No eligible rows to cluster. Select completed calls that match "
+                "at least one configured failure policy."
+            ),
+        )
+    if not filtered_pairs:
+        raise HTTPException(
+            status_code=400,
+            detail="No completed rows match the selected evaluation_row_ids.",
+        )
+
+    _enqueue_metric_clusters_job(
+        evaluation,
+        provider=provider_enum.value,
+        model=model_str,
+        force=body.force or body.regenerate,
+        max_llm_calls=body.max_llm_calls,
+        evaluation_row_ids=body.evaluation_row_ids,
+        selected_evaluation_row_ids=selected_row_ids,
+        failure_policies=merged_policies,
+        db=db,
+    )
+
+    db.refresh(evaluation)
+    return _metric_clusters_payload(evaluation) or EvaluationMetricClustersState(
+        status="running"
+    )
+
+
+@router.post(
+    "/{eval_id}/metric-clusters/cancel",
+    response_model=EvaluationMetricClustersState,
+    operation_id="cancelCallImportEvaluationMetricClusters",
+)
+async def cancel_call_import_evaluation_metric_clusters(
+    call_import_id: UUID,
+    eval_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> EvaluationMetricClustersState:
+    """Abort in-flight failure-diagnostics clustering.
+
+    Idempotent: if clustering is not ``running``, returns the current state
+    unchanged.
+    """
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation not found"
+        )
+
+    _apply_metric_clusters_cancel(evaluation)
+    flag_modified(evaluation, "metric_clusters")
+    db.commit()
+    db.refresh(evaluation)
+
+    return _metric_clusters_payload(evaluation) or EvaluationMetricClustersState(
+        status="idle"
+    )
+
+
+@router.get(
+    "/{eval_id}/prompt-improvements",
+    response_model=Optional[EvaluationPromptImprovementsState],
+    operation_id="getCallImportEvaluationPromptImprovements",
+)
+async def get_call_import_evaluation_prompt_improvements(
+    call_import_id: UUID,
+    eval_id: UUID,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    db: Session = Depends(get_db),
+) -> Optional[EvaluationPromptImprovementsState]:
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation not found"
+        )
+    return _prompt_improvements_payload(evaluation)
+
+
+@router.post(
+    "/{eval_id}/prompt-improvements",
+    response_model=EvaluationPromptImprovementsState,
+    operation_id="generateCallImportEvaluationPromptImprovements",
+)
+async def generate_call_import_evaluation_prompt_improvements(
+    call_import_id: UUID,
+    eval_id: UUID,
+    body: EvaluationPromptImprovementsRequest,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: Session = Depends(get_db),
+) -> EvaluationPromptImprovementsState:
+    del api_key
+    _require_import(db, call_import_id, organization_id)
+
+    evaluation = (
+        db.query(CallImportEvaluation)
+        .filter(
+            CallImportEvaluation.id == eval_id,
+            CallImportEvaluation.call_import_id == call_import_id,
+            CallImportEvaluation.organization_id == organization_id,
+        )
+        .first()
+    )
+    if not evaluation:
+        raise HTTPException(
+            status_code=404, detail="Call import evaluation not found"
+        )
+
+    clusters = _metric_clusters_payload(evaluation)
+    if clusters is None or clusters.status != "completed":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Metric clusters must be completed before generating prompt "
+                "improvements. Run failure diagnostics first."
+            ),
+        )
+
+    from app.services.call_import_prompt_improvements import is_imported_agent
+    from app.services.ai.llm_resolver import get_llm_provider_and_model
+
+    imported_agent = (
+        db.query(PromptPartial)
+        .filter(
+            PromptPartial.id == body.imported_agent_id,
+            PromptPartial.organization_id == organization_id,
+            PromptPartial.workspace_id == workspace_id,
+        )
+        .first()
+    )
+    if imported_agent is None or not is_imported_agent(imported_agent):
+        raise HTTPException(
+            status_code=404,
+            detail="Imported agent not found in the active workspace",
+        )
+
+    if not body.regenerate and not body.force:
+        cached = _prompt_improvements_payload(evaluation)
+        if (
+            cached is not None
+            and cached.status in {"running", "completed"}
+            and cached.imported_agent_id == str(body.imported_agent_id)
+        ):
+            return cached
+
+    provider_enum, model_str = get_llm_provider_and_model(
+        organization_id, db, body.provider, body.model
+    )
+
+    _enqueue_prompt_improvements_job(
+        evaluation,
+        imported_agent_id=body.imported_agent_id,
+        imported_agent_name=imported_agent.name,
+        provider=provider_enum.value,
+        model=model_str,
+        force=body.force or body.regenerate,
+        db=db,
+    )
+
+    db.refresh(evaluation)
+    return _prompt_improvements_payload(evaluation) or EvaluationPromptImprovementsState(
+        status="running",
+        imported_agent_id=str(body.imported_agent_id),
+        imported_agent_name=imported_agent.name,
     )
 
 

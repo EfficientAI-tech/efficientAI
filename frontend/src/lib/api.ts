@@ -141,6 +141,30 @@ export interface TokenResponse {
   user: AuthUserSummary
 }
 
+export interface LoginOrgOption {
+  id: string
+  name: string
+  role: string
+}
+
+export interface LoginOrgSelectionResponse {
+  requires_org_selection: true
+  organizations: LoginOrgOption[]
+}
+
+export type LoginResponse = TokenResponse | LoginOrgSelectionResponse
+
+export function isLoginOrgSelectionResponse(
+  response: LoginResponse
+): response is LoginOrgSelectionResponse {
+  return 'requires_org_selection' in response && response.requires_org_selection === true
+}
+
+export interface OrganizationSummary {
+  id: string
+  name: string
+}
+
 export interface TelephonyIntegrationResponse {
   id: string
   organization_id: string
@@ -346,8 +370,16 @@ class ApiClient {
     return response.data
   }
 
-  async loginWithPassword(email: string, password: string): Promise<TokenResponse> {
-    const response = await this.client.post('/api/v1/auth/login', { email, password })
+  async loginWithPassword(
+    email: string,
+    password: string,
+    organizationId?: string
+  ): Promise<LoginResponse> {
+    const response = await this.client.post('/api/v1/auth/login', {
+      email,
+      password,
+      ...(organizationId ? { organization_id: organizationId } : {}),
+    })
     return response.data
   }
 
@@ -810,6 +842,16 @@ class ApiClient {
   }
 
   // IAM endpoints
+  async getOrganization(): Promise<OrganizationSummary> {
+    const response = await this.client.get('/api/v1/iam/organization')
+    return response.data
+  }
+
+  async updateOrganization(data: { name: string }): Promise<OrganizationSummary> {
+    const response = await this.client.patch('/api/v1/iam/organization', data)
+    return response.data
+  }
+
   async listOrganizationUsers(): Promise<OrganizationMember[]> {
     const response = await this.client.get('/api/v1/iam/users')
     return response.data
@@ -1430,9 +1472,15 @@ class ApiClient {
   async getCallImportEvaluationAggregate(
     callImportId: string,
     evaluationId: string,
+    baselineEvaluationId?: string | null,
   ): Promise<CallImportEvaluationAggregateResponse> {
     const response = await this.client.get(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/aggregate`,
+      {
+        params: baselineEvaluationId
+          ? { baseline_evaluation_id: baselineEvaluationId }
+          : undefined,
+      },
     )
     return response.data
   }
@@ -1490,6 +1538,122 @@ class ApiClient {
   ): Promise<import('../types/api').EvaluationUserInsightsState | null> {
     const response = await this.client.get(
       `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/user-insights`,
+    )
+    return response.data
+  }
+
+  async getCallImportEvaluationMetricClusters(
+    callImportId: string,
+    evaluationId: string,
+  ): Promise<import('../types/api').EvaluationMetricClustersState | null> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/metric-clusters`,
+    )
+    return response.data
+  }
+
+  async getCallImportEvaluationPromptImprovements(
+    callImportId: string,
+    evaluationId: string,
+  ): Promise<import('../types/api').EvaluationPromptImprovementsState | null> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/prompt-improvements`,
+    )
+    return response.data
+  }
+
+  async generateCallImportEvaluationPromptImprovements(
+    callImportId: string,
+    evaluationId: string,
+    data: {
+      imported_agent_id: string
+      regenerate?: boolean
+      force?: boolean
+      provider?: string
+      model?: string
+    },
+  ): Promise<import('../types/api').EvaluationPromptImprovementsState> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/prompt-improvements`,
+      data,
+    )
+    return response.data
+  }
+
+  async listCallImportEvaluationMetricClusterEligibleRows(
+    callImportId: string,
+    evaluationId: string,
+  ): Promise<import('../types/api').MetricClusterEligibleRowsResponse> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/metric-clusters/eligible-rows`,
+    )
+    return response.data
+  }
+
+  async getCallImportEvaluationMetricClusterFailurePolicies(
+    callImportId: string,
+    evaluationId: string,
+  ): Promise<import('../types/api').MetricFailurePoliciesResponse> {
+    const response = await this.client.get(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/metric-clusters/failure-policies`,
+    )
+    return response.data
+  }
+
+  async saveCallImportEvaluationMetricClusterFailurePolicies(
+    callImportId: string,
+    evaluationId: string,
+    policies: Record<string, import('../types/api').MetricFailurePolicy>,
+  ): Promise<import('../types/api').MetricFailurePoliciesResponse> {
+    const response = await this.client.put(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/metric-clusters/failure-policies`,
+      { policies, source: 'user' },
+    )
+    return response.data
+  }
+
+  async generateCallImportEvaluationMetricClusters(
+    callImportId: string,
+    evaluationId: string,
+    options?: {
+      regenerate?: boolean
+      force?: boolean
+      provider?: string | null
+      model?: string | null
+      max_llm_calls?: number | null
+      evaluation_row_ids?: string[] | null
+      failure_policies?: Record<
+        string,
+        import('../types/api').MetricFailurePolicy
+      > | null
+    },
+  ): Promise<import('../types/api').EvaluationMetricClustersState> {
+    const body: Record<string, unknown> = {
+      regenerate: Boolean(options?.regenerate),
+      force: Boolean(options?.force),
+    }
+    if (options?.provider) body.provider = options.provider
+    if (options?.model) body.model = options.model
+    if (options?.max_llm_calls != null) body.max_llm_calls = options.max_llm_calls
+    if (options?.evaluation_row_ids?.length) {
+      body.evaluation_row_ids = options.evaluation_row_ids
+    }
+    if (options?.failure_policies) {
+      body.failure_policies = options.failure_policies
+    }
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/metric-clusters`,
+      body,
+    )
+    return response.data
+  }
+
+  async cancelCallImportEvaluationMetricClusters(
+    callImportId: string,
+    evaluationId: string,
+  ): Promise<import('../types/api').EvaluationMetricClustersState> {
+    const response = await this.client.post(
+      `/api/v1/call-imports/${callImportId}/evaluations/${evaluationId}/metric-clusters/cancel`,
     )
     return response.data
   }
@@ -2084,6 +2248,7 @@ class ApiClient {
       useCase?: string | null
       baselineEvaluationId?: string | null
       reportConfig?: Record<string, any>
+      platformBaseUrl?: string | null
     },
   ): Promise<Blob> {
     const response = await this.client.post(
@@ -2098,6 +2263,7 @@ class ApiClient {
         internal_brand_image_id: options?.internalBrandImageId || null,
         external_brand_image_id: options?.externalBrandImageId || null,
         report_config: options?.reportConfig || {},
+        platform_base_url: options?.platformBaseUrl || null,
       },
       { responseType: 'blob' },
     )
@@ -3286,9 +3452,123 @@ class ApiClient {
   }
 
   // Prompt Partials
-  async listPromptPartials(skip = 0, limit = 100, search?: string): Promise<any[]> {
+  async listPromptPartials(
+    skip = 0,
+    limit = 100,
+    search?: string,
+    kind: 'all' | 'partial' | 'imported_agent' | 'metric' = 'all',
+  ): Promise<any[]> {
     const response = await this.client.get('/api/v1/prompt-partials', {
-      params: { skip, limit, ...(search ? { search } : {}) },
+      params: {
+        skip,
+        limit,
+        kind,
+        ...(search ? { search } : {}),
+      },
+    })
+    return response.data
+  }
+
+  async listImportedAgents(skip = 0, limit = 100, search?: string): Promise<import('../types/api').ImportedAgent[]> {
+    return this.listPromptPartials(skip, limit, search, 'imported_agent')
+  }
+
+  async listMetricPartials(skip = 0, limit = 100, search?: string): Promise<import('../types/api').MetricPartial[]> {
+    return this.listPromptPartials(skip, limit, search, 'metric')
+  }
+
+  async createImportedAgent(data: {
+    name: string
+    description?: string | null
+    content: string
+  }): Promise<import('../types/api').ImportedAgent> {
+    const response = await this.client.post('/api/v1/prompt-partials', {
+      ...data,
+      tags: ['__imported_agent__'],
+    })
+    return response.data
+  }
+
+  async createMetricPartial(data: {
+    name: string
+    description?: string | null
+    content: string
+  }): Promise<import('../types/api').MetricPartial> {
+    const response = await this.client.post('/api/v1/prompt-partials', {
+      ...data,
+      tags: ['__metric_partial__'],
+    })
+    return response.data
+  }
+
+  async updateMetricPartial(
+    partialId: string,
+    data: {
+      name?: string
+      description?: string | null
+      content?: string
+      change_summary?: string
+    },
+  ): Promise<import('../types/api').MetricPartial> {
+    const response = await this.client.put(`/api/v1/prompt-partials/${partialId}`, {
+      ...data,
+      tags: ['__metric_partial__'],
+    })
+    return response.data
+  }
+
+  async generateAgentFlowchart(
+    partialId: string,
+    options?: { provider?: string; model?: string; regenerate?: boolean },
+  ): Promise<import('../types/api').AgentFlowGraph> {
+    const response = await this.client.post(
+      `/api/v1/prompt-partials/${partialId}/flowchart`,
+      {
+        provider: options?.provider,
+        model: options?.model,
+        regenerate: options?.regenerate ?? false,
+      },
+    )
+    return response.data
+  }
+
+  async saveAgentFlowchartLayout(
+    partialId: string,
+    nodes: Array<{ id: string; position_x: number; position_y: number }>,
+  ): Promise<import('../types/api').AgentFlowGraph> {
+    const response = await this.client.put(
+      `/api/v1/prompt-partials/${partialId}/flowchart/layout`,
+      { nodes },
+    )
+    return response.data
+  }
+
+  async mapAgentFlowchartPromptSections(
+    partialId: string,
+    options?: { provider?: string; model?: string },
+  ): Promise<import('../types/api').AgentFlowGraph> {
+    const response = await this.client.post(
+      `/api/v1/prompt-partials/${partialId}/flowchart/prompt-map`,
+      {
+        provider: options?.provider,
+        model: options?.model,
+      },
+    )
+    return response.data
+  }
+
+  async updateImportedAgent(
+    partialId: string,
+    data: {
+      name?: string
+      description?: string | null
+      content?: string
+      change_summary?: string
+    },
+  ): Promise<import('../types/api').ImportedAgent> {
+    const response = await this.client.put(`/api/v1/prompt-partials/${partialId}`, {
+      ...data,
+      tags: ['__imported_agent__'],
     })
     return response.data
   }

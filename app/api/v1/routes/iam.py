@@ -148,6 +148,65 @@ def require_admin_role(
     return user
 
 
+class OrganizationResponse(BaseModel):
+    id: str
+    name: str
+
+
+class OrganizationUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+
+
+def _organization_to_response(org: Organization) -> OrganizationResponse:
+    return OrganizationResponse(id=str(org.id), name=org.name)
+
+
+@router.get(
+    "/organization",
+    response_model=OrganizationResponse,
+    operation_id="getOrganization",
+)
+async def get_organization(
+    organization_id: UUID = Depends(get_organization_id),
+    api_key: str = Depends(get_api_key),
+    db: Session = Depends(get_db),
+) -> OrganizationResponse:
+    """Return the current organization's id and name."""
+    org = db.query(Organization).filter(Organization.id == organization_id).first()
+    if org is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    return _organization_to_response(org)
+
+
+@router.patch(
+    "/organization",
+    response_model=OrganizationResponse,
+    operation_id="updateOrganization",
+)
+async def update_organization(
+    payload: OrganizationUpdate,
+    organization_id: UUID = Depends(get_organization_id),
+    current_user: User = Depends(require_admin_role),
+    db: Session = Depends(get_db),
+) -> OrganizationResponse:
+    """Update the current organization's name. Requires ADMIN role."""
+    org = db.query(Organization).filter(Organization.id == organization_id).first()
+    if org is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Organization name cannot be empty.",
+        )
+
+    org.name = name
+    db.commit()
+    db.refresh(org)
+    return _organization_to_response(org)
+
+
 @router.get("/users", response_model=List[OrganizationMemberResponse], operation_id="listOrganizationUsers")
 async def list_organization_users(
     organization_id: UUID = Depends(get_organization_id),

@@ -3,6 +3,7 @@
 import pytest
 
 from app.models.database import OrganizationMember
+from app.models.enums import RoleEnum
 
 
 @pytest.fixture
@@ -53,3 +54,45 @@ def test_update_user_role(iam_admin_override, authenticated_client, db_session, 
 
     assert response.status_code == 200
     assert response.json()["role"] == "admin"
+
+
+def test_get_organization(authenticated_client, user_context, org_id, seed_org):
+    response = authenticated_client.get("/api/v1/iam/organization")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == str(org_id)
+    assert body["name"] == seed_org.name
+
+
+def test_update_organization_as_admin(iam_admin_override, authenticated_client, db_session, seed_org):
+    response = authenticated_client.patch(
+        "/api/v1/iam/organization",
+        json={"name": "Renamed Org"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "Renamed Org"
+    db_session.refresh(seed_org)
+    assert seed_org.name == "Renamed Org"
+
+
+def test_update_organization_rejects_reader(authenticated_client, user_context, db_session):
+    user_context["membership"].role = RoleEnum.READER.value
+    db_session.commit()
+
+    response = authenticated_client.patch(
+        "/api/v1/iam/organization",
+        json={"name": "Should Fail"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_update_organization_rejects_empty_name(iam_admin_override, authenticated_client):
+    response = authenticated_client.patch(
+        "/api/v1/iam/organization",
+        json={"name": "   "},
+    )
+
+    assert response.status_code == 422

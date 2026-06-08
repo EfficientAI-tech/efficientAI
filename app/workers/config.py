@@ -111,4 +111,8 @@ celery_app.conf.task_routes = {
     # queue (synthetic calling, playground evals, TTS, etc.).
     "generate_evaluation_tldr_insights": {"queue": "imports"},
     "generate_evaluation_user_insights": {"queue": "imports"},
+    "generate_evaluation_metric_clusters": {"queue": "imports"},
+    "generate_evaluation_prompt_improvements": {"queue": "imports"},
+    "generate_agent_flowchart": {"queue": "imports"},
+    "map_agent_flowchart_prompt_sections": {"queue": "imports"},
 }

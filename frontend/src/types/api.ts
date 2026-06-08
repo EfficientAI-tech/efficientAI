@@ -1051,6 +1051,7 @@ export interface CallImportEvaluation {
    */
   tldr_summary?: EvaluationTldrSummary | null
   user_insights?: EvaluationUserInsightsState | null
+  metric_clusters?: EvaluationMetricClustersState | null
   /**
    * True when the user opted into top-level metric discovery on the
    * Run Evaluation modal. Gates the Discovered metrics panel on the
@@ -1105,6 +1106,7 @@ export interface EvaluationUserInsightItem {
 export interface EvaluationUserInsightsState {
   status: 'idle' | 'running' | 'completed' | 'failed'
   insights: EvaluationUserInsightItem[]
+  overview?: string | null
   generated_at?: string | null
   generated_at_completed_rows: number
   progress?: { completed_llm_calls: number; total_llm_calls: number } | null
@@ -1114,6 +1116,289 @@ export interface EvaluationUserInsightsState {
   max_llm_calls?: number | null
   error_message?: string | null
   is_stale: boolean
+}
+
+export type MetricClusterGapLabel =
+  | 'LOGIC_GAP'
+  | 'UNDERSPEC'
+  | 'EXISTS_NO_TRIGGER'
+  | 'MISSING'
+
+export interface MetricSubCluster {
+  label: string
+  count: number
+  share_pct: number
+}
+
+export interface MetricClusterEvidenceTurn {
+  speaker: string
+  text: string
+}
+
+export interface MetricClusterEvidence {
+  conversation_id?: string | null
+  evaluation_row_id?: string | null
+  quote: string
+  turns?: MetricClusterEvidenceTurn[]
+}
+
+export interface MetricCluster {
+  id: string
+  label: string
+  gap_label: MetricClusterGapLabel
+  level: number
+  count: number
+  share_pct: number
+  sub_clusters: MetricSubCluster[]
+  observation: string
+  failure_reason?: string
+  evidence: MetricClusterEvidence
+  is_discovered: boolean
+}
+
+export interface MetricClusterGroup {
+  metric_id: string
+  metric_name: string
+  flagged_count: number
+  failure_reason?: string
+  clusters: MetricCluster[]
+}
+
+export interface DiscoveredProblemCluster {
+  id: string
+  label: string
+  gap_label: MetricClusterGapLabel
+  count: number
+  share_pct: number
+  observation: string
+  failure_reason?: string
+  evidence: MetricClusterEvidence
+}
+
+export interface RcaRepeatedPatternRow {
+  metric_id: string
+  metric_name: string
+  top_rca_patterns: string
+  evidence_share_pct: number
+  evidence_calls: number
+  evidence_cluster_count?: number
+  failure_reason: string
+}
+
+export interface RcaMetricHotspotRow {
+  metric_id: string
+  metric_name: string
+  description: string
+  metric_rate_pct: number
+  flagged_calls: number
+}
+
+export interface RcaPromptAreaRow {
+  label: string
+  share_pct: number
+  gap_label: MetricClusterGapLabel
+}
+
+export interface MetricClustersRcaSummary {
+  total_clusters: number
+  total_clustered_instances: number
+  total_flagged_instances?: number
+  analysed_calls: number
+  repeated_patterns: RcaRepeatedPatternRow[]
+  metric_hotspots: RcaMetricHotspotRow[]
+  prompt_areas: RcaPromptAreaRow[]
+}
+
+export interface MetricFailurePolicy {
+  metric_id: string
+  failure_values: string[]
+  failure_child_names?: string[]
+  numeric_rule?: { op: 'lt' | 'lte' | 'gt' | 'gte'; threshold: number } | null
+}
+
+export interface MetricFailurePolicyValueCount {
+  label: string
+  count: number
+}
+
+export interface MetricFailurePolicyMetricPreview {
+  metric_id: string
+  metric_name: string
+  metric_type?: string | null
+  selection_mode?: string | null
+  is_multi_label_parent: boolean
+  value_counts: MetricFailurePolicyValueCount[]
+  child_names: string[]
+  row_count_by_value: Record<string, number>
+  suggested_policy: MetricFailurePolicy
+  effective_policy: MetricFailurePolicy
+}
+
+export interface MetricFailurePoliciesResponse {
+  previews: MetricFailurePolicyMetricPreview[]
+  policies: Record<string, MetricFailurePolicy>
+  source: 'inferred' | 'user'
+  updated_at?: string | null
+}
+
+export interface MetricClusterEligibleRow {
+  evaluation_row_id: string
+  conversation_id?: string | null
+  row_index?: number | null
+  flagged_metric_names: string[]
+}
+
+export interface MetricClusterEligibleRowsResponse {
+  items: MetricClusterEligibleRow[]
+  total: number
+}
+
+export interface EvaluationMetricClustersState {
+  status: 'idle' | 'running' | 'completed' | 'failed' | 'cancelled'
+  groups: MetricClusterGroup[]
+  discovered_problems: DiscoveredProblemCluster[]
+  overview?: string | null
+  generated_at?: string | null
+  generated_at_completed_rows: number
+  progress?: { completed_llm_calls: number; total_llm_calls: number } | null
+  provider?: string | null
+  model?: string | null
+  llm_calls_used: number
+  max_llm_calls?: number | null
+  error_message?: string | null
+  is_stale: boolean
+  selected_evaluation_row_ids?: string[]
+  failure_policies?: Record<string, MetricFailurePolicy>
+  failure_policies_source?: 'inferred' | 'user'
+  failure_policies_updated_at?: string | null
+  rca_summary?: MetricClustersRcaSummary | null
+}
+
+export interface AgentFlowNode {
+  id: string
+  label: string
+  node_type: 'start' | 'decision' | 'action' | 'terminal'
+  position_x?: number | null
+  position_y?: number | null
+  prompt_excerpt?: string | null
+  start_offset?: number | null
+  end_offset?: number | null
+}
+
+export interface AgentFlowEdge {
+  source: string
+  target: string
+  condition?: string | null
+}
+
+export interface AgentFlowGraph {
+  nodes: AgentFlowNode[]
+  edges: AgentFlowEdge[]
+  generated_at?: string | null
+  provider?: string | null
+  model?: string | null
+  layout_saved_at?: string | null
+  prompt_content_hash?: string | null
+  mapping_error?: string | null
+  generation_error?: string | null
+}
+
+export interface ImportedAgent {
+  id: string
+  organization_id: string
+  name: string
+  description: string | null
+  content: string
+  tags: string[] | null
+  current_version: number
+  agent_flowchart?: AgentFlowGraph | null
+  agent_flowchart_status?: string | null
+  created_at: string
+  updated_at: string
+  created_by: string | null
+}
+
+export interface ImportedAgentDetail extends ImportedAgent {
+  versions: PromptPartialVersion[]
+}
+
+export interface MetricPartialChild {
+  name: string
+  description: string
+  example: string
+}
+
+export interface MetricPartialContent {
+  schema_version: 1
+  metric_kind: 'single' | 'category'
+  description: string
+  children?: MetricPartialChild[]
+}
+
+export interface MetricPartial {
+  id: string
+  organization_id: string
+  name: string
+  description: string | null
+  content: string
+  tags: string[] | null
+  current_version: number
+  created_at: string
+  updated_at: string
+  created_by: string | null
+}
+
+export interface MetricPartialDetail extends MetricPartial {
+  versions: PromptPartialVersion[]
+}
+
+export interface PromptPartialVersion {
+  id: string
+  prompt_partial_id: string
+  version: number
+  content: string
+  change_summary: string | null
+  created_at: string
+  created_by: string | null
+}
+
+export interface PromptImprovementSuggestion {
+  id: string
+  metric_id: string
+  metric_name: string
+  cluster_id: string
+  cluster_label: string
+  gap_label: MetricClusterGapLabel
+  share_pct: number
+  priority: 'high' | 'medium' | 'low'
+  change_type?: 'edit' | 'add'
+  target_section: string
+  anchor_excerpt?: string
+  current_gap: string
+  suggested_text: string
+  rationale: string
+  flow_node_id?: string
+  flow_node_label?: string
+}
+
+export interface EvaluationPromptImprovementsState {
+  status: 'idle' | 'running' | 'completed' | 'failed'
+  imported_agent_id?: string | null
+  imported_agent_name?: string | null
+  suggestions: PromptImprovementSuggestion[]
+  overview?: string | null
+  generated_at?: string | null
+  generated_at_completed_rows: number
+  provider?: string | null
+  model?: string | null
+  error_message?: string | null
+  is_stale: boolean
+}
+
+export interface MetricPeriodDelta {
+  label: string
+  detail: string
+  why?: string | null
 }
 
 export interface CallImportEvaluationListResponse {
@@ -1350,6 +1635,9 @@ export interface CallImportEvaluationAggregateResponse {
   completed_rows: number
   failed_rows: number
   metrics: CallImportMetricAggregate[]
+  period_deltas?: Record<string, MetricPeriodDelta>
+  baseline_evaluation_id?: string | null
+  failure_policies_source?: 'inferred' | 'user' | null
 }
 
 export interface CallImportInsightsRunPoint {

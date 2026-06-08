@@ -26,7 +26,16 @@ def _default_workspace_id(db_session, org_id) -> UUID:
         )
         .first()
     )
-    assert workspace is not None
+    if workspace is None:
+        workspace = Workspace(
+            organization_id=org_id,
+            name="Default",
+            slug="default",
+            is_default=True,
+        )
+        db_session.add(workspace)
+        db_session.commit()
+        db_session.refresh(workspace)
     return workspace.id
 
 
@@ -118,7 +127,7 @@ def test_pdf_report_generates_selected_external_pdf(
     monkeypatch.setattr(
         call_import_evaluation_pdf_report_service,
         "_render_weasyprint",
-        lambda _html: None,
+        lambda _html, **_kwargs: None,
     )
     call_import, evaluation = _seed_completed_evaluation(db_session, org_id)
 
@@ -153,7 +162,7 @@ def test_pdf_report_generates_selected_internal_pdf(
     monkeypatch.setattr(
         call_import_evaluation_pdf_report_service,
         "_render_weasyprint",
-        lambda _html: None,
+        lambda _html, **_kwargs: None,
     )
     call_import, evaluation = _seed_completed_evaluation(db_session, org_id)
 
@@ -169,8 +178,8 @@ def test_pdf_report_generates_selected_internal_pdf(
     ]
     internal_pdf = response.content
     assert internal_pdf.startswith(b"%PDF-1.4")
-    assert b"Measurement standpoint" in internal_pdf
-    assert b"Metric distribution" in internal_pdf
+    assert b"metric-compact-meaning" in internal_pdf or b"Business meaning" in internal_pdf
+    assert b"Metric distribution" not in internal_pdf
     assert b"Internal Diagnostics" not in internal_pdf
     assert b"Evaluation Row ID" not in internal_pdf
 
@@ -220,7 +229,7 @@ def test_pdf_report_html_includes_metric_graph_elements(
     assert 'class="metric metric-compact"' in html
     assert '<div class="metric-bar"><div class="metric-bar-fill"' not in html
     assert '<div class="subhead">Metric distribution</div>' not in html
-    assert "brand-logo-row" in html
+    assert '<div class="brand-logo-row">' not in html
     assert "max-width: 230px" in html
     assert "max-height: 58px" in html
     assert "title-rule" in html
@@ -230,6 +239,8 @@ def test_pdf_report_html_includes_metric_graph_elements(
     assert "Lower rate is better" not in html
     assert '<div class="delta-card"' not in html
     assert 'class="meaning metric-compact-meaning"' in html
+    assert "· acc 100.0%" in html
+    assert '<div class="audit-delta-panel"' not in html
     assert "Internal brand" not in html
     assert "Vendor brand" not in html
 
@@ -272,8 +283,8 @@ def test_pdf_report_html_uses_supplied_audit_summary(
     )
 
     assert "LLM-generated visualization summary goes here." in html
-    assert "<li>User frustration is a significant issue.</li>" in html
-    assert "<li>Bot interruptions occurred in nearly a quarter of calls.</li>" in html
+    assert "<li>User frustration is a significant issue.</li>" not in html
+    assert "<li>Bot interruptions occurred in nearly a quarter of calls.</li>" not in html
 
 
 def test_pdf_report_html_uses_metric_business_insight(
@@ -352,8 +363,8 @@ def test_pdf_report_uses_full_cached_tldr_summary(
 
     assert response.status_code == 200, response.text
     assert "The evaluation shows strong performance" in str(captured["audit_summary"])
-    assert "User frustration is a significant issue." in str(captured["audit_summary"])
-    assert "High rates of user repetition" in str(captured["audit_summary"])
+    assert "User frustration is a significant issue." not in str(captured["audit_summary"])
+    assert "High rates of user repetition" not in str(captured["audit_summary"])
     assert captured["metric_insights"] == {
         evaluation.selected_metric_ids[0]: "Escalation handling indicates whether sensitive cases need human recovery."
     }
@@ -365,7 +376,7 @@ def test_pdf_report_html_includes_weekly_delta_when_enabled(
     monkeypatch.setattr(
         call_import_evaluation_pdf_report_service,
         "_render_weasyprint",
-        lambda _html: None,
+        lambda _html, **_kwargs: None,
     )
     call_import, evaluation = _seed_completed_evaluation(db_session, org_id)
     metric = (
@@ -691,6 +702,16 @@ def test_pdf_report_uses_selected_baseline_evaluation_for_delta(
         flagged=False,
         name="Default Prior Week QA",
     )
+    evaluation.metric_clusters = {
+        "failure_policies": {
+            str(metric.id): {
+                "metric_id": str(metric.id),
+                "failure_values": ["true"],
+            }
+        },
+        "failure_policies_source": "user",
+    }
+    db_session.commit()
 
     response = authenticated_client.post(
         f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/pdf-report",
@@ -796,7 +817,7 @@ def test_delta_sparkline_uses_red_for_increasing_metric():
     assert 'fill="#fee2e2"' in svg
 
 
-def test_pdf_report_internal_html_keeps_detailed_metric_layout(
+def test_pdf_report_internal_html_uses_compact_metric_layout(
     authenticated_client, db_session, org_id, seed_org
 ):
     call_import, evaluation = _seed_completed_evaluation(db_session, org_id)
@@ -810,6 +831,9 @@ def test_pdf_report_internal_html_keeps_detailed_metric_layout(
     summaries = call_import_evaluation_pdf_report_service._summarize_metrics(
         [metric], rows
     )
+    summaries[0].weekly_delta_label = "+10.0 pp"
+    summaries[0].weekly_delta_detail = "Current report 50.0% vs previous report 40.0%"
+    summaries[0].weekly_delta_why = "Increase driven by more repeated-handoff cluster cases."
     html = call_import_evaluation_pdf_report_service._render_html(
         {
             "title": "Internal Quality Metric Audit",
@@ -825,14 +849,28 @@ def test_pdf_report_internal_html_keeps_detailed_metric_layout(
             "rows": rows,
             "internal": True,
             "completion_rate": "100.0%",
+            "include_weekly_delta": True,
         }
     )
 
-    assert '<div class="metric-compact-grid">' not in html
-    assert 'class="metric metric-compact"' not in html
-    assert '<div class="metric-bar"><div class="metric-bar-fill"' in html
-    assert "<small>Measurement standpoint</small>" in html
-    assert '<div class="subhead">Metric distribution</div>' in html
+    assert '<div class="metric-compact-grid">' in html
+    assert 'class="metric metric-compact"' in html
+    assert 'class="meaning metric-compact-meaning"' in html
+    assert 'class="metric-sparkline"' in html
+    assert 'class="audit-summary-section"' in html
+    assert 'margin: 14px 0 0' in html
+    assert 'audit-summary-section + section h2 { margin-top: 0; }' in html
+    assert "audit-delta-panel" in html
+    assert "Top metric delta vs last week" in html
+    assert "Lower rate is better" in html
+    assert ".audit-delta-title { font-size: 13px" in html
+    assert "+10.0 pp" in html
+    assert "repeated-handoff cluster cases" in html
+    assert "metric-compact-delta-why" not in html
+    assert "1 of 1" in html
+    assert "· acc" not in html
+    assert '<div class="metric-bar"><div class="metric-bar-fill"' not in html
+    assert '<div class="subhead">Metric distribution</div>' not in html
 
 
 def test_external_pdf_renders_generated_user_insights(
@@ -841,7 +879,7 @@ def test_external_pdf_renders_generated_user_insights(
     monkeypatch.setattr(
         call_import_evaluation_pdf_report_service,
         "_render_weasyprint",
-        lambda _html: None,
+        lambda _html, **_kwargs: None,
     )
     call_import, evaluation = _seed_completed_evaluation(db_session, org_id)
     evaluation.user_insights = {
@@ -946,3 +984,425 @@ def test_render_html_generated_user_insight_block():
     assert "Callers most often describe first-time product issues." in html
     assert "insight-observation-box" in html
     assert "insight-evidence-box" in html
+
+
+def test_audit_summary_html_clamps_narrative_to_three_sentences():
+    html = call_import_evaluation_pdf_report_service._audit_summary_html(
+        "One. Two. Three. Four. Five."
+    )
+    assert "One. Two. Three." in html
+    assert "Four." not in html
+
+
+def test_top_metric_percentages_html_renders_audit_stat_strip():
+    from app.services.reporting.call_import_evaluation_pdf_report import MetricReportSummary
+
+    summaries = [
+        MetricReportSummary(
+            id="metric-a",
+            name="Asks For Human",
+            metric_type="boolean",
+            description="",
+            flagged_count=17,
+            evaluated_count=100,
+        ),
+        MetricReportSummary(
+            id="metric-b",
+            name="Connect+",
+            metric_type="boolean",
+            description="",
+            flagged_count=12,
+            evaluated_count=100,
+        ),
+    ]
+    html = call_import_evaluation_pdf_report_service._top_metric_percentages_html(
+        summaries,
+        limit=5,
+    )
+    assert "audit-stat-strip" in html
+    assert "ASKS FOR HUMAN" in html
+    assert "CONNECT+" in html
+    assert "17.0%" in html
+    assert "12.0%" in html
+
+
+def test_top_metric_delta_line_graphs_html_renders_reasons_and_fallback():
+    from app.services.reporting.call_import_evaluation_pdf_report import MetricReportSummary
+
+    summaries = [
+        MetricReportSummary(
+            id="metric-a",
+            name="Asks For Human",
+            metric_type="boolean",
+            description="",
+            flagged_count=17,
+            evaluated_count=100,
+            weekly_delta_label="+7.0 pp",
+            weekly_delta_detail="Current report 17.0% vs previous report 10.0%",
+            weekly_delta_why="More calls requested a human handoff after failed resolution.",
+        ),
+        MetricReportSummary(
+            id="metric-b",
+            name="Connect+",
+            metric_type="boolean",
+            description="",
+            flagged_count=12,
+            evaluated_count=100,
+            weekly_delta_label="No previous-week baseline",
+            weekly_delta_detail="No comparable prior report snapshot was found.",
+        ),
+        MetricReportSummary(
+            id="metric-c",
+            name="Cancellation Flow",
+            metric_type="boolean",
+            description="",
+            flagged_count=22,
+            evaluated_count=100,
+            weekly_delta_label="-3.0 pp",
+            weekly_delta_detail="Current report 22.0% vs previous report 25.0%",
+            weekly_delta_why="Fewer cancellation calls stalled at verification.",
+        ),
+    ]
+
+    html = call_import_evaluation_pdf_report_service._top_metric_delta_line_graphs_html(
+        summaries,
+        limit=5,
+    )
+
+    assert "audit-delta-panel" in html
+    assert html.index("CANCELLATION FLOW") < html.index("ASKS FOR HUMAN")
+    assert html.index("ASKS FOR HUMAN") < html.index("CONNECT+")
+    assert "metric-sparkline" in html
+    assert "+7.0 pp" in html
+    assert "Lower rate is better" in html
+    assert "audit-delta-direction" in html
+    assert "17.0%" in html
+    assert "10.0%" in html
+    assert "More calls requested a human handoff" in html
+    assert "No comparable line data" in html
+    assert "Reason not available for this comparison." in html
+    assert "audit-delta-reason" in html
+
+
+def test_compact_weekly_delta_html_omits_why_from_metric_cards():
+    from app.services.reporting.call_import_evaluation_pdf_report import MetricReportSummary
+
+    summary = MetricReportSummary(
+        id="metric-a",
+        name="Escalation Handling",
+        metric_type="boolean",
+        description="",
+        flagged_count=12,
+        evaluated_count=100,
+        weekly_delta_label="+2.0 pp",
+        weekly_delta_detail="Current report 12.0% vs previous report 10.0%",
+        weekly_delta_why="Increase driven by more repeated-handoff cluster cases.",
+    )
+    delta_markup, _ = call_import_evaluation_pdf_report_service._compact_weekly_delta_html(
+        summary
+    )
+    assert "metric-compact-delta-why" not in delta_markup
+    assert "repeated-handoff cluster cases" not in delta_markup
+
+
+def test_explain_period_deltas_returns_cached_why(db_session, org_id, seed_org):
+    routes = import_module("app.api.v1.routes.call_import_evaluations")
+    call_import, evaluation = _seed_completed_evaluation(db_session, org_id)
+    metric = (
+        db_session.query(Metric)
+        .filter(
+            Metric.organization_id == org_id,
+            Metric.name == "Escalation Handling",
+        )
+        .one()
+    )
+    _prior_import, baseline = _seed_prior_evaluation(
+        db_session,
+        org_id,
+        workspace_id=call_import.workspace_id,
+        metric=metric,
+        recording_date=date(2026, 5, 11),
+        flagged=False,
+        name="Prior Week QA",
+    )
+    cache_key = routes._period_delta_explanation_cache_key(
+        baseline.id,
+        completed_rows=evaluation.completed_rows,
+        baseline_completed_rows=baseline.completed_rows,
+    )
+    evaluation.period_delta_explanations = {
+        cache_key: {
+            "explanations": {
+                str(metric.id): "More calls hit the handoff cluster."
+            },
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    }
+    db_session.commit()
+
+    raw_deltas = {
+        str(metric.id): {
+            "label": "+100.0 pp",
+            "detail": "Current report 100.0% vs previous report 0.0%",
+        }
+    }
+    result = routes._explain_period_deltas(
+        db_session,
+        org_id,
+        evaluation,
+        baseline,
+        raw_deltas,
+    )
+    assert result[str(metric.id)]["why"] == "More calls hit the handoff cluster."
+
+
+def test_reconcile_cluster_periods_matches_similar_labels():
+    routes = import_module("app.api.v1.routes.call_import_evaluations")
+    current = [
+        {
+            "label": "Premature Digit Collection Prompts",
+            "gap_label": "LOGIC_GAP",
+            "share_pct": 47.1,
+            "count": 8,
+        },
+        {
+            "label": "General Conversational Overlap",
+            "gap_label": "EXISTS_NO_TRIGGER",
+            "share_pct": 23.5,
+            "count": 4,
+        },
+    ]
+    baseline = [
+        {
+            "label": "Bot interrupts during digit entry",
+            "gap_label": "LOGIC_GAP",
+            "share_pct": 31.0,
+            "count": 5,
+        },
+        {
+            "label": "Overlap while user speaking",
+            "gap_label": "EXISTS_NO_TRIGGER",
+            "share_pct": 12.0,
+            "count": 2,
+        },
+    ]
+    reconciled = routes._reconcile_cluster_periods(current, baseline)
+    assert len(reconciled["matched_theme_shifts"]) == 2
+    assert reconciled["new_themes_current_period"] == []
+    assert reconciled["gap_label_shifts"]["LOGIC_GAP"]["share_delta_pp"] == 16.1
+
+
+def test_reconcile_cluster_periods_treats_unmatched_as_new_themes():
+    routes = import_module("app.api.v1.routes.call_import_evaluations")
+    current = [
+        {
+            "label": "Premature Digit Collection Prompts",
+            "gap_label": "LOGIC_GAP",
+            "share_pct": 47.1,
+            "count": 8,
+        }
+    ]
+    baseline = [
+        {
+            "label": "Wrong transfer target selected",
+            "gap_label": "MISSING",
+            "share_pct": 18.0,
+            "count": 3,
+        }
+    ]
+    reconciled = routes._reconcile_cluster_periods(current, baseline)
+    assert reconciled["matched_theme_shifts"] == []
+    assert len(reconciled["new_themes_current_period"]) == 1
+    assert len(reconciled["retired_themes_baseline_period"]) == 1
+    assert "LOGIC_GAP" in reconciled["gap_label_shifts"]
+    assert "MISSING" in reconciled["gap_label_shifts"]
+
+
+def test_render_html_includes_top_metric_strip_below_audit_summary(
+    db_session, org_id, seed_org
+):
+    call_import, evaluation = _seed_completed_evaluation(db_session, org_id)
+    metric = (
+        db_session.query(Metric)
+        .filter(
+            Metric.organization_id == org_id,
+            Metric.name == "Escalation Handling",
+        )
+        .one()
+    )
+    rows = (
+        db_session.query(CallImportEvaluationRow, CallImportRow)
+        .filter(CallImportEvaluationRow.evaluation_id == evaluation.id)
+        .join(CallImportRow, CallImportRow.id == CallImportEvaluationRow.call_import_row_id)
+        .all()
+    )
+    summaries = call_import_evaluation_pdf_report_service._summarize_metrics(
+        [metric], rows
+    )
+    html = call_import_evaluation_pdf_report_service._render_html(
+        {
+            "title": "Quality Metric Audit",
+            "subtitle": "Call Import Evaluation Report",
+            "vendor_name": "Acme Vendor",
+            "generated_at": "May 28, 2026 00:00 UTC",
+            "generated_at_iso": "2026-05-28 00:00 UTC",
+            "logo_data_uris": {},
+            "custom_heading": None,
+            "call_import": call_import,
+            "evaluation": evaluation,
+            "metrics": summaries,
+            "rows": rows,
+            "internal": False,
+            "completion_rate": "100.0%",
+            "include_weekly_delta": False,
+            "report_config": {"sections": {"audit_summary": True}},
+            "narrative": {},
+            "audit_summary": "Concise audit summary.",
+        }
+    )
+    assert "01 Audit Summary" in html
+    assert "audit-stat-strip" in html
+    assert "ESCALATION HANDLING" in html
+    assert "100.0%" in html
+
+
+def test_prompt_improvements_section_renders_top_five_with_edit_and_add_blocks():
+    service = call_import_evaluation_pdf_report_service
+    suggestions = [
+        {
+            "id": "s-low",
+            "metric_name": "Overlap",
+            "cluster_label": "Minor overlap",
+            "gap_label": "UNDERSPEC",
+            "priority": "low",
+            "share_pct": 5.0,
+            "change_type": "add",
+            "suggested_text": "Add overlap guardrail text.",
+            "rationale": "Low priority filler.",
+        },
+        {
+            "id": "s-edit",
+            "metric_name": "Escalation Handling",
+            "cluster_label": "Missed handoff",
+            "gap_label": "LOGIC_GAP",
+            "priority": "high",
+            "share_pct": 42.0,
+            "change_type": "edit",
+            "target_section": "Escalation policy",
+            "flow_node_label": "Escalate to human",
+            "current_gap": "Agent skips escalation step.",
+            "anchor_excerpt": "If the user asks for a manager, continue troubleshooting.",
+            "suggested_text": "If the user asks for a manager, transfer immediately.",
+            "rationale": "Highest-impact cluster.",
+        },
+        {
+            "id": "s-mid",
+            "metric_name": "Digit Collection",
+            "cluster_label": "Premature prompts",
+            "gap_label": "EXISTS_NO_TRIGGER",
+            "priority": "medium",
+            "share_pct": 18.0,
+            "change_type": "add",
+            "suggested_text": "Wait until the user finishes entering digits.",
+            "rationale": "Medium priority addition.",
+        },
+    ]
+    for idx in range(6):
+        suggestions.append(
+            {
+                "id": f"s-extra-{idx}",
+                "metric_name": f"Metric {idx}",
+                "cluster_label": f"Cluster {idx}",
+                "gap_label": "MISSING",
+                "priority": "low",
+                "share_pct": float(idx),
+                "change_type": "add",
+                "suggested_text": f"Extra suggestion {idx}",
+            }
+        )
+
+    section_html = service._prompt_improvements_section_html(
+        {
+            "imported_agent_name": "Billing Agent",
+            "overview": "Focus on escalation and digit-entry flows.",
+            "suggestions": suggestions,
+        }
+    )
+
+    assert "05 Prompt Improvement Recommendations" in section_html
+    assert "Top 5 recommended prompt changes" in section_html
+    assert "Billing Agent" in section_html
+    assert "Focus on escalation and digit-entry flows." in section_html
+    assert section_html.count("prompt-improvement-card") == 5
+    assert "Current prompt (being changed)" in section_html
+    assert "Suggested replacement" in section_html
+    assert "If the user asks for a manager, continue troubleshooting." in section_html
+    assert "If the user asks for a manager, transfer immediately." in section_html
+    assert "Suggested prompt addition" in section_html
+    assert "Agent logic node:" in section_html
+    assert "Escalate to human" in section_html
+    assert "Edit existing" in section_html
+    assert "New addition" in section_html
+    assert "1. Escalation Handling" in section_html
+    assert "Extra suggestion 0" not in section_html
+
+
+def test_pdf_report_html_includes_brand_logos_on_first_page_header(
+    db_session, org_id, seed_org
+):
+    call_import, evaluation = _seed_completed_evaluation(db_session, org_id)
+    metric = (
+        db_session.query(Metric)
+        .filter(
+            Metric.organization_id == org_id,
+            Metric.name == "Escalation Handling",
+        )
+        .one()
+    )
+    rows = (
+        db_session.query(CallImportEvaluationRow, CallImportRow)
+        .filter(CallImportEvaluationRow.evaluation_id == evaluation.id)
+        .join(CallImportRow, CallImportRow.id == CallImportEvaluationRow.call_import_row_id)
+        .all()
+    )
+    summaries = call_import_evaluation_pdf_report_service._summarize_metrics(
+        [metric], rows
+    )
+    internal_logo = "data:image/png;base64,internal-logo"
+    external_logo = "data:image/png;base64,vendor-logo"
+
+    html = call_import_evaluation_pdf_report_service._render_html(
+        {
+            "title": "Internal Quality Metric Audit",
+            "subtitle": "Call Import Evaluation Report",
+            "vendor_name": "Acme Vendor",
+            "generated_at": "May 28, 2026 00:00 UTC",
+            "generated_at_iso": "2026-05-28 00:00 UTC",
+            "logo_data_uris": {
+                "internal": internal_logo,
+                "external": external_logo,
+            },
+            "custom_heading": "Acme Branch",
+            "call_import": call_import,
+            "evaluation": evaluation,
+            "metrics": summaries,
+            "rows": rows,
+            "internal": True,
+            "completion_rate": "100.0%",
+            "report_config": {"sections": {"audit_summary": True}},
+            "audit_summary": "Concise audit summary.",
+        }
+    )
+
+    header_start = html.index("<header>")
+    header_end = html.index("</header>")
+    first_page_header = html[header_start:header_end]
+
+    assert '<div class="brand-logo-row">' in first_page_header
+    assert 'class="brand-logo-slot brand-logo-slot-internal"' in first_page_header
+    assert 'class="brand-logo-slot brand-logo-slot-external"' in first_page_header
+    assert f'src="{internal_logo}"' in first_page_header
+    assert f'src="{external_logo}"' in first_page_header
+    assert "Internal brand" in first_page_header
+    assert "External vendor brand" in first_page_header
+    assert "Acme Branch" in first_page_header

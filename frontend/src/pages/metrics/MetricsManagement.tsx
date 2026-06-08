@@ -1,6 +1,7 @@
 import { Fragment, useState, useEffect, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../lib/api'
+import { getApiErrorMessage } from '../../lib/apiErrors'
 import Button from '../../components/Button'
 import { useToast } from '../../hooks/useToast'
 import { useWorkspaceStore } from '../../store/workspaceStore'
@@ -21,6 +22,15 @@ import {
   Layers,
   AlertTriangle,
 } from 'lucide-react'
+import {
+  categoryChildrenFromPartial,
+  createCategoryChildrenFromPartial,
+  formatMetricPartialPreview,
+  metricPartialHasSaveableContent,
+  parseMetricPartialContent,
+  serializeMetricPartialContent,
+  type MetricPartialContent,
+} from '../promptPartials/metricPartialUtils'
 
 interface Metric {
   id: string
@@ -117,6 +127,40 @@ const MODERN_INPUT_CLASS =
   'w-full rounded-lg border border-gray-200 bg-white px-3.5 py-2.5 text-sm text-gray-900 placeholder-gray-400 shadow-sm transition focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 disabled:bg-gray-50 disabled:text-gray-500'
 const MODERN_INPUT_SM_CLASS =
   'w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 placeholder-gray-400 shadow-sm transition focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 disabled:bg-gray-50 disabled:text-gray-500'
+
+function buildMetricPartialContentForTarget(
+  target: 'single' | 'category' | 'edit_category',
+  formData: { description: string },
+  categoryForm: {
+    description: string
+    children: Array<{ name: string; description: string; example: string }>
+  },
+  editCategoryForm: {
+    description: string
+    children: Array<{ name: string; description: string; example: string }>
+  },
+): MetricPartialContent {
+  if (target === 'single') {
+    return {
+      schema_version: 1,
+      metric_kind: 'single',
+      description: formData.description.trim(),
+    }
+  }
+  const source = target === 'category' ? categoryForm : editCategoryForm
+  return {
+    schema_version: 1,
+    metric_kind: 'category',
+    description: source.description.trim(),
+    children: source.children
+      .filter((child) => child.name.trim())
+      .map((child) => ({
+        name: child.name.trim(),
+        description: child.description.trim(),
+        example: child.example.trim(),
+      })),
+  }
+}
 
 export default function MetricsManagement() {
   const queryClient = useQueryClient()
@@ -355,6 +399,7 @@ export default function MetricsManagement() {
         0,
         100,
         partialsSearchQuery ? partialsSearchQuery : undefined,
+        'metric',
       ),
     enabled:
       partialsImportTarget !== null ||
@@ -368,17 +413,49 @@ export default function MetricsManagement() {
   const importPartialMutation = useMutation({
     mutationFn: (partialId: string) => apiClient.getPromptPartial(partialId),
     onSuccess: (partial) => {
-      const content = ((partial?.content as string | undefined) || '').trim()
-      if (!content) {
-        setPartialsImportError('Selected prompt partial has no content.')
-        return
-      }
+      const parsed = parseMetricPartialContent(
+        ((partial?.content as string | undefined) || '').trim(),
+      )
+      const { content, isLegacyPlainText } = parsed
+
       if (partialsImportTarget === 'single') {
-        setFormData((prev) => ({ ...prev, description: content }))
+        if (!isLegacyPlainText && content.metric_kind === 'category') {
+          setPartialsImportError(
+            'Selected partial is for categorization labels. Import it from the category form instead.',
+          )
+          return
+        }
+        setFormData((prev) => ({ ...prev, description: content.description }))
       } else if (partialsImportTarget === 'category') {
-        setCategoryForm((prev) => ({ ...prev, description: content }))
+        if (!isLegacyPlainText && content.metric_kind === 'single') {
+          setPartialsImportError(
+            'Selected partial is for a single metric. Import it from the single metric form instead.',
+          )
+          return
+        }
+        setCategoryForm((prev) => ({
+          ...prev,
+          description: content.description,
+          children: createCategoryChildrenFromPartial(content.children),
+        }))
       } else if (partialsImportTarget === 'edit_category') {
-        setEditCategoryForm((prev) => ({ ...prev, description: content }))
+        if (!isLegacyPlainText && content.metric_kind === 'single') {
+          setPartialsImportError(
+            'Selected partial is for a single metric. Import it from the single metric form instead.',
+          )
+          return
+        }
+        setEditCategoryForm((prev) => {
+          const deletedIds = prev.children
+            .map((child) => child.server_id)
+            .filter((id): id is string => !!id)
+          return {
+            ...prev,
+            description: content.description,
+            children: categoryChildrenFromPartial(content.children, 'edit'),
+            deleted_child_ids: [...new Set([...prev.deleted_child_ids, ...deletedIds])],
+          }
+        })
       }
       setPartialsImportTarget(null)
       setPartialsSearchInput('')
@@ -427,13 +504,13 @@ export default function MetricsManagement() {
       changeSummary?: string
     }) => {
       if (input.mode === 'new') {
-        return apiClient.createPromptPartial({
-          name: input.name || 'Untitled metric prompt',
+        return apiClient.createMetricPartial({
+          name: input.name || 'Untitled metric partial',
           description: input.description || undefined,
           content: input.content,
         })
       }
-      return apiClient.updatePromptPartial(input.partialId!, {
+      return apiClient.updateMetricPartial(input.partialId!, {
         content: input.content,
         change_summary: input.changeSummary || undefined,
       })
@@ -443,11 +520,11 @@ export default function MetricsManagement() {
         queryKey: ['metrics-prompt-partials'],
       })
       const label =
-        partial?.name || (savePartialMode === 'new' ? 'new partial' : 'partial')
+        partial?.name || (savePartialMode === 'new' ? 'new metric partial' : 'metric partial')
       setSavePartialSuccess(
         savePartialMode === 'new'
-          ? `Saved as new prompt partial “${label}”.`
-          : `Updated prompt partial “${label}” (new version saved).`,
+          ? `Saved as new metric partial “${label}”.`
+          : `Updated metric partial “${label}” (new version saved).`,
       )
       setSavePartialError(null)
       setTimeout(() => {
@@ -560,6 +637,9 @@ export default function MetricsManagement() {
     mutationFn: (id: string) => apiClient.deleteMetric(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['metrics'] })
+    },
+    onError: (err: unknown) => {
+      showToast(getApiErrorMessage(err, 'Failed to delete metric'), 'error')
     },
   })
 
@@ -910,14 +990,6 @@ export default function MetricsManagement() {
     // clean (no stale enum/number_range hints attached to text metrics).
     const useCustomConfig =
       formData.metric_origin === 'custom' && formData.metric_type !== 'text'
-    // ``allow_discovery`` is valid on any parent (single_choice or
-    // multi_label) but is meaningless on standalone or child metrics.
-    // We only forward the field when editing an actual parent metric
-    // so the server-side value on non-parents stays untouched.
-    const isParentBeingEdited =
-      !!editingMetric &&
-      !!editingMetric.selection_mode &&
-      !editingMetric.parent_metric_id
     return {
       name: formData.name,
       description: formData.description,
@@ -935,9 +1007,6 @@ export default function MetricsManagement() {
       // exporter and worker both no-op when the flag is false.
       capture_rationale:
         formData.metric_type !== 'text' ? formData.capture_rationale : false,
-      ...(isParentBeingEdited
-        ? { allow_discovery: !!formData.allow_discovery }
-        : {}),
       // Transcript-compare judge metrics live alongside standalone
       // transcript metrics. The server rejects the flag on child
       // sub-metrics and parents (selection_mode set), so we only
@@ -1476,14 +1545,6 @@ export default function MetricsManagement() {
                                 <span className="ml-0.5 px-1 py-0.5 bg-purple-200 text-purple-900 rounded text-[10px]">
                                   {enabledChildren.length}
                                 </span>
-                              </span>
-                            )}
-                            {isParent && metric.allow_discovery && (
-                              <span
-                                className="px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-amber-50 text-amber-700 border border-amber-200 rounded"
-                                title="LLM may discover and propose additional sub-labels for this category during call-import evaluations."
-                              >
-                                Auto-discover
                               </span>
                             )}
                           </div>
@@ -2030,21 +2091,26 @@ export default function MetricsManagement() {
                           className="inline-flex items-center gap-1 text-xs font-medium text-primary-600 hover:text-primary-700"
                         >
                           <Layers className="w-3.5 h-3.5" />
-                          Import from saved partials
+                          Import metric partial
                         </button>
                         <button
                           type="button"
                           onClick={() => openSavePartial('single')}
-                          disabled={!formData.description.trim()}
-                          title={
-                            formData.description.trim()
-                              ? 'Save the current prompt to your Prompt Partials library'
-                              : 'Write a description first'
+                          disabled={
+                            !metricPartialHasSaveableContent(
+                              buildMetricPartialContentForTarget(
+                                'single',
+                                formData,
+                                categoryForm,
+                                editCategoryForm,
+                              ),
+                            )
                           }
+                          title="Save the current metric prompt to your metric partials library"
                           className="inline-flex items-center gap-1 text-xs font-medium text-primary-600 hover:text-primary-700 disabled:text-gray-400 disabled:cursor-not-allowed"
                         >
                           <Layers className="w-3.5 h-3.5" />
-                          Save as partial
+                          Save metric partial
                         </button>
                       </div>
                     </div>
@@ -2224,48 +2290,6 @@ export default function MetricsManagement() {
                       <option value="always">Always</option>
                     </select>
                   </div>
-
-                  {/* Discovery toggle: surfaces in the edit form so a
-                      user who forgot to tick the box during Create
-                      Category can flip it on later without having to
-                      delete + recreate the category. The backend now
-                      accepts allow_discovery on both single_choice and
-                      multi_label parents. */}
-                  {editingMetric &&
-                    !editingMetric.parent_metric_id &&
-                    !!editingMetric.selection_mode && (
-                      <div className="lg:col-span-2 border border-amber-200 bg-amber-50/40 rounded-xl p-3.5">
-                        <label className="flex items-start gap-2.5 text-sm text-gray-800">
-                          <input
-                            type="checkbox"
-                            checked={formData.allow_discovery}
-                            onChange={(e) =>
-                              setFormData({
-                                ...formData,
-                                allow_discovery: e.target.checked,
-                              })
-                            }
-                            className="mt-0.5 h-4 w-4 text-amber-600 focus:ring-amber-500 border-gray-300 rounded"
-                          />
-                          <span>
-                            <span className="font-medium">
-                              Allow LLM-discovered metrics
-                            </span>
-                            <span className="block text-xs text-gray-600 mt-0.5">
-                              Lets the LLM emit candidate sub-metrics beyond
-                              the children below during call-import
-                              evaluation. Promote useful candidates from
-                              the Discovered Metrics panel on each
-                              evaluation.
-                              {editingMetric.selection_mode === 'single_choice'
-                                ? ' For single-choice categories the discovered metrics are supplemental — the existing children still control the picked outcome.'
-                                : ''}
-                            </span>
-                          </span>
-                        </label>
-                      </div>
-                    )}
-
                   {/* Visibility scope picker. Only meaningful at
                       CREATE time — the metrics API does not support
                       flipping a row between workspace and org scope
@@ -2383,35 +2407,9 @@ export default function MetricsManagement() {
                     </div>
 
                     <div className="md:col-span-2">
-                      <div className="flex items-center justify-between mb-2">
-                        <label className="block text-sm font-medium text-gray-700">
-                          Description (Prompt)
-                        </label>
-                        <div className="flex items-center gap-3">
-                          <button
-                            type="button"
-                            onClick={() => openPartialsImport('category')}
-                            className="inline-flex items-center gap-1 text-xs font-medium text-primary-600 hover:text-primary-700"
-                          >
-                            <Layers className="w-3.5 h-3.5" />
-                            Import from saved partials
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => openSavePartial('category')}
-                            disabled={!categoryForm.description.trim()}
-                            title={
-                              categoryForm.description.trim()
-                                ? 'Save the current prompt to your Prompt Partials library'
-                                : 'Write a description first'
-                            }
-                            className="inline-flex items-center gap-1 text-xs font-medium text-primary-600 hover:text-primary-700 disabled:text-gray-400 disabled:cursor-not-allowed"
-                          >
-                            <Layers className="w-3.5 h-3.5" />
-                            Save as partial
-                          </button>
-                        </div>
-                      </div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Description (Prompt)
+                      </label>
                       <textarea
                         value={categoryForm.description}
                         onChange={(e) =>
@@ -2506,10 +2504,39 @@ export default function MetricsManagement() {
                   </div>
 
                   <div>
-                    <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center justify-between mb-2 gap-3">
                       <label className="block text-sm font-medium text-gray-700">
                         Categorization Labels ({categoryForm.children.length})
                       </label>
+                      <div className="flex items-center gap-3 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => openPartialsImport('category')}
+                          className="inline-flex items-center gap-1 text-xs font-medium text-primary-600 hover:text-primary-700"
+                        >
+                          <Layers className="w-3.5 h-3.5" />
+                          Import metric partial
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openSavePartial('category')}
+                          disabled={
+                            !metricPartialHasSaveableContent(
+                              buildMetricPartialContentForTarget(
+                                'category',
+                                formData,
+                                categoryForm,
+                                editCategoryForm,
+                              ),
+                            )
+                          }
+                          title="Save the full category prompt and all labels to metric partials"
+                          className="inline-flex items-center gap-1 text-xs font-medium text-primary-600 hover:text-primary-700 disabled:text-gray-400 disabled:cursor-not-allowed"
+                        >
+                          <Layers className="w-3.5 h-3.5" />
+                          Save metric partial
+                        </button>
+                      </div>
                     </div>
                     <div className="space-y-3">
                       {categoryForm.children.map((child, idx) => (
@@ -2717,35 +2744,9 @@ export default function MetricsManagement() {
                     </div>
 
                     <div className="md:col-span-2">
-                      <div className="flex items-center justify-between mb-2">
-                        <label className="block text-sm font-medium text-gray-700">
-                          Description (Prompt)
-                        </label>
-                        <div className="flex items-center gap-3">
-                          <button
-                            type="button"
-                            onClick={() => openPartialsImport('edit_category')}
-                            className="inline-flex items-center gap-1 text-xs font-medium text-primary-600 hover:text-primary-700"
-                          >
-                            <Layers className="w-3.5 h-3.5" />
-                            Import from saved partials
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => openSavePartial('edit_category')}
-                            disabled={!editCategoryForm.description.trim()}
-                            title={
-                              editCategoryForm.description.trim()
-                                ? 'Save the current prompt to your Prompt Partials library'
-                                : 'Write a description first'
-                            }
-                            className="inline-flex items-center gap-1 text-xs font-medium text-primary-600 hover:text-primary-700 disabled:text-gray-400 disabled:cursor-not-allowed"
-                          >
-                            <Layers className="w-3.5 h-3.5" />
-                            Save as partial
-                          </button>
-                        </div>
-                      </div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Description (Prompt)
+                      </label>
                       <textarea
                         value={editCategoryForm.description}
                         onChange={(e) =>
@@ -2789,10 +2790,39 @@ export default function MetricsManagement() {
                   </div>
 
                   <div>
-                    <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center justify-between mb-2 gap-3">
                       <label className="block text-sm font-medium text-gray-700">
                         Categorization Labels ({editCategoryForm.children.length})
                       </label>
+                      <div className="flex items-center gap-3 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => openPartialsImport('edit_category')}
+                          className="inline-flex items-center gap-1 text-xs font-medium text-primary-600 hover:text-primary-700"
+                        >
+                          <Layers className="w-3.5 h-3.5" />
+                          Import metric partial
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openSavePartial('edit_category')}
+                          disabled={
+                            !metricPartialHasSaveableContent(
+                              buildMetricPartialContentForTarget(
+                                'edit_category',
+                                formData,
+                                categoryForm,
+                                editCategoryForm,
+                              ),
+                            )
+                          }
+                          title="Save the full category prompt and all labels to metric partials"
+                          className="inline-flex items-center gap-1 text-xs font-medium text-primary-600 hover:text-primary-700 disabled:text-gray-400 disabled:cursor-not-allowed"
+                        >
+                          <Layers className="w-3.5 h-3.5" />
+                          Save metric partial
+                        </button>
+                      </div>
                     </div>
                     <div className="space-y-3">
                       {editCategoryForm.children.map((child, idx) => (
@@ -3072,11 +3102,6 @@ export default function MetricsManagement() {
                         Default
                       </span>
                     )}
-                    {isParent && m.allow_discovery && (
-                      <span className="px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-amber-50 text-amber-700 border border-amber-200 rounded">
-                        Auto-discover
-                      </span>
-                    )}
                   </div>
                   {m.description && (
                     <p className="text-sm text-gray-600 line-clamp-3">
@@ -3314,7 +3339,7 @@ export default function MetricsManagement() {
           >
             <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
               <h3 className="text-lg font-semibold text-gray-900">
-                Import metric prompt from saved partials
+                Import metric partial
               </h3>
               <button
                 onClick={closePartialsImport}
@@ -3327,27 +3352,28 @@ export default function MetricsManagement() {
             </div>
             <div className="p-6 space-y-4 overflow-y-auto flex-1">
               <p className="text-xs text-gray-500">
-                Pick a saved Prompt Partial; its content will replace the
-                current Description textarea.
+                Pick a saved metric partial from the Metrics library. For
+                categorization metrics, importing replaces the description and
+                all label rows.
               </p>
               <input
                 type="text"
                 value={partialsSearchInput}
                 onChange={(e) => setPartialsSearchInput(e.target.value)}
-                placeholder="Search saved prompts..."
+                placeholder="Search metric partials..."
                 className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
               />
 
               {isLoadingPartials ? (
                 <div className="flex items-center justify-center py-8 text-sm text-gray-500">
                   <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                  Loading saved prompts...
+                  Loading metric partials...
                 </div>
               ) : promptPartials.length === 0 ? (
                 <div className="rounded-lg border border-gray-200 p-8 text-center text-sm text-gray-500">
                   {partialsSearchQuery
-                    ? `No saved prompt partials match “${partialsSearchQuery}”.`
-                    : 'No saved prompt partials yet.'}
+                    ? `No metric partials match “${partialsSearchQuery}”.`
+                    : 'No metric partials yet. Save one from this form first.'}
                 </div>
               ) : (
                 <div className="space-y-2 max-h-[45vh] overflow-y-auto">
@@ -3407,7 +3433,7 @@ export default function MetricsManagement() {
                 isLoading={importPartialMutation.isPending}
                 disabled={!selectedPartialId}
               >
-                Use Selected Prompt
+                Use Selected Partial
               </Button>
             </div>
           </div>
@@ -3420,17 +3446,19 @@ export default function MetricsManagement() {
           new version appended to an existing partial's history. */}
       {savePartialTarget !== null &&
         (() => {
-          const currentContent =
-            savePartialTarget === 'single'
-              ? formData.description
-              : savePartialTarget === 'category'
-                ? categoryForm.description
-                : editCategoryForm.description
-          const trimmedContent = currentContent.trim()
+          const metricPartialContent = buildMetricPartialContentForTarget(
+            savePartialTarget,
+            formData,
+            categoryForm,
+            editCategoryForm,
+          )
+          const serializedContent = serializeMetricPartialContent(metricPartialContent)
+          const previewText = formatMetricPartialPreview(metricPartialContent)
+          const hasSaveableContent = metricPartialHasSaveableContent(metricPartialContent)
           const canSubmit =
             savePartialMode === 'new'
-              ? !!savePartialName.trim() && !!trimmedContent
-              : !!savePartialExistingId && !!trimmedContent
+              ? !!savePartialName.trim() && hasSaveableContent
+              : !!savePartialExistingId && hasSaveableContent
           return (
             <div
               className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[10000]"
@@ -3442,7 +3470,7 @@ export default function MetricsManagement() {
               >
                 <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
                   <h3 className="text-lg font-semibold text-gray-900">
-                    Save metric prompt to partials
+                    Save metric partial
                   </h3>
                   <button
                     onClick={closeSavePartial}
@@ -3493,10 +3521,9 @@ export default function MetricsManagement() {
                     </button>
                   </div>
 
-                  {!trimmedContent && (
+                  {!hasSaveableContent && (
                     <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
-                      The Description textarea is empty — there's nothing to
-                      save yet.
+                      Add a description or at least one named label before saving.
                     </div>
                   )}
 
@@ -3544,7 +3571,7 @@ export default function MetricsManagement() {
                   ) : (
                     <div className="space-y-3">
                       <p className="text-xs text-gray-500">
-                        Pick the saved Prompt Partial to overwrite. A new
+                        Pick the saved metric partial to overwrite. A new
                         version row is appended — previous versions stay in
                         the partial's history and can be reverted to.
                       </p>
@@ -3554,20 +3581,20 @@ export default function MetricsManagement() {
                         onChange={(e) =>
                           setPartialsSearchInput(e.target.value)
                         }
-                        placeholder="Search saved prompts..."
+                        placeholder="Search metric partials..."
                         className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                       />
 
                       {isLoadingPartials ? (
                         <div className="flex items-center justify-center py-8 text-sm text-gray-500">
                           <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                          Loading saved prompts...
+                          Loading metric partials...
                         </div>
                       ) : promptPartials.length === 0 ? (
                         <div className="rounded-lg border border-gray-200 p-8 text-center text-sm text-gray-500">
                           {partialsSearchQuery
-                            ? `No saved prompt partials match “${partialsSearchQuery}”.`
-                            : 'No saved prompt partials yet. Switch to "Save as new" to create one.'}
+                            ? `No metric partials match “${partialsSearchQuery}”.`
+                            : 'No metric partials yet. Switch to "Save as new" to create one.'}
                         </div>
                       ) : (
                         <div className="space-y-2 max-h-[35vh] overflow-y-auto">
@@ -3628,13 +3655,13 @@ export default function MetricsManagement() {
 
                   <details className="rounded-md border border-gray-200 bg-gray-50 p-3 text-xs">
                     <summary className="cursor-pointer font-medium text-gray-700">
-                      Preview prompt content
+                      Preview metric partial content
                       <span className="ml-1 font-normal text-gray-500">
-                        ({trimmedContent.length} chars)
+                        ({serializedContent.length} chars JSON)
                       </span>
                     </summary>
                     <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded border border-gray-200 bg-white p-2 font-mono text-[11px] text-gray-800">
-                      {trimmedContent || '(empty)'}
+                      {previewText || '(empty)'}
                     </pre>
                   </details>
 
@@ -3661,7 +3688,7 @@ export default function MetricsManagement() {
                     variant="primary"
                     onClick={() =>
                       savePartialMutation.mutate({
-                        content: trimmedContent,
+                        content: serializedContent,
                         mode: savePartialMode,
                         name: savePartialName.trim(),
                         description: savePartialDescription.trim(),
@@ -3673,7 +3700,7 @@ export default function MetricsManagement() {
                     disabled={!canSubmit}
                   >
                     {savePartialMode === 'new'
-                      ? 'Create Partial'
+                      ? 'Create Metric Partial'
                       : 'Save New Version'}
                   </Button>
                 </div>

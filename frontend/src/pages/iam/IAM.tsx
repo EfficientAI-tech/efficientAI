@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../lib/api'
 import { useState } from 'react'
 import { Role, Invitation, OrganizationMember, InvitationCreate } from '../../types/api'
-import { Users, Mail, UserPlus, Shield, ShieldCheck, ShieldAlert, X, Trash2, KeyRound, Eye, EyeOff } from 'lucide-react'
+import { Users, Mail, UserPlus, Shield, ShieldCheck, ShieldAlert, X, Trash2, KeyRound, Eye, EyeOff, Building2, Copy, Check } from 'lucide-react'
 import Button from '../../components/Button'
 import { useToast } from '../../hooks/useToast'
 import { useIsAdmin } from '../../hooks/useRole'
@@ -25,6 +25,15 @@ export default function IAM() {
   const [resetPasswordConfirm, setResetPasswordConfirm] = useState('')
   const [showResetPasswordPlain, setShowResetPasswordPlain] = useState(false)
   const [resetPasswordError, setResetPasswordError] = useState<string | null>(null)
+  const [editingOrgName, setEditingOrgName] = useState(false)
+  const [orgNameDraft, setOrgNameDraft] = useState('')
+  const [copiedOrgId, setCopiedOrgId] = useState(false)
+
+  const { data: organization, isLoading: orgLoading } = useQuery({
+    queryKey: ['iam', 'organization'],
+    queryFn: () => apiClient.getOrganization(),
+    enabled: isAdmin,
+  })
 
   const { data: users, isLoading: usersLoading } = useQuery({
     queryKey: ['iam', 'users'],
@@ -34,6 +43,21 @@ export default function IAM() {
   const { data: invitations, isLoading: invitationsLoading } = useQuery({
     queryKey: ['iam', 'invitations'],
     queryFn: () => apiClient.listInvitations(),
+  })
+
+  const updateOrgMutation = useMutation({
+    mutationFn: (name: string) => apiClient.updateOrganization({ name }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['iam', 'organization'] })
+      queryClient.invalidateQueries({ queryKey: ['profile'] })
+      setEditingOrgName(false)
+      showToast('Organization name updated', 'success')
+    },
+    onError: (error: any) => {
+      const errorMessage =
+        error.response?.data?.detail || error.message || 'Failed to update organization name'
+      showToast(errorMessage, 'error')
+    },
   })
 
   const inviteMutation = useMutation({
@@ -228,6 +252,104 @@ export default function IAM() {
           </Button>
         )}
       </div>
+
+      {isAdmin && (
+        <div className="bg-white shadow rounded-lg">
+          <div className="px-6 py-4 border-b border-gray-200">
+            <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+              <Building2 className="h-5 w-5" />
+              Organization
+            </h2>
+          </div>
+          <div className="p-6 space-y-4">
+            {orgLoading ? (
+              <div className="text-gray-500">Loading organization...</div>
+            ) : organization ? (
+              <>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
+                    Organization ID
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <code className="text-sm text-gray-800 bg-gray-50 border border-gray-200 rounded px-3 py-2 font-mono break-all">
+                      {organization.id}
+                    </code>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        await navigator.clipboard.writeText(organization.id)
+                        setCopiedOrgId(true)
+                        setTimeout(() => setCopiedOrgId(false), 2000)
+                      }}
+                      className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+                      title="Copy organization ID"
+                    >
+                      {copiedOrgId ? (
+                        <Check className="h-4 w-4 text-green-600" />
+                      ) : (
+                        <Copy className="h-4 w-4" />
+                      )}
+                    </button>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">
+                    Organization Name
+                  </label>
+                  {editingOrgName ? (
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={orgNameDraft}
+                        onChange={(e) => setOrgNameDraft(e.target.value)}
+                        maxLength={255}
+                        className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
+                      />
+                      <Button
+                        variant="primary"
+                        onClick={() => {
+                          const trimmed = orgNameDraft.trim()
+                          if (!trimmed) {
+                            showToast('Organization name cannot be empty', 'error')
+                            return
+                          }
+                          updateOrgMutation.mutate(trimmed)
+                        }}
+                        disabled={updateOrgMutation.isPending}
+                      >
+                        Save
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        onClick={() => {
+                          setEditingOrgName(false)
+                          setOrgNameDraft(organization.name)
+                        }}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-3">
+                      <span className="text-sm font-medium text-gray-900">{organization.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setOrgNameDraft(organization.name)
+                          setEditingOrgName(true)
+                        }}
+                        className="text-sm text-primary-700 hover:text-primary-800 font-medium"
+                      >
+                        Edit
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : null}
+          </div>
+        </div>
+      )}
 
       {/* Users Section */}
       <div className="bg-white shadow rounded-lg">

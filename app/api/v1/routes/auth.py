@@ -20,7 +20,7 @@ Covers three concerns:
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List, Optional, Union
 import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -41,6 +41,7 @@ from app.models.database import (
     RoleEnum,
     User,
 )
+from app.services.organization_provisioning import provision_default_workspace
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -81,6 +82,18 @@ class SignupRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
+    organization_id: Optional[str] = None
+
+
+class LoginOrgOption(BaseModel):
+    id: str
+    name: str
+    role: str
+
+
+class LoginOrgSelectionResponse(BaseModel):
+    requires_org_selection: bool = True
+    organizations: List[LoginOrgOption]
 
 
 class TokenResponse(BaseModel):
@@ -114,6 +127,8 @@ class APIKeyResponse(BaseModel):
     is_active: bool
     created_at: Optional[str] = None
 
+
+LoginResponse = Union[TokenResponse, LoginOrgSelectionResponse]
 
 TokenResponse.model_rebuild()
 
@@ -243,6 +258,11 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)) -> TokenRespon
         role=RoleEnum.ADMIN.value,
     )
     db.add(membership)
+    provision_default_workspace(
+        db,
+        organization_id=organization.id,
+        created_by_user_id=user.id,
+    )
     user.last_login_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(user)
@@ -260,8 +280,8 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)) -> TokenRespon
     )
 
 
-@router.post("/login", response_model=TokenResponse)
-def login(payload: LoginRequest, db: Session = Depends(get_db)) -> TokenResponse:
+@router.post("/login", response_model=LoginResponse)
+def login(payload: LoginRequest, db: Session = Depends(get_db)) -> LoginResponse:
     """Verify email/password and return a short-lived Bearer token."""
     _local_password_enabled()
 
@@ -279,30 +299,69 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)) -> TokenResponse
             detail="Invalid email or password.",
         )
 
-    membership = (
-        db.query(OrganizationMember)
+    memberships = (
+        db.query(OrganizationMember, Organization)
+        .join(Organization, Organization.id == OrganizationMember.organization_id)
         .filter(OrganizationMember.user_id == user.id)
-        .first()
+        .order_by(OrganizationMember.joined_at.asc())
+        .all()
     )
-    if membership is None:
+    if not memberships:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Your account is not a member of any organization. Contact your administrator.",
         )
+
+    if len(memberships) > 1 and not payload.organization_id:
+        org_options: List[LoginOrgOption] = []
+        for member, org in memberships:
+            role_value = member.role.value if hasattr(member.role, "value") else member.role
+            org_options.append(
+                LoginOrgOption(
+                    id=str(org.id),
+                    name=org.name,
+                    role=role_value,
+                )
+            )
+        return LoginOrgSelectionResponse(organizations=org_options)
+
+    if payload.organization_id:
+        try:
+            from uuid import UUID as _UUID
+
+            target_org_id = _UUID(payload.organization_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="organization_id must be a valid UUID.",
+            )
+        membership = next(
+            (member for member, _org in memberships if member.organization_id == target_org_id),
+            None,
+        )
+        if membership is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You are not a member of the selected organization.",
+            )
+        target_organization_id = membership.organization_id
+    else:
+        membership, _org = memberships[0]
+        target_organization_id = membership.organization_id
 
     user.last_login_at = datetime.now(timezone.utc)
     db.commit()
 
     token = create_access_token(
         user_id=user.id,
-        organization_id=membership.organization_id,
+        organization_id=target_organization_id,
         email=user.email,
     )
     role_value = membership.role.value if hasattr(membership.role, "value") else membership.role
     return TokenResponse(
         access_token=token,
         expires_in=settings.AUTH_LOCAL_TOKEN_TTL_MINUTES * 60,
-        user=_user_to_summary(user, membership.organization_id, role_value),
+        user=_user_to_summary(user, target_organization_id, role_value),
     )
 
 
