@@ -259,8 +259,9 @@ def test_pdf_failure_diagnostics_includes_rca_subsections_and_link():
         evaluation_id="eval-1",
     )
     assert "4.2 Repeated failure patterns" in html
-    assert "<th>Evidence share</th>" in html
-    assert "<th>Evidence calls</th>" in html
+    assert 'class="fd-rca-col-pct">Evidence share</th>' in html
+    assert 'class="fd-rca-col-count">Evidence calls</th>' in html
+    assert "fd-rca-patterns-wrap" in html
     assert "1 of 1 RCA clusters" not in html
     assert "Appendix: What is a cluster?" in html
     assert "4.3 Metric hotspots" in html
