@@ -229,6 +229,7 @@ def compute_rca_summary(
                 top_rca_patterns=top_rca_patterns_text(group.clusters),
                 evidence_share_pct=share,
                 evidence_calls=evidence_calls,
+                evidence_cluster_count=len(group.clusters),
                 failure_reason=group.failure_reason,
             )
         )

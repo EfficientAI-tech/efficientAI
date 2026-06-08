@@ -100,6 +100,7 @@ def test_compute_rca_summary_orders_top_five_and_prompt_areas():
     assert len(summary.repeated_patterns) == 2
     assert summary.repeated_patterns[0].metric_name == "Asks for human"
     assert summary.repeated_patterns[0].evidence_calls == 40
+    assert summary.repeated_patterns[0].evidence_cluster_count == 1
     assert abs(summary.repeated_patterns[0].evidence_share_pct - (40 / 70 * 100)) < 0.2
     assert summary.metric_hotspots[0].metric_rate_pct == 50.0
     assert summary.metric_hotspots[0].flagged_calls == 100
@@ -232,6 +233,7 @@ def test_pdf_failure_diagnostics_includes_rca_subsections_and_link():
                     "top_rca_patterns": "Cluster A",
                     "evidence_share_pct": 100.0,
                     "evidence_calls": 10,
+                    "evidence_cluster_count": 1,
                     "failure_reason": "Flagged when: yes",
                 }
             ],
@@ -257,6 +259,10 @@ def test_pdf_failure_diagnostics_includes_rca_subsections_and_link():
         evaluation_id="eval-1",
     )
     assert "4.2 Repeated failure patterns" in html
+    assert "<th>Evidence share</th>" in html
+    assert "<th>Evidence calls</th>" in html
+    assert "1 of 1 RCA clusters" not in html
+    assert "Appendix: What is a cluster?" in html
     assert "4.3 Metric hotspots" in html
     assert "User asks for human" not in html
     assert "4.4 RCA data summary" in html

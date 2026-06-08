@@ -862,6 +862,8 @@ def test_pdf_report_internal_html_uses_compact_metric_layout(
     assert 'audit-summary-section + section h2 { margin-top: 0; }' in html
     assert "audit-delta-panel" in html
     assert "Top metric delta vs last week" in html
+    assert "Lower rate is better" in html
+    assert ".audit-delta-title { font-size: 13px" in html
     assert "+10.0 pp" in html
     assert "repeated-handoff cluster cases" in html
     assert "metric-compact-delta-why" not in html
@@ -1072,9 +1074,14 @@ def test_top_metric_delta_line_graphs_html_renders_reasons_and_fallback():
     assert html.index("ASKS FOR HUMAN") < html.index("CONNECT+")
     assert "metric-sparkline" in html
     assert "+7.0 pp" in html
+    assert "Lower rate is better" in html
+    assert "audit-delta-direction" in html
+    assert "17.0%" in html
+    assert "10.0%" in html
     assert "More calls requested a human handoff" in html
     assert "No comparable line data" in html
     assert "Reason not available for this comparison." in html
+    assert "audit-delta-reason" in html
 
 
 def test_compact_weekly_delta_html_omits_why_from_metric_cards():

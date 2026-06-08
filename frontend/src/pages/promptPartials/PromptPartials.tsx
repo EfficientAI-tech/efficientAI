@@ -30,7 +30,6 @@ import {
 } from 'lucide-react'
 import { format } from 'date-fns'
 import AIProviderModelPicker from '../../components/AIProviderModelPicker'
-import MarkdownEditor from '../../components/shared/MarkdownEditor'
 import AgentFlowChart from './components/AgentFlowChart'
 import MetricPartialEditor from './components/MetricPartialEditor'
 import AgentPromptSectionView, {
@@ -224,8 +223,8 @@ export default function PromptPartials() {
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedPartial, setSelectedPartial] = useState<PromptPartialDetail | null>(null)
   const [showCreateModal, setShowCreateModal] = useState(false)
+  const [createModalDefaultAgent, setCreateModalDefaultAgent] = useState(false)
   const [showCreateMetricModal, setShowCreateMetricModal] = useState(false)
-  const [showImportAgentModal, setShowImportAgentModal] = useState(false)
   const [showEditModal, setShowEditModal] = useState(false)
   const [showVersionHistory, setShowVersionHistory] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null)
@@ -342,14 +341,27 @@ export default function PromptPartials() {
     setSearchParams(next, { replace: true })
   }
 
-  const handleSelectPartial = (partial: PromptPartial) => {
+  const openCreateModal = (defaultAgent = false) => {
+    setCreateModalDefaultAgent(defaultAgent)
+    setShowCreateModal(true)
+  }
+
+  const closeCreateModal = () => {
+    setShowCreateModal(false)
+    setCreateModalDefaultAgent(false)
+  }
+
+  const handleSelectPartial = (partial: PromptPartial, kind?: PartialKind) => {
+    const effectiveKind = kind ?? kindFilter
     setSelectedPartial(partial as PromptPartialDetail)
     setShowVersionHistory(false)
     setCompareVersion(null)
     setSelectedFlowNodeId(null)
     setPromptHighlight(null)
     setNodeMapError(null)
-    navigate(`/prompt-partials/${partial.id}${kindFilter === 'all' ? '' : `?kind=${kindFilter}`}`)
+    navigate(
+      `/prompt-partials/${partial.id}${effectiveKind === 'all' ? '' : `?kind=${effectiveKind}`}`,
+    )
   }
 
   const mapPromptSectionsMutation = useMutation({
@@ -483,13 +495,6 @@ export default function PromptPartials() {
             <Sparkles className="h-4 w-4" />
             AI Generate
           </button>
-          <button
-            onClick={() => setShowImportAgentModal(true)}
-            className="inline-flex items-center gap-2 px-4 py-2 bg-white text-gray-700 text-sm font-medium rounded-lg border border-gray-300 hover:bg-gray-50 transition-colors"
-          >
-            <Bot className="h-4 w-4" />
-            Import Agent
-          </button>
           {kindFilter === 'metric' ? (
             <button
               onClick={() => setShowCreateMetricModal(true)}
@@ -500,7 +505,7 @@ export default function PromptPartials() {
             </button>
           ) : (
             <button
-              onClick={() => setShowCreateModal(true)}
+              onClick={() => openCreateModal(kindFilter === 'imported_agent')}
               className="inline-flex items-center gap-2 px-4 py-2 bg-gray-900 text-white text-sm font-medium rounded-lg hover:bg-gray-800 transition-colors"
             >
               <Plus className="h-4 w-4" />
@@ -573,16 +578,14 @@ export default function PromptPartials() {
                 {!searchQuery && (
                   <button
                     onClick={() =>
-                      kindFilter === 'imported_agent'
-                        ? setShowImportAgentModal(true)
-                        : kindFilter === 'metric'
-                          ? setShowCreateMetricModal(true)
-                          : setShowCreateModal(true)
+                      kindFilter === 'metric'
+                        ? setShowCreateMetricModal(true)
+                        : openCreateModal(kindFilter === 'imported_agent')
                     }
                     className="mt-3 text-sm text-gray-700 font-medium hover:text-gray-900"
                   >
                     {kindFilter === 'imported_agent'
-                      ? 'Import your first agent'
+                      ? 'Create your first agent prompt'
                       : kindFilter === 'metric'
                         ? 'Create your first metric partial'
                       : 'Create your first prompt'}
@@ -1141,22 +1144,15 @@ export default function PromptPartials() {
       {/* Create Modal */}
       {showCreateModal && (
         <PromptPartialModal
-          onClose={() => setShowCreateModal(false)}
-          onSaved={() => {
-            setShowCreateModal(false)
-            queryClient.invalidateQueries({ queryKey: ['prompt-partials'] })
-          }}
-        />
-      )}
-
-      {showImportAgentModal && (
-        <ImportAgentModal
-          onClose={() => setShowImportAgentModal(false)}
+          defaultIsAgent={createModalDefaultAgent}
+          onClose={closeCreateModal}
           onSaved={(created) => {
-            setShowImportAgentModal(false)
+            closeCreateModal()
             queryClient.invalidateQueries({ queryKey: ['prompt-partials'] })
-            setKindFilter('imported_agent')
-            handleSelectPartial(created as PromptPartial)
+            if (created && isImportedAgent(created)) {
+              setKindFilter('imported_agent')
+              handleSelectPartial(created, 'imported_agent')
+            }
           }}
         />
       )}
@@ -1249,93 +1245,21 @@ export default function PromptPartials() {
 }
 
 
-function ImportAgentModal({
-  onClose,
-  onSaved,
-}: {
-  onClose: () => void
-  onSaved: (created: PromptPartial) => void
-}) {
-  const [name, setName] = useState('')
-  const [description, setDescription] = useState('')
-  const [content, setContent] = useState('')
-  const [error, setError] = useState('')
-
-  const createMutation = useMutation({
-    mutationFn: () =>
-      apiClient.createImportedAgent({
-        name: name.trim(),
-        description: description.trim() || null,
-        content: content.trim(),
-      }),
-    onSuccess: (created) => onSaved(created as PromptPartial),
-    onError: (err: any) => {
-      setError(err?.response?.data?.detail || 'Failed to import agent')
-    },
-  })
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="w-full max-w-3xl rounded-xl bg-white shadow-xl border border-gray-200">
-        <div className="border-b border-gray-200 px-6 py-4">
-          <h2 className="text-lg font-semibold text-gray-900">Import production agent</h2>
-          <p className="text-sm text-gray-500 mt-1">
-            Paste the live system prompt — it will be saved as a prompt partial tagged as an agent.
-          </p>
-        </div>
-        <div className="px-6 py-4 space-y-4 max-h-[70vh] overflow-y-auto">
-          {error ? (
-            <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">
-              {error}
-            </div>
-          ) : null}
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Agent name"
-            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
-          />
-          <input
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            placeholder="Description (optional)"
-            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
-          />
-          <MarkdownEditor value={content} onChange={setContent} rows={12} />
-        </div>
-        <div className="flex justify-end gap-2 border-t border-gray-200 px-6 py-4">
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-4 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            disabled={!name.trim() || !content.trim() || createMutation.isPending}
-            onClick={() => createMutation.mutate()}
-            className="px-4 py-2 text-sm font-medium text-white bg-gray-900 rounded-lg hover:bg-gray-800 disabled:opacity-50"
-          >
-            {createMutation.isPending ? 'Saving...' : 'Save imported agent'}
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 function PromptPartialModal({
   partial,
+  defaultIsAgent = false,
   onClose,
   onSaved,
 }: {
   partial?: PromptPartialDetail | PromptPartial
+  defaultIsAgent?: boolean
   onClose: () => void
-  onSaved: () => void
+  onSaved: (created?: PromptPartial) => void
 }) {
   const isEditing = !!partial
-  const agentMode = partial ? isImportedAgent(partial) : false
+  const editingAgentMode = partial ? isImportedAgent(partial) : false
+  const [isAgentPrompt, setIsAgentPrompt] = useState(defaultIsAgent)
+  const agentMode = isEditing ? editingAgentMode : isAgentPrompt
   const [name, setName] = useState(partial?.name || '')
   const [description, setDescription] = useState(partial?.description || '')
   const [content, setContent] = useState(partial?.content || '')
@@ -1363,11 +1287,31 @@ function PromptPartialModal({
   })
 
   const createMutation = useMutation({
-    mutationFn: (data: { name: string; description?: string; content: string; tags?: string[] }) =>
-      apiClient.createPromptPartial(data),
-    onSuccess: () => onSaved(),
+    mutationFn: (data: {
+      isAgent: boolean
+      name: string
+      description?: string
+      content: string
+      tags?: string[]
+    }) =>
+      data.isAgent
+        ? apiClient.createImportedAgent({
+            name: data.name,
+            description: data.description || null,
+            content: data.content,
+          })
+        : apiClient.createPromptPartial({
+            name: data.name,
+            description: data.description,
+            content: data.content,
+            tags: data.tags,
+          }),
+    onSuccess: (created) => onSaved(created as PromptPartial),
     onError: (err: any) => {
-      setError(err?.response?.data?.detail || 'Failed to create prompt partial')
+      setError(
+        err?.response?.data?.detail ||
+          (agentMode ? 'Failed to create agent prompt' : 'Failed to create prompt partial'),
+      )
     },
   })
 
@@ -1415,6 +1359,7 @@ function PromptPartialModal({
       })
     } else {
       createMutation.mutate({
+        isAgent: isAgentPrompt,
         name: name.trim(),
         description: description.trim() || undefined,
         content: content,
@@ -1424,6 +1369,9 @@ function PromptPartialModal({
   }
 
   const isPending = createMutation.isPending || updateMutation.isPending
+  const contentPlaceholder = agentMode
+    ? 'Paste the live system prompt — it will be saved as an agent prompt with flowchart support.'
+    : 'Write your prompt content here... Markdown is supported.'
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-500 bg-opacity-75">
@@ -1435,7 +1383,9 @@ function PromptPartialModal({
               ? agentMode
                 ? 'Edit Imported Agent'
                 : 'Edit Prompt Partial'
-              : 'Create Prompt Partial'}
+              : agentMode
+                ? 'Create Agent Prompt'
+                : 'Create Prompt Partial'}
           </h2>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-500">
             <X className="h-5 w-5" />
@@ -1450,6 +1400,36 @@ function PromptPartialModal({
             </div>
           )}
 
+          {!isEditing ? (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Prompt type</label>
+              <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5">
+                <button
+                  type="button"
+                  onClick={() => setIsAgentPrompt(false)}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition ${
+                    !isAgentPrompt
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  Prompt partial
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsAgentPrompt(true)}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition ${
+                    isAgentPrompt
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  Agent prompt
+                </button>
+              </div>
+            </div>
+          ) : null}
+
           {/* Name */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Name</label>
@@ -1457,7 +1437,7 @@ function PromptPartialModal({
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g., System Prompt - Customer Support"
+              placeholder={agentMode ? 'Agent name' : 'e.g., System Prompt - Customer Support'}
               className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
             />
           </div>
@@ -1481,7 +1461,7 @@ function PromptPartialModal({
             <div className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-800">
               <span className="inline-flex items-center gap-1 font-medium">
                 <Bot className="h-4 w-4" />
-                Imported agent
+                Agent prompt
               </span>
               <p className="text-xs text-sky-700 mt-1">
                 This prompt is tagged as a production agent and includes flowchart visualization.
@@ -1614,7 +1594,7 @@ function PromptPartialModal({
               <textarea
                 value={content}
                 onChange={(e) => setContent(e.target.value)}
-                placeholder="Write your prompt content here... Markdown is supported."
+                placeholder={contentPlaceholder}
                 rows={12}
                 className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent font-mono resize-y"
               />

@@ -444,6 +444,11 @@ class CallImportEvaluationPdfReportService:
             return "Boolean metric measured as flagged-call percentage"
         return "Categorical metric measured as response distribution"
 
+    def _metric_direction_label(self, summary: MetricReportSummary) -> str:
+        if summary.numeric_values:
+            return "Higher score is better"
+        return "Lower rate is better"
+
     def _metric_result(self, summary: MetricReportSummary) -> str:
         if summary.numeric_values:
             avg = sum(summary.numeric_values) / len(summary.numeric_values)
@@ -640,13 +645,16 @@ class CallImportEvaluationPdfReportService:
                 body.append(
                     f"""
                     <tr>
-                      <td>
+                      <td class="fd-rca-col-finding">
                         <strong>{html.escape(name)}</strong>
                         <div class="fd-finding-sub">Top RCA patterns: {html.escape(patterns)}</div>
                       </td>
                       <td class="fd-rca-col-pct">{share:.1f}%</td>
                       <td class="fd-rca-col-bar"><div class="fd-rca-track"><div class="fd-rca-fill" style="width: {width:.1f}%"></div></div></td>
-                      <td class="fd-rca-col-count">{calls}</td>
+                      <td class="fd-rca-col-count">
+                        <div class="fd-evidence-primary">{calls:,}</div>
+                        <div class="fd-evidence-line">{share:.1f}%</div>
+                      </td>
                     </tr>
                     """
                 )
@@ -767,17 +775,19 @@ class CallImportEvaluationPdfReportService:
                   {total_flagged:,} total flagged metric-call instances across {analysed:,}
                   analysed calls.
                 </p>
-                <table class="insight-table fd-rca-table">
+                <div class="fd-rca-patterns-wrap">
+                <table class="insight-table fd-rca-table fd-rca-patterns-table">
                   <thead>
                     <tr>
-                      <th>Finding</th>
-                      <th>Evidence share</th>
-                      <th>Distribution</th>
-                      <th>Evidence calls</th>
+                      <th class="fd-rca-col-finding">Finding</th>
+                      <th class="fd-rca-col-pct">Evidence share</th>
+                      <th class="fd-rca-col-bar">Distribution</th>
+                      <th class="fd-rca-col-count">Evidence calls</th>
                     </tr>
                   </thead>
                   <tbody>{patterns_body}</tbody>
                 </table>
+                </div>
                 {pattern_interpretation}
               </div>
             """
@@ -790,7 +800,7 @@ class CallImportEvaluationPdfReportService:
                 <p class="method fd-rca-base">
                   Base: selected metric flags across {analysed:,} analysed calls.
                 </p>
-                <table class="insight-table fd-rca-table">
+                <table class="insight-table fd-rca-table fd-rca-hotspots-table">
                   <thead>
                     <tr>
                       <th>Finding</th>
@@ -1270,6 +1280,21 @@ class CallImportEvaluationPdfReportService:
             </div>
             """
 
+    def _cluster_appendix_html(self) -> str:
+        return """
+              <div class="fd-cluster-appendix">
+                <h3>Appendix: What is a cluster?</h3>
+                <p class="method">
+                  A cluster groups flagged calls that share the same underlying failure
+                  theme within a quality metric. Each cluster is labeled with an RCA
+                  pattern name and an engineering gap type (such as MISSING, LOGIC_GAP,
+                  UNDERSPEC, or EXISTS_NO_TRIGGER). Evidence share is the percentage of
+                  all clustered failure instances attributed to that metric&apos;s patterns;
+                  evidence calls is the raw count of those instances.
+                </p>
+              </div>
+            """
+
     def _failure_diagnostics_section_html(
         self,
         metric_clusters: dict[str, Any],
@@ -1360,6 +1385,7 @@ class CallImportEvaluationPdfReportService:
                 {metrics_body}
                 {discovered_section}
               </div>
+              {self._cluster_appendix_html()}
             </section>
             """
 
@@ -1586,6 +1612,7 @@ class CallImportEvaluationPdfReportService:
             current_previous = self._period_delta_values(detail)
             tone = "flat"
             arrow = ""
+            direction_label = self._metric_direction_label(summary)
             if current_previous is not None:
                 current_pct, previous_pct = current_previous
                 delta = current_pct - previous_pct
@@ -1597,6 +1624,7 @@ class CallImportEvaluationPdfReportService:
                     tone=tone,
                     previous_label="Last",
                     current_label="Current",
+                    show_pct_labels=True,
                 )
             else:
                 chart_markup = '<div class="audit-delta-empty">No comparable line data</div>'
@@ -1604,7 +1632,10 @@ class CallImportEvaluationPdfReportService:
                 f"""
                 <article class="audit-delta-card delta-{tone}">
                   <div class="audit-delta-head">
-                    <span>{html.escape(summary.name.upper())}</span>
+                    <div class="audit-delta-head-main">
+                      <span>{html.escape(summary.name.upper())}</span>
+                      <small class="audit-delta-direction">{html.escape(direction_label)}</small>
+                    </div>
                     <strong>{html.escape(label)}{arrow}</strong>
                   </div>
                   <div class="audit-delta-chart">{chart_markup}</div>
@@ -1668,14 +1699,16 @@ class CallImportEvaluationPdfReportService:
         tone: str = "flat",
         previous_label: str = "Prev",
         current_label: str = "Current",
+        show_pct_labels: bool = False,
     ) -> str:
         colors = self._sparkline_palette(tone)
         width = 118
-        height = 44
+        height = 50 if show_pct_labels else 44
         padding_x = 8
         padding_y = 8
         chart_width = width - (padding_x * 2)
-        chart_height = height - 18
+        label_block_height = 14 if show_pct_labels else 10
+        chart_height = height - label_block_height - 6
         max_value = max(previous_pct, current_pct, 1.0)
         min_value = min(previous_pct, current_pct, 0.0)
         span = max(max_value - min_value, 1.0)
@@ -1697,14 +1730,23 @@ class CallImportEvaluationPdfReportService:
             f"{x2},{y2} "
             f"{x2},{padding_y + chart_height}"
         )
+        axis_y = height - (10 if show_pct_labels else 3)
+        pct_y = height - 2
+        pct_markup = ""
+        if show_pct_labels:
+            pct_markup = f"""
+            <text x="{padding_x}" y="{pct_y}" fill="{colors['label']}" font-size="5" font-family="Helvetica, Arial, sans-serif">{previous_pct:.1f}%</text>
+            <text x="{width - padding_x}" y="{pct_y}" text-anchor="end" fill="{colors['label']}" font-size="5" font-family="Helvetica, Arial, sans-serif">{current_pct:.1f}%</text>
+            """
         return f"""
           <svg class="metric-sparkline" viewBox="0 0 {width} {height}" width="{width}" height="{height}" aria-hidden="true">
             <polygon points="{area_points}" fill="{colors['area']}" stroke="none" />
             <polyline points="{x1:.1f},{y1:.1f} {x2:.1f},{y2:.1f}" fill="none" stroke="{colors['line']}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
             <circle cx="{x1:.1f}" cy="{y1:.1f}" r="2.2" fill="{colors['dot']}" />
             <circle cx="{x2:.1f}" cy="{y2:.1f}" r="2.2" fill="{colors['dot']}" />
-            <text x="{padding_x}" y="{height - 3}" fill="{colors['label']}" font-size="7" font-family="Helvetica, Arial, sans-serif">{html.escape(previous_label)}</text>
-            <text x="{width - padding_x}" y="{height - 3}" text-anchor="end" fill="{colors['label']}" font-size="7" font-family="Helvetica, Arial, sans-serif">{html.escape(current_label)}</text>
+            <text x="{padding_x}" y="{axis_y}" fill="{colors['label']}" font-size="4" font-family="Helvetica, Arial, sans-serif">{html.escape(previous_label)}</text>
+            <text x="{width - padding_x}" y="{axis_y}" text-anchor="end" fill="{colors['label']}" font-size="4" font-family="Helvetica, Arial, sans-serif">{html.escape(current_label)}</text>
+            {pct_markup}
           </svg>
         """
 
@@ -2340,17 +2382,31 @@ class CallImportEvaluationPdfReportService:
             .fd-num {{ color: #6b7280; font-weight: 800; width: 24px; }}
             .fd-breakdown-caption {{ margin: 0 0 4px; font-size: 9px; color: #6b7280; text-transform: uppercase; letter-spacing: .04em; font-weight: 700; }}
             .fd-discovered-block {{ margin-top: 4px; padding-top: 6px; border-top: 1px solid #e5e7eb; max-width: 100%; }}
-            .fd-rca-block {{ margin: 10px 0 12px; max-width: 100%; }}
+            .fd-rca-block {{ margin: 10px 0 12px; max-width: 100%; overflow: hidden; box-sizing: border-box; }}
             .fd-rca-block h3 {{ margin: 0 0 4px; font-size: 12px; }}
             .fd-rca-base {{ margin: 0 0 6px; font-size: 9px; }}
-            .fd-rca-table {{ table-layout: fixed; width: 100%; max-width: 100%; }}
-            .fd-rca-table td, .fd-rca-table th {{ font-size: 10px; padding: 5px 6px; overflow-wrap: anywhere; }}
-            .fd-rca-track {{ height: 9px; background: #e7ddd1; border: 1px solid #d7cfc2; min-width: 0; }}
-            .fd-rca-fill {{ height: 100%; background: #c7725e; }}
-            .fd-rca-table .fd-rca-col-pct {{ white-space: nowrap; text-align: right; font-weight: 800; width: 72px; }}
-            .fd-rca-table .fd-rca-col-bar {{ width: 28%; }}
-            .fd-rca-table .fd-rca-col-count {{ white-space: nowrap; text-align: right; font-weight: 800; width: 64px; }}
+            .fd-rca-patterns-wrap {{ width: 100%; max-width: 100%; margin: 0 auto; overflow: hidden; box-sizing: border-box; }}
+            .fd-rca-table {{ table-layout: fixed; width: 100%; max-width: 100%; box-sizing: border-box; }}
+            .fd-rca-table td, .fd-rca-table th {{ font-size: 10px; padding: 5px 4px; overflow-wrap: anywhere; word-break: break-word; box-sizing: border-box; }}
+            .fd-rca-patterns-table {{ margin-left: auto; margin-right: auto; }}
+            .fd-rca-patterns-table .fd-rca-col-finding {{ width: 41%; text-align: left; }}
+            .fd-rca-patterns-table th.fd-rca-col-finding {{ text-align: left; }}
+            .fd-rca-patterns-table .fd-rca-col-pct {{ width: 12%; white-space: nowrap; text-align: center; font-weight: 800; vertical-align: top; }}
+            .fd-rca-patterns-table th.fd-rca-col-pct {{ text-align: center; }}
+            .fd-rca-patterns-table .fd-rca-col-bar {{ width: 29%; vertical-align: middle; padding-left: 6px; padding-right: 6px; }}
+            .fd-rca-patterns-table th.fd-rca-col-bar {{ text-align: center; }}
+            .fd-rca-patterns-table .fd-rca-col-count {{ width: 18%; white-space: nowrap; text-align: center; font-weight: 800; vertical-align: top; }}
+            .fd-rca-patterns-table th.fd-rca-col-count {{ text-align: center; }}
+            .fd-rca-track {{ height: 9px; background: #e7ddd1; border: 1px solid #d7cfc2; min-width: 0; max-width: 100%; width: 100%; box-sizing: border-box; }}
+            .fd-rca-fill {{ height: 100%; background: #c7725e; max-width: 100%; }}
+            .fd-rca-hotspots-table .fd-rca-col-pct {{ white-space: nowrap; text-align: center; font-weight: 800; width: 14%; }}
+            .fd-rca-hotspots-table .fd-rca-col-bar {{ width: 28%; }}
+            .fd-rca-hotspots-table .fd-rca-col-count {{ white-space: nowrap; text-align: center; font-weight: 800; width: 14%; vertical-align: top; }}
             .fd-finding-sub {{ margin-top: 3px; font-size: 9px; color: #6b7280; font-weight: 400; line-height: 1.35; }}
+            .fd-evidence-line {{ font-size: 8px; color: #6b7280; font-weight: 600; line-height: 1.3; }}
+            .fd-evidence-primary {{ font-size: 10px; font-weight: 800; color: #111827; line-height: 1.3; }}
+            .fd-cluster-appendix {{ margin-top: 14px; padding-top: 10px; border-top: 1px solid #e5e7eb; break-inside: avoid; }}
+            .fd-cluster-appendix h3 {{ margin: 0 0 4px; font-size: 11px; }}
             .fd-rca-interpretation {{ margin-top: 6px; }}
             .fd-rca-summary-grid {{ display: grid; grid-template-columns: 1.2fr 1fr; gap: 10px; align-items: start; }}
             .fd-rca-twocol {{ display: grid; gap: 8px; }}
@@ -2437,19 +2493,21 @@ class CallImportEvaluationPdfReportService:
             .audit-stat-label {{ font-size: 8px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: #d16532; margin-bottom: 6px; line-height: 1.3; }}
             .audit-stat-value {{ font-family: Georgia, 'Times New Roman', serif; font-size: 28px; font-weight: 700; color: #111827; line-height: 1; }}
             .audit-delta-panel {{ break-inside: auto; page-break-inside: auto; margin: 8px 0 12px; padding-top: 8px; border-top: 1px solid #e5e7eb; }}
-            .audit-delta-title {{ font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: #475467; margin-bottom: 8px; }}
+            .audit-delta-title {{ font-size: 13px; font-weight: 900; letter-spacing: .04em; text-transform: uppercase; color: #111827; margin-bottom: 8px; }}
             .audit-delta-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }}
             .audit-delta-card {{ break-inside: auto; page-break-inside: auto; border: 1px solid #d9dee8; border-radius: 6px; padding: 8px 9px; background: #f8fafc; min-height: 96px; }}
             .audit-delta-head {{ display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin-bottom: 4px; }}
-            .audit-delta-head span {{ color: #667085; font-size: 8px; font-weight: 800; letter-spacing: .07em; line-height: 1.25; text-transform: uppercase; overflow-wrap: anywhere; }}
+            .audit-delta-head-main {{ min-width: 0; }}
+            .audit-delta-head span {{ display: block; color: #111827; font-size: 9px; font-weight: 900; letter-spacing: .06em; line-height: 1.25; text-transform: uppercase; overflow-wrap: anywhere; }}
+            .audit-delta-direction {{ display: block; margin-top: 2px; color: #94a3b8; font-size: 7px; font-weight: 600; letter-spacing: .03em; text-transform: none; }}
             .audit-delta-head strong {{ flex-shrink: 0; font-size: 10px; line-height: 1.2; text-align: right; white-space: nowrap; }}
             .audit-delta-card.delta-good .audit-delta-head strong {{ color: #047857; }}
             .audit-delta-card.delta-bad .audit-delta-head strong {{ color: #b42318; }}
             .audit-delta-card.delta-flat .audit-delta-head strong {{ color: #475569; }}
-            .audit-delta-chart {{ min-height: 44px; }}
+            .audit-delta-chart {{ min-height: 50px; }}
             .audit-delta-chart .metric-sparkline {{ width: 100%; max-width: 100%; }}
-            .audit-delta-empty {{ height: 44px; display: flex; align-items: center; justify-content: center; border: 1px dashed #cbd5e1; background: #fff; color: #667085; font-size: 9px; }}
-            .audit-delta-reason {{ margin: 5px 0 0; color: #475467; font-size: 8.5px; line-height: 1.35; }}
+            .audit-delta-empty {{ height: 50px; display: flex; align-items: center; justify-content: center; border: 1px dashed #cbd5e1; background: #fff; color: #667085; font-size: 9px; }}
+            .audit-delta-reason {{ margin: 6px 0 0; padding-top: 5px; border-top: 1px solid #e5e7eb; color: #374151; font-size: 10px; font-weight: 600; line-height: 1.45; }}
             .report-footer {{ margin-top: 24px; border-top: 1px solid #1f2937; padding-top: 10px; display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; color: #4b5563; font-size: 10px; }}
             .footer-left, .footer-right {{ display: flex; flex-direction: column; gap: 3px; }}
             .footer-right {{ text-align: right; }}

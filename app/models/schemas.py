@@ -3726,6 +3726,7 @@ class RcaRepeatedPatternRow(BaseModel):
     top_rca_patterns: str = ""
     evidence_share_pct: float = 0.0
     evidence_calls: int = 0
+    evidence_cluster_count: int = 0
     failure_reason: str = ""
 
 

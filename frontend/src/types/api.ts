@@ -1181,6 +1181,7 @@ export interface RcaRepeatedPatternRow {
   top_rca_patterns: string
   evidence_share_pct: number
   evidence_calls: number
+  evidence_cluster_count?: number
   failure_reason: string
 }
 
