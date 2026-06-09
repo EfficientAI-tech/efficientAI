@@ -17,6 +17,16 @@ An agent can be configured for one or both execution paths:
 
 If both are configured, you can test both paths from the Agent Playground.
 
+```mermaid
+flowchart TD
+    Agent[Agent Configuration] --> Internal[Test Agent Path]
+    Agent --> External[Voice AI Agent Path]
+    Internal --> Bundle[Voice Bundle<br/>STT + LLM + TTS or S2S]
+    External --> Provider[Retell or Vapi or ElevenLabs]
+    Bundle --> Playground[Agent Playground]
+    Provider --> Playground
+```
+
 ## Core configuration
 
 | Property | Type | Description |
@@ -58,6 +68,17 @@ Sync can happen:
 - manually through "Sync Now" in the agent view.
 
 This keeps local review and optimization aligned with what is currently running on the provider.
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant EA as EfficientAI
+    participant VP as Voice Provider
+    U->>EA: Click Sync Now
+    EA->>VP: Fetch current provider prompt
+    VP-->>EA: Return provider prompt
+    EA-->>U: Store and display provider_prompt
+```
 
 ## Voice bundles
 

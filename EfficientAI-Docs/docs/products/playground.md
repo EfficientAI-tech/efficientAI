@@ -31,6 +31,20 @@ Current supported providers:
 - Vapi
 - ElevenLabs
 
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant PG as Agent Playground
+    participant VP as Voice Provider
+    participant EV as Evaluator
+    U->>PG: Start Voice AI Agent mode test
+    PG->>VP: Create and run web call session
+    VP-->>PG: Return status, transcript, and audio metadata
+    PG->>EV: Create evaluator result
+    EV-->>PG: Metric scores and outcomes
+    PG-->>U: Show transcript, recording, and metrics
+```
+
 Typical flow:
 
 1. Create web call using selected agent.
@@ -44,6 +58,16 @@ Typical flow:
 Uses the internal voice-agent path backed by a configured voice bundle.
 
 This is useful for controlled comparisons where you want to test the bundle-defined STT, LLM, and TTS stack.
+
+```mermaid
+flowchart LR
+    U[User] --> T[Test Agent Mode]
+    T --> VB[Voice Bundle]
+    VB --> STT[STT]
+    STT --> LLM[LLM]
+    LLM --> TTS[TTS]
+    TTS --> R[Recorded Result and Metrics]
+```
 
 ## Result views
 

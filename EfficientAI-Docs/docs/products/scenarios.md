@@ -19,6 +19,16 @@ EfficientAI supports three scenario creation paths:
 3. **Create Manually**  
    Write a fully custom scenario.
 
+```mermaid
+flowchart LR
+    P[Agent Prompt] --> G1[Generate Scenario Draft]
+    C[Call Transcripts or Call Data] --> G2[Generate Scenario Draft]
+    M[Manual Authoring] --> G3[Custom Scenario]
+    G1 --> Final[Scenario Library]
+    G2 --> Final
+    G3 --> Final
+```
+
 ## Scenario structure
 
 | Field | Description |
