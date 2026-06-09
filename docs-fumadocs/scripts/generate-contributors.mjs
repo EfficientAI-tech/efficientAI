@@ -137,8 +137,17 @@ function buildMetadata() {
   };
 }
 
+function normalizeForCheck(raw) {
+  const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  return {
+    ...parsed,
+    features: (parsed.features || []).map(({ lastReviewed, ...feature }) => feature),
+  };
+}
+
 function main() {
-  const nextData = `${JSON.stringify(buildMetadata(), null, 2)}\n`;
+  const metadata = buildMetadata();
+  const nextData = `${JSON.stringify(metadata, null, 2)}\n`;
 
   if (CHECK_MODE) {
     if (!fs.existsSync(OUTPUT_PATH)) {
@@ -146,7 +155,9 @@ function main() {
       process.exit(1);
     }
     const existing = fs.readFileSync(OUTPUT_PATH, 'utf8');
-    if (existing !== nextData) {
+    const existingNormalized = JSON.stringify(normalizeForCheck(existing));
+    const nextNormalized = JSON.stringify(normalizeForCheck(metadata));
+    if (existingNormalized !== nextNormalized) {
       console.error('feature-contributors.json is out of date. Run `npm run contributors:generate`.');
       process.exit(1);
     }

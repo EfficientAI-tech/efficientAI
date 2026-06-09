@@ -87,6 +87,23 @@
       "lastReviewed": "2026-06-09"
     },
     {
+      "featureId": "getting-started/cloud-storage",
+      "docPath": "docs-fumadocs/content/docs/getting-started/cloud-storage.mdx",
+      "historyPath": "docs-fumadocs/content/docs/getting-started/cloud-storage.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [
+        {
+          "name": "Tejas Narayan",
+          "email": "stejasnarayan@gmail.com",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-06-09"
+    },
+    {
       "featureId": "getting-started/installation",
       "docPath": "docs-fumadocs/content/docs/getting-started/installation.mdx",
       "historyPath": "docs-fumadocs/content/docs/getting-started/installation.mdx",
@@ -98,6 +115,11 @@
         {
           "name": "aadhar-EAI",
           "email": "aadhar@efficientai.cloud",
+          "commits": 2
+        },
+        {
+          "name": "Tejas Narayan",
+          "email": "stejasnarayan@gmail.com",
           "commits": 2
         }
       ],
@@ -116,27 +138,10 @@
           "name": "Aadhar Singh Bhadauria",
           "email": "aadhar@efficientai.cloudbs",
           "commits": 1
-        }
-      ],
-      "lastReviewed": "2026-06-09"
-    },
-    {
-      "featureId": "getting-started/s3-storage",
-      "docPath": "docs-fumadocs/content/docs/getting-started/s3-storage.mdx",
-      "historyPath": "docs-fumadocs/content/docs/getting-started/s3-storage.mdx",
-      "owners": [
-        "aadhar-EAI",
-        "Tejas Narayan"
-      ],
-      "contributors": [
-        {
-          "name": "Aadhar Singh Bhadauria",
-          "email": "aadhar@efficientai.cloudbs",
-          "commits": 1
         },
         {
-          "name": "aadhar-EAI",
-          "email": "aadhar@efficientai.cloud",
+          "name": "Tejas Narayan",
+          "email": "stejasnarayan@gmail.com",
           "commits": 1
         }
       ],
@@ -154,6 +159,23 @@
         {
           "name": "Aadhar Singh Bhadauria",
           "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-06-09"
+    },
+    {
+      "featureId": "getting-started/workspaces",
+      "docPath": "docs-fumadocs/content/docs/getting-started/workspaces.mdx",
+      "historyPath": "docs-fumadocs/content/docs/getting-started/workspaces.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [
+        {
+          "name": "Tejas Narayan",
+          "email": "stejasnarayan@gmail.com",
           "commits": 1
         }
       ],
@@ -438,6 +460,23 @@
       "lastReviewed": "2026-06-09"
     },
     {
+      "featureId": "products/prompt-partials",
+      "docPath": "docs-fumadocs/content/docs/products/prompt-partials.mdx",
+      "historyPath": "docs-fumadocs/content/docs/products/prompt-partials.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [
+        {
+          "name": "Tejas Narayan",
+          "email": "stejasnarayan@gmail.com",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-06-09"
+    },
+    {
       "featureId": "products/scenarios",
       "docPath": "docs-fumadocs/content/docs/products/scenarios.mdx",
       "historyPath": "docs-fumadocs/content/docs/products/scenarios.mdx",
@@ -488,15 +527,15 @@
         {
           "name": "Tejas Narayan",
           "email": "stejasnarayan@gmail.com",
-          "commits": 2
+          "commits": 3
         }
       ],
       "lastReviewed": "2026-06-09"
     }
   ],
   "summary": {
-    "featureCount": 26,
-    "contributorCount": 38,
+    "featureCount": 28,
+    "contributorCount": 41,
     "skippedBots": 0
   }
 }
