@@ -1,0 +1,541 @@
+{
+  "source": "git-history",
+  "maxContributors": 5,
+  "minCommits": 2,
+  "features": [
+    {
+      "featureId": "advanced/architecture",
+      "docPath": "docs-fumadocs/content/docs/advanced/architecture.mdx",
+      "historyPath": "docs-fumadocs/content/docs/advanced/architecture.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        },
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-06-09"
+    },
+    {
+      "featureId": "advanced/database",
+      "docPath": "docs-fumadocs/content/docs/advanced/database.mdx",
+      "historyPath": "docs-fumadocs/content/docs/advanced/database.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 2
+        }
+      ],
+      "lastReviewed": "2026-06-09"
+    },
+    {
+      "featureId": "advanced/development",
+      "docPath": "docs-fumadocs/content/docs/advanced/development.mdx",
+      "historyPath": "docs-fumadocs/content/docs/advanced/development.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        },
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-06-09"
+    },
+    {
+      "featureId": "getting-started/authentication",
+      "docPath": "docs-fumadocs/content/docs/getting-started/authentication.mdx",
+      "historyPath": "docs-fumadocs/content/docs/getting-started/authentication.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        },
+        {
+          "name": "Tejas Narayan",
+          "email": "stejasnarayan@gmail.com",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-06-09"
+    },
+    {
+      "featureId": "getting-started/cloud-storage",
+      "docPath": "docs-fumadocs/content/docs/getting-started/cloud-storage.mdx",
+      "historyPath": "docs-fumadocs/content/docs/getting-started/cloud-storage.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [
+        {
+          "name": "Tejas Narayan",
+          "email": "stejasnarayan@gmail.com",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-06-09"
+    },
+    {
+      "featureId": "getting-started/installation",
+      "docPath": "docs-fumadocs/content/docs/getting-started/installation.mdx",
+      "historyPath": "docs-fumadocs/content/docs/getting-started/installation.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 2
+        },
+        {
+          "name": "Tejas Narayan",
+          "email": "stejasnarayan@gmail.com",
+          "commits": 2
+        }
+      ],
+      "lastReviewed": "2026-06-09"
+    },
+    {
+      "featureId": "getting-started/integrations",
+      "docPath": "docs-fumadocs/content/docs/getting-started/integrations.mdx",
+      "historyPath": "docs-fumadocs/content/docs/getting-started/integrations.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        },
+        {
+          "name": "Tejas Narayan",
+          "email": "stejasnarayan@gmail.com",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-06-09"
+    },
+    {
+      "featureId": "getting-started/voice-bundles",
+      "docPath": "docs-fumadocs/content/docs/getting-started/voice-bundles.mdx",
+      "historyPath": "docs-fumadocs/content/docs/getting-started/voice-bundles.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-06-09"
+    },
+    {
+      "featureId": "getting-started/workspaces",
+      "docPath": "docs-fumadocs/content/docs/getting-started/workspaces.mdx",
+      "historyPath": "docs-fumadocs/content/docs/getting-started/workspaces.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [
+        {
+          "name": "Tejas Narayan",
+          "email": "stejasnarayan@gmail.com",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-06-09"
+    },
+    {
+      "featureId": "intro",
+      "docPath": "docs-fumadocs/content/docs/intro.mdx",
+      "historyPath": "docs-fumadocs/content/docs/intro.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 2
+        }
+      ],
+      "lastReviewed": "2026-06-09"
+    },
+    {
+      "featureId": "monitoring/alerting",
+      "docPath": "docs-fumadocs/content/docs/monitoring/alerting.mdx",
+      "historyPath": "docs-fumadocs/content/docs/monitoring/alerting.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        },
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-06-09"
+    },
+    {
+      "featureId": "monitoring/calls",
+      "docPath": "docs-fumadocs/content/docs/monitoring/calls.mdx",
+      "historyPath": "docs-fumadocs/content/docs/monitoring/calls.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        },
+        {
+          "name": "Tejas Narayan",
+          "email": "stejasnarayan@gmail.com",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-06-09"
+    },
+    {
+      "featureId": "monitoring/cron-jobs",
+      "docPath": "docs-fumadocs/content/docs/monitoring/cron-jobs.mdx",
+      "historyPath": "docs-fumadocs/content/docs/monitoring/cron-jobs.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        },
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-06-09"
+    },
+    {
+      "featureId": "more/pitch-ideas",
+      "docPath": "docs-fumadocs/content/docs/more/pitch-ideas.mdx",
+      "historyPath": "docs-fumadocs/content/docs/more/pitch-ideas.mdx",
+      "owners": [],
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-06-09"
+    },
+    {
+      "featureId": "more/polls",
+      "docPath": "docs-fumadocs/content/docs/more/polls.mdx",
+      "historyPath": "docs-fumadocs/content/docs/more/polls.mdx",
+      "owners": [],
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-06-09"
+    },
+    {
+      "featureId": "more/qna",
+      "docPath": "docs-fumadocs/content/docs/more/qna.mdx",
+      "historyPath": "docs-fumadocs/content/docs/more/qna.mdx",
+      "owners": [],
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-06-09"
+    },
+    {
+      "featureId": "more/roadmap",
+      "docPath": "docs-fumadocs/content/docs/more/roadmap.mdx",
+      "historyPath": "docs-fumadocs/content/docs/more/roadmap.mdx",
+      "owners": [],
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-06-09"
+    },
+    {
+      "featureId": "products/agents",
+      "docPath": "docs-fumadocs/content/docs/products/agents.mdx",
+      "historyPath": "docs-fumadocs/content/docs/products/agents.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 2
+        }
+      ],
+      "lastReviewed": "2026-06-09"
+    },
+    {
+      "featureId": "products/alerting",
+      "docPath": "docs-fumadocs/content/docs/products/alerting.mdx",
+      "historyPath": "docs-fumadocs/content/docs/products/alerting.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        },
+        {
+          "name": "Tejas Narayan",
+          "email": "stejasnarayan@gmail.com",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-06-09"
+    },
+    {
+      "featureId": "products/evaluators",
+      "docPath": "docs-fumadocs/content/docs/products/evaluators.mdx",
+      "historyPath": "docs-fumadocs/content/docs/products/evaluators.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        },
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-06-09"
+    },
+    {
+      "featureId": "products/metrics",
+      "docPath": "docs-fumadocs/content/docs/products/metrics.mdx",
+      "historyPath": "docs-fumadocs/content/docs/products/metrics.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 3
+        }
+      ],
+      "lastReviewed": "2026-06-09"
+    },
+    {
+      "featureId": "products/personas",
+      "docPath": "docs-fumadocs/content/docs/products/personas.mdx",
+      "historyPath": "docs-fumadocs/content/docs/products/personas.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 2
+        }
+      ],
+      "lastReviewed": "2026-06-09"
+    },
+    {
+      "featureId": "products/playground",
+      "docPath": "docs-fumadocs/content/docs/products/playground.mdx",
+      "historyPath": "docs-fumadocs/content/docs/products/playground.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        },
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-06-09"
+    },
+    {
+      "featureId": "products/prompt-optimization",
+      "docPath": "docs-fumadocs/content/docs/products/prompt-optimization.mdx",
+      "historyPath": "docs-fumadocs/content/docs/products/prompt-optimization.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        },
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-06-09"
+    },
+    {
+      "featureId": "products/prompt-partials",
+      "docPath": "docs-fumadocs/content/docs/products/prompt-partials.mdx",
+      "historyPath": "docs-fumadocs/content/docs/products/prompt-partials.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [
+        {
+          "name": "Tejas Narayan",
+          "email": "stejasnarayan@gmail.com",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-06-09"
+    },
+    {
+      "featureId": "products/scenarios",
+      "docPath": "docs-fumadocs/content/docs/products/scenarios.mdx",
+      "historyPath": "docs-fumadocs/content/docs/products/scenarios.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 2
+        }
+      ],
+      "lastReviewed": "2026-06-09"
+    },
+    {
+      "featureId": "reference/cli-commands",
+      "docPath": "docs-fumadocs/content/docs/reference/cli-commands.mdx",
+      "historyPath": "docs-fumadocs/content/docs/reference/cli-commands.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [
+        {
+          "name": "Aadhar Singh Bhadauria",
+          "email": "aadhar@efficientai.cloudbs",
+          "commits": 1
+        },
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-06-09"
+    },
+    {
+      "featureId": "reference/configuration",
+      "docPath": "docs-fumadocs/content/docs/reference/configuration.mdx",
+      "historyPath": "docs-fumadocs/content/docs/reference/configuration.mdx",
+      "owners": [
+        "aadhar-EAI",
+        "Tejas Narayan"
+      ],
+      "contributors": [
+        {
+          "name": "Tejas Narayan",
+          "email": "stejasnarayan@gmail.com",
+          "commits": 3
+        }
+      ],
+      "lastReviewed": "2026-06-09"
+    }
+  ],
+  "summary": {
+    "featureCount": 28,
+    "contributorCount": 41,
+    "skippedBots": 0
+  }
+}

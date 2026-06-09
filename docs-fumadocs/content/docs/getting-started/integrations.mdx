@@ -1,0 +1,120 @@
+---
+id: integrations
+title: Integrations
+sidebar_position: 4
+---
+
+# Integrations
+
+Integrations in EfficientAI are not limited to external voice-agent platforms. You can connect integrations across three layers of the stack:
+
+1. **Voice agent platforms** (agent/runtime side)
+2. **AI providers** (LLM/STT/TTS model side)
+3. **Telephony providers** (PSTN/number/routing side)
+
+This lets you test and evaluate the complete call path from model behavior to phone-network delivery.
+
+## Integrations UI
+
+![Integrations configuration page](/screenshots/integration-section.png)
+
+## 1) Voice platform integrations (agent side)
+
+Voice platform integrations connect EfficientAI to externally hosted voice agents.
+
+<div className="not-prose mt-4 mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+  {[
+    { name: 'Retell', logo: '/retellai.png' },
+    { name: 'Vapi', logo: '/vapiai.jpg' },
+    { name: 'ElevenLabs', logo: '/elevenlabs.jpg' },
+    { name: 'Deepgram', logo: '/deepgram.png' },
+    { name: 'Cartesia', logo: '/cartesia.jpg' },
+    { name: 'Murf', logo: '/murf.png' },
+    { name: 'Sarvam', logo: '/sarvam.png' },
+    { name: 'VoiceMaker', logo: '/voiceMaker.png' },
+    { name: 'Smallest.ai', logo: '/smallest.jpeg' },
+  ].map((item) => (
+    <div key={item.name} className="rounded-md border border-fd-border/70 bg-fd-card px-2 py-2">
+      <img src={item.logo} alt={`${item.name} logo`} className="h-8 w-full object-contain" />
+      <p className="mt-2 truncate text-center text-xs text-fd-muted-foreground">{item.name}</p>
+    </div>
+  ))}
+</div>
+
+With these integrations, you can run provider-backed calls, ingest transcripts/call metadata, and evaluate outcomes in EfficientAI.
+
+## 2) AI provider integrations (LLM layer)
+
+AI provider integrations connect model vendors used by your Voice Bundles and evaluation workflows.
+
+<div className="not-prose mt-4 mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+  {[
+    { name: 'OpenAI', logo: '/openai-logo.png' },
+    { name: 'Anthropic', logo: '/anthropic.png' },
+    { name: 'Google', logo: '/geminiai.png' },
+    { name: 'xAI', logo: '/xai.svg' },
+    { name: 'Cohere', logo: '/cohere.svg' },
+    { name: 'Mistral', logo: '/mistral.svg' },
+    { name: 'Meta', logo: '/metaai.png' },
+    { name: 'Together', logo: '/togetherai.svg' },
+    { name: 'Perplexity', logo: '/perplexity-ai.svg' },
+    { name: 'Azure', logo: '/azureai.png' },
+    { name: 'AWS', logo: '/AWS_logo.png' },
+  ].map((item) => (
+    <div key={item.name} className="rounded-md border border-fd-border/70 bg-fd-card px-2 py-2">
+      <img src={item.logo} alt={`${item.name} logo`} className="h-8 w-full object-contain" />
+      <p className="mt-2 truncate text-center text-xs text-fd-muted-foreground">{item.name}</p>
+    </div>
+  ))}
+</div>
+
+These providers power model-side capabilities for generation and speech pipelines depending on your configuration.
+
+## 3) Telephony provider integrations
+
+Telephony integrations connect your phone-network provider to EfficientAI.
+
+<div className="not-prose mt-4 mb-6 grid grid-cols-2 gap-3 sm:max-w-md">
+  {[
+    { name: 'Plivo', logo: '/plivo.png' },
+    { name: 'Exotel', logo: '/exotel.jpg' },
+  ].map((item) => (
+    <div key={item.name} className="rounded-md border border-fd-border/70 bg-fd-card px-2 py-2">
+      <img src={item.logo} alt={`${item.name} logo`} className="h-8 w-full object-contain" />
+      <p className="mt-2 truncate text-center text-xs text-fd-muted-foreground">{item.name}</p>
+    </div>
+  ))}
+</div>
+
+These integrations handle telephony-specific setup like credentials, number sync, and routing-related configuration used by call workflows.
+
+## What integrations enable in practice
+
+Once linked, an agent can:
+
+- execute tests through external voice providers,
+- use configured AI providers for model operations,
+- run telephony-connected flows when phone network integration is needed,
+- evaluate all of the above inside the same metrics/reporting loop.
+
+## Agent fields commonly used for external voice platforms
+
+When mapping an agent to an external voice platform, these fields are typically configured on the agent:
+
+- `voice_ai_integration_id`: integration connection reference.
+- `voice_ai_agent_id`: provider-side agent identifier.
+- `call_medium = web_call`: required for web-call testing workflows.
+
+## Recommended setup flow
+
+1. Configure your required integrations (voice platform, AI provider, telephony as needed).
+2. Link the agent to the relevant voice platform integration and provider-side agent ID.
+3. Configure Voice Bundles to use your chosen AI providers.
+4. Add telephony configuration if your flow requires phone-network execution.
+5. Run and compare outcomes in Playground/evaluator workflows.
+
+## Backlinks
+
+- Agent-level capability overview: [Agents](/docs/products/agents)
+- Internal test stack alternative: [Voice Bundles](/docs/getting-started/voice-bundles)
+- Product walkthrough where integrations are managed: [Configuration - Integrations](/docs/reference/configuration)

@@ -1,0 +1,96 @@
+---
+id: workspaces
+title: Workspaces
+sidebar_position: 2
+---
+
+# Workspaces
+
+## Overview
+
+Workspaces provide **in-organization project isolation**. Multiple teams or projects can share one EfficientAI organization while keeping their agents, metrics, call imports, and prompt libraries separate.
+
+Every organization starts with a **Default** workspace. You can create additional workspaces for individual teams, customers, or pilots without provisioning separate orgs.
+
+---
+
+## Workspace switcher
+
+The workspace switcher lives at the top of the left sidebar, directly under the EfficientAI logo.
+
+From the switcher you can:
+
+- See which workspace is currently active
+- Switch to another workspace in your organization
+- Create a new workspace (display name + slug)
+
+When you switch workspaces, all data views refetch automatically so you never see stale rows from the previous workspace.
+
+---
+
+## How scoping works
+
+The UI stores your active workspace in the browser and sends it on every API request as the `X-Workspace-Id` header. The backend uses this header to scope listings and creates to the selected workspace.
+
+If a request arrives without the header, the backend falls back to the organization's **Default** workspace.
+
+---
+
+## What is workspace-scoped
+
+Workspaces isolate the resources you interact with day to day, including:
+
+| Category | Resources |
+|----------|-----------|
+| Simulation | Agents, Personas, Scenarios, Evaluators |
+| Evaluation | Evaluator results, legacy evaluations |
+| Metrics | Custom and built-in metrics (when created with workspace scope) |
+| Call imports | Call import batches and evaluations |
+| Prompt tooling | Prompt partials, prompt optimization runs |
+| Voice playground | Comparisons, samples, blind-test shares |
+| Judge alignment | Judge datasets and runs |
+
+Switching workspace changes which rows appear in each of these sections.
+
+---
+
+## Organization-wide resources
+
+Some metrics can be created with **organization** scope instead of workspace scope. Organization-scoped metrics:
+
+- Are stored with `workspace_id = null`
+- Appear in **every** workspace in the org
+- Are useful for shared rubrics, compliance checks, or standard evaluation criteria
+
+When creating a metric or categorization label group, choose **Organization** visibility if the rubric should be shared; choose **Workspace** (the default) to keep it project-specific.
+
+See [Metrics](/docs/products/metrics) for details on scope and categorization.
+
+---
+
+## Default workspace rules
+
+- Every organization has exactly one Default workspace (created automatically).
+- The Default workspace **cannot be deleted**.
+- If your stored workspace ID is invalid (for example after an org switch), the UI resets to Default.
+
+---
+
+## Recommended usage
+
+- **One workspace per team or project** — e.g., `support_pilot`, `sales_eval`, `customer_acme`.
+- **Keep shared rubrics org-wide** — compliance metrics or standard QA scorecards that every team uses.
+- **Switch before creating resources** — agents, metrics, and prompt partials are created in the active workspace.
+
+---
+
+## API
+
+Workspace management endpoints live under `/api/v1/workspaces`:
+
+- `GET /workspaces` — list workspaces in your organization
+- `POST /workspaces` — create a workspace (name, optional slug)
+- `PATCH /workspaces/{id}` — rename a workspace
+- `DELETE /workspaces/{id}` — delete a non-default workspace
+
+All other scoped API calls should include `X-Workspace-Id` with the target workspace UUID.

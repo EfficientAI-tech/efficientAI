@@ -1,0 +1,85 @@
+---
+id: agents
+title: Agents
+sidebar_position: 1
+---
+
+# Agents
+
+In EfficientAI, an **Agent** is a **test agent** — the voice AI configuration you set up to evaluate behavior, prompts, and call quality before or alongside production rollout.
+
+A test agent is not a live production deployment on its own. It is the evaluation target you define in EfficientAI: call context, prompts, and how tests run (via an internal voice bundle or an external voice platform).
+
+## What the Agents section is for
+
+The **Test Agents** page is your control plane for:
+
+- defining which voice system you want to test,
+- choosing call context (language, medium, inbound/outbound),
+- managing test-agent and provider prompt surfaces,
+- linking the test agent to internal or external execution paths.
+
+## Creating a test agent
+
+![Creating an agent](/screenshots/creating-agents.png)
+
+Use **Create Test Agent** to add a new evaluation configuration. Each test agent gets a name, call settings, and a prompt that describes how the agent should behave during simulated or provider-backed test calls.
+
+## Execution paths
+
+A test agent can run on one or both paths:
+
+- **Test Agent path (internal)** via `voice_bundle_id`.
+- **Voice AI Agent path (external)** via integration + provider agent mapping.
+
+If both are configured, you can compare outcomes across both paths from Playground and evaluator workflows.
+
+## Core configuration
+
+| Property | Type | Description |
+|---|---|---|
+| `name` | String | Human-readable test agent name. |
+| `language` | Enum | Primary language context for evaluation. |
+| `call_type` | Enum | `inbound` or `outbound` behavior context. |
+| `call_medium` | Enum | `phone_call` or `web_call`. |
+| `phone_number` | String | Required when `call_medium = phone_call`. |
+| `voice_bundle_id` | UUID | Internal test stack for voice-bundle testing. |
+| `voice_ai_integration_id` | UUID | External provider integration reference. |
+| `voice_ai_agent_id` | String | External provider agent identifier. |
+
+## Inbound vs outbound calls
+
+Use `call_type` to model the call direction the system under test is designed for:
+
+- **Inbound**: user initiates call to the agent.
+- **Outbound**: agent initiates call to the user.
+
+This setting should match your real deployment pattern so evaluation conditions are realistic.
+
+## Prompt management
+
+Each test agent can carry two prompt surfaces:
+
+- **Test Agent Prompt (`description`)**  
+  The EfficientAI test-agent prompt — used for internal test-agent behavior, scenario generation, and evaluation context.
+- **Provider Prompt (`provider_prompt`)**  
+  Prompt fetched from the linked external voice provider, when you are evaluating a provider-hosted agent.
+
+### Provider prompt sync
+
+When a test agent is linked to an external provider, EfficientAI can fetch and store the current provider prompt.
+
+Sync can happen:
+
+- automatically on relevant create/update operations, and
+- manually through "Sync Now" in the agent view.
+
+This keeps local review and optimization aligned with what is currently running on the provider.
+
+## Related setup guides
+
+For setup details, use these getting-started guides:
+
+- Voice bundle setup: [Voice Bundles](/docs/getting-started/voice-bundles)
+- Provider integration setup: [Integrations](/docs/getting-started/integrations)
+

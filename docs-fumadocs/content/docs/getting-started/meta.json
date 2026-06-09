@@ -1,0 +1,11 @@
+{
+  "title": "Getting Started",
+  "pages": [
+    "installation",
+    "workspaces",
+    "cloud-storage",
+    "authentication",
+    "integrations",
+    "voice-bundles"
+  ]
+}

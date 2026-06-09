@@ -1,0 +1,155 @@
+---
+id: metrics
+title: Metrics
+sidebar_position: 5
+---
+
+# Metrics
+
+Metrics are the scoring rules used to evaluate calls, playground runs, and blind tests. Only **enabled** metrics run during processing — there is no hidden global default set beyond what you turn on in the Metrics page.
+
+Metrics are scoped to your active [workspace](/docs/getting-started/workspaces) unless you create them with organization-wide visibility.
+
+---
+
+## Metric groups
+
+EfficientAI ships built-in metrics across three evaluation methods:
+
+### LLM-evaluated conversation metrics
+
+Examples: Follow Instructions, Professionalism, Problem Resolution.
+
+- Evaluates transcript and context against metric definitions
+- Supports custom prompts and [prompt partials](/docs/products/prompt-partials) import/save
+
+### Acoustic metrics (signal-based)
+
+Examples: Pitch Variance, Jitter, Shimmer, HNR.
+
+- Computed from raw audio signal characteristics (Parselmouth)
+- Require audio; skipped when audio is unavailable
+
+### AI voice quality metrics (model-based)
+
+Examples: MOS Score, Emotion Category, Emotion Confidence, Valence, Arousal, Speaker Consistency, Prosody Score.
+
+- Uses audio-based ML models for quality, emotion, and consistency
+- Require audio; skipped when audio is unavailable
+
+---
+
+## Custom metrics
+
+Beyond built-in defaults, you can create **custom metrics** with these types:
+
+| Type | Output | Use case |
+|------|--------|----------|
+| `boolean` | true / false | Pass-fail checks |
+| `enum` | One of defined values | Categorical judgments |
+| `number_range` | Numeric score in a range | Quantitative ratings |
+| `text` | Free-text response | Open-ended notes |
+| `rating` | Star or scale rating | Subjective scores |
+
+Custom metrics use your LLM evaluation prompt (editable in the Metrics UI) and respect the same enable/disable and surface rules as built-in metrics.
+
+---
+
+## Categorization labels
+
+For multi-class evaluations, create a **categorization** metric:
+
+- A **parent** metric holds the overall evaluation name and LLM prompt
+- **Child labels** define each category (name, definition, optional example)
+- Output is **single-choice** — one label per run, which maps cleanly to a single CSV column on export
+
+Enable **Capture LLM Rationale** on the parent or children to store the model's reasoning alongside the chosen label.
+
+---
+
+## Evaluation surfaces
+
+Metrics can run on one or more **surfaces**:
+
+| Surface | Where it runs |
+|---------|---------------|
+| **Agent** | Evaluator and agent test workflows |
+| **Voice Playground** | TTS comparison and playground analytics |
+| **Blind Test** | Blind listening test responses |
+
+Use the surface filter on the Metrics page to focus on a workflow. Toggle **enabled surfaces** per metric to control where each metric is evaluated.
+
+---
+
+## Visibility scope
+
+When creating a metric, choose who can see it:
+
+| Scope | Behavior |
+|-------|----------|
+| **Workspace** (default) | Metric belongs to the active workspace only |
+| **Organization** | Metric is shared across all workspaces in the org |
+
+Organization scope is ideal for standard rubrics. Workspace scope keeps project-specific metrics isolated. Scope is set at create time for metrics and categorization groups.
+
+---
+
+## Advanced options
+
+### Capture LLM rationale
+
+When enabled, the evaluator stores the LLM's explanation alongside the score. Useful for auditing subjective metrics and debugging prompt behavior.
+
+### Transcript-compare judge
+
+Enable **Compare transcripts** on a metric to run a transcript-pair judge at call-import evaluation time. The worker feeds **both** the production transcript and the diarized transcript to the LLM as a labeled pair. The run's transcript-source toggle is ignored for this metric.
+
+Transcript-compare judges are mutually exclusive with categorization parent/child structure.
+
+---
+
+## Prompt partials integration
+
+Metric evaluation prompts can be managed with [Prompt Partials](/docs/products/prompt-partials):
+
+- **Import** a saved partial into a metric's prompt field
+- **Save** the current prompt as a new partial or as a new version of an existing partial
+
+This keeps rubric prompts versioned and reusable across metrics and workspaces.
+
+---
+
+## How metrics run during processing
+
+1. Call audio and transcript are collected.
+2. Only **enabled** metrics for the relevant surface are considered.
+3. Metrics are split by evaluation method (LLM, acoustic, AI voice).
+4. Audio-required metrics run only when audio is available.
+5. LLM metrics run on transcript and context (or transcript pairs for compare judges).
+6. Scores are written to evaluator results for reporting and comparison.
+
+If audio is missing, audio-dependent metrics are skipped — scores are never fabricated.
+
+---
+
+## Defaults and deprecation
+
+Out of the box:
+
+- **Pitch Variance** starts enabled.
+- **Jitter**, **Shimmer**, and **HNR** start disabled.
+
+Legacy defaults **Response Time** and **Customer Satisfaction** are deprecated and can be removed from your metric library if no longer needed.
+
+---
+
+## Managing metrics
+
+Open **Metrics** in the sidebar to:
+
+- Enable or disable metrics
+- Create custom metrics or categorization label groups
+- Edit evaluation prompts
+- Configure surfaces and rationale capture
+- Filter by surface (Agent, Voice Playground, Blind Test)
+- Import or save prompts via prompt partials

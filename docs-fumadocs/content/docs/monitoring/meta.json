@@ -1,0 +1,8 @@
+{
+  "title": "Monitoring",
+  "pages": [
+    "calls",
+    "alerting",
+    "cron-jobs"
+  ]
+}
