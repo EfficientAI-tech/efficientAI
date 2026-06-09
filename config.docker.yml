@@ -117,5 +117,5 @@ judge_alignment:
 
 # Enterprise License (JWT signed with RS256). Unlocks gated features like
 # oidc_sso, mfa_enforce, audit_export, voice_playground, gepa_optimization.
-license:
-  key: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJvcmciOiJBY21lIENvcnAiLCJmZWF0dXJlcyI6WyJ2b2ljZV9wbGF5Z3JvdW5kIiwiZ2VwYV9vcHRpbWl6YXRpb24iLCJjYWxsX2ltcG9ydHMiXSwiaWF0IjoxNzc5MDIyMzM0LCJleHAiOjE4MTA1NTgzMzR9.kwLzYK3g5U7VIZEcSI_JKpNJ4GskE-iwDNGMLZcntHAqRDZELEFupK-tCq8RotVzKaMeJdBPlpLz-ajRnRpSxDrT849lOwO1PPR3hcCmVzgVO0QoG9J3SZsM2OhQnZmTu85WjbpLKY4lu7v60pN2gurpzjNkr39iKWQ65NvtRtRaXI_7nLuGxrDb-YsMP0kvO1wmNLcht7O8BmYbg2zjeyWbN-ac6191WSfjcy-AY2vBY4fQJWAlcO5yOJPIxFvBrgHHcBz5m1OgOduFlzY4Vb4Yfu9KgWKyOhguUlJtrLsRm1a4FQ64eURfDPF6IW2riK1_kEdm_oi5R3WKfT_L5A"
+# license:
+#   key: "eyJhbGciOi..."
