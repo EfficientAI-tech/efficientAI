@@ -232,6 +232,22 @@ def _was_cancelled_externally(db, row) -> bool:
     )
 
 
+def _compact_diarisation_error(text: str, *, max_chars: int = 280) -> str:
+    """Keep per-row diarisation errors readable in the UI."""
+    cleaned = (text or "").strip()
+    for sep in ("\nDetails:", "\nTraceback (most recent call last):"):
+        if sep in cleaned:
+            cleaned = cleaned.split(sep, 1)[0].strip()
+    if "does not accept audio input via Chat Completions" in cleaned:
+        provider_idx = cleaned.find("Provider error:")
+        if provider_idx >= 0:
+            cleaned = cleaned[:provider_idx].strip()
+    cleaned = " ".join(cleaned.split())
+    if len(cleaned) > max_chars:
+        cleaned = cleaned[: max_chars - 1].rstrip() + "…"
+    return cleaned
+
+
 def _summarize_exc(exc: BaseException, *, max_chars: int = 240) -> str:
     """Pull a human-friendly one-liner out of an STT-client exception.
 
@@ -258,9 +274,7 @@ def _summarize_exc(exc: BaseException, *, max_chars: int = 240) -> str:
     label = last.__class__.__name__
     if label and not text.lower().startswith(label.lower()):
         text = f"{label}: {text}"
-    if len(text) > max_chars:
-        text = text[: max_chars - 1].rstrip() + "…"
-    return text
+    return _compact_diarisation_error(text, max_chars=max_chars)
 
 
 @celery_app.task(
@@ -557,7 +571,7 @@ def transcribe_call_import_row_task(
                 if _was_cancelled_externally(db, row):
                     return {"status": "cancelled", "reason": "cancelled_by_user"}
                 row.diarised_transcript_status = "failed"
-                row.diarised_transcript_error = str(exc)
+                row.diarised_transcript_error = _compact_diarisation_error(str(exc))
                 db.commit()
                 return {"status": "failed", "reason": "llm_diarisation_error"}
             except Exception as exc:  # noqa: BLE001 — same surfacing as STT
@@ -614,7 +628,7 @@ def transcribe_call_import_row_task(
                 if _was_cancelled_externally(db, row):
                     return {"status": "cancelled", "reason": "cancelled_by_user"}
                 row.diarised_transcript_status = "failed"
-                row.diarised_transcript_error = str(exc)
+                row.diarised_transcript_error = _compact_diarisation_error(str(exc))
                 db.commit()
                 return {
                     "status": "failed",

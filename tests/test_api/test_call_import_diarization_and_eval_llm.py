@@ -1280,3 +1280,36 @@ def test_transcribe_request_requires_llm_diariser_fields():
             stt_model="nova-2",
             diarization_llm_provider="openai",
         )
+
+
+def test_humanise_audio_call_error_omits_provider_traceback():
+    from app.workers.tasks.helpers.llm_diarisation import _humanise_audio_call_error
+
+    exc = RuntimeError(
+        "LLM generation failed for openai/gpt-4o-mini: litellm.BadRequestError: "
+        "OpenAIException - Invalid 'messages[1]'. Content blocks are expected to "
+        "be either text or image_url type.\nDetails: Traceback (most recent call last):\n"
+        "  File \"/app/llm_service.py\", line 247, in generate_response"
+    )
+    message = _humanise_audio_call_error(
+        provider="openai",
+        model="gpt-4o-mini",
+        exc=exc,
+    )
+
+    assert "does not accept audio input via Chat Completions" in message
+    assert "gpt-4o-audio-preview" in message
+    assert "Provider error:" not in message
+    assert "Traceback" not in message
+
+
+def test_compact_diarisation_error_strips_details_block():
+    from app.workers.tasks.transcribe_call_import_row import _compact_diarisation_error
+
+    raw = (
+        "Diarisation LLM provider/model not configured.\n"
+        "Details: Traceback (most recent call last):\n  File \"x.py\", line 1"
+    )
+    assert _compact_diarisation_error(raw) == (
+        "Diarisation LLM provider/model not configured."
+    )

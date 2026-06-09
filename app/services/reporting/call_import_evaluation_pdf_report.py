@@ -101,9 +101,9 @@ class MetricReportSummary:
 class CallImportEvaluationPdfReportService:
     """Render external/internal Quality Metric Audit PDFs.
 
-    WeasyPrint is used when the optional reporting dependency is installed.
-    A small built-in PDF renderer keeps the endpoint usable in lean test/dev
-    environments where optional native PDF dependencies are absent.
+    WeasyPrint renders styled HTML when system libraries are available.
+    A small built-in PDF renderer keeps the endpoint usable when native
+    PDF dependencies are missing at runtime.
     """
 
     def render_pdf(
@@ -2485,9 +2485,10 @@ class CallImportEvaluationPdfReportService:
             .audit-summary li {{ margin-bottom: 5px; }}
             .audit-summary-section {{ margin-bottom: 0; break-after: avoid; page-break-after: avoid; }}
             .audit-summary-section + section {{ margin-top: 0; }}
-            .audit-summary-section + section h2 {{ margin-top: 0; }}
+            .audit-summary-section + section h2 {{ margin-top: 12px; }}
             .audit-stat-strip {{ display: flex; gap: 0; margin: 14px 0 0; border-top: 1px solid #111827; break-after: avoid; page-break-after: avoid; }}
-            .audit-stat-card {{ flex: 1; min-width: 0; padding: 10px 12px 0 0; }}
+            .audit-stat-strip:last-child {{ margin-bottom: 18px; }}
+            .audit-stat-card {{ flex: 1; min-width: 0; padding: 10px 12px 12px 0; }}
             .audit-stat-card + .audit-stat-card {{ border-left: 1px solid #d1d5db; padding-left: 12px; }}
             .audit-stat-rule {{ display: none; }}
             .audit-stat-label {{ font-size: 8px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: #d16532; margin-bottom: 6px; line-height: 1.3; }}

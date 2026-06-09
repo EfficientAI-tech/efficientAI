@@ -3025,10 +3025,9 @@ class CallImportEvaluationResponse(BaseModel):
     # eval header can render "Diarised via LLM only (Gemini)" instead of
     # an empty STT label.
     transcribe_mode: Literal["stt_llm", "llm_only"] = "stt_llm"
-    # Which transcript column this run scored against. See the
-    # ``CallImportEvaluation.transcript_source`` model docstring for
-    # the semantics. Defaults to ``'production'`` on legacy rows.
-    transcript_source: CallImportEvaluationTranscriptSource = "production"
+    # Which transcript column this run scored against. All current runs
+    # use diarised; legacy rows may still carry ``production``.
+    transcript_source: CallImportEvaluationTranscriptSource = "diarised"
     # Sibling evaluation ids created in the same Run Evaluation request.
     # Populated only on the POST response (and only when the user ticked
     # both Production and Diarised in the modal — the backend creates

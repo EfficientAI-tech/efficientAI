@@ -859,7 +859,8 @@ def test_pdf_report_internal_html_uses_compact_metric_layout(
     assert 'class="metric-sparkline"' in html
     assert 'class="audit-summary-section"' in html
     assert 'margin: 14px 0 0' in html
-    assert 'audit-summary-section + section h2 { margin-top: 0; }' in html
+    assert '.audit-stat-strip:last-child { margin-bottom: 18px; }' in html
+    assert 'audit-summary-section + section h2 { margin-top: 12px; }' in html
     assert "audit-delta-panel" in html
     assert "Top metric delta vs last week" in html
     assert "Lower rate is better" in html
@@ -1264,6 +1265,7 @@ def test_render_html_includes_top_metric_strip_below_audit_summary(
     assert "audit-stat-strip" in html
     assert "ESCALATION HANDLING" in html
     assert "100.0%" in html
+    assert '.audit-stat-strip:last-child { margin-bottom: 18px; }' in html
 
 
 def test_prompt_improvements_section_renders_top_five_with_edit_and_add_blocks():

@@ -32,6 +32,7 @@ import {
   XCircle,
 } from 'lucide-react'
 import { apiClient } from '../../lib/api'
+import { formatDiarisationError } from '../../lib/diarisationErrors'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import type {
   CallImportEvaluation,
@@ -2448,7 +2449,7 @@ export default function CallImportDetail() {
                           <span className="font-medium">
                             Diarisation error:
                           </span>{' '}
-                          {row.diarised_transcript_error}
+                          {formatDiarisationError(row.diarised_transcript_error)}
                         </div>
                       </div>
                     )}
@@ -2527,9 +2528,9 @@ export default function CallImportDetail() {
                                   'failed' && (
                                   <span
                                     className="ml-1 inline-flex items-center gap-1 rounded-full bg-red-50 text-red-700 px-2 py-0.5 text-[10px] font-medium"
-                                    title={
-                                      row.diarised_transcript_error || ''
-                                    }
+                                    title={formatDiarisationError(
+                                      row.diarised_transcript_error,
+                                    )}
                                   >
                                     <AlertCircle className="h-3 w-3" />
                                     Diarisation failed
@@ -2615,7 +2616,7 @@ export default function CallImportDetail() {
                                     <span className="font-medium">
                                       Diarisation failed:
                                     </span>{' '}
-                                    {row.diarised_transcript_error}
+                                    {formatDiarisationError(row.diarised_transcript_error)}
                                     {row.diarised_transcript_provider && (
                                       <span className="ml-1 text-[10px] text-red-700/80 font-mono">
                                         ({row.diarised_transcript_provider}

@@ -219,8 +219,7 @@ def test_export_emits_rationale_column_for_capture_rationale_metric(
     assert rows[0]["Production Transcript"] == "hello world"
     # No diarisation has run on this fixture row.
     assert rows[0]["Diarised Transcript"] == ""
-    # Default ``transcript_source = 'production'`` -> exported label.
-    assert rows[0]["Evaluated Transcript Source"] == "Production"
+    assert rows[0]["Evaluated Transcript Source"] == ""
 
 
 def test_export_omits_rationale_column_when_capture_rationale_false(
@@ -419,6 +418,102 @@ def test_export_surfaces_both_transcripts_and_diarised_source(
     assert rows[0]["Production Transcript"] == "hello world"
     assert rows[0]["Diarised Transcript"] == "worker output text"
     assert rows[0]["Evaluated Transcript Source"] == "Diarised"
+
+
+def test_export_omits_diarised_source_when_diarised_transcript_missing(
+    authenticated_client, db_session, org_id, seed_org
+):
+    """A diarised evaluation run must not label rows whose diarised transcript
+    is still empty — the export should leave the source cell blank."""
+    call_import = _make_call_import(db_session, org_id)
+    source_row = _make_call_import_row(db_session, call_import)
+
+    metric = _make_metric(
+        db_session, org_id, name="Quality", capture_rationale=False
+    )
+
+    evaluation = _make_evaluation_with_row(
+        db_session,
+        call_import=call_import,
+        source_row=source_row,
+        metrics=[metric],
+        metric_scores={
+            str(metric.id): {
+                "value": 0.9,
+                "type": "rating",
+                "metric_name": "Quality",
+            }
+        },
+    )
+    evaluation.transcript_source = "diarised"
+    db_session.commit()
+
+    response = authenticated_client.get(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/export"
+    )
+    assert response.status_code == 200, response.text
+    _headers, rows = _parse_csv(response.content)
+
+    assert rows[0]["Diarised Transcript"] == ""
+    assert rows[0]["Evaluated Transcript Source"] == ""
+
+
+def test_export_diarised_source_is_per_row(
+    authenticated_client, db_session, org_id, seed_org
+):
+    call_import = _make_call_import(db_session, org_id)
+    row_without = _make_call_import_row(db_session, call_import, row_index=0)
+    row_with = _make_call_import_row(db_session, call_import, row_index=1)
+    row_with.diarised_transcript = "agent: hello\nuser: hi"
+    db_session.commit()
+
+    metric = _make_metric(
+        db_session, org_id, name="Quality", capture_rationale=False
+    )
+
+    evaluation = CallImportEvaluation(
+        id=uuid4(),
+        call_import_id=call_import.id,
+        organization_id=call_import.organization_id,
+        workspace_id=call_import.workspace_id,
+        name="Mixed diarisation",
+        selected_metric_ids=[str(metric.id)],
+        transcript_source="diarised",
+        status="completed",
+        total_rows=2,
+        completed_rows=2,
+        failed_rows=0,
+    )
+    db_session.add(evaluation)
+    db_session.commit()
+
+    for source_row in (row_without, row_with):
+        db_session.add(
+            CallImportEvaluationRow(
+                id=uuid4(),
+                evaluation_id=evaluation.id,
+                call_import_row_id=source_row.id,
+                status="completed",
+                metric_scores={
+                    str(metric.id): {
+                        "value": 0.9,
+                        "type": "rating",
+                        "metric_name": "Quality",
+                    }
+                },
+            )
+        )
+    db_session.commit()
+
+    response = authenticated_client.get(
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/export"
+    )
+    assert response.status_code == 200, response.text
+    _headers, rows = _parse_csv(response.content)
+
+    assert len(rows) == 2
+    assert rows[0]["Evaluated Transcript Source"] == ""
+    assert rows[1]["Evaluated Transcript Source"] == "Diarised"
 
 
 def test_export_flattens_multi_line_diarised_transcript(

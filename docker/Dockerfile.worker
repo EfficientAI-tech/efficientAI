@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
 # Build arguments for configurable installs
-ARG INSTALL_EXTRAS="qualitative-voice,reports"
+ARG INSTALL_EXTRAS="qualitative-voice"
 ARG TORCH_CPU_ONLY="true"
 
 # Install system dependencies:
@@ -84,7 +84,7 @@ RUN mkdir -p /app/uploads
 #   Set TORCH_CPU_ONLY=false if you need GPU support
 # - NeMo ASR (WER/CER hallucination metrics) is NOT included by default (~2GB).
 #   It will be auto-installed on first use, or you can bake it in at build time:
-#     docker compose build --build-arg INSTALL_EXTRAS="qualitative-voice,reports,nemo-asr" worker
+#     docker compose build --build-arg INSTALL_EXTRAS="qualitative-voice,nemo-asr" worker
 # - ML models (emotion classifier, valence/arousal, UTMOS, NeMo ASR) are
 #   downloaded lazily on first use, keeping the image smaller
 # - For persistent model caching across container restarts, mount volumes:

@@ -106,7 +106,7 @@ jobs:
             image_name_var: WORKER_IMAGE_NAME
             cache_scope: worker-pr-dev
             build_args: |
-              INSTALL_EXTRAS=qualitative-voice,reports
+              INSTALL_EXTRAS=qualitative-voice
 
     steps:
       - name: Checkout repository

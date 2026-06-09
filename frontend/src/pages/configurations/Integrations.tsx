@@ -51,8 +51,10 @@ export default function Integrations() {
   const [name, setName] = useState('')
   const [showDeleteModal, setShowDeleteModal] = useState(false)
   const [showDeleteAIProviderModal, setShowDeleteAIProviderModal] = useState(false)
+  const [showDeleteTelephonyModal, setShowDeleteTelephonyModal] = useState(false)
   const [integrationToDelete, setIntegrationToDelete] = useState<Integration | null>(null)
   const [aiProviderToDelete, setAIProviderToDelete] = useState<AIProvider | null>(null)
+  const [telephonyToDelete, setTelephonyToDelete] = useState<TelephonyIntegrationResponse | null>(null)
   const [deleteDependencies, setDeleteDependencies] = useState<Record<string, number> | null>(null)
   const providerDropdownRef = useRef<HTMLDivElement>(null)
   const platformDropdownRef = useRef<HTMLDivElement>(null)
@@ -198,7 +200,12 @@ export default function Integrations() {
 
   const deleteTelephonyMutation = useMutation({
     mutationFn: (id: string) => apiClient.deleteTelephonyConfig(id),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['telephony-configs'] }); showToast('Telephony credential deleted', 'success') },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['telephony-configs'] })
+      showToast('Telephony credential deleted', 'success')
+      setShowDeleteTelephonyModal(false)
+      setTelephonyToDelete(null)
+    },
     onError: (error: any) => { showToast(error?.response?.data?.detail || error?.message || 'Failed to delete', 'error') },
   })
 
@@ -279,8 +286,10 @@ export default function Integrations() {
 
   const handleDelete = (integration: Integration) => { setIntegrationToDelete(integration); setDeleteDependencies(null); setShowDeleteModal(true) }
   const handleDeleteAIProvider = (provider: AIProvider) => { setAIProviderToDelete(provider); setShowDeleteAIProviderModal(true) }
+  const handleDeleteTelephony = (config: TelephonyIntegrationResponse) => { setTelephonyToDelete(config); setShowDeleteTelephonyModal(true) }
   const confirmDeleteIntegration = (force?: boolean) => { if (integrationToDelete) deleteIntegrationMutation.mutate({ id: integrationToDelete.id, force }) }
   const confirmDeleteAIProvider = () => { if (aiProviderToDelete) deleteAIProviderMutation.mutate(aiProviderToDelete.id) }
+  const confirmDeleteTelephony = () => { if (telephonyToDelete) deleteTelephonyMutation.mutate(telephonyToDelete.id) }
 
   const platforms = [
     {
@@ -350,6 +359,10 @@ export default function Integrations() {
   const aiIntegrationProviders = (aiproviders as AIProvider[]).filter((p) =>
     AI_INTEGRATION_PROVIDERS.includes(p.provider as ModelProvider)
   )
+  const hasConfiguredIntegrations =
+    integrations.length > 0 ||
+    aiIntegrationProviders.length > 0 ||
+    hasTelephony
 
   const getPlatformInfo = (platformId: IntegrationPlatform) => {
     return platforms.find(p => p.id === platformId)
@@ -370,7 +383,7 @@ export default function Integrations() {
       </div>
 
       {/* Configured Integrations */}
-      {(integrations.length > 0 || aiIntegrationProviders.length > 0) && (
+      {hasConfiguredIntegrations && (
         <div className="bg-white shadow rounded-lg overflow-hidden">
           <div className="px-6 py-4 border-b border-gray-200">
             <h2 className="text-lg font-semibold text-gray-900">Configured Integrations</h2>
@@ -584,11 +597,7 @@ export default function Integrations() {
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => {
-                            if (window.confirm(`Delete this ${getTelephonyProviderLabel(cfg.provider as TelephonyProvider)} credential?`)) {
-                              deleteTelephonyMutation.mutate(cfg.id)
-                            }
-                          }}
+                          onClick={() => handleDeleteTelephony(cfg)}
                           leftIcon={<Trash2 className="h-4 w-4" />}
                           className="text-red-600 hover:text-red-700 hover:bg-red-50"
                         >
@@ -605,7 +614,7 @@ export default function Integrations() {
         </div>
       )}
 
-      {integrations.length === 0 && aiIntegrationProviders.length === 0 && (
+      {!hasConfiguredIntegrations && (
         <div className="bg-white rounded-lg shadow p-12 text-center">
           <Plug className="w-12 h-12 text-gray-400 mx-auto mb-4" />
           <h3 className="text-lg font-medium text-gray-900 mb-2">No integrations configured</h3>
@@ -934,6 +943,31 @@ export default function Integrations() {
               <div className="flex gap-3">
                 <Button variant="outline" onClick={() => { setShowDeleteAIProviderModal(false); setAIProviderToDelete(null) }} className="flex-1" disabled={deleteAIProviderMutation.isPending}>Cancel</Button>
                 <Button variant="danger" onClick={confirmDeleteAIProvider} isLoading={deleteAIProviderMutation.isPending} leftIcon={!deleteAIProviderMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined} className="flex-1">Delete</Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDeleteTelephonyModal && telephonyToDelete && renderModal(
+        <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center z-[9999]" onClick={() => { setShowDeleteTelephonyModal(false); setTelephonyToDelete(null) }}>
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
+            <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+              <h3 className="text-lg font-semibold text-gray-900">Confirm Delete</h3>
+              <button onClick={() => { setShowDeleteTelephonyModal(false); setTelephonyToDelete(null) }} className="text-gray-400 hover:text-gray-600" disabled={deleteTelephonyMutation.isPending}><X className="h-5 w-5" /></button>
+            </div>
+            <div className="p-6">
+              <div className="flex items-start gap-4 mb-6">
+                <div className="flex-shrink-0"><div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center"><Trash2 className="h-6 w-6 text-red-600" /></div></div>
+                <div className="flex-1">
+                  <p className="text-sm text-gray-700 mb-2">Are you sure you want to delete the <span className="font-semibold text-gray-900">{getTelephonyProviderLabel(telephonyToDelete.provider as TelephonyProvider)}</span> configuration?</p>
+                  {telephonyToDelete.name && <p className="text-sm text-gray-600 mb-2">Name: <span className="font-medium">{telephonyToDelete.name}</span></p>}
+                  <p className="text-xs text-gray-500">This action cannot be undone. Phone numbers and agents linked to this credential may stop working.</p>
+                </div>
+              </div>
+              <div className="flex gap-3">
+                <Button variant="outline" onClick={() => { setShowDeleteTelephonyModal(false); setTelephonyToDelete(null) }} className="flex-1" disabled={deleteTelephonyMutation.isPending}>Cancel</Button>
+                <Button variant="danger" onClick={confirmDeleteTelephony} isLoading={deleteTelephonyMutation.isPending} leftIcon={!deleteTelephonyMutation.isPending ? <Trash2 className="h-4 w-4" /> : undefined} className="flex-1">Delete</Button>
               </div>
             </div>
           </div>
