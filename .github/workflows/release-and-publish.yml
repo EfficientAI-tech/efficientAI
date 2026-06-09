@@ -213,7 +213,7 @@ jobs:
           cache-from: type=gha,scope=worker-${{ matrix.slug }}
           cache-to: type=gha,scope=worker-${{ matrix.slug }},mode=max
           build-args: |
-            INSTALL_EXTRAS=qualitative-voice,reports
+            INSTALL_EXTRAS=qualitative-voice
 
       - name: Export digests
         run: |

@@ -204,6 +204,17 @@ def _flatten_transcript(text: Optional[str]) -> str:
     return " ".join(p for p in parts if p)
 
 
+def _evaluated_transcript_source_label(
+    evaluation: CallImportEvaluation,
+    source_row: CallImportRow,
+) -> str:
+    """Label whether this row had a diarised transcript for scoring."""
+    del evaluation
+    if not (source_row.diarised_transcript or "").strip():
+        return ""
+    return "Diarised"
+
+
 def _serialize_selected_metric_ids(value) -> List[UUID]:
     result: List[UUID] = []
     if not isinstance(value, list):
@@ -438,7 +449,7 @@ def _serialize_eval(
         transcribe_mode=(
             (getattr(row, "transcribe_mode", None) or "stt_llm")
         ),
-        transcript_source=(row.transcript_source or "production"),
+        transcript_source=(row.transcript_source or "diarised"),
         sibling_evaluation_ids=list(sibling_evaluation_ids or []),
         started_at=row.started_at,
         finished_at=row.finished_at,
@@ -927,14 +938,9 @@ async def create_call_import_evaluation(
             db, primary_evaluation, sibling_evaluation_ids=sibling_ids
         )
 
-    # ------------------------------------------------------------------
-    # Auto-transcribe scheduling is shared across every requested
-    # source: we only enqueue ONE diarisation per call_import_row
-    # (keyed by row id), then fan that diarisation completion out to
-    # every "diarised" evaluation row that's waiting for it. Production
-    # evaluations skip the diarisation path entirely — they read the
-    # CSV transcript which is already on the row.
-    # ------------------------------------------------------------------
+    # Auto-transcribe scheduling: enqueue diarisation once per row when
+    # the diarised transcript is missing. Production (CSV) text is kept
+    # on the row for comparison metrics only.
 
     # Lazy imports keep test setup simple — tests stub the worker module so
     # importing the route never reaches into Celery's broker config.
@@ -944,11 +950,8 @@ async def create_call_import_evaluation(
     from celery import group
 
     try:
-        # Per-evaluation: figure out which eval rows can run immediately
-        # vs which need to wait for diarisation. Production runs always
-        # run immediately; diarised runs wait for diarisation when
-        # ``auto_transcribe`` is set and the diarised transcript is
-        # missing/being overwritten.
+        # Figure out which eval rows can run immediately vs which need
+        # to wait for diarisation when ``auto_transcribe`` is enabled.
         eval_only_row_ids: List[str] = []
         # row_id -> list of (eval_row, source_row) waiting on its diarisation
         deferred_by_row: Dict[
@@ -957,7 +960,9 @@ async def create_call_import_evaluation(
 
         for evaluation in created_evaluations:
             bucket = eval_row_buckets[evaluation.id]
-            is_diarised_run = evaluation.transcript_source == "diarised"
+            # Every evaluation run scores the diarised transcript; auto-
+            # transcribe when it is missing and the row has audio.
+            is_diarised_run = True
             for eval_row, source_row in bucket:
                 if (
                     auto_transcribe
@@ -1535,22 +1540,10 @@ async def list_call_import_evaluation_rows(
     total = query.count()
     rows = query.offset((page - 1) * page_size).limit(page_size).all()
 
-    # Pick the transcript that matches the parent evaluation's
-    # ``transcript_source`` so the row-detail drawer naturally shows
-    # the value that was actually scored. Falls back to the other
-    # transcript if the chosen one is missing so the user still sees
-    # context instead of an empty panel.
-    eval_transcript_source = (
-        (eval_row.transcript_source or "production").strip().lower()
-    )
-
+    # Row detail shows the diarised transcript that normal metrics score.
     def _pick_transcript(source_row: CallImportRow) -> Optional[str]:
-        if eval_transcript_source == "diarised":
-            return (
-                source_row.diarised_transcript
-                or source_row.transcript
-            )
-        return source_row.transcript or source_row.diarised_transcript
+        diarised = (source_row.diarised_transcript or "").strip()
+        return diarised or None
 
     items: List[CallImportEvaluationRowResponse] = []
     for eval_row_obj, source_row in rows:
@@ -1781,12 +1774,6 @@ async def export_call_import_evaluation_csv(
         .all()
     )
 
-    evaluated_source_label = (
-        "Diarised"
-        if (evaluation.transcript_source or "production") == "diarised"
-        else "Production"
-    )
-
     def _project_rows() -> Iterator[Dict[str, str]]:
         for eval_row, source_row in rows:
             row_out: Dict[str, str] = {}
@@ -1814,7 +1801,10 @@ async def export_call_import_evaluation_csv(
             row_out[DIARISED_TRANSCRIPT_HEADER] = _flatten_transcript(
                 source_row.diarised_transcript
             )
-            row_out[EVAL_SOURCE_HEADER] = evaluated_source_label
+            row_out[EVAL_SOURCE_HEADER] = _evaluated_transcript_source_label(
+                evaluation,
+                source_row,
+            )
 
             scores = (
                 eval_row.metric_scores
@@ -7807,8 +7797,8 @@ def _enqueue_eval_rows_with_optional_transcribe(
     )
     from celery import group
 
-    transcript_source = (evaluation.transcript_source or "").strip().lower()
-    is_diarised_run = transcript_source == "diarised"
+    # Every evaluation run scores the diarised transcript.
+    is_diarised_run = True
     # ``transcribe_mode`` was added in migration 041; legacy runs read as
     # NULL → default to the historical ``stt_llm`` behavior so retries
     # of pre-feature evaluations stay byte-identical.

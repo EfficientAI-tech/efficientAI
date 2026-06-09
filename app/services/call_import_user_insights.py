@@ -143,20 +143,9 @@ def _pick_transcript(
     evaluation: CallImportEvaluation,
     source_row: CallImportRow,
 ) -> str:
-    production = (source_row.transcript or "").strip()
+    del evaluation
     diarised = (source_row.diarised_transcript or "").strip()
-    raw_source = (evaluation.transcript_source or "").strip().lower()
-    if raw_source:
-        transcript_source = raw_source
-    elif diarised:
-        transcript_source = "diarised"
-    else:
-        transcript_source = "production"
-    if transcript_source == "diarised":
-        text = diarised or production
-    else:
-        text = production or diarised
-    return text[:ROW_TRANSCRIPT_CHAR_CAP]
+    return diarised[:ROW_TRANSCRIPT_CHAR_CAP]
 
 
 def _metric_name_map(metrics: Sequence[Metric]) -> Dict[str, str]:

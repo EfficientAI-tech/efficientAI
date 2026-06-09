@@ -467,31 +467,13 @@ def evaluate_call_import_row_task(
             evaluation.started_at = evaluation.started_at or _now()
         db.commit()
 
-        # Pick which transcript column to score against based on the
-        # parent evaluation's ``transcript_source`` — 'production' reads
-        # the CSV-supplied value, 'diarised' reads the worker-produced
-        # value. Legacy / API-omitted runs (NULL ``transcript_source``)
-        # now prefer the diarised transcript when one is available, and
-        # only fall back to the production transcript when no diarised
-        # text exists yet. New evaluations created via the API are
-        # always stamped ``transcript_source='diarised'`` by the
-        # schema validator; the fallback here protects rows imported
-        # / scored under the legacy flow.
+        # Normal transcript metrics always score the diarised transcript.
+        # Production (CSV) text is only fed to comparison metrics that
+        # explicitly compare both columns — see ``comparison_metrics`` below.
         production_transcript = (source_row.transcript or "").strip()
         diarised_transcript = (source_row.diarised_transcript or "").strip()
-        raw_source = (evaluation.transcript_source or "").strip().lower()
-        if raw_source:
-            transcript_source = raw_source
-        elif diarised_transcript:
-            transcript_source = "diarised"
-        else:
-            transcript_source = "production"
-        if transcript_source == "diarised":
-            transcript = diarised_transcript
-            missing_label = "diarised"
-        else:
-            transcript = production_transcript
-            missing_label = "production"
+        transcript = diarised_transcript
+        missing_label = "diarised"
         recording_s3_key = (source_row.recording_s3_key or "").strip() or None
         has_audio = recording_s3_key is not None
 

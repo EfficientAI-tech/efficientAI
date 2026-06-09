@@ -83,7 +83,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.worker
       args:
-        INSTALL_EXTRAS: "qualitative-voice,reports"
+        INSTALL_EXTRAS: "qualitative-voice"
     container_name: efficientai_worker
     environment:
       # Worker uses Docker network, so it reaches DB/Redis via service names
@@ -116,7 +116,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.worker
       args:
-        INSTALL_EXTRAS: "qualitative-voice,reports"
+        INSTALL_EXTRAS: "qualitative-voice"
     container_name: efficientai_worker_imports
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-efficientai}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-efficientai}

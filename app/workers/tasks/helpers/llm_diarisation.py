@@ -1122,7 +1122,10 @@ def _humanise_audio_call_error(
             "diarisation uses. Pick an audio-capable model: OpenAI's "
             "gpt-4o-audio-preview / gpt-4o-mini-audio-preview, or any "
             "Google Gemini 1.5+ model (gemini-1.5-pro, gemini-2.0-flash, "
-            "gemini-2.5-pro, …). Provider error: "
-            + msg
+            "gemini-2.5-pro, …)."
         )
-    return f"LLM-only diarisation call failed for {provider}/{model}: {msg}"
+    compact = msg.split("\nDetails:", 1)[0].strip()
+    compact = " ".join(compact.split())
+    if len(compact) > 240:
+        compact = compact[:239].rstrip() + "…"
+    return f"LLM-only diarisation call failed for {provider}/{model}: {compact}"

@@ -79,13 +79,15 @@ def _seed(db_session, *, row_count: int = 1, metric_count: int = 1):
 
     source_rows = []
     for idx in range(row_count):
+        transcript = f"Hello transcript {idx}"
         row = CallImportRow(
             id=uuid4(),
             call_import_id=call_import.id,
             organization_id=org.id,
             row_index=idx,
             conversation_id=f"call-{idx}",
-            transcript=f"Hello transcript {idx}",
+            transcript=transcript,
+            diarised_transcript=transcript,
             status=CallImportRowStatus.COMPLETED,
         )
         db_session.add(row)
@@ -212,6 +214,7 @@ def test_evaluate_call_import_row_marks_failed_on_empty_transcript(
 ):
     _, _ci, _metrics, source_rows, evaluation, eval_rows = _seed(db_session)
     source_rows[0].transcript = "   "
+    source_rows[0].diarised_transcript = None
     db_session.commit()
 
     task_module = _patch_dependencies(monkeypatch, db_session)
@@ -223,10 +226,10 @@ def test_evaluate_call_import_row_marks_failed_on_empty_transcript(
     db_session.refresh(eval_rows[0])
     db_session.refresh(evaluation)
     assert eval_rows[0].status == "failed"
-    # New error message is "No production transcript for this row..."
+    # Normal metrics always require a diarised transcript.
     err = (eval_rows[0].error_message or "").lower()
     assert "transcript" in err
-    assert "production" in err
+    assert "diarised" in err
     assert evaluation.failed_rows == 1
     assert evaluation.completed_rows == 0
     assert evaluation.status == "failed"
@@ -650,10 +653,9 @@ def test_evaluate_call_import_row_mixes_comparison_with_other_metric_kinds(
     comparison_metric.compare_transcripts = True
     source_rows[0].transcript = "PROD text"
     source_rows[0].diarised_transcript = "DIAR text"
-    # Pin the transcript source so the transcript-metric assertion
-    # below is deterministic; the default fallback prefers diarised
-    # when both are present.
-    evaluation.transcript_source = "production"
+    # Pin the run to diarised so the transcript-metric assertion below
+    # is explicit; normal metrics always read diarised_transcript.
+    evaluation.transcript_source = "diarised"
     db_session.commit()
 
     invocations: list[dict] = []
@@ -697,7 +699,7 @@ def test_evaluate_call_import_row_mixes_comparison_with_other_metric_kinds(
 
     transcript_call = by_metric[str(transcript_metric.id)]
     assert transcript_call["comparison_pair"] is None
-    assert transcript_call["transcription"] == "PROD text"
+    assert transcript_call["transcription"] == "DIAR text"
 
     db_session.refresh(eval_rows[0])
     # Both metrics scored exactly once; the column-input bucket has
