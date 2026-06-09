@@ -1,0 +1,205 @@
+---
+id: cloud-storage
+title: Cloud Storage
+sidebar_position: 3
+---
+
+# Cloud Storage
+
+## Overview
+
+EfficientAI can store audio files and recordings in the cloud using **one active blob backend** at a time:
+
+- **Amazon S3** (or any S3-compatible service such as MinIO, DigitalOcean Spaces, Cloudflare R2)
+- **Google Cloud Storage (GCS)**
+
+Cloud storage is useful for:
+
+- Storing large audio files outside your application server
+- Scaling storage independently from compute
+- Integrating with existing AWS or GCP infrastructure
+- Browsing, uploading, and managing audio from the **Data Sources** page in the UI
+
+Select the backend with `storage.blob_provider` in `config.yml` (`s3` or `gcs`), then enable and configure the matching block below.
+
+---
+
+## Storage block
+
+```yaml
+storage:
+  upload_dir: "./uploads"
+  max_file_size_mb: 500
+  blob_provider: s3  # s3 | gcs — single active cloud blob backend
+  allowed_audio_formats:
+    - "wav"
+    - "mp3"
+    - "flac"
+    - "m4a"
+```
+
+| Option | Description |
+|--------|-------------|
+| `upload_dir` | Local fallback directory for uploads when cloud storage is disabled |
+| `max_file_size_mb` | Maximum upload size in megabytes |
+| `blob_provider` | Active cloud backend: `s3` or `gcs` |
+| `allowed_audio_formats` | File extensions accepted for audio uploads |
+
+---
+
+## Amazon S3 and S3-compatible storage
+
+### Configuration
+
+Set `storage.blob_provider: s3` and enable the `s3` block:
+
+```yaml
+storage:
+  blob_provider: s3
+
+s3:
+  enabled: true
+  bucket_name: "your-bucket-name"
+  region: "us-east-1"
+  access_key_id: "AKIAIOSFODNN7EXAMPLE"
+  secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+  endpoint_url: null  # Optional: for S3-compatible services
+  prefix: "audio/"    # Folder prefix for files
+```
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `enabled` | Yes | Set to `true` to enable S3 storage |
+| `bucket_name` | Yes | Name of your S3 bucket |
+| `region` | Yes | AWS region (e.g., `us-east-1`, `eu-west-1`) |
+| `access_key_id` | Yes | AWS Access Key ID |
+| `secret_access_key` | Yes | AWS Secret Access Key |
+| `endpoint_url` | No | Custom endpoint for S3-compatible services |
+| `prefix` | No | Folder prefix for uploaded files (default: `audio/`) |
+
+### S3-compatible examples
+
+**MinIO**
+
+```yaml
+s3:
+  enabled: true
+  bucket_name: "efficientai"
+  region: "us-east-1"
+  access_key_id: "minioadmin"
+  secret_access_key: "minioadmin"
+  endpoint_url: "http://localhost:9000"
+  prefix: "audio/"
+```
+
+**DigitalOcean Spaces**
+
+```yaml
+s3:
+  enabled: true
+  bucket_name: "your-space-name"
+  region: "nyc3"
+  access_key_id: "your-spaces-key"
+  secret_access_key: "your-spaces-secret"
+  endpoint_url: "https://nyc3.digitaloceanspaces.com"
+  prefix: "audio/"
+```
+
+**Cloudflare R2**
+
+```yaml
+s3:
+  enabled: true
+  bucket_name: "your-bucket"
+  region: "auto"
+  access_key_id: "your-r2-access-key"
+  secret_access_key: "your-r2-secret-key"
+  endpoint_url: "https://<account-id>.r2.cloudflarestorage.com"
+  prefix: "audio/"
+```
+
+---
+
+## Google Cloud Storage
+
+### Configuration
+
+Set `storage.blob_provider: gcs` and enable the `gcs` block:
+
+```yaml
+storage:
+  blob_provider: gcs
+
+gcs:
+  enabled: true
+  bucket_name: "your-gcs-bucket-name"
+  project_id: "your-gcp-project-id"
+  credentials_path: null  # Optional path to service-account JSON
+  prefix: "audio/"
+```
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `enabled` | Yes | Set to `true` to enable GCS storage |
+| `bucket_name` | Yes | Name of your GCS bucket |
+| `project_id` | Yes | GCP project ID |
+| `credentials_path` | No | Path to a service-account JSON key file |
+| `prefix` | No | Folder prefix for uploaded files (default: `audio/`) |
+
+### Authentication
+
+EfficientAI resolves GCS credentials in this order:
+
+1. `gcs.credentials_path` in `config.yml` (relative paths resolve from the working directory)
+2. `GOOGLE_APPLICATION_CREDENTIALS` environment variable
+3. Application Default Credentials (ADC) on GCE, GKE, or Cloud Run
+
+The `google-cloud-storage` client is included in the standard EfficientAI install (`pip install -e .`); no extra Python package step is required for GCS.
+
+### GCP setup
+
+1. **Create a GCS bucket** in your project (Console or `gcloud storage buckets create`).
+2. **Create a service account** with object read/write access (e.g., `roles/storage.objectAdmin` on the bucket, or a tighter custom role).
+3. **Download a JSON key** and set `credentials_path`, or mount the key and set `GOOGLE_APPLICATION_CREDENTIALS`.
+4. Set `storage.blob_provider: gcs`, `gcs.enabled: true`, and fill in `bucket_name` and `project_id`.
+
+Object layout under `prefix` matches S3 (organization-scoped paths), so you can migrate between providers without changing application logic.
+
+---
+
+## Data Sources UI
+
+Once cloud storage is configured and connected, open **Configuration → Data Sources** to:
+
+- Browse folders and audio files in your bucket
+- Upload new audio files
+- Preview playback in the browser
+- Delete files
+- Test the connection (labels show **Amazon S3** or **Google Cloud Storage** based on `blob_provider`)
+
+---
+
+## Verifying connection
+
+Restart the application after changing storage settings:
+
+```bash
+eai start-all --config config.yml
+```
+
+Use **Test Connection** on the Data Sources page, or upload a test file and confirm it appears under the configured `prefix` in your bucket.
+
+---
+
+## Troubleshooting
+
+| Issue | Solution |
+|-------|----------|
+| `Access Denied` (S3) | Check IAM permissions and bucket policy |
+| `NoSuchBucket` (S3) | Verify bucket name and region |
+| `Connection refused` (S3) | Check `endpoint_url` for S3-compatible services |
+| `Invalid credentials` (S3) | Verify `access_key_id` and `secret_access_key` |
+| GCS `Forbidden` | Confirm service account has `storage.objects.*` on the bucket |
+| GCS bucket not found | Verify `bucket_name`, `project_id`, and that the bucket exists |
+| GCS auth failure | Set `credentials_path` or `GOOGLE_APPLICATION_CREDENTIALS`; on GCP VMs you can use ADC |
+| Wrong provider in UI | Ensure `storage.blob_provider` matches the enabled block (`s3` vs `gcs`) |

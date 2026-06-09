@@ -4,8 +4,8 @@ This runbook tracks the Fumadocs rollout and rollback strategy.
 
 ## Cutover steps
 
-1. Ensure `docs-fumadocs` checks are green in `Docs Quality`.
-2. Trigger `Deploy Docs to S3` (or push to `main` with docs changes).
+1. Ensure `docs-fumadocs` checks are green in the `Docs` workflow `build` job.
+2. Trigger the `Docs` workflow `deploy` job (or push to `main` with docs changes).
 3. Verify production routes:
    - `/docs/intro`
    - `/docs/getting-started/installation`

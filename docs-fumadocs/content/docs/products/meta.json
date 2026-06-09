@@ -8,6 +8,7 @@
     "metrics",
     "playground",
     "alerting",
-    "prompt-optimization"
+    "prompt-optimization",
+    "prompt-partials"
   ]
 }

@@ -23,12 +23,15 @@ EfficientAI gives you an end-to-end loop for voice AI quality:
 
 ## Core capabilities
 
+- **Workspaces**: isolate agents, metrics, call imports, and prompt libraries per team or project within one organization.
 - **Agent testing across call setups**: supports inbound/outbound context and phone/web call mediums.
 - **Prompt management**: maintain an internal test-agent prompt and sync provider prompts from external voice platforms.
+- **Prompt partials**: reusable, versioned prompt templates with AI generate/improve, shared across metrics, agents, and call imports.
 - **Voice bundle composition**: configure STT, LLM, and TTS stacks (or S2S where configured) for test-agent behavior.
 - **Persona voice mapping**: personas are tied to concrete provider and voice identities.
 - **Scenario generation and curation**: generate from agent prompts, derive from call transcripts/call data, or create manually.
-- **Metric-driven evaluation**: enable the exact metrics you want and apply them consistently across runs.
+- **Metric-driven evaluation**: built-in and custom metrics with categorization labels, surface targeting, and org-wide or workspace scope.
+- **Cloud storage**: store audio in Amazon S3, S3-compatible services, or Google Cloud Storage via the Data Sources UI.
 - **Prompt optimization workflows**: run optimization loops, compare candidates, accept winners, and push selected prompts to providers.
 
 ## Platform model
@@ -42,3 +45,10 @@ At a high level:
 - **Results** provide run-level evidence for iteration decisions.
 
 This structure keeps testing reproducible while still reflecting real-world voice interactions.
+
+## Key guides
+
+- [Workspaces](/docs/getting-started/workspaces) — project isolation within your organization
+- [Cloud Storage](/docs/getting-started/cloud-storage) — S3 and GCS configuration
+- [Metrics](/docs/products/metrics) — custom rubrics, surfaces, and evaluation scope
+- [Prompt Partials](/docs/products/prompt-partials) — versioned prompt templates

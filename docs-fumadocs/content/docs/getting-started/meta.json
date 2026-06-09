@@ -2,7 +2,8 @@
   "title": "Getting Started",
   "pages": [
     "installation",
-    "s3-storage",
+    "workspaces",
+    "cloud-storage",
     "authentication",
     "integrations",
     "voice-bundles"

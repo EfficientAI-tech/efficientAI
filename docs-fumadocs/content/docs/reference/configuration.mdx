@@ -54,9 +54,10 @@ celery:
 storage:
   upload_dir: "/app/uploads"
   max_file_size_mb: 500
+  blob_provider: s3        # s3 | gcs — single active cloud blob backend
   allowed_audio_formats: ["wav", "mp3", "flac", "m4a"]
 
-# S3 (optional, used by the Data Sources feature)
+# S3 (optional, used by the Data Sources feature when blob_provider is s3)
 s3:
   enabled: false
   bucket_name: "your-bucket"
@@ -64,6 +65,14 @@ s3:
   access_key_id: "YOUR_ACCESS_KEY_ID"
   secret_access_key: "YOUR_SECRET_ACCESS_KEY"
   endpoint_url: null         # MinIO / DO Spaces / etc.
+  prefix: "audio/"
+
+# GCS (optional, used by the Data Sources feature when blob_provider is gcs)
+gcs:
+  enabled: false
+  bucket_name: "your-gcs-bucket-name"
+  project_id: "your-gcp-project-id"
+  credentials_path: null     # service-account JSON; or GOOGLE_APPLICATION_CREDENTIALS / ADC
   prefix: "audio/"
 
 # CORS
@@ -112,7 +121,7 @@ auth:
 ```
 
 :::tip
-Keep `secret_key`, database credentials, S3 keys, and the license JWT
+Keep `secret_key`, database credentials, S3/GCS credentials, and the license JWT
 **out of version control**. Put them in `.env` or your secret manager of
 choice and reference them from there.
 :::

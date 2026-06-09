@@ -24,6 +24,42 @@ This will automatically:
 
 The first run will download ~4GB of images, which typically takes 1-2 minutes depending on your internet speed.
 
+### Configure for Docker
+
+Docker Compose mounts **`config.docker.yml`** from your project root into every app container as `/app/config.yml`. Containers do **not** read the host `config.yml` used by CLI mode.
+
+1. Copy the example config:
+
+```bash
+cp config.yml.example config.docker.yml
+```
+
+2. Edit `config.docker.yml` for Docker networking and your integrations:
+
+```yaml
+database:
+  url: "postgresql://efficientai:password@db:5432/efficientai"
+
+redis:
+  url: "redis://redis:6379/0"
+
+celery:
+  broker_url: "redis://redis:6379/0"
+  result_backend: "redis://redis:6379/0"
+
+storage:
+  upload_dir: "/app/uploads"
+  blob_provider: s3  # or gcs
+
+# Enable and fill in s3: or gcs: for Data Sources, plus auth, diarization, etc.
+```
+
+Use the Docker service hostnames `db` and `redis` (not `localhost`). Match database credentials to your `.env` or `docker-compose.yml` defaults (`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`).
+
+`docker-compose.yml` also sets some values via environment variables (`DATABASE_URL`, `REDIS_URL`, `SECRET_KEY`, …), but **cloud storage, auth, diarization, and other YAML-only settings must live in `config.docker.yml`**.
+
+See [Configuration](/docs/reference/configuration) and [Cloud Storage](/docs/getting-started/cloud-storage) for the full option reference.
+
 ### Using a Specific Version
 
 You can pin to a specific release version for stability:

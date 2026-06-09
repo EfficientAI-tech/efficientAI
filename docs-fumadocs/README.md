@@ -29,6 +29,6 @@ npm run ci:check
 
 ## Deployment
 
-Deployment is handled by `.github/workflows/deploy-docs.yml` and publishes static output from `docs-fumadocs/out`.
+Deployment is handled by `.github/workflows/docs.yml` (the `deploy` job) and publishes static output from `docs-fumadocs/out`.
 
 Rollback instructions are documented in `CUTOVER.md`.

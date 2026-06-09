@@ -1,10 +1,10 @@
 import type { BaseLayoutProps } from 'fumadocs-ui/layouts/shared';
-import { appName } from './shared';
+import { Logo } from '@/components/logo';
 
 export function baseOptions(): BaseLayoutProps {
   return {
     nav: {
-      title: <span className="font-semibold tracking-tight">{appName}</span>,
+      title: <Logo />,
       url: '/docs/intro',
     },
     themeSwitch: { enabled: false },

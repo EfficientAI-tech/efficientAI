@@ -15,6 +15,7 @@ const featureDocs = new Set([
   'products/playground',
   'products/alerting',
   'products/prompt-optimization',
+  'products/prompt-partials',
   'monitoring/calls',
   'monitoring/alerting',
   'monitoring/cron-jobs',

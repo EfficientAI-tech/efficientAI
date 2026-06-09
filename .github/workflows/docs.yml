@@ -1,0 +1,70 @@
+name: Docs
+
+on:
+  pull_request:
+    paths:
+      - 'docs-fumadocs/**'
+      - '.github/workflows/docs.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'docs-fumadocs/**'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+    inputs: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: docs-fumadocs/package-lock.json
+
+      - name: Install docs dependencies
+        run: npm ci
+        working-directory: docs-fumadocs
+
+      - name: Run docs quality checks
+        run: npm run ci:check
+        working-directory: docs-fumadocs
+
+      - name: Upload docs site
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-site
+          path: docs-fumadocs/out
+
+  deploy:
+    needs: build
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download docs site
+        uses: actions/download-artifact@v4
+        with:
+          name: docs-site
+          path: out
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Deploy to S3
+        run: aws s3 sync ./out s3://${{ secrets.AWS_S3_BUCKET }} --delete
+
+      - name: Invalidating CloudFront cache
+        run: |
+          aws cloudfront create-invalidation --distribution-id ${{ secrets.AWS_CLOUDFRONT_DISTRIBUTION_ID }} --paths "/*"

@@ -1,0 +1,107 @@
+---
+id: prompt-partials
+title: Prompt Partials
+sidebar_position: 8
+---
+
+# Prompt Partials
+
+Prompt partials are **reusable, versioned markdown prompt templates** scoped to your active [workspace](/docs/getting-started/workspaces). Use them to standardize evaluation rubrics, agent instructions, and call-import prompts without copying text across pages.
+
+---
+
+## Core workflows
+
+### Create and edit
+
+- Open **Prompt Partials** in the sidebar
+- Click **New Prompt** to create a partial with name, description, content, and optional tags
+- Edit content in the split view; each save creates a new version automatically
+
+### Search and organize
+
+- Search by name or description from the list panel
+- Tag partials for filtering and discovery (e.g., `evaluation`, `compliance`, `sales`)
+
+### Preview
+
+Toggle between **Preview** (rendered markdown) and **Raw** (source markdown) when reviewing content.
+
+---
+
+## Version history
+
+Every save increments the version number and stores a snapshot in history.
+
+| Action | Description |
+|--------|-------------|
+| **View versions** | Browse all versions with timestamps and change summaries |
+| **Compare** | Side-by-side diff of current vs a historical version |
+| **Revert** | Restore a prior version as the current content (creates a new version entry) |
+| **Clone** | Duplicate a partial under a new name |
+
+Deleting a partial removes all version history permanently.
+
+---
+
+## AI-assisted authoring
+
+Prompt partials include AI tools that require at least one configured **AI Provider** integration.
+
+### AI Generate
+
+Describe what you need (use case, tone, format style). The system drafts a complete markdown prompt using your selected LLM provider and model, or auto-detects the first available provider.
+
+### AI Improve
+
+Submit existing prompt content with optional instructions. The model restructures and clarifies the text while preserving intent — useful for turning rough notes into production-ready rubrics.
+
+Both flows let you pick provider and model, or leave provider empty for auto-detect.
+
+---
+
+## Where partials are used
+
+Saved partials can be imported and exported across the platform:
+
+| Location | Usage |
+|----------|-------|
+| **Metrics** | Import a partial into a metric evaluation prompt; save metric prompts back as partials |
+| **Call Imports** | Import/save evaluation and insights prompts during call-import workflows |
+| **Agents** | Save agent prompts as partials for reuse |
+
+Import opens a searchable picker of partials in the active workspace. Save supports **new partial** or **update existing** (which appends a version).
+
+---
+
+## Workspace scoping
+
+Prompt partials belong to the **active workspace**. Switching workspaces shows a different partial library. To share prompts across projects, clone a partial into each workspace or manage the canonical version in one workspace and copy as needed.
+
+---
+
+## API
+
+REST endpoints under `/api/v1/prompt-partials`:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/prompt-partials` | List partials (optional `search` query) |
+| `POST` | `/prompt-partials` | Create partial with initial version |
+| `GET` | `/prompt-partials/{id}` | Get partial with full version history |
+| `PUT` | `/prompt-partials/{id}` | Update content (new version) |
+| `DELETE` | `/prompt-partials/{id}` | Delete partial and all versions |
+| `POST` | `/prompt-partials/{id}/clone` | Clone to a new partial |
+| `POST` | `/prompt-partials/{id}/revert` | Revert to a specific version |
+| `POST` | `/prompt-partials/generate` | AI-generate prompt from description |
+| `POST` | `/prompt-partials/improve` | AI-improve existing prompt content |
+
+All scoped endpoints require `X-Workspace-Id` (see [Workspaces](/docs/getting-started/workspaces)).
+
+---
+
+## Related
+
+- [Metrics](/docs/products/metrics) — evaluation rubrics and prompt import/save
+- [Prompt Optimization](/docs/products/prompt-optimization) — automated prompt improvement loops
+- [Agents](/docs/products/agents) — agent prompt management
