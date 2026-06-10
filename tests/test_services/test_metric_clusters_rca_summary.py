@@ -135,6 +135,15 @@ def test_format_failure_policy_reason_includes_values_and_gap():
     assert "Escalation" in text or "missing" in text.lower()
 
 
+def test_format_failure_policy_reason_handles_numeric_rule_dict():
+    policy = MetricFailurePolicy(
+        metric_id="m1",
+        numeric_rule={"op": "lt", "threshold": 0.5},
+    )
+    text = format_failure_policy_reason(policy, None)
+    assert text == "Numeric rule: lt 0.5"
+
+
 def test_format_failure_policy_reason_omits_metric_rubric_description():
     policy = MetricFailurePolicy(metric_id="m1", failure_values=["no"])
     metric = type(

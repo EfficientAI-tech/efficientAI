@@ -6,12 +6,13 @@ drives the upload-time mapping UI. The user defines the schema once
 ``transcript`` + ``agent_name``) and on every CSV/Excel upload the
 parameters are mapped to source columns.
 
-Every schema MUST contain exactly one parameter each with
-``type='conversation_id'`` and ``type='recording_date'``. Only
-``conversation_id`` is forced to ``is_required=True``; ``recording_date``
-may be optional per schema. The invariant is enforced here on create +
-update because it spans the parent (`call_import_schemas`) and the
-children (`call_import_schema_parameters`) which are written in the same
+Every schema MUST contain exactly one parameter with
+``type='conversation_id'``. At most one parameter each may use
+``type='recording_url'``, ``type='recording_date'``, or
+``type='transcript'``. Only ``conversation_id`` is forced to
+``is_required=True``. The invariant is enforced here on create + update
+because it spans the parent (`call_import_schemas`) and the children
+(`call_import_schema_parameters`) which are written in the same
 transaction.
 """
 

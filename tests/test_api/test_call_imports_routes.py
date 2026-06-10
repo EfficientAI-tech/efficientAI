@@ -288,6 +288,45 @@ def test_parse_csv_accepts_blank_recording_date_when_optional():
     assert rows[0]["recording_date"] is None
 
 
+def test_parse_csv_works_without_recording_date_parameter():
+    params = [
+        _param(
+            name="conversation_id",
+            type_=CallImportParameterType.CONVERSATION_ID,
+            is_required=True,
+            ordering=0,
+        ),
+        _param(
+            name="recording_url",
+            type_=CallImportParameterType.RECORDING_URL,
+            ordering=1,
+        ),
+        _param(
+            name="transcript",
+            type_=CallImportParameterType.TRANSCRIPT,
+            ordering=2,
+        ),
+    ]
+    mapping = {
+        "conversation_id": "CallID",
+        "recording_url": "Recording URL",
+        "transcript": "Transcript",
+    }
+    csv_text = (
+        "CallID,Recording URL,Transcript\n"
+        "abc-1,https://x/recording.mp3,Some transcript\n"
+    )
+    rows = _parse_csv(
+        _csv_bytes(csv_text),
+        params,
+        mapping,
+        _standard_skipped(),
+    )
+    assert len(rows) == 1
+    assert rows[0]["conversation_id"] == "abc-1"
+    assert rows[0]["recording_date"] is None
+
+
 def test_parse_csv_rejects_invalid_recording_date_value():
     csv_text = (
         "CallID,Recording Date,Recording URL,Transcript\n"

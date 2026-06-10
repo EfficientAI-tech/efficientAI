@@ -424,16 +424,6 @@ def _apply_schema_mapping(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Selected schema is missing the mandatory conversation_id parameter.",
         )
-    recording_date_param = next(
-        (p for p in parameters if p.type == CallImportParameterType.RECORDING_DATE),
-        None,
-    )
-    if recording_date_param is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Selected schema is missing the mandatory recording_date parameter.",
-        )
-
     # 2. Resolve every mapped parameter to a canonical fieldname.
     #    Required parameters MUST resolve; optional ones may resolve to
     #    None if the user left them blank (no mapping).

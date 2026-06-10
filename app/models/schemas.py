@@ -2174,8 +2174,9 @@ class CallImportSchemaParameterBase(BaseModel):
         description=(
             "Parameter type. One of conversation_id / recording_url / "
             "recording_date / transcript / text / number / boolean / "
-            "datetime / url. Exactly one parameter each of type "
-            "'conversation_id' and 'recording_date' must be present; only "
+            "datetime / url. Exactly one parameter of type "
+            "'conversation_id' must be present; at most one each of "
+            "'recording_url', 'recording_date', and 'transcript'. Only "
             "'conversation_id' is forced required."
         ),
     )
@@ -2244,9 +2245,9 @@ def _validate_schema_parameters(
             "Schema must contain exactly one parameter of type "
             "'conversation_id'."
         )
-    if recording_date_count != 1:
+    if recording_date_count > 1:
         raise ValueError(
-            "Schema must contain exactly one parameter of type "
+            "Schema may contain at most one parameter of type "
             "'recording_date'."
         )
     if rec_url_count > 1:
