@@ -107,7 +107,7 @@ def test_create_schema_forces_conversation_id_required(
 ):
     """Even if the client sends is_required=False for conversation_id,
     the server stamps it back to True (the parameter is mandatory by
-    definition)."""
+    definition). recording_date stays optional when the client omits it."""
     payload = _minimal_payload()
     payload["parameters"][0]["is_required"] = False
     payload["parameters"][2]["is_required"] = False
@@ -122,7 +122,7 @@ def test_create_schema_forces_conversation_id_required(
         p for p in body["parameters"] if p["type"] == "recording_date"
     )
     assert conv_param["is_required"] is True
-    assert date_param["is_required"] is True
+    assert date_param["is_required"] is False
 
 
 def test_create_schema_rejects_missing_conversation_id(
@@ -141,13 +141,26 @@ def test_create_schema_rejects_missing_conversation_id(
     assert "conversation_id" in response.text.lower()
 
 
-def test_create_schema_rejects_missing_recording_date(
+def test_create_schema_accepts_missing_recording_date(
     authenticated_client, db_session, org_id, seed_org
 ):
     payload = _minimal_payload()
     payload["parameters"] = [
         p for p in payload["parameters"] if p["type"] != "recording_date"
     ]
+    response = authenticated_client.post("/api/v1/call-import-schemas", json=payload)
+    assert response.status_code == 201, response.text
+    names = [p["name"] for p in response.json()["parameters"]]
+    assert "recording_date" not in names
+
+
+def test_create_schema_rejects_two_recording_date_params(
+    authenticated_client, db_session, org_id, seed_org
+):
+    payload = _minimal_payload()
+    payload["parameters"].append(
+        {"name": "call_date", "type": "recording_date"}
+    )
     response = authenticated_client.post("/api/v1/call-import-schemas", json=payload)
     assert response.status_code == 422
     assert "recording_date" in response.text.lower()
@@ -382,7 +395,7 @@ def test_update_schema_rejects_dropping_conversation_id(
     assert "conversation_id" in response.text.lower()
 
 
-def test_update_schema_rejects_dropping_recording_date(
+def test_update_schema_accepts_dropping_recording_date(
     authenticated_client, db_session, org_id, seed_org
 ):
     created = authenticated_client.post(
@@ -398,8 +411,9 @@ def test_update_schema_rejects_dropping_recording_date(
             ]
         },
     )
-    assert response.status_code == 422
-    assert "recording_date" in response.text.lower()
+    assert response.status_code == 200, response.text
+    names = [p["name"] for p in response.json()["parameters"]]
+    assert names == ["conversation_id", "agent_name"]
 
 
 # ---------------------------------------------------------------------------

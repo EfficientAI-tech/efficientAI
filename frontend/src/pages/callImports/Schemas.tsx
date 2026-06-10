@@ -60,16 +60,6 @@ function makeConversationIdParameter(): EditableParameter {
   }
 }
 
-function makeRecordingDateParameter(): EditableParameter {
-  return {
-    key: 'recording_date',
-    name: 'recording_date',
-    type: 'recording_date',
-    description: 'Date the call recording was captured (D/M/YYYY or D-M-YYYY).',
-    is_required: true,
-  }
-}
-
 function parametersFromSchema(
   parameters: CallImportSchemaParameter[],
 ): EditableParameter[] {
@@ -103,8 +93,8 @@ function validateParameters(params: EditableParameter[]): string | null {
   if (convCount !== 1) {
     return 'Exactly one parameter must be of type "conversation_id".'
   }
-  if (recordingDateCount !== 1) {
-    return 'Exactly one parameter must be of type "recording_date".'
+  if (recordingDateCount > 1) {
+    return 'At most one parameter can be of type "recording_date".'
   }
   if (recordingCount > 1) {
     return 'At most one parameter can be of type "recording_url".'
@@ -129,7 +119,7 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
   const [parameters, setParameters] = useState<EditableParameter[]>(
     schema
       ? parametersFromSchema(schema.parameters)
-      : [makeConversationIdParameter(), makeRecordingDateParameter()],
+      : [makeConversationIdParameter()],
   )
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
 
@@ -147,7 +137,7 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
       setParameters(
         schema
           ? parametersFromSchema(schema.parameters)
-          : [makeConversationIdParameter(), makeRecordingDateParameter()],
+          : [makeConversationIdParameter()],
       )
       setErrorMsg(null)
     }
@@ -163,9 +153,7 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
           type: p.type,
           description: p.description.trim() || null,
           is_required:
-            p.type === 'conversation_id' || p.type === 'recording_date'
-              ? true
-              : p.is_required,
+            p.type === 'conversation_id' ? true : p.is_required,
         })),
       }),
     onSuccess: () => {
@@ -189,9 +177,7 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
           type: p.type,
           description: p.description.trim() || null,
           is_required:
-            p.type === 'conversation_id' || p.type === 'recording_date'
-              ? true
-              : p.is_required,
+            p.type === 'conversation_id' ? true : p.is_required,
         })),
       })
     },
@@ -331,9 +317,8 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
               <div className="divide-y divide-gray-100">
                 {parameters.map((p, idx) => {
                   const isConversationId = p.type === 'conversation_id'
-                  const isRecordingDate = p.type === 'recording_date'
                   const locked = isConversationId
-                  const isSystemRequired = isConversationId || isRecordingDate
+                  const isSystemRequired = isConversationId
                   return (
                     <div
                       key={p.key}
@@ -399,10 +384,7 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
                                 .value as CallImportSchemaParameterType
                               updateParameter(idx, {
                                 type: nextType,
-                                is_required:
-                                  nextType === 'recording_date'
-                                    ? true
-                                    : p.is_required,
+                                is_required: p.is_required,
                               })
                             }}
                             disabled={isSubmitting}
@@ -460,11 +442,13 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
               </div>
             </div>
             <p className="mt-1 text-xs text-gray-500">
-              Every schema must include{' '}
+              Every schema must include exactly one{' '}
               <code className="bg-gray-100 px-1 rounded">conversation_id</code>{' '}
-              and required{' '}
-              <code className="bg-gray-100 px-1 rounded">recording_date</code>{' '}
-              — it identifies each imported row and cannot be removed.
+              parameter (required). Add{' '}
+              <code className="bg-gray-100 px-1 rounded">recording_date</code>,{' '}
+              <code className="bg-gray-100 px-1 rounded">recording_url</code>, or{' '}
+              <code className="bg-gray-100 px-1 rounded">transcript</code> only
+              when your uploads include those columns.
             </p>
           </div>
 

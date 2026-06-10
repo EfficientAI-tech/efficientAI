@@ -74,7 +74,7 @@ class TelephonyService:
         )
         auth_id = decrypt_api_key(integration.auth_id)
         auth_token = decrypt_api_key(integration.auth_token)
-        provider_key = provider.lower()
+        provider_key = (integration.provider or provider or "").lower()
         if provider_key == "plivo":
             return PlivoClient(auth_id=auth_id, auth_token=auth_token)
         if provider_key == "exotel":

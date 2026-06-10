@@ -49,6 +49,7 @@ import ProviderModelPicker, {
 } from '../../components/providers/ProviderModelPicker'
 import CallImportProgressBar from './components/CallImportProgressBar'
 import ImportPanel from './components/ImportPanel'
+import RetryFailedImportModal from './components/RetryFailedImportModal'
 import InsightsMetricCard, {
   INSIGHTS_PALETTE,
 } from './components/InsightsMetricCard'
@@ -547,7 +548,11 @@ export default function CallImportDetail() {
   })
 
   const retryFailedImportMutation = useMutation({
-    mutationFn: () => apiClient.retryFailedCallImportRows(id!),
+    mutationFn: (selection: {
+      provider: string | null
+      telephonyIntegrationId: string | null
+    }) =>
+      apiClient.retryFailedCallImportRows(id!, selection),
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ['call-import', id] })
       queryClient.invalidateQueries({ queryKey: ['call-imports'] })
@@ -4587,28 +4592,15 @@ export default function CallImportDetail() {
           })(),
         )}
 
-      <ConfirmModal
+      <RetryFailedImportModal
         isOpen={showRetryFailedImportConfirm}
-        title={`Retry ${failedImportRowsCount} failed import row${
-          failedImportRowsCount === 1 ? '' : 's'
-        }?`}
-        description={(() => {
-          const lines = [
-            `This will re-enqueue every currently failed import row in this batch (${failedImportRowsCount}).`,
-            'Use this after fixing transient provider/credential issues so failed recording fetches can run again.',
-            retryFailedImportError ? `Error: ${retryFailedImportError}` : '',
-          ]
-          return lines.filter(Boolean).join('\n\n')
-        })()}
-        confirmLabel={`Retry ${failedImportRowsCount} failed row${
-          failedImportRowsCount === 1 ? '' : 's'
-        }`}
-        cancelLabel="Cancel"
-        variant="warning"
+        failedCount={failedImportRowsCount}
+        callImport={data}
         isLoading={retryFailedImportMutation.isPending}
-        onConfirm={() => {
+        errorMessage={retryFailedImportError}
+        onConfirm={(selection) => {
           if (retryFailedImportMutation.isPending) return
-          retryFailedImportMutation.mutate()
+          retryFailedImportMutation.mutate(selection)
         }}
         onCancel={() => {
           if (retryFailedImportMutation.isPending) return

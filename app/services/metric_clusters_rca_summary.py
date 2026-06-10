@@ -58,9 +58,10 @@ def format_failure_policy_reason(
                 "Flagged children: "
                 + ", ".join(str(n) for n in policy.failure_child_names)
             )
-        if policy.numeric_rule is not None:
-            rule = policy.numeric_rule
-            parts.append(f"Numeric rule: {rule.op} {rule.threshold}")
+        if policy.numeric_rule and isinstance(policy.numeric_rule, dict):
+            op = policy.numeric_rule.get("op", "lt")
+            threshold = policy.numeric_rule.get("threshold", 0.5)
+            parts.append(f"Numeric rule: {op} {threshold}")
     if gap_label:
         parts.append(_GAP_HUMAN_LABELS.get(str(gap_label).upper(), str(gap_label)))
     return ". ".join(parts) if parts else "Quality metric failure"

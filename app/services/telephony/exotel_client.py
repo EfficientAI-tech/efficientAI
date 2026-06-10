@@ -149,47 +149,14 @@ class ExotelClient:
         Returns (audio_bytes, content_type). Raises a typed ExotelXxxError so
         the worker can decide between retrying and failing the row.
         """
-        if not recording_url:
-            raise ExotelInvalidContentError("recording_url is empty")
+        from app.services.telephony.recording_download import download_recording_url
 
-        try:
-            with httpx.Client(timeout=self._timeout, follow_redirects=True) as client:
-                resp = client.get(recording_url, auth=self._auth)
-        except httpx.TimeoutException as e:
-            raise ExotelTransientError(f"Timeout fetching Exotel recording: {e}") from e
-        except httpx.HTTPError as e:
-            raise ExotelTransientError(f"HTTP error fetching Exotel recording: {e}") from e
-
-        if resp.status_code in (401, 403):
-            raise ExotelAuthError(
-                f"Exotel rejected credentials when fetching recording (HTTP {resp.status_code})"
-            )
-        if resp.status_code == 404:
-            raise ExotelNotFoundError(f"Exotel recording not found at {recording_url}")
-        if 500 <= resp.status_code < 600:
-            raise ExotelTransientError(
-                f"Exotel server error fetching recording (HTTP {resp.status_code})"
-            )
-        if resp.status_code >= 400:
-            raise ExotelInvalidContentError(
-                f"Unexpected HTTP {resp.status_code} fetching recording: {resp.text[:200]}"
-            )
-
-        content_type = (resp.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
-        if not content_type.startswith("audio/"):
-            raise ExotelInvalidContentError(
-                f"Recording URL returned non-audio content type: {content_type or 'unknown'}"
-            )
-
-        body = resp.content
-        if len(body) == 0:
-            raise ExotelInvalidContentError("Recording response was empty")
-        if len(body) > self._max_bytes:
-            raise ExotelRecordingTooLargeError(
-                f"Recording size {len(body)} bytes exceeds cap of {self._max_bytes} bytes"
-            )
-
-        return body, content_type
+        return download_recording_url(
+            recording_url,
+            auth=self._auth,
+            timeout_seconds=self._timeout,
+            max_bytes=self._max_bytes,
+        )
 
 
 def build_exotel_client_from_integration(
