@@ -19,7 +19,7 @@ from datetime import date, datetime, time, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from loguru import logger
 from sqlalchemy import desc, func, or_
 from sqlalchemy.orm import Session
@@ -58,6 +58,7 @@ from app.models.schemas import (
     CallImportMetricAggregate,
     CallImportPreviewResponse,
     CallImportPreviewSheet,
+    CallImportRetryFailedRowsRequest,
     CallImportRetryFailedRowsResponse,
     CallImportResponse,
     CallImportRowIdsResponse,
@@ -939,6 +940,38 @@ def _resolve_schema(
     return schema
 
 
+def _validate_direct_url_import_ready(
+    parameters: List[CallImportSchemaParameter],
+    parameter_mapping: Dict[str, Any],
+) -> None:
+    """Ensure direct-URL import has a mapped recording_url column."""
+    rec_url_param = next(
+        (
+            p
+            for p in parameters
+            if p.type == CallImportParameterType.RECORDING_URL.value
+        ),
+        None,
+    )
+    if rec_url_param is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Direct URL import requires a schema parameter of type "
+                "'recording_url'."
+            ),
+        )
+    mapped_header = (parameter_mapping or {}).get(rec_url_param.name)
+    if not (mapped_header or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Direct URL import requires the 'recording_url' parameter to "
+                "be mapped to a source column."
+            ),
+        )
+
+
 def _resolve_telephony_integration(
     db: Session,
     organization_id: UUID,
@@ -1593,12 +1626,18 @@ async def start_call_import(
     )
     parameters = list(schema.parameters)
 
-    integration = _resolve_telephony_integration(
-        db,
-        organization_id,
-        payload.telephony_integration_id,
-        payload.provider,
-    )
+    if payload.telephony_integration_id is not None:
+        integration = _resolve_telephony_integration(
+            db,
+            organization_id,
+            payload.telephony_integration_id,
+            payload.provider or "",
+        )
+    else:
+        _validate_direct_url_import_ready(
+            parameters, dict(call_import.parameter_mapping or {})
+        )
+        integration = None
 
     # Re-fetch the staged source file from S3 each time IMPORT runs so
     # the parse is always against the artefact we promised the user
@@ -1635,8 +1674,12 @@ async def start_call_import(
         cleaned_skipped,
     )
 
-    call_import.provider = integration.provider
-    call_import.telephony_integration_id = integration.id
+    if integration is not None:
+        call_import.provider = integration.provider
+        call_import.telephony_integration_id = integration.id
+    else:
+        call_import.provider = None
+        call_import.telephony_integration_id = None
     call_import.total_rows = len(parsed_rows)
     call_import.completed_rows = 0
     call_import.failed_rows = 0
@@ -1673,18 +1716,20 @@ async def start_call_import(
 )
 async def upload_call_import_csv(
     file: UploadFile = File(...),
-    provider: str = Form(
-        ...,
+    provider: Optional[str] = Form(
+        None,
         description=(
             "Telephony provider key (e.g. 'exotel', 'plivo'). Must match the "
-            "selected telephony_integration_id's provider."
+            "selected telephony_integration_id's provider. Omit together "
+            "with telephony_integration_id for direct-URL import."
         ),
     ),
-    telephony_integration_id: UUID = Form(
-        ...,
+    telephony_integration_id: Optional[UUID] = Form(
+        None,
         description=(
             "Specific TelephonyIntegration credential row to use when "
-            "downloading recordings for this batch."
+            "downloading recordings for this batch. Omit together with "
+            "provider for direct-URL import."
         ),
     ),
     schema_id: UUID = Form(
@@ -1788,9 +1833,24 @@ async def upload_call_import_csv(
     skipped_payload = _parse_json_form_field("skipped_columns", skipped_columns, [])
     cleaned_skipped = _clean_skipped_columns(skipped_payload)
 
-    integration = _resolve_telephony_integration(
-        db, organization_id, telephony_integration_id, provider
-    )
+    has_provider = bool((provider or "").strip())
+    has_integration = telephony_integration_id is not None
+    if has_provider != has_integration:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "provider and telephony_integration_id must both be provided "
+                "or both omitted for direct-URL import."
+            ),
+        )
+
+    if telephony_integration_id is not None:
+        integration = _resolve_telephony_integration(
+            db, organization_id, telephony_integration_id, provider or ""
+        )
+    else:
+        _validate_direct_url_import_ready(parameters, cleaned_mapping)
+        integration = None
 
     parsed_rows = _parse_source_file(
         file_bytes, fmt, sheet_name_clean, parameters, cleaned_mapping, cleaned_skipped
@@ -1801,8 +1861,8 @@ async def upload_call_import_csv(
     call_import = CallImport(
         organization_id=organization_id,
         workspace_id=workspace_id,
-        provider=integration.provider,
-        telephony_integration_id=integration.id,
+        provider=integration.provider if integration is not None else None,
+        telephony_integration_id=integration.id if integration is not None else None,
         original_filename=file.filename,
         sheet_name=sheet_name_clean,
         dataset=_normalize_dataset(dataset),
@@ -1823,6 +1883,10 @@ async def upload_call_import_csv(
         call_import.tags = tag_rows
     db.add(call_import)
     db.flush()  # populate call_import.id
+    if integration is None:
+        # The model's historical Python default is "exotel"; direct-URL
+        # imports intentionally have no telephony provider.
+        call_import.provider = None
 
     row_models = _materialize_rows(
         db, call_import, parsed_rows, organization_id
@@ -2697,6 +2761,7 @@ def _recompute_call_import_counters(
 )
 async def retry_failed_call_import_rows(
     call_import_id: UUID,
+    payload: Optional[CallImportRetryFailedRowsRequest] = Body(None),
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
@@ -2705,6 +2770,11 @@ async def retry_failed_call_import_rows(
 
     Useful when transient provider issues are resolved and the operator wants
     a one-click "try failed downloads again" pass without re-uploading the CSV.
+
+    Pass ``provider`` + ``telephony_integration_id`` (or both omitted for
+    direct-URL retry) to change how recordings are fetched on this pass.
+    When the body is omitted entirely, the batch keeps its existing pinned
+    credentials.
     """
     del api_key
 
@@ -2721,6 +2791,21 @@ async def retry_failed_call_import_rows(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Call import not found",
         )
+
+    if payload is not None:
+        if payload.telephony_integration_id is not None:
+            integration = _resolve_telephony_integration(
+                db,
+                organization_id,
+                payload.telephony_integration_id,
+                payload.provider or "",
+            )
+            call_import.provider = integration.provider
+            call_import.telephony_integration_id = integration.id
+        else:
+            call_import.provider = None
+            call_import.telephony_integration_id = None
+        db.flush()
 
     failed_rows = (
         db.query(CallImportRow)

@@ -107,7 +107,7 @@ def test_create_schema_forces_conversation_id_required(
 ):
     """Even if the client sends is_required=False for conversation_id,
     the server stamps it back to True (the parameter is mandatory by
-    definition)."""
+    definition). recording_date stays optional when the client omits it."""
     payload = _minimal_payload()
     payload["parameters"][0]["is_required"] = False
     payload["parameters"][2]["is_required"] = False
@@ -122,7 +122,7 @@ def test_create_schema_forces_conversation_id_required(
         p for p in body["parameters"] if p["type"] == "recording_date"
     )
     assert conv_param["is_required"] is True
-    assert date_param["is_required"] is True
+    assert date_param["is_required"] is False
 
 
 def test_create_schema_rejects_missing_conversation_id(

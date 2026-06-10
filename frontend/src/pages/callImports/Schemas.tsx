@@ -66,7 +66,7 @@ function makeRecordingDateParameter(): EditableParameter {
     name: 'recording_date',
     type: 'recording_date',
     description: 'Date the call recording was captured (D/M/YYYY or D-M-YYYY).',
-    is_required: true,
+    is_required: false,
   }
 }
 
@@ -163,9 +163,7 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
           type: p.type,
           description: p.description.trim() || null,
           is_required:
-            p.type === 'conversation_id' || p.type === 'recording_date'
-              ? true
-              : p.is_required,
+            p.type === 'conversation_id' ? true : p.is_required,
         })),
       }),
     onSuccess: () => {
@@ -189,9 +187,7 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
           type: p.type,
           description: p.description.trim() || null,
           is_required:
-            p.type === 'conversation_id' || p.type === 'recording_date'
-              ? true
-              : p.is_required,
+            p.type === 'conversation_id' ? true : p.is_required,
         })),
       })
     },
@@ -331,9 +327,8 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
               <div className="divide-y divide-gray-100">
                 {parameters.map((p, idx) => {
                   const isConversationId = p.type === 'conversation_id'
-                  const isRecordingDate = p.type === 'recording_date'
                   const locked = isConversationId
-                  const isSystemRequired = isConversationId || isRecordingDate
+                  const isSystemRequired = isConversationId
                   return (
                     <div
                       key={p.key}
@@ -399,10 +394,7 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
                                 .value as CallImportSchemaParameterType
                               updateParameter(idx, {
                                 type: nextType,
-                                is_required:
-                                  nextType === 'recording_date'
-                                    ? true
-                                    : p.is_required,
+                                is_required: p.is_required,
                               })
                             }}
                             disabled={isSubmitting}
@@ -462,9 +454,10 @@ function SchemaEditor({ open, schema, onClose, onSaved }: SchemaEditorProps) {
             <p className="mt-1 text-xs text-gray-500">
               Every schema must include{' '}
               <code className="bg-gray-100 px-1 rounded">conversation_id</code>{' '}
-              and required{' '}
+              (required) and{' '}
               <code className="bg-gray-100 px-1 rounded">recording_date</code>{' '}
-              — it identifies each imported row and cannot be removed.
+              (optional). Conversation ID identifies each imported row and
+              cannot be removed.
             </p>
           </div>
 

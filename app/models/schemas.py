@@ -2175,7 +2175,8 @@ class CallImportSchemaParameterBase(BaseModel):
             "Parameter type. One of conversation_id / recording_url / "
             "recording_date / transcript / text / number / boolean / "
             "datetime / url. Exactly one parameter each of type "
-            "'conversation_id' and 'recording_date' is required."
+            "'conversation_id' and 'recording_date' must be present; only "
+            "'conversation_id' is forced required."
         ),
     )
     description: Optional[str] = Field(
@@ -2532,20 +2533,34 @@ class CallImportMappingUpdate(BaseModel):
 class CallImportStartRequest(BaseModel):
     """Provider + credential picker for the IMPORT stage."""
 
-    provider: str = Field(
-        ...,
+    provider: Optional[str] = Field(
+        default=None,
         description=(
             "Telephony provider key. Must match the "
-            "``telephony_integration_id``'s provider."
+            "``telephony_integration_id``'s provider. Omit together with "
+            "``telephony_integration_id`` to download recordings directly "
+            "from CSV-supplied URLs without credentials."
         ),
     )
-    telephony_integration_id: UUID = Field(
-        ...,
+    telephony_integration_id: Optional[UUID] = Field(
+        default=None,
         description=(
             "Specific TelephonyIntegration credential row to use when "
-            "downloading recordings for this batch."
+            "downloading recordings for this batch. Omit together with "
+            "``provider`` for direct-URL import."
         ),
     )
+
+    @model_validator(mode="after")
+    def validate_credential_mode(self) -> "CallImportStartRequest":
+        has_provider = bool((self.provider or "").strip())
+        has_integration = self.telephony_integration_id is not None
+        if has_provider != has_integration:
+            raise ValueError(
+                "provider and telephony_integration_id must both be provided "
+                "or both omitted for direct-URL import."
+            )
+        return self
 
 
 # --- Call Import Evaluation Schemas ---
@@ -3123,6 +3138,36 @@ class CallImportRowBulkDeleteResponse(BaseModel):
         ...,
         description="How many rows were actually removed (unknown ids are skipped).",
     )
+
+
+class CallImportRetryFailedRowsRequest(BaseModel):
+    """Optional credential override when re-enqueueing failed import rows."""
+
+    provider: Optional[str] = Field(
+        default=None,
+        description=(
+            "Telephony provider key for this retry pass. Omit together with "
+            "``telephony_integration_id`` to download from CSV recording URLs."
+        ),
+    )
+    telephony_integration_id: Optional[UUID] = Field(
+        default=None,
+        description=(
+            "Telephony credential to use for this retry pass. Omit together "
+            "with ``provider`` for direct-URL retry."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_credential_mode(self) -> "CallImportRetryFailedRowsRequest":
+        has_provider = bool((self.provider or "").strip())
+        has_integration = self.telephony_integration_id is not None
+        if has_provider != has_integration:
+            raise ValueError(
+                "provider and telephony_integration_id must both be provided "
+                "or both omitted for direct-URL retry."
+            )
+        return self
 
 
 class CallImportRetryFailedRowsResponse(BaseModel):

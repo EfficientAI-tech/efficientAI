@@ -1,7 +1,9 @@
 """Tests for the process_call_import_row Celery task and its rollup helper."""
 
+import importlib.util
 import sys
 import types
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -52,6 +54,7 @@ def _seed(db_session, *, row_count: int = 1):
         organization_id=org.id,
         workspace_id=workspace.id,
         provider=TelephonyProvider.EXOTEL.value,
+        telephony_integration_id=integration.id,
         original_filename="batch.csv",
         total_rows=row_count,
         completed_rows=0,
@@ -143,9 +146,60 @@ class _NonClosingSession:
         return getattr(self._session, name)
 
 
+def _patch_public_download(monkeypatch, *, return_value=None, side_effect=None):
+    """Patch the unauthenticated CSV-URL downloader used by Tier 2."""
+    calls = []
+
+    def fake_public(url):
+        calls.append(url)
+        if side_effect is not None:
+            if isinstance(side_effect, type) and issubclass(side_effect, Exception):
+                raise side_effect(f"public download failed for {url}")
+            if callable(side_effect):
+                return side_effect(url)
+            raise side_effect
+        if callable(return_value):
+            return return_value(url)
+        return return_value
+
+    monkeypatch.setattr(
+        "app.services.telephony.recording_download.download_public_recording",
+        fake_public,
+    )
+    return calls
+
+
+def _load_task_module():
+    """Load the real task module even when conftest/API tests stub workers.tasks.
+
+    ``authenticated_client`` installs a lightweight ``app.workers.tasks``
+    package with ``__path__ = []``, which blocks normal submodule imports.
+    Load the task file directly from disk instead.
+    """
+    module_name = "app.workers.tasks.process_call_import_row"
+    existing = sys.modules.get(module_name)
+    if existing is not None and hasattr(existing, "SessionLocal"):
+        return existing
+
+    module_path = (
+        Path(__file__).resolve().parents[2]
+        / "app"
+        / "workers"
+        / "tasks"
+        / "process_call_import_row.py"
+    )
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load task module from {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def _patch_dependencies(monkeypatch, db_session, fake_client, fake_s3):
     """Wire up SessionLocal + the lazily-imported services the task uses."""
-    from app.workers.tasks import process_call_import_row as task_module
+    task_module = _load_task_module()
 
     monkeypatch.setattr(
         task_module, "SessionLocal", lambda: _NonClosingSession(db_session)
@@ -232,6 +286,11 @@ def test_process_call_import_row_marks_failed_on_auth_error_without_retry(db_ses
     fake_s3 = _FakeS3(enabled=True)
     task_module = _patch_dependencies(monkeypatch, db_session, _AuthFailingClient(), fake_s3)
 
+    def _public_auth_fail(_url):
+        raise ExotelAuthError("bad creds")
+
+    _patch_public_download(monkeypatch, side_effect=_public_auth_fail)
+
     # If retry is invoked, the test would surface it; we don't expect it.
     monkeypatch.setattr(
         task_module.process_call_import_row_task,
@@ -268,6 +327,11 @@ def test_process_call_import_row_retries_on_transient_error(db_session, monkeypa
 
     fake_s3 = _FakeS3(enabled=True)
     task_module = _patch_dependencies(monkeypatch, db_session, _TransientFailingClient(), fake_s3)
+
+    def _public_transient(_url):
+        raise ExotelTransientError("flaky network")
+
+    _patch_public_download(monkeypatch, side_effect=_public_transient)
 
     monkeypatch.setattr(
         task_module.process_call_import_row_task,
@@ -473,6 +537,9 @@ def test_process_call_import_row_uses_csv_url_when_provider_lacks_lookup(
     fake_client = _NoLookupClient()
     fake_s3 = _FakeS3(enabled=True)
     task_module = _patch_dependencies(monkeypatch, db_session, fake_client, fake_s3)
+    public_calls = _patch_public_download(
+        monkeypatch, return_value=(b"plivo-audio", "audio/mpeg")
+    )
 
     result = task_module.process_call_import_row_task.run(str(row.id))
 
@@ -480,7 +547,8 @@ def test_process_call_import_row_uses_csv_url_when_provider_lacks_lookup(
     db_session.refresh(row)
     db_session.refresh(call_import)
 
-    assert fake_client.calls == [csv_url]
+    assert fake_client.calls == []
+    assert public_calls == [csv_url]
     assert row.status == CallImportRowStatus.COMPLETED
     assert call_import.status == CallImportStatus.COMPLETED
 
@@ -570,6 +638,58 @@ def test_process_call_import_row_retries_when_both_tiers_transient(
     assert fake_client.resolved_calls == [row.conversation_id]
     # Fallback was attempted with the CSV URL before retry was scheduled.
     assert fake_client.calls == [row.recording_url]
+
+
+def test_process_call_import_row_uses_conversation_id_when_provider_set_without_pin(
+    db_session, monkeypatch
+):
+    """Legacy/credentialed batches with provider but no pinned credential id
+    must still use the conversation-id lookup path."""
+    _, call_import, rows = _seed(db_session, row_count=1)
+    row = rows[0]
+    call_import.telephony_integration_id = None
+    call_import.provider = TelephonyProvider.EXOTEL.value
+    db_session.commit()
+
+    fake_client = _FakeExotelClient(audio=b"legacy-auth-audio", content_type="audio/mpeg")
+    fake_s3 = _FakeS3(enabled=True)
+    task_module = _patch_dependencies(monkeypatch, db_session, fake_client, fake_s3)
+    public_calls = _patch_public_download(
+        monkeypatch,
+        return_value=(b"should-not-be-used", "audio/mpeg"),
+    )
+
+    result = task_module.process_call_import_row_task.run(str(row.id))
+
+    assert result["status"] == "completed"
+    db_session.refresh(row)
+    assert row.status == CallImportRowStatus.COMPLETED
+    assert fake_client.resolved_calls == [row.conversation_id]
+    assert public_calls == []
+
+
+def test_process_call_import_row_direct_url_mode_completes(db_session, monkeypatch):
+    org, call_import, rows = _seed(db_session, row_count=1)
+    row = rows[0]
+    call_import.telephony_integration_id = None
+    call_import.provider = None
+    db_session.commit()
+
+    fake_s3 = _FakeS3(enabled=True)
+    task_module = _patch_dependencies(
+        monkeypatch, db_session, _FakeExotelClient(), fake_s3
+    )
+    public_calls = _patch_public_download(
+        monkeypatch, return_value=(b"direct-url-audio", "audio/mpeg")
+    )
+
+    result = task_module.process_call_import_row_task.run(str(row.id))
+
+    assert result["status"] == "completed"
+    db_session.refresh(row)
+    assert row.status == CallImportRowStatus.COMPLETED
+    assert public_calls == [row.recording_url]
+    assert row.recording_size_bytes == len(b"direct-url-audio")
 
 
 def test_process_call_import_row_marks_failed_on_resolve_not_found(db_session, monkeypatch):

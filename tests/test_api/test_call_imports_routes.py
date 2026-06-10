@@ -249,6 +249,45 @@ def test_parse_csv_rejects_missing_recording_date_value():
     assert "recording_date" in exc.value.detail.lower()
 
 
+def test_parse_csv_accepts_blank_recording_date_when_optional():
+    params = [
+        _param(
+            name="conversation_id",
+            type_=CallImportParameterType.CONVERSATION_ID,
+            is_required=True,
+            ordering=0,
+        ),
+        _param(
+            name="recording_date",
+            type_=CallImportParameterType.RECORDING_DATE,
+            is_required=False,
+            ordering=1,
+        ),
+        _param(
+            name="recording_url",
+            type_=CallImportParameterType.RECORDING_URL,
+            ordering=2,
+        ),
+        _param(
+            name="transcript",
+            type_=CallImportParameterType.TRANSCRIPT,
+            ordering=3,
+        ),
+    ]
+    csv_text = (
+        "CallID,Recording Date,Recording URL,Transcript\n"
+        "abc-1,,https://x/recording.mp3,Some transcript\n"
+    )
+    rows = _parse_csv(
+        _csv_bytes(csv_text),
+        params,
+        _standard_mapping(),
+        _standard_skipped(),
+    )
+    assert len(rows) == 1
+    assert rows[0]["recording_date"] is None
+
+
 def test_parse_csv_rejects_invalid_recording_date_value():
     csv_text = (
         "CallID,Recording Date,Recording URL,Transcript\n"
@@ -1433,3 +1472,71 @@ def test_upload_csv_still_persists_with_null_sheet_name(
         db_session.query(CallImport).filter(CallImport.id == call_import_id).one()
     )
     assert call_import.sheet_name is None
+
+
+def test_upload_direct_url_mode_without_credentials(
+    authenticated_client, db_session, org_id, seed_org
+):
+    schema = _seed_schema(db_session, org_id, _default_workspace_id(db_session, org_id))
+    response = authenticated_client.post(
+        "/api/v1/call-imports/upload",
+        files={"file": _csv()},
+        data={
+            "schema_id": str(schema.id),
+            "parameter_mapping": (
+                '{"conversation_id": "CallID", "recording_date": "Recording Date", '
+                '"recording_url": "Recording URL", "transcript": "Transcript"}'
+            ),
+            "skipped_columns": "[]",
+        },
+    )
+    assert response.status_code == 202, response.text
+    call_import = (
+        db_session.query(CallImport)
+        .filter(CallImport.id == UUID(response.json()["id"]))
+        .one()
+    )
+    assert call_import.provider is None
+    assert call_import.telephony_integration_id is None
+
+
+def test_upload_direct_url_rejects_when_recording_url_unmapped(
+    authenticated_client, db_session, org_id, seed_org
+):
+    schema = _seed_schema(db_session, org_id, _default_workspace_id(db_session, org_id))
+    response = authenticated_client.post(
+        "/api/v1/call-imports/upload",
+        files={"file": _csv()},
+        data={
+            "schema_id": str(schema.id),
+            "parameter_mapping": (
+                '{"conversation_id": "CallID", "recording_date": "Recording Date", '
+                '"transcript": "Transcript"}'
+            ),
+            "skipped_columns": '["Recording URL"]',
+        },
+    )
+    assert response.status_code == 400
+    assert "recording_url" in response.json()["detail"].lower()
+
+
+def test_upload_rejects_mixed_provider_and_credential_payload(
+    authenticated_client, db_session, org_id, seed_org
+):
+    integration = _seed_integration(db_session, org_id)
+    schema = _seed_schema(db_session, org_id, _default_workspace_id(db_session, org_id))
+    response = authenticated_client.post(
+        "/api/v1/call-imports/upload",
+        files={"file": _csv()},
+        data={
+            "provider": integration.provider,
+            "schema_id": str(schema.id),
+            "parameter_mapping": (
+                '{"conversation_id": "CallID", "recording_date": "Recording Date", '
+                '"recording_url": "Recording URL", "transcript": "Transcript"}'
+            ),
+            "skipped_columns": "[]",
+        },
+    )
+    assert response.status_code == 400
+    assert "telephony_integration_id" in response.json()["detail"].lower()

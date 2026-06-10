@@ -1259,8 +1259,8 @@ class ApiClient {
   async startCallImport(
     id: string,
     options: {
-      provider: string
-      telephonyIntegrationId: string
+      provider: string | null
+      telephonyIntegrationId: string | null
     },
   ): Promise<CallImportUploadResponse> {
     const response = await this.client.post(
@@ -1914,9 +1914,19 @@ class ApiClient {
    */
   async retryFailedCallImportRows(
     callImportId: string,
+    options?: {
+      provider: string | null
+      telephonyIntegrationId: string | null
+    },
   ): Promise<CallImportRetryFailedRowsResponse> {
     const response = await this.client.post(
       `/api/v1/call-imports/${callImportId}/retry-failed`,
+      options
+        ? {
+            provider: options.provider,
+            telephony_integration_id: options.telephonyIntegrationId,
+          }
+        : undefined,
     )
     return response.data
   }
