@@ -64,7 +64,6 @@ import CronJobs from './pages/configurations/CronJobs'
 
 // IAM
 import IAM from './pages/iam/IAM'
-import WorkspaceMembers from './pages/workspace/WorkspaceMembers'
 
 // Profile
 import Profile from './pages/profile/Profile'
@@ -164,7 +163,10 @@ function App() {
           <Route path="observability/calls" element={<ObservabilityCalls />} />
           <Route path="observability/calls/:callShortId" element={<ObservabilityCallDetail />} />
           <Route path="iam" element={<IAM />} />
-          <Route path="workspace-members" element={<WorkspaceMembers />} />
+          <Route
+            path="workspace-members"
+            element={<Navigate to="/iam?tab=workspace-members" replace />}
+          />
           <Route path="profile" element={<Profile />} />
           <Route path="settings" element={<Settings />} />
           <Route path="alerts" element={<Alerts />} />

@@ -74,7 +74,7 @@ export default function WorkspaceRolesSection() {
   )
 
   return (
-    <div className="mt-10 border-t border-gray-200 pt-8">
+    <div>
       <ToastContainer />
       <div className="flex items-center justify-between mb-4">
         <div>

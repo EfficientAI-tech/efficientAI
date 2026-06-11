@@ -114,7 +114,6 @@ const navigationSections: NavSection[] = [
       { name: 'VoiceBundle', href: '/voicebundles', icon: Mic },
       { name: 'Integrations', href: '/integrations', icon: Plug },
       { name: 'API Keys', href: '/settings', icon: Key },
-      { name: 'Workspace Members', href: '/workspace-members', icon: Users },
       { name: 'Cron Jobs', href: '/cron-jobs', icon: Clock },
     ],
   },
