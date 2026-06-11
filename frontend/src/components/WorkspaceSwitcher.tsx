@@ -7,11 +7,11 @@ import { useCanWrite } from '../hooks/useRole'
 import { useWorkspaceStore } from '../store/workspaceStore'
 import CreateWorkspaceModal from './CreateWorkspaceModal'
 
-const ACTIVE_WORKSPACE_KEY = 'activeWorkspaceId'
-
 export default function WorkspaceSwitcher() {
   const queryClient = useQueryClient()
   const canWrite = useCanWrite()
+  const activeId = useWorkspaceStore((s) => s.activeWorkspaceId)
+  const switchWorkspace = useWorkspaceStore((s) => s.switchWorkspace)
   const setActiveCapabilities = useWorkspaceStore((s) => s.setActiveCapabilities)
   const [open, setOpen] = useState(false)
   const [showCreateModal, setShowCreateModal] = useState(false)
@@ -26,15 +26,9 @@ export default function WorkspaceSwitcher() {
     staleTime: 60_000,
   })
 
-  const [activeId, setActiveId] = useState<string | null>(() =>
-    typeof window !== 'undefined'
-      ? localStorage.getItem(ACTIVE_WORKSPACE_KEY)
-      : null,
-  )
-
   useEffect(() => {
     if (!workspaces.length) return
-    const stored = localStorage.getItem(ACTIVE_WORKSPACE_KEY)
+    const stored = activeId
     const isValid = stored && workspaces.some((w) => w.id === stored)
     const fallback =
       (isValid ? workspaces.find((w) => w.id === stored) : null) ??
@@ -44,35 +38,36 @@ export default function WorkspaceSwitcher() {
     if (!fallback) return
 
     if (!isValid) {
-      localStorage.setItem(ACTIVE_WORKSPACE_KEY, fallback.id)
-      setActiveId(fallback.id)
+      switchWorkspace(fallback.id, fallback.capabilities ?? [])
       queryClient.invalidateQueries()
-    } else if (stored !== activeId) {
-      setActiveId(stored)
+      return
     }
 
-    setActiveCapabilities(fallback.capabilities ?? [])
-  }, [workspaces, activeId, queryClient, setActiveCapabilities])
+    const current = workspaces.find((w) => w.id === stored)
+    if (!current) return
+
+    const nextCaps = current.capabilities ?? []
+    const { activeCapabilities } = useWorkspaceStore.getState()
+    const capsChanged =
+      nextCaps.length !== activeCapabilities.length ||
+      nextCaps.some((cap, i) => cap !== activeCapabilities[i])
+
+    if (capsChanged) {
+      setActiveCapabilities(nextCaps)
+    }
+  }, [workspaces, activeId, queryClient, switchWorkspace, setActiveCapabilities])
 
   const activeWorkspace = useMemo(
     () => workspaces.find((w) => w.id === activeId) ?? null,
     [workspaces, activeId],
   )
 
-  useEffect(() => {
-    if (activeWorkspace?.capabilities) {
-      setActiveCapabilities(activeWorkspace.capabilities)
-    }
-  }, [activeWorkspace, setActiveCapabilities])
-
   const handleSelect = async (workspace: Workspace) => {
     if (workspace.id === activeId) {
       setOpen(false)
       return
     }
-    localStorage.setItem(ACTIVE_WORKSPACE_KEY, workspace.id)
-    setActiveId(workspace.id)
-    setActiveCapabilities(workspace.capabilities ?? [])
+    switchWorkspace(workspace.id, workspace.capabilities ?? [])
     setOpen(false)
     await queryClient.invalidateQueries()
   }

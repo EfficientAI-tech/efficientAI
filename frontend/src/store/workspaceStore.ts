@@ -7,6 +7,7 @@ interface WorkspaceState {
   activeCapabilities: string[]
   setActiveWorkspaceId: (id: string | null) => void
   setActiveCapabilities: (capabilities: string[]) => void
+  switchWorkspace: (id: string, capabilities?: string[]) => void
   clearActiveWorkspaceId: () => void
 }
 
@@ -33,6 +34,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
 
   setActiveCapabilities: (capabilities: string[]) => {
     set({ activeCapabilities: capabilities })
+  },
+
+  switchWorkspace: (id: string, capabilities: string[] = []) => {
+    localStorage.setItem(STORAGE_WORKSPACE_ID, id)
+    set({ activeWorkspaceId: id, activeCapabilities: capabilities })
   },
 
   clearActiveWorkspaceId: () => {
