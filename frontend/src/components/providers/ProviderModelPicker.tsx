@@ -35,6 +35,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   anthropic: 'Anthropic',
   openrouter: 'OpenRouter',
   xai: 'xAI',
+  fireworks: 'Fireworks AI',
   google: 'Google',
   cohere: 'Cohere',
   mistral: 'Mistral',

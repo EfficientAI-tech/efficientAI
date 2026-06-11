@@ -213,6 +213,7 @@ export enum ModelProvider {
   ANTHROPIC = 'anthropic',
   GOOGLE = 'google',
   XAI = 'xai',
+  FIREWORKS = 'fireworks',
   COHERE = 'cohere',
   MISTRAL = 'mistral',
   META = 'meta',

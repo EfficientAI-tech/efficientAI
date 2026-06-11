@@ -32,6 +32,11 @@ export const MODEL_PROVIDER_CONFIG: Record<ModelProvider, ProviderMetadata> = {
     logo: '/xai.svg',
     description: 'Grok models via xAI',
   },
+  [ModelProvider.FIREWORKS]: {
+    label: 'Fireworks AI',
+    logo: '/fireworks.png',
+    description: 'Hosted open-source LLMs via Fireworks',
+  },
   [ModelProvider.COHERE]: {
     label: 'Cohere',
     logo: '/cohere.svg',

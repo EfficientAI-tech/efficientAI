@@ -71,6 +71,16 @@
     "provider": "openai",
     "model_type": "llm"
   },
+  "gpt-5.5": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "OpenAI flagship — complex reasoning, agentic coding, 1M context"
+  },
+  "gpt-5.5-pro": {
+    "provider": "openai",
+    "model_type": "llm",
+    "description": "Higher-accuracy GPT-5.5 variant with parallel test-time compute"
+  },
   "tts-1": {
     "provider": "openai",
     "model_type": "tts"
@@ -130,6 +140,106 @@
   "claude-opus-4.6": {
     "provider": "anthropic",
     "model_type": "llm"
+  },
+  "claude-opus-4-7": {
+    "provider": "anthropic",
+    "model_type": "llm",
+    "description": "Claude Opus 4.7 — stronger coding, vision, and complex multi-step tasks"
+  },
+  "claude-opus-4-8": {
+    "provider": "anthropic",
+    "model_type": "llm",
+    "description": "Claude Opus 4.8 — most capable Opus-tier model; 1M context, adaptive thinking"
+  },
+  "claude-fable-5": {
+    "provider": "anthropic",
+    "model_type": "llm",
+    "description": "Claude Fable 5 — Anthropic's most capable widely released model for demanding agentic work"
+  },
+  "claude-mythos-5": {
+    "provider": "anthropic",
+    "model_type": "llm",
+    "description": "Claude Mythos 5 — Fable 5 capabilities; limited availability via Project Glasswing"
+  },
+  "grok-4.3": {
+    "provider": "xai",
+    "model_type": "llm",
+    "description": "xAI flagship — low hallucination, agentic tool calling, 1M context"
+  },
+  "grok-build-0.1": {
+    "provider": "xai",
+    "model_type": "llm",
+    "description": "xAI fast coding model trained for agentic coding (early access)"
+  },
+  "grok-4.20-0309-reasoning": {
+    "provider": "xai",
+    "model_type": "llm",
+    "description": "Grok 4.20 reasoning snapshot (Mar 2026)"
+  },
+  "grok-4.20-0309-non-reasoning": {
+    "provider": "xai",
+    "model_type": "llm",
+    "description": "Grok 4.20 non-reasoning snapshot (Mar 2026)"
+  },
+  "grok-4.20-multi-agent-0309": {
+    "provider": "xai",
+    "model_type": "llm",
+    "description": "Grok 4.20 multi-agent snapshot (Mar 2026)"
+  },
+  "deepseek-v4-pro": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "DeepSeek V4 Pro — frontier MoE reasoning and coding (1M context)"
+  },
+  "deepseek-v4-flash": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "DeepSeek V4 Flash — fast extraction, classification, and search"
+  },
+  "kimi-k2p6": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "Kimi K2.6 — native multimodal agentic model for long-horizon coding"
+  },
+  "kimi-k2p5": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "Kimi K2.5 — unified vision/text agentic model with controllable reasoning"
+  },
+  "glm-5p1": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "GLM 5.1 — frontier open model for reasoning and agentic workflows"
+  },
+  "minimax-m2p7": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "MiniMax M2.7 — MoE model for complex agent harnesses and productivity tasks"
+  },
+  "minimax-m2p5": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "MiniMax M2.5 — fast coding and agentic tool use at low cost"
+  },
+  "qwen3p6-plus": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "Qwen 3.6 Plus — flagship multimodal model (Fireworks exclusive outside Alibaba)"
+  },
+  "gpt-oss-120b": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "OpenAI gpt-oss-120b — high-quality open-weight model for general reasoning"
+  },
+  "gpt-oss-20b": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "OpenAI gpt-oss-20b — fast open-weight model for chat and classification"
+  },
+  "firefunction-v2": {
+    "provider": "fireworks",
+    "model_type": "llm",
+    "description": "FireFunction V2 — Fireworks function-calling optimized model"
   },
   "google-speech-v2": {
     "provider": "google",

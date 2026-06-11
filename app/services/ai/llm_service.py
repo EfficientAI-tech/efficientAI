@@ -33,6 +33,8 @@ _LITELLM_PROVIDER_PREFIX: Dict[str, str] = {
     "aws": "bedrock",
     "deepseek": "deepseek",
     "groq": "groq",
+    "xai": "xai",
+    "fireworks": "fireworks_ai",
 }
 
 # Matches the model-name half of the Gemini 2.5 family: ``gemini-2.5-pro``,
@@ -162,6 +164,8 @@ class LLMService:
         """Build the ``provider/model`` string that LiteLLM expects."""
         provider_value = provider.value if hasattr(provider, "value") else str(provider)
         prefix = _LITELLM_PROVIDER_PREFIX.get(provider_value.lower(), provider_value.lower())
+        if provider_value.lower() == "fireworks" and not model.startswith("accounts/"):
+            model = f"accounts/fireworks/models/{model}"
         return f"{prefix}/{model}"
 
     def generate_response(

@@ -16,6 +16,11 @@ def test_litellm_model_name_maps_known_provider_prefixes():
     assert LLMService._litellm_model_name(ModelProvider.OPENAI, "gpt-4o") == "openai/gpt-4o"
     assert LLMService._litellm_model_name(ModelProvider.GOOGLE, "gemini-1.5-pro") == "gemini/gemini-1.5-pro"
     assert LLMService._litellm_model_name(ModelProvider.AWS, "claude") == "bedrock/claude"
+    assert LLMService._litellm_model_name(ModelProvider.XAI, "grok-4.3") == "xai/grok-4.3"
+    assert (
+        LLMService._litellm_model_name(ModelProvider.FIREWORKS, "deepseek-v4-pro")
+        == "fireworks_ai/accounts/fireworks/models/deepseek-v4-pro"
+    )
 
 
 def test_generate_response_raises_when_provider_not_configured(monkeypatch):
