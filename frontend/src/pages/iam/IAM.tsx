@@ -6,6 +6,7 @@ import { Users, Mail, UserPlus, Shield, ShieldCheck, ShieldAlert, X, Trash2, Key
 import Button from '../../components/Button'
 import { useToast } from '../../hooks/useToast'
 import { useIsAdmin } from '../../hooks/useRole'
+import WorkspaceRolesSection from '../../components/WorkspaceRolesSection'
 
 export default function IAM() {
   const queryClient = useQueryClient()
@@ -512,6 +513,12 @@ export default function IAM() {
           )}
         </div>
       </div>
+
+      {isAdmin && (
+        <div className="bg-white shadow rounded-lg p-6">
+          <WorkspaceRolesSection />
+        </div>
+      )}
 
       {/* Invite Modal */}
       {showInviteModal && (

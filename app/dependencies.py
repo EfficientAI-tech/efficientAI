@@ -9,16 +9,21 @@ New code should prefer `get_principal` directly: it returns a `Principal`
 which carries user_id, organization_id, and auth_method in one place.
 """
 
-from typing import Optional
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Optional, Set
 from uuid import UUID
 
-from fastapi import Depends, Header, HTTPException
+from fastapi import Depends, Header, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.core.auth import Principal, get_principal  # noqa: F401 - re-exported
+from app.core.auth.rbac import get_org_role
 from app.core.license import is_feature_enabled
 from app.database import get_db
-from app.models.database import Workspace
+from app.models.database import RoleEnum, Workspace, WorkspaceMember
+from app.services.workspace_rbac import resolve_workspace_capabilities
 
 
 def get_api_key(
@@ -53,68 +58,177 @@ def get_organization_id(
     return principal.organization_id
 
 
-def get_workspace_id(
+@dataclass(frozen=True)
+class WorkspaceContext:
+    """Resolved active workspace plus the caller's capabilities within it."""
+
+    workspace_id: UUID
+    organization_id: UUID
+    capabilities: frozenset[str]
+    role_id: UUID | None = None
+    role_name: str | None = None
+    is_org_admin: bool = False
+
+
+def _resolve_workspace_row(
+    db: Session,
+    *,
+    organization_id: UUID,
+    workspace_id: UUID | None,
+    principal: Principal,
+) -> Workspace:
+    org_role = get_org_role(principal, db)
+    is_org_admin = org_role == RoleEnum.ADMIN
+
+    if workspace_id is not None:
+        workspace = (
+            db.query(Workspace)
+            .filter(
+                Workspace.id == workspace_id,
+                Workspace.organization_id == organization_id,
+            )
+            .first()
+        )
+        if workspace is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Workspace not found in this organization.",
+            )
+        if not is_org_admin and principal.user_id is not None:
+            member = (
+                db.query(WorkspaceMember)
+                .filter(
+                    WorkspaceMember.workspace_id == workspace.id,
+                    WorkspaceMember.user_id == principal.user_id,
+                )
+                .first()
+            )
+            if member is None:
+                raise HTTPException(
+                    status_code=403,
+                    detail="You don't have access to this workspace.",
+                )
+        return workspace
+
+    if is_org_admin or principal.user_id is None:
+        default_ws = (
+            db.query(Workspace)
+            .filter(
+                Workspace.organization_id == organization_id,
+                Workspace.is_default.is_(True),
+            )
+            .first()
+        )
+        if default_ws is None:
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "No default workspace exists for this organization. "
+                    "Please contact support; migration 033 may not have run."
+                ),
+            )
+        return default_ws
+
+    membership_rows = (
+        db.query(WorkspaceMember, Workspace)
+        .join(Workspace, Workspace.id == WorkspaceMember.workspace_id)
+        .filter(
+            Workspace.organization_id == organization_id,
+            WorkspaceMember.user_id == principal.user_id,
+        )
+        .order_by(Workspace.is_default.desc(), Workspace.name.asc())
+        .all()
+    )
+    if not membership_rows:
+        raise HTTPException(
+            status_code=403,
+            detail="You don't have access to any workspace in this organization.",
+        )
+    return membership_rows[0][1]
+
+
+def get_workspace_context(
+    request: Request,
     x_workspace_id: Optional[str] = Header(None, alias="X-Workspace-Id"),
+    principal: Principal = Depends(get_principal),
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
-) -> UUID:
-    """Return the active workspace UUID for the authenticated caller.
+) -> WorkspaceContext:
+    """Resolve workspace + capability set once per request (cached on request.state)."""
+    cached = getattr(request.state, "workspace_context", None)
+    if cached is not None:
+        return cached
 
-    Resolution order:
-      1. ``X-Workspace-Id`` header. The referenced workspace must belong
-         to the caller's organization, otherwise we 404 (don't leak the
-         existence of another org's workspace).
-      2. The organization's Default workspace (``is_default = True``).
-         This is the back-compat path for existing API-key consumers
-         that don't know about workspaces yet - migration 033 seeds a
-         Default for every org so this always resolves.
-
-    A 500 is raised if step 2 fails because the migration didn't run;
-    callers should never see that in healthy deployments.
-    """
-
+    parsed_ws_id: UUID | None = None
     if x_workspace_id:
         try:
-            ws_id = UUID(x_workspace_id)
+            parsed_ws_id = UUID(x_workspace_id)
         except (ValueError, TypeError):
             raise HTTPException(
                 status_code=400,
                 detail="X-Workspace-Id must be a valid UUID.",
             )
-        ws_id_row = (
-            db.query(Workspace.id)
-            .filter(
-                Workspace.id == ws_id,
-                Workspace.organization_id == organization_id,
-            )
-            .first()
-        )
-        if ws_id_row is None:
-            raise HTTPException(
-                status_code=404, detail="Workspace not found in this organization."
-            )
-        return ws_id_row[0]
 
-    default_ws_row = (
-        db.query(Workspace.id)
-        .filter(
-            Workspace.organization_id == organization_id,
-            Workspace.is_default.is_(True),
-        )
-        .first()
+    workspace = _resolve_workspace_row(
+        db,
+        organization_id=organization_id,
+        workspace_id=parsed_ws_id,
+        principal=principal,
     )
-    if default_ws_row is None:
-        # Should never happen post-migration. Raising 500 is preferable
-        # to silently writing rows with a NULL workspace_id and tripping
-        # the NOT NULL constraint downstream.
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "No default workspace exists for this organization. "
-                "Please contact support; migration 033 may not have run."
-            ),
-        )
-    return default_ws_row[0]
+    capabilities, membership, role = resolve_workspace_capabilities(
+        db,
+        principal=principal,
+        workspace_id=workspace.id,
+        organization_id=organization_id,
+    )
+    org_role = get_org_role(principal, db)
+    ctx = WorkspaceContext(
+        workspace_id=workspace.id,
+        organization_id=organization_id,
+        capabilities=frozenset(capabilities),
+        role_id=role.id if role else (membership.role_id if membership else None),
+        role_name=role.name if role else None,
+        is_org_admin=org_role == RoleEnum.ADMIN,
+    )
+    request.state.workspace_context = ctx
+    return ctx
+
+
+def get_workspace_id(
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+) -> UUID:
+    """Return the active workspace UUID for the authenticated caller."""
+    return ctx.workspace_id
+
+
+def get_workspace_capabilities(
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+) -> Set[str]:
+    """Return the caller's capability set for the active workspace."""
+    return set(ctx.capabilities)
+
+
+def require_capability(capability: str):
+    """
+    Build a FastAPI dependency that ensures the caller has a workspace capability.
+
+    Requires ``get_workspace_context`` to have run (directly or via
+    ``get_workspace_id``) so capabilities are resolved for the active workspace.
+    Org admins and unbound API keys receive all capabilities implicitly.
+    """
+
+    def _dep(ctx: WorkspaceContext = Depends(get_workspace_context)) -> WorkspaceContext:
+        if capability not in ctx.capabilities:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    f"This action requires the '{capability}' capability "
+                    f"in the active workspace."
+                ),
+            )
+        return ctx
+
+    return _dep
 
 
 def get_db_session() -> Session:

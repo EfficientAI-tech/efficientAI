@@ -651,3 +651,13 @@ def run_evaluators(
         evaluator_results=evaluator_results
     )
 
+
+from app.core.auth.capabilities import SIM_MANAGE, SIM_VIEW
+from app.core.auth.workspace_route_capabilities import apply_workspace_route_capabilities
+
+apply_workspace_route_capabilities(
+    router,
+    view_capability=SIM_VIEW,
+    manage_capability=SIM_MANAGE,
+)
+

@@ -4201,5 +4201,71 @@ class WorkspaceResponse(BaseModel):
     is_default: bool
     created_at: datetime
     updated_at: datetime
+    role_id: Optional[UUID] = None
+    role_name: Optional[str] = None
+    capabilities: List[str] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class WorkspaceRoleBase(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
+    capabilities: List[str] = Field(default_factory=list)
+
+
+class WorkspaceRoleCreate(WorkspaceRoleBase):
+    pass
+
+
+class WorkspaceRoleUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    description: Optional[str] = None
+    capabilities: Optional[List[str]] = None
+
+
+class WorkspaceRoleResponse(BaseModel):
+    id: UUID
+    organization_id: UUID
+    name: str
+    description: Optional[str] = None
+    capabilities: List[str]
+    is_system: bool
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class WorkspaceMemberResponse(BaseModel):
+    id: UUID
+    workspace_id: UUID
+    user_id: UUID
+    role_id: UUID
+    role_name: str
+    user_email: str
+    user_name: Optional[str] = None
+    added_by_user_id: Optional[UUID] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class WorkspaceMemberCreate(BaseModel):
+    user_id: UUID
+    role_id: UUID
+
+
+class WorkspaceMemberUpdate(BaseModel):
+    role_id: UUID
+
+
+class CapabilityInfoResponse(BaseModel):
+    key: str
+    label: str
+
+
+class CapabilityDomainResponse(BaseModel):
+    key: str
+    label: str
+    capabilities: List[CapabilityInfoResponse]

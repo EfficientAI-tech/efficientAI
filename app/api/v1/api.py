@@ -40,6 +40,7 @@ from app.api.v1.routes import (
     call_import_evaluations,
     judge_alignment,
     workspaces,
+    workspace_iam,
 )
 
 api_router = APIRouter()
@@ -83,3 +84,4 @@ api_router.include_router(call_import_tags.router)
 api_router.include_router(call_import_evaluations.router)
 api_router.include_router(judge_alignment.router)
 api_router.include_router(workspaces.router)
+api_router.include_router(workspace_iam.router)

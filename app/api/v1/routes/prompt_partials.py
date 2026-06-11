@@ -838,3 +838,13 @@ async def map_prompt_partial_flowchart_nodes(
     )
     db.refresh(partial)
     return _agent_flowchart_response(partial)
+
+
+from app.core.auth.capabilities import SIM_MANAGE, SIM_VIEW
+from app.core.auth.workspace_route_capabilities import apply_workspace_route_capabilities
+
+apply_workspace_route_capabilities(
+    router,
+    view_capability=SIM_VIEW,
+    manage_capability=SIM_MANAGE,
+)

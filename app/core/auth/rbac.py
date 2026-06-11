@@ -24,8 +24,8 @@ from uuid import UUID
 from fastapi import Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.core.auth.principal import Principal
 from app.core.auth.dependency import get_principal
+from app.core.auth.principal import Principal
 from app.database import get_db
 from app.models.database import OrganizationMember, RoleEnum
 

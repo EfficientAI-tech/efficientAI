@@ -353,6 +353,79 @@ class ApiClient {
     await this.client.delete(`/api/v1/workspaces/${workspaceId}`)
   }
 
+  async listCapabilities(): Promise<import('../types/api').CapabilityDomain[]> {
+    const response = await this.client.get('/api/v1/capabilities')
+    return response.data
+  }
+
+  async listWorkspaceRoles(): Promise<import('../types/api').WorkspaceRole[]> {
+    const response = await this.client.get('/api/v1/workspace-roles')
+    return response.data
+  }
+
+  async createWorkspaceRole(
+    payload: import('../types/api').WorkspaceRoleCreate,
+  ): Promise<import('../types/api').WorkspaceRole> {
+    const response = await this.client.post('/api/v1/workspace-roles', payload)
+    return response.data
+  }
+
+  async updateWorkspaceRole(
+    roleId: string,
+    payload: import('../types/api').WorkspaceRoleUpdate,
+  ): Promise<import('../types/api').WorkspaceRole> {
+    const response = await this.client.patch(
+      `/api/v1/workspace-roles/${roleId}`,
+      payload,
+    )
+    return response.data
+  }
+
+  async deleteWorkspaceRole(roleId: string): Promise<void> {
+    await this.client.delete(`/api/v1/workspace-roles/${roleId}`)
+  }
+
+  async listWorkspaceMembers(
+    workspaceId: string,
+  ): Promise<import('../types/api').WorkspaceMember[]> {
+    const response = await this.client.get(
+      `/api/v1/workspaces/${workspaceId}/members`,
+    )
+    return response.data
+  }
+
+  async addWorkspaceMember(
+    workspaceId: string,
+    payload: { user_id: string; role_id: string },
+  ): Promise<import('../types/api').WorkspaceMember> {
+    const response = await this.client.post(
+      `/api/v1/workspaces/${workspaceId}/members`,
+      payload,
+    )
+    return response.data
+  }
+
+  async updateWorkspaceMember(
+    workspaceId: string,
+    userId: string,
+    payload: { role_id: string },
+  ): Promise<import('../types/api').WorkspaceMember> {
+    const response = await this.client.patch(
+      `/api/v1/workspaces/${workspaceId}/members/${userId}`,
+      payload,
+    )
+    return response.data
+  }
+
+  async removeWorkspaceMember(
+    workspaceId: string,
+    userId: string,
+  ): Promise<void> {
+    await this.client.delete(
+      `/api/v1/workspaces/${workspaceId}/members/${userId}`,
+    )
+  }
+
   // Auth endpoints
   async getAuthConfig(): Promise<AuthConfigResponse> {
     const response = await this.client.get('/api/v1/auth/config')

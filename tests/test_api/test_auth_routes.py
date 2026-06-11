@@ -29,6 +29,39 @@ from app.models.database import (
 from app.services.organization_provisioning import provision_default_workspace
 
 
+def _bind_api_key_to_user(db_session, *, api_key: str, org_id: UUID, user: User) -> APIKey:
+    """Point the shared test API key at ``user``, replacing any bootstrap binding."""
+    db_session.query(APIKey).filter(APIKey.key == api_key).delete()
+    db_session.flush()
+    key = APIKey(
+        id=uuid4(),
+        key=api_key,
+        name="Test Key",
+        organization_id=org_id,
+        user_id=user.id,
+        is_active=True,
+    )
+    db_session.add(key)
+    membership = (
+        db_session.query(OrganizationMember)
+        .filter(
+            OrganizationMember.organization_id == org_id,
+            OrganizationMember.user_id == user.id,
+        )
+        .first()
+    )
+    if membership is None:
+        db_session.add(
+            OrganizationMember(
+                organization_id=org_id,
+                user_id=user.id,
+                role=RoleEnum.ADMIN.value,
+            )
+        )
+    db_session.commit()
+    return key
+
+
 # ---------------------------------------------------------------------------
 # Existing smoke tests (kept verbatim - they guard the API-key path).
 # ---------------------------------------------------------------------------
@@ -448,23 +481,7 @@ def test_api_key_user_can_attach_password_and_real_email(
     )
     db_session.add(user)
     db_session.flush()
-    db_session.add(
-        APIKey(
-            id=api_key_id,
-            key=api_key,
-            name="Bootstrap Key",
-            organization_id=org_id,
-            user_id=user.id,
-            is_active=True,
-        )
-    )
-    db_session.add(
-        OrganizationMember(
-            organization_id=org_id,
-            user_id=user.id,
-            role=RoleEnum.ADMIN.value,
-        )
-    )
+    _bind_api_key_to_user(db_session, api_key=api_key, org_id=org_id, user=user)
     db_session.commit()
 
     response = authenticated_client.post(
@@ -497,24 +514,7 @@ def test_set_password_rejects_email_change_for_non_placeholder_user(
     )
     db_session.add(user)
     db_session.flush()
-    db_session.add(
-        APIKey(
-            id=uuid4(),
-            key=api_key,
-            name="User Key",
-            organization_id=org_id,
-            user_id=user.id,
-            is_active=True,
-        )
-    )
-    db_session.add(
-        OrganizationMember(
-            organization_id=org_id,
-            user_id=user.id,
-            role=RoleEnum.ADMIN.value,
-        )
-    )
-    db_session.commit()
+    _bind_api_key_to_user(db_session, api_key=api_key, org_id=org_id, user=user)
 
     response = authenticated_client.post(
         "/api/v1/auth/password",
@@ -541,23 +541,7 @@ def test_rotating_password_requires_current_password(
     )
     db_session.add(user)
     db_session.flush()
-    db_session.add(
-        APIKey(
-            id=uuid4(),
-            key=api_key,
-            organization_id=org_id,
-            user_id=user.id,
-            is_active=True,
-        )
-    )
-    db_session.add(
-        OrganizationMember(
-            organization_id=org_id,
-            user_id=user.id,
-            role=RoleEnum.ADMIN.value,
-        )
-    )
-    db_session.commit()
+    _bind_api_key_to_user(db_session, api_key=api_key, org_id=org_id, user=user)
 
     # Missing current_password -> 401.
     missing_current = authenticated_client.post(

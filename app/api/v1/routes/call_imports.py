@@ -3746,3 +3746,14 @@ async def get_call_import_insights(
         evaluation_count=len(evaluations),
         metrics=metrics_payload,
     )
+
+
+from app.core.auth.capabilities import CALLS_DELETE, CALLS_IMPORT, CALLS_VIEW
+from app.core.auth.workspace_route_capabilities import apply_workspace_route_capabilities
+
+apply_workspace_route_capabilities(
+    router,
+    view_capability=CALLS_VIEW,
+    manage_capability=CALLS_IMPORT,
+    delete_capability=CALLS_DELETE,
+)

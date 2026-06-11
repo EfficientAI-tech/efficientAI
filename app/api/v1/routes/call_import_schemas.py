@@ -396,3 +396,13 @@ async def delete_call_import_schema(
     db.delete(schema)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+from app.core.auth.capabilities import CALLS_IMPORT, CALLS_VIEW
+from app.core.auth.workspace_route_capabilities import apply_workspace_route_capabilities
+
+apply_workspace_route_capabilities(
+    router,
+    view_capability=CALLS_VIEW,
+    manage_capability=CALLS_IMPORT,
+)

@@ -2470,3 +2470,14 @@ def _recompute_summary(comparison: TTSComparison, db: Session):
 
     comparison.evaluation_summary = summary
     db.commit()
+
+
+from app.core.auth.capabilities import REPORTS_GENERATE, REPORTS_VIEW
+from app.core.auth.workspace_route_capabilities import apply_workspace_route_capabilities
+
+apply_workspace_route_capabilities(
+    router,
+    view_capability=REPORTS_VIEW,
+    manage_capability=REPORTS_GENERATE,
+    run_capability=REPORTS_GENERATE,
+)

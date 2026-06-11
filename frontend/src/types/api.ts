@@ -842,6 +842,55 @@ export interface Workspace {
   is_default: boolean
   created_at: string
   updated_at: string
+  role_id?: string | null
+  role_name?: string | null
+  capabilities?: string[]
+}
+
+export interface WorkspaceRole {
+  id: string
+  organization_id: string
+  name: string
+  description?: string | null
+  capabilities: string[]
+  is_system: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface WorkspaceMember {
+  id: string
+  workspace_id: string
+  user_id: string
+  role_id: string
+  role_name: string
+  user_email: string
+  user_name?: string | null
+  added_by_user_id?: string | null
+  created_at: string
+}
+
+export interface CapabilityInfo {
+  key: string
+  label: string
+}
+
+export interface CapabilityDomain {
+  key: string
+  label: string
+  capabilities: CapabilityInfo[]
+}
+
+export interface WorkspaceRoleCreate {
+  name: string
+  description?: string | null
+  capabilities: string[]
+}
+
+export interface WorkspaceRoleUpdate {
+  name?: string
+  description?: string | null
+  capabilities?: string[]
 }
 
 export interface CallImport {

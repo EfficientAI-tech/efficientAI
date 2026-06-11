@@ -582,3 +582,14 @@ async def evaluate_call(
         "message": "Evaluation queued successfully",
     }
 
+
+from app.core.auth.capabilities import REPORTS_GENERATE, REPORTS_VIEW
+from app.core.auth.workspace_route_capabilities import apply_workspace_route_capabilities
+
+apply_workspace_route_capabilities(
+    router,
+    view_capability=REPORTS_VIEW,
+    manage_capability=REPORTS_GENERATE,
+    run_capability=REPORTS_GENERATE,
+)
+

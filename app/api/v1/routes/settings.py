@@ -14,7 +14,14 @@ from typing import List, Literal, Optional
 import secrets
 from pydantic import BaseModel
 
-from app.dependencies import get_db, get_api_key, get_organization_id, get_workspace_id
+from app.dependencies import (
+    get_db,
+    get_api_key,
+    get_organization_id,
+    get_workspace_id,
+    require_capability,
+)
+from app.core.auth.capabilities import REPORTS_VIEW, WORKSPACE_SETTINGS
 from app.models.database import APIKey, User, Organization, Workspace
 from app.models.schemas import MessageResponse
 from app.api.v1.routes.profile import get_current_user
@@ -130,7 +137,11 @@ def _report_branding_response(workspace: Workspace) -> ReportBrandingResponse:
     )
 
 
-@router.get("/report-branding", response_model=ReportBrandingResponse)
+@router.get(
+    "/report-branding",
+    response_model=ReportBrandingResponse,
+    dependencies=[Depends(require_capability(REPORTS_VIEW))],
+)
 def get_report_branding(
     api_key: str = Depends(get_api_key),
     organization_id: UUID = Depends(get_organization_id),
@@ -151,7 +162,11 @@ def get_report_branding(
     return _report_branding_response(workspace)
 
 
-@router.patch("/report-branding", response_model=ReportBrandingResponse)
+@router.patch(
+    "/report-branding",
+    response_model=ReportBrandingResponse,
+    dependencies=[Depends(require_capability(WORKSPACE_SETTINGS))],
+)
 def update_report_branding(
     payload: ReportBrandingUpdateRequest,
     api_key: str = Depends(get_api_key),
@@ -181,7 +196,11 @@ def update_report_branding(
     return _report_branding_response(workspace)
 
 
-@router.post("/report-branding/images", response_model=ReportBrandingResponse)
+@router.post(
+    "/report-branding/images",
+    response_model=ReportBrandingResponse,
+    dependencies=[Depends(require_capability(WORKSPACE_SETTINGS))],
+)
 async def upload_report_branding_images(
     files: List[UploadFile] = File(...),
     role: Literal["internal", "external", "generic"] = Form("generic"),
@@ -265,7 +284,11 @@ async def upload_report_branding_images(
     return _report_branding_response(workspace)
 
 
-@router.delete("/report-branding/images/{image_id}", response_model=ReportBrandingResponse)
+@router.delete(
+    "/report-branding/images/{image_id}",
+    response_model=ReportBrandingResponse,
+    dependencies=[Depends(require_capability(WORKSPACE_SETTINGS))],
+)
 def delete_report_branding_image(
     image_id: str,
     api_key: str = Depends(get_api_key),
