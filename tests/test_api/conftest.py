@@ -297,7 +297,9 @@ def user_context(db_session, org_id, api_key, seed_org, make_user):
         if user.email != "owner@example.com":
             user.email = "owner@example.com"
             user.name = "Org Owner"
-            db_session.commit()
+        if existing_key.name != "Owner API Key":
+            existing_key.name = "Owner API Key"
+        db_session.commit()
         return {"user": user, "membership": membership, "api_key_record": existing_key}
 
     user = make_user(email="owner@example.com", name="Org Owner")

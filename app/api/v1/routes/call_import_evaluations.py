@@ -432,6 +432,9 @@ def _serialize_eval(
         llm_provider=row.llm_provider,
         llm_model=row.llm_model,
         llm_credential_id=row.llm_credential_id,
+        llm_config=(
+            row.llm_config if isinstance(getattr(row, "llm_config", None), dict) else None
+        ),
         metric_llm_overrides=(
             row.metric_llm_overrides
             if isinstance(row.metric_llm_overrides, dict)
@@ -717,6 +720,8 @@ async def create_call_import_evaluation(
                 )
             if override.credential_id is not None:
                 override_dict["credential_id"] = str(override.credential_id)
+            if override.llm_config is not None:
+                override_dict["llm_config"] = override.llm_config
             if override_dict:
                 for leaf_id in target_leaf_ids:
                     metric_overrides_payload[leaf_id] = override_dict
@@ -887,6 +892,7 @@ async def create_call_import_evaluation(
             llm_provider=llm_provider_norm,
             llm_model=llm_model_norm,
             llm_credential_id=payload.llm_credential_id,
+            llm_config=payload.llm_config,
             metric_llm_overrides=metric_overrides_payload,
             stt_provider=stt_provider_norm,
             stt_model=stt_model_norm,
@@ -7984,6 +7990,9 @@ def _apply_retry_overrides(
             )
         evaluation.llm_credential_id = payload.llm_credential_id
 
+    if payload.llm_config is not None:
+        evaluation.llm_config = payload.llm_config
+
     # --- Per-metric LLM overrides ---
     # We accept the same dict shape as the create endpoint but
     # constrain keys to leaf metrics that are actually in this run.
@@ -8036,6 +8045,8 @@ def _apply_retry_overrides(
                 )
             if override.credential_id is not None:
                 override_dict["credential_id"] = str(override.credential_id)
+            if override.llm_config is not None:
+                override_dict["llm_config"] = override.llm_config
             if override_dict:
                 overrides_payload[metric_id] = override_dict
         evaluation.metric_llm_overrides = overrides_payload or None

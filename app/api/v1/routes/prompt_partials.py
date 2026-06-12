@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from uuid import UUID
 from pydantic import BaseModel
 from loguru import logger
@@ -40,6 +40,7 @@ class GeneratePromptRequest(BaseModel):
     format_style: Optional[str] = "structured"
     provider: Optional[str] = None
     model: Optional[str] = None
+    llm_config: Optional[Dict[str, Any]] = None
 
 
 class ImprovePromptRequest(BaseModel):
@@ -47,6 +48,7 @@ class ImprovePromptRequest(BaseModel):
     instructions: Optional[str] = None
     provider: Optional[str] = None
     model: Optional[str] = None
+    llm_config: Optional[Dict[str, Any]] = None
 
 
 class GenerateFlowchartRequest(BaseModel):
@@ -213,8 +215,8 @@ async def generate_prompt_with_ai(
             llm_model=model_str,
             organization_id=organization_id,
             db=db,
-            temperature=0.7,
-            max_tokens=4000,
+            llm_config=data.llm_config,
+            task_defaults={"temperature": 0.7, "max_tokens": 4000},
         )
         return {"content": result["text"], "provider": provider_enum.value, "model": model_str}
     except Exception as e:
@@ -255,8 +257,8 @@ async def improve_prompt_with_ai(
             llm_model=model_str,
             organization_id=organization_id,
             db=db,
-            temperature=0.3,
-            max_tokens=4000,
+            llm_config=data.llm_config,
+            task_defaults={"temperature": 0.3, "max_tokens": 4000},
         )
         return {"content": result["text"], "provider": provider_enum.value, "model": model_str}
     except Exception as e:

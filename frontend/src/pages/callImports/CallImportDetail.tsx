@@ -4528,6 +4528,11 @@ export default function CallImportDetail() {
                                 provider: val.provider,
                                 model: val.model,
                                 credential_id: val.credential_id || null,
+                                llm_config: val.llm_config || null,
+                              }
+                            } else if (val.llm_config) {
+                              overrides[mid] = {
+                                llm_config: val.llm_config,
                               }
                             }
                           }
@@ -4540,6 +4545,7 @@ export default function CallImportDetail() {
                             llm_provider: runLLM.provider || null,
                             llm_model: runLLM.model || null,
                             llm_credential_id: runLLM.credential_id || null,
+                            llm_config: runLLM.llm_config || null,
                             metric_llm_overrides: Object.keys(overrides).length
                               ? overrides
                               : null,

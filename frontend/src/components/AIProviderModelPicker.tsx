@@ -2,6 +2,8 @@ import { useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Bot } from 'lucide-react'
 import { apiClient } from '../lib/api'
+import LLMAdvancedOptionsPanel from './providers/LLMAdvancedOptionsPanel'
+import type { LLMGenerationConfig } from '../config/llmGenerationParams'
 
 interface AIProviderRow {
   id: string
@@ -37,15 +39,21 @@ export default function AIProviderModelPicker({
   model,
   onProviderChange,
   onModelChange,
+  llm_config,
+  onLLMConfigChange,
   disabled = false,
   size = 'md',
+  showAdvancedOptions = true,
 }: {
   provider: string
   model: string
   onProviderChange: (next: string) => void
   onModelChange: (next: string) => void
+  llm_config?: LLMGenerationConfig | null
+  onLLMConfigChange?: (next: LLMGenerationConfig | null) => void
   disabled?: boolean
   size?: 'sm' | 'md'
+  showAdvancedOptions?: boolean
 }) {
   const { data: aiProviders = [] } = useQuery<AIProviderRow[]>({
     queryKey: ['ai-providers'],
@@ -82,7 +90,8 @@ export default function AIProviderModelPicker({
       : 'block text-xs font-medium text-gray-600 mb-1'
 
   return (
-    <div className="flex gap-2 w-full">
+    <div className="space-y-2 w-full">
+      <div className="flex gap-2 w-full">
       <div className="flex-1 min-w-0">
         <label className={labelClass}>
           <Bot className="w-3 h-3 inline mr-1" />
@@ -132,6 +141,15 @@ export default function AIProviderModelPicker({
           )}
         </select>
       </div>
+      </div>
+      {showAdvancedOptions && provider && onLLMConfigChange && (
+        <LLMAdvancedOptionsPanel
+          provider={provider}
+          value={llm_config ?? null}
+          disabled={disabled}
+          onChange={onLLMConfigChange}
+        />
+      )}
     </div>
   )
 }

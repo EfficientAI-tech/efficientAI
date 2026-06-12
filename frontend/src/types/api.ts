@@ -1,5 +1,8 @@
 // API Types matching the backend schemas
 
+export type { LLMGenerationConfig } from '../config/llmGenerationParams'
+import type { LLMGenerationConfig } from '../config/llmGenerationParams'
+
 export enum EvaluationType {
   ASR = 'asr',
   TTS = 'tts',
@@ -1034,11 +1037,12 @@ export interface CallImportMetricSummary {
   allow_discovery?: boolean
 }
 
-/** Per-metric LLM override (provider+model+optional credential). */
+/** Per-metric LLM override (provider+model+optional credential + generation params). */
 export interface CallImportEvaluationLLMOverride {
   provider?: string | null
   model?: string | null
   credential_id?: string | null
+  llm_config?: LLMGenerationConfig | null
 }
 
 export interface CallImportEvaluation {
@@ -1060,6 +1064,7 @@ export interface CallImportEvaluation {
   llm_provider: string | null
   llm_model: string | null
   llm_credential_id: string | null
+  llm_config?: LLMGenerationConfig | null
   metric_llm_overrides: Record<string, CallImportEvaluationLLMOverride> | null
   stt_provider: string | null
   stt_model: string | null

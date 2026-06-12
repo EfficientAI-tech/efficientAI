@@ -4,7 +4,7 @@ For generating responses from AI models
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from uuid import UUID
 from pydantic import BaseModel
 
@@ -26,6 +26,7 @@ class ChatRequest(BaseModel):
     model: str
     temperature: Optional[float] = 0.7
     max_tokens: Optional[int] = None
+    llm_config: Optional[Dict[str, Any]] = None
 
 
 class ChatResponse(BaseModel):
@@ -52,8 +53,10 @@ async def chat_completion(
             llm_model=request.model,
             organization_id=organization_id,
             db=db,
+            llm_config=request.llm_config,
             temperature=request.temperature,
-            max_tokens=request.max_tokens
+            max_tokens=request.max_tokens,
+            task_defaults={"temperature": 0.7},
         )
         
         return ChatResponse(

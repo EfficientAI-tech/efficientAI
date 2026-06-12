@@ -46,6 +46,7 @@ import type {
   CallImportTranscribeResponse,
   CallImportRetryFailedRowsResponse,
   Workspace,
+  LLMGenerationConfig,
 } from '../types/api'
 
 export interface EnterpriseFeatureMeta {
@@ -837,6 +838,7 @@ class ApiClient {
     model: string
     temperature?: number
     max_tokens?: number
+    llm_config?: LLMGenerationConfig | null
   }): Promise<{
     text: string
     model: string
@@ -1498,6 +1500,7 @@ class ApiClient {
       llm_provider?: string | null
       llm_model?: string | null
       llm_credential_id?: string | null
+      llm_config?: LLMGenerationConfig | null
       /** Per-metric LLM override map keyed by metric UUID. */
       metric_llm_overrides?: Record<string, CallImportEvaluationLLMOverride> | null
       /** When true, diarize rows missing transcripts before evaluation. */
@@ -2124,6 +2127,7 @@ class ApiClient {
       llmProvider?: string | null
       llmModel?: string | null
       llmCredentialId?: string | null
+      llmConfig?: LLMGenerationConfig | null
       sttProvider?: string | null
       sttModel?: string | null
       sttCredentialId?: string | null
@@ -2152,6 +2156,9 @@ class ApiClient {
     if (options?.llmModel) body.llm_model = options.llmModel
     if (options?.llmCredentialId !== undefined) {
       body.llm_credential_id = options.llmCredentialId
+    }
+    if (options?.llmConfig !== undefined) {
+      body.llm_config = options.llmConfig
     }
     if (options?.sttProvider) body.stt_provider = options.sttProvider
     if (options?.sttModel) body.stt_model = options.sttModel
@@ -3436,6 +3443,7 @@ class ApiClient {
     count?: number
     length?: string
     temperature?: number
+    llm_config?: LLMGenerationConfig | null
   }): Promise<{ samples: string[]; provider: string; model: string }> {
     const response = await this.client.post('/api/v1/voice-playground/generate-samples', params)
     return response.data
@@ -3712,6 +3720,7 @@ class ApiClient {
     format_style?: string
     provider?: string
     model?: string
+    llm_config?: LLMGenerationConfig | null
   }): Promise<{ content: string; provider: string; model: string }> {
     const response = await this.client.post('/api/v1/prompt-partials/generate', data)
     return response.data
@@ -3722,6 +3731,7 @@ class ApiClient {
     instructions?: string
     provider?: string
     model?: string
+    llm_config?: LLMGenerationConfig | null
   }): Promise<{ content: string; provider: string; model: string }> {
     const response = await this.client.post('/api/v1/prompt-partials/improve', data)
     return response.data

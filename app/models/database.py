@@ -757,6 +757,7 @@ class Evaluator(Base):
     # LLM configuration for evaluation (overrides hardcoded defaults)
     llm_provider = Column(String, nullable=True)  # e.g. "openai", "anthropic", "google"
     llm_model = Column(String, nullable=True)  # e.g. "gpt-4.1", "claude-sonnet-4-20250514"
+    llm_config = Column(JSON, nullable=True)
     
     # Tags for categorization
     tags = Column(JSON, nullable=True)  # Array of tag strings
@@ -2142,6 +2143,7 @@ class CallImportEvaluation(Base):
         ForeignKey("aiproviders.id", ondelete="SET NULL"),
         nullable=True,
     )
+    llm_config = Column(JSON, nullable=True)
     # Optional per-metric LLM override:
     # ``{"<metric_id>": {"provider": "...", "model": "...", "credential_id": "..."}}``.
     # Each entry overrides the run-level default for that metric only;

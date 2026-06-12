@@ -1053,6 +1053,7 @@ export default function CallImportEvaluationDetail() {
       provider: evaluation.llm_provider ?? null,
       model: evaluation.llm_model ?? null,
       credential_id: evaluation.llm_credential_id ?? null,
+      llm_config: evaluation.llm_config ?? null,
     })
     setRerunMetricIds(new Set())
     setRerunError(null)
@@ -1078,25 +1079,25 @@ export default function CallImportEvaluationDetail() {
         rerunLLM.provider !== (evaluation?.llm_provider ?? null) ||
         rerunLLM.model !== (evaluation?.llm_model ?? null) ||
         (rerunLLM.credential_id ?? null) !==
-          (evaluation?.llm_credential_id ?? null)
+          (evaluation?.llm_credential_id ?? null) ||
+        JSON.stringify(rerunLLM.llm_config ?? null) !==
+          JSON.stringify(evaluation?.llm_config ?? null)
       return apiClient.retryCallImportEvaluation(id!, evalId!, {
         metricIds,
-        // ``include_completed`` would be auto-flipped server-side
-        // when ``metricIds`` is set; sending it explicitly here
-        // makes the intent obvious in the network tab.
         includeCompleted: true,
         llmProvider:
           llmChanged && rerunLLM.provider && rerunLLM.model
             ? rerunLLM.provider
             : undefined,
         llmModel:
-          llmChanged && rerunLLM.provider && rerunLLM.model
+          llmChanged && rerunLLM.model && rerunLLM.provider
             ? rerunLLM.model
             : undefined,
         llmCredentialId:
           llmChanged && rerunLLM.provider && rerunLLM.model
             ? rerunLLM.credential_id ?? null
             : undefined,
+        llmConfig: llmChanged ? rerunLLM.llm_config ?? null : undefined,
       })
     },
     onSuccess: () => {

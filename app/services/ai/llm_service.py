@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.models.database import ModelProvider, AIProvider
 from app.services.credentials import resolve_ai_provider
+from app.services.ai.llm_generation_config import build_litellm_kwargs
 
 # LiteLLM will silently drop params the target provider doesn't support
 # rather than raising an error.
@@ -178,6 +179,9 @@ class LLMService:
         temperature: Optional[float] = 0.7,
         max_tokens: Optional[int] = None,
         config: Optional[Dict[str, Any]] = None,
+        llm_config: Optional[Dict[str, Any]] = None,
+        override_llm_config: Optional[Dict[str, Any]] = None,
+        task_defaults: Optional[Dict[str, Any]] = None,
         credential_id: Optional[UUID] = None,
     ) -> Dict[str, Any]:
         """Generate a text response using the specified LLM via LiteLLM.
@@ -186,7 +190,21 @@ class LLMService:
         organization has multiple keys for the same provider; when omitted
         the resolver falls back to the row marked ``is_default`` (or the
         most recently updated active row for back-compat).
+
+        Generation parameters resolve as:
+        override_llm_config > llm_config/config > legacy temperature/max_tokens > task_defaults.
         """
+        gen_kwargs = build_litellm_kwargs(
+            llm_config=llm_config or config,
+            override_llm_config=override_llm_config,
+            legacy_temperature=temperature,
+            legacy_max_tokens=max_tokens,
+            task_defaults=task_defaults,
+        )
+        temperature = gen_kwargs["temperature"]
+        max_tokens = gen_kwargs["max_tokens"]
+        config = gen_kwargs["config"]
+
         start_time = time.time()
 
         # --- resolve API key from database --------------------------------

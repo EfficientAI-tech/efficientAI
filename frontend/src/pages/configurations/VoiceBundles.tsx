@@ -8,6 +8,12 @@ import Button from '../../components/Button'
 import { useToast } from '../../hooks/useToast'
 import { getProviderLabel, getProviderLogo, mapIntegrationToModelProvider } from '../../config/providers'
 import WalkthroughToggleButton from '../../components/walkthrough/WalkthroughToggleButton'
+import LLMAdvancedOptionsPanel from '../../components/providers/LLMAdvancedOptionsPanel'
+import {
+  isLLMGenerationConfigEmpty,
+  summarizeLLMConfig,
+  type LLMGenerationConfig,
+} from '../../config/llmGenerationParams'
 
 export default function VoiceBundles() {
   const queryClient = useQueryClient()
@@ -26,8 +32,7 @@ export default function VoiceBundles() {
     stt_credential_id: null,
     llm_provider: ModelProvider.OPENAI,
     llm_model: 'gpt-4',
-    llm_temperature: 0.7,
-    llm_max_tokens: null,
+    llm_config: { temperature: 0.7 },
     llm_credential_id: null,
     tts_provider: ModelProvider.OPENAI,
     tts_model: 'tts-1',
@@ -239,6 +244,17 @@ export default function VoiceBundles() {
     },
   })
 
+  const bundleLLMConfig = (bundle: VoiceBundle): LLMGenerationConfig | null => {
+    const config: LLMGenerationConfig = { ...(bundle.llm_config || {}) }
+    if (config.temperature == null && bundle.llm_temperature != null) {
+      config.temperature = bundle.llm_temperature
+    }
+    if (config.max_tokens == null && bundle.llm_max_tokens != null) {
+      config.max_tokens = bundle.llm_max_tokens
+    }
+    return isLLMGenerationConfigEmpty(config) ? null : config
+  }
+
   const resetForm = () => {
     const defaultSttProvider = getDefaultProvider(null, 'stt')
     const defaultLlmProvider = getDefaultProvider(null, 'llm')
@@ -257,8 +273,7 @@ export default function VoiceBundles() {
       stt_credential_id: null,
       llm_provider: defaultLlmProvider,
       llm_model: defaultLlmModel,
-      llm_temperature: 0.7,
-      llm_max_tokens: null,
+      llm_config: { temperature: 0.7 },
       llm_credential_id: null,
       tts_provider: defaultTtsProvider,
       tts_model: defaultTtsModel,
@@ -286,8 +301,7 @@ export default function VoiceBundles() {
       stt_credential_id: bundle.stt_credential_id || null,
       llm_provider: bundle.llm_provider ? getDefaultProvider(bundle.llm_provider as ModelProvider, 'llm') : null,
       llm_model: bundle.llm_model || null,
-      llm_temperature: bundle.llm_temperature || 0.7,
-      llm_max_tokens: bundle.llm_max_tokens || null,
+      llm_config: bundleLLMConfig(bundle),
       llm_credential_id: bundle.llm_credential_id || null,
       tts_provider: bundle.tts_provider ? getDefaultProvider(bundle.tts_provider as ModelProvider, 'tts') : null,
       tts_model: bundle.tts_model || null,
@@ -509,10 +523,10 @@ export default function VoiceBundles() {
                             <span className="font-medium">{getProviderLabel(bundle.llm_provider as ModelProvider)}</span>
                             <span className="text-gray-500"> • </span>
                             <span>{bundle.llm_model}</span>
-                            {bundle.llm_temperature && (
+                            {summarizeLLMConfig(bundleLLMConfig(bundle)) && (
                               <>
                                 <span className="text-gray-500"> • </span>
-                                <span>Temp: {bundle.llm_temperature}</span>
+                                <span>{summarizeLLMConfig(bundleLLMConfig(bundle))}</span>
                               </>
                             )}
                           </div>
@@ -1104,33 +1118,18 @@ function VoiceBundleModal({
                     )}
                   </select>
                 </div>
-                <div>
-                  <label htmlFor="llm_temperature" className="block text-sm font-medium text-gray-700 mb-1">
-                    Temperature (0-2)
-                  </label>
-                  <input
-                    id="llm_temperature"
-                    type="number"
-                    min="0"
-                    max="2"
-                    step="0.1"
-                    value={formData.llm_temperature || 0.7}
-                    onChange={(e) => setFormData({ ...formData, llm_temperature: parseFloat(e.target.value) || 0.7 })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                  />
-                </div>
-                <div>
-                  <label htmlFor="llm_max_tokens" className="block text-sm font-medium text-gray-700 mb-1">
-                    Max Tokens (Optional)
-                  </label>
-                  <input
-                    id="llm_max_tokens"
-                    type="number"
-                    min="1"
-                    value={formData.llm_max_tokens || ''}
-                    onChange={(e) => setFormData({ ...formData, llm_max_tokens: e.target.value ? parseInt(e.target.value) : null })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                    placeholder="Leave empty for default"
+                <div className="md:col-span-2">
+                  <LLMAdvancedOptionsPanel
+                    provider={formData.llm_provider}
+                    value={formData.llm_config ?? null}
+                    onChange={(llm_config) =>
+                      setFormData({
+                        ...formData,
+                        llm_config,
+                        llm_temperature: null,
+                        llm_max_tokens: null,
+                      })
+                    }
                   />
                 </div>
                 {renderCredentialPicker(

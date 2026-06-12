@@ -8,6 +8,8 @@ import Button from '../../../components/Button'
 import { ArrowLeft, Edit, Save, X, Phone, Globe, Trash2, AlertCircle, Brain, ChevronDown } from 'lucide-react'
 import { useToast } from '../../../hooks/useToast'
 import { getProviderLabel, getProviderLogo } from '../../../config/providers'
+import LLMAdvancedOptionsPanel from '../../../components/providers/LLMAdvancedOptionsPanel'
+import type { LLMGenerationConfig } from '../../../config/llmGenerationParams'
 
 interface Evaluator {
   id: string
@@ -20,6 +22,7 @@ interface Evaluator {
   metric_ids?: string[] | null
   llm_provider?: string | null
   llm_model?: string | null
+  llm_config?: LLMGenerationConfig | null
   tags?: string[]
   created_at: string
   updated_at: string
@@ -279,6 +282,7 @@ export default function EvaluatorDetail() {
     }
     if (editData.llm_provider) data.llm_provider = editData.llm_provider
     if (editData.llm_model) data.llm_model = editData.llm_model
+    if (editData.llm_config !== undefined) data.llm_config = editData.llm_config
     updateMutation.mutate({ evalId: evaluator.id, data })
   }
 
@@ -878,6 +882,15 @@ export default function EvaluatorDetail() {
                                         <option value="">Select provider first</option>
                                       )}
                                     </select>
+                                  </div>
+                                  <div className="md:col-span-2">
+                                    <LLMAdvancedOptionsPanel
+                                      provider={editData.llm_provider}
+                                      value={editData.llm_config ?? null}
+                                      onChange={(llm_config) =>
+                                        setEditData({ ...editData, llm_config })
+                                      }
+                                    />
                                   </div>
                                 </>
                               )}

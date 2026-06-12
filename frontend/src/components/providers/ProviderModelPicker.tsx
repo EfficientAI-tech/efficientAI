@@ -29,6 +29,8 @@ import { Bot, AudioLines } from 'lucide-react'
 
 import { apiClient } from '../../lib/api'
 import type { Integration } from '../../types/api'
+import LLMAdvancedOptionsPanel from './LLMAdvancedOptionsPanel'
+import type { LLMGenerationConfig } from '../../config/llmGenerationParams'
 
 const PROVIDER_LABELS: Record<string, string> = {
   openai: 'OpenAI',
@@ -54,6 +56,7 @@ export interface ProviderModelValue {
   provider: string | null
   model: string | null
   credential_id?: string | null
+  llm_config?: LLMGenerationConfig | null
 }
 
 interface AIProviderRow {
@@ -107,6 +110,8 @@ export interface ProviderModelPickerProps {
    * without a code change.
    */
   audioCapableOnly?: boolean
+  /** When false, hide the LLM advanced options panel (LLM kind only). */
+  showAdvancedOptions?: boolean
 }
 
 // Per-provider substring fingerprints for "this chat model accepts audio
@@ -142,6 +147,7 @@ export default function ProviderModelPicker({
   allowCredentialPick = false,
   disabled = false,
   audioCapableOnly = false,
+  showAdvancedOptions = true,
 }: ProviderModelPickerProps) {
   const { data: aiProviders = [] } = useQuery<AIProviderRow[]>({
     queryKey: ['ai-providers'],
@@ -353,6 +359,14 @@ export default function ProviderModelPicker({
             ))}
           </select>
         </div>
+      )}
+      {kind === 'llm' && showAdvancedOptions && value.provider && (
+        <LLMAdvancedOptionsPanel
+          provider={value.provider}
+          value={value.llm_config ?? null}
+          disabled={disabled}
+          onChange={(llm_config) => onChange({ ...value, llm_config })}
+        />
       )}
     </div>
   )
