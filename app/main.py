@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.config import load_config_from_file, settings
+from app.config import load_config_from_file, settings, validate_auth_configuration
 from app.core.migration_middleware import MigrationCheckMiddleware
 from app.core.migrations import check_migrations_status, ensure_migrations_directory, run_migrations
 from app.core.rbac_middleware import ReaderReadOnlyMiddleware
@@ -43,6 +43,16 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 60)
 
     ensure_migrations_directory()
+
+    try:
+        validate_auth_configuration()
+        logger.info("Authentication configuration validated")
+    except Exception as e:
+        logger.error("=" * 60)
+        logger.error("CRITICAL: Authentication configuration is invalid!")
+        logger.error("=" * 60)
+        logger.error(f"Error: {e}")
+        raise
 
     try:
         init_db()

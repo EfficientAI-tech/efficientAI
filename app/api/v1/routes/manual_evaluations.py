@@ -11,6 +11,7 @@ from app.dependencies import get_api_key, get_organization_id
 from app.models.database import ManualTranscription, ModelProvider, AudioFile
 from app.models.schemas import MessageResponse, S3ListFilesResponse, S3FileInfo
 from app.services.ai.transcription_service import transcription_service
+from app.services.storage.blob_paths import assert_key_belongs_to_org
 from app.services.storage.s3_service import s3_service
 
 router = APIRouter(prefix="/manual-evaluations", tags=["Manual Evaluations"])
@@ -124,14 +125,13 @@ async def get_presigned_url(
         )
     
     try:
-        from urllib.parse import unquote
-        decoded_key = unquote(file_key)
-        
-        # Verify file exists in S3 (we skip DB check since we are listing from S3 directly)
-        # In a stricter environment, we might want to verify ownership if files are namespaced by org
-        
-        # Generate presigned URL
-        url = s3_service.generate_presigned_url_by_key(decoded_key, expiration=expiration)
+        validated_key = assert_key_belongs_to_org(
+            file_key,
+            organization_id,
+            storage_prefix=s3_service.prefix,
+            decode=True,
+        )
+        url = s3_service.generate_presigned_url_by_key(validated_key, expiration=expiration)
         
         return PresignedUrlResponse(url=url, expires_in=expiration)
     except HTTPException:

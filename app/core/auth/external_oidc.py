@@ -59,6 +59,12 @@ class ExternalOIDCProvider(AuthProvider):
                 status_code=500,
             )
 
+        if not audience:
+            raise AuthError(
+                "AUTH_OIDC_AUDIENCE must be configured for external OIDC.",
+                status_code=500,
+            )
+
         # Derive a sensible default JWKS URI when the operator didn't set one.
         if not jwks_uri:
             jwks_uri = issuer.rstrip("/") + "/.well-known/jwks.json"

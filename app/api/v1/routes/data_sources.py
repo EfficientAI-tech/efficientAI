@@ -8,6 +8,7 @@ import io
 
 from app.dependencies import get_api_key, get_organization_id
 from app.models.schemas import MessageResponse, S3ListFilesResponse, S3FileInfo, S3BrowseResponse, S3FolderInfo
+from app.services.storage.blob_paths import assert_key_belongs_to_org
 from app.services.storage.s3_service import s3_service
 from app.core.exceptions import StorageError
 from uuid import UUID
@@ -206,7 +207,11 @@ async def upload_to_s3(
         )
 
 @router.get("/files/{file_key:path}/download", operation_id="downloadFromS3")
-async def download_from_s3(file_key: str, api_key: str = Depends(get_api_key)):
+async def download_from_s3(
+    file_key: str,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+):
     """Download a file from the S3 bucket."""
     if not s3_service.is_enabled():
         raise HTTPException(
@@ -215,13 +220,20 @@ async def download_from_s3(file_key: str, api_key: str = Depends(get_api_key)):
         )
     
     try:
-        file_bytes = s3_service.download_file_by_key(file_key)
-        filename = file_key.split("/")[-1]
+        validated_key = assert_key_belongs_to_org(
+            file_key,
+            organization_id,
+            storage_prefix=s3_service.prefix,
+        )
+        file_bytes = s3_service.download_file_by_key(validated_key)
+        filename = validated_key.split("/")[-1]
         return StreamingResponse(
             io.BytesIO(file_bytes),
             media_type="application/octet-stream",
             headers={"Content-Disposition": f"attachment; filename=\"{filename}\""}
         )
+    except HTTPException:
+        raise
     except StorageError as e:
         if "not found" in str(e).lower():
             raise HTTPException(
@@ -250,6 +262,7 @@ async def get_s3_presigned_url(
     file_key: str,
     expiration: int = 3600,
     api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
 ):
     """Get presigned URL for S3 file playback/access."""
     if not s3_service.is_enabled():
@@ -259,10 +272,16 @@ async def get_s3_presigned_url(
         )
     
     try:
-        import urllib.parse
-        decoded_key = urllib.parse.unquote(file_key)
-        url = s3_service.generate_presigned_url_by_key(decoded_key, expiration=expiration)
+        validated_key = assert_key_belongs_to_org(
+            file_key,
+            organization_id,
+            storage_prefix=s3_service.prefix,
+            decode=True,
+        )
+        url = s3_service.generate_presigned_url_by_key(validated_key, expiration=expiration)
         return PresignedUrlResponse(url=url, expires_in=expiration)
+    except HTTPException:
+        raise
     except StorageError as e:
         if "not found" in str(e).lower():
             raise HTTPException(
@@ -281,7 +300,11 @@ async def get_s3_presigned_url(
 
 
 @router.delete("/files/{file_key:path}", response_model=MessageResponse, operation_id="deleteFromS3")
-async def delete_from_s3(file_key: str, api_key: str = Depends(get_api_key)):
+async def delete_from_s3(
+    file_key: str,
+    api_key: str = Depends(get_api_key),
+    organization_id: UUID = Depends(get_organization_id),
+):
     """Delete a file from the S3 bucket."""
     if not s3_service.is_enabled():
         raise HTTPException(
@@ -290,8 +313,15 @@ async def delete_from_s3(file_key: str, api_key: str = Depends(get_api_key)):
         )
     
     try:
-        s3_service.delete_file_by_key(file_key)
+        validated_key = assert_key_belongs_to_org(
+            file_key,
+            organization_id,
+            storage_prefix=s3_service.prefix,
+        )
+        s3_service.delete_file_by_key(validated_key)
         return {"message": "File deleted successfully."}
+    except HTTPException:
+        raise
     except StorageError as e:
         if "not found" in str(e).lower():
             raise HTTPException(

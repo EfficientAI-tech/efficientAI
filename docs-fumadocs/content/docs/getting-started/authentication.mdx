@@ -243,7 +243,7 @@ auth:
 
   oidc:
     issuer: "https://<your-tenant>.okta.com"   # REQUIRED
-    audience: "efficientai"                     # expected `aud` claim
+    audience: "efficientai"                     # REQUIRED — expected `aud` claim
     client_id: "0oa..."                         # SPA client id from step 2
 
     # Default org for new users whose token has no org claim.
@@ -258,6 +258,11 @@ auth:
 The backend verifies every incoming Bearer token against the IdP's JWKS,
 which it auto-discovers from `<issuer>/.well-known/openid-configuration`.
 You never copy public keys by hand.
+
+When `external_oidc` is enabled, `issuer` and `audience` are mandatory.
+The application fails at startup if either is unset, and every token's `aud`
+claim must match `audience` — tokens issued for other applications at the
+same IdP are rejected.
 
 The same settings as env vars:
 

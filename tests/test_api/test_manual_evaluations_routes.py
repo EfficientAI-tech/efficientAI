@@ -1,16 +1,29 @@
 """API tests for manual-evaluations routes."""
 
+from uuid import uuid4
 
-def test_list_audio_files_and_presigned_url(authenticated_client, monkeypatch):
+
+def _org_key(org_id, filename: str = "audio.wav", prefix: str = "audio/") -> str:
+    return f"{prefix}organizations/{org_id}/audio/{filename}"
+
+
+def test_list_audio_files_and_presigned_url(authenticated_client, monkeypatch, org_id):
     from app.api.v1.routes import manual_evaluations as manual_routes
 
+    own_key = _org_key(org_id)
     monkeypatch.setattr(manual_routes.s3_service, "is_enabled", lambda: True)
+    monkeypatch.setattr(manual_routes.s3_service, "prefix", "audio/")
+    monkeypatch.setattr(
+        manual_routes.s3_service,
+        "get_organization_root_prefix",
+        lambda organization_id: f"audio/organizations/{organization_id}/",
+    )
     monkeypatch.setattr(
         manual_routes.s3_service,
         "list_audio_files",
         lambda **_kwargs: [
             {
-                "key": "org/audio.wav",
+                "key": own_key,
                 "filename": "audio.wav",
                 "size": 1234,
                 "last_modified": "2026-01-01T00:00:00Z",
@@ -27,11 +40,33 @@ def test_list_audio_files_and_presigned_url(authenticated_client, monkeypatch):
     assert list_response.status_code == 200
     assert list_response.json()["total"] == 1
 
+    encoded_key = own_key.replace("/", "%2F")
     url_response = authenticated_client.get(
-        "/api/v1/manual-evaluations/audio-files/org%2Faudio.wav/presigned-url"
+        f"/api/v1/manual-evaluations/audio-files/{encoded_key}/presigned-url"
     )
     assert url_response.status_code == 200
-    assert "https://example.com/org/audio.wav" in url_response.json()["url"]
+    assert f"https://example.com/{own_key}" in url_response.json()["url"]
+
+
+def test_manual_evaluations_presigned_url_rejects_cross_tenant_key(
+    authenticated_client, monkeypatch, org_id
+):
+    from app.api.v1.routes import manual_evaluations as manual_routes
+
+    monkeypatch.setattr(manual_routes.s3_service, "is_enabled", lambda: True)
+    monkeypatch.setattr(manual_routes.s3_service, "prefix", "audio/")
+    monkeypatch.setattr(
+        manual_routes.s3_service,
+        "get_organization_root_prefix",
+        lambda organization_id: f"audio/organizations/{organization_id}/",
+    )
+
+    victim_key = _org_key(uuid4())
+    encoded_key = victim_key.replace("/", "%2F")
+    response = authenticated_client.get(
+        f"/api/v1/manual-evaluations/audio-files/{encoded_key}/presigned-url"
+    )
+    assert response.status_code == 403
 
 
 def test_transcribe_audio_creates_transcription(authenticated_client, monkeypatch):

@@ -1,7 +1,10 @@
 """Shared object key/path helpers for cloud blob storage backends."""
 
 from typing import Optional
+from urllib.parse import unquote
 import uuid
+
+from fastapi import HTTPException
 
 
 def normalize_prefix(prefix: str) -> str:
@@ -35,6 +38,23 @@ def build_object_key(
 def get_organization_root_prefix(prefix: str, organization_id: str) -> str:
     """Get the root object prefix for a given organization."""
     return f"{normalize_prefix(prefix)}organizations/{organization_id}/"
+
+
+def assert_key_belongs_to_org(
+    file_key: str,
+    organization_id: uuid.UUID,
+    *,
+    storage_prefix: str,
+    decode: bool = False,
+) -> str:
+    """Validate that a blob key belongs to the caller's organization namespace."""
+    key = unquote(file_key) if decode else file_key
+    if "\x00" in key or "/../" in f"/{key}/" or key.startswith("../"):
+        raise HTTPException(status_code=403, detail="Access denied")
+    expected = get_organization_root_prefix(storage_prefix, str(organization_id))
+    if not key.startswith(expected):
+        raise HTTPException(status_code=403, detail="Access denied")
+    return key
 
 
 def content_type_for_format(file_format: str) -> str:
