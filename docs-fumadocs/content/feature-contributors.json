@@ -63,7 +63,7 @@
         {
           "name": "Tejas Narayan",
           "email": "stejasnarayan@gmail.com",
-          "commits": 2
+          "commits": 1
         }
       ],
       "lastReviewed": "2026-06-13"
@@ -77,7 +77,7 @@
         {
           "name": "Tejas Narayan",
           "email": "stejasnarayan@gmail.com",
-          "commits": 2
+          "commits": 1
         }
       ],
       "lastReviewed": "2026-06-13"
@@ -92,11 +92,6 @@
           "name": "aadhar-EAI",
           "email": "aadhar@efficientai.cloud",
           "commits": 2
-        },
-        {
-          "name": "Tejas Narayan",
-          "email": "stejasnarayan@gmail.com",
-          "commits": 2
         }
       ],
       "lastReviewed": "2026-06-13"
@@ -110,7 +105,7 @@
         {
           "name": "Tejas Narayan",
           "email": "stejasnarayan@gmail.com",
-          "commits": 2
+          "commits": 1
         }
       ],
       "lastReviewed": "2026-06-13"
@@ -124,7 +119,7 @@
         {
           "name": "Tejas Narayan",
           "email": "stejasnarayan@gmail.com",
-          "commits": 2
+          "commits": 1
         }
       ],
       "lastReviewed": "2026-06-13"
@@ -413,7 +408,7 @@
         {
           "name": "Tejas Narayan",
           "email": "stejasnarayan@gmail.com",
-          "commits": 2
+          "commits": 1
         }
       ],
       "lastReviewed": "2026-06-13"
@@ -499,11 +494,6 @@
           "name": "aadhar-EAI",
           "email": "aadhar@efficientai.cloud",
           "commits": 2
-        },
-        {
-          "name": "Tejas Narayan",
-          "email": "stejasnarayan@gmail.com",
-          "commits": 2
         }
       ],
       "lastReviewed": "2026-06-13"
@@ -551,7 +541,7 @@
         {
           "name": "Tejas Narayan",
           "email": "stejasnarayan@gmail.com",
-          "commits": 2
+          "commits": 1
         }
       ],
       "lastReviewed": "2026-06-13"
@@ -598,7 +588,7 @@
   ],
   "summary": {
     "featureCount": 35,
-    "contributorCount": 41,
+    "contributorCount": 39,
     "skippedBots": 0
   }
 }
