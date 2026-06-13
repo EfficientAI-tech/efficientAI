@@ -13,6 +13,8 @@ const featureDocs = new Set([
   'products/evaluators',
   'products/metrics',
   'products/playground',
+  'products/voice-playground',
+  'products/call-imports',
   'products/alerting',
   'products/prompt-optimization',
   'products/prompt-partials',

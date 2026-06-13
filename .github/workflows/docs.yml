@@ -26,7 +26,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: docs-fumadocs/package-lock.json
 
@@ -49,11 +49,19 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Download docs site
         uses: actions/download-artifact@v4
         with:
           name: docs-site
           path: out
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
@@ -61,6 +69,15 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Deploy enterprise docs gate
+        run: bash deploy.sh
+        working-directory: docs-fumadocs/lambda-edge/enterprise-auth
+        env:
+          AWS_REGION: us-east-1
+          DOCS_AUTH_LAMBDA_NAME: ${{ secrets.DOCS_AUTH_LAMBDA_NAME }}
+          DOCS_ENTERPRISE_PASSWORD: ${{ secrets.DOCS_ENTERPRISE_PASSWORD }}
+          DOCS_ENTERPRISE_COOKIE_SECRET: ${{ secrets.DOCS_ENTERPRISE_COOKIE_SECRET }}
 
       - name: Deploy to S3
         run: aws s3 sync ./out s3://${{ secrets.AWS_S3_BUCKET }} --delete

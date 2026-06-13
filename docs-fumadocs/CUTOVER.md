@@ -11,6 +11,8 @@ This runbook tracks the Fumadocs rollout and rollback strategy.
    - `/docs/getting-started/installation`
    - `/docs/products/agents`
    - `/docs/monitoring/calls`
+   - `/docs/enterprise/unlock/` (public unlock form)
+   - `/docs/enterprise/overview/` (requires CloudFront Lambda@Edge password gate in production)
 4. Verify contributor sections render on all feature pages.
 5. Record cutover timestamp in the release notes.
 

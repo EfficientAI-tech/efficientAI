@@ -6,9 +6,10 @@
 
 # test & build
 /coverage
-/.next/
+.next/
 /out/
 /build
+/lambda-edge/**/dist/
 *.tsbuildinfo
 
 # misc
