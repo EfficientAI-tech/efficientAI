@@ -32,3 +32,9 @@ npm run ci:check
 Deployment is handled by `.github/workflows/docs.yml` (the `deploy` job) and publishes static output from `docs-fumadocs/out`.
 
 Rollback instructions are documented in `CUTOVER.md`.
+
+## Enterprise documentation
+
+Enterprise feature guides live under `content/docs/enterprise/`. They are excluded from the public search index and marked `noindex`.
+
+Production access is gated at CloudFront with Lambda@Edge (`lambda-edge/enterprise-auth/`). Deployment is handled by the docs GitHub Actions workflow using repository secrets for the enterprise password and cookie signing secret.

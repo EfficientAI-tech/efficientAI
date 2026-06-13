@@ -7,6 +7,8 @@
     "evaluators",
     "metrics",
     "playground",
+    "voice-playground",
+    "call-imports",
     "alerting",
     "prompt-optimization",
     "prompt-partials"

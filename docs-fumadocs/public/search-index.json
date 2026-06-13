@@ -1,6 +1,6 @@
 {
-  "generatedAt": "2026-06-09T14:48:50.806Z",
-  "count": 28,
+  "generatedAt": "2026-06-13T19:35:24.170Z",
+  "count": 30,
   "records": [
     {
       "id": "advanced/architecture",
@@ -172,6 +172,15 @@
       "content": "Alerting What is Alerting? Alerting lets you set up automatic notifications when something important happens with your voice AI agents. Instead of manually checking dashboards, you define rules — and EfficientAI will notify you via Slack , email , or both when those rules are triggered. Think of it as a smoke detector for your voice AI operations. You tell it what to watch (e.g., \"error rate is above 10%\"), and it will ring the alarm when something goes wrong. Quick Example \"If the average latency of my Customer Support Agent exceeds 3 seconds over the last 30 minutes , send a Slack notification to ops alerts.\" That's it — one alert rule, and you'll never miss a latency spike again. Key Concepts Alert An Alert is a monitoring rule. It defines: What to measure (metric + aggregation) When to fire (threshold + operator) How far back to look (time window) Who to notify (emails + webhooks) How often to notify (frequency / cooldown) Alert History Every time an alert's condition is met and fires, an Alert History record is created. This gives you a full audit trail of when alerts were triggered, what the value was, and whether notifications were sent. Setting Up an Alert Step 1: Navigate to Alerts From the sidebar, go to Alerting Alerts . You'll see a list of all configured alerts. Step 2: Create a New Alert Click Create Alert and fill in the following: Basic Information | Field | Required | Description | | | | | | Alert Name | Yes | A descriptive name, e.g., \"High Error Rate Production\" | | Description | No | Optional notes about what this alert monitors | Metric Condition This is the core of your alert — the rule that determines when it fires. | Field | Required | Description | | | | | | Metric | Yes | What to measure (see ) | | Aggregation | Yes | How to combine values over the time window (see ) | | Operator | Yes | The comparison operator ( , , , , , ) | | Threshold | Yes | The value to compare against | | Time Window | Yes | How many minutes of data to look back (e.g., = last 1 hour) | Example: over a window means: \"If the average latency across all calls in the last 30 minutes exceeds 3 seconds, fire the alert.\" Agent Selection Choose which agents this alert applies to: All Agents — monitors every agent in your organization (default) Specific Agents — select one or more agents to scope the alert Notification Settings | Field | Required | Description | | | | | | Notification Frequency | Yes | How often to re notify if the condition persists (see ) | | Email Recipients | No | One or more email addresses to receive alert emails | | Webhooks | No | One or more webhook URLs (e.g., Slack incoming webhooks) | You must configure at least one email or webhook for notifications to work. Step 3: Save Click Create Alert . Your alert is now Active and will be evaluated automatically. Available Metrics | Metric | Value | Description | | | | | | Number of Calls | | Total count of calls in the time window | | Call Duration | | Duration of calls (in seconds) | | Error Rate | | Percentage of calls that resulted in errors | | Success Rate | | Percentage of calls that completed successfully | | Latency | | Response latency of the voice AI agent | | Custom | | Custom metric (for advanced use cases) | Aggregations Aggregations determine how metric values are combined over the time window: | Aggregation | Value | Description | | | | | | Sum | | Total sum of all values | | Average | | Arithmetic mean of all values | | Count | | Number of data points | | Minimum | | Lowest value in the window | | Maximum | | Highest value in the window | Operators | Operator | Description | | | | | | Greater than | | | Less than | | | Greater than or equal to | | | Less than or equal to | | | Equal to | | | Not equal to | Notification Channels Slack Webhooks EfficientAI sends rich Slack messages using formatting. Each notification includes: Alert name and severity The triggered metric value vs. the threshold Timestamp and agent scope To set up a Slack webhook: 1. Go t"
     },
     {
+      "id": "products/call-imports",
+      "url": "/docs/products/call-imports",
+      "title": "Call Imports",
+      "breadcrumbs": [
+        "Products"
+      ],
+      "content": "Call Imports Call Imports lets you bulk import production call recordings via CSV and run batch evaluations on them. Enterprise feature — requires in your . Full documentation is available in the (password required). At a glance Upload CSV datasets and optional audio files Map columns with reusable schemas Run metrics and insights across imported production calls Contact the EfficientAI team for a license and enterprise documentation access."
+    },
+    {
       "id": "products/evaluators",
       "url": "/docs/products/evaluators",
       "title": "Evaluators",
@@ -214,7 +223,7 @@
       "breadcrumbs": [
         "Products"
       ],
-      "content": "Prompt Optimization Prompt Optimization is an enterprise feature for iteratively improving agent prompts using evaluation feedback. What gets optimized Each run starts from a seed prompt: provider prompt, if available, otherwise internal agent description. The optimizer generates candidate prompts, evaluates them against available examples and enabled metrics, and ranks them by score. Run configuration Common run controls include: for evaluation budget for examples per iteration These settings determine optimization depth, runtime, and cost. Candidate workflow For each optimization run: 1. Review generated candidates and their scores. 2. Compare candidate prompt text against the seed prompt. 3. Accept the candidate you want to promote. 4. Optionally Push to Provider to update the linked external agent prompt. Push behavior When a candidate is pushed: EfficientAI updates the prompt in the external provider, updates local agent prompt fields, records push timing for traceability. Best practices Use representative completed evaluator results as optimization data. Keep enabled metric sets stable while comparing candidates. Review prompt semantics in addition to score before pushing."
+      "content": "Prompt Optimization Prompt Optimization is an enterprise feature for iteratively improving agent prompts using evaluation feedback. Enterprise feature — requires in your . Full documentation is available in the (password required). At a glance Generate and rank candidate prompts from evaluation feedback Accept winning candidates and optionally push to your voice provider Control optimization depth with and Contact the EfficientAI team for a license and enterprise documentation access."
     },
     {
       "id": "products/prompt-partials",
@@ -233,6 +242,15 @@
         "Products"
       ],
       "content": "Scenarios A Scenario defines the goal and context for a test conversation. Creating a scenario How scenarios are created EfficientAI supports three scenario creation paths: 1. Generate from Agent Prompt (AI assisted) Generate scenario drafts from the selected agent's prompt/description. 2. Generate from Call data Derive scenario content from call transcripts or call data. 3. Create Manually Write a fully custom scenario. Scenario structure | Field | Description | | | | | | Scenario title. | | | What should happen in the conversation. | | | Structured key/value expectations for the test. | | | Optional linked agent for context. | How scenarios are used Scenarios are used to: guide persona behavior during tests, provide evaluation context for scoring, keep testing reproducible across repeated runs. A good scenario is specific enough to be measurable, but open enough to preserve natural conversation flow."
+    },
+    {
+      "id": "products/voice-playground",
+      "url": "/docs/products/voice-playground",
+      "title": "Voice Playground",
+      "breadcrumbs": [
+        "Products"
+      ],
+      "content": "Voice Playground Voice Playground lets you A/B test TTS providers with real synthesis, blind tests, and automated evaluation. Enterprise feature — requires in your . Full documentation is available in the (password required). At a glance Compare multiple voices on the same script Run benchmark simulations and blind test shares Evaluate with metrics enabled for the Voice Playground surface Contact the EfficientAI team for a license and enterprise documentation access."
     },
     {
       "id": "reference/cli-commands",

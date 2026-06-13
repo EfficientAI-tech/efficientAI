@@ -8,44 +8,13 @@ sidebar_position: 7
 
 Prompt Optimization is an enterprise feature for iteratively improving agent prompts using evaluation feedback.
 
-## What gets optimized
+> **Enterprise feature** — requires `gepa_optimization` in your `EFFICIENTAI_LICENSE`. Full documentation is available in the [Enterprise docs](/docs/enterprise/prompt-optimization) (password required).
 
-Each run starts from a seed prompt:
+## At a glance
 
-- provider prompt, if available, otherwise
-- internal agent description.
+- Generate and rank candidate prompts from evaluation feedback
+- Accept winning candidates and optionally push to your voice provider
+- Control optimization depth with `max_metric_calls` and `minibatch_size`
 
-The optimizer generates candidate prompts, evaluates them against available examples and enabled metrics, and ranks them by score.
-
-## Run configuration
-
-Common run controls include:
-
-- `max_metric_calls` for evaluation budget
-- `minibatch_size` for examples per iteration
-
-These settings determine optimization depth, runtime, and cost.
-
-## Candidate workflow
-
-For each optimization run:
-
-1. Review generated candidates and their scores.
-2. Compare candidate prompt text against the seed prompt.
-3. **Accept** the candidate you want to promote.
-4. Optionally **Push to Provider** to update the linked external agent prompt.
-
-## Push behavior
-
-When a candidate is pushed:
-
-- EfficientAI updates the prompt in the external provider,
-- updates local agent prompt fields,
-- records push timing for traceability.
-
-## Best practices
-
-- Use representative completed evaluator results as optimization data.
-- Keep enabled metric sets stable while comparing candidates.
-- Review prompt semantics in addition to score before pushing.
+Contact the EfficientAI team for a license and enterprise documentation access.
 
