@@ -59,7 +59,13 @@
       "docPath": "docs-fumadocs/content/docs/enterprise/call-imports.mdx",
       "historyPath": "docs-fumadocs/content/docs/enterprise/call-imports.mdx",
       "owners": [],
-      "contributors": [],
+      "contributors": [
+        {
+          "name": "Tejas Narayan",
+          "email": "stejasnarayan@gmail.com",
+          "commits": 1
+        }
+      ],
       "lastReviewed": "2026-06-13"
     },
     {
@@ -67,7 +73,13 @@
       "docPath": "docs-fumadocs/content/docs/enterprise/overview.mdx",
       "historyPath": "docs-fumadocs/content/docs/enterprise/overview.mdx",
       "owners": [],
-      "contributors": [],
+      "contributors": [
+        {
+          "name": "Tejas Narayan",
+          "email": "stejasnarayan@gmail.com",
+          "commits": 1
+        }
+      ],
       "lastReviewed": "2026-06-13"
     },
     {
@@ -75,7 +87,13 @@
       "docPath": "docs-fumadocs/content/docs/enterprise/prompt-optimization.mdx",
       "historyPath": "docs-fumadocs/content/docs/enterprise/prompt-optimization.mdx",
       "owners": [],
-      "contributors": [],
+      "contributors": [
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 2
+        }
+      ],
       "lastReviewed": "2026-06-13"
     },
     {
@@ -83,7 +101,13 @@
       "docPath": "docs-fumadocs/content/docs/enterprise/unlock.mdx",
       "historyPath": "docs-fumadocs/content/docs/enterprise/unlock.mdx",
       "owners": [],
-      "contributors": [],
+      "contributors": [
+        {
+          "name": "Tejas Narayan",
+          "email": "stejasnarayan@gmail.com",
+          "commits": 1
+        }
+      ],
       "lastReviewed": "2026-06-13"
     },
     {
@@ -91,7 +115,13 @@
       "docPath": "docs-fumadocs/content/docs/enterprise/voice-playground.mdx",
       "historyPath": "docs-fumadocs/content/docs/enterprise/voice-playground.mdx",
       "owners": [],
-      "contributors": [],
+      "contributors": [
+        {
+          "name": "Tejas Narayan",
+          "email": "stejasnarayan@gmail.com",
+          "commits": 1
+        }
+      ],
       "lastReviewed": "2026-06-13"
     },
     {
@@ -104,9 +134,14 @@
       ],
       "contributors": [
         {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 1
+        },
+        {
           "name": "Tejas Narayan",
           "email": "stejasnarayan@gmail.com",
-          "commits": 2
+          "commits": 1
         }
       ],
       "lastReviewed": "2026-06-13"
@@ -369,7 +404,13 @@
       "docPath": "docs-fumadocs/content/docs/products/call-imports.mdx",
       "historyPath": "docs-fumadocs/content/docs/products/call-imports.mdx",
       "owners": [],
-      "contributors": [],
+      "contributors": [
+        {
+          "name": "Tejas Narayan",
+          "email": "stejasnarayan@gmail.com",
+          "commits": 1
+        }
+      ],
       "lastReviewed": "2026-06-13"
     },
     {
@@ -496,7 +537,13 @@
       "docPath": "docs-fumadocs/content/docs/products/voice-playground.mdx",
       "historyPath": "docs-fumadocs/content/docs/products/voice-playground.mdx",
       "owners": [],
-      "contributors": [],
+      "contributors": [
+        {
+          "name": "Tejas Narayan",
+          "email": "stejasnarayan@gmail.com",
+          "commits": 1
+        }
+      ],
       "lastReviewed": "2026-06-13"
     },
     {
@@ -541,7 +588,7 @@
   ],
   "summary": {
     "featureCount": 35,
-    "contributorCount": 31,
+    "contributorCount": 39,
     "skippedBots": 0
   }
 }
