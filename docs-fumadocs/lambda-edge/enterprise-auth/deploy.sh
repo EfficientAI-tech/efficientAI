@@ -27,6 +27,10 @@ aws lambda update-function-code \
   --function-name "${FUNCTION_NAME}" \
   --zip-file "fileb://${ZIP_PATH}"
 
+aws lambda wait function-updated \
+  --region "${AWS_REGION}" \
+  --function-name "${FUNCTION_NAME}"
+
 NEW_VERSION="$(aws lambda publish-version \
   --region "${AWS_REGION}" \
   --function-name "${FUNCTION_NAME}" \
