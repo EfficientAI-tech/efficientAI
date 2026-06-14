@@ -9,10 +9,18 @@ def _org_key(org_id, filename: str = "audio.wav", prefix: str = "audio/") -> str
     return f"{prefix}organizations/{org_id}/audio/{filename}"
 
 
-def _patch_storage(monkeypatch, data_routes, org_id, *, prefix: str = "audio/"):
+def _patch_storage(
+    monkeypatch, data_routes, org_id, *, prefix: str = "audio/", blob_provider: str = "s3"
+):
+    from app.config import settings
+
+    if blob_provider == "gcs":
+        monkeypatch.setattr(settings, "GCS_PREFIX", prefix.rstrip("/"), raising=False)
+    else:
+        monkeypatch.setattr(settings, "S3_PREFIX", prefix.rstrip("/"), raising=False)
+
     monkeypatch.setattr(data_routes.s3_service, "is_enabled", lambda: True)
     monkeypatch.setattr(data_routes.s3_service, "get_status_message", lambda: "ok")
-    monkeypatch.setattr(data_routes.s3_service, "prefix", prefix)
     monkeypatch.setattr(
         data_routes.s3_service,
         "get_organization_root_prefix",
@@ -51,7 +59,9 @@ def test_s3_status_list_presigned_and_delete(
     from app.config import settings
 
     monkeypatch.setattr(settings, "BLOB_STORAGE_PROVIDER", blob_provider)
-    _patch_storage(monkeypatch, data_routes, org_id, prefix=prefix)
+    _patch_storage(
+        monkeypatch, data_routes, org_id, prefix=prefix, blob_provider=blob_provider
+    )
     own_key = _org_key(org_id, prefix=prefix)
     encoded_key = own_key.replace("/", "%2F")
 
@@ -81,7 +91,9 @@ def test_blob_routes_reject_cross_tenant_keys(
     from app.config import settings
 
     monkeypatch.setattr(settings, "BLOB_STORAGE_PROVIDER", blob_provider)
-    _patch_storage(monkeypatch, data_routes, org_id, prefix=prefix)
+    _patch_storage(
+        monkeypatch, data_routes, org_id, prefix=prefix, blob_provider=blob_provider
+    )
 
     victim_org_id = uuid4()
     victim_key = _org_key(victim_org_id, prefix=prefix)
@@ -111,7 +123,9 @@ def test_blob_download_allows_own_org_key(
     from app.config import settings
 
     monkeypatch.setattr(settings, "BLOB_STORAGE_PROVIDER", blob_provider)
-    _patch_storage(monkeypatch, data_routes, org_id, prefix=prefix)
+    _patch_storage(
+        monkeypatch, data_routes, org_id, prefix=prefix, blob_provider=blob_provider
+    )
     own_key = _org_key(org_id, prefix=prefix)
 
     response = authenticated_client.get(

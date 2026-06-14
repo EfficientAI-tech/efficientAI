@@ -441,6 +441,9 @@ def test_process_call_import_row_falls_back_to_csv_url_when_lookup_fails(
     fake_client = _LookupFailsFallbackWorks()
     fake_s3 = _FakeS3(enabled=True)
     task_module = _patch_dependencies(monkeypatch, db_session, fake_client, fake_s3)
+    public_calls = _patch_public_download(
+        monkeypatch, return_value=(b"fallback-audio", "audio/mpeg")
+    )
 
     result = task_module.process_call_import_row_task.run(str(row.id))
 
@@ -451,7 +454,8 @@ def test_process_call_import_row_falls_back_to_csv_url_when_lookup_fails(
     # Lookup attempted exactly once with the call_sid, then download from
     # the original CSV URL (no other URL was tried).
     assert fake_client.resolved_calls == [row.conversation_id]
-    assert fake_client.calls == [csv_url]
+    assert fake_client.calls == []
+    assert public_calls == [csv_url]
 
     assert row.status == CallImportRowStatus.COMPLETED
     assert row.recording_size_bytes == len(b"fallback-audio")
@@ -491,6 +495,12 @@ def test_process_call_import_row_fails_when_both_lookup_and_csv_url_fail(
     fake_client = _BothPathsFail()
     fake_s3 = _FakeS3(enabled=True)
     task_module = _patch_dependencies(monkeypatch, db_session, fake_client, fake_s3)
+    _patch_public_download(
+        monkeypatch,
+        side_effect=lambda url: (_ for _ in ()).throw(
+            ExotelAuthError(f"auth rejected for {url}")
+        ),
+    )
 
     monkeypatch.setattr(
         task_module.process_call_import_row_task,
@@ -582,6 +592,9 @@ def test_process_call_import_row_recovers_via_csv_url_after_transient_lookup(
     fake_client = _LookupTransientCsvOk()
     fake_s3 = _FakeS3(enabled=True)
     task_module = _patch_dependencies(monkeypatch, db_session, fake_client, fake_s3)
+    public_calls = _patch_public_download(
+        monkeypatch, return_value=(b"recovered-via-fallback", "audio/mpeg")
+    )
 
     result = task_module.process_call_import_row_task.run(str(row.id))
 
@@ -589,7 +602,8 @@ def test_process_call_import_row_recovers_via_csv_url_after_transient_lookup(
     db_session.refresh(row)
     db_session.refresh(call_import)
     assert fake_client.resolved_calls == [row.conversation_id]
-    assert fake_client.calls == [csv_url]
+    assert fake_client.calls == []
+    assert public_calls == [csv_url]
     assert row.status == CallImportRowStatus.COMPLETED
     assert row.recording_size_bytes == len(b"recovered-via-fallback")
     assert call_import.status == CallImportStatus.COMPLETED
@@ -622,6 +636,12 @@ def test_process_call_import_row_retries_when_both_tiers_transient(
     fake_client = _BothTransient()
     fake_s3 = _FakeS3(enabled=True)
     task_module = _patch_dependencies(monkeypatch, db_session, fake_client, fake_s3)
+    public_calls = _patch_public_download(
+        monkeypatch,
+        side_effect=lambda url: (_ for _ in ()).throw(
+            ExotelTransientError("503 fetching recording")
+        ),
+    )
 
     monkeypatch.setattr(
         task_module.process_call_import_row_task,
@@ -637,7 +657,8 @@ def test_process_call_import_row_retries_when_both_tiers_transient(
     assert "Transient" in (row.error_message or "")
     assert fake_client.resolved_calls == [row.conversation_id]
     # Fallback was attempted with the CSV URL before retry was scheduled.
-    assert fake_client.calls == [row.recording_url]
+    assert fake_client.calls == []
+    assert public_calls == [row.recording_url]
 
 
 def test_process_call_import_row_uses_conversation_id_when_provider_set_without_pin(

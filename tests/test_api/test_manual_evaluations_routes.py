@@ -9,10 +9,11 @@ def _org_key(org_id, filename: str = "audio.wav", prefix: str = "audio/") -> str
 
 def test_list_audio_files_and_presigned_url(authenticated_client, monkeypatch, org_id):
     from app.api.v1.routes import manual_evaluations as manual_routes
+    from app.config import settings
 
     own_key = _org_key(org_id)
+    monkeypatch.setattr(settings, "S3_PREFIX", "audio", raising=False)
     monkeypatch.setattr(manual_routes.s3_service, "is_enabled", lambda: True)
-    monkeypatch.setattr(manual_routes.s3_service, "prefix", "audio/")
     monkeypatch.setattr(
         manual_routes.s3_service,
         "get_organization_root_prefix",
@@ -52,9 +53,10 @@ def test_manual_evaluations_presigned_url_rejects_cross_tenant_key(
     authenticated_client, monkeypatch, org_id
 ):
     from app.api.v1.routes import manual_evaluations as manual_routes
+    from app.config import settings
 
+    monkeypatch.setattr(settings, "S3_PREFIX", "audio", raising=False)
     monkeypatch.setattr(manual_routes.s3_service, "is_enabled", lambda: True)
-    monkeypatch.setattr(manual_routes.s3_service, "prefix", "audio/")
     monkeypatch.setattr(
         manual_routes.s3_service,
         "get_organization_root_prefix",

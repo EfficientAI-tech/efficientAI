@@ -118,6 +118,14 @@ class Settings(BaseSettings):
     PLIVO_VERIFY_APP_UUID: str = ""
     PLIVO_WEBHOOK_BASE_URL: str = ""
 
+    # Recording URL fetch safety (SSRF guards for CSV/direct-URL imports)
+    RECORDING_URL_ALLOWED_HOST_SUFFIXES: List[str] = [
+        "exotel.com",
+        "plivo.com",
+        "amazonaws.com",
+        "cloudfront.net",
+    ]
+
     # Judge Alignment (AlignEval-style hybrid integration).
     # Operator-only knobs. Per-org thresholds and judge model selection
     # live in the database / UI, not here.
