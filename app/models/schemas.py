@@ -719,6 +719,22 @@ class AIProviderResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class LLMGenerationConfig(BaseModel):
+    """User-tunable LLM sampling / generation parameters."""
+
+    temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
+    max_tokens: Optional[int] = Field(None, gt=0)
+    top_p: Optional[float] = Field(None, ge=0.0, le=1.0)
+    top_k: Optional[int] = Field(None, ge=0)
+    frequency_penalty: Optional[float] = Field(None, ge=-2.0, le=2.0)
+    presence_penalty: Optional[float] = Field(None, ge=-2.0, le=2.0)
+    seed: Optional[int] = Field(None, ge=0)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return only explicitly set fields."""
+        return self.model_dump(exclude_none=True)
+
+
 # VoiceBundle Schemas
 class VoiceBundleCreate(BaseModel):
     """Schema for creating a VoiceBundle."""
@@ -1002,6 +1018,7 @@ class EvaluatorCreate(BaseModel):
     metric_ids: Optional[List[UUID]] = None
     llm_provider: Optional[ModelProvider] = None
     llm_model: Optional[str] = None
+    llm_config: Optional[Dict[str, Any]] = None
     tags: Optional[List[str]] = None
 
 
@@ -1015,6 +1032,7 @@ class EvaluatorUpdate(BaseModel):
     metric_ids: Optional[List[UUID]] = None
     llm_provider: Optional[ModelProvider] = None
     llm_model: Optional[str] = None
+    llm_config: Optional[Dict[str, Any]] = None
     tags: Optional[List[str]] = None
 
 
@@ -1031,6 +1049,7 @@ class EvaluatorResponse(BaseModel):
     metric_ids: Optional[List[UUID]] = None
     llm_provider: Optional[ModelProvider] = None
     llm_model: Optional[str] = None
+    llm_config: Optional[Dict[str, Any]] = None
     tags: Optional[List[str]]
     created_at: datetime
     updated_at: datetime
@@ -2591,6 +2610,10 @@ class CallImportEvaluationLLMOverride(BaseModel):
         default=None,
         description="Optional AIProvider id when the org has multiple credentials.",
     )
+    llm_config: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Optional per-metric generation parameters (temperature, top_p, etc.).",
+    )
 
 
 CallImportEvaluationTranscriptSource = Literal["production", "diarised"]
@@ -2661,6 +2684,10 @@ class CallImportEvaluationCreate(BaseModel):
     llm_credential_id: Optional[UUID] = Field(
         default=None,
         description="Optional AIProvider row to pin for the run-level LLM.",
+    )
+    llm_config: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Run-level LLM generation parameters (temperature, top_p, etc.).",
     )
     metric_llm_overrides: Optional[
         Dict[str, CallImportEvaluationLLMOverride]
@@ -2876,6 +2903,10 @@ class CallImportEvaluationRetryRequest(BaseModel):
             "When omitted, the resolver falls back to the org default."
         ),
     )
+    llm_config: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Override run-level LLM generation parameters for this retry.",
+    )
     metric_llm_overrides: Optional[
         Dict[str, CallImportEvaluationLLMOverride]
     ] = Field(
@@ -3023,6 +3054,7 @@ class CallImportEvaluationResponse(BaseModel):
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None
     llm_credential_id: Optional[UUID] = None
+    llm_config: Optional[Dict[str, Any]] = None
     metric_llm_overrides: Optional[Dict[str, Any]] = None
     stt_provider: Optional[str] = None
     stt_model: Optional[str] = None
@@ -4201,5 +4233,71 @@ class WorkspaceResponse(BaseModel):
     is_default: bool
     created_at: datetime
     updated_at: datetime
+    role_id: Optional[UUID] = None
+    role_name: Optional[str] = None
+    capabilities: List[str] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class WorkspaceRoleBase(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
+    capabilities: List[str] = Field(default_factory=list)
+
+
+class WorkspaceRoleCreate(WorkspaceRoleBase):
+    pass
+
+
+class WorkspaceRoleUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    description: Optional[str] = None
+    capabilities: Optional[List[str]] = None
+
+
+class WorkspaceRoleResponse(BaseModel):
+    id: UUID
+    organization_id: UUID
+    name: str
+    description: Optional[str] = None
+    capabilities: List[str]
+    is_system: bool
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class WorkspaceMemberResponse(BaseModel):
+    id: UUID
+    workspace_id: UUID
+    user_id: UUID
+    role_id: UUID
+    role_name: str
+    user_email: str
+    user_name: Optional[str] = None
+    added_by_user_id: Optional[UUID] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class WorkspaceMemberCreate(BaseModel):
+    user_id: UUID
+    role_id: UUID
+
+
+class WorkspaceMemberUpdate(BaseModel):
+    role_id: UUID
+
+
+class CapabilityInfoResponse(BaseModel):
+    key: str
+    label: str
+
+
+class CapabilityDomainResponse(BaseModel):
+    key: str
+    label: str
+    capabilities: List[CapabilityInfoResponse]

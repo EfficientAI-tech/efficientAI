@@ -348,9 +348,10 @@ class TestAgentService:
                 llm_model=voice_bundle.llm_model,
                 organization_id=organization_id,
                 db=db,
-                temperature=voice_bundle.llm_temperature or 0.7,
+                llm_config=voice_bundle.llm_config,
+                temperature=voice_bundle.llm_temperature,
                 max_tokens=voice_bundle.llm_max_tokens,
-                config=voice_bundle.llm_config,
+                task_defaults={"temperature": 0.7},
             )
 
             test_agent_text = llm_result.get("text", "").strip()

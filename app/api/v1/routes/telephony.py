@@ -23,6 +23,7 @@ from app.models.schemas import (
     TelephonyVerifyStartResponse,
 )
 from app.services.telephony.telephony_service import telephony_service
+from app.services.telephony.webhook_auth import verify_plivo_webhook
 
 router = APIRouter(prefix="/telephony", tags=["Telephony"])
 
@@ -334,6 +335,7 @@ async def _read_webhook_params(request: Request) -> Dict[str, Any]:
 @router.post("/webhooks/answer")
 async def telephony_answer_webhook(request: Request, db: Session = Depends(get_db)):
     params = await _read_webhook_params(request)
+    verify_plivo_webhook(request, params, "answer", db)
     xml = telephony_service.handle_answer_webhook(params, db)
     return Response(content=xml, media_type="application/xml")
 
@@ -341,6 +343,7 @@ async def telephony_answer_webhook(request: Request, db: Session = Depends(get_d
 @router.post("/webhooks/events")
 async def telephony_events_webhook(request: Request, db: Session = Depends(get_db)):
     params = await _read_webhook_params(request)
+    verify_plivo_webhook(request, params, "events", db)
     telephony_service.handle_event_webhook(params, db)
     return {"status": "ok"}
 
@@ -348,5 +351,6 @@ async def telephony_events_webhook(request: Request, db: Session = Depends(get_d
 @router.post("/webhooks/masking")
 async def telephony_masking_webhook(request: Request, db: Session = Depends(get_db)):
     params = await _read_webhook_params(request)
+    verify_plivo_webhook(request, params, "masking", db)
     xml = telephony_service.handle_masking_webhook(params, db)
     return Response(content=xml, media_type="application/xml")

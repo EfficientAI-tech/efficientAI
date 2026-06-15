@@ -139,6 +139,10 @@ they can do.
 The role is stored per membership, so the *same user* can be an `admin`
 in one org and a `reader` in another.
 
+:::note Organization role is not the same as workspace role
+Organization roles (`reader` / `writer` / `admin`) apply org-wide. **Workspace roles** (`Viewer` / `Editor` / `Workspace Admin`) apply per workspace and control access to call imports, metrics, agents, and other scoped data in the active workspace. Both layers apply together — for example, an org **writer** with workspace **Viewer** can browse a workspace but cannot import or delete calls there. See [Workspaces — Access control](/docs/getting-started/workspaces#access-control-organization-vs-workspace) for the full hierarchy and action matrix.
+:::
+
 ### Inviting a teammate
 
 Admins invite teammates from **Settings → Team**. An invitation captures
@@ -243,7 +247,7 @@ auth:
 
   oidc:
     issuer: "https://<your-tenant>.okta.com"   # REQUIRED
-    audience: "efficientai"                     # expected `aud` claim
+    audience: "efficientai"                     # REQUIRED — expected `aud` claim
     client_id: "0oa..."                         # SPA client id from step 2
 
     # Default org for new users whose token has no org claim.
@@ -258,6 +262,11 @@ auth:
 The backend verifies every incoming Bearer token against the IdP's JWKS,
 which it auto-discovers from `<issuer>/.well-known/openid-configuration`.
 You never copy public keys by hand.
+
+When `external_oidc` is enabled, `issuer` and `audience` are mandatory.
+The application fails at startup if either is unset, and every token's `aud`
+claim must match `audience` — tokens issued for other applications at the
+same IdP are rejected.
 
 The same settings as env vars:
 

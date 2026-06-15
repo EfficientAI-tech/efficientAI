@@ -1192,14 +1192,15 @@ def evaluate_with_llm(
     )
 
     evaluation_start_time = time.time()
+    evaluator_llm_config = getattr(evaluator, "llm_config", None) if evaluator else None
     llm_result = llm_service.generate_response(
         messages=messages,
         llm_provider=llm_provider,
         llm_model=llm_model,
         organization_id=organization_id,
         db=db,
-        temperature=0.3,
-        max_tokens=dynamic_max_tokens,
+        llm_config=evaluator_llm_config,
+        task_defaults={"temperature": 0.3, "max_tokens": dynamic_max_tokens},
     )
     evaluation_time = time.time() - evaluation_start_time
 

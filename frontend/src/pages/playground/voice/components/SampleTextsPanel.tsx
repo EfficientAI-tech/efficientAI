@@ -8,6 +8,8 @@ import { useToast } from '../../../../hooks/useToast'
 import { AIProvider } from '../../../../types/api'
 import { useVoicePlayground } from '../context'
 import { DEFAULT_SAMPLE_TEXTS } from '../types'
+import LLMAdvancedOptionsPanel from '../../../../components/providers/LLMAdvancedOptionsPanel'
+import type { LLMGenerationConfig } from '../../../../config/llmGenerationParams'
 
 interface PromptPartial {
   id: string
@@ -58,6 +60,7 @@ export default function SampleTextsPanel() {
 
   const [selectedLlmProvider, setSelectedLlmProvider] = useState('')
   const [selectedLlmModel, setSelectedLlmModel] = useState('')
+  const [sampleLlmConfig, setSampleLlmConfig] = useState<LLMGenerationConfig | null>(null)
   const { showToast, ToastContainer } = useToast()
 
   const { data: aiProviders = [] } = useQuery<AIProvider[]>({
@@ -528,6 +531,14 @@ export default function SampleTextsPanel() {
               </div>
             </div>
 
+            {selectedLlmProvider && (
+              <LLMAdvancedOptionsPanel
+                provider={selectedLlmProvider}
+                value={sampleLlmConfig}
+                onChange={setSampleLlmConfig}
+              />
+            )}
+
             <div className="flex justify-end">
               <button
                 onClick={() =>
@@ -537,6 +548,7 @@ export default function SampleTextsPanel() {
                     scenario: aiScenario || undefined,
                     count: aiSampleCount,
                     length: aiSampleLength,
+                    llm_config: sampleLlmConfig || undefined,
                   })
                 }
                 disabled={generateSamplesMutation.isPending || !selectedLlmProvider || !selectedLlmModel}

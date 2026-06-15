@@ -23,6 +23,8 @@ from sqlalchemy import desc, func, or_, text
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
+from app.core.auth import Principal, get_principal
+from app.core.auth.capabilities import REPORTS_GENERATE, capability_denied_message
 from app.database import get_db
 from app.dependencies import (
     get_api_key,
@@ -30,6 +32,7 @@ from app.dependencies import (
     get_workspace_id,
     require_enterprise_feature,
 )
+from app.services.workspace_rbac import resolve_workspace_capabilities
 from app.models.database import (
     AIProvider,
     CallImport,
@@ -182,6 +185,36 @@ def _require_import(
     if not call_import:
         raise HTTPException(status_code=404, detail="Call import not found")
     return call_import
+
+
+def require_call_import_capability(capability: str):
+    """Ensure the caller has *capability* in the call import's workspace (not just the header)."""
+
+    def _dep(
+        call_import_id: UUID,
+        principal: Principal = Depends(get_principal),
+        organization_id: UUID = Depends(get_organization_id),
+        db: Session = Depends(get_db),
+    ) -> CallImport:
+        call_import = _require_import(db, call_import_id, organization_id)
+        caps, _, role = resolve_workspace_capabilities(
+            db,
+            principal=principal,
+            workspace_id=call_import.workspace_id,
+            organization_id=organization_id,
+        )
+        if capability not in caps:
+            raise HTTPException(
+                status_code=403,
+                detail=capability_denied_message(
+                    capability,
+                    role_name=role.name if role else None,
+                    workspace_label="the active workspace",
+                ),
+            )
+        return call_import
+
+    return _dep
 
 
 def _flatten_transcript(text: Optional[str]) -> str:
@@ -432,6 +465,9 @@ def _serialize_eval(
         llm_provider=row.llm_provider,
         llm_model=row.llm_model,
         llm_credential_id=row.llm_credential_id,
+        llm_config=(
+            row.llm_config if isinstance(getattr(row, "llm_config", None), dict) else None
+        ),
         metric_llm_overrides=(
             row.metric_llm_overrides
             if isinstance(row.metric_llm_overrides, dict)
@@ -717,6 +753,8 @@ async def create_call_import_evaluation(
                 )
             if override.credential_id is not None:
                 override_dict["credential_id"] = str(override.credential_id)
+            if override.llm_config is not None:
+                override_dict["llm_config"] = override.llm_config
             if override_dict:
                 for leaf_id in target_leaf_ids:
                     metric_overrides_payload[leaf_id] = override_dict
@@ -887,6 +925,7 @@ async def create_call_import_evaluation(
             llm_provider=llm_provider_norm,
             llm_model=llm_model_norm,
             llm_credential_id=payload.llm_credential_id,
+            llm_config=payload.llm_config,
             metric_llm_overrides=metric_overrides_payload,
             stt_provider=stt_provider_norm,
             stt_model=stt_model_norm,
@@ -3214,6 +3253,7 @@ async def list_call_import_evaluation_baseline_candidates(
 @router.post(
     "/{eval_id}/pdf-report",
     operation_id="generateCallImportEvaluationPdfReport",
+    dependencies=[Depends(require_call_import_capability(REPORTS_GENERATE))],
 )
 async def generate_call_import_evaluation_pdf_report(
     call_import_id: UUID,
@@ -7984,6 +8024,9 @@ def _apply_retry_overrides(
             )
         evaluation.llm_credential_id = payload.llm_credential_id
 
+    if payload.llm_config is not None:
+        evaluation.llm_config = payload.llm_config
+
     # --- Per-metric LLM overrides ---
     # We accept the same dict shape as the create endpoint but
     # constrain keys to leaf metrics that are actually in this run.
@@ -8036,6 +8079,8 @@ def _apply_retry_overrides(
                 )
             if override.credential_id is not None:
                 override_dict["credential_id"] = str(override.credential_id)
+            if override.llm_config is not None:
+                override_dict["llm_config"] = override.llm_config
             if override_dict:
                 overrides_payload[metric_id] = override_dict
         evaluation.metric_llm_overrides = overrides_payload or None
@@ -8583,3 +8628,15 @@ async def retry_call_import_evaluation_row(
         created_at=eval_row.created_at,
         updated_at=eval_row.updated_at,
     )
+
+
+from app.core.auth.capabilities import EVALS_RUN, EVALS_VIEW, REPORTS_GENERATE
+from app.core.auth.workspace_route_capabilities import apply_workspace_route_capabilities
+
+apply_workspace_route_capabilities(
+    router,
+    view_capability=EVALS_VIEW,
+    manage_capability=EVALS_RUN,
+    run_capability=EVALS_RUN,
+    report_capability=REPORTS_GENERATE,
+)

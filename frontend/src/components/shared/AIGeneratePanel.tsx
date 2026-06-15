@@ -1,9 +1,11 @@
-import { useState, useEffect, useRef } from 'react'
-import { useQuery, useMutation } from '@tanstack/react-query'
+import { useState, useRef, useEffect } from 'react'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { Sparkles, Loader2, Bot, ChevronDown } from 'lucide-react'
 import { apiClient } from '../../lib/api'
 import { getProviderLabel, getProviderLogo } from '../../config/providers'
 import { ModelProvider } from '../../types/api'
+import LLMAdvancedOptionsPanel from '../providers/LLMAdvancedOptionsPanel'
+import type { LLMGenerationConfig } from '../../config/llmGenerationParams'
 
 interface AIProvider {
   id: string
@@ -29,6 +31,7 @@ interface AIGeneratePanelProps {
     format_style?: string
     provider?: string
     model?: string
+    llm_config?: LLMGenerationConfig | null
   }) => Promise<{ content: string }>
   title?: string
   placeholder?: string
@@ -48,6 +51,7 @@ export default function AIGeneratePanel({
   const [format, setFormat] = useState('structured')
   const [provider, setProvider] = useState('')
   const [model, setModel] = useState('')
+  const [llmConfig, setLlmConfig] = useState<LLMGenerationConfig | null>(null)
   const [showProviderDropdown, setShowProviderDropdown] = useState(false)
   const providerDropdownRef = useRef<HTMLDivElement>(null)
 
@@ -100,6 +104,7 @@ export default function AIGeneratePanel({
       format_style: showToneAndFormat ? format : undefined,
       ...(provider ? { provider } : {}),
       ...(model ? { model } : {}),
+      ...(llmConfig ? { llm_config: llmConfig } : {}),
     })
   }
 
@@ -242,6 +247,15 @@ export default function AIGeneratePanel({
           </select>
         </div>
       </div>
+
+      {provider && (
+        <LLMAdvancedOptionsPanel
+          provider={provider}
+          value={llmConfig}
+          onChange={setLlmConfig}
+          className="mb-2"
+        />
+      )}
       
       <div className="flex items-center gap-2 justify-end">
         <button

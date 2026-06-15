@@ -6,7 +6,7 @@ import type {
   VoicePlaygroundSourceType,
   VoicePlaygroundBlindTestPair,
 } from '../../../../lib/api'
-import { VoiceBundle } from '../../../../types/api'
+import { VoiceBundle, LLMGenerationConfig } from '../../../../types/api'
 import {
   TTSVoice,
   TTSProvider,
@@ -155,7 +155,7 @@ interface VoicePlaygroundContextType {
   setAiSampleCount: (count: number) => void
   aiSampleLength: 'short' | 'medium' | 'long' | 'paragraph'
   setAiSampleLength: (length: 'short' | 'medium' | 'long' | 'paragraph') => void
-  generateSamplesMutation: ReturnType<typeof useMutation<{ samples: string[] }, Error, { voice_bundle_id?: string; provider?: string; model?: string; scenario?: string; count?: number; length?: string }>>
+  generateSamplesMutation: ReturnType<typeof useMutation<{ samples: string[] }, Error, { voice_bundle_id?: string; provider?: string; model?: string; scenario?: string; count?: number; length?: string; llm_config?: LLMGenerationConfig | null }>>
 
   // Active comparison
   step: PlaygroundStep

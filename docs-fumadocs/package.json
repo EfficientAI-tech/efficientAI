@@ -9,13 +9,10 @@
     "types:check": "fumadocs-mdx && next typegen && tsc --noEmit",
     "postinstall": "fumadocs-mdx",
     "lint": "eslint",
-    "contributors:generate": "node scripts/generate-contributors.mjs",
-    "contributors:check": "node scripts/generate-contributors.mjs --check",
     "search:generate": "node scripts/generate-search-index.mjs",
     "validate:docs": "node scripts/validate-docs.mjs",
     "check:links": "node scripts/check-links.mjs",
-    "ci:check": "npm run contributors:check && npm run validate:docs && npm run check:links && npm run types:check && npm run build",
-    "lambda:edge:build": "node lambda-edge/enterprise-auth/build.mjs"
+    "ci:check": "npm run validate:docs && npm run check:links && npm run types:check && npm run build"
   },
   "dependencies": {
     "fumadocs-core": "16.8.11",

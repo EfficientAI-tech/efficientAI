@@ -308,14 +308,7 @@ def process_call_import_row_task(self, row_id: str):
 
             if audio_bytes is None and original_csv_url:
                 try:
-                    if (
-                        client is not None
-                        and provider_lookup_supported
-                        and hasattr(client, "download_recording")
-                    ):
-                        fetched = client.download_recording(original_csv_url)
-                    else:
-                        fetched = download_public_recording(original_csv_url)
+                    fetched = download_public_recording(original_csv_url)
                     audio_bytes, content_type = fetched
                     used_url = original_csv_url
                     if primary_failure is not None:

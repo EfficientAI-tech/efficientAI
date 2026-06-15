@@ -32,6 +32,8 @@ import {
   XCircle,
 } from 'lucide-react'
 import { apiClient } from '../../lib/api'
+import { getApiErrorMessage } from '../../lib/apiErrors'
+import { useToast } from '../../hooks/useToast'
 import { formatDiarisationError } from '../../lib/diarisationErrors'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import type {
@@ -246,6 +248,7 @@ export default function CallImportDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const { showToast, ToastContainer } = useToast()
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId)
   const [rowOffset, setRowOffset] = useState(0)
   const [expandedRowIds, setExpandedRowIds] = useState<Set<string>>(new Set())
@@ -343,6 +346,16 @@ export default function CallImportDetail() {
   const [bulkDeleteRowsError, setBulkDeleteRowsError] = useState<string | null>(
     null,
   )
+
+  const reportDeleteError = (
+    err: unknown,
+    fallback: string,
+    setError: (message: string) => void,
+  ) => {
+    const message = getApiErrorMessage(err, fallback)
+    setError(message)
+    showToast(message, 'error')
+  }
 
   const [playingRowId, setPlayingRowId] = useState<string | null>(null)
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
@@ -540,10 +553,8 @@ export default function CallImportDetail() {
       queryClient.invalidateQueries({ queryKey: ['call-imports'] })
       navigate('/call-imports')
     },
-    onError: (err: any) => {
-      setDeleteError(
-        err?.response?.data?.detail || err?.message || 'Failed to delete import.',
-      )
+    onError: (err: unknown) => {
+      reportDeleteError(err, 'Failed to delete import.', setDeleteError)
     },
   })
 
@@ -606,10 +617,8 @@ export default function CallImportDetail() {
       setPendingDeleteRow(null)
       setDeleteError(null)
     },
-    onError: (err: any) => {
-      setDeleteError(
-        err?.response?.data?.detail || err?.message || 'Failed to delete row.',
-      )
+    onError: (err: unknown) => {
+      reportDeleteError(err, 'Failed to delete row.', setDeleteError)
     },
   })
 
@@ -623,11 +632,11 @@ export default function CallImportDetail() {
       setShowBulkDeleteRows(false)
       setBulkDeleteRowsError(null)
     },
-    onError: (err: any) => {
-      setBulkDeleteRowsError(
-        err?.response?.data?.detail ||
-          err?.message ||
-          'Failed to delete selected rows.',
+    onError: (err: unknown) => {
+      reportDeleteError(
+        err,
+        'Failed to delete selected rows.',
+        setBulkDeleteRowsError,
       )
     },
   })
@@ -1105,11 +1114,11 @@ export default function CallImportDetail() {
       setShowBulkDeleteEvals(false)
       setBulkDeleteEvalsError(null)
     },
-    onError: (err: any) => {
-      setBulkDeleteEvalsError(
-        err?.response?.data?.detail ||
-          err?.message ||
-          'Failed to delete evaluation runs.',
+    onError: (err: unknown) => {
+      reportDeleteError(
+        err,
+        'Failed to delete evaluation runs.',
+        setBulkDeleteEvalsError,
       )
     },
   })
@@ -1436,6 +1445,7 @@ export default function CallImportDetail() {
 
   return (
     <div className="space-y-6">
+      <ToastContainer />
       <div className="flex items-center justify-between">
         <Link
           to="/call-imports"
@@ -4528,6 +4538,11 @@ export default function CallImportDetail() {
                                 provider: val.provider,
                                 model: val.model,
                                 credential_id: val.credential_id || null,
+                                llm_config: val.llm_config || null,
+                              }
+                            } else if (val.llm_config) {
+                              overrides[mid] = {
+                                llm_config: val.llm_config,
                               }
                             }
                           }
@@ -4540,6 +4555,7 @@ export default function CallImportDetail() {
                             llm_provider: runLLM.provider || null,
                             llm_model: runLLM.model || null,
                             llm_credential_id: runLLM.credential_id || null,
+                            llm_config: runLLM.llm_config || null,
                             metric_llm_overrides: Object.keys(overrides).length
                               ? overrides
                               : null,

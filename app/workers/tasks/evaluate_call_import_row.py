@@ -18,6 +18,7 @@ from the audio.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, List, Optional
@@ -700,6 +701,11 @@ def evaluate_call_import_row_task(
         if comparison_metrics:
             run_provider = (evaluation.llm_provider or "").strip() or None
             run_model = (evaluation.llm_model or "").strip() or None
+            run_llm_config = (
+                evaluation.llm_config
+                if isinstance(getattr(evaluation, "llm_config", None), dict)
+                else None
+            )
             overrides = (
                 evaluation.metric_llm_overrides
                 if isinstance(evaluation.metric_llm_overrides, dict)
@@ -709,11 +715,13 @@ def evaluate_call_import_row_task(
                 override = overrides.get(str(cmp_metric.id)) or {}
                 provider = override.get("provider") or run_provider or None
                 model = override.get("model") or run_model or None
+                llm_config = override.get("llm_config") or run_llm_config
                 evaluator_obj = None
                 if provider and model:
                     evaluator_obj = SimpleNamespace(
                         llm_provider=provider,
                         llm_model=model,
+                        llm_config=llm_config,
                         custom_prompt=None,
                     )
                 try:
@@ -774,37 +782,47 @@ def evaluate_call_import_row_task(
             # ``evaluate_with_llm``.
             run_provider = (evaluation.llm_provider or "").strip() or None
             run_model = (evaluation.llm_model or "").strip() or None
+            run_llm_config = (
+                evaluation.llm_config
+                if isinstance(getattr(evaluation, "llm_config", None), dict)
+                else None
+            )
             overrides = (
                 evaluation.metric_llm_overrides
                 if isinstance(evaluation.metric_llm_overrides, dict)
                 else {}
             )
 
-            def _resolve_pm(metric: Metric) -> tuple[str | None, str | None]:
+            def _llm_config_key(cfg: dict | None) -> str | None:
+                if not cfg:
+                    return None
+                return json.dumps(cfg, sort_keys=True, default=str)
+
+            def _resolve_pm(
+                metric: Metric,
+            ) -> tuple[str | None, str | None, dict | None]:
                 override = overrides.get(str(metric.id)) or {}
                 provider = (
                     override.get("provider") or run_provider or None
                 )
                 model = override.get("model") or run_model or None
-                return provider, model
+                llm_config = override.get("llm_config") or run_llm_config
+                return provider, model, llm_config
 
-            # Bucket = ((provider, model), parent_id_or_None) -> metrics.
-            # parent_id_or_None keys hierarchical groups; ``None`` keys
-            # the standalone bucket. Splitting on parent_id lets us pass
-            # ``parent_metric`` to ``evaluate_with_llm`` for prompt rendering.
-            BucketKey = tuple[tuple[str | None, str | None], UUID | None]
+            # Bucket = ((provider, model, llm_config_key), parent_id_or_None) -> metrics.
+            BucketKey = tuple[tuple[str | None, str | None, str | None], UUID | None]
             groups: dict[BucketKey, list[Metric]] = {}
             for metric in standalone_metrics:
-                provider, model = _resolve_pm(metric)
-                groups.setdefault(((provider, model), None), []).append(metric)
-            for parent_id, children in children_by_parent.items():
-                # Children of the same parent MUST end up in one bucket
-                # (no per-child provider/model split inside a hierarchy
-                # group) — otherwise we lose the mutex / consistency
-                # guarantees. Use the first child's resolved config.
-                provider, model = _resolve_pm(children[0])
+                provider, model, llm_config = _resolve_pm(metric)
                 groups.setdefault(
-                    ((provider, model), parent_id), []
+                    ((provider, model, _llm_config_key(llm_config)), None),
+                    [],
+                ).append(metric)
+            for parent_id, children in children_by_parent.items():
+                provider, model, llm_config = _resolve_pm(children[0])
+                groups.setdefault(
+                    ((provider, model, _llm_config_key(llm_config)), parent_id),
+                    [],
                 ).extend(children)
 
             # Top-level metric discovery is opt-in per evaluation. When
@@ -842,12 +860,14 @@ def evaluate_call_import_row_task(
             metric_discovery_emitted = False
 
             for (config, parent_id), bucket in groups.items():
-                provider, model = config
+                provider, model, llm_config_key = config
+                llm_config = json.loads(llm_config_key) if llm_config_key else None
                 evaluator_obj = None
                 if provider and model:
                     evaluator_obj = SimpleNamespace(
                         llm_provider=provider,
                         llm_model=model,
+                        llm_config=llm_config,
                         custom_prompt=None,
                     )
                 parent_metric = (

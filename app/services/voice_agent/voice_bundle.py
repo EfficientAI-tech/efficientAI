@@ -320,17 +320,19 @@ def _get_llm_providers():
         "openai": {
             "env_key": "OPENAI_API_KEY",
             "default_model": "gpt-4.1",
-            "factory": lambda api_key, model: _get_service("OpenAILLMService")(
+            "factory": lambda api_key, model, params=None: _get_service("OpenAILLMService")(
                 api_key=api_key,
                 model=model,
+                **({"params": params} if params else {}),
             ),
         },
         "google": {
             "env_key": "GOOGLE_API_KEY",
             "default_model": "gemini-2.5-flash",
-            "factory": lambda api_key, model: _get_service("GoogleLLMService")(
+            "factory": lambda api_key, model, params=None: _get_service("GoogleLLMService")(
                 api_key=api_key,
                 model=model,
+                **({"params": params} if params else {}),
             ),
         },
     }
@@ -556,7 +558,20 @@ async def run_voice_bundle_fastapi(
         tts = tts_cfg["factory"](api_key=tts_api_key, voice_id=tts_voice_id, model=tts_model)
 
         llm_model = getattr(voice_bundle, "llm_model", None) or llm_cfg["default_model"]
-        llm = llm_cfg["factory"](api_key=llm_api_key, model=llm_model)
+        from app.services.ai.llm_generation_config import (
+            build_efficientai_input_params,
+            merge_llm_config,
+        )
+
+        llm_params = build_efficientai_input_params(
+            llm_provider_value,
+            merge_llm_config(
+                getattr(voice_bundle, "llm_config", None),
+                legacy_temperature=getattr(voice_bundle, "llm_temperature", None),
+                legacy_max_tokens=getattr(voice_bundle, "llm_max_tokens", None),
+            ),
+        )
+        llm = llm_cfg["factory"](api_key=llm_api_key, model=llm_model, params=llm_params)
 
         # Build context with provided system instruction or a default
         base_instruction = (

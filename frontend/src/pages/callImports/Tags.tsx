@@ -11,6 +11,8 @@ import {
   X,
 } from 'lucide-react'
 import { apiClient } from '../../lib/api'
+import { getApiErrorMessage } from '../../lib/apiErrors'
+import { useToast } from '../../hooks/useToast'
 import type { CallImportTag } from '../../types/api'
 import Button from '../../components/Button'
 import ConfirmModal from '../../components/ConfirmModal'
@@ -19,6 +21,7 @@ const DEFAULT_NEW_TAG_COLOR = '#3b82f6'
 
 export default function CallImportTagsPage() {
   const queryClient = useQueryClient()
+  const { showToast, ToastContainer } = useToast()
   const [creating, setCreating] = useState(false)
   const [newName, setNewName] = useState('')
   const [newColor, setNewColor] = useState(DEFAULT_NEW_TAG_COLOR)
@@ -64,10 +67,14 @@ export default function CallImportTagsPage() {
       queryClient.invalidateQueries({ queryKey: ['call-imports'] })
       setPendingDelete(null)
     },
+    onError: (err: unknown) => {
+      showToast(getApiErrorMessage(err, 'Failed to delete tag.'), 'error')
+    },
   })
 
   return (
     <div className="space-y-6">
+      <ToastContainer />
       <div className="flex items-center justify-between">
         <Link
           to="/call-imports"

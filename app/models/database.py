@@ -66,6 +66,11 @@ class Organization(Base):
         back_populates="organization",
         cascade="all, delete-orphan",
     )
+    workspace_roles = relationship(
+        "WorkspaceRole",
+        back_populates="organization",
+        cascade="all, delete-orphan",
+    )
 
 
 class Workspace(Base):
@@ -74,8 +79,9 @@ class Workspace(Base):
     Every organization has at least one workspace (``is_default = True``,
     seeded by migration 033). Users pick an "active workspace" in the UI;
     list endpoints filter by it so users only see calls/metrics from the
-    project they're currently working in. There's no per-workspace ACL in
-    v1 - every org member can switch into any of their org's workspaces.
+    project they're currently working in. Access is governed by
+    ``workspace_members`` and org-scoped ``workspace_roles`` (capability
+    bundles); org admins implicitly access all workspaces.
     """
 
     __tablename__ = "workspaces"
@@ -121,6 +127,92 @@ class Workspace(Base):
     )
 
     organization = relationship("Organization", back_populates="workspaces")
+    members = relationship(
+        "WorkspaceMember",
+        back_populates="workspace",
+        cascade="all, delete-orphan",
+    )
+
+
+class WorkspaceRole(Base):
+    """Org-scoped workspace role (system or custom) as a capability bundle."""
+
+    __tablename__ = "workspace_roles"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "name", name="uq_workspace_roles_org_name"),
+    )
+
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    organization_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    capabilities = Column(JSON, nullable=False, default=list)
+    is_system = Column(Boolean, nullable=False, default=False, server_default="false")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    organization = relationship("Organization", back_populates="workspace_roles")
+    members = relationship("WorkspaceMember", back_populates="role")
+
+
+class WorkspaceMember(Base):
+    """User membership in a workspace with an assigned workspace role."""
+
+    __tablename__ = "workspace_members"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "user_id", name="uq_workspace_members_ws_user"),
+    )
+
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    workspace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    role_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("workspace_roles.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    added_by_user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    workspace = relationship("Workspace", back_populates="members")
+    user = relationship("User", foreign_keys=[user_id])
+    role = relationship("WorkspaceRole", back_populates="members")
+    added_by = relationship("User", foreign_keys=[added_by_user_id])
 
 
 # Partial unique index: "at most one default workspace per org". This
@@ -665,6 +757,7 @@ class Evaluator(Base):
     # LLM configuration for evaluation (overrides hardcoded defaults)
     llm_provider = Column(String, nullable=True)  # e.g. "openai", "anthropic", "google"
     llm_model = Column(String, nullable=True)  # e.g. "gpt-4.1", "claude-sonnet-4-20250514"
+    llm_config = Column(JSON, nullable=True)
     
     # Tags for categorization
     tags = Column(JSON, nullable=True)  # Array of tag strings
@@ -2050,6 +2143,7 @@ class CallImportEvaluation(Base):
         ForeignKey("aiproviders.id", ondelete="SET NULL"),
         nullable=True,
     )
+    llm_config = Column(JSON, nullable=True)
     # Optional per-metric LLM override:
     # ``{"<metric_id>": {"provider": "...", "model": "...", "credential_id": "..."}}``.
     # Each entry overrides the run-level default for that metric only;

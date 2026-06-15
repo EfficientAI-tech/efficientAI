@@ -46,6 +46,7 @@ import type {
   CallImportTranscribeResponse,
   CallImportRetryFailedRowsResponse,
   Workspace,
+  LLMGenerationConfig,
 } from '../types/api'
 
 export interface EnterpriseFeatureMeta {
@@ -295,16 +296,29 @@ class ApiClient {
     // Add response interceptor for error handling
     this.client.interceptors.response.use(
       (response) => response,
-      (error) => {
+      async (error) => {
+        const response = error.response
+        if (response?.data instanceof Blob) {
+          try {
+            const text = await response.data.text()
+            const trimmed = text.trim()
+            if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+              response.data = JSON.parse(text)
+            }
+          } catch {
+            // Keep the original blob when it isn't JSON.
+          }
+        }
+
         // Only log out on 401 (authentication failure)
         // 403 errors are authorization failures that should be handled by the calling code
-        if (error.response?.status === 401) {
+        if (response?.status === 401) {
           // API key invalid, clear it
           localStorage.removeItem('apiKey')
           window.location.href = '/login'
         }
         return Promise.reject(error)
-      }
+      },
     )
   }
 
@@ -351,6 +365,79 @@ class ApiClient {
 
   async deleteWorkspace(workspaceId: string): Promise<void> {
     await this.client.delete(`/api/v1/workspaces/${workspaceId}`)
+  }
+
+  async listCapabilities(): Promise<import('../types/api').CapabilityDomain[]> {
+    const response = await this.client.get('/api/v1/capabilities')
+    return response.data
+  }
+
+  async listWorkspaceRoles(): Promise<import('../types/api').WorkspaceRole[]> {
+    const response = await this.client.get('/api/v1/workspace-roles')
+    return response.data
+  }
+
+  async createWorkspaceRole(
+    payload: import('../types/api').WorkspaceRoleCreate,
+  ): Promise<import('../types/api').WorkspaceRole> {
+    const response = await this.client.post('/api/v1/workspace-roles', payload)
+    return response.data
+  }
+
+  async updateWorkspaceRole(
+    roleId: string,
+    payload: import('../types/api').WorkspaceRoleUpdate,
+  ): Promise<import('../types/api').WorkspaceRole> {
+    const response = await this.client.patch(
+      `/api/v1/workspace-roles/${roleId}`,
+      payload,
+    )
+    return response.data
+  }
+
+  async deleteWorkspaceRole(roleId: string): Promise<void> {
+    await this.client.delete(`/api/v1/workspace-roles/${roleId}`)
+  }
+
+  async listWorkspaceMembers(
+    workspaceId: string,
+  ): Promise<import('../types/api').WorkspaceMember[]> {
+    const response = await this.client.get(
+      `/api/v1/workspaces/${workspaceId}/members`,
+    )
+    return response.data
+  }
+
+  async addWorkspaceMember(
+    workspaceId: string,
+    payload: { user_id: string; role_id: string },
+  ): Promise<import('../types/api').WorkspaceMember> {
+    const response = await this.client.post(
+      `/api/v1/workspaces/${workspaceId}/members`,
+      payload,
+    )
+    return response.data
+  }
+
+  async updateWorkspaceMember(
+    workspaceId: string,
+    userId: string,
+    payload: { role_id: string },
+  ): Promise<import('../types/api').WorkspaceMember> {
+    const response = await this.client.patch(
+      `/api/v1/workspaces/${workspaceId}/members/${userId}`,
+      payload,
+    )
+    return response.data
+  }
+
+  async removeWorkspaceMember(
+    workspaceId: string,
+    userId: string,
+  ): Promise<void> {
+    await this.client.delete(
+      `/api/v1/workspaces/${workspaceId}/members/${userId}`,
+    )
   }
 
   // Auth endpoints
@@ -764,6 +851,7 @@ class ApiClient {
     model: string
     temperature?: number
     max_tokens?: number
+    llm_config?: LLMGenerationConfig | null
   }): Promise<{
     text: string
     model: string
@@ -1425,6 +1513,7 @@ class ApiClient {
       llm_provider?: string | null
       llm_model?: string | null
       llm_credential_id?: string | null
+      llm_config?: LLMGenerationConfig | null
       /** Per-metric LLM override map keyed by metric UUID. */
       metric_llm_overrides?: Record<string, CallImportEvaluationLLMOverride> | null
       /** When true, diarize rows missing transcripts before evaluation. */
@@ -2051,6 +2140,7 @@ class ApiClient {
       llmProvider?: string | null
       llmModel?: string | null
       llmCredentialId?: string | null
+      llmConfig?: LLMGenerationConfig | null
       sttProvider?: string | null
       sttModel?: string | null
       sttCredentialId?: string | null
@@ -2079,6 +2169,9 @@ class ApiClient {
     if (options?.llmModel) body.llm_model = options.llmModel
     if (options?.llmCredentialId !== undefined) {
       body.llm_credential_id = options.llmCredentialId
+    }
+    if (options?.llmConfig !== undefined) {
+      body.llm_config = options.llmConfig
     }
     if (options?.sttProvider) body.stt_provider = options.sttProvider
     if (options?.sttModel) body.stt_model = options.sttModel
@@ -3363,6 +3456,7 @@ class ApiClient {
     count?: number
     length?: string
     temperature?: number
+    llm_config?: LLMGenerationConfig | null
   }): Promise<{ samples: string[]; provider: string; model: string }> {
     const response = await this.client.post('/api/v1/voice-playground/generate-samples', params)
     return response.data
@@ -3639,6 +3733,7 @@ class ApiClient {
     format_style?: string
     provider?: string
     model?: string
+    llm_config?: LLMGenerationConfig | null
   }): Promise<{ content: string; provider: string; model: string }> {
     const response = await this.client.post('/api/v1/prompt-partials/generate', data)
     return response.data
@@ -3649,6 +3744,7 @@ class ApiClient {
     instructions?: string
     provider?: string
     model?: string
+    llm_config?: LLMGenerationConfig | null
   }): Promise<{ content: string; provider: string; model: string }> {
     const response = await this.client.post('/api/v1/prompt-partials/improve', data)
     return response.data

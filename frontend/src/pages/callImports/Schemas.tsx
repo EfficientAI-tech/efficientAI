@@ -13,6 +13,8 @@ import {
   X,
 } from 'lucide-react'
 import { apiClient } from '../../lib/api'
+import { getApiErrorMessage } from '../../lib/apiErrors'
+import { useToast } from '../../hooks/useToast'
 import type {
   CallImportSchema,
   CallImportSchemaParameter,
@@ -625,6 +627,7 @@ function DeleteSchemaModal({
 
 export default function CallImportSchemasPage() {
   const queryClient = useQueryClient()
+  const { showToast, ToastContainer } = useToast()
   const [editorOpen, setEditorOpen] = useState(false)
   const [editingSchema, setEditingSchema] = useState<CallImportSchema | null>(null)
   const [pendingDelete, setPendingDelete] = useState<CallImportSchema | null>(null)
@@ -650,10 +653,10 @@ export default function CallImportSchemasPage() {
       setPendingDelete(null)
       setDeleteError(null)
     },
-    onError: (err: any) => {
-      setDeleteError(
-        err?.response?.data?.detail || err?.message || 'Failed to delete schema.',
-      )
+    onError: (err: unknown) => {
+      const message = getApiErrorMessage(err, 'Failed to delete schema.')
+      setDeleteError(message)
+      showToast(message, 'error')
     },
   })
 
@@ -665,6 +668,7 @@ export default function CallImportSchemasPage() {
 
   return (
     <div className="space-y-6">
+      <ToastContainer />
       <div className="flex items-center justify-between">
         <Link
           to="/call-imports"

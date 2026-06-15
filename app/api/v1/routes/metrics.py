@@ -2197,3 +2197,13 @@ def parse_bulk_metric(
 
     return MetricParseBulkResponse(metrics=drafts, parent=parent_payload)
 
+
+from app.core.auth.capabilities import METRICS_MANAGE, METRICS_VIEW
+from app.core.auth.workspace_route_capabilities import apply_workspace_route_capabilities
+
+apply_workspace_route_capabilities(
+    router,
+    view_capability=METRICS_VIEW,
+    manage_capability=METRICS_MANAGE,
+)
+

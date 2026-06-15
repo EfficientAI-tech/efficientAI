@@ -228,6 +228,7 @@ def create_evaluator(
         metric_ids=validated_metric_ids if (is_custom and validated_metric_ids) else None,
         llm_provider=evaluator_data.llm_provider.value if evaluator_data.llm_provider else None,
         llm_model=evaluator_data.llm_model,
+        llm_config=evaluator_data.llm_config,
         tags=evaluator_data.tags,
     )
     db.add(evaluator)
@@ -478,6 +479,9 @@ def update_evaluator(
     if evaluator_data.llm_model is not None:
         evaluator.llm_model = evaluator_data.llm_model
 
+    if evaluator_data.llm_config is not None:
+        evaluator.llm_config = evaluator_data.llm_config
+
     db.commit()
     db.refresh(evaluator)
 
@@ -650,4 +654,14 @@ def run_evaluators(
         task_ids=task_ids,
         evaluator_results=evaluator_results
     )
+
+
+from app.core.auth.capabilities import SIM_MANAGE, SIM_VIEW
+from app.core.auth.workspace_route_capabilities import apply_workspace_route_capabilities
+
+apply_workspace_route_capabilities(
+    router,
+    view_capability=SIM_VIEW,
+    manage_capability=SIM_MANAGE,
+)
 

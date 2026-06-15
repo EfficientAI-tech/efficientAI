@@ -914,3 +914,14 @@ def recompute_metrics(
     db.commit()
     db.refresh(run)
     return run
+
+
+from app.core.auth.capabilities import EVALS_RUN, EVALS_VIEW
+from app.core.auth.workspace_route_capabilities import apply_workspace_route_capabilities
+
+apply_workspace_route_capabilities(
+    router,
+    view_capability=EVALS_VIEW,
+    manage_capability=EVALS_RUN,
+    run_capability=EVALS_RUN,
+)

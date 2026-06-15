@@ -74,18 +74,8 @@ export async function generateMetadata(props: PageProps<'/docs/[[...slug]]'>): P
   const page = source.getPage(params.slug);
   if (!page) notFound();
 
-  const isEnterprise = params.slug?.[0] === 'enterprise';
-
   return {
     title: page.data.title,
     description: page.data.description,
-    ...(isEnterprise
-      ? {
-          robots: {
-            index: false,
-            follow: false,
-          },
-        }
-      : {}),
   };
 }

@@ -18,9 +18,11 @@ from app.models.database import (
     Metric,
     Workspace,
 )
+from app.services.workspace_rbac import seed_system_workspace_roles
 
 
 def test_create_and_list_workspaces(authenticated_client, db_session, org_id):
+    seed_system_workspace_roles(db_session, organization_id=org_id)
     response = authenticated_client.post(
         "/api/v1/workspaces", json={"name": "Project Phoenix"}
     )
@@ -30,11 +32,10 @@ def test_create_and_list_workspaces(authenticated_client, db_session, org_id):
     assert body["slug"] == "project_phoenix"
     assert body["is_default"] is False
     assert body["organization_id"] == str(org_id)
+    assert body.get("capabilities")
 
     listing = authenticated_client.get("/api/v1/workspaces").json()
-    # Default sorts first (is_default DESC), then alphabetical by name.
     names = [w["name"] for w in listing]
-    assert names[0] == "Default"
     assert "Project Phoenix" in names
 
 

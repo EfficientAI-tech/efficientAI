@@ -24,6 +24,7 @@ const AI_INTEGRATION_PROVIDERS: ModelProvider[] = [
   ModelProvider.ANTHROPIC,
   ModelProvider.GOOGLE,
   ModelProvider.XAI,
+  ModelProvider.FIREWORKS,
   ModelProvider.COHERE,
   ModelProvider.MISTRAL,
   ModelProvider.META,

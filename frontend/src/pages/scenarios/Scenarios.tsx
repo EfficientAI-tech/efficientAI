@@ -7,6 +7,8 @@ import Button from '../../components/Button'
 import { useToast } from '../../hooks/useToast'
 import { AIProvider, ModelProvider } from '../../types/api'
 import { getProviderLabel, getProviderLogo } from '../../config/providers'
+import LLMAdvancedOptionsPanel from '../../components/providers/LLMAdvancedOptionsPanel'
+import type { LLMGenerationConfig } from '../../config/llmGenerationParams'
 import { useWalkthroughSectionState } from '../../context/WalkthroughContext'
 import WalkthroughToggleButton from '../../components/walkthrough/WalkthroughToggleButton'
 
@@ -62,6 +64,7 @@ export default function Scenarios() {
   // Shared AI generation selectors
   const [selectedAIProvider, setSelectedAIProvider] = useState<ModelProvider | null>(null)
   const [selectedModel, setSelectedModel] = useState<string>('')
+  const [llmConfig, setLlmConfig] = useState<LLMGenerationConfig | null>(null)
   const [showProviderDropdown, setShowProviderDropdown] = useState(false)
   const providerDropdownRef = useRef<HTMLDivElement>(null)
   const [selectedAgentIdForGeneration, setSelectedAgentIdForGeneration] = useState('')
@@ -342,7 +345,7 @@ export default function Scenarios() {
         messages: messages as Array<{ role: string; content: string }>,
         provider: selectedAIProvider,
         model: selectedModel,
-        temperature: 0.7,
+        llm_config: llmConfig,
       })
 
       const drafts = parseScenarioDraftsFromResponse(response.text)
@@ -493,7 +496,7 @@ export default function Scenarios() {
         ],
         provider: selectedAIProvider,
         model: selectedModel,
-        temperature: 0.7,
+        llm_config: llmConfig,
       })
 
       setFormData((prev) => ({
@@ -866,6 +869,15 @@ export default function Scenarios() {
                         ))}
                       </select>
                     </div>
+                    {selectedAIProvider && (
+                      <div className="md:col-span-2">
+                        <LLMAdvancedOptionsPanel
+                          provider={selectedAIProvider}
+                          value={llmConfig}
+                          onChange={setLlmConfig}
+                        />
+                      </div>
+                    )}
                   </div>
 
                   <div>
@@ -1285,6 +1297,15 @@ export default function Scenarios() {
                         ))}
                       </select>
                     </div>
+                    {selectedAIProvider && (
+                      <div className="md:col-span-2">
+                        <LLMAdvancedOptionsPanel
+                          provider={selectedAIProvider}
+                          value={llmConfig}
+                          onChange={setLlmConfig}
+                        />
+                      </div>
+                    )}
                   </div>
                   <div className="flex justify-end">
                     <Button

@@ -89,6 +89,8 @@ Thumbs.db
 node_modules/
 frontend/node_modules/
 frontend/dist/
+dist.root.bak/
+frontend/node_modules.root.bak/
 .npm
 .yarn
 *.tsbuildinfo

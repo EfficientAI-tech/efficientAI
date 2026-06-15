@@ -1,16 +1,46 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiClient } from '../../lib/api'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Role, Invitation, OrganizationMember, InvitationCreate } from '../../types/api'
 import { Users, Mail, UserPlus, Shield, ShieldCheck, ShieldAlert, X, Trash2, KeyRound, Eye, EyeOff, Building2, Copy, Check } from 'lucide-react'
 import Button from '../../components/Button'
 import { useToast } from '../../hooks/useToast'
+import { getApiErrorMessage } from '../../lib/apiErrors'
 import { useIsAdmin } from '../../hooks/useRole'
+import WorkspaceRolesSection from '../../components/WorkspaceRolesSection'
+import WorkspaceMembersSection from '../../components/iam/WorkspaceMembersSection'
+
+type IamTab = 'organization' | 'workspace-members' | 'workspace-roles'
+
+const IAM_TABS: { id: IamTab; label: string; icon: typeof Building2; adminOnly?: boolean }[] = [
+  { id: 'organization', label: 'Organization', icon: Building2 },
+  { id: 'workspace-members', label: 'Workspace Members', icon: Users },
+  { id: 'workspace-roles', label: 'Workspace Roles', icon: Shield, adminOnly: true },
+]
 
 export default function IAM() {
   const queryClient = useQueryClient()
   const { showToast, ToastContainer } = useToast()
   const isAdmin = useIsAdmin()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const tabParam = searchParams.get('tab')
+  const activeTab: IamTab =
+    tabParam === 'workspace-members' || tabParam === 'workspace-roles'
+      ? tabParam
+      : 'organization'
+
+  const visibleTabs = IAM_TABS.filter((t) => !t.adminOnly || isAdmin)
+
+  useEffect(() => {
+    if (activeTab === 'workspace-roles' && !isAdmin) {
+      setSearchParams({ tab: 'organization' }, { replace: true })
+    }
+  }, [activeTab, isAdmin, setSearchParams])
+
+  const setActiveTab = (tab: IamTab) => {
+    setSearchParams(tab === 'organization' ? {} : { tab })
+  }
   const [showInviteModal, setShowInviteModal] = useState(false)
   const [inviteEmail, setInviteEmail] = useState('')
   const [inviteRole, setInviteRole] = useState<Role>(Role.READER)
@@ -67,6 +97,10 @@ export default function IAM() {
       setShowInviteModal(false)
       setInviteEmail('')
       setInviteRole(Role.READER)
+      showToast('Invitation sent', 'success')
+    },
+    onError: (error: unknown) => {
+      showToast(getApiErrorMessage(error, 'Failed to send invitation'), 'error')
     },
   })
 
@@ -237,12 +271,17 @@ export default function IAM() {
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Identity & Access Management</h1>
           <p className="mt-2 text-sm text-gray-600">
-            {isAdmin
-              ? 'Manage users and their permissions in your organization'
-              : 'View users and pending invitations in your organization'}
+            {activeTab === 'organization' &&
+              (isAdmin
+                ? 'Manage organization users, invitations, and settings'
+                : 'View users and pending invitations in your organization')}
+            {activeTab === 'workspace-members' &&
+              'Manage workspace access and assign roles per workspace'}
+            {activeTab === 'workspace-roles' &&
+              'Configure workspace roles and their capabilities'}
           </p>
         </div>
-        {isAdmin && (
+        {isAdmin && activeTab === 'organization' && (
           <Button
             variant="primary"
             onClick={() => setShowInviteModal(true)}
@@ -253,6 +292,28 @@ export default function IAM() {
         )}
       </div>
 
+      <div className="border-b border-gray-200">
+        <nav className="-mb-px flex gap-6 overflow-x-auto" aria-label="IAM sections">
+          {visibleTabs.map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setActiveTab(id)}
+              className={`flex items-center gap-2 px-1 py-3 text-sm font-medium border-b-2 whitespace-nowrap transition-colors ${
+                activeTab === id
+                  ? 'border-primary-600 text-primary-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+              }`}
+            >
+              <Icon className="h-4 w-4" />
+              {label}
+            </button>
+          ))}
+        </nav>
+      </div>
+
+      {activeTab === 'organization' && (
+        <>
       {isAdmin && (
         <div className="bg-white shadow rounded-lg">
           <div className="px-6 py-4 border-b border-gray-200">
@@ -512,6 +573,16 @@ export default function IAM() {
           )}
         </div>
       </div>
+        </>
+      )}
+
+      {activeTab === 'workspace-members' && <WorkspaceMembersSection />}
+
+      {activeTab === 'workspace-roles' && isAdmin && (
+        <div className="bg-white shadow rounded-lg p-6">
+          <WorkspaceRolesSection />
+        </div>
+      )}
 
       {/* Invite Modal */}
       {showInviteModal && (

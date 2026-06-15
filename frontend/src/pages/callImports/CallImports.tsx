@@ -14,6 +14,8 @@ import {
 } from 'lucide-react'
 import { Tag as TagIcon } from 'lucide-react'
 import { apiClient } from '../../lib/api'
+import { getApiErrorMessage } from '../../lib/apiErrors'
+import { useToast } from '../../hooks/useToast'
 import { useWorkspaceStore } from '../../store/workspaceStore'
 import type { CallImport, CallImportStatus, CallImportTag } from '../../types/api'
 import Button from '../../components/Button'
@@ -41,6 +43,7 @@ type UploadTab = 'datasets' | 'audio'
 export default function CallImports() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const { showToast, ToastContainer } = useToast()
   // Active workspace is part of every workspace-scoped queryKey so a
   // workspace switch produces a clean cache miss instead of leaking
   // rows from the previously-active workspace.
@@ -72,10 +75,10 @@ export default function CallImports() {
       setPendingDelete(null)
       setDeleteError(null)
     },
-    onError: (err: any) => {
-      setDeleteError(
-        err?.response?.data?.detail || err?.message || 'Failed to delete import.',
-      )
+    onError: (err: unknown) => {
+      const message = getApiErrorMessage(err, 'Failed to delete import.')
+      setDeleteError(message)
+      showToast(message, 'error')
     },
   })
 
@@ -109,6 +112,7 @@ export default function CallImports() {
 
   return (
     <div className="space-y-6">
+      <ToastContainer />
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Call Imports</h1>

@@ -118,6 +118,14 @@ class Settings(BaseSettings):
     PLIVO_VERIFY_APP_UUID: str = ""
     PLIVO_WEBHOOK_BASE_URL: str = ""
 
+    # Recording URL fetch safety (SSRF guards for CSV/direct-URL imports)
+    RECORDING_URL_ALLOWED_HOST_SUFFIXES: List[str] = [
+        "exotel.com",
+        "plivo.com",
+        "amazonaws.com",
+        "cloudfront.net",
+    ]
+
     # Judge Alignment (AlignEval-style hybrid integration).
     # Operator-only knobs. Per-org thresholds and judge model selection
     # live in the database / UI, not here.
@@ -273,6 +281,28 @@ class Settings(BaseSettings):
             self.CELERY_BROKER_URL = self.REDIS_URL
         if not self.CELERY_RESULT_BACKEND:
             self.CELERY_RESULT_BACKEND = self.REDIS_URL
+
+
+def validate_auth_configuration() -> None:
+    """Fail fast when external OIDC is licensed and enabled but misconfigured."""
+    from app.core.license import has_auth_feature
+
+    providers = {p.strip().lower() for p in (settings.AUTH_PROVIDERS or [])}
+    if "external_oidc" not in providers:
+        return
+    # Listing external_oidc in providers alone does not activate SSO — the
+    # enterprise license must include oidc_sso (same gate as ExternalOIDCProvider).
+    if not has_auth_feature("oidc_sso"):
+        return
+    missing = []
+    if not settings.AUTH_OIDC_ISSUER:
+        missing.append("AUTH_OIDC_ISSUER")
+    if not settings.AUTH_OIDC_AUDIENCE:
+        missing.append("AUTH_OIDC_AUDIENCE")
+    if missing:
+        raise RuntimeError(
+            f"external_oidc is enabled but required settings are missing: {', '.join(missing)}"
+        )
 
 
 def load_config_from_file(config_path: str) -> None:

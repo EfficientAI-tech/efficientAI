@@ -279,6 +279,29 @@ def make_user(db_session):
 @pytest.fixture
 def user_context(db_session, org_id, api_key, seed_org, make_user):
     """Seed user + org membership + API key for IAM/settings tests."""
+    existing_key = (
+        db_session.query(APIKey)
+        .filter(APIKey.key == api_key, APIKey.organization_id == org_id)
+        .first()
+    )
+    if existing_key is not None and existing_key.user_id is not None:
+        user = db_session.query(User).filter(User.id == existing_key.user_id).first()
+        membership = (
+            db_session.query(OrganizationMember)
+            .filter(
+                OrganizationMember.organization_id == org_id,
+                OrganizationMember.user_id == user.id,
+            )
+            .first()
+        )
+        if user.email != "owner@example.com":
+            user.email = "owner@example.com"
+            user.name = "Org Owner"
+        if existing_key.name != "Owner API Key":
+            existing_key.name = "Owner API Key"
+        db_session.commit()
+        return {"user": user, "membership": membership, "api_key_record": existing_key}
+
     user = make_user(email="owner@example.com", name="Org Owner")
     membership = OrganizationMember(
         id=uuid4(),

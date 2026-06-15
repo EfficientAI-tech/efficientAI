@@ -287,6 +287,7 @@ class GenerateSamplesRequest(BaseModel):
     count: int = 5
     length: Optional[str] = "short"  # "short" | "medium" | "long" | "paragraph"
     temperature: Optional[float] = 0.8
+    llm_config: Optional[Dict[str, Any]] = None
 
 
 class CustomVoiceCreate(BaseModel):
@@ -400,7 +401,7 @@ async def generate_sample_texts(
 
     llm_provider_str = data.provider
     llm_model_str = data.model
-    temperature = data.temperature or 0.8
+    request_llm_config = data.llm_config
 
     if data.voice_bundle_id:
         bundle = db.query(VoiceBundle).filter(
@@ -413,8 +414,20 @@ async def generate_sample_texts(
             raise HTTPException(400, "Selected voice bundle has no LLM configured")
         llm_provider_str = bundle.llm_provider
         llm_model_str = bundle.llm_model
-        if bundle.llm_temperature is not None:
-            temperature = bundle.llm_temperature
+        from app.services.ai.llm_generation_config import merge_llm_config
+
+        request_llm_config = merge_llm_config(
+            request_llm_config or bundle.llm_config,
+            legacy_temperature=bundle.llm_temperature,
+            legacy_max_tokens=bundle.llm_max_tokens,
+        )
+        if data.temperature is not None and not (request_llm_config or {}).get("temperature"):
+            request_llm_config = {**(request_llm_config or {}), "temperature": data.temperature}
+    elif data.temperature is not None:
+        request_llm_config = {
+            **(request_llm_config or {}),
+            "temperature": data.temperature or 0.8,
+        }
 
     if not llm_provider_str or not llm_model_str:
         raise HTTPException(400, "Either voice_bundle_id or both provider and model are required")
@@ -449,8 +462,8 @@ async def generate_sample_texts(
             llm_model=llm_model_str,
             organization_id=organization_id,
             db=db,
-            temperature=temperature,
-            max_tokens=max_tokens,
+            llm_config=request_llm_config,
+            task_defaults={"temperature": 0.8, "max_tokens": max_tokens},
         )
     except Exception as e:
         logger.error(f"[VoicePlayground] LLM generation failed: {e}")
@@ -2470,3 +2483,14 @@ def _recompute_summary(comparison: TTSComparison, db: Session):
 
     comparison.evaluation_summary = summary
     db.commit()
+
+
+from app.core.auth.capabilities import REPORTS_GENERATE, REPORTS_VIEW
+from app.core.auth.workspace_route_capabilities import apply_workspace_route_capabilities
+
+apply_workspace_route_capabilities(
+    router,
+    view_capability=REPORTS_VIEW,
+    manage_capability=REPORTS_GENERATE,
+    run_capability=REPORTS_GENERATE,
+)

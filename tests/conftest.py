@@ -332,10 +332,14 @@ def client(db_session, api_key, org_id):
     from app.dependencies import (
         get_api_key,
         get_organization_id,
+        get_workspace_context,
         get_workspace_id,
         require_enterprise_feature,
+        WorkspaceContext,
     )
-    from app.models.database import Organization, Workspace
+    from app.core.auth.capabilities import ALL_CAPABILITIES
+    from app.models.database import Organization, OrganizationMember, RoleEnum, User, Workspace, APIKey
+    from app.services.workspace_rbac import backfill_org_workspace_memberships, seed_system_workspace_roles
     import app.dependencies as app_dependencies
     from app.api.v1.routes import (
         aiproviders,
@@ -374,6 +378,7 @@ def client(db_session, api_key, org_id):
         voice_playground,
         voicebundles,
         workspaces,
+        workspace_iam,
     )
 
     app = FastAPI()
@@ -413,6 +418,15 @@ def client(db_session, api_key, org_id):
     app.include_router(call_import_tags.router, prefix="/api/v1")
     app.include_router(call_import_evaluations.router, prefix="/api/v1")
     app.include_router(workspaces.router, prefix="/api/v1")
+    app.include_router(workspace_iam.router, prefix="/api/v1")
+
+    def _override_workspace_context() -> WorkspaceContext:
+        return WorkspaceContext(
+            workspace_id=default_workspace.id,
+            organization_id=org_id,
+            capabilities=frozenset(ALL_CAPABILITIES),
+            is_org_admin=True,
+        )
 
     # Enterprise route dependencies call app.dependencies.is_feature_enabled at runtime.
     # Force-enable it for API tests so tests remain focused on route behavior.
@@ -456,15 +470,18 @@ def client(db_session, api_key, org_id):
             )
             db_session.add(ws)
             db_session.commit()
+        seed_system_workspace_roles(db_session, organization_id=org_id)
         return ws
 
     default_workspace = _ensure_default_workspace()
+    backfill_org_workspace_memberships(db_session, organization_id=org_id)
 
     app.router.lifespan_context = _noop_lifespan
     app.dependency_overrides[get_db] = _override_get_db
     app.dependency_overrides[get_api_key] = lambda: api_key
     app.dependency_overrides[get_organization_id] = lambda: org_id
     app.dependency_overrides[get_workspace_id] = lambda: default_workspace.id
+    app.dependency_overrides[get_workspace_context] = _override_workspace_context
     app.dependency_overrides[require_enterprise_feature] = lambda: None
 
     with TestClient(app) as test_client:
@@ -475,14 +492,45 @@ def client(db_session, api_key, org_id):
 
 @pytest.fixture
 def authenticated_client(client, api_key, db_session, org_id):
-    """Client pre-populated with auth header."""
-    from app.models.database import Organization
+    """Client pre-populated with auth header and a real API key in the DB."""
+    from app.models.database import APIKey, Organization, OrganizationMember, RoleEnum, User
 
-    # Authenticated routes usually persist rows scoped to organization_id.
-    # Ensure the organization exists to satisfy FK constraints on Postgres.
     existing_org = db_session.query(Organization).filter(Organization.id == org_id).first()
     if existing_org is None:
         db_session.add(Organization(id=org_id, name="Test Organization"))
+        db_session.flush()
+
+    existing_key = (
+        db_session.query(APIKey)
+        .filter(APIKey.key == api_key, APIKey.organization_id == org_id)
+        .first()
+    )
+    if existing_key is None:
+        user = User(
+            id=uuid4(),
+            email="owner@example.com",
+            name="Org Owner",
+            is_active=True,
+        )
+        db_session.add(user)
+        db_session.flush()
+        db_session.add(
+            OrganizationMember(
+                organization_id=org_id,
+                user_id=user.id,
+                role=RoleEnum.ADMIN.value,
+            )
+        )
+        db_session.add(
+            APIKey(
+                id=uuid4(),
+                key=api_key,
+                name="Test API Key",
+                organization_id=org_id,
+                user_id=user.id,
+                is_active=True,
+            )
+        )
         db_session.commit()
 
     client.headers.update({"X-API-Key": api_key})

@@ -5,6 +5,7 @@ import { AlertTriangle, ExternalLink, GitBranch, Loader2, Sparkles } from 'lucid
 import ReactMarkdown from 'react-markdown'
 
 import AIProviderModelPicker from '../../../components/AIProviderModelPicker'
+import type { LLMGenerationConfig } from '../../../config/llmGenerationParams'
 import { apiClient } from '../../../lib/api'
 import AgentFlowChart from '../../promptPartials/components/AgentFlowChart'
 import type {
@@ -58,6 +59,7 @@ export default function MetricPromptImprovementsPanel({
   const [selectedAgentId, setSelectedAgentId] = useState('')
   const [pickerProvider, setPickerProvider] = useState('')
   const [pickerModel, setPickerModel] = useState('')
+  const [pickerLlmConfig, setPickerLlmConfig] = useState<LLMGenerationConfig | null>(null)
   const [llmPickerTouched, setLlmPickerTouched] = useState(false)
   const [agentPickerTouched, setAgentPickerTouched] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -293,6 +295,8 @@ export default function MetricPromptImprovementsPanel({
                 setLlmPickerTouched(true)
                 setPickerModel(next)
               }}
+              llm_config={pickerLlmConfig}
+              onLLMConfigChange={setPickerLlmConfig}
               disabled={generateMutation.isPending}
               size="sm"
             />

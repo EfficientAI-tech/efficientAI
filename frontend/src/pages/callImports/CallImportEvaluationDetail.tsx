@@ -58,6 +58,8 @@ import {
   YAxis,
 } from 'recharts'
 import { apiClient, type ReportBranding } from '../../lib/api'
+import { getApiErrorMessage } from '../../lib/apiErrors'
+import { useToast } from '../../hooks/useToast'
 import type {
   CallImportEvaluation,
   CallImportEvaluationBaselineCandidate,
@@ -350,6 +352,7 @@ export default function CallImportEvaluationDetail() {
   const { id, evalId } = useParams<{ id: string; evalId: string }>()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const { showToast, ToastContainer } = useToast()
   const [searchParams] = useSearchParams()
   const deepLinkConversationId =
     searchParams.get('conversation_id')?.trim() || ''
@@ -928,10 +931,10 @@ export default function CallImportEvaluationDetail() {
       setPendingDeleteRow(null)
       setRowDeleteError(null)
     },
-    onError: (err: any) => {
-      setRowDeleteError(
-        err?.response?.data?.detail || err?.message || 'Failed to delete row.',
-      )
+    onError: (err: unknown) => {
+      const message = getApiErrorMessage(err, 'Failed to delete row.')
+      setRowDeleteError(message)
+      showToast(message, 'error')
     },
   })
 
@@ -942,6 +945,9 @@ export default function CallImportEvaluationDetail() {
         queryKey: ['call-import-evaluations', id],
       })
       navigate(`/call-imports/${id}`)
+    },
+    onError: (err: unknown) => {
+      showToast(getApiErrorMessage(err, 'Failed to delete evaluation run.'), 'error')
     },
   })
 
@@ -1053,6 +1059,7 @@ export default function CallImportEvaluationDetail() {
       provider: evaluation.llm_provider ?? null,
       model: evaluation.llm_model ?? null,
       credential_id: evaluation.llm_credential_id ?? null,
+      llm_config: evaluation.llm_config ?? null,
     })
     setRerunMetricIds(new Set())
     setRerunError(null)
@@ -1078,25 +1085,25 @@ export default function CallImportEvaluationDetail() {
         rerunLLM.provider !== (evaluation?.llm_provider ?? null) ||
         rerunLLM.model !== (evaluation?.llm_model ?? null) ||
         (rerunLLM.credential_id ?? null) !==
-          (evaluation?.llm_credential_id ?? null)
+          (evaluation?.llm_credential_id ?? null) ||
+        JSON.stringify(rerunLLM.llm_config ?? null) !==
+          JSON.stringify(evaluation?.llm_config ?? null)
       return apiClient.retryCallImportEvaluation(id!, evalId!, {
         metricIds,
-        // ``include_completed`` would be auto-flipped server-side
-        // when ``metricIds`` is set; sending it explicitly here
-        // makes the intent obvious in the network tab.
         includeCompleted: true,
         llmProvider:
           llmChanged && rerunLLM.provider && rerunLLM.model
             ? rerunLLM.provider
             : undefined,
         llmModel:
-          llmChanged && rerunLLM.provider && rerunLLM.model
+          llmChanged && rerunLLM.model && rerunLLM.provider
             ? rerunLLM.model
             : undefined,
         llmCredentialId:
           llmChanged && rerunLLM.provider && rerunLLM.model
             ? rerunLLM.credential_id ?? null
             : undefined,
+        llmConfig: llmChanged ? rerunLLM.llm_config ?? null : undefined,
       })
     },
     onSuccess: () => {
@@ -1691,12 +1698,10 @@ export default function CallImportEvaluationDetail() {
       setPdfReportType('external')
       setPdfIncludeWeeklyDelta(false)
       setPdfUseCase('')
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error('Failed to generate PDF report', e)
-      setPdfReportError(
-        e?.response?.data?.detail ||
-          'Failed to generate PDF report. Please try again.',
-      )
+      const message = getApiErrorMessage(e, 'Failed to generate PDF report. Please try again.')
+      showToast(message, 'error')
     } finally {
       setPdfReportLoadingAction(null)
     }
@@ -1725,12 +1730,10 @@ export default function CallImportEvaluationDetail() {
         `${vendorSlug}-${pdfReportType}-quality-metric-audit-${evalId}.pdf`,
       )
       setPdfPreviewOpen(true)
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error('Failed to preview PDF report', e)
-      setPdfReportError(
-        e?.response?.data?.detail ||
-          'Failed to generate PDF preview. Please try again.',
-      )
+      const message = getApiErrorMessage(e, 'Failed to generate PDF preview. Please try again.')
+      showToast(message, 'error')
     } finally {
       setPdfReportLoadingAction(null)
     }
@@ -2074,6 +2077,7 @@ export default function CallImportEvaluationDetail() {
 
   return (
     <div className="space-y-6">
+      <ToastContainer />
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <Link
           to={`/call-imports/${id}`}

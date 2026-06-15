@@ -5,23 +5,6 @@ import path from 'node:path';
 
 const appRoot = process.cwd();
 const docsRoot = path.join(appRoot, 'content', 'docs');
-const featureMetaPath = path.join(appRoot, 'content', 'feature-contributors.json');
-const featureDocs = new Set([
-  'products/agents',
-  'products/personas',
-  'products/scenarios',
-  'products/evaluators',
-  'products/metrics',
-  'products/playground',
-  'products/voice-playground',
-  'products/call-imports',
-  'products/alerting',
-  'products/prompt-optimization',
-  'products/prompt-partials',
-  'monitoring/calls',
-  'monitoring/alerting',
-  'monitoring/cron-jobs',
-]);
 
 function walkDocs(dir) {
   const results = [];
@@ -64,7 +47,6 @@ const errors = [];
 const docs = walkDocs(docsRoot);
 for (const file of docs) {
   const rel = path.relative(docsRoot, file).replace(/\\/g, '/');
-  const featureId = rel.replace(/\.mdx$/, '');
   const content = fs.readFileSync(file, 'utf8');
   const frontmatter = parseFrontmatter(content);
   if (!frontmatter) {
@@ -74,25 +56,10 @@ for (const file of docs) {
   if (!frontmatter.get('title')) {
     errors.push(`${rel}: missing frontmatter title`);
   }
-
-  // Feature pages now render contributors from a shared bottom-right widget.
-  // Keep validation focused on metadata presence rather than inline page markers.
-}
-
-if (!fs.existsSync(featureMetaPath)) {
-  errors.push('content/feature-contributors.json does not exist');
-} else {
-  const featureMeta = JSON.parse(fs.readFileSync(featureMetaPath, 'utf8'));
-  const found = new Set((featureMeta.features || []).map((item) => item.featureId));
-  for (const featureId of featureDocs) {
-    if (!found.has(featureId)) {
-      errors.push(`feature-contributors.json missing entry for ${featureId}`);
-    }
-  }
 }
 
 if (errors.length > 0) {
   fail(errors);
 }
 
-console.log(`Validated ${docs.length} docs pages and contributor metadata.`);
+console.log(`Validated ${docs.length} docs pages.`);

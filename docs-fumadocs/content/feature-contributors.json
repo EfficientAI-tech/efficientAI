@@ -18,7 +18,7 @@
           "commits": 2
         }
       ],
-      "lastReviewed": "2026-06-13"
+      "lastReviewed": "2026-06-15"
     },
     {
       "featureId": "advanced/database",
@@ -35,7 +35,7 @@
           "commits": 3
         }
       ],
-      "lastReviewed": "2026-06-13"
+      "lastReviewed": "2026-06-15"
     },
     {
       "featureId": "advanced/development",
@@ -52,7 +52,7 @@
           "commits": 2
         }
       ],
-      "lastReviewed": "2026-06-13"
+      "lastReviewed": "2026-06-15"
     },
     {
       "featureId": "enterprise/call-imports",
@@ -134,17 +134,12 @@
       ],
       "contributors": [
         {
-          "name": "aadhar-EAI",
-          "email": "aadhar@efficientai.cloud",
-          "commits": 1
-        },
-        {
           "name": "Tejas Narayan",
           "email": "stejasnarayan@gmail.com",
-          "commits": 1
+          "commits": 3
         }
       ],
-      "lastReviewed": "2026-06-13"
+      "lastReviewed": "2026-06-15"
     },
     {
       "featureId": "getting-started/cloud-storage",
@@ -161,7 +156,7 @@
           "commits": 1
         }
       ],
-      "lastReviewed": "2026-06-13"
+      "lastReviewed": "2026-06-15"
     },
     {
       "featureId": "getting-started/installation",
@@ -178,7 +173,7 @@
           "commits": 3
         }
       ],
-      "lastReviewed": "2026-06-13"
+      "lastReviewed": "2026-06-15"
     },
     {
       "featureId": "getting-started/integrations",
@@ -195,7 +190,7 @@
           "commits": 1
         }
       ],
-      "lastReviewed": "2026-06-13"
+      "lastReviewed": "2026-06-15"
     },
     {
       "featureId": "getting-started/voice-bundles",
@@ -212,7 +207,7 @@
           "commits": 1
         }
       ],
-      "lastReviewed": "2026-06-13"
+      "lastReviewed": "2026-06-15"
     },
     {
       "featureId": "getting-started/workspaces",
@@ -227,9 +222,14 @@
           "name": "aadhar-EAI",
           "email": "aadhar@efficientai.cloud",
           "commits": 1
+        },
+        {
+          "name": "Tejas Narayan",
+          "email": "stejasnarayan@gmail.com",
+          "commits": 1
         }
       ],
-      "lastReviewed": "2026-06-13"
+      "lastReviewed": "2026-06-15"
     },
     {
       "featureId": "intro",
@@ -246,7 +246,7 @@
           "commits": 3
         }
       ],
-      "lastReviewed": "2026-06-13"
+      "lastReviewed": "2026-06-15"
     },
     {
       "featureId": "monitoring/alerting",
@@ -263,7 +263,7 @@
           "commits": 2
         }
       ],
-      "lastReviewed": "2026-06-13"
+      "lastReviewed": "2026-06-15"
     },
     {
       "featureId": "monitoring/calls",
@@ -285,7 +285,7 @@
           "commits": 1
         }
       ],
-      "lastReviewed": "2026-06-13"
+      "lastReviewed": "2026-06-15"
     },
     {
       "featureId": "monitoring/cron-jobs",
@@ -302,7 +302,7 @@
           "commits": 2
         }
       ],
-      "lastReviewed": "2026-06-13"
+      "lastReviewed": "2026-06-15"
     },
     {
       "featureId": "more/pitch-ideas",
@@ -316,7 +316,7 @@
           "commits": 1
         }
       ],
-      "lastReviewed": "2026-06-13"
+      "lastReviewed": "2026-06-15"
     },
     {
       "featureId": "more/polls",
@@ -330,7 +330,7 @@
           "commits": 1
         }
       ],
-      "lastReviewed": "2026-06-13"
+      "lastReviewed": "2026-06-15"
     },
     {
       "featureId": "more/qna",
@@ -344,7 +344,7 @@
           "commits": 1
         }
       ],
-      "lastReviewed": "2026-06-13"
+      "lastReviewed": "2026-06-15"
     },
     {
       "featureId": "more/roadmap",
@@ -358,7 +358,7 @@
           "commits": 1
         }
       ],
-      "lastReviewed": "2026-06-13"
+      "lastReviewed": "2026-06-15"
     },
     {
       "featureId": "products/agents",
@@ -375,7 +375,7 @@
           "commits": 1
         }
       ],
-      "lastReviewed": "2026-06-13"
+      "lastReviewed": "2026-06-15"
     },
     {
       "featureId": "products/alerting",
@@ -397,21 +397,7 @@
           "commits": 1
         }
       ],
-      "lastReviewed": "2026-06-13"
-    },
-    {
-      "featureId": "products/call-imports",
-      "docPath": "docs-fumadocs/content/docs/products/call-imports.mdx",
-      "historyPath": "docs-fumadocs/content/docs/products/call-imports.mdx",
-      "owners": [],
-      "contributors": [
-        {
-          "name": "Tejas Narayan",
-          "email": "stejasnarayan@gmail.com",
-          "commits": 1
-        }
-      ],
-      "lastReviewed": "2026-06-13"
+      "lastReviewed": "2026-06-15"
     },
     {
       "featureId": "products/evaluators",
@@ -428,7 +414,7 @@
           "commits": 2
         }
       ],
-      "lastReviewed": "2026-06-13"
+      "lastReviewed": "2026-06-15"
     },
     {
       "featureId": "products/metrics",
@@ -445,7 +431,7 @@
           "commits": 1
         }
       ],
-      "lastReviewed": "2026-06-13"
+      "lastReviewed": "2026-06-15"
     },
     {
       "featureId": "products/personas",
@@ -462,7 +448,7 @@
           "commits": 3
         }
       ],
-      "lastReviewed": "2026-06-13"
+      "lastReviewed": "2026-06-15"
     },
     {
       "featureId": "products/playground",
@@ -479,7 +465,7 @@
           "commits": 2
         }
       ],
-      "lastReviewed": "2026-06-13"
+      "lastReviewed": "2026-06-15"
     },
     {
       "featureId": "products/prompt-optimization",
@@ -496,7 +482,7 @@
           "commits": 2
         }
       ],
-      "lastReviewed": "2026-06-13"
+      "lastReviewed": "2026-06-15"
     },
     {
       "featureId": "products/prompt-partials",
@@ -513,7 +499,7 @@
           "commits": 1
         }
       ],
-      "lastReviewed": "2026-06-13"
+      "lastReviewed": "2026-06-15"
     },
     {
       "featureId": "products/scenarios",
@@ -530,21 +516,7 @@
           "commits": 3
         }
       ],
-      "lastReviewed": "2026-06-13"
-    },
-    {
-      "featureId": "products/voice-playground",
-      "docPath": "docs-fumadocs/content/docs/products/voice-playground.mdx",
-      "historyPath": "docs-fumadocs/content/docs/products/voice-playground.mdx",
-      "owners": [],
-      "contributors": [
-        {
-          "name": "Tejas Narayan",
-          "email": "stejasnarayan@gmail.com",
-          "commits": 1
-        }
-      ],
-      "lastReviewed": "2026-06-13"
+      "lastReviewed": "2026-06-15"
     },
     {
       "featureId": "reference/cli-commands",
@@ -561,7 +533,7 @@
           "commits": 2
         }
       ],
-      "lastReviewed": "2026-06-13"
+      "lastReviewed": "2026-06-15"
     },
     {
       "featureId": "reference/configuration",
@@ -583,12 +555,12 @@
           "commits": 2
         }
       ],
-      "lastReviewed": "2026-06-13"
+      "lastReviewed": "2026-06-15"
     }
   ],
   "summary": {
-    "featureCount": 35,
-    "contributorCount": 39,
+    "featureCount": 28,
+    "contributorCount": 32,
     "skippedBots": 0
   }
 }

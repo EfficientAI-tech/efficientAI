@@ -82,6 +82,9 @@ def verify_jwt(
     Matches the key by `kid`. Falls back to trying every key if `kid` is
     missing - this happens with some cloud IdPs on signature rollover.
     """
+    if not audience:
+        raise AuthError("OIDC audience is not configured")
+
     keys = fetch_jwks(jwks_uri)
     try:
         header = jwt.get_unverified_header(token)
@@ -98,16 +101,12 @@ def verify_jwt(
     last_error: Optional[Exception] = None
     for key in candidate_keys:
         try:
-            options = {}
-            if audience is None:
-                options["verify_aud"] = False
             return jwt.decode(
                 token,
                 key,
                 algorithms=[key.get("alg", "RS256")],
                 issuer=issuer,
                 audience=audience,
-                options=options,
             )
         except JWTError as e:
             last_error = e

@@ -30,6 +30,7 @@ import {
 } from 'lucide-react'
 import { format } from 'date-fns'
 import AIProviderModelPicker from '../../components/AIProviderModelPicker'
+import type { LLMGenerationConfig } from '../../config/llmGenerationParams'
 import AgentFlowChart from './components/AgentFlowChart'
 import MetricPartialEditor from './components/MetricPartialEditor'
 import AgentPromptSectionView, {
@@ -233,6 +234,7 @@ export default function PromptPartials() {
   const [showAIGenerateModal, setShowAIGenerateModal] = useState(false)
   const [pickerProvider, setPickerProvider] = useState('')
   const [pickerModel, setPickerModel] = useState('')
+  const [pickerLlmConfig, setPickerLlmConfig] = useState<LLMGenerationConfig | null>(null)
   const [llmPickerTouched, setLlmPickerTouched] = useState(false)
   const [flowchartError, setFlowchartError] = useState<string | null>(null)
   const [selectedFlowNodeId, setSelectedFlowNodeId] = useState<string | null>(null)
@@ -879,6 +881,8 @@ export default function PromptPartials() {
                             setLlmPickerTouched(true)
                             setPickerModel(next)
                           }}
+                          llm_config={pickerLlmConfig}
+                          onLLMConfigChange={setPickerLlmConfig}
                           disabled={
                             flowchartMutation.isPending || mapPromptSectionsMutation.isPending
                           }
