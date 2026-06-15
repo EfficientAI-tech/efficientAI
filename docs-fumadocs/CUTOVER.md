@@ -25,5 +25,3 @@ If production docs regress, redeploy the last known-good commit that built and e
 - Check CloudFront/S3 404 metrics for docs paths for at least one release window.
 - Track search failures and broken-link reports.
 - Confirm no unresolved internal links from `npm run check:links`.
-- Regenerate contributor metadata weekly or when major docs edits land:
-  - `npm run contributors:generate`
