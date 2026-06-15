@@ -23,6 +23,8 @@ from sqlalchemy import desc, func, or_, text
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
+from app.core.auth import Principal, get_principal
+from app.core.auth.capabilities import REPORTS_GENERATE, capability_denied_message
 from app.database import get_db
 from app.dependencies import (
     get_api_key,
@@ -30,6 +32,7 @@ from app.dependencies import (
     get_workspace_id,
     require_enterprise_feature,
 )
+from app.services.workspace_rbac import resolve_workspace_capabilities
 from app.models.database import (
     AIProvider,
     CallImport,
@@ -182,6 +185,36 @@ def _require_import(
     if not call_import:
         raise HTTPException(status_code=404, detail="Call import not found")
     return call_import
+
+
+def require_call_import_capability(capability: str):
+    """Ensure the caller has *capability* in the call import's workspace (not just the header)."""
+
+    def _dep(
+        call_import_id: UUID,
+        principal: Principal = Depends(get_principal),
+        organization_id: UUID = Depends(get_organization_id),
+        db: Session = Depends(get_db),
+    ) -> CallImport:
+        call_import = _require_import(db, call_import_id, organization_id)
+        caps, _, role = resolve_workspace_capabilities(
+            db,
+            principal=principal,
+            workspace_id=call_import.workspace_id,
+            organization_id=organization_id,
+        )
+        if capability not in caps:
+            raise HTTPException(
+                status_code=403,
+                detail=capability_denied_message(
+                    capability,
+                    role_name=role.name if role else None,
+                    workspace_label="the active workspace",
+                ),
+            )
+        return call_import
+
+    return _dep
 
 
 def _flatten_transcript(text: Optional[str]) -> str:
@@ -3220,6 +3253,7 @@ async def list_call_import_evaluation_baseline_candidates(
 @router.post(
     "/{eval_id}/pdf-report",
     operation_id="generateCallImportEvaluationPdfReport",
+    dependencies=[Depends(require_call_import_capability(REPORTS_GENERATE))],
 )
 async def generate_call_import_evaluation_pdf_report(
     call_import_id: UUID,
@@ -8596,7 +8630,7 @@ async def retry_call_import_evaluation_row(
     )
 
 
-from app.core.auth.capabilities import EVALS_RUN, EVALS_VIEW
+from app.core.auth.capabilities import EVALS_RUN, EVALS_VIEW, REPORTS_GENERATE
 from app.core.auth.workspace_route_capabilities import apply_workspace_route_capabilities
 
 apply_workspace_route_capabilities(
@@ -8604,4 +8638,5 @@ apply_workspace_route_capabilities(
     view_capability=EVALS_VIEW,
     manage_capability=EVALS_RUN,
     run_capability=EVALS_RUN,
+    report_capability=REPORTS_GENERATE,
 )

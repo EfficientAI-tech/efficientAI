@@ -539,3 +539,70 @@ def test_capability_denied_message_maps_editor_and_admin():
     )
     assert "Editor role" in import_msg
     assert "Viewer" in import_msg
+
+
+def _iam_admin_client(db_session, rbac_org, rbac_users):
+    app = FastAPI()
+    app.include_router(workspace_iam.router, prefix="/api/v1")
+
+    def _principal():
+        return Principal(
+            organization_id=rbac_org.id,
+            auth_method=AuthMethod.LOCAL_PASSWORD,
+            user_id=rbac_users["admin"].id,
+        )
+
+    def _override_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = _override_db
+    app.dependency_overrides[get_principal] = _principal
+    app.dependency_overrides[get_organization_id] = lambda: rbac_org.id
+    return TestClient(app)
+
+
+def test_workspace_role_crud(db_session, rbac_org, rbac_users):
+    with _iam_admin_client(db_session, rbac_org, rbac_users) as client:
+        create = client.post(
+            "/api/v1/workspace-roles",
+            json={
+                "name": "Eval Runner",
+                "description": "Can view and run evals",
+                "capabilities": ["evals.view", "evals.run"],
+            },
+        )
+        assert create.status_code == 201
+        role_id = create.json()["id"]
+        assert create.json()["is_system"] is False
+
+        listed = client.get("/api/v1/workspace-roles")
+        assert listed.status_code == 200
+        names = {r["name"] for r in listed.json()}
+        assert "Eval Runner" in names
+
+        update = client.patch(
+            f"/api/v1/workspace-roles/{role_id}",
+            json={
+                "name": "Eval Runner Plus",
+                "capabilities": ["evals.view", "evals.run", "reports.view"],
+            },
+        )
+        assert update.status_code == 200
+        assert update.json()["name"] == "Eval Runner Plus"
+        assert "reports.view" in update.json()["capabilities"]
+
+        delete = client.delete(f"/api/v1/workspace-roles/{role_id}")
+        assert delete.status_code == 204
+
+
+def test_cannot_update_system_workspace_role(db_session, rbac_org, rbac_users):
+    roles = seed_system_workspace_roles(db_session, organization_id=rbac_org.id)
+    viewer_role = roles[SYSTEM_ROLE_VIEWER]
+
+    with _iam_admin_client(db_session, rbac_org, rbac_users) as client:
+        response = client.patch(
+            f"/api/v1/workspace-roles/{viewer_role.id}",
+            json={"name": "Renamed Viewer"},
+        )
+    assert response.status_code == 400
+    assert "System roles cannot be modified" in response.json()["detail"]

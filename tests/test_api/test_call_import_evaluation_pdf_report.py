@@ -1408,3 +1408,87 @@ def test_pdf_report_html_includes_brand_logos_on_first_page_header(
     assert "Internal brand" in first_page_header
     assert "External vendor brand" in first_page_header
     assert "Acme Branch" in first_page_header
+
+
+def test_pdf_report_denied_for_workspace_viewer(db_session, org_id, seed_org, monkeypatch):
+    """Workspace Viewers may view evals but must not generate PDF reports."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.api.v1.routes import call_import_evaluations
+    from app.core.auth.capabilities import SYSTEM_ROLE_VIEWER
+    from app.core.auth.dependency import get_principal
+    from app.core.auth.principal import AuthMethod, Principal
+    from app.database import get_db
+    from app import dependencies as app_dependencies
+    from app.dependencies import get_organization_id
+    from app.models.database import OrganizationMember, RoleEnum, User, Workspace
+    from app.services.workspace_rbac import (
+        add_workspace_member,
+        seed_system_workspace_roles,
+    )
+
+    call_import, evaluation = _seed_completed_evaluation(db_session, org_id)
+    roles = seed_system_workspace_roles(db_session, organization_id=org_id)
+    viewer = User(id=uuid4(), email="viewer-pdf@test.local", name="Viewer")
+    db_session.add(viewer)
+    db_session.add(
+        OrganizationMember(
+            organization_id=org_id,
+            user_id=viewer.id,
+            role=RoleEnum.WRITER,
+        )
+    )
+    db_session.flush()
+    add_workspace_member(
+        db_session,
+        workspace_id=call_import.workspace_id,
+        user_id=viewer.id,
+        role_id=roles[SYSTEM_ROLE_VIEWER].id,
+    )
+    db_session.commit()
+
+    monkeypatch.setattr(
+        call_import_evaluation_pdf_report_service,
+        "_render_weasyprint",
+        lambda _html, **_kwargs: b"%PDF-1.4 test",
+    )
+    monkeypatch.setattr(
+        app_dependencies,
+        "is_feature_enabled",
+        lambda *_args, **_kwargs: True,
+    )
+
+    app = FastAPI()
+    app.include_router(call_import_evaluations.router, prefix="/api/v1")
+
+    def _principal():
+        return Principal(
+            organization_id=org_id,
+            auth_method=AuthMethod.LOCAL_PASSWORD,
+            user_id=viewer.id,
+        )
+
+    def _override_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = _override_db
+    app.dependency_overrides[get_principal] = _principal
+    app.dependency_overrides[get_organization_id] = lambda: org_id
+
+    workspace = (
+        db_session.query(Workspace)
+        .filter(Workspace.id == call_import.workspace_id)
+        .first()
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/pdf-report",
+            headers={"X-Workspace-Id": str(workspace.id)},
+            json={"vendor_name": "Acme"},
+        )
+
+    assert response.status_code == 403
+    assert "Editor role" in response.json()["detail"]
+    assert "Viewer" in response.json()["detail"]

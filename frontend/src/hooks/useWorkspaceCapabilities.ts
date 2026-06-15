@@ -14,6 +14,7 @@ export function useWorkspaceCapabilities() {
       canImportCalls: capabilities.includes('calls.import'),
       canManageMetrics: capabilities.includes('metrics.manage'),
       canRunEvals: capabilities.includes('evals.run'),
+      canGenerateReports: capabilities.includes('reports.generate'),
     }),
     [capabilities],
   )

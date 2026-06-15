@@ -9,7 +9,6 @@
 .next/
 /out/
 /build
-/lambda-edge/**/dist/
 *.tsbuildinfo
 
 # misc

@@ -193,7 +193,19 @@ def update_workspace_role(
         raise HTTPException(status_code=400, detail="System roles cannot be modified.")
 
     if payload.name is not None:
-        role.name = payload.name.strip()
+        new_name = payload.name.strip()
+        conflict = (
+            db.query(WorkspaceRole)
+            .filter(
+                WorkspaceRole.organization_id == organization_id,
+                WorkspaceRole.name == new_name,
+                WorkspaceRole.id != role_id,
+            )
+            .first()
+        )
+        if conflict:
+            raise HTTPException(status_code=409, detail="A role with this name already exists.")
+        role.name = new_name
     if payload.description is not None:
         role.description = payload.description
     if payload.capabilities is not None:

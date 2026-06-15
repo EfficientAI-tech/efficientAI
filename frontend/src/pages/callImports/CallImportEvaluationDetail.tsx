@@ -1698,12 +1698,10 @@ export default function CallImportEvaluationDetail() {
       setPdfReportType('external')
       setPdfIncludeWeeklyDelta(false)
       setPdfUseCase('')
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error('Failed to generate PDF report', e)
-      setPdfReportError(
-        e?.response?.data?.detail ||
-          'Failed to generate PDF report. Please try again.',
-      )
+      const message = getApiErrorMessage(e, 'Failed to generate PDF report. Please try again.')
+      showToast(message, 'error')
     } finally {
       setPdfReportLoadingAction(null)
     }
@@ -1732,12 +1730,10 @@ export default function CallImportEvaluationDetail() {
         `${vendorSlug}-${pdfReportType}-quality-metric-audit-${evalId}.pdf`,
       )
       setPdfPreviewOpen(true)
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error('Failed to preview PDF report', e)
-      setPdfReportError(
-        e?.response?.data?.detail ||
-          'Failed to generate PDF preview. Please try again.',
-      )
+      const message = getApiErrorMessage(e, 'Failed to generate PDF preview. Please try again.')
+      showToast(message, 'error')
     } finally {
       setPdfReportLoadingAction(null)
     }

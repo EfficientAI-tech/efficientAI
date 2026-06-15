@@ -16,6 +16,7 @@ def apply_workspace_route_capabilities(
     view_capability: str,
     manage_capability: str,
     run_capability: str | None = None,
+    report_capability: str | None = None,
     delete_capability: str | None = None,
     skip_paths: Iterable[str] | None = None,
 ) -> None:
@@ -23,7 +24,8 @@ def apply_workspace_route_capabilities(
     Attach capability dependencies to routes on ``router`` based on HTTP method.
 
     GET/HEAD -> view_capability
-    POST/PUT/PATCH -> manage_capability (or run_capability when path ends with /run)
+    POST/PUT/PATCH -> manage_capability (or run_capability when path ends with /run,
+    or report_capability when path ends with /pdf-report)
     DELETE -> delete_capability or manage_capability
     """
     skipped = set(skip_paths or ())
@@ -45,7 +47,9 @@ def apply_workspace_route_capabilities(
             deps.append(Depends(require_capability(cap)))
         elif methods & {"POST", "PUT", "PATCH"}:
             cap = manage_capability
-            if run_capability and _looks_like_run_route(path):
+            if report_capability and _looks_like_report_route(path):
+                cap = report_capability
+            elif run_capability and _looks_like_run_route(path):
                 cap = run_capability
             deps.append(Depends(require_capability(cap)))
 
@@ -55,3 +59,8 @@ def apply_workspace_route_capabilities(
 def _looks_like_run_route(path: str) -> bool:
     lowered = path.lower()
     return lowered.endswith("/run") or "/run/" in lowered
+
+
+def _looks_like_report_route(path: str) -> bool:
+    lowered = path.lower()
+    return lowered.endswith("/pdf-report") or "/pdf-report" in lowered

@@ -28,12 +28,6 @@ npm run ci:check
 
 ## Deployment
 
-Deployment is handled by `.github/workflows/docs.yml` (the `deploy` job) and publishes static output from `docs-fumadocs/out`.
+Deployment is handled by `.github/workflows/docs.yml` (the `deploy` job) and publishes static output from `docs-fumadocs/out` to S3/CloudFront on pushes to `main` (or via manual workflow dispatch).
 
-Rollback instructions are documented in `CUTOVER.md`.
-
-## Enterprise documentation
-
-Enterprise feature guides live under `content/docs/enterprise/`. They are excluded from the public search index and marked `noindex`.
-
-Production access is gated at CloudFront with Lambda@Edge (`lambda-edge/enterprise-auth/`). Deployment is handled by the docs GitHub Actions workflow using repository secrets for the enterprise password and cookie signing secret.
+The `build` job runs the same checks on pull requests. Only public docs content under `content/docs/` is included — there is no separate enterprise docs section or password gate.

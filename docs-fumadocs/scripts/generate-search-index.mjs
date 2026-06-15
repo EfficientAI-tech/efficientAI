@@ -67,9 +67,7 @@ function toLabel(segment) {
 
 function buildRecords() {
   const files = walkDocs(DOCS_ROOT);
-  const records = files
-    .filter(({ relative }) => !relative.startsWith('enterprise/'))
-    .map(({ relative, absolute }) => {
+  const records = files.map(({ relative, absolute }) => {
     const raw = fs.readFileSync(absolute, 'utf8');
     const { frontmatter, body } = stripFrontmatter(raw);
     const featureId = relative.replace(/\.mdx$/, '');

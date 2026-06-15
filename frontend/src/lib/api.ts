@@ -296,16 +296,29 @@ class ApiClient {
     // Add response interceptor for error handling
     this.client.interceptors.response.use(
       (response) => response,
-      (error) => {
+      async (error) => {
+        const response = error.response
+        if (response?.data instanceof Blob) {
+          try {
+            const text = await response.data.text()
+            const trimmed = text.trim()
+            if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+              response.data = JSON.parse(text)
+            }
+          } catch {
+            // Keep the original blob when it isn't JSON.
+          }
+        }
+
         // Only log out on 401 (authentication failure)
         // 403 errors are authorization failures that should be handled by the calling code
-        if (error.response?.status === 401) {
+        if (response?.status === 401) {
           // API key invalid, clear it
           localStorage.removeItem('apiKey')
           window.location.href = '/login'
         }
         return Promise.reject(error)
-      }
+      },
     )
   }
 

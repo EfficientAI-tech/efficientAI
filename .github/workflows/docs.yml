@@ -68,15 +68,6 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Deploy enterprise docs gate
-        run: bash deploy.sh
-        working-directory: docs-fumadocs/lambda-edge/enterprise-auth
-        env:
-          AWS_REGION: us-east-1
-          DOCS_AUTH_LAMBDA_NAME: ${{ secrets.DOCS_AUTH_LAMBDA_NAME }}
-          DOCS_ENTERPRISE_PASSWORD: ${{ secrets.DOCS_ENTERPRISE_PASSWORD }}
-          DOCS_ENTERPRISE_COOKIE_SECRET: ${{ secrets.DOCS_ENTERPRISE_COOKIE_SECRET }}
-
       - name: Deploy to S3
         run: aws s3 sync ./out s3://${{ secrets.AWS_S3_BUCKET }} --delete
 
