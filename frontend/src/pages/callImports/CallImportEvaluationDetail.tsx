@@ -58,6 +58,8 @@ import {
   YAxis,
 } from 'recharts'
 import { apiClient, type ReportBranding } from '../../lib/api'
+import { getApiErrorMessage } from '../../lib/apiErrors'
+import { useToast } from '../../hooks/useToast'
 import type {
   CallImportEvaluation,
   CallImportEvaluationBaselineCandidate,
@@ -350,6 +352,7 @@ export default function CallImportEvaluationDetail() {
   const { id, evalId } = useParams<{ id: string; evalId: string }>()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const { showToast, ToastContainer } = useToast()
   const [searchParams] = useSearchParams()
   const deepLinkConversationId =
     searchParams.get('conversation_id')?.trim() || ''
@@ -928,10 +931,10 @@ export default function CallImportEvaluationDetail() {
       setPendingDeleteRow(null)
       setRowDeleteError(null)
     },
-    onError: (err: any) => {
-      setRowDeleteError(
-        err?.response?.data?.detail || err?.message || 'Failed to delete row.',
-      )
+    onError: (err: unknown) => {
+      const message = getApiErrorMessage(err, 'Failed to delete row.')
+      setRowDeleteError(message)
+      showToast(message, 'error')
     },
   })
 
@@ -942,6 +945,9 @@ export default function CallImportEvaluationDetail() {
         queryKey: ['call-import-evaluations', id],
       })
       navigate(`/call-imports/${id}`)
+    },
+    onError: (err: unknown) => {
+      showToast(getApiErrorMessage(err, 'Failed to delete evaluation run.'), 'error')
     },
   })
 
@@ -2075,6 +2081,7 @@ export default function CallImportEvaluationDetail() {
 
   return (
     <div className="space-y-6">
+      <ToastContainer />
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <Link
           to={`/call-imports/${id}`}

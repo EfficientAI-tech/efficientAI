@@ -23,6 +23,7 @@ from app.core.auth.rbac import get_org_role
 from app.core.license import is_feature_enabled
 from app.database import get_db
 from app.models.database import RoleEnum, Workspace, WorkspaceMember
+from app.core.auth.capabilities import capability_denied_message
 from app.services.workspace_rbac import resolve_workspace_capabilities
 
 
@@ -220,10 +221,11 @@ def require_capability(capability: str):
     def _dep(ctx: WorkspaceContext = Depends(get_workspace_context)) -> WorkspaceContext:
         if capability not in ctx.capabilities:
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=(
-                    f"This action requires the '{capability}' capability "
-                    f"in the active workspace."
+                status_code=403,
+                detail=capability_denied_message(
+                    capability,
+                    role_name=ctx.role_name,
+                    workspace_label="the active workspace",
                 ),
             )
         return ctx

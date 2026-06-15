@@ -6,6 +6,7 @@ import { Role, Invitation, OrganizationMember, InvitationCreate } from '../../ty
 import { Users, Mail, UserPlus, Shield, ShieldCheck, ShieldAlert, X, Trash2, KeyRound, Eye, EyeOff, Building2, Copy, Check } from 'lucide-react'
 import Button from '../../components/Button'
 import { useToast } from '../../hooks/useToast'
+import { getApiErrorMessage } from '../../lib/apiErrors'
 import { useIsAdmin } from '../../hooks/useRole'
 import WorkspaceRolesSection from '../../components/WorkspaceRolesSection'
 import WorkspaceMembersSection from '../../components/iam/WorkspaceMembersSection'
@@ -96,6 +97,10 @@ export default function IAM() {
       setShowInviteModal(false)
       setInviteEmail('')
       setInviteRole(Role.READER)
+      showToast('Invitation sent', 'success')
+    },
+    onError: (error: unknown) => {
+      showToast(getApiErrorMessage(error, 'Failed to send invitation'), 'error')
     },
   })
 

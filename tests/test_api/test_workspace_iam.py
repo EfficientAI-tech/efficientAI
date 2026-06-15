@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from uuid import uuid4
+from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI
@@ -13,6 +14,7 @@ from app.core.auth.capabilities import (
     METRICS_VIEW,
     SYSTEM_ROLE_ADMIN,
     SYSTEM_ROLE_VIEWER,
+    WORKSPACE_MEMBERS_MANAGE,
 )
 from app.core.auth.principal import AuthMethod, Principal
 from app.core.auth.dependency import get_principal
@@ -47,7 +49,8 @@ def rbac_org(db_session):
 def rbac_users(db_session, rbac_org):
     admin = User(id=uuid4(), email="admin@test.local", name="Admin")
     viewer = User(id=uuid4(), email="viewer@test.local", name="Viewer")
-    db_session.add_all([admin, viewer])
+    writer = User(id=uuid4(), email="writer@test.local", name="Writer")
+    db_session.add_all([admin, viewer, writer])
     db_session.add_all(
         [
             OrganizationMember(
@@ -60,10 +63,15 @@ def rbac_users(db_session, rbac_org):
                 user_id=viewer.id,
                 role=RoleEnum.READER,
             ),
+            OrganizationMember(
+                organization_id=rbac_org.id,
+                user_id=writer.id,
+                role=RoleEnum.WRITER,
+            ),
         ]
     )
     db_session.commit()
-    return {"admin": admin, "viewer": viewer}
+    return {"admin": admin, "viewer": viewer, "writer": writer}
 
 
 @pytest.fixture
@@ -214,3 +222,320 @@ def test_workspace_members_require_view_capability(
     with TestClient(app) as client:
         allowed = client.get(f"/api/v1/workspaces/{ws_b.id}/members")
     assert allowed.status_code == 200
+
+
+def _iam_test_app(db_session, principal_factory):
+    app = FastAPI()
+    app.include_router(workspace_iam.router, prefix="/api/v1")
+
+    def _override_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = _override_db
+    app.dependency_overrides[get_principal] = principal_factory
+    return app
+
+
+def test_list_capabilities_requires_auth():
+    app = FastAPI()
+    app.include_router(workspace_iam.router, prefix="/api/v1")
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/capabilities")
+    assert response.status_code == 401
+
+
+def test_list_capabilities_with_auth(db_session, rbac_org, rbac_users):
+    app = _iam_test_app(
+        db_session,
+        lambda: Principal(
+            organization_id=rbac_org.id,
+            auth_method=AuthMethod.LOCAL_PASSWORD,
+            user_id=rbac_users["admin"].id,
+        ),
+    )
+    app.dependency_overrides[get_organization_id] = lambda: rbac_org.id
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/capabilities")
+    assert response.status_code == 200
+    assert isinstance(response.json(), list)
+    assert len(response.json()) > 0
+
+
+def test_org_reader_workspace_admin_capabilities_but_writes_blocked(
+    db_session, rbac_org, rbac_users, rbac_workspace
+):
+    roles = seed_system_workspace_roles(db_session, organization_id=rbac_org.id)
+    add_workspace_member(
+        db_session,
+        workspace_id=rbac_workspace.id,
+        user_id=rbac_users["viewer"].id,
+        role_id=roles[SYSTEM_ROLE_ADMIN].id,
+    )
+    db_session.commit()
+
+    principal = Principal(
+        organization_id=rbac_org.id,
+        auth_method=AuthMethod.LOCAL_PASSWORD,
+        user_id=rbac_users["viewer"].id,
+    )
+    caps, _, _ = resolve_workspace_capabilities(
+        db_session,
+        principal=principal,
+        workspace_id=rbac_workspace.id,
+        organization_id=rbac_org.id,
+    )
+    assert WORKSPACE_MEMBERS_MANAGE in caps
+
+    from app.core.rbac_middleware import ReaderReadOnlyMiddleware
+
+    app = FastAPI()
+    app.add_middleware(ReaderReadOnlyMiddleware)
+    app.include_router(workspace_iam.router, prefix="/api/v1")
+
+    def _override_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = _override_db
+    app.dependency_overrides[get_organization_id] = lambda: rbac_org.id
+    app.dependency_overrides[get_principal] = lambda: principal
+
+    target_user = User(id=uuid4(), email="target@test.local", name="Target")
+    db_session.add(target_user)
+    db_session.add(
+        OrganizationMember(
+            organization_id=rbac_org.id,
+            user_id=target_user.id,
+            role=RoleEnum.READER,
+        )
+    )
+    db_session.flush()
+    add_workspace_member(
+        db_session,
+        workspace_id=rbac_workspace.id,
+        user_id=target_user.id,
+        role_id=roles[SYSTEM_ROLE_VIEWER].id,
+    )
+    db_session.commit()
+
+    editor_role = roles["Editor"]
+
+    with patch("app.core.rbac_middleware._resolve_principal", return_value=principal), patch(
+        "app.core.rbac_middleware.get_org_role",
+        return_value=RoleEnum.READER,
+    ):
+        with TestClient(app) as client:
+            get_resp = client.get(
+                f"/api/v1/workspaces/{rbac_workspace.id}/members",
+                headers={"Authorization": "Bearer test-token"},
+            )
+            patch_resp = client.patch(
+                f"/api/v1/workspaces/{rbac_workspace.id}/members/{target_user.id}",
+                json={"role_id": str(editor_role.id)},
+                headers={"Authorization": "Bearer test-token"},
+            )
+
+    assert get_resp.status_code == 200
+    assert patch_resp.status_code == 403
+    assert "reader" in patch_resp.json()["detail"].lower()
+
+
+def test_self_demote_workspace_admin_forbidden(
+    db_session, rbac_org, rbac_users, rbac_workspace
+):
+    roles = seed_system_workspace_roles(db_session, organization_id=rbac_org.id)
+    add_workspace_member(
+        db_session,
+        workspace_id=rbac_workspace.id,
+        user_id=rbac_users["writer"].id,
+        role_id=roles[SYSTEM_ROLE_ADMIN].id,
+    )
+    db_session.commit()
+
+    app = _iam_test_app(
+        db_session,
+        lambda: Principal(
+            organization_id=rbac_org.id,
+            auth_method=AuthMethod.LOCAL_PASSWORD,
+            user_id=rbac_users["writer"].id,
+        ),
+    )
+    app.dependency_overrides[get_organization_id] = lambda: rbac_org.id
+
+    with TestClient(app) as client:
+        response = client.patch(
+            f"/api/v1/workspaces/{rbac_workspace.id}/members/{rbac_users['writer'].id}",
+            json={"role_id": str(roles[SYSTEM_ROLE_VIEWER].id)},
+        )
+
+    assert response.status_code == 403
+    assert "cannot demote your own workspace admin role" in response.json()["detail"].lower()
+
+
+def test_demote_other_workspace_admin_allowed(
+    db_session, rbac_org, rbac_users, rbac_workspace
+):
+    roles = seed_system_workspace_roles(db_session, organization_id=rbac_org.id)
+    other_admin = User(id=uuid4(), email="other-admin@test.local", name="Other Admin")
+    db_session.add(other_admin)
+    db_session.add(
+        OrganizationMember(
+            organization_id=rbac_org.id,
+            user_id=other_admin.id,
+            role=RoleEnum.WRITER,
+        )
+    )
+    db_session.flush()
+    add_workspace_member(
+        db_session,
+        workspace_id=rbac_workspace.id,
+        user_id=rbac_users["writer"].id,
+        role_id=roles[SYSTEM_ROLE_ADMIN].id,
+    )
+    add_workspace_member(
+        db_session,
+        workspace_id=rbac_workspace.id,
+        user_id=other_admin.id,
+        role_id=roles[SYSTEM_ROLE_ADMIN].id,
+    )
+    db_session.commit()
+
+    app = _iam_test_app(
+        db_session,
+        lambda: Principal(
+            organization_id=rbac_org.id,
+            auth_method=AuthMethod.LOCAL_PASSWORD,
+            user_id=rbac_users["writer"].id,
+        ),
+    )
+    app.dependency_overrides[get_organization_id] = lambda: rbac_org.id
+
+    with TestClient(app) as client:
+        response = client.patch(
+            f"/api/v1/workspaces/{rbac_workspace.id}/members/{other_admin.id}",
+            json={"role_id": str(roles[SYSTEM_ROLE_VIEWER].id)},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["role_name"] == SYSTEM_ROLE_VIEWER
+
+
+def test_self_remove_requires_workspace_in_org(db_session, rbac_org, rbac_users):
+    roles = seed_system_workspace_roles(db_session, organization_id=rbac_org.id)
+    other_org = Organization(id=uuid4(), name="Other Org")
+    db_session.add(other_org)
+    db_session.flush()
+    other_ws = Workspace(
+        id=uuid4(),
+        organization_id=other_org.id,
+        name="Foreign",
+        slug="foreign",
+        is_default=False,
+    )
+    db_session.add(other_ws)
+    db_session.flush()
+    add_workspace_member(
+        db_session,
+        workspace_id=other_ws.id,
+        user_id=rbac_users["viewer"].id,
+        role_id=roles[SYSTEM_ROLE_VIEWER].id,
+    )
+    db_session.commit()
+
+    app = _iam_test_app(
+        db_session,
+        lambda: Principal(
+            organization_id=rbac_org.id,
+            auth_method=AuthMethod.LOCAL_PASSWORD,
+            user_id=rbac_users["viewer"].id,
+        ),
+    )
+    app.dependency_overrides[get_organization_id] = lambda: rbac_org.id
+
+    with TestClient(app) as client:
+        response = client.delete(
+            f"/api/v1/workspaces/{other_ws.id}/members/{rbac_users['viewer'].id}",
+        )
+
+    assert response.status_code == 404
+    assert db_session.query(WorkspaceMember).filter(
+        WorkspaceMember.workspace_id == other_ws.id,
+        WorkspaceMember.user_id == rbac_users["viewer"].id,
+    ).first() is not None
+
+
+def test_update_workspace_missing_returns_404_not_403(
+    db_session, rbac_org, rbac_users, rbac_workspace
+):
+    app = FastAPI()
+    app.include_router(workspaces.router, prefix="/api/v1")
+
+    def _override_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = _override_db
+    app.dependency_overrides[get_principal] = lambda: Principal(
+        organization_id=rbac_org.id,
+        auth_method=AuthMethod.LOCAL_PASSWORD,
+        user_id=rbac_users["writer"].id,
+    )
+    app.dependency_overrides[get_organization_id] = lambda: rbac_org.id
+
+    missing_id = uuid4()
+    with TestClient(app) as client:
+        response = client.patch(
+            f"/api/v1/workspaces/{missing_id}",
+            json={"name": "Renamed"},
+        )
+
+    assert response.status_code == 404
+
+
+def test_require_capability_missing_capability_returns_403():
+    """Regression: require_capability must not NameError on status import."""
+    from uuid import uuid4
+
+    from fastapi import HTTPException
+
+    from app.core.auth.capabilities import CALLS_DELETE, CALLS_VIEW
+    from app.dependencies import WorkspaceContext, require_capability
+
+    dep = require_capability(CALLS_DELETE)
+    ctx = WorkspaceContext(
+        workspace_id=uuid4(),
+        organization_id=uuid4(),
+        capabilities=frozenset([CALLS_VIEW]),
+        role_name="Viewer",
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        dep(ctx=ctx)
+
+    assert exc_info.value.status_code == 403
+    assert "Workspace Admin role" in exc_info.value.detail
+    assert "Viewer" in exc_info.value.detail
+
+
+def test_capability_denied_message_maps_editor_and_admin():
+    from app.core.auth.capabilities import (
+        CALLS_DELETE,
+        CALLS_IMPORT,
+        capability_denied_message,
+    )
+
+    delete_msg = capability_denied_message(
+        CALLS_DELETE,
+        role_name="Viewer",
+        workspace_label="the active workspace",
+    )
+    assert "Workspace Admin role" in delete_msg
+    assert "Viewer" in delete_msg
+
+    import_msg = capability_denied_message(
+        CALLS_IMPORT,
+        role_name="Viewer",
+        workspace_label="the active workspace",
+    )
+    assert "Editor role" in import_msg
+    assert "Viewer" in import_msg

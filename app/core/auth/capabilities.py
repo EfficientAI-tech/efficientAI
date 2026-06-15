@@ -135,3 +135,42 @@ def capabilities_for_registry() -> List[Dict[str, object]]:
 def _capability_label(cap: str) -> str:
     action = cap.split(".")[-1].replace("_", " ")
     return action.title()
+
+
+def required_workspace_role_label(capability: str) -> str:
+    """Return the minimum system workspace role that grants *capability*."""
+    if capability in ADMIN_EXTRA_CAPABILITIES:
+        return SYSTEM_ROLE_ADMIN
+    if capability in EDITOR_EXTRA_CAPABILITIES:
+        return SYSTEM_ROLE_EDITOR
+    return SYSTEM_ROLE_VIEWER
+
+
+def capability_denied_message(
+    capability: str,
+    *,
+    role_name: str | None = None,
+    workspace_label: str = "this workspace",
+) -> str:
+    """
+    User-facing 403 detail when a workspace capability check fails.
+
+    Maps internal capability strings to system role names (Viewer / Editor /
+    Workspace Admin) instead of exposing raw capability keys in the UI.
+    """
+    required_role = required_workspace_role_label(capability)
+
+    if required_role == SYSTEM_ROLE_ADMIN:
+        base = (
+            f"This action requires the Workspace Admin role in {workspace_label}."
+        )
+    elif required_role == SYSTEM_ROLE_EDITOR:
+        base = (
+            f"This action requires at least the Editor role in {workspace_label}."
+        )
+    else:
+        base = f"You don't have permission to perform this action in {workspace_label}."
+
+    if role_name:
+        return f"{base} Your current workspace role is {role_name}."
+    return f"{base} Ask a workspace admin to upgrade your access."

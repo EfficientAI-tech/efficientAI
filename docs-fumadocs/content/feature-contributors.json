@@ -136,7 +136,7 @@
         {
           "name": "Tejas Narayan",
           "email": "stejasnarayan@gmail.com",
-          "commits": 2
+          "commits": 3
         }
       ],
       "lastReviewed": "2026-06-15"
@@ -221,6 +221,11 @@
         {
           "name": "aadhar-EAI",
           "email": "aadhar@efficientai.cloud",
+          "commits": 1
+        },
+        {
+          "name": "Tejas Narayan",
+          "email": "stejasnarayan@gmail.com",
           "commits": 1
         }
       ],
@@ -555,7 +560,7 @@
   ],
   "summary": {
     "featureCount": 28,
-    "contributorCount": 31,
+    "contributorCount": 32,
     "skippedBots": 0
   }
 }

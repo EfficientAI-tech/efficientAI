@@ -6,6 +6,7 @@ import { apiClient } from '../lib/api'
 import type { OrganizationMember, Workspace, WorkspaceRole } from '../types/api'
 import Button from './Button'
 import { useToast } from '../hooks/useToast'
+import { getApiErrorMessage } from '../lib/apiErrors'
 import { useAuthStore } from '../store/authStore'
 
 export interface PendingWorkspaceMember {
@@ -195,11 +196,10 @@ export default function CreateWorkspaceModal({
       } else {
         showToast('Workspace created', 'success')
       }
-    } catch (err: any) {
-      const detail = err?.response?.data?.detail
-      setError(
-        typeof detail === 'string' ? detail : 'Could not create workspace.',
-      )
+    } catch (err: unknown) {
+      const message = getApiErrorMessage(err, 'Could not create workspace.')
+      setError(message)
+      showToast(message, 'error')
     } finally {
       setSubmitting(false)
     }

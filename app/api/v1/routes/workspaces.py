@@ -11,7 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.auth import Principal, get_principal
-from app.core.auth.capabilities import WORKSPACE_SETTINGS
+from app.core.auth.capabilities import WORKSPACE_SETTINGS, capability_denied_message
 from app.core.auth.rbac import get_org_role, require_admin, require_writer
 from app.database import get_db
 from app.dependencies import get_organization_id
@@ -169,18 +169,6 @@ def update_workspace(
     db: Session = Depends(get_db),
 ):
     """Rename a workspace (slug stays put to keep deep-links stable)."""
-    caps, _, _ = resolve_workspace_capabilities(
-        db,
-        principal=principal,
-        workspace_id=workspace_id,
-        organization_id=organization_id,
-    )
-    if WORKSPACE_SETTINGS not in caps:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"This action requires the '{WORKSPACE_SETTINGS}' capability in this workspace.",
-        )
-
     workspace = (
         db.query(Workspace)
         .filter(
@@ -191,6 +179,21 @@ def update_workspace(
     )
     if workspace is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found.")
+
+    caps, _, role = resolve_workspace_capabilities(
+        db,
+        principal=principal,
+        workspace_id=workspace_id,
+        organization_id=organization_id,
+    )
+    if WORKSPACE_SETTINGS not in caps:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=capability_denied_message(
+                WORKSPACE_SETTINGS,
+                role_name=role.name if role else None,
+            ),
+        )
 
     workspace.name = payload.name.strip()
     db.commit()

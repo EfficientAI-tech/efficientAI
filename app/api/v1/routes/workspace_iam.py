@@ -13,6 +13,7 @@ from app.core.auth import Principal, get_principal
 from app.core.auth.capabilities import (
     WORKSPACE_MEMBERS_MANAGE,
     WORKSPACE_MEMBERS_VIEW,
+    capability_denied_message,
     capabilities_for_registry,
     normalize_capabilities,
 )
@@ -41,14 +42,12 @@ from app.services.workspace_rbac import (
 router = APIRouter(tags=["Workspace IAM"])
 
 
-def _require_workspace_capability(
+def _require_workspace_in_org(
     db: Session,
     *,
-    principal: Principal,
     organization_id: UUID,
     workspace_id: UUID,
-    capability: str,
-) -> None:
+) -> Workspace:
     workspace = (
         db.query(Workspace)
         .filter(
@@ -59,7 +58,23 @@ def _require_workspace_capability(
     )
     if workspace is None:
         raise HTTPException(status_code=404, detail="Workspace not found.")
-    caps, _, _ = resolve_workspace_capabilities(
+    return workspace
+
+
+def _require_workspace_capability(
+    db: Session,
+    *,
+    principal: Principal,
+    organization_id: UUID,
+    workspace_id: UUID,
+    capability: str,
+) -> None:
+    _require_workspace_in_org(
+        db,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+    )
+    caps, _, role = resolve_workspace_capabilities(
         db,
         principal=principal,
         workspace_id=workspace_id,
@@ -68,7 +83,10 @@ def _require_workspace_capability(
     if capability not in caps:
         raise HTTPException(
             status_code=403,
-            detail=f"This action requires the '{capability}' capability in this workspace.",
+            detail=capability_denied_message(
+                capability,
+                role_name=role.name if role else None,
+            ),
         )
 
 
@@ -89,8 +107,11 @@ def _member_response(db: Session, member: WorkspaceMember) -> WorkspaceMemberRes
 
 
 @router.get("/capabilities", response_model=List[CapabilityDomainResponse])
-def list_capabilities():
+def list_capabilities(
+    organization_id: UUID = Depends(get_organization_id),
+):
     """Return the capability registry for the role-builder UI."""
+    del organization_id  # auth gate only; registry is static
     return capabilities_for_registry()
 
 
@@ -345,6 +366,19 @@ def update_workspace_member_route(
         raise HTTPException(status_code=404, detail="Role not found.")
 
     old_role = db.query(WorkspaceRole).filter(WorkspaceRole.id == member.role_id).first()
+    is_self = principal.user_id == user_id
+    if (
+        is_self
+        and is_workspace_admin_role(old_role)
+        and not is_workspace_admin_role(new_role)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "You cannot demote your own Workspace Admin role. "
+                "Ask another admin to change your role."
+            ),
+        )
     if is_workspace_admin_role(old_role) and not is_workspace_admin_role(new_role):
         if count_workspace_admins(db, workspace_id=workspace_id) <= 1:
             raise HTTPException(
@@ -369,6 +403,12 @@ def remove_workspace_member_route(
     organization_id: UUID = Depends(get_organization_id),
     db: Session = Depends(get_db),
 ):
+    _require_workspace_in_org(
+        db,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+    )
+
     is_self = principal.user_id == user_id
     if not is_self:
         _require_workspace_capability(
