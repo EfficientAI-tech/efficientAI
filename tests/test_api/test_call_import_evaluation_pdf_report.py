@@ -112,9 +112,12 @@ def _seed_completed_evaluation(db_session, org_id):
     return call_import, evaluation
 
 
-def test_pdf_report_rejects_blank_vendor_name(authenticated_client):
+def test_pdf_report_rejects_blank_vendor_name(
+    authenticated_client, db_session, org_id, seed_org
+):
+    call_import, evaluation = _seed_completed_evaluation(db_session, org_id)
     response = authenticated_client.post(
-        f"/api/v1/call-imports/{uuid4()}/evaluations/{uuid4()}/pdf-report",
+        f"/api/v1/call-imports/{call_import.id}/evaluations/{evaluation.id}/pdf-report",
         json={"vendor_name": "   "},
     )
 
