@@ -55,6 +55,76 @@
       "lastReviewed": "2026-06-15"
     },
     {
+      "featureId": "enterprise/call-imports",
+      "docPath": "docs-fumadocs/content/docs/enterprise/call-imports.mdx",
+      "historyPath": "docs-fumadocs/content/docs/enterprise/call-imports.mdx",
+      "owners": [],
+      "contributors": [
+        {
+          "name": "Tejas Narayan",
+          "email": "stejasnarayan@gmail.com",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-06-13"
+    },
+    {
+      "featureId": "enterprise/overview",
+      "docPath": "docs-fumadocs/content/docs/enterprise/overview.mdx",
+      "historyPath": "docs-fumadocs/content/docs/enterprise/overview.mdx",
+      "owners": [],
+      "contributors": [
+        {
+          "name": "Tejas Narayan",
+          "email": "stejasnarayan@gmail.com",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-06-13"
+    },
+    {
+      "featureId": "enterprise/prompt-optimization",
+      "docPath": "docs-fumadocs/content/docs/enterprise/prompt-optimization.mdx",
+      "historyPath": "docs-fumadocs/content/docs/enterprise/prompt-optimization.mdx",
+      "owners": [],
+      "contributors": [
+        {
+          "name": "aadhar-EAI",
+          "email": "aadhar@efficientai.cloud",
+          "commits": 2
+        }
+      ],
+      "lastReviewed": "2026-06-13"
+    },
+    {
+      "featureId": "enterprise/unlock",
+      "docPath": "docs-fumadocs/content/docs/enterprise/unlock.mdx",
+      "historyPath": "docs-fumadocs/content/docs/enterprise/unlock.mdx",
+      "owners": [],
+      "contributors": [
+        {
+          "name": "Tejas Narayan",
+          "email": "stejasnarayan@gmail.com",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-06-13"
+    },
+    {
+      "featureId": "enterprise/voice-playground",
+      "docPath": "docs-fumadocs/content/docs/enterprise/voice-playground.mdx",
+      "historyPath": "docs-fumadocs/content/docs/enterprise/voice-playground.mdx",
+      "owners": [],
+      "contributors": [
+        {
+          "name": "Tejas Narayan",
+          "email": "stejasnarayan@gmail.com",
+          "commits": 1
+        }
+      ],
+      "lastReviewed": "2026-06-13"
+    },
+    {
       "featureId": "getting-started/authentication",
       "docPath": "docs-fumadocs/content/docs/getting-started/authentication.mdx",
       "historyPath": "docs-fumadocs/content/docs/getting-started/authentication.mdx",
