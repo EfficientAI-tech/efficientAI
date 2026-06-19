@@ -5,7 +5,10 @@ description = "Voice AI Evaluation Platform"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "fastapi>=0.104.0",
+    # Cap below 0.137: FastAPI 0.137+ uses _IncludedRouter without .path, which
+    # breaks prometheus-fastapi-instrumentator on every API request when
+    # OBSERVABILITY_ENABLED is true. See prometheus-fastapi-instrumentator#370.
+    "fastapi>=0.104.0,<0.137",
     "uvicorn[standard]>=0.24.0",
     "sqlalchemy>=2.0.0",
     "alembic>=1.12.0",
